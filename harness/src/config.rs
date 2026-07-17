@@ -233,10 +233,12 @@ fn default_sweep_expression() -> String {
     "0 0 0 * * *".to_string()
 }
 fn default_functions() -> Option<FunctionPolicy> {
-    // Read-only baseline for parentless spawns: discovery, reads, and
-    // subscription management. Deliberately excludes every write surface,
-    // router spend, and harness::spawn — a pipeline author grants those
-    // explicitly via options / react metadata.options.
+    // Read-only baseline for parentless spawns: discovery and reads only.
+    // Deliberately excludes every write surface, router spend, spawning, AND
+    // trigger registration — children are leaves that do one task and write
+    // state; a pipeline author grants anything more explicitly via options /
+    // react metadata.options (exact ids re-grant the orchestration surface,
+    // see `policy::CHILD_ORCHESTRATION_DENY`).
     Some(FunctionPolicy {
         allow: [
             "engine::functions::list",
@@ -247,8 +249,6 @@ fn default_functions() -> Option<FunctionPolicy> {
             "engine::workers::info",
             "engine::registered-triggers::list",
             "engine::registered-triggers::info",
-            "engine::register_trigger",
-            "engine::unregister_trigger",
             "state::get",
             "state::list",
             "router::models::list",
@@ -342,14 +342,14 @@ mod tests {
         assert!(policy
             .allow
             .contains(&"engine::functions::list".to_string()));
-        assert!(policy
-            .allow
-            .contains(&"engine::register_trigger".to_string()));
         assert!(policy.allow.contains(&"state::get".to_string()));
-        // No write surface, no spend, no spawning in the baseline.
+        // No write surface, no spend, no spawning, no trigger registration in
+        // the baseline — children are leaves.
         for denied in [
             "state::set",
             "harness::spawn",
+            "engine::register_trigger",
+            "engine::unregister_trigger",
             "router::chat",
             "shell::exec",
         ] {

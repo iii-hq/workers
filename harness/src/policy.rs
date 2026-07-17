@@ -82,6 +82,35 @@ pub fn subset_policy(
     })
 }
 
+/// The orchestration surface children lose by default: sub-agents are leaves
+/// that do ONE task and write state — they never spawn or wire triggers. An
+/// explicit exact-id entry in the spawn's requested allow list re-grants (the
+/// escape hatch for a deliberately orchestrating child); a glob never does.
+pub const CHILD_ORCHESTRATION_DENY: [&str; 3] = [
+    "harness::spawn",
+    "engine::register_trigger",
+    "engine::unregister_trigger",
+];
+
+/// Enforce child dumbness in policy, not just prose: extend the child's deny
+/// set with [`CHILD_ORCHESTRATION_DENY`] except where the requested allow
+/// names the exact id. Applied to EVERY seeded child (in-turn, react-fired,
+/// direct/CLI). `None` (deny-all) stays `None`.
+pub fn deny_child_orchestration(
+    policy: Option<FunctionPolicy>,
+    requested: Option<&FunctionPolicy>,
+) -> Option<FunctionPolicy> {
+    let mut policy = policy?;
+    let explicitly_allowed =
+        |id: &str| requested.is_some_and(|r| r.allow.iter().any(|g| g == id));
+    for id in CHILD_ORCHESTRATION_DENY {
+        if !explicitly_allowed(id) && !policy.deny.iter().any(|d| d == id) {
+            policy.deny.push(id.to_string());
+        }
+    }
+    Some(policy)
+}
+
 /// Is a child allow glob covered by the parent's allow set? Conservative: an
 /// exact match, a parent `*`, or a parent `<prefix>::*` covering the child.
 fn glob_covered(child: &str, parent_globs: &[String]) -> bool {
@@ -261,6 +290,35 @@ mod tests {
         let p = CompiledPolicy::from(None);
         assert!(!p.allows("shell::run"));
         assert!(!p.allows("anything"));
+    }
+
+    #[test]
+    fn children_lose_orchestration_unless_exact_id_regranted() {
+        // Inherited-allowlist child (`*` from the parent): the deny set wins.
+        let inherited = deny_child_orchestration(Some(policy(&["*"], &[])), None).unwrap();
+        let compiled = CompiledPolicy::from(Some(&inherited));
+        assert!(compiled.allows("state::set"));
+        for id in CHILD_ORCHESTRATION_DENY {
+            assert!(!compiled.allows(id), "{id} must be denied by default");
+        }
+
+        // Exact-id re-grant is the escape hatch…
+        let requested = policy(&["harness::spawn", "state::set"], &[]);
+        let regranted =
+            deny_child_orchestration(Some(policy(&["*"], &[])), Some(&requested)).unwrap();
+        let compiled = CompiledPolicy::from(Some(&regranted));
+        assert!(compiled.allows("harness::spawn"));
+        assert!(!compiled.allows("engine::register_trigger"));
+
+        // …but a glob is not: dumbness never leaks back through a wildcard.
+        let globbed = policy(&["harness::*"], &[]);
+        let denied =
+            deny_child_orchestration(Some(policy(&["*"], &[])), Some(&globbed)).unwrap();
+        let compiled = CompiledPolicy::from(Some(&denied));
+        assert!(!compiled.allows("harness::spawn"));
+
+        // Deny-all stays deny-all.
+        assert!(deny_child_orchestration(None, None).is_none());
     }
 
     #[test]

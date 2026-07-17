@@ -138,13 +138,12 @@ async fn seed_child(
         .or_else(|| parent_record.map(|p| p.options.model.clone()))
         .ok_or_else(|| HarnessError::InvalidRequest("spawn requires a model".into()))?;
     let provider = child_provider(req, parent_record);
-    // Children resolve their own prompt (never inherited); the provider
-    // identity prompt is fetched once here and frozen on the child's turn.
-    let identity = deps
-        .router()
-        .await
-        .system_prompt_get(provider.as_deref())
-        .await;
+    // Children get the embedded minimal sub-agent identity, never the
+    // orchestrator prompt the router serves to top-level agents: a child
+    // knows its one task, its state destination, and nothing else — by
+    // design. Spawn `options.system_prompt` (+ override strategy) is the
+    // escape hatch for a child that genuinely needs a different identity.
+    let identity = prompt::SUBAGENT;
 
     let requested_policy = req.options.as_ref().and_then(|o| o.functions.as_ref());
     let functions = match parent_record {
@@ -155,6 +154,9 @@ async fn seed_child(
             .cloned()
             .or_else(|| cfg.default_functions.clone()),
     };
+    // Dumbness is enforced, not just prompted: children lose the
+    // orchestration surface unless the spawner re-granted the exact ids.
+    let functions = policy::deny_child_orchestration(functions, requested_policy);
 
     let depth = parent_record.map(|p| p.depth + 1).unwrap_or(0);
     let requested_turns = req
@@ -266,7 +268,7 @@ async fn seed_child(
                     .map(|o| o.system_prompt_strategy)
                     .unwrap_or_default(),
                 req.options.as_ref().and_then(|o| o.mode),
-                identity.as_deref(),
+                Some(identity),
             ),
             mode: req.options.as_ref().and_then(|o| o.mode),
             max_turns,
