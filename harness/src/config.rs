@@ -201,7 +201,11 @@ fn default_max_depth() -> u32 {
     3
 }
 fn default_max_children() -> u32 {
-    5
+    // Per-turn spawn total (fire-and-forget spawns settle instantly). Live
+    // testing showed 6-wide fan-outs are a mundane ask ("one worker per
+    // planet") that forced workarounds at 5; 8 covers the ordinary case
+    // while the guard still stops runaways.
+    8
 }
 fn default_max_validation_retries() -> u32 {
     2

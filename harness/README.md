@@ -144,7 +144,7 @@ field hot-reloads (no restart). The fields a deployment is most likely to tune:
 default_max_turns: 16            # per-turn generate-step cap when a send omits it
 default_pending_timeout_ms: 1800000  # legacy parked-call (hold / pre-deploy child) wait guard
 max_depth: 3                     # sub-agent depth budget
-max_children: 5                  # sub-agent spawns-per-turn budget
+max_children: 8                  # sub-agent spawns-per-turn budget
 max_transient_resumes: 1         # recovery generations after a partial stream failure
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 ```
