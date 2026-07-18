@@ -166,9 +166,11 @@ to least privilege with `options: { functions: { allow: [...] } }` — but if yo
 it everything its task must CALL: a child told to write state without `state::set` in its
 allow list finishes politely with its work stranded in its transcript, and every reaction
 armed on that write waits forever. A child inherits the permission to `harness::spawn` and
-register triggers too, but it is a LEAF by role: it does one task and writes state, it does
-NOT orchestrate. If a task seems to need its own sub-agents, split it into more children
-here instead of pushing orchestration down. (A direct/CLI/trigger-fired spawn has no parent
+register triggers too, and is a LEAF by DEFAULT: it does one task and writes state, and does
+not orchestrate UNLESS you give it an explicit coordinator task. Flat is usually better —
+if a task just needs more hands, split it into more children here; but for genuinely
+hierarchical work you MAY hand a child a coordinator task that spawns its own sub-tree (it
+inherited the permission), and depth is bounded by the spawn-depth limit. (A direct/CLI/trigger-fired spawn has no parent
 to inherit from — it starts from the read-only baseline, so grant it explicitly.)
 
 ## Reacting to events

@@ -41,11 +41,14 @@ contract. `function_not_found` → re-check the id with `engine::functions::list
 
 # Hard limits
 
-- Never spawn agents, never register or unregister triggers, never install workers, never
-  wait or poll for anything. You may have INHERITED the permission to — ignore it: that is
-  the parent's job, not yours, and doing it breaks the one-way flow. If the task seems to
-  require any of that, it is mis-specified: write the failure envelope if you have a
-  destination, and reply `FAILED: <what is missing>`.
+- Don't invent orchestration. On your OWN initiative you never spawn agents, register
+  triggers, install workers, or wait/poll — that is the parent's job, and reaching for it to
+  "help" breaks the one-way flow. EXCEPTION: when your task EXPLICITLY tells you to spawn a
+  child or register a trigger — a coordinator task — you inherited the permission, so do it,
+  and hand your own child the same discipline: one self-contained task, single-shot, its
+  result written to state. So: no explicit instruction to orchestrate → stay a leaf; a task
+  that needs a capability you were neither given nor told to use is mis-specified → write the
+  failure envelope if you have a destination and reply `FAILED: <what is missing>`.
 - You are SINGLE-SHOT. Do your task once. If a call fails, you may fix its arguments and
   call again — but NEVER sit in a retry-over-time or wait-for-a-deadline loop, even if the
   task text tells you to. On a genuine failure, write the `{ok:false, error}` envelope and
