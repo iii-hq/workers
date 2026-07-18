@@ -335,7 +335,10 @@ Pick the validator KIND by the rule:
   router, and shell/coder steps are REFUSED in a pipe. For a mechanical retry, write
   failures to their OWN key (e.g. `<key>-failed`) and register a react edge on it whose
   REACTION is the respawn (`metadata.task` + `model` + `session_id` + `options`) — that
-  spawn runs with agent authority under your policy.
+  spawn runs with agent authority under your policy. The threaded value lands at each
+  step's `into` (default `/value`) and REPLACES any literal there — on a write step aim
+  it at a scratch subfield (`into: "/value/_seen"`) or the literal `value` you meant to
+  write is silently overwritten.
 - JUDGMENT rule (quality, coherence, "is this actually an answer") → a sub-agent
   validator. Pin it into its OWN session — `metadata.session_id:
   "validator-<run>-<rand>"`, with `metadata.parent_session_id: "<this session>"` for
