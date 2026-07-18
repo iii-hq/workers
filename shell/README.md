@@ -198,6 +198,47 @@ same failure class, so a caller can learn the taxonomy once:
 
 No separate install: `iii worker add shell` brings the whole surface.
 
+## Two surfaces, one contract
+
+`shell::fs::*` and `coder::*` are two views of the same filesystem, served by
+this one worker under ONE policy: the same jail (`fs.host_roots`), the same
+unjailed opt-in (`fs.allow_unjailed`), the same protected globs
+(`code.non_accessible_globs`), the same operator denylist
+(`fs.denylist_paths`), and — since 0.10.0 — the same error-code semantics
+(equal digits, equal meaning) and the same existence redaction (a denied path
+reads exactly like a missing one on both surfaces).
+
+They differ in ergonomics, and each operation has a twin:
+
+| Task | `coder::*` (agent-ergonomic) | `shell::fs::*` (byte-level) |
+|---|---|---|
+| read | `coder::read-file` — inline text, windowed, batched | `shell::fs::read` — streams bytes via channel |
+| create | `coder::create-file` — batched inline text | `shell::fs::write` — inline or streamed, modes |
+| edit | `coder::update-file` — line ops + regex, post-apply echoes | `shell::fs::sed` — regex replace across files |
+| delete | `coder::delete-file` — batched, per-entry errors | `shell::fs::rm` — single path |
+| list | `coder::list-folder` / `coder::tree` — paginated, noise-filtered | `shell::fs::ls` — single directory |
+| move | `coder::move` — batched, cross-root copy+delete | `shell::fs::mv` — single path |
+| search | `coder::search` — budgeted, context lines | `shell::fs::grep` — raw matches |
+| introspect | `coder::info` — mode, roots, caps, globs | `shell::fs::stat` — one path's metadata |
+
+Conventions (hold these when adding functions to either surface):
+
+- **Batching**: `coder::*` operations are batched with per-entry error
+  isolation. `shell::fs::*` point operations are single-path (`write` and
+  `sed` are the historical exceptions).
+- **Naming**: `coder::*` uses verb-noun kebab (`read-file`); `shell::fs::*`
+  uses the unix tool name (`read`, `ls`, `mv`). Follow the surface you are
+  extending.
+- **Errors**: one `{ code, message }` envelope; C/S codes with equal digits
+  mean the same failure class (see [Errors](#errors)). Redaction: never let
+  a denied path read differently from a missing one.
+- **Discovery**: `coder::info` is the agent-facing contract report.
+  `shell::config-status` (reload health) and `shell::workspace::*` (console
+  working-directory picker) are operator/console control plane, not agent
+  tools.
+- **Sandbox**: `shell::fs::*`/`shell::exec` accept `target: sandbox`;
+  `coder::*` is host-only.
+
 ## Hot-reload
 
 When the `configuration` worker pushes an updated config, the shell worker swaps in the new security policy and fs backend atomically. A few things to know:
