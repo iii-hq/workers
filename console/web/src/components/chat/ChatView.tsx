@@ -38,6 +38,7 @@ import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { newMessageId } from '@/lib/session-id'
+import { isEmptyFcallInput } from '@/lib/sessions/entry-mapper'
 import { cn } from '@/lib/utils'
 import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
 import {
@@ -552,7 +553,7 @@ export function ChatView({
       if (event.kind === 'fcall-start') {
         const existing = event.functionCallId
           ? messagesRef.current.find(
-              (message) =>
+              (message): message is FunctionCallMessage =>
                 message.role === 'function-call' &&
                 message.functionCallId === event.functionCallId,
             )
@@ -564,6 +565,13 @@ export function ChatView({
             functionCallId: event.functionCallId,
             sessionId: event.sessionId,
             filesystemAccess: event.filesystemAccess,
+            // The approval record's arguments_excerpt is the only source of
+            // args when the transcript row degraded to empty/streaming (the
+            // wrapper payload was dropped or still forming at snapshot time).
+            ...(isEmptyFcallInput(existing.input) &&
+            !isEmptyFcallInput(event.input)
+              ? { input: event.input }
+              : {}),
           })
           return
         }
@@ -1065,12 +1073,23 @@ export function ChatView({
                       m.functionCallId === event.functionCallId,
                   )?.id
                 if (existing) {
+                  const existingRow = messagesRef.current.find(
+                    (m): m is FunctionCallMessage =>
+                      m.role === 'function-call' && m.id === existing,
+                  )
                   onPatchMessage(conversationId, existing, {
                     pendingApproval: event.pendingApproval,
                     running: !event.pendingApproval,
                     functionCallId: event.functionCallId,
                     sessionId: event.sessionId,
                     filesystemAccess: event.filesystemAccess,
+                    // Backfill args from the approval record's excerpt when
+                    // the row's transcript-derived input degraded to empty.
+                    ...(existingRow &&
+                    isEmptyFcallInput(existingRow.input) &&
+                    !isEmptyFcallInput(event.input)
+                      ? { input: event.input }
+                      : {}),
                   })
                   fcallId = existing
                   break

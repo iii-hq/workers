@@ -7,9 +7,14 @@ import { InfoView } from './InfoView'
 import { ListFolderView } from './ListFolderView'
 import { MovePreview, MoveView } from './MoveView'
 import {
+  createFileRequestSchema,
+  deleteFileRequestSchema,
   isCoderFunction,
   isCoderMutateFunction,
+  moveFileRequestSchema,
+  safeParseRequest,
   unwrapEnvelope,
+  updateFileRequestSchema,
 } from './parsers'
 import { ReadFileView } from './ReadFileView'
 import { SearchView } from './SearchView'
@@ -76,15 +81,26 @@ function tryRenderPreview(
 ): React.ReactNode | null {
   if (!isCoderMutateFunction(message.functionId)) return null
   const input = unwrapEnvelope(message.input)
+  // Parse-check BEFORE building an element: the preview components render
+  // null for an unparseable request, but a non-null element here makes
+  // FunctionCallCard suppress its raw request pane (the null contract).
   switch (message.functionId) {
     case 'coder::create-file':
-      return <CreateFilePreview input={input} />
+      return safeParseRequest(createFileRequestSchema, input) ? (
+        <CreateFilePreview input={input} />
+      ) : null
     case 'coder::update-file':
-      return <UpdateFilePreview input={input} />
+      return safeParseRequest(updateFileRequestSchema, input) ? (
+        <UpdateFilePreview input={input} />
+      ) : null
     case 'coder::delete-file':
-      return <DeleteFilePreview input={input} />
+      return safeParseRequest(deleteFileRequestSchema, input) ? (
+        <DeleteFilePreview input={input} />
+      ) : null
     case 'coder::move':
-      return <MovePreview input={input} />
+      return safeParseRequest(moveFileRequestSchema, input) ? (
+        <MovePreview input={input} />
+      ) : null
     default:
       return null
   }

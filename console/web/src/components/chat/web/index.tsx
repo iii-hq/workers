@@ -2,7 +2,12 @@ import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
 import type { FunctionCallMessage } from '@/types/chat'
 import { FetchPreview, FetchView } from './FetchView'
-import { isWebFunction, unwrapEnvelope } from './parsers'
+import {
+  fetchRequestSchema,
+  isWebFunction,
+  safeParseRequest,
+  unwrapEnvelope,
+} from './parsers'
 
 export function WebFunctionIdLabel({ functionId }: { functionId: string }) {
   if (!functionId.startsWith('web::')) {
@@ -48,9 +53,14 @@ function tryRenderPreview(
 ): React.ReactNode | null {
   if (!isWebFunction(message.functionId)) return null
   const input = unwrapEnvelope(message.input)
+  // Parse-check BEFORE building an element: FetchPreview renders null for
+  // an unparseable request, but a non-null element here makes
+  // FunctionCallCard suppress its raw request pane (the null contract).
   switch (message.functionId) {
     case 'web::fetch':
-      return <FetchPreview input={input} />
+      return safeParseRequest(fetchRequestSchema, input) ? (
+        <FetchPreview input={input} />
+      ) : null
     default:
       return null
   }

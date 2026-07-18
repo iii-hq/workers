@@ -233,6 +233,66 @@ function lifecycleNotice(
   return null
 }
 
+/**
+ * Recover a JSON object from a stringified `payload`. Mirrors the harness's
+ * leading-value parse (`plan_calls`, harness/src/policy.rs): models that
+ * stringify the payload also tend to append stray closing braces, which a
+ * strict whole-string parse rejects as trailing data — so parse the balanced
+ * `{…}` prefix instead. Only objects are recovered (the schema says object);
+ * anything else returns undefined and the caller keeps the original string.
+ */
+function parseJsonObjectPrefix(s: string): unknown | undefined {
+  const t = s.trim()
+  if (!t.startsWith('{')) return undefined
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (c === '\\') escaped = true
+      else if (c === '"') inString = false
+      continue
+    }
+    if (c === '"') inString = true
+    else if (c === '{') depth++
+    else if (c === '}') {
+      depth--
+      if (depth === 0) {
+        try {
+          return JSON.parse(t.slice(0, i + 1)) as unknown
+        } catch {
+          return undefined
+        }
+      }
+    }
+  }
+  return undefined
+}
+
+/**
+ * The arguments a resolved wrapper call actually ran with — mirrors the
+ * harness's `plan_calls` unwrapping (harness/src/policy.rs) so the request
+ * pane shows what executed:
+ * - `payload` object → verbatim;
+ * - `payload` stringified JSON object → parsed (models double-encode);
+ * - no `payload` key → the model flattened the target's arguments beside
+ *   `function`; the harness hoists them, so dropping them here would render
+ *   a call that visibly ran with arguments as `request · empty`.
+ */
+function wrapperInput(args: Record<string, unknown>): unknown {
+  if ('payload' in args) {
+    const payload = args.payload
+    if (typeof payload === 'string') {
+      return parseJsonObjectPrefix(payload) ?? payload
+    }
+    return payload ?? {}
+  }
+  const { function: _target, ...rest } = args
+  return rest
+}
+
 /** The harness wraps every tool call in agent_trigger; unwrap for display. */
 function unwrapFunctionCall(
   block: Extract<ContentBlock, { type: 'function_call' }>,
@@ -257,7 +317,10 @@ function unwrapFunctionCall(
         if (streaming !== undefined) {
           return { functionId: args.function, input: { _streaming: streaming } }
         }
-        return { functionId: args.function, input: args.payload ?? {} }
+        return {
+          functionId: args.function,
+          input: wrapperInput(args as Record<string, unknown>),
+        }
       }
       if (streaming !== undefined) {
         return {
@@ -568,6 +631,23 @@ function belongsToEntry(messageId: string, entryId: string): boolean {
   return messageId === entryId || messageId.startsWith(`${entryId}:`)
 }
 
+/**
+ * True when a function-call `input` carries no reviewable arguments: absent,
+ * empty (`''`/`[]`/`{}`), or only the transient `_streaming` tail. Decides
+ * when a better source — the approval record's `arguments_excerpt`, a row
+ * already patched with it — should win over a degraded transcript snapshot.
+ */
+export function isEmptyFcallInput(v: unknown): boolean {
+  if (v === null || v === undefined) return true
+  if (typeof v === 'string') return v.length === 0
+  if (Array.isArray(v)) return v.length === 0
+  if (typeof v === 'object') {
+    const keys = Object.keys(v as Record<string, unknown>)
+    return keys.length === 0 || keys.every((k) => k === '_streaming')
+  }
+  return false
+}
+
 /** Patchable transient state for a function-call row. */
 export type FcallPatch = Partial<
   Pick<
@@ -659,6 +739,13 @@ export function applyEntryUpsert(
       absorbedLocalIds.add(existing.id)
     return {
       ...segment,
+      // A degraded snapshot (streaming tail, dropped wrapper payload) must
+      // not clobber arguments the row already shows — e.g. the approval
+      // record's excerpt patched in while the call was held, or a complete
+      // snapshot arriving before a late redelivery (events are unordered).
+      ...(isEmptyFcallInput(segment.input) && !isEmptyFcallInput(existing.input)
+        ? { input: existing.input }
+        : {}),
       output: existing.output,
       durationMs: existing.durationMs,
       running: existing.running,

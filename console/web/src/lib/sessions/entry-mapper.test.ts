@@ -5,6 +5,7 @@ import {
   applyFcallPatch,
   clearTransientFlags,
   entrySegments,
+  isEmptyFcallInput,
   splitReactionTask,
   transcriptToMessages,
   triggerFiredSummary,
@@ -268,6 +269,67 @@ describe('entrySegments', () => {
     expect(noTarget).toMatchObject({
       unresolvedTarget: true,
       input: { _streaming: '{"fun' },
+    })
+  })
+
+  // The harness (`plan_calls`, harness/src/policy.rs) executes flattened
+  // wrapper args and recovers stringified payloads; the mapper must mirror
+  // it or the request pane reads `empty` for a call that visibly ran with
+  // arguments (MOT-4101).
+  it('hoists flattened wrapper arguments when payload is missing', () => {
+    const [call] = entrySegments(
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'agent_trigger',
+          arguments: {
+            function: 'shell::exec',
+            command: 'cargo fmt',
+            cwd: '/repo',
+          },
+        },
+      ]),
+    )
+    expect(call).toMatchObject({
+      functionId: 'shell::exec',
+      input: { command: 'cargo fmt', cwd: '/repo' },
+    })
+  })
+
+  it('recovers a stringified JSON-object payload, tolerating trailing braces', () => {
+    const parsed = entrySegments(
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'agent_trigger',
+          arguments: {
+            function: 'state::set',
+            payload: '{"key":"k","value":1}}',
+          },
+        },
+      ]),
+    )[0]
+    expect(parsed).toMatchObject({
+      functionId: 'state::set',
+      input: { key: 'k', value: 1 },
+    })
+
+    // A scalar string is NOT recovered — it stays visible as-is.
+    const scalar = entrySegments(
+      assistantItem('e-b', [
+        {
+          type: 'function_call',
+          id: 'fc-2',
+          function_id: 'agent_trigger',
+          arguments: { function: 'state::get', payload: 'not json' },
+        },
+      ]),
+    )[0]
+    expect(scalar).toMatchObject({
+      functionId: 'state::get',
+      input: 'not json',
     })
   })
 
@@ -674,6 +736,53 @@ describe('applyEntryUpsert', () => {
     })
   })
 
+  it('keeps patched-in arguments when a snapshot re-derives with empty input', () => {
+    // The row was patched with the approval record's arguments_excerpt while
+    // the transcript block's wrapper carried no payload.
+    const local: Message = {
+      id: 'e-a:0',
+      role: 'function-call',
+      functionId: 'shell::exec',
+      input: { command: 'ls -la' },
+      pendingApproval: true,
+      functionCallId: 'fc-1',
+      createdAt: 0,
+    }
+    const next = applyEntryUpsert(
+      [local],
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'agent_trigger',
+          arguments: { function: 'shell::exec' },
+        },
+      ]),
+    )
+    expect(next[0]).toMatchObject({
+      id: 'e-a:0',
+      input: { command: 'ls -la' },
+      pendingApproval: true,
+    })
+
+    // A snapshot that DOES carry arguments stays the source of truth.
+    const richer = applyEntryUpsert(
+      [local],
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'agent_trigger',
+          arguments: {
+            function: 'shell::exec',
+            payload: { command: 'ls -la /tmp' },
+          },
+        },
+      ]),
+    )
+    expect(richer[0]).toMatchObject({ input: { command: 'ls -la /tmp' } })
+  })
+
   it('infers running for unpaired calls while the session is working', () => {
     const messages = applyEntryUpsert(
       [],
@@ -814,6 +923,20 @@ describe('transcriptToMessages — running inference on hydration', () => {
       'sess-1',
     )
     expect((idle[0] as { running?: boolean }).running).toBeUndefined()
+  })
+})
+
+describe('isEmptyFcallInput', () => {
+  it('treats absent/empty/streaming-only inputs as empty, real args as not', () => {
+    expect(isEmptyFcallInput(undefined)).toBe(true)
+    expect(isEmptyFcallInput(null)).toBe(true)
+    expect(isEmptyFcallInput('')).toBe(true)
+    expect(isEmptyFcallInput([])).toBe(true)
+    expect(isEmptyFcallInput({})).toBe(true)
+    expect(isEmptyFcallInput({ _streaming: '{"comm' })).toBe(true)
+    expect(isEmptyFcallInput({ command: 'ls' })).toBe(false)
+    expect(isEmptyFcallInput('raw text')).toBe(false)
+    expect(isEmptyFcallInput(0)).toBe(false)
   })
 })
 

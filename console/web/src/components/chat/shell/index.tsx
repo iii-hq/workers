@@ -18,6 +18,9 @@ import { ShellListView } from './ListView'
 import {
   isShellFunction,
   parseShellErrorDisplay,
+  shellExecBgRequestSchema,
+  shellExecRequestSchema,
+  shellKillRequestSchema,
   unwrapEnvelope,
 } from './parsers'
 import { ShellStatusView } from './StatusView'
@@ -105,13 +108,24 @@ function tryRenderPreview(
 ): React.ReactNode | null {
   if (!isShellFunction(message.functionId)) return null
   const input = unwrapEnvelope(message.input)
+  // Honor the documented null contract BEFORE building an element: the
+  // preview components render null for an unparseable request, but a
+  // non-null element here makes FunctionCallCard treat the preview as
+  // present and suppress its raw request pane — a held call would show
+  // no arguments at all.
   switch (message.functionId) {
     case 'shell::exec':
-      return <ShellExecPreview input={input} />
+      return shellExecRequestSchema.safeParse(input).success ? (
+        <ShellExecPreview input={input} />
+      ) : null
     case 'shell::exec_bg':
-      return <ShellExecBgPreview input={input} />
+      return shellExecBgRequestSchema.safeParse(input).success ? (
+        <ShellExecBgPreview input={input} />
+      ) : null
     case 'shell::kill':
-      return <ShellKillPreview input={input} />
+      return shellKillRequestSchema.safeParse(input).success ? (
+        <ShellKillPreview input={input} />
+      ) : null
     default:
       return null
   }

@@ -199,6 +199,9 @@ export interface MessagePatch {
   streaming?: boolean
   durationMs?: number
   running?: boolean
+  /** Function-call arguments — patched from the approval record's
+      `arguments_excerpt` when the transcript-derived input is empty. */
+  input?: unknown
   output?: unknown
   pendingApproval?: boolean
   /** Set during fcall-start dedupe so resolve handlers know which iii call to resolve. */

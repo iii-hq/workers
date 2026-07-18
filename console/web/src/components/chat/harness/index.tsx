@@ -1,7 +1,12 @@
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
 import type { FunctionCallMessage } from '@/types/chat'
-import { isHarnessFunction, unwrapEnvelope } from './parsers'
+import {
+  isHarnessFunction,
+  safeParseRequest,
+  spawnRequestSchema,
+  unwrapEnvelope,
+} from './parsers'
 import { SpawnPreview, SpawnView } from './SpawnView'
 import { SubmitResultView } from './SubmitResultView'
 
@@ -65,7 +70,13 @@ function tryRenderPreview(
   message: FunctionCallMessage,
 ): React.ReactNode | null {
   if (message.functionId !== 'harness::spawn') return null
-  return <SpawnPreview input={unwrapEnvelope(message.input)} />
+  const input = unwrapEnvelope(message.input)
+  // Parse-check BEFORE building an element: SpawnPreview renders null for
+  // an unparseable request, but a non-null element here makes
+  // FunctionCallCard suppress its raw request pane (the null contract).
+  return safeParseRequest(spawnRequestSchema, input) ? (
+    <SpawnPreview input={input} />
+  ) : null
 }
 
 export const HarnessToolView = {

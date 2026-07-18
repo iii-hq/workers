@@ -13,7 +13,12 @@ import { FsSedView } from './FsSedView'
 import { FsStatView } from './FsStatView'
 import { FsWriteView } from './FsWriteView'
 import { ListView } from './ListView'
-import { parseSandboxErrorDisplay, unwrapEnvelope } from './parsers'
+import {
+  execRequestSchema,
+  parseSandboxErrorDisplay,
+  runRequestSchema,
+  unwrapEnvelope,
+} from './parsers'
 import { RunPreview, RunView } from './RunView'
 import { StopView } from './StopView'
 
@@ -118,11 +123,18 @@ function tryRenderPreview(
 ): React.ReactNode | null {
   if (!isSandboxFunction(message.functionId)) return null
   const input = unwrapEnvelope(message.input)
+  // Parse-check BEFORE building an element: the preview components render
+  // null for an unparseable request, but a non-null element here makes
+  // FunctionCallCard suppress its raw request pane (the null contract).
   switch (message.functionId) {
     case 'sandbox::exec':
-      return <ExecPreview input={input} />
+      return execRequestSchema.safeParse(input).success ? (
+        <ExecPreview input={input} />
+      ) : null
     case 'sandbox::run':
-      return <RunPreview input={input} />
+      return runRequestSchema.safeParse(input).success ? (
+        <RunPreview input={input} />
+      ) : null
     default:
       return null
   }

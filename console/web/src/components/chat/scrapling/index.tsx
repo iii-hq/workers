@@ -6,10 +6,15 @@ import { FetchPreview, FetchView } from './FetchView'
 import { MarkdownView } from './MarkdownView'
 import { ExtractView, FindSimilarView, QueryView } from './ParseViews'
 import {
+  crawlRequestSchema,
   ELEMENT_SEARCH_FUNCTION_IDS,
   FETCH_FUNCTION_IDS,
+  fetchRequestSchema,
   isScraplingFunction,
   SESSION_GATED_FUNCTION_IDS,
+  safeParseRequest,
+  screenshotRequestSchema,
+  sessionOpenRequestSchema,
   unwrapEnvelope,
 } from './parsers'
 import { ScreenshotPreview, ScreenshotView } from './ScreenshotView'
@@ -130,21 +135,32 @@ function tryRenderPreview(
 ): React.ReactNode | null {
   if (!isScraplingFunction(message.functionId)) return null
   const input = unwrapEnvelope(message.input)
+  // Parse-check BEFORE building an element: the preview components render
+  // null for an unparseable request, but a non-null element here makes
+  // FunctionCallCard suppress its raw request pane (the null contract).
+  // SessionFetchPreview is exempt — it renders a header for any input.
   if (FETCH_FUNCTION_IDS.has(message.functionId)) {
-    return <FetchPreview functionId={message.functionId} input={input} />
+    return safeParseRequest(fetchRequestSchema, input) ? (
+      <FetchPreview functionId={message.functionId} input={input} />
+    ) : null
   }
   if (message.functionId === 'scrapling::screenshot') {
-    return <ScreenshotPreview input={input} />
+    return safeParseRequest(screenshotRequestSchema, input) ? (
+      <ScreenshotPreview input={input} />
+    ) : null
   }
   if (SESSION_GATED_FUNCTION_IDS.has(message.functionId)) {
-    return message.functionId === 'scrapling::session-open' ? (
-      <SessionOpenPreview input={input} />
-    ) : (
-      <SessionFetchPreview input={input} />
-    )
+    if (message.functionId === 'scrapling::session-open') {
+      return safeParseRequest(sessionOpenRequestSchema, input) ? (
+        <SessionOpenPreview input={input} />
+      ) : null
+    }
+    return <SessionFetchPreview input={input} />
   }
   if (message.functionId === 'scrapling::crawl') {
-    return <CrawlPreview input={input} />
+    return safeParseRequest(crawlRequestSchema, input) ? (
+      <CrawlPreview input={input} />
+    ) : null
   }
   return null
 }
