@@ -142,8 +142,8 @@ async fn seed_child(
         .ok_or_else(|| {
             HarnessError::InvalidRequest(
                 "spawn requires a model — only an IN-TURN spawn inherits its parent's; a spawn \
-                 dispatched from a reaction, call-mode pipe, trigger, or CLI is parentless and \
-                 inherits nothing, so name `model` explicitly in that spawn payload"
+                 dispatched from a reaction, trigger, or CLI is parentless and inherits \
+                 nothing, so name `model` explicitly in that spawn payload"
                     .into(),
             )
         })?;
