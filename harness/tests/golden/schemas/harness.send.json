@@ -439,7 +439,7 @@
                 "type": "null"
               }
             ],
-            "description": "The fail-closed dispatch policy; omit to deny every call."
+            "description": "The fail-closed dispatch policy. Omitted on a NEW session → deny every call; omitted when steering an EXISTING session → inherit the prior turn's policy (a nudge must not disarm a live run). Pass `{ allow: [] }` to strip explicitly."
           },
           "max_turns": {
             "format": "uint32",

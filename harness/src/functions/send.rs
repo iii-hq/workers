@@ -49,7 +49,10 @@ pub struct SendOptions {
     /// The turn's deliverable; default `{ type: "text" }`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputContract>,
-    /// The fail-closed dispatch policy; omit to deny every call.
+    /// The fail-closed dispatch policy. Omitted on a NEW session → deny every
+    /// call; omitted when steering an EXISTING session → inherit the prior
+    /// turn's policy (a nudge must not disarm a live run). Pass
+    /// `{ allow: [] }` to strip explicitly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
     /// Tracing passthrough.
@@ -140,22 +143,22 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
     // model (and provider, unless overridden) instead of failing on a raw
     // missing-field error — a user nudging a live run should not have to
     // re-name the model every time. A NEW session has nothing to inherit.
-    let (model, provider) = match (req.model.clone(), req.session_id.as_deref()) {
+    let prev = match req.session_id.as_deref() {
+        Some(sid) => crate::state::get_turn(&deps.iii, sid, cfg.session_timeout_ms).await?,
+        None => None,
+    };
+    let (model, provider) = match (req.model.clone(), &prev) {
         (Some(m), _) => (m, req.provider.clone()),
-        (None, Some(sid)) => {
-            match crate::state::get_turn(&deps.iii, sid, cfg.session_timeout_ms).await? {
-                Some(prev) => (
-                    prev.options.model.clone(),
-                    req.provider.clone().or_else(|| prev.options.provider.clone()),
-                ),
-                None => {
-                    return Err(HarnessError::InvalidRequest(
-                        "harness::send without `model` inherits from the session's prior \
-                         turn, but this session has none — name a `model`"
-                            .into(),
-                    ))
-                }
-            }
+        (None, Some(prev)) => (
+            prev.options.model.clone(),
+            req.provider.clone().or_else(|| prev.options.provider.clone()),
+        ),
+        (None, None) if req.session_id.is_some() => {
+            return Err(HarnessError::InvalidRequest(
+                "harness::send without `model` inherits from the session's prior \
+                 turn, but this session has none — name a `model`"
+                    .into(),
+            ))
         }
         (None, None) => {
             return Err(HarnessError::InvalidRequest(
@@ -169,7 +172,17 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
     // Freeze the per-send options before moving the message out of `req`.
     // The provider identity prompt is fetched once here and frozen with them.
     let identity = deps.router().await.system_prompt_get(provider.as_deref()).await;
-    let options = build_options(&cfg, &req, model, provider, identity.as_deref());
+    let mut options = build_options(&cfg, &req, model, provider, identity.as_deref());
+    // A steer also inherits the prior turn's dispatch policy unless this send
+    // names its own: `functions` is fail-closed, so leaving it `None` on a
+    // fresh steer record would silently DISARM a live run — every turn from
+    // the nudge onward denied all dispatch. Explicit strip stays possible
+    // (`options.functions: { allow: [] }`).
+    if options.functions.is_none() {
+        if let Some(prev) = &prev {
+            options.functions = prev.options.functions.clone();
+        }
+    }
 
     // Normalise the incoming message and validate its role.
     let message = normalize_message(req.message)?;
