@@ -73,6 +73,7 @@ npx skills add iii-hq/iii --all
 | [`scrapling`](scrapling/) | Python | [Scrapling](https://github.com/D4Vinci/Scrapling) as an iii worker — `scrapling::*` map three fetch tiers (HTTP / Camoufox stealth / Playwright), screenshots, and CSS/XPath/regex/adaptive extraction over the bus. |
 | [`browser`](browser/) | Rust | Interactive Chromium sessions over CDP with console/network capture, a11y-tree snapshots with actionable refs, viewable screenshots, and DevTools element picking for the console UI. |
 | [`worktree`](worktree/) | Rust | Git worktree lifecycle for parallel agents — `worktree::*` mint, claim, and track isolated worktrees per repo, emit six lifecycle trigger types, and land branches back through a per-repo FIFO queue (rebase, test gate, ff-only merge). |
+| [`github`](github/) | Rust | GitHub CLI (`gh`) as an iii worker — typed `github::pr/issue/repo/run/workflow/release/search::*` functions plus `github::exec` argv passthrough and `github::api` for any GitHub REST endpoint. |
 
 ## SDK
 

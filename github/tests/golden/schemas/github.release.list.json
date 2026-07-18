@@ -1,0 +1,41 @@
+{
+  "description": "List releases: { repo: \"owner/name\", limit? } -> { value: [{tagName, name, isDraft, isLatest, isPrerelease, createdAt, publishedAt}] }.",
+  "function_id": "github::release::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "limit": {
+        "description": "Maximum number of results (gh default: 30).",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "repo": {
+        "description": "Target repository, \"owner/name\".",
+        "type": "string"
+      }
+    },
+    "required": [
+      "repo"
+    ],
+    "title": "ListRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Parsed `--json` output of a gh command.",
+    "properties": {
+      "value": {
+        "description": "The JSON gh printed for the requested `--json` fields."
+      }
+    },
+    "required": [
+      "value"
+    ],
+    "title": "ValueResponse",
+    "type": "object"
+  }
+}

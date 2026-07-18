@@ -1,0 +1,64 @@
+{
+  "description": "Open a pull request: { repo: \"owner/name\", title, body, base?, head?, draft? } -> { output: <pr url> }. head defaults to the repo's current branch on the gh side — pass it explicitly.",
+  "function_id": "github::pr::create",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "base": {
+        "description": "Base branch to merge into (gh default: the repo default branch).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "body": {
+        "description": "Pull request body (markdown).",
+        "type": "string"
+      },
+      "draft": {
+        "description": "Open as draft.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "head": {
+        "description": "Head branch the PR ships (pass explicitly; the worker has no checkout).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "repo": {
+        "description": "Target repository, \"owner/name\".",
+        "type": "string"
+      },
+      "title": {
+        "description": "Pull request title.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "body",
+      "repo",
+      "title"
+    ],
+    "title": "CreateRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Trimmed stdout of a mutating gh command (gh prints the created/updated URL or a confirmation line; some commands print nothing).",
+    "properties": {
+      "output": {
+        "description": "gh's stdout, trimmed.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "output"
+    ],
+    "title": "TextResponse",
+    "type": "object"
+  }
+}

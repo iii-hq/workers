@@ -25,6 +25,7 @@ on:
       - 'image-resize/v*'
       - 'llm-router/v*'
       - 'fp/v*'
+      - 'github/v*'
       - 'mcp/v*'
       - 'memory/v*'
       - 'memory-consolidate/v*'

@@ -1,0 +1,7 @@
+iii: v1
+name: github
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: github
+description: GitHub CLI (gh) as an iii worker — typed github::pr/issue/repo/run/workflow/release/search functions, github::exec argv passthrough, and github::api for any GitHub REST endpoint.

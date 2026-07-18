@@ -1,0 +1,68 @@
+{
+  "description": "Close an issue: { repo, number, comment?, reason?: completed|not-planned } -> { output }.",
+  "function_id": "github::issue::close",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "CloseReason": {
+        "description": "Close reason. The wire value is kebab-case; gh's flag value for `not-planned` is the space-separated \"not planned\".",
+        "enum": [
+          "completed",
+          "not-planned"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "comment": {
+        "description": "Closing comment.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "number": {
+        "description": "Issue number.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "reason": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CloseReason"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Close reason."
+      },
+      "repo": {
+        "description": "Target repository, \"owner/name\".",
+        "type": "string"
+      }
+    },
+    "required": [
+      "number",
+      "repo"
+    ],
+    "title": "CloseRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Trimmed stdout of a mutating gh command (gh prints the created/updated URL or a confirmation line; some commands print nothing).",
+    "properties": {
+      "output": {
+        "description": "gh's stdout, trimmed.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "output"
+    ],
+    "title": "TextResponse",
+    "type": "object"
+  }
+}

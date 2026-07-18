@@ -1,0 +1,62 @@
+{
+  "description": "List GitHub Actions workflow runs: { repo: \"owner/name\", workflow?, branch?, status?, limit? } -> { value: [{databaseId, displayTitle, workflowName, headBranch, event, status, conclusion, url, ...}] }.",
+  "function_id": "github::run::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "branch": {
+        "description": "Filter by branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "limit": {
+        "description": "Maximum number of results (gh default: 20).",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "repo": {
+        "description": "Target repository, \"owner/name\".",
+        "type": "string"
+      },
+      "status": {
+        "description": "Filter by status (e.g. completed, in_progress, queued, failure, success).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "workflow": {
+        "description": "Filter by workflow (file name, e.g. \"ci.yml\").",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "repo"
+    ],
+    "title": "RunListRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Parsed `--json` output of a gh command.",
+    "properties": {
+      "value": {
+        "description": "The JSON gh printed for the requested `--json` fields."
+      }
+    },
+    "required": [
+      "value"
+    ],
+    "title": "ValueResponse",
+    "type": "object"
+  }
+}
