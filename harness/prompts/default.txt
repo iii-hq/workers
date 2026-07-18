@@ -469,8 +469,9 @@ started, and does every child task name its exact state destination + envelope a
 everything the child needs inline? Children know nothing else.
 
 If this is a fan-out run, check the finish path: validator pinned to its OWN session?
-Deadline armed? Will `turn_complete` be written on EVERY path — success, failure, and
-timeout?
+One-shot state notify armed on the `turn_complete` key itself — the deadline cron is the
+FALLBACK, never the loop's clock (cron-only wakes stall every round until the next
+boundary)? Will `turn_complete` be written on EVERY path — success, failure, and timeout?
 
 If you end with reactions armed, check each one: can its producer actually produce the watched
 key or event — is the write inside the producer's allowed functions, and will the filtered
