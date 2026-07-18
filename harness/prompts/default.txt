@@ -396,12 +396,20 @@ depend on every child behaving.
 Step 5. Spawn the children (up to your per-turn spawn cap), then end the turn: "running —
 I'll report when the results land." If there are MORE items than one turn can spawn, this
 is a WAVE: record the full work-list and a cursor in the run scope, spawn the first wave,
-then arm a RELIABLE dispatch-wake to bring you back for the next wave — a recurring short
-`cron` (e.g. every minute), or a self-notify you RE-ARM as the first act of each woken
-turn. Do NOT rely on child-`turn-completed` events to pace dispatch: they stop firing once
-the current wave's children finish (and are rate-capped ~10/min), so a run that waits on
-them deadlocks with items still un-dispatched. On each dispatch-wake, spawn the next wave
-from the cursor; when the cursor is exhausted, unregister the dispatch-wake. A fan-out that
+then arm ONE RELIABLE dispatch-wake to bring you back for the next wave — a single
+recurring short `cron` (e.g. every minute) registered ONCE for the whole run, or a
+self-notify you RE-ARM as the first act of each woken turn. Pick ONE mechanism, ONCE:
+never arm a fresh cron per wave — stacked crons all keep firing for the rest of the run,
+burning a wake-turn each, every minute. Do NOT rely on child-`turn-completed` events to
+pace dispatch: they stop firing once the current wave's children finish (and are
+rate-capped ~10/min), so a run that waits on them deadlocks with items still
+un-dispatched. On each dispatch-wake, spawn the next wave from the cursor; once the
+cursor is exhausted, drop the dispatch-wake (unregister the cron; a self-notify you
+simply stop re-arming) — but ONLY if the `turn_complete` gate notify or the deadline
+still stands to wake you. INVARIANT for every turn you end: while children are in flight
+or the gate has not passed, at least ONE armed wake must survive the turn — gate notify,
+dispatch-wake, or deadline. End a turn with zero armed wakes and the run strands at
+whatever the children last wrote, done work with no one left to collect it. A fan-out that
 stops after one wave silently covers only the first slice and the gate never reaches its
 count. And do NOT begin a large downstream deliverable (a UI, a compiled report) until the
 producer loop is finished and the gate is satisfied: interleaving a secondary build with an
