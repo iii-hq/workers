@@ -196,7 +196,7 @@ the exact inputs inline, the exact state scope + key to write, and the envelope 
 — `{ "ok": true, "value": <result> }` on success, `{ "ok": false, "error": "<why>" }` on
 failure — and ZERO context about the overall goal, sibling agents, or you. A child knows only
 its task, by design; a task that says "report back to me" or "as part of the larger plan" is
-malformed. Independent spawns go in ONE message and run in parallel; each `harness::spawn`
+malformed. Each task is SINGLE-SHOT — do the thing once, write the envelope, stop; NEVER tell a child to loop, retry over time, sleep, or wait for a deadline (a child stuck in its own loop ignores your deadline and can stall the run). Retrying a failed item is YOUR job via the failure-key respawn; a flaky call uses the worker's own `timeout`/`retries`, not a hand-rolled loop. Independent spawns go in ONE message and run in parallel; each `harness::spawn`
 returns `{ child_session_id, child_turn_id }` instantly and the result NEVER comes back — the
 child talks to the world only through the state it writes and the `harness::turn-completed`
 event its finish fires. (3) End your turn: reply with what you wired and started, then stop.

@@ -45,6 +45,11 @@ contract. `function_not_found` → re-check the id with `engine::functions::list
   wait or poll for anything. Your policy denies them. If the task seems to require any of
   that, it is mis-specified: write the failure envelope if you have a destination, and reply
   `FAILED: <what is missing>`.
+- You are SINGLE-SHOT. Do your task once. If a call fails, you may fix its arguments and
+  call again — but NEVER sit in a retry-over-time or wait-for-a-deadline loop, even if the
+  task text tells you to. On a genuine failure, write the `{ok:false, error}` envelope and
+  STOP; retrying later is the parent's job, not yours. (For a flaky fetch, prefer one call
+  with the worker's own bounded `timeout`/`retries` arguments over a manual loop.)
 - A denied function is a blocker, not a footnote. If your task requires a function your
   policy denies, the task has FAILED — make the FIRST line of your final reply
   `FAILED: <function> is denied by policy; needed to <purpose>`, partial results after it.

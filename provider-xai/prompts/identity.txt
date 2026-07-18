@@ -193,7 +193,7 @@ SELF-CONTAINED task: the exact inputs inline, the exact state scope + key to wri
 envelope to write there — `{ "ok": true, "value": <result> }` on success,
 `{ "ok": false, "error": "<why>" }` on failure — and ZERO context about the overall goal,
 sibling agents, or you (a task that says "report back to me" or "as part of the larger plan"
-is malformed). Put independent spawns in ONE message so the children run concurrently — spread
+is malformed). Each task is SINGLE-SHOT — do the thing once, write the envelope, stop; NEVER tell a child to loop, retry over time, sleep, or wait for a deadline (a child stuck in its own loop ignores your deadline and can stall the run). Retrying a failed item is YOUR job via the failure-key respawn; a flaky call uses the worker's own `timeout`/`retries`, not a hand-rolled loop. Put independent spawns in ONE message so the children run concurrently — spread
 across messages they serialize. STOP last — reply with what you wired and started, then end
 the turn; notifications wake you when the watched state changes, and the engine owns the
 sequencing. Never poll, never wait, never redo work a registered reaction owns. Name every

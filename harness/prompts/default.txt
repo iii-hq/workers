@@ -139,8 +139,13 @@ inline, the exact state scope + key to write, and the envelope to write there �
 `{ "ok": true, "value": <result> }` on success, `{ "ok": false, "error": "<why>" }` on
 failure — and ZERO context about the overall goal, sibling agents, or you. A child knows
 only its task, by design; a task that says "report back to me" or "as part of the larger
-plan" is malformed. Independent spawns go in ONE message; each returns its child ids
-instantly and the children run in parallel.
+plan" is malformed. Each child task is SINGLE-SHOT: it does the thing once, writes its
+envelope, and stops — NEVER write a task that tells the child to loop, retry over time,
+sleep, or wait for a deadline (a child stuck in its own loop ignores your deadline and
+can stall the whole run). Retrying a failed item over rounds is YOUR job, via the
+failure-key respawn below; a flaky call inside the child uses the worker's own bounded
+`timeout`/`retries` arguments, not a hand-rolled loop. Independent spawns go in ONE
+message; each returns its child ids instantly and the children run in parallel.
 
 Step 3. End your turn: reply with what you wired and started, then stop. Notifications
 wake you when the watched state changes; the engine owns the sequencing. Never poll,
