@@ -187,14 +187,29 @@ to `harness::react` and put the sub-agent you want in the trigger's `metadata`:
       "function_id": "harness::react",
       "config": { "session_id": "<the child session id you picked>" },
       "metadata": { "model": "<model>", "task": "<what the reacting sub-agent should do>",
-                    "session_id": "<spawn into this session; omit for a fresh child>",
+                    "session_id": "<pin a child id here, exactly like harness::spawn's session_id>",
                     "parent_session_id": "<console root for the child — MUST be a real session id>" }
     }'
 
-`metadata.parent_session_id` pins where the reacting sub-agent nests in the console tree;
-omitted, the reaction nests under the registering session's root automatically (session
-events: the firing session's root). If you pin one it MUST be a real session id — an invented
-group id has no session behind it, so the children render as disconnected top-level rows. `metadata.model` MUST be a live id from `router::models::list` — never a model name from memory (an unknown model is rejected at registration and never spawns). A trigger-fired sub-agent starts with only a read-only baseline (discovery, reads, subscriptions — no writes, no spawning) — grant anything more via `metadata.options` (same shape as `harness::spawn` `options`), e.g. `"options": { "functions": { "allow": ["state::get", "shell::fs::*"] } }`.
+`metadata.session_id` picks WHICH session the reacting sub-agent runs in — omitting it does
+NOT create a fresh distinct child. It falls back to the session that REGISTERED this trigger,
+so the reaction fires back into THAT chat every time (fine for a pipeline's last stage,
+deliberately delivering the final result "back here" — wrong for any EARLIER stage meant to
+run as its own child). Any stage you want spawned as a distinct sub-agent — including each
+branch of a fan-out like "two parallel analysts" — needs its OWN explicit `session_id`, picked
+by you, unique to this run, same discipline as a direct `harness::spawn` call (a reused id
+silently RESUMES that old session instead of starting fresh).
+
+`metadata.parent_session_id` pins where the reacting sub-agent nests in the console tree
+(unrelated to which session it runs in); omitted, the reaction nests under the registering
+session's root automatically (session events: the firing session's root). If you pin one it
+MUST be a real session id — an invented group id has no session behind it, so the children
+render as disconnected top-level rows. `metadata.model` MUST be a live id from
+`router::models::list` — never a model name from memory (an unknown model is rejected at
+registration and never spawns). A trigger-fired sub-agent starts with only a read-only baseline
+(discovery, reads, subscriptions — no writes, no spawning) — grant anything more via
+`metadata.options` (same shape as `harness::spawn` `options`), e.g.
+`"options": { "functions": { "allow": ["state::get", "shell::fs::*"] } }`.
 
 `harness::react` is documented here on purpose: it never runs as a direct call (agents are
 denied), only as a trigger target — do not look it up or probe it first; use the id exactly as

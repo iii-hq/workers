@@ -19,7 +19,7 @@ use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use tokio::sync::Notify;
+use tokio::sync::{watch, Notify};
 
 use crate::error::HarnessError;
 use crate::types::event::{AssistantMessageEvent, StopReason};
@@ -70,10 +70,17 @@ impl RouterClient {
     }
 
     /// Stream one assistant turn, forwarding coalesced partials to `sink`.
+    ///
+    /// `abort_rx` is the harness-local cancel backstop: `router::abort` is the
+    /// happy path (the router closes the stream → EOF), but it's a no-op when
+    /// it races ahead of the router's stream registration or after a router
+    /// restart — then only this local signal cuts the await (which otherwise
+    /// blocks up to `router_timeout_ms`).
     pub async fn chat(
         &self,
         params: ChatParams,
         sink: &dyn StreamSink,
+        mut abort_rx: watch::Receiver<bool>,
     ) -> Result<ChatOutcome, HarnessError> {
         let channel = create_channel(&self.iii, None)
             .await
@@ -113,6 +120,7 @@ impl RouterClient {
             }
         });
 
+        let request_id = params.request_id.clone();
         let mut payload = json!({
             "writer_ref": channel.writer_ref,
             "request_id": params.request_id,
@@ -186,6 +194,15 @@ impl RouterClient {
         // then fall through to the outcome handling below.
         let mut response: Option<Result<Value, iii_sdk::errors::Error>> = None;
         let mut drain_deadline = Instant::now();
+        // Resolves when harness::stop fires the turn's local cancel; a dropped
+        // sender (registry cleared — no stop can arrive) parks forever instead
+        // of busy-looping the select.
+        let abort_fired = async move {
+            if abort_rx.wait_for(|a| *a).await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        };
+        tokio::pin!(abort_fired);
         loop {
             let frame = if response.is_some() {
                 match tokio::time::timeout(Duration::from_millis(750), rx.recv()).await {
@@ -208,6 +225,52 @@ impl RouterClient {
             } else {
                 tokio::select! {
                     f = rx.recv() => f,
+                    // Local cancel backstop: cut the await now, return the
+                    // partial as Aborted. No arm in the post-ack drain branch
+                    // above — that path is bounded (≤10s) already.
+                    _ = &mut abort_fired => {
+                        // notify_one, not notify_waiters: it stores a permit
+                        // when the pump task hasn't polled its notified() yet
+                        // (a pre-fired cancel can get here before the spawned
+                        // pump first runs), so the wakeup can't be lost and
+                        // pump.await can't hang on next_binary().
+                        cancel.notify_one();
+                        let _ = pump.await;
+                        // Kill the held-open router::chat task; the router's
+                        // own teardown was already requested via router::abort.
+                        trigger.abort();
+                        // Re-request the router abort: stop.rs's router::abort
+                        // can race ahead of the router's stream registration
+                        // and no-op — by now the stream is certainly
+                        // registered, so this lands and the provider stops
+                        // generating instead of streaming into the closed
+                        // channel until its own terminal. Detached: an abort
+                        // against a hung router must not block the stop path.
+                        let client = self.clone();
+                        let rid = request_id.clone();
+                        tokio::spawn(async move {
+                            client.abort(&rid).await;
+                        });
+                        // Prefer a terminal frame's complete message over the
+                        // tracker's partial: a stop landing between a Done
+                        // frame and EOF must not replace the full assistant
+                        // entry with the stale pre-Done partial.
+                        let mut message = final_message
+                            .or_else(|| tracker.current())
+                            .unwrap_or_else(|| {
+                                empty_assistant(
+                                    params.provider.as_deref().unwrap_or(""),
+                                    &params.model,
+                                )
+                            });
+                        message.stop_reason = StopReason::Aborted;
+                        return Ok(ChatOutcome {
+                            ok: false,
+                            stop_reason: Some(StopReason::Aborted),
+                            message,
+                            error: None,
+                        });
+                    }
                     r = &mut trigger => {
                         response = Some(r.map_err(|e| {
                             HarnessError::Internal(format!("router::chat task: {e}"))
@@ -273,7 +336,8 @@ impl RouterClient {
         }
 
         // Stream drained; stop the pump and collect the trigger ack.
-        cancel.notify_waiters();
+        // notify_one: latched — safe even if the pump task hasn't polled yet.
+        cancel.notify_one();
         let _ = pump.await;
         let response = match response {
             Some(r) => r,

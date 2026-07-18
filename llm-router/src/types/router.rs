@@ -241,6 +241,23 @@ pub struct RefreshModelsResponse {
     pub count: usize,
 }
 
+/// Input of a provider's `provider::<id>::abort`: actively cancel the
+/// in-flight upstream stream for `request_id` (the router's `request_id`,
+/// delivered to the provider as `resolution_key`) so billed generation stops
+/// immediately instead of waiting for the provider to notice the closed
+/// channel on its next write.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderAbortRequest {
+    pub request_id: String,
+}
+
+/// Output of `provider::<id>::abort`. `aborted: false` means the request was
+/// unknown — already finished, never started, or aborted before (idempotent).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderAbortResponse {
+    pub aborted: bool,
+}
+
 /// Event delivered to a provider's `provider::<id>::on_router_ready` (the
 /// `router::ready` trigger payload, currently `{}`). Unknown fields are ignored.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]

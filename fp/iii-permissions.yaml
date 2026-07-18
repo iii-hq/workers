@@ -1,0 +1,34 @@
+# Agent permissions for the fp worker.
+# Spec: docs/sops/new-worker.md § 7. First-match-wins.
+#
+# The transforms are pure, side-effect-free value reshapes and are safe for an
+# agent to call without approval. `fp::pipe` is deliberately NOT listed:
+# its steps run with this worker's (worker-to-worker) authority, outside the
+# calling agent's per-step dispatch policy, so it stays at the needs_approval
+# default — an approver sees the full step list in the pipe call. Flip it to
+# allow here if your deployment wants agents to pipe freely.
+#
+# NOTE: the policy the checked-in harness actually loads is the repo-root
+# iii-permissions.yaml (harness/iii-permissions.yaml symlinks to it), which
+# carries these same transform allows. This per-worker copy documents the
+# worker's intended posture for other deployments.
+version: 1
+
+rules:
+  - fp::get
+  - fp::pick
+  - fp::omit
+  - fp::take
+  - fp::drop
+  - fp::map
+  - fp::filter
+  - fp::split
+  - fp::join
+  - fp::uniq
+  - fp::size
+  - fp::compact
+  - fp::nth
+  - fp::getOr
+  - fp::flatten
+  - fp::sortBy
+  - fp::reverse

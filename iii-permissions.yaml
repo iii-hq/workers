@@ -196,6 +196,28 @@ rules:
   - coder::search
   - coder::list-folder
   - coder::tree
+  # fp: the seventeen pure value transforms are side-effect-free reshapes (no
+  # I/O, no authority). fp::pipe stays at the needs_approval default ON
+  # PURPOSE: its steps run with the fp worker's authority, so the pipe
+  # call itself is the surface an approver reviews (the worker statically
+  # refuses hard-denied classes as steps; see fp/src/pipe.rs).
+  - fp::get
+  - fp::pick
+  - fp::omit
+  - fp::take
+  - fp::drop
+  - fp::map
+  - fp::filter
+  - fp::split
+  - fp::join
+  - fp::uniq
+  - fp::size
+  - fp::compact
+  - fp::nth
+  - fp::getOr
+  - fp::flatten
+  - fp::sortBy
+  - fp::reverse
   # web::fetch is load-bearing for the system prompt's SDK-reference gate and
   # HTTP-trigger verification; it enforces size/timeout caps and server-side
   # SSRF protection, so it is allowed by default.
