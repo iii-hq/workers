@@ -73,6 +73,26 @@ invariants:
   # THE issue-507 assertion: no dangling function_call after recovery.
   - id: transcript.calls_closed
     parameters: {}
+  # calls_closed is vacuously true on an empty transcript (no call found →
+  # nothing dangling), so the whole recovered turn must be present: the
+  # crash must not have eaten the function_call message or its result.
+  - id: transcript.message_counts
+    parameters:
+      user: 1
+      assistant: 2
+      function_result: 1
+  # The interrupted call-1 specifically is closed by a durable result
+  # (synthesized error or real result — either closes the call).
+  - id: transcript.function_result
+    parameters:
+      function_call_id: call-1
+  # Recovery consumed the second scripted generation and surfaced its text.
+  - id: transcript.assistant_text
+    parameters:
+      text: recovered
+  - id: router.generations_consumed
+    parameters:
+      count: 2
   # Recovery means the turn ends terminal and usable, not wedged or failed.
   - id: status.terminal
     parameters:
