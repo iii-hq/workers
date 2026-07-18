@@ -329,13 +329,17 @@ Pick the validator KIND by the rule:
 
   The same shape counts state keys (start from `state::list`) or checks any readable
   store. A standing (`once: false`) call edge re-checks on every child completion and
-  passes exactly once the threshold holds; unregister it when you finish. A pipe can
-  only observe and write (state/db/fp): steps run with WORKER authority, so
-  `harness::spawn` and other turn-control, session, trigger-control, credential,
-  router, and shell/coder steps are REFUSED in a pipe. For a mechanical retry, write
-  failures to their OWN key (e.g. `<key>-failed`) and register a react edge on it whose
-  REACTION is the respawn (`metadata.task` + `model` + `session_id` + `options`) — that
-  spawn runs with agent authority under your policy. The threaded value lands at each
+  passes exactly once the threshold holds; unregister it when you finish. A pipe READS
+  (`state::get`, `state::list`, read-only `database::query`, `fp::*` transforms) and
+  writes ONLY `state::set`: steps run with WORKER authority, so `harness::spawn`, every
+  DATABASE WRITE (`database::execute`/transactions/prepared statements), and all
+  turn-control, session, trigger-control, credential, router, and shell/coder steps are
+  REFUSED in a pipe. The gate writes `turn_complete` to STATE; anything else — a db
+  marker row, a respawn — happens on the woken turn or a react edge, with agent
+  authority. For a mechanical retry, write failures to their OWN key (e.g.
+  `<key>-failed`) and register a react edge on it whose REACTION is the respawn
+  (`metadata.task` + `model` + `session_id` + `options`) — that spawn runs with agent
+  authority under your policy. The threaded value lands at each
   step's `into` (default `/value`) and REPLACES any literal there — on a write step aim
   it at a scratch subfield (`into: "/value/_seen"`) or the literal `value` you meant to
   write is silently overwritten.
