@@ -198,10 +198,11 @@ async fn main() -> Result<()> {
         );
     }
 
-    // coder::* remains jailed even when shell::fs::* is explicitly unjailed:
-    // an empty fs.host_roots uses the code resolver's narrow cwd + /tmp
-    // fallback. Building the cells unconditionally keeps the zero-config
-    // worker useful while preserving the coder path boundary.
+    // coder::* follows the same policy switch as shell::fs::*: with the
+    // explicit unjailed opt-in (fs.allow_unjailed + empty fs.host_roots) the
+    // resolver runs deny-only against the real filesystem, keeping the narrow
+    // cwd + /tmp fallback roots as relative-path anchors; without the opt-in
+    // an empty fs.host_roots stays jailed to that fallback.
     let code_cells = configuration::build_code_cells(&cfg)
         .map_err(anyhow::Error::msg)
         .context("building initial code surface state (coder::*)")?;
@@ -237,8 +238,9 @@ async fn main() -> Result<()> {
 
     // Code surface (folded coder::*): explicit fs.host_roots are shared with
     // shell::fs::*; when they are empty, PathResolver supplies its own narrow
-    // cwd + /tmp defaults. In both cases the resolver is a jail. A bad glob or
-    // unreachable root aborts startup so the worker never half-boots.
+    // cwd + /tmp defaults — as the jail without the unjailed opt-in, as
+    // relative-path anchors with it. A bad glob or unreachable root aborts
+    // startup so the worker never half-boots.
     code::register_all(&iii, code_cells);
     tracing::info!("code surface (coder::*) registered");
 

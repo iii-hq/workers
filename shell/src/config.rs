@@ -515,13 +515,12 @@ impl ShellConfig {
     /// registration and used as the runtime fallback when the stored value is
     /// null, so the worker boots with no config file at all (database-style
     /// zero-config). Unjailed by design (`allow_unjailed: true`, empty
-    /// `host_roots`): `shell::fs::*` and the per-call `cwd` on `shell::exec`
-    /// operate against the real filesystem, confined only by
-    /// `denylist_paths` — matching `shell::exec` itself, which is deny-only
-    /// rather than confinement-based. `coder::*` is unaffected: it falls back
-    /// to its own default roots (engine workspace cwd + `/tmp`, see
-    /// `code::path::default_roots`) whenever `host_roots` is empty, regardless
-    /// of `allow_unjailed`. `Default::default()` is ALSO unjailed (empty
+    /// `host_roots`): `shell::fs::*`, `coder::*`, and the per-call `cwd` on
+    /// `shell::exec` all operate against the real filesystem, confined only
+    /// by `denylist_paths` + `code.non_accessible_globs` — one deny-only
+    /// policy across both surfaces. `coder::*` keeps its fallback roots
+    /// (engine workspace cwd + `/tmp`, see `code::path::default_roots`) as
+    /// relative-path anchors only. `Default::default()` is ALSO unjailed (empty
     /// `host_roots`) but leaves `allow_unjailed: false`, so an operator config
     /// that merely omits the `fs` section — never explicitly opting in —
     /// still fails closed; only this seed opts in explicitly. This seed is
@@ -584,10 +583,15 @@ impl ShellConfig {
     /// glob/budget settings from the `code` block, with ROOTS taken from
     /// `fs.host_roots` (the unified jail) — `code.base_paths` is runtime
     /// plumbing filled here, never read from config. This is what keeps the
-    /// merge's promise that the operator sets the root once.
+    /// merge's promise that the operator sets the root once. The unjailed
+    /// opt-in and `fs.denylist_paths` ride along the same way, so the coder
+    /// resolver applies the SAME deny-only policy as `shell::fs::*` when the
+    /// operator runs unjailed.
     pub fn code_resolver_config(&self) -> crate::code::config::CoderConfig {
         let mut c = self.code.clone();
         c.base_paths = self.fs.roots();
+        c.unjailed = self.fs.allow_unjailed && self.fs.host_roots.is_empty();
+        c.denylist_paths = self.fs.denylist_paths.clone();
         c
     }
 }
@@ -1218,6 +1222,34 @@ sandbox:
             resolved.non_accessible_globs,
             vec!["**/.env".to_string()],
             "the rest of the code block is preserved"
+        );
+        assert!(
+            !resolved.unjailed,
+            "explicit host_roots must never mark the resolver unjailed"
+        );
+    }
+
+    /// The unjailed opt-in and `fs.denylist_paths` ride the same wiring hop
+    /// as the roots: unjailed only when `allow_unjailed` AND empty
+    /// `host_roots`; the denylist is copied verbatim in every mode.
+    #[test]
+    fn code_resolver_config_threads_unjailed_and_denylist() {
+        let seed = ShellConfig::seed_default();
+        let resolved = seed.code_resolver_config();
+        assert!(resolved.unjailed, "seed (allow_unjailed + empty roots)");
+        assert_eq!(resolved.denylist_paths, seed.fs.denylist_paths);
+
+        let mut pinned = ShellConfig::seed_default();
+        pinned.fs.host_roots = vec!["/tmp".into()];
+        assert!(
+            !pinned.code_resolver_config().unjailed,
+            "pinned roots override the allow_unjailed opt-in"
+        );
+
+        let no_opt_in = ShellConfig::default();
+        assert!(
+            !no_opt_in.code_resolver_config().unjailed,
+            "empty roots WITHOUT the opt-in stay jailed"
         );
     }
 

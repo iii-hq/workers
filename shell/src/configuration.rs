@@ -530,7 +530,10 @@ mod tests {
     }
 
     #[test]
-    fn zero_config_seed_builds_coder_cells_with_narrow_fallback_roots() {
+    fn zero_config_seed_builds_unjailed_coder_cells_with_anchor_roots() {
+        // The seed opts into unjailed (allow_unjailed + empty host_roots), so
+        // the coder resolver runs deny-only like shell::fs::* — with the
+        // narrow cwd + /tmp fallback kept as relative-path ANCHORS, not a jail.
         let cells = build_code_cells(&ShellConfig::seed_default())
             .expect("zero-config shell must expose coder functions");
         let resolver = cells.resolver.blocking_read();
@@ -539,8 +542,25 @@ mod tests {
 
         assert_eq!(resolver.roots(), &[expected_cwd, expected_tmp]);
         assert!(
+            resolver.unjailed(),
+            "the explicit allow_unjailed opt-in must reach the coder resolver"
+        );
+        assert!(
             cells.config.blocking_read().base_paths.is_empty(),
             "empty configured roots must keep using the coder-only fallback"
+        );
+    }
+
+    #[test]
+    fn explicit_host_roots_build_a_jailed_coder_resolver() {
+        // allow_unjailed only takes effect when host_roots is EMPTY: an
+        // operator who pins roots keeps the jail even with the opt-in set.
+        let mut c = ShellConfig::seed_default();
+        c.fs.host_roots = vec![std::path::PathBuf::from("/tmp")];
+        let cells = build_code_cells(&c).expect("pinned roots build");
+        assert!(
+            !cells.resolver.blocking_read().unjailed(),
+            "explicit host_roots must keep the coder resolver jailed"
         );
     }
 
@@ -837,8 +857,10 @@ mod tests {
         );
         assert_eq!(cells.config.read().await.base_paths, vec![dir_b]);
 
-        // Clearing host_roots is an explicit shell::fs::* widening, but coder
-        // remains jailed to its own cwd + /tmp fallback and stays available.
+        // Reloading to the seed (allow_unjailed + empty host_roots) widens
+        // coder to the same deny-only policy as shell::fs::*: the cwd + /tmp
+        // fallback stays as relative-path anchors and the resolver reports
+        // unjailed.
         let unjailed = ShellConfig::seed_default();
         let res = reload_serialized(&state, {
             let unjailed = unjailed.clone();
@@ -855,6 +877,7 @@ mod tests {
                 std::fs::canonicalize("/tmp").expect("/tmp exists"),
             ]
         );
+        assert!(after.unjailed(), "seed reload must widen coder to deny-only");
         assert!(cells.config.read().await.base_paths.is_empty());
     }
 

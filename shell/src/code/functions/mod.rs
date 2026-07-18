@@ -38,14 +38,17 @@ use crate::code::state::CodeCells;
 // ---------------------------------------------------------------------------
 
 const INFO_ID: &str = "coder::info";
-const INFO_DESC: &str = "Report the coder jail: canonical allowed roots (primary first), \
-     per-file size caps, response budgets (max_output_bytes, \
-     batch_read_budget_bytes, search_response_budget_bytes), \
-     listing/search limits, the non-accessible glob patterns, and the \
-     default_exclude_globs noise filter applied by tree/search. Call \
-     this FIRST when unsure where coder may read or write, or when a \
-     path was rejected — paths outside every allowed root need the \
-     shell worker's shell::fs::* instead.";
+const INFO_DESC: &str = "Report the coder access contract: the effective mode (jailed = \
+     paths confined to the allowed roots; unjailed = deny-only, absolute \
+     paths anywhere on the host, roots anchor relative paths only), \
+     canonical allowed roots (primary first), per-file size caps, \
+     response budgets (max_output_bytes, batch_read_budget_bytes, \
+     search_response_budget_bytes), listing/search limits, the \
+     non-accessible glob patterns, and the default_exclude_globs noise \
+     filter applied by tree/search. Call this FIRST when unsure where \
+     coder may read or write, or when a path was rejected — in jailed \
+     mode, paths outside every allowed root need the shell worker's \
+     shell::fs::* instead.";
 
 const READ_FILE_ID: &str = "coder::read-file";
 const READ_FILE_DESC: &str = "Read a file window-first: probe with stat: true (size/mtime/mode \

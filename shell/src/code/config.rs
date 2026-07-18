@@ -32,6 +32,25 @@ pub struct CoderConfig {
     #[schemars(skip)]
     pub base_paths: Vec<PathBuf>,
 
+    /// Runtime plumbing, NEVER read from config: true when the operator
+    /// explicitly opted into the unjailed mode (`fs.allow_unjailed: true`
+    /// with empty `fs.host_roots`). Copied here by
+    /// `ShellConfig::code_resolver_config` so the resolver applies the same
+    /// deny-only policy as `shell::fs::*`: absolute paths anywhere on the
+    /// host, confined only by `denylist_paths` and `non_accessible_globs`.
+    /// The `base_paths` fallback roots still anchor relative wire paths.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub unjailed: bool,
+
+    /// Runtime plumbing, NEVER read from config: `fs.denylist_paths` copied
+    /// here by `ShellConfig::code_resolver_config` so both surfaces honor
+    /// the same operator path denylist. Matching paths are rejected with
+    /// the redacted C211 (indistinguishable from missing).
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub denylist_paths: Vec<PathBuf>,
+
     /// Glob patterns matched against the path *relative to its containing
     /// root*. Matching files can be listed but not
     /// read/written/deleted/created.
@@ -185,6 +204,14 @@ pub struct JailSignature {
     /// boundary, so it is restart-required: the `PathResolver` canonicalizes
     /// these once at boot and refuses to swap them live.
     pub base_paths: Vec<PathBuf>,
+    /// The unjailed opt-in (`fs.allow_unjailed` + empty `fs.host_roots`).
+    /// Flipping it moves the security boundary wholesale, so it is
+    /// restart-required like the root set it derives from.
+    pub unjailed: bool,
+    /// The operator path denylist (`fs.denylist_paths`), canonicalized into
+    /// the resolver at boot. Part of the deny-only protection layer, so
+    /// restart-required.
+    pub denylist_paths: Vec<PathBuf>,
     /// The access-deny globs. These are the read/write/delete protection layer
     /// (e.g. `.env`, `*.pem`), compiled into the `PathResolver` at boot. A
     /// change alters the security posture, so it is restart-required — never
@@ -201,6 +228,8 @@ impl Default for CoderConfig {
     fn default() -> Self {
         Self {
             base_paths: Vec::new(),
+            unjailed: false,
+            denylist_paths: Vec::new(),
             non_accessible_globs: Vec::new(),
             default_exclude_globs: default_default_exclude_globs(),
             max_read_bytes: default_max_read_bytes(),
@@ -261,6 +290,8 @@ impl CoderConfig {
     pub fn jail_signature(&self) -> JailSignature {
         JailSignature {
             base_paths: self.base_paths.clone(),
+            unjailed: self.unjailed,
+            denylist_paths: self.denylist_paths.clone(),
             non_accessible_globs: self.non_accessible_globs.clone(),
             default_exclude_globs: self.default_exclude_globs.clone(),
         }

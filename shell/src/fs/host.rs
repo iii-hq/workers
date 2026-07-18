@@ -458,13 +458,25 @@ fn path_is_non_accessible(
     if non_accessible.is_empty() {
         return false;
     }
+    let mut contained = false;
     for root in host_roots_canon {
         if let Ok(rel) = canon.strip_prefix(root) {
+            contained = true;
             let rel = rel.to_string_lossy().replace('\\', "/");
             if !rel.is_empty() && non_accessible.is_match(&rel) {
                 return true;
             }
         }
+    }
+    // No containing root — the unjailed mode (empty roots, no scope). The
+    // globs must still protect secrets there: match against the
+    // root-stripped absolute form, the same fallback the coder resolver
+    // uses. Contained paths never reach this, so jailed matching is
+    // byte-for-byte unchanged.
+    if !contained {
+        let abs = canon.to_string_lossy().replace('\\', "/");
+        let stripped = abs.trim_start_matches('/');
+        return !stripped.is_empty() && non_accessible.is_match(stripped);
     }
     false
 }
@@ -2491,6 +2503,32 @@ mod tests {
         );
         let ok = std::fs::canonicalize(&outer).unwrap().join("ok.txt");
         assert!(!path_is_non_accessible(&ok, &roots, &gs));
+    }
+
+    #[test]
+    fn path_is_non_accessible_protects_unjailed_paths_without_roots() {
+        // The unjailed gap (MOT-4099 audit): with empty host_roots the glob
+        // loop never ran and secrets globs were silently skipped. The
+        // absolute-form fallback must protect them; a non-matching neighbor
+        // stays accessible.
+        let dir = tmp();
+        let secret = std::fs::canonicalize(&dir).unwrap().join(".env");
+        let plain = std::fs::canonicalize(&dir).unwrap().join("notes.txt");
+        let mut bld = GlobSetBuilder::new();
+        bld.add(Glob::new("**/.env").unwrap());
+        let gs = bld.build().unwrap();
+
+        assert!(
+            path_is_non_accessible(&secret, &[], &gs),
+            "empty roots must fall back to absolute-form matching"
+        );
+        assert!(!path_is_non_accessible(&plain, &[], &gs));
+
+        // A contained path keeps root-relative-only matching: a glob that
+        // would only match the absolute form must NOT fire inside a root.
+        let roots = vec![std::fs::canonicalize(&dir).unwrap()];
+        assert!(path_is_non_accessible(&secret, &roots, &gs));
+        assert!(!path_is_non_accessible(&plain, &roots, &gs));
     }
 
     #[tokio::test]

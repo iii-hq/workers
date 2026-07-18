@@ -23,12 +23,32 @@ fn example_info_input() -> serde_json::Value {
     serde_json::json!({})
 }
 
+/// Effective access mode of the coder surface — the same deny-only policy
+/// switch `shell::fs::*` runs under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessMode {
+    /// Paths are confined to `base_paths`; anything outside is rejected.
+    Jailed,
+    /// Operator opt-in (`fs.allow_unjailed: true`, empty `fs.host_roots`):
+    /// absolute paths anywhere on the host are accepted, confined only by
+    /// `fs.denylist_paths` and `non_accessible_globs`. `base_paths` only
+    /// anchor relative wire paths.
+    Unjailed,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct InfoOutput {
+    /// `jailed`: paths must stay inside `base_paths`. `unjailed`: absolute
+    /// paths anywhere on the host are accepted (deny-only, like
+    /// `shell::fs::*`) and `base_paths` only anchor relative paths.
+    pub mode: AccessMode,
+
     /// Canonical absolute paths of the allowed roots, in configuration order.
     /// The primary root (index 0) is where relative wire paths resolve; an
-    /// absolute path is accepted when it canonicalises inside ANY of these.
-    /// Paths outside every root are rejected — use `shell::fs::*` instead.
+    /// absolute path is accepted when it canonicalises inside ANY of these
+    /// (in `unjailed` mode: anywhere on the host). In `jailed` mode paths
+    /// outside every root are rejected — use `shell::fs::*` instead.
     pub base_paths: Vec<String>,
 
     /// Convenience duplicate of `base_paths[0]` — the primary allowed root.
@@ -133,6 +153,11 @@ fn inner(resolver: &PathResolver, cfg: &CoderConfig) -> InfoOutput {
     let primary_root = base_paths[0].clone();
 
     InfoOutput {
+        mode: if resolver.unjailed() {
+            AccessMode::Unjailed
+        } else {
+            AccessMode::Jailed
+        },
         base_paths,
         primary_root,
         non_accessible_globs: cfg.non_accessible_globs.clone(),
@@ -219,6 +244,7 @@ mod tests {
             search_response_budget_bytes: 29,
             batch_read_budget_bytes: 23,
             max_output_bytes: 31,
+            ..CoderConfig::default()
         });
         let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
 
@@ -227,6 +253,7 @@ mod tests {
         // primary_root == base_paths[0]
         assert!(!out.base_paths.is_empty());
         assert_eq!(out.primary_root, out.base_paths[0]);
+        assert_eq!(out.mode, AccessMode::Jailed);
 
         // globs
         assert_eq!(
