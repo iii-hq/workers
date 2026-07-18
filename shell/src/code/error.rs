@@ -56,8 +56,8 @@ pub enum CoderError {
     NotFoundOrDenied(String),
 
     /// File exceeds `max_read_bytes` or `max_write_bytes`.
-    #[error("C213: {0}")]
-    #[serde(rename = "C213")]
+    #[error("C218: {0}")]
+    #[serde(rename = "C218")]
     TooLarge(String),
 
     /// Path escapes every allowed root, lexically or through a symlink.
@@ -71,16 +71,16 @@ pub enum CoderError {
     Io(String),
 
     /// `create-file` saw an existing file and `overwrite=false`.
-    #[error("C217: {0}")]
-    #[serde(rename = "C217")]
+    #[error("C213: {0}")]
+    #[serde(rename = "C213")]
     AlreadyExists(String),
 
     /// Path canonicalises inside a configured root but OUTSIDE the
     /// per-call `scope_root` the session is scoped to. Distinct from `C215`
     /// (outside EVERY root) so the rejection can name the session
     /// directory rather than contradict `coder::info`'s allowed-roots list.
-    #[error("C218: {0}")]
-    #[serde(rename = "C218")]
+    #[error("C220: {0}")]
+    #[serde(rename = "C220")]
     OutsideSession(String),
 }
 
@@ -97,11 +97,11 @@ impl CoderError {
         match self {
             CoderError::BadInput(_) => "C210",
             CoderError::NotFoundOrDenied(_) => "C211",
-            CoderError::TooLarge(_) => "C213",
+            CoderError::TooLarge(_) => "C218",
             CoderError::OutsideBase(_) => "C215",
             CoderError::Io(_) => "C216",
-            CoderError::AlreadyExists(_) => "C217",
-            CoderError::OutsideSession(_) => "C218",
+            CoderError::AlreadyExists(_) => "C213",
+            CoderError::OutsideSession(_) => "C220",
         }
     }
 
@@ -263,10 +263,10 @@ mod tests {
             std::io::Error::new(std::io::ErrorKind::AlreadyExists, "exists"),
             "some/file.txt",
         );
-        assert_eq!(e.code(), "C217");
+        assert_eq!(e.code(), "C213");
         assert!(
             e.message().starts_with("some/file.txt: "),
-            "C217 via io_for_path must prefix the caller path: {}",
+            "C213 via io_for_path must prefix the caller path: {}",
             e.message()
         );
     }
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn io_already_exists_maps_to_c217() {
         let e: CoderError = std::io::Error::new(std::io::ErrorKind::AlreadyExists, "x").into();
-        assert_eq!(e.code(), "C217");
+        assert_eq!(e.code(), "C213");
     }
 
     #[test]

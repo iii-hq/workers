@@ -85,7 +85,7 @@
                 "type": "null"
               }
             ],
-            "description": "Structured error for this entry. `code` is stable for programmatic branching (e.g. `\"C217\"` means already-exists; pass `overwrite=true` to replace). `message` carries the corrective action an LLM agent needs to make a successful second call."
+            "description": "Structured error for this entry. `code` is stable for programmatic branching (e.g. `\"C213\"` means already-exists; pass `overwrite=true` to replace). `message` carries the corrective action an LLM agent needs to make a successful second call."
           },
           "path": {
             "description": "Canonical absolute path (resolved through the jail); the caller's input verbatim when resolution failed.",

@@ -259,10 +259,9 @@ impl HostFsBackend {
     pub(crate) fn validate_path(&self, path: &str) -> Result<PathBuf, FsError> {
         let canon = confine_path(path, &self.host_roots_canon, &self.denylist_canon)?;
         if self.is_non_accessible(&canon) {
-            return Err(FsError::new(
-                "S215",
-                format!("path is protected (non_accessible): {path}"),
-            ));
+            // REDACTION INVARIANT: protected paths fold into the same S211 as
+            // missing ones so callers cannot probe for their existence.
+            return Err(FsError::not_found_or_denied(path));
         }
         Ok(canon)
     }
@@ -314,10 +313,9 @@ impl HostFsBackend {
         };
         let access_scope = restrict_to_workspace.then_some(scope_root_canon).flatten();
         if self.is_non_accessible_scoped(&canon, access_scope, scope_grants_canon) {
-            return Err(FsError::new(
-                "S215",
-                format!("path is protected (non_accessible): {path}"),
-            ));
+            // REDACTION INVARIANT: protected paths fold into the same S211 as
+            // missing ones so callers cannot probe for their existence.
+            return Err(FsError::not_found_or_denied(path));
         }
         Ok(canon)
     }
@@ -433,7 +431,9 @@ pub(crate) fn confine_path(
     }
     for deny_canon in denylist_canon {
         if canon.starts_with(deny_canon) {
-            return Err(FsError::new("S215", format!("path is denylisted: {path}")));
+            // Operator denylist folds into the redacted S211 too — approval
+            // cannot override an explicit deny, so no jail-escape hint.
+            return Err(FsError::not_found_or_denied(path));
         }
     }
     Ok(canon)
@@ -575,10 +575,9 @@ fn confine_scope_root(
     }
     for deny_canon in denylist_canon {
         if canon.starts_with(deny_canon) {
-            return Err(FsError::new(
-                "S215",
-                format!("scope_root is denylisted: {scope_root}"),
-            ));
+            // REDACTION INVARIANT: denylisted folds into the same S211 as
+            // missing, so callers cannot probe operator-denied directories.
+            return Err(FsError::not_found_or_denied(scope_root));
         }
     }
     Ok(Some(canon))
@@ -1687,10 +1686,7 @@ impl FsBackend for HostFsBackend {
                 // D4: a protected file is locked for modification, exactly like
                 // shell::fs::write/rm (which route through validate_path_scoped).
                 if path_is_non_accessible(&canon, &access_roots, &non_accessible) {
-                    return Err(FsError::new(
-                        "S215",
-                        format!("path is protected (non_accessible): {f}"),
-                    ));
+                    return Err(FsError::not_found_or_denied(f));
                 }
             }
 
@@ -2193,8 +2189,14 @@ mod tests {
         });
         let backend = HostFsBackend::try_new(cfg, Arc::new(StubChan)).unwrap();
         let err = backend.validate_path(".env").unwrap_err();
-        assert_eq!(err.code, "S215");
-        assert!(err.message.contains("protected"), "got: {}", err.message);
+        assert_eq!(err.code, "S211");
+        // REDACTION INVARIANT: the message must NOT say "protected" — a
+        // denied path reads exactly like a missing one.
+        assert!(
+            err.message.contains("not found or not accessible"),
+            "got: {}",
+            err.message
+        );
         assert!(backend.validate_path("ok.txt").is_ok());
     }
 
@@ -2532,7 +2534,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sed_rejects_non_accessible_file_s215() {
+    async fn sed_rejects_non_accessible_file_with_redacted_s211() {
         // D4: sed confines in a spawn_blocking closure (not validate_path_scoped)
         // — it must still hard-reject a protected file, exactly like write/rm.
         let root = tmp();
@@ -2559,7 +2561,7 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert_eq!(err.code, "S215");
+        assert_eq!(err.code, "S211");
         // The protected file is untouched.
         assert_eq!(
             fs::read_to_string(root.join(".env")).unwrap(),
@@ -2674,7 +2676,7 @@ mod tests {
         let err = h
             .validate_path(root.join("etc/shadow").to_str().unwrap())
             .unwrap_err();
-        assert_eq!(err.code, "S215");
+        assert_eq!(err.code, "S211");
     }
 
     #[test]
@@ -3159,7 +3161,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chmod_with_uid_unprivileged_returns_s215() {
+    async fn chmod_with_uid_unprivileged_returns_redacted_s211() {
         let root = tmp();
         let f = root.join("c.txt");
         std::fs::write(&f, b"x").unwrap();
@@ -3177,7 +3179,7 @@ mod tests {
         match resp {
             Ok(_) => {}
 
-            Err(e) => assert_eq!(e.code, "S215"),
+            Err(e) => assert_eq!(e.code, "S211"),
         }
     }
 
@@ -4275,7 +4277,7 @@ mod tests {
             })
             .await
             .expect_err("protected file under selected scope_root must stay locked");
-        assert_eq!(err.code, "S215");
+        assert_eq!(err.code, "S211");
     }
 
     #[tokio::test]

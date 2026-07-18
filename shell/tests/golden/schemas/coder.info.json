@@ -42,7 +42,7 @@
         "type": "array"
       },
       "batch_read_budget_bytes": {
-        "description": "Aggregate budget across a single `paths[]` batch call to `coder::read-file`, measured in bytes of returned content (after UTF-8 sanitization — invalid bytes expand to U+FFFD before being counted, so the cap bounds what the caller actually receives). Entries are collected in request order; each entry may consume up to `min(remaining_budget, max_read_bytes)`. An entry reached with zero remaining budget receives a per-entry C213 naming this key, its value, and the bytes already consumed, with recovery guidance. Budget topology: batch reads are governed by this key; single-path full reads by `max_output_bytes`; windowed reads by `max_read_bytes` applied per returned window — `max_read_bytes` is also the per-file IO ceiling for all of them.",
+        "description": "Aggregate budget across a single `paths[]` batch call to `coder::read-file`, measured in bytes of returned content (after UTF-8 sanitization — invalid bytes expand to U+FFFD before being counted, so the cap bounds what the caller actually receives). Entries are collected in request order; each entry may consume up to `min(remaining_budget, max_read_bytes)`. An entry reached with zero remaining budget receives a per-entry C218 naming this key, its value, and the bytes already consumed, with recovery guidance. Budget topology: batch reads are governed by this key; single-path full reads by `max_output_bytes`; windowed reads by `max_read_bytes` applied per returned window — `max_read_bytes` is also the per-file IO ceiling for all of them.",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"
@@ -67,19 +67,19 @@
         "type": "integer"
       },
       "max_output_bytes": {
-        "description": "Context budget for single-path FULL reads in `coder::read-file`, in bytes of returned content. Full reads larger than this return C213 with the file's size/line count and window/stat recovery guidance; a per-call `max_output_bytes` override is available on `coder::read-file` (clamped to `max_read_bytes`).",
+        "description": "Context budget for single-path FULL reads in `coder::read-file`, in bytes of returned content. Full reads larger than this return C218 with the file's size/line count and window/stat recovery guidance; a per-call `max_output_bytes` override is available on `coder::read-file` (clamped to `max_read_bytes`).",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"
       },
       "max_read_bytes": {
-        "description": "Per-file IO ceiling for `coder::read-file`. Full reads of files larger than this are rejected with C213; windowed reads cap the returned window bytes instead, so larger files stay readable window by window. Also the ceiling for `coder::search` content scanning — larger files are silently skipped during search.",
+        "description": "Per-file IO ceiling for `coder::read-file`. Full reads of files larger than this are rejected with C218; windowed reads cap the returned window bytes instead, so larger files stay readable window by window. Also the ceiling for `coder::search` content scanning — larger files are silently skipped during search.",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"
       },
       "max_write_bytes": {
-        "description": "Maximum bytes that `coder::create-file` or `coder::update-file` will accept for a single file write. Larger writes are rejected with C213.",
+        "description": "Maximum bytes that `coder::create-file` or `coder::update-file` will accept for a single file write. Larger writes are rejected with C218.",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"

@@ -432,7 +432,7 @@ impl PathResolver {
     ///    absolute `path` is taken as-is. Either form runs through the SAME
     ///    `canonicalize_wire` as `resolve`.
     /// 3. the canonical result must stay inside the canonical `scope_root` —
-    ///    else `C218` (DX-1), which NAMES the session directory rather than
+    ///    else `C220` (DX-1), which NAMES the session directory rather than
     ///    reusing the generic "outside every allowed root" wording.
     ///
     /// This is strictly NARROWER than `resolve`: it can only reject paths
@@ -483,7 +483,7 @@ impl PathResolver {
                     "this session is scoped to {base}; {path} is inside an \
                      allowed root but outside the session directory — use a \
                      path under {base}.{hint}",
-                    hint = crate::filesystem_access::request_suffix("C218", path, &canon),
+                    hint = crate::filesystem_access::request_suffix("C220", path, &canon),
                 )));
             }
             // Outside the session AND outside every allowed root: the
@@ -1151,7 +1151,7 @@ mod tests {
     // -----------------------------------------------------------------------
     // Per-call scope_root (resolve_in / require_writable_scope): a containment
     // check + relative-anchor LAYERED on the existing jail core. These
-    // exercise the new C218 DX-1 error and prove scope_root=None is unchanged.
+    // exercise the new C220 DX-1 error and prove scope_root=None is unchanged.
     // -----------------------------------------------------------------------
 
     /// Relative wire paths anchor at scope_root, NOT the primary root — even
@@ -1198,7 +1198,7 @@ mod tests {
     }
 
     /// DX-1: an absolute path that IS inside a configured root but OUTSIDE
-    /// scope_root is rejected with the new C218 code, and the message NAMES
+    /// scope_root is rejected with the new C220 code, and the message NAMES
     /// the session directory (not the generic "outside every allowed root"
     /// wording, which would contradict coder::info's allowed-roots list).
     #[test]
@@ -1213,30 +1213,30 @@ mod tests {
         // sibling.txt is inside the allowed root but OUTSIDE session/.
         let sibling = tmp.path().join("sibling.txt").display().to_string();
         let err = r.resolve_in(&base, &sibling).unwrap_err();
-        assert_eq!(err.code(), "C218");
+        assert_eq!(err.code(), "C220");
         let msg = err.to_string();
         // DX-1: the session directory must be named in the rejection.
         assert!(
             msg.contains(&base),
-            "C218 must name the session dir ({base}); got: {msg}"
+            "C220 must name the session dir ({base}); got: {msg}"
         );
         // DX-1: it must NOT reuse the generic "outside every allowed root"
         // wording — that path genuinely lives in an allowed root.
         assert!(
             !msg.contains("outside every allowed root"),
-            "C218 must not contradict the allowed-roots list; got: {msg}"
+            "C220 must not contradict the allowed-roots list; got: {msg}"
         );
         // It should affirmatively explain the path is inside an allowed root.
         assert!(
             msg.contains("inside an allowed root"),
-            "C218 should clarify the path is inside a root but outside the \
+            "C220 should clarify the path is inside a root but outside the \
              session; got: {msg}"
         );
     }
 
     /// In a multi-root config, an absolute path inside the SECOND root but
     /// outside the scope_root (which lives in the FIRST root) is still the
-    /// DX-1 C218 case — it is inside *an* allowed root, just not the session.
+    /// DX-1 C220 case — it is inside *an* allowed root, just not the session.
     #[test]
     fn resolve_in_absolute_in_other_root_outside_scope_root_is_c218() {
         let a = tempdir().unwrap();
@@ -1251,7 +1251,7 @@ mod tests {
         let base = canon(a.path()).display().to_string();
         let in_b = b.path().join("y.txt").display().to_string();
         let err = r.resolve_in(&base, &in_b).unwrap_err();
-        assert_eq!(err.code(), "C218");
+        assert_eq!(err.code(), "C220");
         assert!(err.to_string().contains(&base));
     }
 
@@ -1356,14 +1356,14 @@ mod tests {
         // ../../ climbs above the allowed root entirely.
         let err = r.resolve_in(&base, "../../escape.txt").unwrap_err();
         assert!(
-            err.code() == "C215" || err.code() == "C218",
-            "escape must fail closed (C215/C218); got {}",
+            err.code() == "C215" || err.code() == "C220",
+            "escape must fail closed (C215/C220); got {}",
             err.code()
         );
     }
 
     /// A single `..` that stays inside the allowed root but climbs OUT of
-    /// scope_root is the DX-1 C218 case (inside a root, outside the session).
+    /// scope_root is the DX-1 C220 case (inside a root, outside the session).
     #[test]
     fn resolve_in_dotdot_within_root_but_outside_base_is_c218() {
         let tmp = tempdir().unwrap();
@@ -1374,7 +1374,7 @@ mod tests {
         // `../secret.txt` collapses to <root>/secret.txt — inside the root,
         // outside the session.
         let err = r.resolve_in(&base, "../secret.txt").unwrap_err();
-        assert_eq!(err.code(), "C218");
+        assert_eq!(err.code(), "C220");
         assert!(err.to_string().contains(&base));
     }
 
@@ -1391,8 +1391,8 @@ mod tests {
         let base = tmp.path().join("session").display().to_string();
         let err = r.resolve_in(&base, "escape/child.txt").unwrap_err();
         assert!(
-            err.code() == "C215" || err.code() == "C218",
-            "symlink escape must fail closed (C215/C218); got {}",
+            err.code() == "C215" || err.code() == "C220",
+            "symlink escape must fail closed (C215/C220); got {}",
             err.code()
         );
     }
@@ -1578,7 +1578,7 @@ mod tests {
     #[test]
     fn unjailed_workspace_boundary_still_scopes_to_session() {
         // With the approval hook live (workspace boundary), unjailed does
-        // NOT bypass the session scope: escapes keep raising C218 so the
+        // NOT bypass the session scope: escapes keep raising C220 so the
         // grant flow still triggers.
         let anchor = tempdir().unwrap();
         std::fs::create_dir_all(anchor.path().join("session")).unwrap();
@@ -1595,6 +1595,6 @@ mod tests {
                 &anchor.path().join("elsewhere/f.txt").display().to_string(),
             )
             .unwrap_err();
-        assert_eq!(err.code(), "C218");
+        assert_eq!(err.code(), "C220");
     }
 }

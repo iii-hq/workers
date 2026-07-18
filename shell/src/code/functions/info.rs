@@ -69,14 +69,14 @@ pub struct InfoOutput {
     pub default_exclude_globs: Vec<String>,
 
     /// Per-file IO ceiling for `coder::read-file`. Full reads of files
-    /// larger than this are rejected with C213; windowed reads cap the
+    /// larger than this are rejected with C218; windowed reads cap the
     /// returned window bytes instead, so larger files stay readable
     /// window by window. Also the ceiling for `coder::search` content
     /// scanning — larger files are silently skipped during search.
     pub max_read_bytes: u64,
 
     /// Maximum bytes that `coder::create-file` or `coder::update-file` will
-    /// accept for a single file write. Larger writes are rejected with C213.
+    /// accept for a single file write. Larger writes are rejected with C218.
     pub max_write_bytes: u64,
 
     /// Default `max_depth` used by `coder::tree` when the caller omits it.
@@ -114,7 +114,7 @@ pub struct InfoOutput {
     /// counted, so the cap bounds what the caller actually receives).
     /// Entries are collected in request order; each entry may consume up
     /// to `min(remaining_budget, max_read_bytes)`. An entry reached with
-    /// zero remaining budget receives a per-entry C213 naming this key,
+    /// zero remaining budget receives a per-entry C218 naming this key,
     /// its value, and the bytes already consumed, with recovery guidance.
     /// Budget topology: batch reads are governed by this key; single-path
     /// full reads by `max_output_bytes`; windowed reads by `max_read_bytes`
@@ -124,7 +124,7 @@ pub struct InfoOutput {
 
     /// Context budget for single-path FULL reads in `coder::read-file`,
     /// in bytes of returned content. Full reads larger than this return
-    /// C213 with the file's size/line count and window/stat recovery
+    /// C218 with the file's size/line count and window/stat recovery
     /// guidance; a per-call `max_output_bytes` override is available on
     /// `coder::read-file` (clamped to `max_read_bytes`).
     pub max_output_bytes: u64,

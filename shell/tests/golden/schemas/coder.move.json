@@ -76,7 +76,7 @@
                 "type": "null"
               }
             ],
-            "description": "Structured error for this entry. `code` is stable for programmatic branching (e.g. `\"C217\"` means destination exists; pass `overwrite=true` to replace; `\"C210\"` for disallowed operations such as cross-root directory moves, moving a root itself, or a destination that is a directory — the message then names the corrected target path). `message` carries the corrective action an LLM agent needs to make a successful second call."
+            "description": "Structured error for this entry. `code` is stable for programmatic branching (e.g. `\"C213\"` means destination exists; pass `overwrite=true` to replace; `\"C210\"` for disallowed operations such as cross-root directory moves, moving a root itself, or a destination that is a directory — the message then names the corrected target path). `message` carries the corrective action an LLM agent needs to make a successful second call."
           },
           "from": {
             "description": "Canonical absolute path of the source (resolved through the jail); the caller's input verbatim when resolution failed.",

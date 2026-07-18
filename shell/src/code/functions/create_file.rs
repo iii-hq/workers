@@ -81,7 +81,7 @@ pub struct CreateFileResult {
     pub success: bool,
     pub bytes_written: u64,
     /// Structured error for this entry. `code` is stable for programmatic
-    /// branching (e.g. `"C217"` means already-exists; pass `overwrite=true`
+    /// branching (e.g. `"C213"` means already-exists; pass `overwrite=true`
     /// to replace). `message` carries the corrective action an LLM agent
     /// needs to make a successful second call.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -301,7 +301,7 @@ mod tests {
         .unwrap();
         assert!(!out.results[0].success);
         let err = out.results[0].error.as_ref().unwrap();
-        assert_eq!(err.code, "C217");
+        assert_eq!(err.code, "C213");
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
             "old"
@@ -361,7 +361,7 @@ mod tests {
     #[tokio::test]
     async fn jail_escape_aborts_batch_before_any_write() {
         // Jail-scope failures must be top-level call errors so the harness
-        // post-trigger approval hook can see the C215/C218 and hold the call.
+        // post-trigger approval hook can see the C215/C220 and hold the call.
         // Preflight all paths before I/O: a later escape must not leave earlier
         // entries partially written before the call is re-invoked after a grant.
         let (tmp, r, c) = setup();
@@ -425,7 +425,7 @@ mod tests {
         .await
         .unwrap();
         assert!(!out.results[0].success);
-        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C213");
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C218");
     }
 
     #[tokio::test]

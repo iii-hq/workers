@@ -3,7 +3,7 @@
 //! After the coder→shell fold, secrets are declared ONCE under
 //! `code.non_accessible_globs`, and the merge's promise is that the SAME
 //! globs guard BOTH surfaces: the `coder::*` code surface (C211 show-but-lock)
-//! AND the `shell::fs::*` host surface (S215 hard-reject).
+//! AND the `shell::fs::*` host surface (S211 hard-reject, redacted like C211).
 //!
 //! `configuration::build_runtime` is the single place that copies
 //! `code.non_accessible_globs` onto the host fs backend
@@ -13,7 +13,7 @@
 //! would silently disable fs secret protection while every other test stayed
 //! green. These tests close that hole end-to-end: a glob declared ONLY under
 //! `code` must cause the host fs backend that `build_runtime` produces to
-//! protect a matching in-jail path with S215.
+//! protect a matching in-jail path with the redacted S211.
 
 use shell::code::config::CoderConfig;
 use shell::config::{FsConfig, ShellConfig};
@@ -43,7 +43,8 @@ fn runtime_for(
 }
 
 /// A glob declared ONLY under `code.non_accessible_globs` must reject a
-/// matching `shell::fs::read` with S215. The protected read returns S215 in
+/// matching `shell::fs::read` with the redacted S211 (REDACTION INVARIANT:
+/// indistinguishable from missing). The protected read rejects in
 /// `validate_path` (before the streaming channel), so this stays fast and
 /// deterministic even with a stub engine.
 #[tokio::test]
@@ -62,15 +63,19 @@ async fn code_non_accessible_globs_block_the_fs_read() {
         .await
         .expect_err("a glob declared under code.non_accessible_globs must block the fs read too");
     assert_eq!(
-        err.code, "S215",
-        "the fs surface must reject the code-declared protected path with S215; got {err:?}"
+        err.code, "S211",
+        "the fs surface must reject the code-declared protected path with the redacted S211; got {err:?}"
+    );
+    assert!(
+        err.message.contains("not found or not accessible"),
+        "redacted wording required; got {err:?}"
     );
 }
 
 /// Causality control: with NO globs under `code`, the SAME in-jail path is no
 /// longer protected on the fs surface. `stat` exercises the identical
 /// `validate_path` gate as `read` but creates no channel, so the positive
-/// case is fast and deterministic — proving the S215 above is caused
+/// case is fast and deterministic — proving the rejection above is caused
 /// specifically by the propagated glob, not by some unrelated rejection.
 #[tokio::test]
 async fn fs_surface_not_protected_without_code_glob() {
@@ -88,7 +93,7 @@ async fn fs_surface_not_protected_without_code_glob() {
         })
         .await
         .expect_err("stat must hit the same protection gate as read");
-    assert_eq!(err.code, "S215", "got {err:?}");
+    assert_eq!(err.code, "S211", "got {err:?}");
 
     // …and without it, the very same stat succeeds.
     let open = runtime_for(tmp.path(), vec![]);

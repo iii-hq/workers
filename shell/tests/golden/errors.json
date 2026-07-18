@@ -35,21 +35,13 @@
     "code": "C211",
     "message": "missing.txt: not found or not accessible. Verify the path with coder::list-folder or coder::tree."
   },
-  "C213_batch_budget_exhausted": {
+  "C213_create_exists_without_overwrite": {
     "code": "C213",
-    "message": "batch budget exhausted before reaching budget-b.txt: batch_read_budget_bytes is 5 and earlier entries already returned 5 bytes of content (after UTF-8 sanitization). To recover: request fewer or smaller entries, use per-entry line_from/line_to windows, or raise batch_read_budget_bytes in coder config."
+    "message": "exists.txt already exists; pass overwrite=true to replace"
   },
-  "C213_full_read_output_budget_exceeded": {
+  "C213_move_dst_exists_without_overwrite": {
     "code": "C213",
-    "message": "over-output.txt: a full read would return 9 bytes of content (file is 9 bytes, 3 lines), which exceeds max_output_bytes (8). To recover: read a slice with line_from/line_to, probe metadata cheaply with stat: true, or re-call with a higher per-call max_output_bytes (values above max_read_bytes are clamped)."
-  },
-  "C213_read_cap_exceeded": {
-    "code": "C213",
-    "message": "big.txt is 16 bytes, which exceeds max_read_bytes (8). Read a smaller file, raise max_read_bytes in coder config, or read a slice with line_from/line_to."
-  },
-  "C213_write_cap_exceeded": {
-    "code": "C213",
-    "message": "big-create.txt is 16 bytes, which exceeds max_write_bytes (8). Split the content into smaller files or raise max_write_bytes in coder config."
+    "message": "move-dst.txt already exists; pass overwrite=true to replace"
   },
   "C215_absolute_outside_all_roots": {
     "code": "C215",
@@ -67,12 +59,20 @@
     "code": "C216",
     "message": "synthetic io failure"
   },
-  "C217_create_exists_without_overwrite": {
-    "code": "C217",
-    "message": "exists.txt already exists; pass overwrite=true to replace"
+  "C218_batch_budget_exhausted": {
+    "code": "C218",
+    "message": "batch budget exhausted before reaching budget-b.txt: batch_read_budget_bytes is 5 and earlier entries already returned 5 bytes of content (after UTF-8 sanitization). To recover: request fewer or smaller entries, use per-entry line_from/line_to windows, or raise batch_read_budget_bytes in coder config."
   },
-  "C217_move_dst_exists_without_overwrite": {
-    "code": "C217",
-    "message": "move-dst.txt already exists; pass overwrite=true to replace"
+  "C218_full_read_output_budget_exceeded": {
+    "code": "C218",
+    "message": "over-output.txt: a full read would return 9 bytes of content (file is 9 bytes, 3 lines), which exceeds max_output_bytes (8). To recover: read a slice with line_from/line_to, probe metadata cheaply with stat: true, or re-call with a higher per-call max_output_bytes (values above max_read_bytes are clamped)."
+  },
+  "C218_read_cap_exceeded": {
+    "code": "C218",
+    "message": "big.txt is 16 bytes, which exceeds max_read_bytes (8). Read a smaller file, raise max_read_bytes in coder config, or read a slice with line_from/line_to."
+  },
+  "C218_write_cap_exceeded": {
+    "code": "C218",
+    "message": "big-create.txt is 16 bytes, which exceeds max_write_bytes (8). Split the content into smaller files or raise max_write_bytes in coder config."
   }
 }

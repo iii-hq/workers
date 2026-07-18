@@ -60,12 +60,12 @@ const READ_FILE_DESC: &str = "Read a file window-first: probe with stat: true (s
      matching coder::update-file's line ops exactly. Full reads are \
      budgeted by max_output_bytes (default 128 KiB; per-call override \
      clamped to max_read_bytes) — an over-budget full read fails with \
-     a C213 carrying the file's size, line count, and the window/stat \
+     a C218 carrying the file's size, line count, and the window/stat \
      recovery calls. Batch mode: pass paths[] (XOR path) \
      to read multiple files in one call — entries are processed in \
      request order against batch_read_budget_bytes, measured in \
      bytes of returned content (after UTF-8 sanitization); per-entry \
-     errors (C211/C213) leave other entries unaffected. Paths are relative \
+     errors (C211/C218) leave other entries unaffected. Paths are relative \
      to the primary allowed root or absolute inside any allowed root \
      (coder::info lists them); for host paths outside the jail use \
      shell::fs::*. Non-accessible paths return C211.";

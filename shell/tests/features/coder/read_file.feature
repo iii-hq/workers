@@ -55,7 +55,7 @@ Feature: coder read-file adversarial behavior
       {"paths":["batch/a.txt","batch/b.txt"]}
       """
     Then the batch read result for "batch/a.txt" succeeded
-    And the batch read result for "batch/b.txt" failed with code "C213"
+    And the batch read result for "batch/b.txt" failed with code "C218"
 
   Scenario: path and paths are mutually exclusive
     Given a jailed code surface

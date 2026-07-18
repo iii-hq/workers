@@ -16,15 +16,15 @@
 //! - C211: missing path; glob-denied path (byte-identical suffix —
 //!   REDACTION INVARIANT); recursive-delete subtree-blocked; move missing
 //!   source
-//! - C213: read cap; write cap; batch budget exhausted; full-read output
+//! - C218: read cap; write cap; batch budget exhausted; full-read output
 //!   budget (the recovery-tool message: size + total_lines + corrective
 //!   calls)
 //! - C215: relative `..` escape; absolute outside all roots; dangling
 //!   symlink
 //! - C216: io passthrough (via the public `From<io::Error>` conversion —
 //!   see the case comment for why no handler drives this one)
-//! - C217: create-file exists without overwrite; move destination exists
-//!   without overwrite (one house C217 shape)
+//! - C213: create-file exists without overwrite; move destination exists
+//!   without overwrite (one house C213 shape)
 //!
 //! Regenerate with `UPDATE_GOLDENS=1 cargo test`.
 
@@ -280,7 +280,7 @@ async fn error_message_formats_match_golden() {
         );
     }
 
-    // --- C213: read cap and write cap -----------------------------------
+    // --- C218: read cap and write cap -----------------------------------
     {
         let tiny = Arc::new(CoderConfig {
             base_paths: vec![jail.root0.clone(), jail.root1.clone()],
@@ -300,7 +300,7 @@ async fn error_message_formats_match_golden() {
         )
         .await
         .expect_err("over-cap read must fail");
-        put("C213_read_cap_exceeded", parse_wire_string(&err), &jail);
+        put("C218_read_cap_exceeded", parse_wire_string(&err), &jail);
 
         let got = create_err(
             &jail,
@@ -314,10 +314,10 @@ async fn error_message_formats_match_golden() {
             },
         )
         .await;
-        put("C213_write_cap_exceeded", got, &jail);
+        put("C218_write_cap_exceeded", got, &jail);
     }
 
-    // --- C213: batch budget exhausted -------------------------------------
+    // --- C218: batch budget exhausted -------------------------------------
     {
         let tiny_budget = Arc::new(CoderConfig {
             base_paths: vec![jail.root0.clone(), jail.root1.clone()],
@@ -349,13 +349,13 @@ async fn error_message_formats_match_golden() {
         );
         let wire = results[1].error.as_ref().expect("second entry must fail");
         put(
-            "C213_batch_budget_exhausted",
+            "C218_batch_budget_exhausted",
             (wire.code.clone(), wire.message.clone()),
             &jail,
         );
     }
 
-    // --- C213: full-read output budget (the recovery-tool message) -------
+    // --- C218: full-read output budget (the recovery-tool message) -------
     {
         let tiny_output = Arc::new(CoderConfig {
             base_paths: vec![jail.root0.clone(), jail.root1.clone()],
@@ -375,7 +375,7 @@ async fn error_message_formats_match_golden() {
         .await
         .expect_err("over-output full read must fail");
         put(
-            "C213_full_read_output_budget_exceeded",
+            "C218_full_read_output_budget_exceeded",
             parse_wire_string(&err),
             &jail,
         );
@@ -414,7 +414,7 @@ async fn error_message_formats_match_golden() {
         put("C216_io_passthrough", from_coder_error(&e), &jail);
     }
 
-    // --- C217: create-file exists without overwrite ---------------------
+    // --- C213: create-file exists without overwrite ---------------------
     {
         std::fs::write(jail.root0.join("exists.txt"), "old").unwrap();
         let got = create_err(
@@ -429,10 +429,10 @@ async fn error_message_formats_match_golden() {
             },
         )
         .await;
-        put("C217_create_exists_without_overwrite", got, &jail);
+        put("C213_create_exists_without_overwrite", got, &jail);
     }
 
-    // --- C217: move destination exists without overwrite ----------------
+    // --- C213: move destination exists without overwrite ----------------
     {
         std::fs::write(jail.root0.join("move-src.txt"), "src").unwrap();
         std::fs::write(jail.root0.join("move-dst.txt"), "dst").unwrap();
@@ -455,7 +455,7 @@ async fn error_message_formats_match_golden() {
             .as_ref()
             .expect("entry must carry an error");
         put(
-            "C217_move_dst_exists_without_overwrite",
+            "C213_move_dst_exists_without_overwrite",
             (wire.code.clone(), wire.message.clone()),
             &jail,
         );
