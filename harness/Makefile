@@ -20,6 +20,12 @@ SCRAPLING_STAMP := $(SCRAPLING_VENV)/.installed
 STACK := iii-directory llm-router session-manager context-manager \
          provider-anthropic provider-openai provider-openai-codex shell scrapling queue harness approval-gate console
 
+# scrapling is a Python worker (pyproject + venv, see prepare-scrapling);
+# every other STACK member is a Rust crate with <worker>/Cargo.toml. Cargo
+# targets must only ever see the Rust subset.
+PYTHON_WORKERS := scrapling
+RUST_WORKERS   := $(filter-out $(PYTHON_WORKERS),$(STACK))
+
 GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart \
                     engine wait-engine restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
                     ensure-session prepare-scrapling require-engine where conformance-e2e,$(MAKECMDGOALS))
@@ -73,18 +79,24 @@ build:
 	  echo "valid workers: $(STACK)"; \
 	  exit 2; \
 	fi
-	@for w in $(ACTIVE_WORKERS); do \
+	@for w in $(filter $(RUST_WORKERS),$(ACTIVE_WORKERS)); do \
 	  manifest="$(WORKTREE_ROOT_ABS)/$$w/Cargo.toml"; \
 	  test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
 	  echo "building $$w ($(PROFILE)) from $(WORKTREE_ROOT_ABS)"; \
 	  cargo build $(BUILD_FLAG) --manifest-path "$$manifest" || exit 1; \
 	done
+	@if [ -n "$(filter $(PYTHON_WORKERS),$(ACTIVE_WORKERS))" ]; then \
+	  $(MAKE) --no-print-directory prepare-scrapling; \
+	fi
 
 install-local: build
 	@mkdir -p "$(III_WORKERS)"
-	@for w in $(ACTIVE_WORKERS); do \
+	@for w in $(filter $(RUST_WORKERS),$(ACTIVE_WORKERS)); do \
 	  ln -sfn "$(WORKTREE_ROOT_ABS)/$$w/target/$(PROFILE)/$$w" "$(III_WORKERS)/$$w"; \
 	  echo "linked $(III_WORKERS)/$$w"; \
+	done
+	@for w in $(filter $(PYTHON_WORKERS),$(ACTIVE_WORKERS)); do \
+	  echo "skipping $$w: Python worker has no binary to link; run it with make restart $$w"; \
 	done
 	@echo "restart the engine to load linked binaries, or use make dev-up for cargo-run development"
 
@@ -97,11 +109,14 @@ cargo-clean:
 	  echo "valid workers: $(STACK)"; \
 	  exit 2; \
 	fi
-	@for w in $(ACTIVE_WORKERS); do \
+	@for w in $(filter $(RUST_WORKERS),$(ACTIVE_WORKERS)); do \
 	  manifest="$(WORKTREE_ROOT_ABS)/$$w/Cargo.toml"; \
 	  test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
 	  echo "cleaning cargo artifacts for $$w from $(WORKTREE_ROOT_ABS)"; \
 	  cargo clean --manifest-path "$$manifest" || exit 1; \
+	done
+	@for w in $(filter $(PYTHON_WORKERS),$(ACTIVE_WORKERS)); do \
+	  echo "skipping $$w: no cargo artifacts"; \
 	done
 
 dev-up: engine wait-engine
