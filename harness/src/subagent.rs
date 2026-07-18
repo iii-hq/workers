@@ -139,7 +139,14 @@ async fn seed_child(
         .model
         .clone()
         .or_else(|| parent_record.map(|p| p.options.model.clone()))
-        .ok_or_else(|| HarnessError::InvalidRequest("spawn requires a model".into()))?;
+        .ok_or_else(|| {
+            HarnessError::InvalidRequest(
+                "spawn requires a model — only an IN-TURN spawn inherits its parent's; a spawn \
+                 dispatched from a reaction, call-mode pipe, trigger, or CLI is parentless and \
+                 inherits nothing, so name `model` explicitly in that spawn payload"
+                    .into(),
+            )
+        })?;
     let provider = child_provider(req, parent_record);
     // Children get the embedded minimal sub-agent identity, never the
     // orchestrator prompt the router serves to top-level agents: a child
