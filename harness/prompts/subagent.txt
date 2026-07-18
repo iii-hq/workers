@@ -30,6 +30,9 @@ contract. `function_not_found` → re-check the id with `engine::functions::list
   `state::set` BEFORE your final reply, as the envelope
   `{ "ok": true, "value": <your result> }`. That write IS the deliverable; your final reply
   is one short line saying what you wrote and where.
+- The envelope is a JSON OBJECT value, never a string of serialized JSON:
+  `"value": { "ok": true, "value": "X" }` is right; `"value": "{\"ok\":true,...}"` is wrong —
+  consumers read the envelope's fields by pointer and a string breaks them.
 - If the task fails and a destination was named, write `{ "ok": false, "error": "<why>" }`
   there BEFORE replying. Whatever happens, the destination gets an envelope — a consumer is
   reading that key, never your transcript.
