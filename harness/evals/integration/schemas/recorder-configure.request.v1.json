@@ -1,0 +1,119 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "LifecycleFunctionId": {
+      "enum": [
+        "integration-recorder::lifecycle"
+      ],
+      "type": "string"
+    },
+    "LifecycleTriggerType": {
+      "enum": [
+        "harness::turn-started",
+        "harness::turn-completed"
+      ],
+      "type": "string"
+    },
+    "RecorderConfigV1": {
+      "additionalProperties": false,
+      "properties": {
+        "extra_functions": {
+          "description": "Additional run-scoped controlled functions (e.g. hook implementations for `harness::hook::*` scenarios). Registered exactly like the target: declared description/schema verbatim, every call durably recorded, declared response returned.",
+          "items": {
+            "$ref": "#/definitions/RecorderTargetV1"
+          },
+          "type": "array"
+        },
+        "lifecycle": {
+          "$ref": "#/definitions/RecorderLifecycleV1"
+        },
+        "target": {
+          "$ref": "#/definitions/RecorderTargetV1"
+        }
+      },
+      "required": [
+        "lifecycle",
+        "target"
+      ],
+      "type": "object"
+    },
+    "RecorderLifecycleV1": {
+      "additionalProperties": false,
+      "properties": {
+        "function_id": {
+          "$ref": "#/definitions/LifecycleFunctionId"
+        },
+        "trigger_type": {
+          "$ref": "#/definitions/LifecycleTriggerType"
+        }
+      },
+      "required": [
+        "function_id",
+        "trigger_type"
+      ],
+      "type": "object"
+    },
+    "RecorderTargetV1": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "function_id": {
+          "description": "Must be prefixed by `<run_id>::` — enforced by `configure`.",
+          "type": "string"
+        },
+        "request_schema": {
+          "additionalProperties": true,
+          "description": "Registered verbatim; the same schema must appear in native tool exposure (that registration is part of the oracle).",
+          "type": "object"
+        },
+        "response": {
+          "description": "Declared response returned for every target call."
+        },
+        "response_delay_ms": {
+          "description": "Delay between the durable append and the response, opening a window for fault injection while the dispatched call is executing (crash-recovery scenarios). Omitted = respond immediately.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "description",
+        "function_id",
+        "request_schema",
+        "response"
+      ],
+      "type": "object"
+    },
+    "SchemaVersion1": {
+      "description": "The literal string `\"1\"`; any other value is a schema error.",
+      "enum": [
+        "1"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "config": {
+      "$ref": "#/definitions/RecorderConfigV1"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "schema_version": {
+      "$ref": "#/definitions/SchemaVersion1"
+    }
+  },
+  "required": [
+    "config",
+    "run_id",
+    "schema_version"
+  ],
+  "title": "RecorderConfigureRequestV1",
+  "type": "object"
+}

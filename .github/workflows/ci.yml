@@ -382,17 +382,17 @@ jobs:
           fi
 
   # ──────────────────────────────────────────────────────────────
-  # Harness conformance E2E (non-required): deterministic public-path
+  # Harness integration E2E (non-required): deterministic public-path
   # regression scenarios against the engine pinned in
-  # harness/evals/conformance/engine.lock (see that crate's README; the
+  # harness/evals/integration/engine.lock (see that crate's README; the
   # architecture spec lives in the iii repo). Runs on EVERY PR — the
   # suite is the harness stack's public-contract gate, and engine/worker
   # builds are cached. The engine is BUILT from the pinned source, never
   # downloaded; a cache hit is still re-hashed before use. "Non-required"
   # is enforced by branch protection, not continue-on-error.
   # ──────────────────────────────────────────────────────────────
-  harness-conformance:
-    name: harness conformance e2e
+  harness-integration:
+    name: harness integration e2e
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -401,7 +401,7 @@ jobs:
         id: lock
         run: |
           set -euo pipefail
-          lock=harness/evals/conformance/engine.lock
+          lock=harness/evals/integration/engine.lock
           read_field() { sed -n "s/^$1 = \"\(.*\)\"$/\1/p" "$lock"; }
           repository=$(read_field repository)
           revision=$(read_field revision)
@@ -423,25 +423,25 @@ jobs:
         with:
           repository: ${{ steps.lock.outputs.repository }}
           ref: ${{ steps.lock.outputs.revision }}
-          path: target/conformance-engine-src
+          path: target/integration-engine-src
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Cache engine build
         uses: actions/cache@v4
         with:
-          path: target/conformance-engine-src/target
-          key: conformance-engine-${{ runner.os }}-${{ runner.arch }}-${{ steps.lock.outputs.revision }}-${{ hashFiles('target/conformance-engine-src/Cargo.lock') }}
+          path: target/integration-engine-src/target
+          key: integration-engine-${{ runner.os }}-${{ runner.arch }}-${{ steps.lock.outputs.revision }}-${{ hashFiles('target/integration-engine-src/Cargo.lock') }}
 
       - name: Build pinned engine
-        working-directory: target/conformance-engine-src
+        working-directory: target/integration-engine-src
         run: cargo build --locked --release -p ${{ steps.lock.outputs.package }}
 
       - name: Record engine digest
         id: engine
         run: |
           set -euo pipefail
-          bin="$GITHUB_WORKSPACE/target/conformance-engine-src/${{ steps.lock.outputs.binary }}"
+          bin="$GITHUB_WORKSPACE/target/integration-engine-src/${{ steps.lock.outputs.binary }}"
           [[ -x "$bin" ]] || { echo "engine binary missing at $bin"; exit 3; }
           sha256sum "$bin"
           echo "bin=$bin" >> "$GITHUB_OUTPUT"
@@ -454,28 +454,28 @@ jobs:
             session-manager -> target
             context-manager -> target
             iii-directory -> target
-            harness/evals/conformance -> target
+            harness/evals/integration -> target
 
-      - name: Conformance crate unit tests
-        run: cargo test --manifest-path harness/evals/conformance/Cargo.toml
+      - name: Integration crate unit tests
+        run: cargo test --manifest-path harness/evals/integration/Cargo.toml
 
-      - name: Run conformance scenarios
-        run: make -C harness conformance-e2e III_BIN="${{ steps.engine.outputs.bin }}"
+      - name: Run integration scenarios
+        run: make -C harness integration-e2e III_BIN="${{ steps.engine.outputs.bin }}"
 
       - name: Upload compact results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: conformance-results
-          path: target/conformance/*/result.json
+          name: integration-results
+          path: target/integration/*/result.json
           if-no-files-found: ignore
 
       - name: Upload full non-pass artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: conformance-artifacts
-          path: target/conformance/
+          name: integration-artifacts
+          path: target/integration/
           retention-days: 14
           if-no-files-found: ignore
 

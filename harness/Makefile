@@ -28,7 +28,7 @@ RUST_WORKERS   := $(filter-out $(PYTHON_WORKERS),$(STACK))
 
 GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart \
                     engine wait-engine restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
-                    ensure-session prepare-scrapling require-engine where conformance-e2e,$(MAKECMDGOALS))
+                    ensure-session prepare-scrapling require-engine where integration-e2e,$(MAKECMDGOALS))
 SELECTED_WORKERS := $(strip $(GOAL_ARGS))
 ACTIVE_WORKERS   := $(if $(SELECTED_WORKERS),$(SELECTED_WORKERS),$(STACK))
 UNKNOWN_WORKERS  := $(filter-out $(STACK),$(SELECTED_WORKERS))
@@ -40,7 +40,7 @@ RUN_FLAG   := $(if $(filter release,$(RUN_PROFILE)),--release,)
 
 .PHONY: help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart engine wait-engine \
         restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach ensure-session prepare-scrapling \
-        require-engine where conformance-e2e $(STACK)
+        require-engine where integration-e2e $(STACK)
 
 help:
 	@printf '%s\n' \
@@ -61,7 +61,7 @@ help:
 	  '  make build [workers...]             cargo build stack or selected workers' \
 	  '  make cargo-clean [workers...]       cargo clean stack or selected workers' \
 	  '  make install-local [workers...]     build and symlink into ~/.iii/workers' \
-	  '  make conformance-e2e III_BIN=<iii>  run the harness conformance scenarios (evals/conformance)'
+	  '  make integration-e2e III_BIN=<iii>  run the harness integration scenarios (evals/integration)'
 
 install-iii-next:
 	@curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --next
@@ -308,39 +308,39 @@ where:
 	  echo "  no tmux session named $(TMUX_SESSION)"
 
 # ---------------------------------------------------------------------------
-# Harness conformance E2E (see harness/evals/conformance/README.md)
+# Harness integration E2E (see harness/evals/integration/README.md)
 #
-# Builds the subject stack + the standalone runner (evals/conformance, its own
+# Builds the subject stack + the standalone runner (evals/integration, its own
 # workspace) and runs every scenario against the pinned engine binary. The
 # engine is never downloaded here: pass III_BIN (CI builds it from
-# evals/conformance/engine.lock; locally see that file for the pinned source).
-CONFORMANCE_WORKERS := queue iii-directory session-manager context-manager
-CONFORMANCE_PROFILE ?= release
-CONFORMANCE_FLAG    := $(if $(filter release,$(CONFORMANCE_PROFILE)),--release,)
-CONFORMANCE_SCENARIO ?= all
-CONFORMANCE_ARTIFACTS ?= $(REPO_ROOT)/target/conformance
+# evals/integration/engine.lock; locally see that file for the pinned source).
+INTEGRATION_WORKERS := queue iii-directory session-manager context-manager
+INTEGRATION_PROFILE ?= release
+INTEGRATION_FLAG    := $(if $(filter release,$(INTEGRATION_PROFILE)),--release,)
+INTEGRATION_SCENARIO ?= all
+INTEGRATION_ARTIFACTS ?= $(REPO_ROOT)/target/integration
 
-conformance-e2e:
+integration-e2e:
 	@if [ -z "$(III_BIN)" ]; then \
 	  echo "III_BIN is required: path to the pinned iii engine binary."; \
-	  echo "Pinned source: harness/evals/conformance/engine.lock"; \
+	  echo "Pinned source: harness/evals/integration/engine.lock"; \
 	  exit 3; \
 	fi
-	@for w in $(CONFORMANCE_WORKERS) harness; do \
-	  echo "building $$w ($(CONFORMANCE_PROFILE))"; \
-	  cargo build $(CONFORMANCE_FLAG) --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
+	@for w in $(INTEGRATION_WORKERS) harness; do \
+	  echo "building $$w ($(INTEGRATION_PROFILE))"; \
+	  cargo build $(INTEGRATION_FLAG) --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
 	done
-	@echo "building harness-conformance ($(CONFORMANCE_PROFILE))"
-	@cargo build $(CONFORMANCE_FLAG) --manifest-path "$(MAKEFILE_DIR)evals/conformance/Cargo.toml"
-	@"$(MAKEFILE_DIR)evals/conformance/target/$(CONFORMANCE_PROFILE)/harness-conformance" \
+	@echo "building harness-integration ($(INTEGRATION_PROFILE))"
+	@cargo build $(INTEGRATION_FLAG) --manifest-path "$(MAKEFILE_DIR)evals/integration/Cargo.toml"
+	@"$(MAKEFILE_DIR)evals/integration/target/$(INTEGRATION_PROFILE)/harness-integration" \
 	  --engine-bin "$(III_BIN)" \
-	  --harness-bin "$(REPO_ROOT)/harness/target/$(CONFORMANCE_PROFILE)/harness" \
-	  --worker-bin "queue=$(REPO_ROOT)/queue/target/$(CONFORMANCE_PROFILE)/queue" \
-	  --worker-bin "iii-directory=$(REPO_ROOT)/iii-directory/target/$(CONFORMANCE_PROFILE)/iii-directory" \
-	  --worker-bin "session-manager=$(REPO_ROOT)/session-manager/target/$(CONFORMANCE_PROFILE)/session-manager" \
-	  --worker-bin "context-manager=$(REPO_ROOT)/context-manager/target/$(CONFORMANCE_PROFILE)/context-manager" \
-	  --scenario "$(CONFORMANCE_SCENARIO)" \
-	  --artifacts-dir "$(CONFORMANCE_ARTIFACTS)"
+	  --harness-bin "$(REPO_ROOT)/harness/target/$(INTEGRATION_PROFILE)/harness" \
+	  --worker-bin "queue=$(REPO_ROOT)/queue/target/$(INTEGRATION_PROFILE)/queue" \
+	  --worker-bin "iii-directory=$(REPO_ROOT)/iii-directory/target/$(INTEGRATION_PROFILE)/iii-directory" \
+	  --worker-bin "session-manager=$(REPO_ROOT)/session-manager/target/$(INTEGRATION_PROFILE)/session-manager" \
+	  --worker-bin "context-manager=$(REPO_ROOT)/context-manager/target/$(INTEGRATION_PROFILE)/context-manager" \
+	  --scenario "$(INTEGRATION_SCENARIO)" \
+	  --artifacts-dir "$(INTEGRATION_ARTIFACTS)"
 
 $(STACK):
 	@:

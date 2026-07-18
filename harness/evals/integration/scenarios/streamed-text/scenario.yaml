@@ -1,0 +1,83 @@
+# C-E2E-001 — streamed text reaches durable completion.
+#
+# Deviations from the spec text, both resolved during implementation review:
+# - `send.session_id` is pre-chosen by the runner ({{session_id}}) because the
+#   harness appends "Your session id is …" to the system prompt; the sha256
+#   matcher needs the id known before Send.
+# - The recorder target is a never-called `{{run_id}}::unused` function: the
+#   scenario schema requires a target, and a zero-call invariant doubles as
+#   the forbidden-side-effect oracle.
+schema_version: "1"
+id: C-E2E-001
+description: Streamed text reaches durable completion through the real queue and turn loop.
+stack_profile: harness-core
+send:
+  session_id: "{{session_id}}"
+  message: "Return the fixture phrase."
+  model: fixture-model
+  provider: scripted
+  idempotency_key: "{{run_id}}:streamed-text"
+  options:
+    functions:
+      allow: []
+      deny: []
+      expose: native
+router_script: router-script.json
+recorder:
+  target:
+    function_id: "{{run_id}}::unused"
+    description: "Unused integration target; must never be called."
+    request_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        value:
+          type: string
+      required: ["value"]
+    response:
+      content:
+        - type: text
+          text: unused
+      is_error: false
+  lifecycle:
+    trigger_type: "harness::turn-completed"
+    function_id: "integration-recorder::lifecycle"
+deadlines:
+  readiness_ms: 60000
+  scenario_ms: 60000
+  teardown_ms: 15000
+invariants:
+  - id: send.flags
+    parameters:
+      merged: false
+      queued: false
+      deduplicated: false
+  - id: transcript.message_counts
+    parameters:
+      user: 1
+      assistant: 1
+      function_result: 0
+  # Durable assistant entries do not persist usage (the harness updates only
+  # the streamed entry's content) — usage correctness is pinned on the wire
+  # by the router-script response contract instead. Spec deviation, recorded
+  # in the amendment.
+  - id: transcript.assistant_text
+    parameters:
+      text: "fixture complete"
+  - id: transcript.no_duplicates
+    parameters: {}
+  - id: status.terminal
+    parameters:
+      status: completed
+      pending_calls: 0
+      queued_messages: 0
+  - id: lifecycle.completed_once
+    parameters:
+      allow_identical_duplicates: true
+  - id: router.generations_consumed
+    parameters:
+      count: 1
+  - id: target.calls
+    parameters:
+      function_id: "{{run_id}}::unused"
+      count: 0

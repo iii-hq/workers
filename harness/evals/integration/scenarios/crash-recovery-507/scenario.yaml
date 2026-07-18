@@ -1,0 +1,106 @@
+# C-E2E-507 — crash recovery closes the interrupted function call
+# (reproduction of https://github.com/iii-hq/workers/issues/507).
+#
+# The model dispatches one allow-listed call whose execution takes 8s; the
+# engine is SIGKILLed while the call is executing and respawned 1.5s later
+# from the same config and data directories. Workers (including the harness)
+# survive and reconnect; the restored harness-turn queue job must drive the
+# turn to recovery.
+#
+# QUARANTINED: the invariants assert the issue's EXPECTED behavior —
+#   - the interrupted `function_call` is closed by a durable
+#     `function_result` (synthesized error or real result), and
+#   - the turn reaches `completed` with no pending calls,
+# which is known to fail on harness 1.3.3 (turn fails on a boot race and the
+# call stays dangling, poisoning the session). Unquarantine when #507 lands.
+schema_version: "1"
+id: C-E2E-507
+description: An engine crash during a dispatched function call must not leave the call dangling or the session unusable.
+stack_profile: harness-core
+quarantine: true
+fault:
+  kind: engine_sigkill
+  after_target_calls: 1
+  restart_delay_ms: 1500
+send:
+  session_id: "{{session_id}}"
+  message: "Call the recorder once."
+  model: fixture-model
+  provider: scripted
+  idempotency_key: "{{run_id}}:crash-recovery"
+  options:
+    functions:
+      allow: ["{{run_id}}::record"]
+      deny: []
+      expose: native
+router_script: router-script.json
+recorder:
+  target:
+    function_id: "{{run_id}}::record"
+    description: "Record one integration fixture value."
+    request_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        value:
+          type: string
+      required: ["value"]
+    response:
+      content:
+        - type: text
+          text: recorded
+      is_error: false
+    # The fault-injection window: the call is durably observed by the
+    # recorder, then keeps "executing" long enough to SIGKILL the engine
+    # mid-call (the issue's 10s sleeping function).
+    response_delay_ms: 8000
+  lifecycle:
+    trigger_type: "harness::turn-completed"
+    function_id: "integration-recorder::lifecycle"
+deadlines:
+  readiness_ms: 60000
+  scenario_ms: 120000
+  teardown_ms: 15000
+invariants:
+  # At-most-once held in the reporter's test and must keep holding: the
+  # side effect ran exactly once even though the engine died mid-call.
+  - id: target.calls
+    parameters:
+      function_id: "{{run_id}}::record"
+      count: 1
+      payload:
+        value: expected
+  # THE issue-507 assertion: no dangling function_call after recovery.
+  - id: transcript.calls_closed
+    parameters: {}
+  # calls_closed is vacuously true on an empty transcript (no call found →
+  # nothing dangling), so the whole recovered turn must be present: the
+  # crash must not have eaten the function_call message or its result.
+  - id: transcript.message_counts
+    parameters:
+      user: 1
+      assistant: 2
+      function_result: 1
+  # The interrupted call-1 specifically is closed by a durable result
+  # (synthesized error or real result — either closes the call).
+  - id: transcript.function_result
+    parameters:
+      function_call_id: call-1
+  # Recovery consumed the second scripted generation and surfaced its text.
+  - id: transcript.assistant_text
+    parameters:
+      text: recovered
+  - id: router.generations_consumed
+    parameters:
+      count: 2
+  # Recovery means the turn ends terminal and usable, not wedged or failed.
+  - id: status.terminal
+    parameters:
+      status: completed
+      pending_calls: 0
+      queued_messages: 0
+  - id: transcript.no_duplicates
+    parameters: {}
+  - id: lifecycle.completed_once
+    parameters:
+      allow_identical_duplicates: true

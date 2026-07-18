@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Classification": {
+      "enum": [
+        "pass",
+        "setup_error",
+        "contract_failure",
+        "timeout",
+        "process_crash",
+        "runner_error"
+      ],
+      "type": "string"
+    },
+    "InvariantResultV1": {
+      "additionalProperties": false,
+      "properties": {
+        "actual": true,
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "expected": true,
+        "id": {
+          "type": "string"
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "actual",
+        "evidence_refs",
+        "expected",
+        "id",
+        "passed"
+      ],
+      "type": "object"
+    },
+    "SchemaVersion1": {
+      "description": "The literal string `\"1\"`; any other value is a schema error.",
+      "enum": [
+        "1"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "artifacts": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "classification": {
+      "$ref": "#/definitions/Classification"
+    },
+    "duration_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "invariants": {
+      "items": {
+        "$ref": "#/definitions/InvariantResultV1"
+      },
+      "type": "array"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "scenario_id": {
+      "type": "string"
+    },
+    "schema_version": {
+      "$ref": "#/definitions/SchemaVersion1"
+    },
+    "started_at": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "artifacts",
+    "classification",
+    "duration_ms",
+    "invariants",
+    "run_id",
+    "scenario_id",
+    "schema_version",
+    "started_at"
+  ],
+  "title": "IntegrationResultV1",
+  "type": "object"
+}
