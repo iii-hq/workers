@@ -92,6 +92,11 @@ pub struct StepReceipt {
     /// Size of the value threaded OUT of this step (chars of its string or
     /// serialized form).
     pub chars: usize,
+    /// Set when the threaded value REPLACED a non-null literal already in this
+    /// step's payload at the `into` pointer — almost always an omitted `into`
+    /// on a write step clobbering the value it meant to write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -292,8 +297,19 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
 
     for (i, step) in req.through.iter().enumerate() {
         let mut args = step.payload.clone().unwrap_or_else(|| json!({}));
+        let mut clobber_note = None;
         if let Some(value) = piped.take() {
             let pointer = step.into.as_deref().unwrap_or("/value");
+            // Injection REPLACES whatever sits at the pointer. Overwriting a
+            // literal the author spelled out is almost always an omitted
+            // `into` on a write step — flag it on the receipt so the clobber
+            // is visible instead of silent.
+            if matches!(args.pointer(pointer), Some(v) if !v.is_null()) {
+                clobber_note = Some(format!(
+                    "piped value REPLACED the literal at `{pointer}` — aim `into` at a \
+                     subfield (e.g. `{pointer}/_piped`) to keep your literal payload"
+                ));
+            }
             args = inject(args, pointer, value)
                 .map_err(|msg| step_error(i, &step.function, &msg, &receipts))?;
         }
@@ -308,6 +324,7 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
             receipts.push(StepReceipt {
                 function: step.function.clone(),
                 chars: chars_of(&value),
+                note: clobber_note,
             });
             piped = Some(value);
             if !passed {
@@ -333,6 +350,7 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
         receipts.push(StepReceipt {
             function: step.function.clone(),
             chars: chars_of(&value),
+            note: clobber_note,
         });
         piped = Some(value);
     }
@@ -541,10 +559,12 @@ mod tests {
             StepReceipt {
                 function: "scrapling::fetch".into(),
                 chars: 184_232,
+                note: None,
             },
             StepReceipt {
                 function: "fp::get".into(),
                 chars: 180_101,
+                note: None,
             },
         ];
         // loop index 2 = the third step; the message is 1-based like the UI
