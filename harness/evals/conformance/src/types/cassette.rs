@@ -52,13 +52,12 @@ impl RouterCassetteV1 {
 /// personal data, nondeterministic IDs, provider-private metadata). The scan
 /// walks every object key and string value; a hit rejects the cassette.
 pub fn denylist_scan(value: &serde_json::Value) -> Vec<String> {
-    const DENY_KEY_FRAGMENTS: [&str; 12] = [
+    const DENY_KEY_FRAGMENTS: [&str; 11] = [
         "authorization",
         "api_key",
         "apikey",
         "api-key",
         "secret",
-        "token",
         "cookie",
         "password",
         "credential",
@@ -66,13 +65,30 @@ pub fn denylist_scan(value: &serde_json::Value) -> Vec<String> {
         "session_key",
         "private",
     ];
+    // Credential token keys are matched by exact name (after `-`→`_`
+    // folding): a generic "token" fragment would reject the mandatory
+    // `max_output_tokens` model field — i.e. every structurally valid
+    // cassette.
+    const DENY_TOKEN_KEYS: [&str; 8] = [
+        "token",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "auth_token",
+        "session_token",
+        "bearer_token",
+        "api_token",
+    ];
     // String values that look like live credentials.
     const DENY_VALUE_PREFIXES: [&str; 4] = ["sk-", "Bearer ", "bearer ", "ghp_"];
     let mut hits = Vec::new();
     walk(value, "", &mut |path, v| {
         if let Some(key) = path.rsplit('/').next() {
             let lower = key.to_ascii_lowercase();
-            if DENY_KEY_FRAGMENTS.iter().any(|f| lower.contains(f)) {
+            let folded = lower.replace('-', "_");
+            if DENY_KEY_FRAGMENTS.iter().any(|f| lower.contains(f))
+                || DENY_TOKEN_KEYS.contains(&folded.as_str())
+            {
                 hits.push(format!("denylisted key at {path}"));
             }
         }
