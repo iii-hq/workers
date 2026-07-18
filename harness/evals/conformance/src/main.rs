@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use clap::Parser;
 use harness_conformance::fixtures::{scenario_dirs, ScenarioFixture};
 use harness_conformance::scenario::run_scenario;
@@ -123,6 +124,19 @@ async fn run(cli: Cli) -> i32 {
         );
         return 3;
     }
+    // Children run with per-run working directories (stack.rs), so a relative
+    // artifacts dir would make every generated config/seed path resolve
+    // against the wrong cwd inside the spawned processes.
+    let artifacts_dir = match cli.artifacts_dir.canonicalize() {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!(
+                "runner_error: resolving {}: {e}",
+                cli.artifacts_dir.display()
+            );
+            return 3;
+        }
+    };
 
     // Scenarios run strictly serially, each on a fresh stack (spec § Decisions).
     let mut exit_code = 0;
@@ -132,7 +146,7 @@ async fn run(cli: Cli) -> i32 {
         let outcome = run_scenario(
             &bins,
             fixture,
-            &cli.artifacts_dir,
+            &artifacts_dir,
             cli.retain_success,
             cli.record_console,
         )
@@ -173,30 +187,37 @@ fn classification_str(c: Classification) -> &'static str {
 }
 
 fn resolve_bins(cli: &Cli) -> anyhow::Result<StackBins> {
-    let engine = cli
-        .engine_bin
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("--engine-bin (or III_BIN) is required; see engine.lock"))?;
-    let harness = cli
-        .harness_bin
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("--harness-bin is required"))?;
-    let workers: BTreeMap<String, PathBuf> = cli.worker_bins.iter().cloned().collect();
-    let bins = StackBins {
-        engine,
-        harness,
-        workers,
-        console: cli.console_bin.clone(),
-    };
-    for (name, path) in std::iter::once(("engine", &bins.engine))
-        .chain(std::iter::once(("harness", &bins.harness)))
-        .chain(bins.workers.iter().map(|(n, p)| (n.as_str(), p)))
-        .chain(bins.console.iter().map(|p| ("console", p)))
-    {
+    // Children are spawned with per-run working directories, so a relative
+    // binary path from the CLI would fail to exec inside the child.
+    fn absolute(name: &str, path: &Path) -> anyhow::Result<PathBuf> {
         if !path.is_file() {
             anyhow::bail!("{name} binary not found at {}", path.display());
         }
+        path.canonicalize()
+            .with_context(|| format!("resolving {name} binary {}", path.display()))
     }
+    let engine = cli
+        .engine_bin
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("--engine-bin (or III_BIN) is required; see engine.lock"))?;
+    let harness = cli
+        .harness_bin
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("--harness-bin is required"))?;
+    let bins = StackBins {
+        engine: absolute("engine", engine)?,
+        harness: absolute("harness", harness)?,
+        workers: cli
+            .worker_bins
+            .iter()
+            .map(|(name, path)| Ok((name.clone(), absolute(name, path)?)))
+            .collect::<anyhow::Result<BTreeMap<String, PathBuf>>>()?,
+        console: cli
+            .console_bin
+            .as_deref()
+            .map(|p| absolute("console", p))
+            .transpose()?,
+    };
     let missing = bins.missing_workers();
     if !missing.is_empty() {
         anyhow::bail!("missing --worker-bin for: {}", missing.join(", "));
