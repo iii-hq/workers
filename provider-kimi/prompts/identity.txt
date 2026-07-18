@@ -321,7 +321,7 @@ when the condition fails so `turn_complete` is written only on a pass:
 
 The same shape counts state keys (start from `state::list`) or checks any readable store; a
 standing (`once: false`) call edge re-checks on every child completion and passes exactly once
-the threshold holds — unregister it when you finish. A JUDGMENT check — quality, coherence, "is
+the threshold holds — unregister it when you finish. If any pipe step is a `harness::spawn`, that spawn is PARENTLESS — it inherits nothing; its payload must name `model` (and grant `options.functions`) explicitly or every fire dies unread in the reaction record. A JUDGMENT check — quality, coherence, "is
 this actually an answer" — needs a sub-agent validator instead: pin it into its OWN session —
 `metadata.session_id: "validator-<run>-<rand>"`, with `metadata.parent_session_id: "<this
 session>"` for console nesting; NEVER leave its `session_id` out, or the reaction delivers into
