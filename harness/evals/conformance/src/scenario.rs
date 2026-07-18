@@ -350,6 +350,12 @@ impl ScenarioRunner<'_> {
         )?);
         if send_failed {
             tracing::error!("harness::send failed: {send_value}");
+            // The RPC also errors when its callee dies mid-call; a dead
+            // child outranks the contract reading (spec step 7).
+            if let Some(exit) = stack.early_exit() {
+                tracing::error!("process {} exited during send: {}", exit.name, exit.status);
+                return Ok(Classification::ProcessCrash);
+            }
             return Ok(Classification::ContractFailure);
         }
         let turn_id = send_value
@@ -447,6 +453,14 @@ impl ScenarioRunner<'_> {
             )?);
             if resolve_response.is_err() {
                 tracing::error!("function::resolve failed: {resolve_value}");
+                if let Some(exit) = stack.early_exit() {
+                    tracing::error!(
+                        "process {} exited during resolve: {}",
+                        exit.name,
+                        exit.status
+                    );
+                    return Ok(Classification::ProcessCrash);
+                }
                 return Ok(Classification::ContractFailure);
             }
         }
@@ -557,6 +571,17 @@ impl ScenarioRunner<'_> {
             &serde_json::to_value(&self.invariants)?,
         )?);
 
+        // The stack must outlive Collect for the evidence to be trustworthy,
+        // and an early process exit outranks an ordinary timeout (spec
+        // step 7) — so this check precedes every remaining classification.
+        if let Some(exit) = stack.early_exit() {
+            tracing::error!(
+                "process {} exited before grading: {}",
+                exit.name,
+                exit.status
+            );
+            return Ok(Classification::ProcessCrash);
+        }
         if timed_out {
             return Ok(Classification::Timeout);
         }
