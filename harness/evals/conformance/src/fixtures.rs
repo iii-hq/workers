@@ -238,6 +238,14 @@ pub fn scenario_dirs(scenarios_root: &Path, selector: &str) -> anyhow::Result<Ve
                 selected.push(dir);
             }
         }
+        // An empty selection must not exit 0: a scenarios dir gone missing or
+        // fully quarantined would otherwise turn the CI gate into a no-op.
+        if selected.is_empty() {
+            anyhow::bail!(
+                "selector \"all\" matched no non-quarantined scenario under {}",
+                scenarios_root.display()
+            );
+        }
         return Ok(selected);
     }
     for dir in dirs {
@@ -386,5 +394,32 @@ mod tests {
                 json!([{ "before_frame": 5, "id": "b", "timeout_ms": 100 }]);
         });
         assert!(error_chain(script).contains("barrier"));
+    }
+
+    /// Both delta wire forms are valid fixtures: the slim delta (no
+    /// `partial`) the router emits today, and the legacy fat delta carrying
+    /// a full snapshot.
+    #[test]
+    fn slim_and_fat_deltas_both_validate() {
+        let slim = minimal_script(|s| {
+            let done = s["generations"][0]["frames"][0].clone();
+            s["generations"][0]["frames"] = json!([{ "type": "text_delta", "delta": "x" }, done]);
+        });
+        validate(slim).unwrap();
+
+        let fat = minimal_script(|s| {
+            let done = s["generations"][0]["frames"][0].clone();
+            let partial = done["message"].clone();
+            s["generations"][0]["frames"] =
+                json!([{ "type": "text_delta", "partial": partial, "delta": "x" }, done]);
+        });
+        validate(fat).unwrap();
+    }
+
+    #[test]
+    fn all_selector_with_no_runnable_scenario_is_an_error() {
+        let empty = tempfile::tempdir().unwrap();
+        let err = scenario_dirs(empty.path(), "all").unwrap_err();
+        assert!(format!("{err:#}").contains("no non-quarantined scenario"));
     }
 }
