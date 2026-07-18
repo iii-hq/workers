@@ -160,6 +160,18 @@ fn forbidden_step(function_id: &str) -> Option<&'static str> {
     {
         return Some("bus-internal functions are not supported in a pipe");
     }
+    // Only the read-only `database::query` may ride a pipe. Every other
+    // `database::*` — execute, the transaction handles, prepared statements —
+    // can WRITE, and a pipe step runs with THIS worker's authority: a child
+    // capped at read-only `database::query` could otherwise wrap a
+    // `database::execute` here and defeat the query/execute split entirely.
+    if function_id.starts_with("database::") && function_id != "database::query" {
+        return Some(
+            "only database::query (read-only) is supported in a pipe — writes, transactions, \
+             and prepared statements run with worker authority, which would bypass the \
+             agent-level deny on them; call them directly",
+        );
+    }
     if function_id.ends_with("::on-config-change") {
         return Some("lifecycle hooks are engine-dispatched, never pipe steps");
     }
@@ -482,10 +494,22 @@ mod tests {
             ("stream::set", "bus-internal"),
             ("iii::durable::publish", "bus-internal"),
             ("storage::on-config-change", "lifecycle"),
+            ("database::execute", "read-only"),
+            ("database::transaction", "read-only"),
+            ("database::transactionExecute", "read-only"),
+            ("database::beginTransaction", "read-only"),
+            ("database::runStatement", "read-only"),
         ] {
             let req = parse(json!({ "through": [{ "function": function }] })).unwrap();
             assert!(validate(&req).unwrap_err().contains(needle), "{function}");
         }
+
+        // …but the read-only query is the whole point of a validator pipe.
+        let ok = parse(json!({ "through": [
+            { "function": "database::query", "payload": { "db": "primary", "sql": "SELECT 1" } },
+        ]}))
+        .unwrap();
+        assert!(validate(&ok).is_ok());
 
         let empty = parse(json!({ "through": [] })).unwrap();
         assert!(validate(&empty).is_err());
