@@ -35,10 +35,6 @@ fn missing_context_manager_names_both_functions() {
         { "function_id": "router::models::get" },
         { "function_id": "router::models::supports" },
         { "function_id": "router::system_prompt::get" },
-        { "function_id": "integration-recorder::configure" },
-        { "function_id": "integration-recorder::reset" },
-        { "function_id": "integration-recorder::snapshot" },
-        { "function_id": "integration-recorder::await" },
         { "function_id": "integration-recorder::lifecycle" },
         { "function_id": "engine::queue::list_topics" }
     ]});

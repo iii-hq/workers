@@ -1,244 +1,217 @@
-//! The controlled recorder (spec § Proposed recorder contract): five fixed
-//! control functions, one run-scoped target function, and the lifecycle
-//! sink. Every accepted target/lifecycle call is durably appended to
-//! `<run>/recorder.log.jsonl` (write + fsync) *before* the handler responds,
-//! with a strictly increasing sequence. `snapshot` orders by sequence;
-//! `await` is a deadline-bounded convenience over the same log.
+//! The controlled recorder: run-scoped target functions and the lifecycle
+//! sink are registered with the engine, while configuration, reset, and
+//! snapshots remain direct runner operations. Every accepted target or
+//! lifecycle call is durably appended to `<run>/recorder.log.jsonl`
+//! (write + fsync) before the handler responds.
 
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use anyhow::Context;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::RegisterFunction;
 use serde_json::{json, Value};
 
 use crate::client::Client;
-use crate::types::recorder::{
-    RecorderConfigV1, RecorderConfigureRequestV1, RecorderEventKind, RecorderEventV1,
-};
+use crate::types::recorder::{RecorderConfigV1, RecorderEventKind, RecorderEventV1};
 use crate::types::script::SchemaVersion1;
 
-struct State {
+struct EventStoreState {
     run_id: Option<String>,
     next_sequence: u64,
     events: Vec<RecorderEventV1>,
-    log_path: PathBuf,
-    /// The target registered by `configure` (used to enforce single
-    /// configuration per run and by the runner's digest verification).
-    configured_target: Option<RecorderConfigV1>,
 }
 
-impl State {
-    /// Durably append one event before the caller's handler responds.
-    fn append(&mut self, kind: RecorderEventKind, function_id: &str, payload: Value) -> u64 {
-        let sequence = self.next_sequence;
-        self.next_sequence += 1;
+struct EventStore {
+    state: Mutex<EventStoreState>,
+    log_path: PathBuf,
+}
+
+impl EventStore {
+    fn new(log_path: PathBuf) -> Self {
+        Self {
+            state: Mutex::new(EventStoreState {
+                run_id: None,
+                next_sequence: 1,
+                events: Vec::new(),
+            }),
+            log_path,
+        }
+    }
+
+    fn configure(&self, run_id: &str) -> anyhow::Result<()> {
+        let mut state = self.lock()?;
+        state.run_id = Some(run_id.to_string());
+        Ok(())
+    }
+
+    /// Durably truncate the event log before resetting the in-memory view.
+    fn reset(&self, run_id: &str) -> anyhow::Result<u64> {
+        let mut state = self.lock()?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.log_path)
+            .with_context(|| {
+                format!("open recorder log for reset at {}", self.log_path.display())
+            })?;
+        file.sync_all()
+            .with_context(|| format!("fsync recorder log reset at {}", self.log_path.display()))?;
+
+        state.run_id = Some(run_id.to_string());
+        state.events.clear();
+        state.next_sequence = 1;
+        Ok(state.next_sequence)
+    }
+
+    /// Durably append one event before making it visible to callers.
+    fn append(
+        &self,
+        kind: RecorderEventKind,
+        function_id: &str,
+        payload: Value,
+    ) -> anyhow::Result<u64> {
+        let mut state = self.lock()?;
+        let sequence = state.next_sequence;
+        let next_sequence = sequence
+            .checked_add(1)
+            .context("recorder event sequence exhausted")?;
+        let run_id = state
+            .run_id
+            .clone()
+            .context("recorder event store is not configured")?;
         let event = RecorderEventV1 {
             schema_version: SchemaVersion1::V1,
-            run_id: self.run_id.clone().unwrap_or_default(),
+            run_id,
             sequence,
             kind,
             function_id: function_id.to_string(),
             payload,
             received_at: now_rfc3339(),
         };
-        let line = serde_json::to_string(&event).expect("recorder event serializes");
-        if let Ok(mut file) = std::fs::OpenOptions::new()
+
+        let mut line = serde_json::to_vec(&event).context("serialize recorder event")?;
+        line.push(b'\n');
+        let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.log_path)
-        {
-            let _ = writeln!(file, "{line}");
-            let _ = file.sync_all();
-        }
-        self.events.push(event);
-        sequence
+            .with_context(|| {
+                format!(
+                    "open recorder log for append at {}",
+                    self.log_path.display()
+                )
+            })?;
+        file.write_all(&line)
+            .with_context(|| format!("write recorder log at {}", self.log_path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("fsync recorder log at {}", self.log_path.display()))?;
+
+        state.next_sequence = next_sequence;
+        state.events.push(event);
+        Ok(sequence)
+    }
+
+    fn snapshot(&self, after_sequence: Option<u64>) -> anyhow::Result<Vec<RecorderEventV1>> {
+        let after_sequence = after_sequence.unwrap_or(0);
+        let state = self.lock()?;
+        Ok(state
+            .events
+            .iter()
+            .filter(|event| event.sequence > after_sequence)
+            .cloned()
+            .collect())
+    }
+
+    fn lock(&self) -> anyhow::Result<std::sync::MutexGuard<'_, EventStoreState>> {
+        self.state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("recorder event store lock poisoned"))
     }
 }
 
 pub struct Recorder {
     client: Client,
-    state: Arc<Mutex<State>>,
+    store: Arc<EventStore>,
 }
 
 impl Recorder {
     pub async fn start(ws_url: &str, log_path: PathBuf) -> anyhow::Result<Self> {
         let client = Client::connect(ws_url, "integration-recorder");
-        let state = Arc::new(Mutex::new(State {
-            run_id: None,
-            next_sequence: 1,
-            events: Vec::new(),
-            log_path,
-            configured_target: None,
-        }));
-        let recorder = Recorder { client, state };
-        recorder.register_controls();
+        let store = Arc::new(EventStore::new(log_path));
+        let recorder = Recorder { client, store };
+        recorder.register_lifecycle();
         Ok(recorder)
     }
 
-    fn register_controls(&self) {
+    fn register_lifecycle(&self) {
         let iii = self.client.inner();
-
-        // integration-recorder::configure — registers the run-scoped target
-        // verbatim and returns the canonical schema digest.
-        {
-            let state = self.state.clone();
-            let iii_for_target = iii.clone();
-            iii.register_function(
-                "integration-recorder::configure",
-                RegisterFunction::new_async(move |raw: Value| {
-                    let state = state.clone();
-                    let iii = iii_for_target.clone();
-                    async move {
-                        // The engine stamps internal `_`-prefixed fields
-                        // (e.g. `_caller_worker_id`) onto trigger payloads;
-                        // strip them before the deny-unknown-fields parse.
-                        let request: RecorderConfigureRequestV1 =
-                            serde_json::from_value(strip_engine_fields(raw)).map_err(|e| {
-                                Error::Handler(format!("integration/configure: {e}"))
-                            })?;
-                        let target = &request.config.target;
-                        let prefix = format!("{}::", request.run_id);
-                        let schema = Value::Object(target.request_schema.clone());
-                        let digest = crate::canonical::sha256_of_canonical(&schema);
-
-                        {
-                            let mut state = state.lock().expect("recorder state");
-                            state.run_id = Some(request.run_id.clone());
-                            state.configured_target = Some(request.config.clone());
-                        }
-
-                        // Register the declared surfaces verbatim (the target
-                        // plus any extra controlled functions, e.g. hooks);
-                        // each handler answers with its declared response
-                        // after a durable append.
-                        for declared in
-                            std::iter::once(target).chain(request.config.extra_functions.iter())
-                        {
-                            if !declared.function_id.starts_with(&prefix) {
-                                return Err(Error::Handler(format!(
-                                    "integration/target_scope: {} must be prefixed by {prefix}",
-                                    declared.function_id
-                                )));
-                            }
-                            register_controlled_function(&iii, &state, declared);
-                        }
-
-                        Ok(json!({ "schema_version": "1", "target_schema_sha256": digest }))
-                    }
-                })
-                .description("Configure the run-scoped integration target and lifecycle binding."),
-            );
-        }
-
-        // integration-recorder::reset — clears only the current run; idempotent.
-        {
-            let state = self.state.clone();
-            iii.register_function(
-                "integration-recorder::reset",
-                RegisterFunction::new_async(move |request: Value| {
-                    let state = state.clone();
-                    async move {
-                        let run_id = request
-                            .get("run_id")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| {
-                                Error::Handler("integration/reset: run_id required".into())
-                            })?
-                            .to_string();
-                        let mut state = state.lock().expect("recorder state");
-                        state.run_id = Some(run_id);
-                        state.events.clear();
-                        state.next_sequence = 1;
-                        let _ = std::fs::write(&state.log_path, b"");
-                        Ok::<Value, Error>(json!({ "schema_version": "1", "next_sequence": 1 }))
-                    }
-                })
-                .description("Reset the recorder's durable log for the current run."),
-            );
-        }
-
-        // integration-recorder::snapshot — ordered by sequence.
-        {
-            let state = self.state.clone();
-            iii.register_function(
-                "integration-recorder::snapshot",
-                RegisterFunction::new_async(move |request: Value| {
-                    let state = state.clone();
-                    async move {
-                        let after = request
-                            .get("after_sequence")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0);
-                        let state = state.lock().expect("recorder state");
-                        let events: Vec<&RecorderEventV1> =
-                            state.events.iter().filter(|e| e.sequence > after).collect();
-                        Ok::<Value, Error>(json!({ "schema_version": "1", "events": events }))
-                    }
-                })
-                .description("Read the recorder's durable event log, ordered by sequence."),
-            );
-        }
-
-        // integration-recorder::await — deadline-bounded count watch.
-        {
-            let state = self.state.clone();
-            iii.register_function(
-                "integration-recorder::await",
-                RegisterFunction::new_async(move |request: Value| {
-                    let state = state.clone();
-                    async move {
-                        let kind: RecorderEventKind = serde_json::from_value(
-                            request.get("kind").cloned().unwrap_or(Value::Null),
-                        )
-                        .map_err(|e| Error::Handler(format!("integration/await: {e}")))?;
-                        let count = request.get("count").and_then(Value::as_u64).unwrap_or(1);
-                        let timeout_ms = request
-                            .get("timeout_ms")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(10_000);
-                        let deadline = tokio::time::Instant::now()
-                            + std::time::Duration::from_millis(timeout_ms);
-                        loop {
-                            let observed = {
-                                let state = state.lock().expect("recorder state");
-                                state.events.iter().filter(|e| e.kind == kind).count() as u64
-                            };
-                            if observed >= count || tokio::time::Instant::now() >= deadline {
-                                return Ok::<Value, Error>(
-                                    json!({ "schema_version": "1", "observed": observed }),
-                                );
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        }
-                    }
-                })
-                .description("Wait until the durable log holds `count` events of `kind`."),
-            );
-        }
 
         // integration-recorder::lifecycle — the trigger-bound sink. Payload
         // is the exact harness lifecycle event.
         {
-            let state = self.state.clone();
+            let store = self.store.clone();
             iii.register_function(
                 "integration-recorder::lifecycle",
                 RegisterFunction::new_async(move |payload: Value| {
-                    let state = state.clone();
+                    let store = store.clone();
                     async move {
-                        state.lock().expect("recorder state").append(
-                            RecorderEventKind::Lifecycle,
-                            "integration-recorder::lifecycle",
-                            strip_engine_fields(payload),
-                        );
+                        store
+                            .append(
+                                RecorderEventKind::Lifecycle,
+                                "integration-recorder::lifecycle",
+                                strip_engine_fields(payload),
+                            )
+                            .map_err(|error| {
+                                Error::Handler(format!("integration/lifecycle: {error:#}"))
+                            })?;
                         Ok::<Value, Error>(json!({ "accepted": true }))
                     }
                 })
                 .description("Durable sink for harness lifecycle trigger deliveries."),
             );
         }
+    }
+
+    /// Configure and register the run-scoped controlled functions directly.
+    /// Returns the canonical digest of the target request schema.
+    pub fn configure(&self, run_id: &str, config: &RecorderConfigV1) -> anyhow::Result<String> {
+        let prefix = format!("{run_id}::");
+        let mut function_ids = BTreeSet::new();
+        for declared in std::iter::once(&config.target).chain(config.extra_functions.iter()) {
+            anyhow::ensure!(
+                declared.function_id.starts_with(&prefix),
+                "integration/target_scope: {} must be prefixed by {prefix}",
+                declared.function_id
+            );
+            anyhow::ensure!(
+                function_ids.insert(declared.function_id.as_str()),
+                "integration/target_duplicate: {} is declared more than once",
+                declared.function_id
+            );
+        }
+
+        self.store.configure(run_id)?;
+        for declared in std::iter::once(&config.target).chain(config.extra_functions.iter()) {
+            register_controlled_function(self.client.inner(), &self.store, declared);
+        }
+
+        let schema = Value::Object(config.target.request_schema.clone());
+        Ok(crate::canonical::sha256_of_canonical(&schema))
+    }
+
+    /// Durably clear evidence for a run and restart event sequencing.
+    pub fn reset(&self, run_id: &str) -> anyhow::Result<u64> {
+        self.store.reset(run_id)
+    }
+
+    /// Return an ordered in-process snapshot after the optional sequence.
+    pub fn snapshot(&self, after_sequence: Option<u64>) -> anyhow::Result<Vec<RecorderEventV1>> {
+        self.store.snapshot(after_sequence)
     }
 
     /// Create the lifecycle trigger binding (runner's Arm step). The binding
@@ -274,11 +247,6 @@ impl Recorder {
         Ok(())
     }
 
-    /// Direct (in-process) event snapshot for evidence collection.
-    pub fn events(&self) -> Vec<RecorderEventV1> {
-        self.state.lock().expect("recorder state").events.clone()
-    }
-
     pub async fn shutdown(&self) {
         self.client.shutdown().await;
     }
@@ -289,26 +257,30 @@ impl Recorder {
 /// fault-injection delay).
 fn register_controlled_function(
     iii: &iii_sdk::IIIClient,
-    state: &Arc<Mutex<State>>,
+    store: &Arc<EventStore>,
     declared: &crate::types::recorder::RecorderTargetV1,
 ) {
     let response = declared.response.clone();
     let delay_ms = declared.response_delay_ms.unwrap_or(0);
-    let state = state.clone();
+    let store = store.clone();
     let function_id = declared.function_id.clone();
     let handler_function_id = function_id.clone();
     iii.register_function(
         &function_id,
         RegisterFunction::new_async(move |payload: Value| {
-            let state = state.clone();
+            let store = store.clone();
             let response = response.clone();
             let function_id = handler_function_id.clone();
             async move {
-                state.lock().expect("recorder state").append(
-                    RecorderEventKind::TargetCall,
-                    &function_id,
-                    strip_engine_fields(payload),
-                );
+                store
+                    .append(
+                        RecorderEventKind::TargetCall,
+                        &function_id,
+                        strip_engine_fields(payload),
+                    )
+                    .map_err(|error| {
+                        Error::Handler(format!("integration/target_append: {error:#}"))
+                    })?;
                 if delay_ms > 0 {
                     // Fault-injection window: the call is durably observed
                     // but still executing.
@@ -335,4 +307,147 @@ fn now_rfc3339() -> String {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use serde_json::json;
+
+    use super::{EventStore, RecorderEventKind};
+
+    #[test]
+    fn event_store_persists_ordered_events_and_resets_durably() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let log_path = temp.path().join("recorder.log.jsonl");
+        let store = EventStore::new(log_path.clone());
+
+        assert_eq!(store.reset("run-1").expect("reset"), 1);
+        assert_eq!(
+            store
+                .append(
+                    RecorderEventKind::TargetCall,
+                    "run-1::target",
+                    json!({"x": 1})
+                )
+                .expect("first append"),
+            1
+        );
+        assert_eq!(
+            store
+                .append(
+                    RecorderEventKind::Lifecycle,
+                    "integration-recorder::lifecycle",
+                    json!({"session_id": "session-1"}),
+                )
+                .expect("second append"),
+            2
+        );
+
+        let snapshot = store.snapshot(None).expect("snapshot");
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0].sequence, 1);
+        assert_eq!(snapshot[1].sequence, 2);
+        assert_eq!(
+            store.snapshot(Some(1)).expect("filtered snapshot"),
+            vec![snapshot[1].clone()]
+        );
+
+        let persisted: Vec<serde_json::Value> = std::fs::read_to_string(&log_path)
+            .expect("read log")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("event JSON"))
+            .collect();
+        assert_eq!(
+            persisted,
+            snapshot
+                .iter()
+                .map(|event| serde_json::to_value(event).expect("event value"))
+                .collect::<Vec<_>>()
+        );
+
+        assert_eq!(store.reset("run-2").expect("second reset"), 1);
+        assert!(store.snapshot(None).expect("empty snapshot").is_empty());
+        assert_eq!(std::fs::read(&log_path).expect("read reset log"), b"");
+        assert_eq!(
+            store
+                .append(RecorderEventKind::TargetCall, "run-2::target", json!({}))
+                .expect("append after reset"),
+            1
+        );
+    }
+
+    #[test]
+    fn failed_open_is_returned_without_acknowledging_the_event() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = temp.path().join("missing");
+        let store = EventStore::new(parent.join("recorder.log.jsonl"));
+        store.configure("run-1").expect("configure");
+
+        let error = store
+            .append(RecorderEventKind::TargetCall, "run-1::target", json!({}))
+            .expect_err("open must fail");
+        assert!(
+            format!("{error:#}").contains("open recorder log for append"),
+            "{error:#}"
+        );
+        assert!(store.snapshot(None).expect("snapshot").is_empty());
+
+        std::fs::create_dir(&parent).expect("create log parent");
+        assert_eq!(
+            store
+                .append(RecorderEventKind::TargetCall, "run-1::target", json!({}))
+                .expect("retry append"),
+            1,
+            "a failed append must not advance the acknowledged sequence"
+        );
+    }
+
+    #[test]
+    fn events_are_rejected_until_the_store_is_configured() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = EventStore::new(temp.path().join("recorder.log.jsonl"));
+
+        let error = store
+            .append(RecorderEventKind::Lifecycle, "lifecycle", json!({}))
+            .expect_err("unconfigured append must fail");
+        assert!(
+            format!("{error:#}").contains("event store is not configured"),
+            "{error:#}"
+        );
+        assert!(store.snapshot(None).expect("snapshot").is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn write_errors_are_returned_without_acknowledging_the_event() {
+        let store = EventStore::new(Path::new("/dev/full").to_path_buf());
+        store.configure("run-1").expect("configure");
+
+        let error = store
+            .append(RecorderEventKind::TargetCall, "run-1::target", json!({}))
+            .expect_err("/dev/full must reject the write");
+        assert!(
+            format!("{error:#}").contains("write recorder log"),
+            "{error:#}"
+        );
+        assert!(store.snapshot(None).expect("snapshot").is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fsync_errors_are_returned_without_acknowledging_the_event() {
+        let store = EventStore::new(Path::new("/dev/null").to_path_buf());
+        store.configure("run-1").expect("configure");
+
+        let error = store
+            .append(RecorderEventKind::TargetCall, "run-1::target", json!({}))
+            .expect_err("/dev/null cannot be fsynced");
+        assert!(
+            format!("{error:#}").contains("fsync recorder log"),
+            "{error:#}"
+        );
+        assert!(store.snapshot(None).expect("snapshot").is_empty());
+    }
 }

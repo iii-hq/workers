@@ -8,22 +8,10 @@ use serde_json::{json, Map, Value};
 use crate::types::recorder::{RecorderEventKind, RecorderEventV1};
 use crate::types::scenario::{InvariantResultV1, InvariantSpecV1};
 
-pub const KNOWN_INVARIANTS: [&str; 10] = [
-    "send.flags",
-    "transcript.message_counts",
-    "transcript.assistant_text",
-    "transcript.no_duplicates",
-    "transcript.function_result",
-    "transcript.calls_closed",
-    "status.terminal",
-    "lifecycle.completed_once",
-    "router.generations_consumed",
-    "target.calls",
-];
-
 /// Everything the grader may look at, exactly as persisted to the artifact
 /// directory (grading twice over the same evidence is byte-deterministic).
 pub struct Evidence {
+    pub run_id: String,
     pub session_id: String,
     pub turn_id: Option<String>,
     pub send_response: Option<Value>,
@@ -40,7 +28,9 @@ pub fn grade(specs: &[InvariantSpecV1], evidence: &Evidence) -> Vec<InvariantRes
     specs
         .iter()
         .map(|spec| {
-            let (passed, expected, actual, refs) = grade_one(spec, evidence);
+            let (passed, mut expected, mut actual, refs) = grade_one(spec, evidence);
+            stabilize_value(&mut expected, evidence);
+            stabilize_value(&mut actual, evidence);
             InvariantResultV1 {
                 id: spec.id.clone(),
                 passed,
@@ -134,7 +124,7 @@ fn grade_one(
                 actual => {
                     actual.get("text") == params.get("text")
                         && params.get("usage").is_none_or(|want| {
-                            subset_eq(want, actual.get("usage").unwrap_or(&Value::Null))
+                            literal_subset(want, actual.get("usage").unwrap_or(&Value::Null))
                         })
                 }
             };
@@ -213,14 +203,21 @@ fn grade_one(
 
         "transcript.function_result" => {
             let expected = Value::Object(params.clone());
+            let expected_call_id = params
+                .get("function_call_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let results: Vec<&Value> = evidence
                 .transcript
                 .iter()
                 .filter_map(|item| item.get("message"))
                 .filter(|m| m.get("role").and_then(Value::as_str) == Some("function_result"))
+                .filter(|m| {
+                    m.get("function_call_id").and_then(Value::as_str) == Some(expected_call_id)
+                })
                 .collect();
             let actual = json!(results);
-            let passed = results.len() == 1 && subset_eq(&expected, results[0]);
+            let passed = results.len() == 1 && literal_subset(&expected, results[0]);
             (passed, expected, actual, vec!["transcript.json"])
         }
 
@@ -255,8 +252,12 @@ fn grade_one(
         }
 
         "lifecycle.completed_once" => {
+            let allow_identical_duplicates = params
+                .get("allow_identical_duplicates")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
             let expected = json!({
-                "at_least_one_completion": true,
+                "delivery_count_valid": true,
                 "all_deliveries_identical_after_timestamp_normalization": true,
                 "session_and_turn_match": true,
             });
@@ -284,13 +285,17 @@ fn grade_one(
                         None => false,
                     }
             });
+            let delivery_count_valid = if allow_identical_duplicates {
+                !payloads.is_empty()
+            } else {
+                payloads.len() == 1
+            };
             let actual = json!({
-                "at_least_one_completion": !payloads.is_empty(),
+                "delivery_count_valid": delivery_count_valid,
                 "all_deliveries_identical_after_timestamp_normalization": identical,
                 "session_and_turn_match": bound_ok,
-                "deliveries": payloads,
             });
-            let passed = !payloads.is_empty() && identical && bound_ok;
+            let passed = delivery_count_valid && identical && bound_ok;
             (passed, expected, actual, vec!["lifecycle-events.json"])
         }
 
@@ -328,7 +333,7 @@ fn grade_one(
             // in every call — used for envelope payloads (hook inputs) whose
             // full shape carries ids/timestamps.
             let subset_ok = match params.get("payload_subset") {
-                Some(want) => calls.iter().all(|c| subset_eq(want, &c.payload)),
+                Some(want) => calls.iter().all(|c| literal_subset(want, &c.payload)),
                 None => true,
             };
             let expected = Value::Object(params.clone());
@@ -353,15 +358,42 @@ fn flag(params: &Map<String, Value>, key: &str) -> bool {
     params.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
 
-/// Object-subset equality: every expected member equals the actual member
-/// (arrays compare positionally-exact here — the grader's expectations are
-/// literal).
-fn subset_eq(expected: &Value, actual: &Value) -> bool {
-    match (expected, actual) {
-        (Value::Object(exp), Value::Object(act)) => exp
-            .iter()
-            .all(|(k, v)| act.get(k).is_some_and(|a| subset_eq(v, a))),
-        (e, a) => e == a,
+fn literal_subset(expected: &Value, actual: &Value) -> bool {
+    crate::matcher::subset_with_array_policy(expected, actual, crate::matcher::ArrayPolicy::Exact)
+        .is_none()
+}
+
+/// Keep result.json stable while detailed evidence retains raw run-scoped
+/// values. Diagnostic artifacts still contain every original id and
+/// timestamp.
+fn stabilize_value(value: &mut Value, evidence: &Evidence) {
+    match value {
+        Value::String(text) => {
+            replace_identity(text, &evidence.run_id, "{{run_id}}");
+            replace_identity(text, &evidence.session_id, "{{session_id}}");
+            if let Some(turn_id) = &evidence.turn_id {
+                replace_identity(text, turn_id, "{{turn_id}}");
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                stabilize_value(item, evidence);
+            }
+        }
+        Value::Object(map) => {
+            map.remove("timestamp");
+            map.remove("received_at");
+            for item in map.values_mut() {
+                stabilize_value(item, evidence);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn replace_identity(text: &mut String, identity: &str, placeholder: &str) {
+    if !identity.is_empty() && text.contains(identity) {
+        *text = text.replace(identity, placeholder);
     }
 }
 
@@ -384,6 +416,7 @@ mod tests {
 
     fn base_evidence() -> Evidence {
         Evidence {
+            run_id: "r".into(),
             session_id: "s_1".into(),
             turn_id: Some("t_1".into()),
             send_response: Some(json!({ "session_id": "s_1", "turn_id": "t_1", "accepted": true })),
@@ -472,6 +505,18 @@ mod tests {
         );
         assert!(ok[0].passed, "{:?}", ok[0]);
 
+        let strict = grade(
+            &[spec(
+                "lifecycle.completed_once",
+                json!({ "allow_identical_duplicates": false }),
+            )],
+            &evidence,
+        );
+        assert!(
+            !strict[0].passed,
+            "strict lifecycle expectation must reject duplicate delivery"
+        );
+
         let mut conflicting = completed;
         conflicting["status"] = json!("failed");
         evidence.recorder_events.push(event(
@@ -481,6 +526,43 @@ mod tests {
         ));
         let bad = grade(&[spec("lifecycle.completed_once", json!({}))], &evidence);
         assert!(!bad[0].passed, "conflicting terminals must fail");
+    }
+
+    #[test]
+    fn function_result_expectations_select_their_call_id() {
+        let mut evidence = base_evidence();
+        evidence.transcript = vec![
+            json!({
+                "message": {
+                    "role": "function_result",
+                    "function_call_id": "call-1",
+                    "function_id": "r::one",
+                    "content": []
+                }
+            }),
+            json!({
+                "message": {
+                    "role": "function_result",
+                    "function_call_id": "call-2",
+                    "function_id": "r::two",
+                    "content": []
+                }
+            }),
+        ];
+        let results = grade(
+            &[
+                spec(
+                    "transcript.function_result",
+                    json!({ "function_call_id": "call-1", "function_id": "r::one" }),
+                ),
+                spec(
+                    "transcript.function_result",
+                    json!({ "function_call_id": "call-2", "function_id": "r::two" }),
+                ),
+            ],
+            &evidence,
+        );
+        assert!(results.iter().all(|result| result.passed), "{results:?}");
     }
 
     #[test]

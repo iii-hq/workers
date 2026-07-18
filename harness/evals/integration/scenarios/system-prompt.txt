@@ -366,6 +366,3 @@ Also remember: when nothing registered fits, search the registry with
 worker) for code files. Never use
 `curl` for HTTP calls, even localhost. Read the SDK reference
 before writing worker code.
-
-Your session id is {{session_id}}.
-Function dispatch is entirely disabled this turn — do not call any function.

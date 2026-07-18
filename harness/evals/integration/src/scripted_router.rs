@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 
 use crate::client::Client;
 use crate::matcher::{evaluate, FieldMatchResult};
-use crate::types::script::{ModelFixtureV1, RouterScriptV1, ScriptedGenerationV1, MATCH_FIELDS};
+use crate::types::script::{ModelFixtureV1, RouterScriptV1, ScriptedGenerationV1};
 
 /// One `router::chat` call's evidence, stored raw (never normalized).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -65,15 +65,6 @@ impl ScriptedRouter {
     /// the given (already placeholder-expanded) script.
     pub async fn start(ws_url: &str, mut script: RouterScriptV1) -> anyhow::Result<Self> {
         script.generations.sort_by_key(|g| g.ordinal);
-        if script
-            .generations
-            .iter()
-            .any(|g| g.barriers.as_deref().is_some_and(|b| !b.is_empty()))
-        {
-            // Barrier release has no transport contract yet (spec gap flagged
-            // during review); no first-slice fixture uses them.
-            anyhow::bail!("script barriers are not supported by this runner version");
-        }
 
         let client = Client::connect(ws_url, "integration-scripted-router");
         let state = Arc::new(Mutex::new(State {
@@ -342,7 +333,8 @@ async fn chat(state: Arc<Mutex<State>>, address: String, input: Value) -> Result
         (generation, writer_ref, request_id)
     };
 
-    let stream_result = stream_frames(&address, &writer_ref, &generation).await;
+    let stream_result =
+        stream_frames(&address, &writer_ref, &generation, &state, &request_id).await;
 
     state.lock().expect("router state").live.remove(&request_id);
 
@@ -357,16 +349,37 @@ async fn stream_frames(
     address: &str,
     writer_ref: &StreamChannelRef,
     generation: &ScriptedGenerationV1,
+    state: &Arc<Mutex<State>>,
+    request_id: &str,
 ) -> Result<(), Error> {
     let writer = ChannelWriter::new(address, writer_ref);
     for frame in &generation.frames {
+        if request_aborted(state, request_id) {
+            writer.close().await?;
+            return Err(Error::Handler(format!(
+                "integration/aborted: request {request_id}"
+            )));
+        }
         let text = serde_json::to_string(frame)
             .map_err(|e| Error::Handler(format!("integration/frame_serialize: {e}")))?;
         writer.send_message(&text).await?;
+    }
+    if request_aborted(state, request_id) {
+        writer.close().await?;
+        return Err(Error::Handler(format!(
+            "integration/aborted: request {request_id}"
+        )));
     }
     writer.close().await?;
     Ok(())
 }
 
-// Compile-time guarantee that the 12-field table and the matcher struct agree.
-const _: () = assert!(MATCH_FIELDS.len() == 12);
+fn request_aborted(state: &Arc<Mutex<State>>, request_id: &str) -> bool {
+    state
+        .lock()
+        .expect("router state")
+        .live
+        .get(request_id)
+        .copied()
+        .unwrap_or(false)
+}

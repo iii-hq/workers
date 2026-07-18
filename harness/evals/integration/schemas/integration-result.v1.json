@@ -48,6 +48,7 @@
       "type": "string"
     }
   },
+  "description": "Stable, byte-comparable scenario result.",
   "properties": {
     "artifacts": {
       "items": {
@@ -58,39 +59,25 @@
     "classification": {
       "$ref": "#/definitions/Classification"
     },
-    "duration_ms": {
-      "format": "uint64",
-      "minimum": 0.0,
-      "type": "integer"
-    },
     "invariants": {
       "items": {
         "$ref": "#/definitions/InvariantResultV1"
       },
       "type": "array"
     },
-    "run_id": {
-      "type": "string"
-    },
     "scenario_id": {
       "type": "string"
     },
     "schema_version": {
       "$ref": "#/definitions/SchemaVersion1"
-    },
-    "started_at": {
-      "type": "string"
     }
   },
   "required": [
     "artifacts",
     "classification",
-    "duration_ms",
     "invariants",
-    "run_id",
     "scenario_id",
-    "schema_version",
-    "started_at"
+    "schema_version"
   ],
   "title": "IntegrationResultV1",
   "type": "object"

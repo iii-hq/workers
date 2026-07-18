@@ -4,7 +4,8 @@
 
 use serde_json::{json, Value};
 
-use crate::client::Client;
+use crate::client::{Client, DEFAULT_CALL_TIMEOUT_MS};
+use crate::deadline::Deadline;
 
 #[derive(Debug, Clone)]
 pub struct ReadinessSpec {
@@ -37,11 +38,8 @@ impl ReadinessSpec {
             "router::models::get",
             "router::models::supports",
             "router::system_prompt::get",
-            // Recorder control plane.
-            "integration-recorder::configure",
-            "integration-recorder::reset",
-            "integration-recorder::snapshot",
-            "integration-recorder::await",
+            // Recorder's only public engine surface. Configuration,
+            // reset, and snapshots stay inside the runner process.
             "integration-recorder::lifecycle",
             // Queue surface consumed by the probe itself.
             "engine::queue::list_topics",
@@ -83,29 +81,31 @@ pub struct ReadinessReport {
 pub async fn probe(
     client: &Client,
     spec: &ReadinessSpec,
-    deadline_ms: u64,
+    deadline: Deadline,
 ) -> Result<(), ReadinessReport> {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
     loop {
-        let report = probe_once(client, spec).await;
+        let report = probe_once(client, spec, deadline).await;
         if report.missing.is_empty() {
             return Ok(());
         }
-        if tokio::time::Instant::now() >= deadline {
+        if deadline.is_expired() {
             return Err(report);
         }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let remaining = deadline.remaining();
+        tokio::time::sleep(std::time::Duration::from_millis(250).min(remaining)).await;
     }
 }
 
-async fn probe_once(client: &Client, spec: &ReadinessSpec) -> ReadinessReport {
+async fn probe_once(client: &Client, spec: &ReadinessSpec, deadline: Deadline) -> ReadinessReport {
     let mut missing = Vec::new();
 
     // 1. Discovery responds, and every required function id is registered.
     match client
-        .call(
+        .call_with_deadline(
             "engine::functions::list",
             json!({ "include_internal": true }),
+            deadline,
+            DEFAULT_CALL_TIMEOUT_MS,
         )
         .await
     {
@@ -116,9 +116,11 @@ async fn probe_once(client: &Client, spec: &ReadinessSpec) -> ReadinessReport {
     // 2. Trigger types.
     if !spec.trigger_types.is_empty() {
         match client
-            .call(
+            .call_with_deadline(
                 "engine::triggers::list",
                 json!({ "include_internal": true }),
+                deadline,
+                DEFAULT_CALL_TIMEOUT_MS,
             )
             .await
         {
@@ -129,7 +131,15 @@ async fn probe_once(client: &Client, spec: &ReadinessSpec) -> ReadinessReport {
 
     // 3. Queue topics with broker type.
     if !spec.queue_topics.is_empty() {
-        match client.call("engine::queue::list_topics", json!({})).await {
+        match client
+            .call_with_deadline(
+                "engine::queue::list_topics",
+                json!({}),
+                deadline,
+                DEFAULT_CALL_TIMEOUT_MS,
+            )
+            .await
+        {
             Ok(listed) => missing.extend(topic_failures(spec, &listed)),
             Err(e) => missing.push(format!("engine::queue::list_topics unavailable: {e}")),
         }
@@ -140,7 +150,15 @@ async fn probe_once(client: &Client, spec: &ReadinessSpec) -> ReadinessReport {
     // so the check is: every seeded key is present with exactly the seeded
     // value. Recorded as a spec correction to the original byte-compare.
     for (id, expected) in &spec.config_entries {
-        match client.call("configuration::get", json!({ "id": id })).await {
+        match client
+            .call_with_deadline(
+                "configuration::get",
+                json!({ "id": id }),
+                deadline,
+                DEFAULT_CALL_TIMEOUT_MS,
+            )
+            .await
+        {
             Ok(resp) => missing.extend(config_failure(id, expected, &resp)),
             Err(e) => missing.push(format!("configuration {id} unavailable: {e}")),
         }
@@ -157,6 +175,16 @@ pub fn missing_functions(spec: &ReadinessSpec, listed: &Value) -> Vec<String> {
         .filter(|required| !ids.contains(*required))
         .map(|required| format!("function {required}"))
         .collect()
+}
+
+/// Structured discovery checks reused by Arm polling. These deliberately
+/// inspect descriptor ids rather than searching a serialized JSON blob.
+pub fn has_function(listed: &Value, function_id: &str) -> bool {
+    collect_ids(listed, &["function_id", "id"]).contains(function_id)
+}
+
+pub fn has_registered_trigger(listed: &Value, function_id: &str) -> bool {
+    collect_ids(listed, &["function_id", "id"]).contains(function_id)
 }
 
 /// Pure check: required trigger types against a trigger-type listing.

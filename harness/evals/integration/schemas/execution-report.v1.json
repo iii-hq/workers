@@ -10,20 +10,33 @@
       "type": "string"
     }
   },
+  "description": "Volatile execution metadata kept separate from the stable result.",
   "properties": {
-    "observed": {
+    "duration_ms": {
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
     },
+    "result_path": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
     "schema_version": {
       "$ref": "#/definitions/SchemaVersion1"
+    },
+    "started_at": {
+      "type": "string"
     }
   },
   "required": [
-    "observed",
-    "schema_version"
+    "duration_ms",
+    "result_path",
+    "run_id",
+    "schema_version",
+    "started_at"
   ],
-  "title": "RecorderAwaitResponseV1",
+  "title": "ExecutionReportV1",
   "type": "object"
 }

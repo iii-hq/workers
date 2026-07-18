@@ -28,7 +28,7 @@ RUST_WORKERS   := $(filter-out $(PYTHON_WORKERS),$(STACK))
 
 GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart \
                     engine wait-engine restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
-                    ensure-session prepare-scrapling require-engine where integration-e2e,$(MAKECMDGOALS))
+                    ensure-session prepare-scrapling require-engine where integration-e2e integration-validate,$(MAKECMDGOALS))
 SELECTED_WORKERS := $(strip $(GOAL_ARGS))
 ACTIVE_WORKERS   := $(if $(SELECTED_WORKERS),$(SELECTED_WORKERS),$(STACK))
 UNKNOWN_WORKERS  := $(filter-out $(STACK),$(SELECTED_WORKERS))
@@ -40,7 +40,7 @@ RUN_FLAG   := $(if $(filter release,$(RUN_PROFILE)),--release,)
 
 .PHONY: help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart engine wait-engine \
         restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach ensure-session prepare-scrapling \
-        require-engine where integration-e2e $(STACK)
+        require-engine where integration-e2e integration-validate $(STACK)
 
 help:
 	@printf '%s\n' \
@@ -61,7 +61,8 @@ help:
 	  '  make build [workers...]             cargo build stack or selected workers' \
 	  '  make cargo-clean [workers...]       cargo clean stack or selected workers' \
 	  '  make install-local [workers...]     build and symlink into ~/.iii/workers' \
-	  '  make integration-e2e III_BIN=<iii>  run the harness integration scenarios (evals/integration)'
+	  '  make integration-e2e III_BIN=<iii>  run the harness integration scenarios (evals/integration)' \
+	  '  make integration-validate           validate every integration scenario'
 
 install-iii-next:
 	@curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --next
@@ -333,6 +334,7 @@ integration-e2e:
 	@echo "building harness-integration ($(INTEGRATION_PROFILE))"
 	@cargo build $(INTEGRATION_FLAG) --manifest-path "$(MAKEFILE_DIR)evals/integration/Cargo.toml"
 	@"$(MAKEFILE_DIR)evals/integration/target/$(INTEGRATION_PROFILE)/harness-integration" \
+	  run \
 	  --engine-bin "$(III_BIN)" \
 	  --harness-bin "$(REPO_ROOT)/harness/target/$(INTEGRATION_PROFILE)/harness" \
 	  --worker-bin "queue=$(REPO_ROOT)/queue/target/$(INTEGRATION_PROFILE)/queue" \
@@ -341,6 +343,10 @@ integration-e2e:
 	  --worker-bin "context-manager=$(REPO_ROOT)/context-manager/target/$(INTEGRATION_PROFILE)/context-manager" \
 	  --scenario "$(INTEGRATION_SCENARIO)" \
 	  --artifacts-dir "$(INTEGRATION_ARTIFACTS)"
+
+integration-validate:
+	@cargo run --quiet --manifest-path "$(MAKEFILE_DIR)evals/integration/Cargo.toml" -- \
+	  validate --scenario all
 
 $(STACK):
 	@:

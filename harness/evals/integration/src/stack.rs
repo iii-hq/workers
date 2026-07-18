@@ -14,10 +14,14 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 
 use anyhow::Context;
 use serde_json::{json, Value};
+
+use crate::process::{ProcessSpec, ProcessSupervisor, DEFAULT_TEARDOWN_BUDGET};
+
+pub use crate::process::EarlyExit;
 
 /// Start order matters: the harness retries `queue::define` only briefly at
 /// boot (`harness/src/queue.rs`), so queue precedes harness. The engine is
@@ -37,18 +41,12 @@ pub const WORKER_START_ORDER: [&str; 4] = [
 /// developer secrets leak into the subject stack.
 const ENV_ALLOWLIST: [&str; 4] = ["PATH", "HOME", "LANG", "RUST_LOG"];
 
-const SIGTERM_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
-
 #[derive(Debug, Clone)]
 pub struct StackBins {
     pub engine: PathBuf,
     pub harness: PathBuf,
     /// queue, iii-directory, session-manager, context-manager.
     pub workers: BTreeMap<String, PathBuf>,
-    /// Optional console worker for the recording profile: spawned per-run
-    /// like every other worker, serving its bundled SPA on a run-scoped
-    /// HTTP port. Diagnostics support only — never part of an oracle.
-    pub console: Option<PathBuf>,
 }
 
 impl StackBins {
@@ -99,6 +97,7 @@ impl RunPaths {
     }
 
     pub fn scenario_dir(&self, scenario_id: &str) -> anyhow::Result<PathBuf> {
+        crate::types::scenario::validate_scenario_id(scenario_id)?;
         let dir = self.root.join("scenarios").join(scenario_id);
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         Ok(dir)
@@ -190,36 +189,16 @@ pub fn expected_harness_config_entry(paths: &RunPaths) -> Vec<(String, Value)> {
         .unwrap_or_default()
 }
 
-pub struct Supervised {
-    pub name: String,
-    child: Child,
-    pub stdout_log: PathBuf,
-    pub stderr_log: PathBuf,
-}
-
-/// How a supervised child left the stack, for classification.
-#[derive(Debug, Clone)]
-pub struct EarlyExit {
-    pub name: String,
-    pub status: String,
-    pub stderr_log: PathBuf,
-}
-
 pub struct Stack {
     pub ws_url: String,
-    pub port: u16,
     pub paths: RunPaths,
-    children: Vec<Supervised>,
-    /// Recorded before boot: absolute paths, digests, versions (stack.json).
-    pub info: Value,
+    processes: ProcessSupervisor,
     /// Engine spawn recipe, kept for fault-injection respawns:
     /// (binary, args, cwd). `None` only in test stacks.
     engine_recipe: Option<(PathBuf, Vec<String>, PathBuf)>,
     /// How many times the engine was intentionally killed and respawned
     /// (suffixes the respawned process's log files).
     engine_restarts: u32,
-    /// HTTP port the optional console worker serves on.
-    pub console_http_port: Option<u16>,
 }
 
 impl Stack {
@@ -270,17 +249,14 @@ impl Stack {
         ];
         let mut stack = Stack {
             ws_url,
-            port,
             paths: paths.clone(),
-            children: Vec::new(),
-            info,
+            processes: ProcessSupervisor::default(),
             engine_recipe: Some((
                 bins.engine.clone(),
                 engine_args.clone(),
                 paths.engine_dir.clone(),
             )),
             engine_restarts: 0,
-            console_http_port: None,
         };
 
         stack
@@ -311,22 +287,6 @@ impl Stack {
             stack.spawn_worker(worker, &bin).map_err(BootError::Other)?;
         }
 
-        if let Some(console_bin) = &bins.console {
-            let http_port = free_loopback_port().map_err(BootError::Other)?;
-            let args = vec![
-                "--url".to_string(),
-                stack.ws_url.clone(),
-                "--http-port".to_string(),
-                http_port.to_string(),
-            ];
-            let bin = console_bin.clone();
-            let cwd = stack.paths.root.clone();
-            stack
-                .spawn_child("console", &bin, &args, &cwd)
-                .map_err(BootError::Other)?;
-            stack.console_http_port = Some(http_port);
-        }
-
         Ok(stack)
     }
 
@@ -343,15 +303,12 @@ impl Stack {
     /// `early_exit` does not classify the intentional kill as a
     /// `process_crash`. Workers keep running; their SDK connections retry
     /// and replay registrations once the engine returns.
-    pub fn kill_engine(&mut self) -> anyhow::Result<()> {
-        let index = self
-            .children
-            .iter()
-            .position(|s| s.name == "engine")
+    pub async fn kill_engine(&mut self) -> anyhow::Result<()> {
+        let mut engine = self
+            .processes
+            .remove("engine")
             .ok_or_else(|| anyhow::anyhow!("no live engine child to kill"))?;
-        let mut engine = self.children.remove(index);
-        engine.child.kill()?; // SIGKILL
-        engine.child.wait()?;
+        engine.kill_now().await?;
         tracing::info!("engine SIGKILLed (fault injection)");
         Ok(())
     }
@@ -390,14 +347,29 @@ impl Stack {
     pub fn for_tests(paths: RunPaths) -> Stack {
         Stack {
             ws_url: "ws://127.0.0.1:0".to_string(),
-            port: 0,
             paths,
-            children: Vec::new(),
-            info: Value::Null,
+            processes: ProcessSupervisor::new(DEFAULT_TEARDOWN_BUDGET),
             engine_recipe: None,
             engine_restarts: 0,
-            console_http_port: None,
         }
+    }
+
+    /// Test support with a short teardown budget.
+    #[doc(hidden)]
+    pub fn for_tests_with_teardown_budget(paths: RunPaths, teardown_budget: Duration) -> Stack {
+        let mut stack = Self::for_tests(paths);
+        stack.set_teardown_budget(teardown_budget);
+        stack
+    }
+
+    /// Configure the total time available for SIGTERM grace, SIGKILL
+    /// escalation and reaping.
+    pub fn set_teardown_budget(&mut self, teardown_budget: Duration) {
+        self.processes.set_teardown_budget(teardown_budget);
+    }
+
+    pub fn teardown_budget(&self) -> Duration {
+        self.processes.teardown_budget()
     }
 
     #[doc(hidden)]
@@ -421,102 +393,26 @@ impl Stack {
     ) -> anyhow::Result<()> {
         let stdout_log = self.paths.logs_dir.join(format!("{log_name}.out"));
         let stderr_log = self.paths.logs_dir.join(format!("{log_name}.err"));
-        let stdout = std::fs::File::create(&stdout_log)?;
-        let stderr = std::fs::File::create(&stderr_log)?;
-
-        let mut command = Command::new(bin);
-        command
-            .args(args)
-            .current_dir(cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
-            .env_clear();
+        let mut spec =
+            ProcessSpec::new(name, bin, cwd, stdout_log, stderr_log).args(args.iter().cloned());
         for key in ENV_ALLOWLIST {
             if let Ok(value) = std::env::var(key) {
-                command.env(key, value);
+                spec = spec.env(key, value);
             }
         }
-
-        let child = command
-            .spawn()
-            .with_context(|| format!("spawning {name} from {}", bin.display()))?;
-        tracing::info!(worker = name, pid = child.id(), "spawned");
-        self.children.push(Supervised {
-            name: name.to_string(),
-            child,
-            stdout_log,
-            stderr_log,
-        });
-        Ok(())
+        self.processes.spawn(spec).map(|_| ())
     }
 
     /// First child that has already exited, if any (spec step 7: early
     /// process exit outranks any ordinary timeout).
     pub fn early_exit(&mut self) -> Option<EarlyExit> {
-        for supervised in &mut self.children {
-            if let Ok(Some(status)) = supervised.child.try_wait() {
-                return Some(EarlyExit {
-                    name: supervised.name.clone(),
-                    status: status.to_string(),
-                    stderr_log: supervised.stderr_log.clone(),
-                });
-            }
-        }
-        None
+        self.processes.early_exit()
     }
 
-    /// SIGTERM everything (children first, engine last), wait up to five
-    /// seconds total, then SIGKILL the remainder (spec step 8).
+    /// SIGTERM everything (children first, engine last), then SIGKILL
+    /// remaining process groups within the configured teardown budget.
     pub async fn teardown(&mut self) {
-        use nix::sys::signal::{kill, Signal};
-        use nix::unistd::Pid;
-
-        for supervised in self.children.iter_mut().rev() {
-            if matches!(supervised.child.try_wait(), Ok(Some(_))) {
-                continue;
-            }
-            let pid = Pid::from_raw(supervised.child.id() as i32);
-            if let Err(e) = kill(pid, Signal::SIGTERM) {
-                tracing::warn!(worker = %supervised.name, "SIGTERM failed: {e}");
-            }
-        }
-
-        let deadline = tokio::time::Instant::now() + SIGTERM_GRACE;
-        loop {
-            let all_dead = self
-                .children
-                .iter_mut()
-                .all(|s| matches!(s.child.try_wait(), Ok(Some(_))));
-            if all_dead {
-                break;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                for supervised in self.children.iter_mut().rev() {
-                    if matches!(supervised.child.try_wait(), Ok(None)) {
-                        tracing::warn!(worker = %supervised.name, "escalating to SIGKILL");
-                        let _ = supervised.child.kill();
-                    }
-                }
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        for supervised in &mut self.children {
-            let _ = supervised.child.wait();
-        }
-    }
-}
-
-impl Drop for Stack {
-    fn drop(&mut self) {
-        // Last-resort cleanup; the run loop calls `teardown` explicitly.
-        for supervised in self.children.iter_mut().rev() {
-            if matches!(supervised.child.try_wait(), Ok(None)) {
-                let _ = supervised.child.kill();
-                let _ = supervised.child.wait();
-            }
-        }
+        self.processes.teardown().await;
     }
 }
 
@@ -550,9 +446,6 @@ fn stack_info(bins: &StackBins, paths: &RunPaths, port: u16) -> Value {
     record("harness", &bins.harness);
     for (name, path) in &bins.workers {
         record(name, path);
-    }
-    if let Some(console) = &bins.console {
-        record("console", console);
     }
     json!({
         "port": port,

@@ -1,143 +1,154 @@
 # Harness integration E2E
 
-Deterministic regression track for the harness. Each scenario boots a fresh
-isolated iii stack (pinned engine + real queue, session-manager,
-context-manager, iii-directory, harness), replaces only the `router::*`
-model boundary with a strict scripted worker, and grades structured public
-evidence (send response, status, full transcript, recorder log, lifecycle
-events, process state) with pure-code invariants. No model key, no network.
+Deterministic public-path regression tests for the harness. Every scenario
+boots a fresh isolated stack with the pinned engine and real queue,
+session-manager, context-manager, iii-directory, and harness workers. Only
+the `router::*` model boundary is replaced by a strict scripted worker.
 
-The authoritative architecture spec (harness-evaluation tech spec) lives in
-the **iii repo**; this README carries the runner's operational docs and the
-implementation-verified corrections to that spec.
+No provider key or network access is required.
 
-## Running
+## Run
 
 ```bash
-# Build + run every non-quarantined scenario against the pinned engine:
-make -C harness integration-e2e III_BIN=<path-to-iii-engine>
+# Build the stack and run every non-quarantined scenario.
+make -C harness integration-e2e III_BIN=<path-to-iii>
 
-# Direct CLI (debug binaries, one scenario):
-harness-integration \
-  --engine-bin <iii> --harness-bin <harness> \
-  --worker-bin queue=<queue> --worker-bin session-manager=<sm> \
-  --worker-bin context-manager=<cm> --worker-bin iii-directory=<dir> \
-  --scenario C-E2E-001 --artifacts-dir target/integration
+# Validate all five fixtures, including quarantined reproductions.
+make -C harness integration-validate
 
-# Validate fixtures without booting a stack:
-harness-integration --validate-only --scenario all
+# Run one scenario directly.
+harness-integration run \
+  --engine-bin <iii> \
+  --harness-bin <harness> \
+  --worker-bin queue=<queue> \
+  --worker-bin session-manager=<session-manager> \
+  --worker-bin context-manager=<context-manager> \
+  --worker-bin iii-directory=<iii-directory> \
+  --scenario C-E2E-001
 ```
 
-The engine is never downloaded: pass `--engine-bin`/`III_BIN` (CI builds the
-revision pinned in `engine.lock`). Exit codes: 0 all pass, 2
-contract_failure/timeout, 3 runner_error/setup_error/process_crash.
+The engine is never downloaded by the runner. CI builds the source revision
+in `engine.lock`; local runs receive the corresponding binary through
+`III_BIN` or `--engine-bin`.
 
-### Console recording (diagnostics only, never an oracle)
+Exit codes are:
 
-`--console-bin <console>` spawns the console worker per-run;
-`--record-console` captures the chat view to
-`scenarios/<id>/console-recording.webm` via headless system Chrome
-(`INTEGRATION_CHROME` overrides the binary; run `pnpm install` in
-`tools/console-recorder` once beforehand — the runner never downloads
-during a test). Send is held until the recorder page loads so short turns
-are fully captured.
+- `0`: every selected scenario passed;
+- `2`: contract failure or scenario timeout;
+- `3`: setup, process, or runner error.
 
-## Scenarios
+## Create a scenario
 
-| id | dir | status |
+Each scenario is one file: `scenarios/<slug>/scenario.yaml`. Model/provider,
+session id, idempotency key, native function policy, run-scoped function ids,
+request matchers, response frames, common completion checks, and system
+prompt hash are inferred.
+
+```bash
+harness-integration init \
+  --id C-E2E-010 \
+  --name my-function-case \
+  --description "The allowed function runs once." \
+  --kind function
+
+harness-integration validate --scenario my-function-case
+harness-integration render C-E2E-010
+```
+
+`init` supports `text`, `function`, `hook`, and `crash` templates and refuses
+to overwrite an existing directory or reuse an existing scenario id. New
+templates are runnable by default; set `quarantine: true` only for a known
+reproduction that should be excluded from `run --scenario all`. `render`
+prints deterministic canonical JSON with the complete compiled request,
+router script, expectations, and system prompt.
+
+A typical authored function scenario is:
+
+```yaml
+schema_version: "1"
+id: C-E2E-010
+description: The allowed function runs once.
+
+send:
+  message: Call the recorder once.
+
+functions:
+  record:
+    description: Record one value.
+    request_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        value: { type: string }
+      required: [value]
+    response:
+      content:
+        - { type: text, text: recorded }
+      is_error: false
+
+router:
+  generations:
+    - reply:
+        type: function_call
+        function: record
+        arguments: { value: expected }
+    - reply:
+        type: text
+        text: recorded once
+
+expect:
+  assistant_text: recorded once
+  calls:
+    - function: record
+      count: 1
+      payload: { value: expected }
+```
+
+Function aliases become `<run_id>::<alias>`. Set `expose: false` for
+hook-only functions. `send.allow` can narrow the exposed aliases or be an
+empty list to disable dispatch. Typed text and function-call replies cover
+normal cases; `match_overrides` and `type: raw` remain escape hatches for
+recovery boundaries and unusual wire contracts.
+
+Timeout defaults are 60 seconds for readiness, 60 seconds for the scenario,
+and 15 seconds for teardown. Positive values can be overridden under
+`timeouts`; one readiness budget is shared by the full probe/arm sequence.
+
+## Checked-in scenarios
+
+| id | directory | status |
 |---|---|---|
-| C-E2E-001 | `scenarios/streamed-text` | green — streamed text reaches durable completion |
-| C-E2E-002 | `scenarios/exactly-once-function` | green — allowed function executes exactly once |
-| C-E2E-505 | `scenarios/hold-mutation-505` | regression gate for [iii-hq/workers#505](https://github.com/iii-hq/workers/issues/505); quarantined until its fix PR merges |
-| C-E2E-506 | `scenarios/hook-held-release-506` | regression gate for [iii-hq/workers#506](https://github.com/iii-hq/workers/issues/506); quarantined until its fix PR merges |
-| C-E2E-507 | `scenarios/crash-recovery-507` | regression gate for [iii-hq/workers#507](https://github.com/iii-hq/workers/issues/507); quarantined until its fix PR merges |
+| C-E2E-001 | `streamed-text` | streamed text reaches durable completion |
+| C-E2E-002 | `exactly-once-function` | a native function executes exactly once |
+| C-E2E-505 | `hold-mutation-505` | quarantined reproduction for issue #505 |
+| C-E2E-506 | `hook-held-release-506` | quarantined reproduction for issue #506 |
+| C-E2E-507 | `crash-recovery-507` | quarantined reproduction for issue #507 |
 
-Quarantine policy: a scenario reproducing a known-open defect asserts the
-EXPECTED behavior, is marked `quarantine: true` (excluded from
-`--scenario all`, runnable by explicit id), and is un-quarantined in the
-same PR as its fix — landing the fix and its permanent regression gate
-atomically. The CI job runs `--scenario all` on every PR, so an
-un-quarantined scenario gates from the moment it merges.
+`run --scenario all` excludes quarantined scenarios. An explicit id or slug
+runs it; `validate --scenario all` always includes it.
 
-## Invariant registry (v1)
+## Runtime and evidence
 
-`scenario.yaml` invariant ids implemented by the grader: `send.flags`,
-`transcript.message_counts`, `transcript.assistant_text`,
-`transcript.no_duplicates`, `transcript.function_result`,
-`transcript.calls_closed`, `status.terminal`, `lifecycle.completed_once`,
-`router.generations_consumed`, `target.calls` (with optional `payload` /
-`payload_subset`). Unknown ids fail closed.
+The lifecycle is allocate → boot → probe → arm → send → optional fault or
+release → await → collect → grade → teardown → report.
 
-## Implementation notes (corrections to the original spec)
+- Readiness inspects structured function, trigger, queue, and configuration
+  surfaces.
+- All RPCs and polling share monotonic phase deadlines.
+- The recorder keeps configuration and snapshots in process; only controlled
+  target functions and the lifecycle sink are registered with the engine.
+- Recorder acknowledgements happen only after append and `fsync`.
+- Child processes run in dedicated process groups and teardown signals the
+  complete group and direct child with SIGTERM followed by SIGKILL, within
+  one hard cleanup budget.
+- Router and grader comparisons use explicit JSON array policies.
 
-Verified against the running stack; these supersede the spec text where
-they disagree.
+Each run writes detailed evidence below
+`target/integration/<run-id>/scenarios/<scenario-id>/`. `result.json` contains
+the stable byte-comparable verdict; `execution.json` contains the run id,
+timestamps, and duration. Passing runs retain the compact reports and remove
+heavyweight stack state unless `--retain-success` is supplied.
 
-1. **Expected system prompt is a template, hashed at Arm.** The harness
-   always appends aid lines (`Your session id is <id>.`, a policy paragraph
-   for narrowed allow-lists, a working-directory line unless
-   `default_filesystem_root: "off"` is seeded — the runner seeds it). The
-   `expected/system-prompt.txt` fixtures carry `{{session_id}}`/`{{run_id}}`
-   placeholders; the runner pre-chooses the session id (sent as
-   `send.session_id`), expands at Arm, and computes the matcher's sha256.
-2. **The harness boots after Arm.** Native exposure reads the harness's
-   boot-seeded, reactively-refreshed registry snapshot
-   (`harness/src/discovery.rs`); the run-scoped recorder target must exist
-   before the harness starts or the first turn races the refresh. Boot
-   order: engine → queue → iii-directory → session-manager →
-   context-manager → Probe → Arm → harness → probe harness surface →
-   lifecycle/hook bindings (need harness-registered trigger types, held
-   until visible in `engine::registered-triggers::list`) → Send.
-3. **Configuration readiness is seeded-keys-subset, not byte-compare** —
-   workers store their resolved config (seed merged with defaults).
-4. **The engine stamps `_caller_worker_id` into trigger payloads** — strict
-   wire handlers strip top-level `_`-prefixed members; the recorder strips
-   them from evidence.
-5. **`router::models::get` accepts a provider-less lookup** (llm-router
-   resolves by id; the mandatory context-manager depends on it) — the
-   scripted router mirrors that instead of the spec's exact-provider rule.
-6. **`request_id` steps are 0-based**: the second generation matches
-   `^t_[0-9a-f]{32}:1$`.
-7. **Durable transcript entries do not persist `usage`,** and the
-   model-visible replay of a streamed assistant message carries the seeded
-   entry's `stop_reason` (`"end"`) — the turn loop updates only the entry's
-   content. `transcript.assistant_text` asserts text only; usage is pinned
-   on the wire by the script's frame/response contract.
-8. **`recorder.json` is folded into `scenario.yaml`** (the scenario schema
-   embeds `RecorderConfigV1`).
-9. **C-E2E-001 declares a never-called target** (`{{run_id}}::unused`,
-   `target.calls {count: 0}`) — the schema requires a target and the
-   zero-count doubles as the forbidden-side-effect oracle.
-10. **Barriers are schema-valid but rejected by the v1 runner** — the
-    release mechanism is unspecified; no fixture uses them.
-11. **Engine YAML facts** (pinned source): `iii-worker-manager` accepts
-    `config: {host, port}`; mandatory builtins merge into a config-file
-    boot but `enabled_by_default` builtins (`iii-state`, `iii-stream`,
-    `iii-cron`) must be listed explicitly; the builtin `configuration`
-    worker accepts `adapter: {name: fs, config: {directory}}`.
-12. **Fault seeds** (`fault: {kind: engine_sigkill, after_target_calls,
-    restart_delay_ms}`) SIGKILL and respawn the engine mid-call; the
-    recorder target's `response_delay_ms` opens the injection window.
-    Observed on engine 0.21.8-next.1: the in-flight `harness-turn` job
-    strands in the surviving queue worker (30-minute visibility timeout),
-    the turn record dies with the engine's in-memory `iii-state`, and the
-    transcript keeps a dangling `function_call` (C-E2E-507).
-13. **Hook-chain scenarios**: `recorder.extra_functions` hosts run-scoped
-    hook implementations with declared decisions; scenario `bindings`
-    create `harness::hook::*` trigger bindings after harness boot; scenario
-    `release` resolves a held call via `harness::function::resolve` once it
-    parks. C-E2E-505/506 use these to pin the hold/release argument
-    semantics.
-
-## Layout
-
-```
-Cargo.toml            # standalone workspace (repo convention)
-engine.lock           # pinned engine source CI builds (never downloaded)
-src/                  # runner: stack, readiness, scripted router, recorder,
-                      # scenario loop, grader, artifacts, console recording
-schemas/              # golden JSON Schemas (REGEN_SCHEMAS=1 cargo test --test schemas)
-scenarios/<name>/     # scenario.yaml + router-script.json + expected/system-prompt.txt
-tools/console-recorder/  # playwright-core recording sidecar (node)
-target/integration/<run_id>/  # per-run artifacts and evidence
-```
+The shared `scenarios/system-prompt.txt` is the single prompt golden. The
+compiler appends the inferred session and function policy, then hashes the
+result for strict router matching.

@@ -1,25 +1,21 @@
-//! Scenario fixture loading and load-time validation. Every defect caught
-//! here is a `runner_error` before the stack starts (spec § Script schema):
-//! duplicate ordinals, invalid matcher/normalizer, missing or multiple
-//! terminal frames, and response/frame disagreement.
-//!
-//! One deviation from the spec's repository sketch: `recorder.json` is folded
-//! into `scenario.yaml` — `IntegrationScenarioV1` already embeds
-//! `RecorderConfigV1`, so a second file would be a divergent copy.
+//! Single-file scenario loading, compilation, selection, and load-time
+//! validation. Every authoring defect is reported before the stack starts.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-use crate::types::scenario::IntegrationScenarioV1;
+use crate::expand::{compile_scenario, CompiledFixtureV1};
+use crate::types::scenario::{CompiledScenarioV1, IntegrationScenarioV1};
 use crate::types::script::{JsonMatcherV1, JsonNormalizerV1, NormalizerOperation, RouterScriptV1};
 
 #[derive(Debug, Clone)]
 pub struct ScenarioFixture {
     pub dir: PathBuf,
-    pub scenario: IntegrationScenarioV1,
+    pub authored: IntegrationScenarioV1,
+    pub scenario: CompiledScenarioV1,
     pub script: RouterScriptV1,
-    /// Template text of `expected/system-prompt.txt` (placeholders intact).
+    /// Compiled shared golden plus inferred session/policy aid.
     pub system_prompt_template: String,
 }
 
@@ -32,27 +28,23 @@ impl ScenarioFixture {
         )
         .with_context(|| format!("parsing {}", scenario_path.display()))?;
 
-        let script_path = dir.join(&scenario.router_script);
-        let script: RouterScriptV1 = serde_json::from_str(
-            &std::fs::read_to_string(&script_path)
-                .with_context(|| format!("reading {}", script_path.display()))?,
-        )
-        .with_context(|| format!("parsing {}", script_path.display()))?;
-
-        let prompt_path = dir.join("expected").join("system-prompt.txt");
-        let raw_template = std::fs::read_to_string(&prompt_path)
+        let scenarios_root = dir.parent().with_context(|| {
+            format!("scenario directory {} has no scenarios root", dir.display())
+        })?;
+        let prompt_path = scenarios_root.join("system-prompt.txt");
+        let system_prompt_base = std::fs::read_to_string(&prompt_path)
             .with_context(|| format!("reading {}", prompt_path.display()))?;
-        // The assembled prompt ends without a newline (the policy aid is the
-        // final line); tolerate the single trailing newline editors and git
-        // hooks like to append to text files.
-        let system_prompt_template = raw_template
-            .strip_suffix('\n')
-            .unwrap_or(&raw_template)
-            .to_string();
+        let CompiledFixtureV1 {
+            scenario: compiled,
+            script,
+            system_prompt_template,
+        } = compile_scenario(&scenario, &system_prompt_base)
+            .with_context(|| format!("compiling {}", scenario_path.display()))?;
 
         let fixture = ScenarioFixture {
             dir: dir.to_path_buf(),
-            scenario,
+            authored: scenario,
+            scenario: compiled,
             script,
             system_prompt_template,
         };
@@ -90,6 +82,14 @@ impl ScenarioFixture {
             .with_context(|| format!("router script for {}", self.scenario.id))?;
         Ok(())
     }
+
+    pub fn compiled(&self) -> CompiledFixtureV1 {
+        CompiledFixtureV1 {
+            scenario: self.scenario.clone(),
+            script: self.script.clone(),
+            system_prompt_template: self.system_prompt_template.clone(),
+        }
+    }
 }
 
 pub fn validate_script(script: &RouterScriptV1) -> anyhow::Result<()> {
@@ -125,17 +125,6 @@ pub fn validate_script(script: &RouterScriptV1) -> anyhow::Result<()> {
             ),
         }
         validate_response_agreement(generation)?;
-        for barrier in generation.barriers.as_deref().unwrap_or_default() {
-            if barrier.before_frame >= generation.frames.len() {
-                anyhow::bail!(
-                    "generation {}: barrier {:?} references frame {} of {}",
-                    generation.ordinal,
-                    barrier.id,
-                    barrier.before_frame,
-                    generation.frames.len()
-                );
-            }
-        }
     }
     Ok(())
 }
@@ -220,43 +209,157 @@ fn validate_response_agreement(
     Ok(())
 }
 
-/// Resolve `--scenario <id|all>` against the checked-in scenarios directory.
-pub fn scenario_dirs(scenarios_root: &Path, selector: &str) -> anyhow::Result<Vec<PathBuf>> {
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(scenarios_root)
-        .with_context(|| format!("reading {}", scenarios_root.display()))?
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|p| p.join("scenario.yaml").is_file())
-        .collect();
-    dirs.sort();
+/// Resolve `--scenario <id|slug|all>` and return already-loaded fixtures.
+///
+/// `include_quarantined` is intended for validation. Explicit id/slug
+/// selection always includes the requested fixture; for `all`, normal runs
+/// exclude quarantines while validation includes them.
+pub fn scenario_fixtures(
+    scenarios_root: &Path,
+    selector: &str,
+    include_quarantined: bool,
+) -> anyhow::Result<Vec<ScenarioFixture>> {
+    let dirs = scenario_directories(scenarios_root)?;
     if selector == "all" {
-        // Quarantined scenarios (known-open defect reproductions) run only
-        // by explicit id.
         let mut selected = Vec::new();
+        let mut ids = std::collections::BTreeMap::new();
         for dir in dirs {
             let fixture = ScenarioFixture::load(&dir)?;
-            if !fixture.scenario.quarantine {
-                selected.push(dir);
+            if let Some(previous) = ids.insert(fixture.scenario.id.clone(), dir.clone()) {
+                anyhow::bail!(
+                    "duplicate scenario id {:?} in {} and {}",
+                    fixture.scenario.id,
+                    previous.display(),
+                    dir.display()
+                );
+            }
+            if include_quarantined || !fixture.scenario.quarantine {
+                selected.push(fixture);
             }
         }
-        // An empty selection must not exit 0: a scenarios dir gone missing or
-        // fully quarantined would otherwise turn the CI gate into a no-op.
         if selected.is_empty() {
+            let qualifier = if include_quarantined {
+                ""
+            } else {
+                " non-quarantined"
+            };
             anyhow::bail!(
-                "selector \"all\" matched no non-quarantined scenario under {}",
+                "selector \"all\" matched no{qualifier} scenario under {}",
                 scenarios_root.display()
             );
         }
         return Ok(selected);
     }
-    for dir in dirs {
-        let fixture = ScenarioFixture::load(&dir)?;
-        if fixture.scenario.id == selector
-            || dir.file_name().and_then(|n| n.to_str()) == Some(selector)
-        {
-            return Ok(vec![dir]);
+
+    // A slug is an exact directory lookup and must not be blocked by an
+    // unrelated invalid fixture.
+    if let Some(dir) = dirs
+        .iter()
+        .find(|dir| dir.file_name().and_then(|name| name.to_str()) == Some(selector))
+    {
+        let fixture = ScenarioFixture::load(dir)?;
+        reject_duplicate_selected_id(&dirs, dir, &fixture.scenario.id)?;
+        return Ok(vec![fixture]);
+    }
+
+    // ID lookup reads only identities first, then compiles the one selected
+    // fixture. Malformed unrelated fixtures remain the responsibility of
+    // `validate --scenario all`.
+    let matching: Vec<&PathBuf> = dirs
+        .iter()
+        .filter(|dir| {
+            read_scenario_id(dir)
+                .map(|id| id == selector)
+                .unwrap_or(false)
+        })
+        .collect();
+    match matching.as_slice() {
+        [dir] => return Ok(vec![ScenarioFixture::load(dir)?]),
+        [] => {}
+        duplicates => {
+            anyhow::bail!(
+                "scenario id {selector:?} is duplicated in {}",
+                duplicates
+                    .iter()
+                    .map(|dir| dir.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
     }
     anyhow::bail!("no scenario matches selector {selector:?}")
+}
+
+/// Refuse `init` when an authored scenario already owns the requested id.
+pub fn ensure_scenario_id_available(
+    scenarios_root: &Path,
+    scenario_id: &str,
+) -> anyhow::Result<()> {
+    crate::types::scenario::validate_scenario_id(scenario_id)?;
+    for dir in scenario_directories(scenarios_root)? {
+        if read_scenario_id(&dir)? == scenario_id {
+            anyhow::bail!(
+                "scenario id {scenario_id:?} already exists in {}",
+                dir.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn scenario_directories(scenarios_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut dirs = Vec::new();
+    for entry in std::fs::read_dir(scenarios_root)
+        .with_context(|| format!("reading {}", scenarios_root.display()))?
+    {
+        let entry = entry
+            .with_context(|| format!("reading an entry under {}", scenarios_root.display()))?;
+        let path = entry.path();
+        if path.join("scenario.yaml").is_file() {
+            dirs.push(path);
+        }
+    }
+    dirs.sort();
+    Ok(dirs)
+}
+
+#[derive(serde::Deserialize)]
+struct ScenarioIdentity {
+    id: String,
+}
+
+fn read_scenario_id(dir: &Path) -> anyhow::Result<String> {
+    let path = dir.join("scenario.yaml");
+    let source = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading scenario identity from {}", path.display()))?;
+    let identity: ScenarioIdentity = serde_yaml::from_str(&source)
+        .with_context(|| format!("parsing scenario identity from {}", path.display()))?;
+    Ok(identity.id)
+}
+
+fn reject_duplicate_selected_id(
+    dirs: &[PathBuf],
+    selected_dir: &Path,
+    selected_id: &str,
+) -> anyhow::Result<()> {
+    let duplicates = dirs
+        .iter()
+        .filter(|dir| dir.as_path() != selected_dir)
+        .filter(|dir| {
+            read_scenario_id(dir)
+                .map(|id| id == selected_id)
+                .unwrap_or(false)
+        })
+        .map(|dir| dir.display().to_string())
+        .collect::<Vec<_>>();
+    if !duplicates.is_empty() {
+        anyhow::bail!(
+            "scenario id {selected_id:?} from {} is duplicated in {}",
+            selected_dir.display(),
+            duplicates.join(", ")
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -265,11 +368,10 @@ mod tests {
     use serde_json::json;
 
     fn minimal_script(mutate: impl FnOnce(&mut serde_json::Value)) -> serde_json::Value {
-        let matcher_absent = json!({ "mode": "absent" });
-        let mut match_ = serde_json::Map::new();
-        for field in crate::types::script::MATCH_FIELDS {
-            match_.insert(field.to_string(), matcher_absent.clone());
-        }
+        let match_ = serde_json::to_value(crate::types::script::GenerationMatchV1::uniform(
+            JsonMatcherV1::Absent,
+        ))
+        .unwrap();
         let mut script = json!({
             "schema_version": "1",
             "scenario_id": "T",
@@ -388,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn barrier_out_of_range_is_rejected() {
+    fn removed_barriers_are_rejected_as_unknown_fields() {
         let script = minimal_script(|s| {
             s["generations"][0]["barriers"] =
                 json!([{ "before_frame": 5, "id": "b", "timeout_ms": 100 }]);
@@ -419,7 +521,110 @@ mod tests {
     #[test]
     fn all_selector_with_no_runnable_scenario_is_an_error() {
         let empty = tempfile::tempdir().unwrap();
-        let err = scenario_dirs(empty.path(), "all").unwrap_err();
+        let err = scenario_fixtures(empty.path(), "all", false).unwrap_err();
         assert!(format!("{err:#}").contains("no non-quarantined scenario"));
+    }
+
+    fn write_text_scenario(root: &Path, slug: &str, id: &str) {
+        let dir = root.join(slug);
+        std::fs::create_dir(&dir).unwrap();
+        let authored = crate::expand::scenario_template(
+            id,
+            "A fixture selection test.",
+            crate::expand::ScenarioTemplateKind::Text,
+        );
+        std::fs::write(
+            dir.join("scenario.yaml"),
+            crate::expand::render_authored_yaml(&authored).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn explicit_selection_isolated_from_unrelated_invalid_fixtures() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("system-prompt.txt"), "base").unwrap();
+        let invalid = root.path().join("a-invalid");
+        std::fs::create_dir(&invalid).unwrap();
+        std::fs::write(invalid.join("scenario.yaml"), "not: [valid").unwrap();
+        write_text_scenario(root.path(), "z-selected", "C-E2E-SELECTED");
+
+        assert_eq!(
+            scenario_fixtures(root.path(), "z-selected", false).unwrap()[0]
+                .scenario
+                .id,
+            "C-E2E-SELECTED"
+        );
+        assert_eq!(
+            scenario_fixtures(root.path(), "C-E2E-SELECTED", false).unwrap()[0]
+                .scenario
+                .id,
+            "C-E2E-SELECTED"
+        );
+        assert!(scenario_fixtures(root.path(), "all", true).is_err());
+    }
+
+    #[test]
+    fn duplicate_ids_are_rejected_and_unavailable_to_init() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("system-prompt.txt"), "base").unwrap();
+        write_text_scenario(root.path(), "first", "C-E2E-DUPLICATE");
+        write_text_scenario(root.path(), "second", "C-E2E-DUPLICATE");
+
+        let all_error = scenario_fixtures(root.path(), "all", true).unwrap_err();
+        assert!(format!("{all_error:#}").contains("duplicate scenario id"));
+        let id_error = scenario_fixtures(root.path(), "C-E2E-DUPLICATE", true).unwrap_err();
+        assert!(format!("{id_error:#}").contains("duplicated"));
+        let slug_error = scenario_fixtures(root.path(), "first", true).unwrap_err();
+        assert!(format!("{slug_error:#}").contains("duplicated"));
+        let init_error = ensure_scenario_id_available(root.path(), "C-E2E-DUPLICATE").unwrap_err();
+        assert!(format!("{init_error:#}").contains("already exists"));
+    }
+
+    #[test]
+    fn checked_in_scenarios_are_single_file_and_compile() {
+        fn files_under(dir: &Path, files: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    files_under(&path, files);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios");
+        let fixtures = scenario_fixtures(&root, "all", true).unwrap();
+        assert_eq!(fixtures.len(), 5);
+        assert_eq!(
+            fixtures
+                .iter()
+                .filter(|fixture| fixture.scenario.quarantine)
+                .count(),
+            3
+        );
+        for fixture in fixtures {
+            let mut files = Vec::new();
+            files_under(&fixture.dir, &mut files);
+            assert_eq!(
+                files,
+                vec![fixture.dir.join("scenario.yaml")],
+                "{} must contain only scenario.yaml",
+                fixture.dir.display()
+            );
+        }
+    }
+
+    #[test]
+    fn all_selection_can_include_quarantines_for_validation() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios");
+        assert_eq!(scenario_fixtures(&root, "all", false).unwrap().len(), 2);
+        assert_eq!(scenario_fixtures(&root, "all", true).unwrap().len(), 5);
+        assert!(
+            scenario_fixtures(&root, "crash-recovery-507", false).unwrap()[0]
+                .scenario
+                .quarantine
+        );
     }
 }
