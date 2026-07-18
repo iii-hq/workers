@@ -255,14 +255,19 @@ fn subset_mismatch(expected: &Value, actual: &Value, path: &str) -> Option<Strin
 }
 
 /// Truncated canonical rendering for mismatch messages (evidence files carry
-/// the full values; this keeps verdict lines readable).
+/// the full values; this keeps verdict lines readable). The cut must land on
+/// a char boundary: a byte slice through a multibyte character would panic
+/// exactly while reporting a mismatch, with the router mutex held.
 fn head(value: &Value) -> String {
     let text = canonical_json(value);
     if text.len() <= 200 {
-        text
-    } else {
-        format!("{}… ({} bytes)", &text[..200], text.len())
+        return text;
     }
+    let mut cut = 200;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}… ({} bytes)", &text[..cut], text.len())
 }
 
 #[cfg(test)]
@@ -284,6 +289,17 @@ mod tests {
         assert!(!evaluate("f", &JsonMatcherV1::Absent, Some(&json!(null))).passed);
         assert!(evaluate("f", &JsonMatcherV1::Present, Some(&json!(null))).passed);
         assert!(!evaluate("f", &JsonMatcherV1::Present, None).passed);
+    }
+
+    /// The truncation cut point lands mid-emoji: 199 leading bytes (quote +
+    /// 198 ASCII) put byte 200 inside the 4-byte 😀. A byte slice here used
+    /// to panic instead of reporting the mismatch.
+    #[test]
+    fn mismatch_truncation_respects_multibyte_boundaries() {
+        let long = format!("{}😀tail", "a".repeat(198));
+        let result = evaluate("f", &exact(json!("expected"), None), Some(&json!(long)));
+        assert!(!result.passed);
+        assert!(result.detail.contains("bytes)"), "{}", result.detail);
     }
 
     #[test]
