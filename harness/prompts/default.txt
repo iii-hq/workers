@@ -338,7 +338,19 @@ Pick the validator KIND by the rule:
 
   The same shape counts state keys (start from `state::list`) or checks any readable
   store. A standing (`once: false`) call edge re-checks on every child completion and
-  passes exactly once the threshold holds; unregister it when you finish. A pipe READS
+  passes exactly once the threshold holds; unregister it when you finish.
+
+  A pipe GATES and moves ONE value — it does NOT compute a new value from several. `fp::*`
+  has no arithmetic (no sum/average/reduce), so a pipe that `state::get`s two keys just
+  threads the LAST one, never their total. To AGGREGATE (sum children into a subtotal,
+  combine results), gate on all inputs being PRESENT — a join over their keys, or a count
+  reaching N — and let that gate WAKE the coordinator (a plain notify, no `function_id`);
+  the coordinator reads the inputs and computes the result IN ITS TURN, then writes it.
+  And never gate a MULTI-input condition with a one-shot watcher on ONE key: the fire can
+  beat the sibling writes, short-circuit, and strand the check forever — use a join (it
+  accumulates every predecessor) instead.
+
+  A pipe READS
   (`state::get`, `state::list`, read-only `database::query`, `fp::*` transforms) and
   writes ONLY `state::set`: steps run with WORKER authority, so `harness::spawn`, every
   DATABASE WRITE (`database::execute`/transactions/prepared statements), and all
