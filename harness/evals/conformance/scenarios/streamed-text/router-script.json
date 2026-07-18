@@ -63,26 +63,10 @@
         },
         {
           "type": "text_delta",
-          "partial": {
-            "role": "assistant",
-            "content": [{ "type": "text", "text": "fixture " }],
-            "stop_reason": "end",
-            "model": "fixture-model",
-            "provider": "scripted",
-            "timestamp": 1
-          },
           "delta": "fixture "
         },
         {
           "type": "text_delta",
-          "partial": {
-            "role": "assistant",
-            "content": [{ "type": "text", "text": "fixture complete" }],
-            "stop_reason": "end",
-            "model": "fixture-model",
-            "provider": "scripted",
-            "timestamp": 1
-          },
           "delta": "complete"
         },
         {

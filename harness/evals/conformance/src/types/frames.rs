@@ -110,6 +110,11 @@ pub struct AssistantMessage {
 
 /// The frozen 15-variant streaming vocabulary
 /// (`llm-router/src/types/events.rs:53`).
+///
+/// Delta variants carry `partial` as an Option, mirroring the router: the
+/// current wire format is the slim delta (`partial` omitted, readers
+/// accumulate); a legacy fat delta (`partial: Some`) is an authoritative
+/// snapshot from old producers. Fixtures may author either form.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AssistantMessageEvent {
@@ -120,7 +125,8 @@ pub enum AssistantMessageEvent {
         partial: AssistantMessage,
     },
     TextDelta {
-        partial: AssistantMessage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<AssistantMessage>,
         delta: String,
     },
     TextEnd {
@@ -130,7 +136,8 @@ pub enum AssistantMessageEvent {
         partial: AssistantMessage,
     },
     ThinkingDelta {
-        partial: AssistantMessage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<AssistantMessage>,
         delta: String,
     },
     ThinkingEnd {
@@ -140,7 +147,8 @@ pub enum AssistantMessageEvent {
         partial: AssistantMessage,
     },
     FunctioncallDelta {
-        partial: AssistantMessage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<AssistantMessage>,
         delta: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         id: String,
