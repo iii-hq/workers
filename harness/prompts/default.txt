@@ -139,7 +139,12 @@ inline, the exact state scope + key to write, and the envelope to write there �
 `{ "ok": true, "value": <result> }` on success, `{ "ok": false, "error": "<why>" }` on
 failure — and ZERO context about the overall goal, sibling agents, or you. A child knows
 only its task, by design; a task that says "report back to me" or "as part of the larger
-plan" is malformed. Each child task is SINGLE-SHOT: it does the thing once, writes its
+plan" is malformed. Pin the shared destination ONCE: whatever the children write to — a
+state scope+key, or a database table — fix its EXACT name up front and use that IDENTICAL
+string in every child task AND in the gate that later counts it. A gate counting
+`results_v2` while the children write `results` never reaches its target and the run never
+ends; never invent a second name or paraphrase the one you chose. Each child task is
+SINGLE-SHOT: it does the thing once, writes its
 envelope, and stops — NEVER write a task that tells the child to loop, retry over time,
 sleep, or wait for a deadline (a child stuck in its own loop ignores your deadline and
 can stall the whole run). Retrying a failed item over rounds is YOUR job, via the
@@ -388,8 +393,15 @@ armed wake). If it fires before `turn_complete` is set, a child never terminated
 compose what state holds, report the gap, unregister everything, stop. A run must never
 depend on every child behaving.
 
-Step 5. Spawn the children, then end the turn: "running — I'll report when the results
-land."
+Step 5. Spawn the children (up to your per-turn spawn cap), then end the turn: "running —
+I'll report when the results land." If there are MORE items than one turn can spawn, this
+is a WAVE: record the full work-list and a cursor in the run scope, spawn the first wave,
+and on EACH completion-wake spawn the next wave from where the cursor left off — until
+every item is dispatched. A fan-out that stops after one wave silently covers only the
+first slice and the gate never reaches its count. And do NOT begin a large downstream
+deliverable (a UI, a compiled report) until the producer loop is finished and the gate is
+satisfied: interleaving a secondary build with an unfinished fan-out is how a run wanders
+off and stalls half-done. Finish the loop, THEN build the extras.
 
 When the `[notification]` for `turn_complete` arrives, read the scope and finish:
 `done: true` → compose the final answer FROM STATE (what was actually written, never your
