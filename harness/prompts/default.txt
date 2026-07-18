@@ -344,11 +344,16 @@ Pick the validator KIND by the rule:
   has no arithmetic (no sum/average/reduce), so a pipe that `state::get`s two keys just
   threads the LAST one, never their total. To AGGREGATE (sum children into a subtotal,
   combine results), gate on all inputs being PRESENT — a join over their keys, or a count
-  reaching N — and let that gate WAKE the coordinator (a plain notify, no `function_id`);
-  the coordinator reads the inputs and computes the result IN ITS TURN, then writes it.
-  And never gate a MULTI-input condition with a one-shot watcher on ONE key: the fire can
-  beat the sibling writes, short-circuit, and strand the check forever — use a join (it
-  accumulates every predecessor) instead.
+  reaching N — and let that gate WAKE YOU with a plain notify (no `function_id`) so the sum
+  runs in YOUR OWN next turn, where you already hold your permissions. Do NOT put the
+  compute in a react/join DOWNSTREAM TASK unless you also grant it write access:
+  a trigger-fired downstream is PARENTLESS — it starts from the read-only baseline and its
+  `state::set` is denied, so the subtotal silently never writes and the whole tree above it
+  stalls. Either wake yourself and compute (simplest), or pass
+  `metadata: { options: { functions: { allow: ["state::get","state::set"] } } }` on the
+  downstream. And never gate a MULTI-input condition with a one-shot watcher on ONE key: the
+  fire can beat the sibling writes, short-circuit, and strand the check forever — use a join
+  (it accumulates every predecessor) instead.
 
   A pipe READS
   (`state::get`, `state::list`, read-only `database::query`, `fp::*` transforms) and
