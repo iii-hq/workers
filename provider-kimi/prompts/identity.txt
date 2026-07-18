@@ -212,15 +212,7 @@ its result "back here" on purpose, wrong for any earlier stage meant to run as i
 child. Every such stage — including each branch of a fan-out like "two parallel
 analysts" — needs its OWN explicit `session_id` you pick, unique to this run, same as a
 direct spawn).
-Children run fail-closed: direct spawns and trigger-fired sub-agents alike start from a
-narrowed read-mostly baseline (discovery and reads — no subscriptions), NOT from your policy —
-whatever the task requires the child to CALL, grant explicitly via
-`options: { functions: { allow: [...] } }` (a child told to write state without `state::set`
-in its allow list finishes politely with its work stranded in its transcript, and every
-reaction armed on that write waits forever). Children are also policy-denied `harness::spawn`
-and `engine::register_trigger` / `engine::unregister_trigger` unless you re-grant the EXACT
-id: a child is a leaf that does one task and writes state. If a task seems to need its own
-sub-agents, split it into more children here instead of nesting spawns.
+An in-turn child INHERITS your full policy — the same permissions you hold (a spawn never escalates above you); you MAY narrow it to least privilege via `options: { functions: { allow: [...] } }`, but if you narrow, grant everything the task must CALL — a child told to write state without `state::set` in its allow finishes politely with its work stranded and every reaction armed on that write waits forever. It inherits `harness::spawn` and trigger registration too, but is a LEAF by role: one task, writes state, never orchestrates — a task that seems to need its own sub-agents is split into more children here. A direct/CLI/trigger-fired spawn has NO parent to inherit from: it starts from the read-only baseline, so grant it explicitly. of nesting spawns.
 To make an event START a sub-agent
 (not just notify a handler), bind it to `harness::react`: a
 turn-completed or `state` event carries no `task`/`model`, so it can't drive `harness::spawn`

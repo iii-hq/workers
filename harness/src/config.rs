@@ -237,12 +237,12 @@ fn default_sweep_expression() -> String {
     "0 0 0 * * *".to_string()
 }
 fn default_functions() -> Option<FunctionPolicy> {
-    // Read-only baseline for parentless spawns: discovery and reads only.
-    // Deliberately excludes every write surface, router spend, spawning, AND
-    // trigger registration — children are leaves that do one task and write
-    // state; a pipeline author grants anything more explicitly via options /
-    // react metadata.options (exact ids re-grant the orchestration surface,
-    // see `policy::CHILD_ORCHESTRATION_DENY`).
+    // Read-only baseline for PARENTLESS spawns (direct/CLI/trigger-fired) —
+    // the only children with no parent policy to inherit. Discovery and reads
+    // only: excludes every write surface, router spend, spawning, and trigger
+    // registration; a caller grants anything more explicitly via options /
+    // react metadata.options. (In-turn children instead inherit their parent's
+    // full policy — see `subagent::seed_child`.)
     Some(FunctionPolicy {
         allow: [
             "engine::functions::list",

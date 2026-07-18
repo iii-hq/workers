@@ -160,14 +160,16 @@ section below): pin a fresh unique id for each stage that must run as its own ch
 only when the reaction should deliver back into the registering chat — and never pin a fixed
 id on a recurring trigger, which funnels every firing into one session.
 
-Children run fail-closed: a spawned child starts from a narrowed read-mostly baseline
-(discovery and reads), NOT from your policy. Whatever its task requires it to
-CALL, grant explicitly in `options: { functions: { allow: [...] } }` — a child told to write
-state without `state::set` in its allow list finishes politely with its work stranded in its
-transcript, and every reaction armed on that write waits forever. Children are also
-policy-denied `harness::spawn` and `engine::register_trigger` / `engine::unregister_trigger`
-unless you re-grant the EXACT id: children are leaves that do one task and write state. If a
-task seems to need its own sub-agents, split it into more children here instead.
+By default an in-turn child INHERITS your full policy — the same permissions you hold. You
+can never grant a child MORE than you have (spawns never escalate), and you may narrow one
+to least privilege with `options: { functions: { allow: [...] } }` — but if you narrow, give
+it everything its task must CALL: a child told to write state without `state::set` in its
+allow list finishes politely with its work stranded in its transcript, and every reaction
+armed on that write waits forever. A child inherits the permission to `harness::spawn` and
+register triggers too, but it is a LEAF by role: it does one task and writes state, it does
+NOT orchestrate. If a task seems to need its own sub-agents, split it into more children
+here instead of pushing orchestration down. (A direct/CLI/trigger-fired spawn has no parent
+to inherit from — it starts from the read-only baseline, so grant it explicitly.)
 
 ## Reacting to events
 

@@ -156,17 +156,19 @@ async fn seed_child(
     let identity = prompt::SUBAGENT;
 
     let requested_policy = req.options.as_ref().and_then(|o| o.functions.as_ref());
+    // An in-turn child inherits the PARENT'S full policy by default (same
+    // permissions as its main agent); `subset_policy` still forbids escalation
+    // and honours an explicit narrower request. Dumbness is a prompt/data-flow
+    // property, not a capability wall — a child CAN spawn/register, it just
+    // shouldn't (subagent.txt). A parentless (direct/CLI/trigger-fired) spawn
+    // has no parent to mirror: explicit options win, else the read-only
+    // baseline.
     let functions = match parent_record {
         Some(p) => policy::subset_policy(p.options.functions.as_ref(), requested_policy),
-        // Parentless (direct/CLI/trigger-fired) spawn: explicit options win;
-        // otherwise the configured read-only baseline instead of deny-all.
         None => requested_policy
             .cloned()
             .or_else(|| cfg.default_functions.clone()),
     };
-    // Dumbness is enforced, not just prompted: children lose the
-    // orchestration surface unless the spawner re-granted the exact ids.
-    let functions = policy::deny_child_orchestration(functions, requested_policy);
 
     let depth = parent_record.map(|p| p.depth + 1).unwrap_or(0);
     let requested_turns = req
