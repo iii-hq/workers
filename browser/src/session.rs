@@ -86,6 +86,17 @@ pub struct ConsoleEntry {
     pub source: Option<String>,
 }
 
+/// One open tab reported by `browser::tabs::list`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TabInfo {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// True when a session already adopted this tab; it cannot be adopted
+    /// again until that session stops.
+    pub adopted: bool,
+}
+
 /// One captured network request.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NetworkEntry {
@@ -197,9 +208,23 @@ impl LatestFrame {
 /// the fail-closed unknown-ref error, never to a wrong element.
 const MAX_REFS: usize = 20_000;
 
+/// How a session came to hold its browser, which decides what shutdown may
+/// destroy. A launched session owns its Chromium process outright. An
+/// attached session holds a CDP connection into the user's own running
+/// browser: shutdown closes at most the one tab the session created
+/// (`owns_page`), and an adopted user tab is always released untouched. The
+/// browser process itself is never closed or killed in attached mode.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SessionKind {
+    Launched,
+    Attached { owns_page: bool },
+}
+
 pub struct Session {
     pub id: String,
     pub headless: bool,
+    /// Ownership model deciding what shutdown may destroy; see `SessionKind`.
+    pub kind: SessionKind,
     /// Inspection-only session: interaction functions are rejected while
     /// navigation and reads stay available. Immutable for the session's
     /// lifetime.
@@ -335,9 +360,13 @@ impl Session {
         errors
     }
 
-    /// Close the page + Chromium process and abort the event pumps.
-    /// Idempotent at the caller level: `Sessions::stop` removes the session
-    /// from the map first, so a second stop never reaches here.
+    /// Tear down what this session owns and abort the event pumps.
+    /// Launched: close (or kill) the whole Chromium process and remove the
+    /// ephemeral profile. Attached: close only a tab the session itself
+    /// created; an adopted user tab is released untouched, and the user's
+    /// browser process is never closed. Idempotent at the caller level:
+    /// `Sessions::stop` removes the session from the map first, so a second
+    /// stop never reaches here.
     pub async fn shutdown(&self) {
         for task in self
             .tasks
@@ -347,15 +376,26 @@ impl Session {
         {
             task.abort();
         }
-        let mut browser = self.browser.lock().await;
-        if browser.close().await.is_err() {
-            if let Some(Err(e)) = browser.kill().await {
-                tracing::warn!(session_id = %self.id, error = %e, "browser kill failed");
+        match self.kind {
+            SessionKind::Launched => {
+                let mut browser = self.browser.lock().await;
+                if browser.close().await.is_err() {
+                    if let Some(Err(e)) = browser.kill().await {
+                        tracing::warn!(session_id = %self.id, error = %e, "browser kill failed");
+                    }
+                }
+                let _ = browser.wait().await;
+                if let Some(dir) = &self.ephemeral_profile {
+                    let _ = std::fs::remove_dir_all(dir);
+                }
             }
-        }
-        let _ = browser.wait().await;
-        if let Some(dir) = &self.ephemeral_profile {
-            let _ = std::fs::remove_dir_all(dir);
+            SessionKind::Attached { owns_page } => {
+                if owns_page {
+                    if let Err(e) = self.page.clone().close().await {
+                        tracing::debug!(session_id = %self.id, error = %e, "tab close failed");
+                    }
+                }
+            }
         }
     }
 }
@@ -364,6 +404,10 @@ impl Session {
 pub struct Sessions {
     map: Mutex<HashMap<String, Arc<Session>>>,
     counter: AtomicU64,
+    /// Target ids of user tabs currently adopted by a session. Adoption is
+    /// exclusive: a tab in this set cannot be adopted again until its
+    /// session stops.
+    adopted_targets: Mutex<std::collections::HashSet<String>>,
     pub config: SharedConfig,
     pub emitter: Arc<Emitter>,
     /// For pushing screencast frames onto the `browser:frames` stream, which
@@ -380,6 +424,7 @@ impl Sessions {
         Arc::new(Self {
             map: Mutex::new(HashMap::new()),
             counter: AtomicU64::new(0),
+            adopted_targets: Mutex::new(std::collections::HashSet::new()),
             config,
             emitter,
             iii,
@@ -461,6 +506,7 @@ impl Sessions {
         let session = Arc::new(Session {
             id: id.clone(),
             headless,
+            kind: SessionKind::Launched,
             read_only,
             viewport_width: cfg.viewport_width,
             viewport_height: cfg.viewport_height,
@@ -495,6 +541,171 @@ impl Sessions {
         Ok(session)
     }
 
+    /// Attach to an already-running browser over CDP and bind a session to
+    /// one of its tabs: a fresh tab (`adopt_url_substring` absent, session
+    /// owns and later closes it) or an existing user tab matched by URL
+    /// substring (adopted exclusively, released untouched on stop). The
+    /// caller has already gated on `allow_attach` and scheme-checked `url`.
+    pub async fn attach(
+        self: &Arc<Self>,
+        cdp_url: String,
+        url: Option<String>,
+        adopt_url_substring: Option<String>,
+        read_only: bool,
+    ) -> Result<Arc<Session>, String> {
+        let cfg = self.config.load_full();
+        if self.count() as u64 >= cfg.max_sessions {
+            return Err(format!(
+                "session limit reached ({}); stop one with browser::sessions::stop",
+                cfg.max_sessions
+            ));
+        }
+
+        let (browser, mut handler) = Browser::connect(cdp_url.clone())
+            .await
+            .map_err(|e| format!("failed to connect to '{cdp_url}': {e}"))?;
+        let handler_task = tokio::spawn(async move {
+            while let Some(event) = handler.next().await {
+                if let Err(e) = event {
+                    tracing::debug!(error = %e, "cdp handler event error");
+                }
+            }
+        });
+
+        let outcome: Result<(Page, bool), String> = match &adopt_url_substring {
+            Some(needle) => match self.find_adoptable(&browser, needle).await {
+                Ok(page) => Ok((page, false)),
+                Err(e) => Err(e),
+            },
+            None => browser
+                .new_page(url.as_deref().unwrap_or("about:blank"))
+                .await
+                .map(|p| (p, true))
+                .map_err(|e| format!("failed to open tab: {e}")),
+        };
+        let (page, owns_page) = match outcome {
+            Ok(v) => v,
+            Err(e) => {
+                handler_task.abort();
+                return Err(e);
+            }
+        };
+
+        let _ = page.execute(cdp_log::EnableParams::default()).await;
+        let _ = page.execute(cdp_network::EnableParams::default()).await;
+
+        let slot = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = format!("b{slot}");
+        let now = now_ms();
+        let session = Arc::new(Session {
+            id: id.clone(),
+            headless: false,
+            kind: SessionKind::Attached { owns_page },
+            read_only,
+            viewport_width: cfg.viewport_width,
+            viewport_height: cfg.viewport_height,
+            created_ms: now,
+            ephemeral_profile: None,
+            latest_frame: Mutex::new(None),
+            screencast_active: std::sync::atomic::AtomicBool::new(false),
+            frame_seq: AtomicU64::new(0),
+            browser: tokio::sync::Mutex::new(browser),
+            page: page.clone(),
+            console: Mutex::new(RingBuffer::new(cfg.console_buffer as usize)),
+            network: Mutex::new(RingBuffer::new(cfg.network_buffer as usize)),
+            seq: AtomicU64::new(1),
+            last_used_ms: AtomicU64::new(now as u64),
+            refs: Mutex::new(HashMap::new()),
+            ref_counter: AtomicU64::new(0),
+            generation: AtomicU64::new(1),
+            snapshot_keys: Mutex::new(None),
+            exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
+            pick_counter: AtomicU64::new(0),
+            tasks: Mutex::new(vec![handler_task]),
+        });
+
+        let pumps = spawn_event_pumps(self.clone(), session.clone()).await;
+        session
+            .tasks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .extend(pumps);
+
+        self.lock().insert(id, session.clone());
+        Ok(session)
+    }
+
+    /// Connect to a running browser and report its open tabs (url, title,
+    /// and whether a session already adopted each). Read-only: opens a
+    /// throwaway CDP connection, lists, and drops it without touching any
+    /// tab. Used by `browser::tabs::list`.
+    pub async fn list_tabs(&self, cdp_url: &str) -> Result<Vec<TabInfo>, String> {
+        let (browser, mut handler) = Browser::connect(cdp_url.to_string())
+            .await
+            .map_err(|e| format!("failed to connect to '{cdp_url}': {e}"))?;
+        let pump = tokio::spawn(async move { while handler.next().await.is_some() {} });
+        let pages = discovered_pages(&browser).await?;
+        let mut tabs = Vec::new();
+        for page in pages {
+            let url = page.url().await.ok().flatten().unwrap_or_default();
+            let title = page.get_title().await.ok().flatten();
+            let target = page.target_id().as_ref().to_string();
+            let adopted = self
+                .adopted_targets
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(&target);
+            tabs.push(TabInfo {
+                url,
+                title,
+                adopted,
+            });
+        }
+        pump.abort();
+        Ok(tabs)
+    }
+
+    /// Resolve a user tab by URL substring for adoption. Exactly one match
+    /// is required; zero or several fail closed with the candidate list so
+    /// the caller can narrow the substring. A tab already adopted by another
+    /// session is excluded up front.
+    async fn find_adoptable(&self, browser: &Browser, needle: &str) -> Result<Page, String> {
+        let pages = discovered_pages(browser).await?;
+        let mut candidates = Vec::new();
+        let mut urls = Vec::new();
+        for page in pages {
+            let url = page.url().await.ok().flatten().unwrap_or_default();
+            let target = page.target_id().as_ref().to_string();
+            let taken = self
+                .adopted_targets
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(&target);
+            if url.contains(needle) && !taken {
+                candidates.push((page, target));
+            }
+            urls.push(url);
+        }
+        match candidates.len() {
+            1 => {
+                let (page, target) = candidates.into_iter().next().expect("one candidate");
+                self.adopted_targets
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(target);
+                Ok(page)
+            }
+            0 => Err(format!(
+                "no adoptable tab matches '{needle}' (open tabs: {})",
+                urls.join(", ")
+            )),
+            n => Err(format!(
+                "'{needle}' matches {n} tabs; use a longer substring (open tabs: {})",
+                urls.join(", ")
+            )),
+        }
+    }
+
     /// Remove + shut down. Returns whether the session was running —
     /// stopping an unknown id succeeds (delete semantics: the caller wants
     /// it gone, and it is).
@@ -502,6 +713,13 @@ impl Sessions {
         let session = self.lock().remove(id);
         match session {
             Some(session) => {
+                if let SessionKind::Attached { owns_page: false } = session.kind {
+                    let target = session.page.target_id().as_ref().to_string();
+                    self.adopted_targets
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .remove(&target);
+                }
                 session.shutdown().await;
                 self.emitter
                     .emit(
@@ -546,6 +764,26 @@ impl Sessions {
             self.stop(&id, "stopped").await;
         }
     }
+}
+
+/// `Browser::pages()` reads the handler's tracked targets, which populate
+/// asynchronously from `Target.targetCreated` events fired after connect.
+/// Called immediately, it races those events and returns empty against a
+/// browser that has tabs. Poll briefly until a page target appears (or the
+/// budget expires — a browser with genuinely no page tabs returns empty).
+async fn discovered_pages(browser: &Browser) -> Result<Vec<Page>, String> {
+    const ATTEMPTS: u32 = 20;
+    for attempt in 0..ATTEMPTS {
+        let pages = browser
+            .pages()
+            .await
+            .map_err(|e| format!("failed to list tabs: {e}"))?;
+        if !pages.is_empty() || attempt == ATTEMPTS - 1 {
+            return Ok(pages);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    Ok(Vec::new())
 }
 
 /// Every session gets its own profile dir: Chromium holds a process

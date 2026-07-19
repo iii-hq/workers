@@ -114,6 +114,14 @@ for inspection-only sessions where act/evaluate/execute/styles::write are
 rejected. `browser::doctor` reports the environment — detected Chromium,
 version, capacity — with an `enable_how` string for anything degraded.
 
+`browser::sessions::attach` binds a session to an already-running browser
+over CDP (start Chrome with `--remote-debugging-port`) instead of launching
+one, so it reaches the real profile with its logins and extensions. It opens
+a fresh tab the session owns, or adopts an existing tab by URL substring and
+releases it untouched on stop; `browser::tabs::list` enumerates a running
+browser's tabs. Attach reaches logged-in state, so it is off unless
+`allow_attach` is set in config, and adoption is exclusive per tab.
+
 ## Configuration
 
 Stored in the `configuration` worker under the `browser` key; every field is
@@ -136,6 +144,7 @@ browser:
   screenshot_quality: 60    # JPEG quality 1-100
   allowed_schemes: [http, https]
   max_snapshot_nodes: 2000  # a11y outline size cap
+  allow_attach: false       # true = allow sessions::attach into a running browser's real profile
 ```
 
 ## Custom trigger types

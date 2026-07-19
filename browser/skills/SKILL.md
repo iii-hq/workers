@@ -41,6 +41,11 @@ on navigation; re-snapshot before acting after any page change.
 - One-shot fetching and scraping belong to `web::fetch` (plain HTTP) and the
   scrapling worker (stealth fetching and bulk extraction). Do not start a
   browser session just to read a static page once.
+- Attach mode reaches the user's real browser profile with its logged-in
+  sessions. It is disabled unless `allow_attach` is set, and adoption is
+  exclusive (one session per tab) so two sessions never fight over a tab.
+  Reach for a launched session when you do not specifically need the user's
+  existing logins.
 - `browser::styles::write` edits are visual experiments only: they die on the
   next navigation and never touch source files. Use them to find the right
   value, then edit the codebase.
@@ -54,7 +59,15 @@ on navigation; re-snapshot before acting after any page change.
   session_id every other function needs. `read_only: true` starts an
   inspection-only session.
 - `browser::sessions::list` — live sessions with their current URL.
-- `browser::sessions::stop` — stop a session; idempotent.
+- `browser::sessions::stop` — stop a session; idempotent. A launched session
+  closes its browser; an attached session closes only a tab it opened and
+  releases an adopted user tab untouched.
+- `browser::sessions::attach` — bind a session to an already-running browser
+  over CDP (start Chrome with `--remote-debugging-port`): open a fresh tab
+  the session owns, or adopt an existing logged-in tab by URL substring.
+  Off unless `allow_attach` is set in config.
+- `browser::tabs::list` — open tabs of a running browser at a CDP endpoint,
+  with which are already adopted; read-only.
 - `browser::doctor` — read-only environment report: which Chromium would
   launch, its version, capacity, and anything degraded with how to enable it.
 - `browser::navigate` — go to a URL and wait for the load.

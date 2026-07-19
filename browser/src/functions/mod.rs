@@ -3,6 +3,7 @@
 //! registration lives here so `register_all` reads as the product surface.
 
 pub mod act;
+pub mod attach;
 pub mod console;
 pub mod doctor;
 pub mod dom;
@@ -52,6 +53,17 @@ pub const SESSIONS_STOP_ID: &str = "browser::sessions::stop";
 pub const SESSIONS_STOP_DESC: &str =
     "Stop a browser session and its Chromium process. Idempotent: stopping an unknown or \
      already-stopped session succeeds with was_running=false.";
+pub const SESSIONS_ATTACH_ID: &str = "browser::sessions::attach";
+pub const SESSIONS_ATTACH_DESC: &str =
+    "Attach a session to an already-running browser over CDP (start Chrome with \
+     --remote-debugging-port). Opens a fresh tab the session owns, or adopts an existing user \
+     tab by URL substring and releases it untouched on stop. Reaches the real profile with its \
+     logins; disabled unless allow_attach is set in config.";
+pub const TABS_LIST_ID: &str = "browser::tabs::list";
+pub const TABS_LIST_DESC: &str =
+    "List the open tabs of a running browser reachable at a CDP endpoint (url, title, and \
+     whether a session already adopted each). Read-only; adopt one with \
+     browser::sessions::attach.";
 pub const NAVIGATE_ID: &str = "browser::navigate";
 pub const NAVIGATE_DESC: &str =
     "Navigate a session to a URL and wait for the page to load. Element refs from earlier \
@@ -169,6 +181,8 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<sessions::StartInput, sessions::StartOutput>(SESSIONS_START_ID, SESSIONS_START_DESC),
         spec::<sessions::ListInput, sessions::ListOutput>(SESSIONS_LIST_ID, SESSIONS_LIST_DESC),
         spec::<sessions::StopInput, sessions::StopOutput>(SESSIONS_STOP_ID, SESSIONS_STOP_DESC),
+        spec::<attach::AttachInput, attach::AttachOutput>(SESSIONS_ATTACH_ID, SESSIONS_ATTACH_DESC),
+        spec::<attach::TabsListInput, attach::TabsListOutput>(TABS_LIST_ID, TABS_LIST_DESC),
         spec::<doctor::DoctorInput, doctor::DoctorOutput>(DOCTOR_ID, DOCTOR_DESC),
         spec::<navigate::NavigateInput, navigate::NavigateOutput>(NAVIGATE_ID, NAVIGATE_DESC),
         spec::<snapshot::SnapshotInput, snapshot::SnapshotOutput>(SNAPSHOT_ID, SNAPSHOT_DESC),
@@ -214,6 +228,8 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_sessions_start(iii, sessions);
     register_sessions_list(iii, sessions);
     register_sessions_stop(iii, sessions);
+    register_sessions_attach(iii, sessions);
+    register_tabs_list(iii, sessions);
     register_doctor(iii, sessions);
     register_navigate(iii, sessions);
     register_snapshot(iii, sessions);
@@ -363,6 +379,89 @@ fn register_sessions_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(SESSIONS_STOP_DESC),
+    );
+}
+
+fn register_sessions_attach(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        SESSIONS_ATTACH_ID,
+        RegisterFunction::new_async(move |req: attach::AttachInput| {
+            let sx = sx.clone();
+            async move {
+                let cfg = sx.config.load_full();
+                if !cfg.allow_attach {
+                    return Err(handler_err(
+                        "attach mode is disabled; set `allow_attach: true` in the browser worker \
+                         config to connect to a running browser. It reaches the real profile with \
+                         its logins, so it is opt-in.",
+                    ));
+                }
+                if let Some(url) = &req.url {
+                    sessions::check_scheme(&cfg, url).map_err(handler_err)?;
+                }
+                let session = sx
+                    .attach(
+                        req.cdp_url,
+                        req.url,
+                        req.adopt_url_substring,
+                        req.read_only.unwrap_or(false),
+                    )
+                    .await
+                    .map_err(handler_err)?;
+                let adopted = matches!(
+                    session.kind,
+                    crate::session::SessionKind::Attached { owns_page: false }
+                );
+                let url = session
+                    .page
+                    .url()
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "about:blank".to_string());
+                sx.emitter
+                    .emit(
+                        EventKind::SessionStarted,
+                        &session.id,
+                        &SessionStartedEvent {
+                            session_id: session.id.clone(),
+                            url: url.clone(),
+                            headless: session.headless,
+                            timestamp: now_ms(),
+                        },
+                    )
+                    .await;
+                Ok::<_, Error>(attach::AttachOutput {
+                    session_id: session.id.clone(),
+                    url,
+                    read_only: session.read_only,
+                    adopted,
+                })
+            }
+        })
+        .description(SESSIONS_ATTACH_DESC),
+    );
+}
+
+fn register_tabs_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        TABS_LIST_ID,
+        RegisterFunction::new_async(move |req: attach::TabsListInput| {
+            let sx = sx.clone();
+            async move {
+                if !sx.config.load().allow_attach {
+                    return Err(handler_err(
+                        "attach mode is disabled; set `allow_attach: true` in the browser worker \
+                         config to inspect a running browser's tabs.",
+                    ));
+                }
+                let tabs = sx.list_tabs(&req.cdp_url).await.map_err(handler_err)?;
+                Ok::<_, Error>(attach::TabsListOutput { tabs })
+            }
+        })
+        .description(TABS_LIST_DESC),
     );
 }
 
