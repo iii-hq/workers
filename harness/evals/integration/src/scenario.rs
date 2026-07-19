@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use crate::artifacts::{write_json, ArtifactSink};
 use crate::client::{Client, DEFAULT_CALL_TIMEOUT_MS};
 use crate::deadline::Deadline;
-use crate::expand::Placeholders;
+use crate::expand::{expand_compiled_fixture, ExpandedFixtureV1};
 use crate::fixtures::ScenarioFixture;
 use crate::grader::{self, Evidence};
 use crate::readiness::{self, ReadinessSpec};
@@ -31,7 +31,7 @@ use crate::types::recorder::{RecorderEventKind, RecorderEventV1};
 use crate::types::scenario::{
     Classification, CompiledScenarioV1, ExecutionReportV1, IntegrationResultV1, InvariantResultV1,
 };
-use crate::types::script::{RouterScriptV1, SchemaVersion1};
+use crate::types::script::SchemaVersion1;
 
 const SEND_TIMEOUT_MS: u64 = 30_000;
 const DISCOVERY_POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -104,12 +104,6 @@ pub async fn run_scenario(
     }
 }
 
-struct ExpandedFixture {
-    scenario: CompiledScenarioV1,
-    script: RouterScriptV1,
-    expected_prompt: String,
-}
-
 struct RunContext {
     scenario: CompiledScenarioV1,
     expected_prompt: String,
@@ -177,11 +171,12 @@ impl ScenarioRunner<'_> {
         };
         self.sink = Some(ArtifactSink::new(paths.root.clone()));
 
-        let ExpandedFixture {
+        let ExpandedFixtureV1 {
             scenario,
             script,
-            expected_prompt,
-        } = match self.expand_fixture() {
+            system_prompt: expected_prompt,
+        } = match expand_compiled_fixture(&self.fixture.compiled(), &self.run_id, &self.session_id)
+        {
             Ok(expanded) => expanded,
             Err(error) => {
                 let error = RunError::with_source(
@@ -967,27 +962,6 @@ impl ScenarioRunner<'_> {
             cursor = Some(next.to_string());
         }
         Ok(messages)
-    }
-
-    fn expand_fixture(&self) -> anyhow::Result<ExpandedFixture> {
-        let base = Placeholders::new(&self.run_id, &self.session_id);
-        let expected_prompt = base.expand_str(&self.fixture.system_prompt_template)?;
-        let digest = crate::canonical::sha256_of_bytes(expected_prompt.as_bytes());
-        let placeholders = base.with_system_prompt_sha256(&digest);
-
-        let mut scenario_value = serde_json::to_value(&self.fixture.scenario)?;
-        placeholders.expand_value(&mut scenario_value)?;
-        let scenario: CompiledScenarioV1 = serde_json::from_value(scenario_value)?;
-
-        let mut script_value = serde_json::to_value(&self.fixture.script)?;
-        placeholders.expand_value(&mut script_value)?;
-        let script: RouterScriptV1 = serde_json::from_value(script_value)?;
-
-        Ok(ExpandedFixture {
-            scenario,
-            script,
-            expected_prompt,
-        })
     }
 
     fn write_artifact<T>(

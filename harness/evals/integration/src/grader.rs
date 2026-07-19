@@ -1,12 +1,14 @@
 //! Pure-code grading (spec § Oracles): every invariant reads collected
-//! evidence only — no engine calls, no subject mutation. The invariant id
-//! registry here is the concrete vocabulary for `scenario.yaml`'s
-//! `invariants` array (the spec left it open; recorded in the amendment).
+//! evidence only — no engine calls, no subject mutation. Invariant ids and
+//! typed invariant dispatch and compiler-side constructors live in the
+//! scenario contract registry.
 
 use serde_json::{json, Map, Value};
 
 use crate::types::recorder::{RecorderEventKind, RecorderEventV1};
-use crate::types::scenario::{InvariantResultV1, InvariantSpecV1};
+use crate::types::scenario::{
+    DecodedInvariantV1, InvariantDecodeError, InvariantResultV1, InvariantSpecV1,
+};
 
 /// Everything the grader may look at, exactly as persisted to the artifact
 /// directory (grading twice over the same evidence is byte-deterministic).
@@ -46,9 +48,19 @@ fn grade_one(
     spec: &InvariantSpecV1,
     evidence: &Evidence,
 ) -> (bool, Value, Value, Vec<&'static str>) {
-    let params = &spec.parameters;
-    match spec.id.as_str() {
-        "send.flags" => {
+    let decoded = match spec.decode() {
+        Ok(decoded) => decoded,
+        Err(InvariantDecodeError::UnknownId(id)) => {
+            return (
+                false,
+                json!({ "error": "unknown invariant id" }),
+                json!({ "id": id }),
+                vec![],
+            );
+        }
+    };
+    match decoded {
+        DecodedInvariantV1::SendFlags(params) => {
             let expected = json!({
                 "accepted": true,
                 "merged": flag(params, "merged"),
@@ -73,7 +85,7 @@ fn grade_one(
             )
         }
 
-        "transcript.message_counts" => {
+        DecodedInvariantV1::TranscriptMessageCounts(params) => {
             let mut counts = std::collections::BTreeMap::new();
             for role in ["user", "assistant", "function_result"] {
                 counts.insert(role.to_string(), 0u64);
@@ -95,7 +107,7 @@ fn grade_one(
             (passed, expected, actual, vec!["transcript.json"])
         }
 
-        "transcript.assistant_text" => {
+        DecodedInvariantV1::TranscriptAssistantText(params) => {
             let expected = Value::Object(params.clone());
             let last_assistant = evidence
                 .transcript
@@ -131,7 +143,7 @@ fn grade_one(
             (passed, expected, actual, vec!["transcript.json"])
         }
 
-        "transcript.no_duplicates" => {
+        DecodedInvariantV1::TranscriptNoDuplicates(_) => {
             let mut seen = std::collections::BTreeSet::new();
             let mut duplicates = Vec::new();
             for item in &evidence.transcript {
@@ -154,7 +166,7 @@ fn grade_one(
         // `function_result` referencing its id — an interrupted call left
         // dangling poisons every later provider request on the session
         // (iii-hq/workers#507).
-        "transcript.calls_closed" => {
+        DecodedInvariantV1::TranscriptCallsClosed(_) => {
             let mut call_ids = Vec::new();
             let mut result_ids = std::collections::BTreeSet::new();
             for item in &evidence.transcript {
@@ -201,7 +213,7 @@ fn grade_one(
             )
         }
 
-        "transcript.function_result" => {
+        DecodedInvariantV1::TranscriptFunctionResult(params) => {
             let expected = Value::Object(params.clone());
             let expected_call_id = params
                 .get("function_call_id")
@@ -221,7 +233,7 @@ fn grade_one(
             (passed, expected, actual, vec!["transcript.json"])
         }
 
-        "status.terminal" => {
+        DecodedInvariantV1::StatusTerminal(params) => {
             let expected = Value::Object(params.clone());
             let actual = json!({
                 "status": evidence.status.get("status").cloned().unwrap_or(Value::Null),
@@ -251,7 +263,7 @@ fn grade_one(
             (passed, expected, actual, vec!["status.json"])
         }
 
-        "lifecycle.completed_once" => {
+        DecodedInvariantV1::LifecycleCompletedOnce(params) => {
             let allow_identical_duplicates = params
                 .get("allow_identical_duplicates")
                 .and_then(Value::as_bool)
@@ -299,7 +311,7 @@ fn grade_one(
             (passed, expected, actual, vec!["lifecycle-events.json"])
         }
 
-        "router.generations_consumed" => {
+        DecodedInvariantV1::RouterGenerationsConsumed(params) => {
             let want = params.get("count").and_then(Value::as_u64);
             let expected = json!({
                 "count": want,
@@ -314,7 +326,7 @@ fn grade_one(
             (passed, expected, actual, vec!["router-calls.json"])
         }
 
-        "target.calls" => {
+        DecodedInvariantV1::TargetCalls(params) => {
             let function_id = params
                 .get("function_id")
                 .and_then(Value::as_str)
@@ -344,13 +356,6 @@ fn grade_one(
             let passed = calls.len() as u64 == want_count && payload_ok && subset_ok;
             (passed, expected, actual, vec!["target-calls.json"])
         }
-
-        unknown => (
-            false,
-            json!({ "error": "unknown invariant id" }),
-            json!({ "id": unknown }),
-            vec![],
-        ),
     }
 }
 
@@ -581,5 +586,25 @@ mod tests {
     fn unknown_invariant_id_fails_closed() {
         let results = grade(&[spec("nonsense.id", json!({}))], &base_evidence());
         assert!(!results[0].passed);
+    }
+
+    #[test]
+    fn known_invariants_preserve_lossless_parameter_maps() {
+        let results = grade(
+            &[
+                spec("send.flags", json!({ "note": "ignored" })),
+                spec("transcript.message_counts", json!({ "assistant": 0 })),
+                spec("target.calls", json!({})),
+                spec("transcript.calls_closed", json!({ "note": "ignored" })),
+                spec("transcript.no_duplicates", json!({ "note": "ignored" })),
+            ],
+            &base_evidence(),
+        );
+        assert!(
+            results.iter().all(|result| result.passed),
+            "missing and extra parameters keep their legacy semantics: {results:?}"
+        );
+        assert_eq!(results[1].expected, json!({ "assistant": 0 }));
+        assert_eq!(results[2].expected, json!({}));
     }
 }

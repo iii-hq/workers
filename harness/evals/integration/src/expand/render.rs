@@ -1,7 +1,7 @@
 use anyhow::Context;
 use serde_json::json;
 
-use super::{CompiledFixtureV1, Placeholders};
+use super::{expand_compiled_fixture, CompiledFixtureV1};
 use crate::types::scenario::IntegrationScenarioV1;
 
 pub(super) fn validate_placeholders(fixture: &CompiledFixtureV1) -> anyhow::Result<()> {
@@ -17,19 +17,11 @@ pub fn render_compiled(fixture: &CompiledFixtureV1) -> anyhow::Result<String> {
         "render-session-{}",
         fixture.scenario.id.to_ascii_lowercase()
     );
-    let base = Placeholders::new(&run_id, &session_id);
-    let system_prompt = base.expand_str(&fixture.system_prompt_template)?;
-    let digest = crate::canonical::sha256_of_bytes(system_prompt.as_bytes());
-    let placeholders = base.with_system_prompt_sha256(&digest);
-
-    let mut scenario = serde_json::to_value(&fixture.scenario)?;
-    placeholders.expand_value(&mut scenario)?;
-    let mut script = serde_json::to_value(&fixture.script)?;
-    placeholders.expand_value(&mut script)?;
+    let expanded = expand_compiled_fixture(fixture, &run_id, &session_id)?;
     Ok(crate::canonical::canonical_json_pretty(&json!({
-        "scenario": scenario,
-        "router_script": script,
-        "system_prompt": system_prompt
+        "scenario": expanded.scenario,
+        "router_script": expanded.script,
+        "system_prompt": expanded.system_prompt
     })))
 }
 

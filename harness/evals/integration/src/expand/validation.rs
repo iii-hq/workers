@@ -144,11 +144,7 @@ pub(super) fn validate_reply(
                 );
             }
         }
-        RouterReplyV1::FunctionCall {
-            function,
-            arguments,
-            ..
-        } => {
+        RouterReplyV1::FunctionCall { function, .. } => {
             if !function_ids.contains_key(function) {
                 anyhow::bail!(
                     "generation {ordinal}: function call references unknown alias {function:?}"
@@ -165,12 +161,6 @@ pub(super) fn validate_reply(
                     "generation {ordinal}: function call alias {function:?} is not exposed by send"
                 );
             }
-            validate_function_arguments(
-                authored,
-                function,
-                arguments,
-                &format!("generation {ordinal}"),
-            )?;
         }
         RouterReplyV1::Raw { .. } => {}
     }

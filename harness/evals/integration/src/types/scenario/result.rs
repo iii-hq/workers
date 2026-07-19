@@ -1,0 +1,107 @@
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::types::script::SchemaVersion1;
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Classification {
+    Pass,
+    SetupError,
+    ContractFailure,
+    Timeout,
+    ProcessCrash,
+    RunnerError,
+}
+
+impl Classification {
+    pub fn precedence(self) -> u8 {
+        match self {
+            Classification::Pass => 0,
+            Classification::ContractFailure => 1,
+            Classification::Timeout => 2,
+            Classification::SetupError => 3,
+            Classification::ProcessCrash => 4,
+            Classification::RunnerError => 5,
+        }
+    }
+
+    pub fn combine(self, other: Classification) -> Classification {
+        if other.precedence() > self.precedence() {
+            other
+        } else {
+            self
+        }
+    }
+
+    pub fn exit_code(self) -> i32 {
+        match self {
+            Classification::Pass => 0,
+            Classification::ContractFailure | Classification::Timeout => 2,
+            Classification::SetupError
+            | Classification::ProcessCrash
+            | Classification::RunnerError => 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InvariantResultV1 {
+    pub id: String,
+    pub passed: bool,
+    pub expected: serde_json::Value,
+    pub actual: serde_json::Value,
+    pub evidence_refs: Vec<String>,
+}
+
+/// Stable, byte-comparable scenario result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IntegrationResultV1 {
+    pub schema_version: SchemaVersion1,
+    pub scenario_id: String,
+    pub classification: Classification,
+    pub invariants: Vec<InvariantResultV1>,
+    pub artifacts: Vec<String>,
+}
+
+/// Volatile execution metadata kept separate from the stable result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionReportV1 {
+    pub schema_version: SchemaVersion1,
+    pub run_id: String,
+    pub started_at: String,
+    pub duration_ms: u64,
+    pub result_path: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn precedence_orders_and_combines() {
+        use Classification::*;
+        assert_eq!(ContractFailure.combine(RunnerError), RunnerError);
+        assert_eq!(RunnerError.combine(ContractFailure), RunnerError);
+        assert_eq!(ProcessCrash.combine(SetupError), ProcessCrash);
+        assert_eq!(SetupError.combine(Timeout), SetupError);
+        assert_eq!(Timeout.combine(ContractFailure), Timeout);
+        assert_eq!(Pass.combine(ContractFailure), ContractFailure);
+    }
+
+    #[test]
+    fn exit_codes_match_spec_table() {
+        use Classification::*;
+        assert_eq!(Pass.exit_code(), 0);
+        assert_eq!(ContractFailure.exit_code(), 2);
+        assert_eq!(Timeout.exit_code(), 2);
+        assert_eq!(RunnerError.exit_code(), 3);
+        assert_eq!(SetupError.exit_code(), 3);
+        assert_eq!(ProcessCrash.exit_code(), 3);
+    }
+}
