@@ -4,6 +4,14 @@
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
+      "diff": {
+        "default": null,
+        "description": "Return only what changed since this session's previous snapshot instead of the full outline. Falls back to a full snapshot when there is no baseline (first snapshot, or first after a navigation).",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
       "session_id": {
         "type": "string"
       }
@@ -16,7 +24,54 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SnapshotDiff": {
+        "description": "Changes since the previous snapshot. Lines are compared without their `[ref=eN]` suffix (ref names are unique per snapshot); `added` lines carry current refs and are directly actionable.",
+        "properties": {
+          "added": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "removed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "unchanged": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "added",
+          "removed",
+          "unchanged"
+        ],
+        "type": "object"
+      }
+    },
     "properties": {
+      "diff": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/SnapshotDiff"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Present when the caller asked for `diff: true` and a baseline existed."
+      },
+      "generation": {
+        "description": "Document generation the refs belong to; navigation advances it and kills every ref from earlier generations.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
       "title": {
         "type": [
           "string",
@@ -24,7 +79,7 @@
         ]
       },
       "tree": {
-        "description": "Indented outline; lines carry `[ref=eN]` handles for `browser::act`.",
+        "description": "Indented outline; lines carry `[ref=eN]` handles for `browser::act`. Empty when `diff` is populated.",
         "type": "string"
       },
       "truncated": {
@@ -36,6 +91,7 @@
       }
     },
     "required": [
+      "generation",
       "tree",
       "truncated",
       "url"

@@ -12,6 +12,14 @@
           "null"
         ]
       },
+      "read_only": {
+        "default": null,
+        "description": "Inspection-only session: act, evaluate, execute, and styles::write are rejected while navigation, snapshots, reads, and screenshots work. Immutable for the session's lifetime.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
       "url": {
         "default": null,
         "description": "URL to open immediately. Omit to start on about:blank.",
@@ -30,6 +38,9 @@
       "headless": {
         "type": "boolean"
       },
+      "read_only": {
+        "type": "boolean"
+      },
       "session_id": {
         "description": "Pass this to every other browser function.",
         "type": "string"
@@ -40,6 +51,7 @@
     },
     "required": [
       "headless",
+      "read_only",
       "session_id",
       "url"
     ],

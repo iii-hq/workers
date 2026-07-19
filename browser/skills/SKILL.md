@@ -51,18 +51,26 @@ on navigation; re-snapshot before acting after any page change.
 ## Functions
 
 - `browser::sessions::start` — launch a Chromium session; returns the
-  session_id every other function needs.
+  session_id every other function needs. `read_only: true` starts an
+  inspection-only session.
 - `browser::sessions::list` — live sessions with their current URL.
 - `browser::sessions::stop` — stop a session; idempotent.
+- `browser::doctor` — read-only environment report: which Chromium would
+  launch, its version, capacity, and anything degraded with how to enable it.
 - `browser::navigate` — go to a URL and wait for the load.
 - `browser::snapshot` — the page as an accessibility outline with `[ref=eN]`
-  handles; the default way to read a page.
+  handles; the default way to read a page. `diff: true` returns only what
+  changed since the previous snapshot.
 - `browser::act` — click, hover, type, press, or scroll, addressed by ref or
   viewport coordinates.
 - `browser::screenshot` — viewable JPEG of the viewport, for when layout or
   rendering matters.
 - `browser::evaluate` — run a JavaScript expression in the page and get the
   completion value.
+- `browser::execute` — run a multi-step async script in the page: top-level
+  await and return, `log(...)`, `sleep(ms)`, `waitFor(selector)`, and a
+  `state` object persisted across execute calls for the session. One call
+  replaces a chain of act/evaluate round-trips.
 - `browser::console::read` — captured console entries; filter with
   pattern/level and page with since_seq.
 - `browser::network::read` — captured requests; failed_only=true is the fast
@@ -72,6 +80,30 @@ on navigation; re-snapshot before acting after any page change.
   accessibility tree hides.
 - `browser::styles::read` / `browser::styles::write` — computed styles and
   live inline CSS edits on one element.
+
+## Workflow: inspect before acting
+
+1. Snapshot first; act on refs from the latest snapshot, never from memory
+   of an earlier one. Refs are unique per snapshot and die on navigation, so
+   a stale ref fails with an error instead of clicking the wrong element.
+2. After an action that changes the page, re-read with
+   `browser::snapshot { diff: true }`: it returns only added and removed
+   lines, which keeps loops cheap.
+3. Use `browser::execute` when a step needs waiting or several dependent
+   reads and writes; use `browser::act` for single trusted input events
+   (in-page script clicks are not trusted events).
+4. Pure inspection tasks (audits, scraping a logged-in page you must not
+   touch) belong in a `read_only: true` session.
+
+## Workflow: destructive UI actions
+
+For destructive page actions (deleting records, cancelling subscriptions)
+use two phases, never one script:
+
+1. Discovery: read candidates and return their exact stable text or ids for
+   the user to approve. Do not act in this call.
+2. Action: operate only on the approved identifiers, read any confirmation
+   dialog text, and abort unless it matches the approved action.
 
 ## Keeping context small
 

@@ -1,0 +1,67 @@
+{
+  "description": "Run a multi-step async JavaScript script in the page: top-level await and return work, with log(...), sleep(ms), waitFor(selector), and a state object that persists across execute calls for the session. One call replaces a chain of act/evaluate round-trips; returns { result, logs, state }.",
+  "function_id": "browser::execute",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "code": {
+        "description": "Async JavaScript body run in the page. Top-level `await` and `return` work. In scope: `state` (JSON object persisted across execute calls for the session), `log(...)` (collected into the response), `sleep(ms)`, and `waitFor(selector, { timeout })`. Return plain JSON.",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timeout_ms": {
+        "default": null,
+        "description": "Upper bound on the run; clamped to `max_timeout_ms`.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "code",
+      "session_id"
+    ],
+    "title": "ExecuteInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "error": {
+        "description": "Exception text when not `ok`. A \"context destroyed\" error usually means the script navigated; split the script at the navigation.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "logs": {
+        "description": "`log(...)` output collected during the run, in order.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "ok": {
+        "type": "boolean"
+      },
+      "result": {
+        "description": "The script's return value when `ok`."
+      },
+      "state": {
+        "description": "Session state after the run; the next execute call sees this as `state`."
+      }
+    },
+    "required": [
+      "logs",
+      "ok",
+      "state"
+    ],
+    "title": "ExecuteOutput",
+    "type": "object"
+  }
+}

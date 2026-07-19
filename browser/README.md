@@ -102,6 +102,18 @@ ref or coordinates, left/right/middle and double-click), `browser::evaluate`
 panel backing), and `browser::sessions::list` / `browser::sessions::stop`.
 Function ids and schemas live in the code and `iii worker info browser`.
 
+Beyond single actions: `browser::execute` runs a multi-step async script in
+the page — top-level await, `log(...)`, `sleep(ms)`, `waitFor(selector)`, and
+a `state` object that persists across execute calls for the session — so one
+call replaces a chain of act/evaluate round-trips. `browser::snapshot`
+accepts `diff: true` to return only what changed since the previous
+snapshot, and reports the document `generation` its refs belong to (ref
+names are unique per snapshot and fail closed when stale, never resolving to
+a different element). `browser::sessions::start` accepts `read_only: true`
+for inspection-only sessions where act/evaluate/execute/styles::write are
+rejected. `browser::doctor` reports the environment — detected Chromium,
+version, capacity — with an `enable_how` string for anything degraded.
+
 ## Configuration
 
 Stored in the `configuration` worker under the `browser` key; every field is
