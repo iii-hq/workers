@@ -387,10 +387,17 @@ impl Session {
     /// stop never reaches here.
     pub async fn shutdown(&self) {
         // Finalize any recording first: dropping stdin lets ffmpeg flush the
-        // file, then reap the child so it is not orphaned.
+        // file, then reap the child so it is not orphaned. Bound the wait so
+        // an ffmpeg that ignores its closed stdin cannot block shutdown
+        // forever; on timeout, kill it and reap.
         if let Some(mut recording) = self.recording.lock().await.take() {
             drop(recording.stdin);
-            let _ = recording.child.wait().await;
+            let reap =
+                tokio::time::timeout(std::time::Duration::from_secs(5), recording.child.wait())
+                    .await;
+            if reap.is_err() {
+                let _ = recording.child.kill().await;
+            }
         }
         for task in self
             .tasks
