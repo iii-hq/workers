@@ -129,6 +129,15 @@ timeout elapses, emitting `browser::handoff-requested` for the console to
 surface. Human acknowledgment is not proof, so the caller verifies the
 expected page state after it returns.
 
+`browser::recording::start` / `browser::recording::stop` capture a session's
+live viewport to a webm or mp4 file by piping the screencast through ffmpeg
+(turning screencast on if needed); stop returns the path, duration, and
+frame count. While screencast is active a human watching the viewport also
+sees a ghost cursor following the agent's clicks and a session-status badge;
+both are fixed-position in-page overlays that never touch page content.
+`browser::doctor` reports whether ffmpeg (recording) and attach mode are
+available.
+
 ## Configuration
 
 Stored in the `configuration` worker under the `browser` key; every field is

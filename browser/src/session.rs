@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::cdp::browser_protocol::dom;
 use chromiumoxide::cdp::browser_protocol::log as cdp_log;
@@ -220,6 +222,19 @@ pub enum SessionKind {
     Attached { owns_page: bool },
 }
 
+/// An in-progress screen recording: the ffmpeg child the screencast pump
+/// feeds decoded JPEG frames, plus the bookkeeping `recording::stop` returns.
+pub struct Recording {
+    pub child: tokio::process::Child,
+    pub stdin: tokio::process::ChildStdin,
+    pub path: String,
+    pub started_ms: i64,
+    pub frames: u64,
+    /// True when `recording::start` turned screencast on; `stop` turns it
+    /// back off only in that case, leaving a console-owned screencast alone.
+    pub started_screencast: bool,
+}
+
 pub struct Session {
     pub id: String,
     pub headless: bool,
@@ -240,6 +255,9 @@ pub struct Session {
     ephemeral_profile: Option<std::path::PathBuf>,
     pub latest_frame: Mutex<Option<LatestFrame>>,
     pub screencast_active: std::sync::atomic::AtomicBool,
+    /// Set while a `browser::recording` is capturing; the screencast pump
+    /// writes decoded frames into it.
+    pub recording: tokio::sync::Mutex<Option<Recording>>,
     frame_seq: AtomicU64,
     browser: tokio::sync::Mutex<Browser>,
     pub page: Page,
@@ -368,6 +386,12 @@ impl Session {
     /// `Sessions::stop` removes the session from the map first, so a second
     /// stop never reaches here.
     pub async fn shutdown(&self) {
+        // Finalize any recording first: dropping stdin lets ffmpeg flush the
+        // file, then reap the child so it is not orphaned.
+        if let Some(mut recording) = self.recording.lock().await.take() {
+            drop(recording.stdin);
+            let _ = recording.child.wait().await;
+        }
         for task in self
             .tasks
             .lock()
@@ -528,6 +552,7 @@ impl Sessions {
             ephemeral_profile,
             latest_frame: Mutex::new(None),
             screencast_active: std::sync::atomic::AtomicBool::new(false),
+            recording: tokio::sync::Mutex::new(None),
             frame_seq: AtomicU64::new(0),
             browser: tokio::sync::Mutex::new(browser),
             page: page.clone(),
@@ -622,6 +647,7 @@ impl Sessions {
             ephemeral_profile: None,
             latest_frame: Mutex::new(None),
             screencast_active: std::sync::atomic::AtomicBool::new(false),
+            recording: tokio::sync::Mutex::new(None),
             frame_seq: AtomicU64::new(0),
             browser: tokio::sync::Mutex::new(browser),
             page: page.clone(),
@@ -820,6 +846,119 @@ impl Sessions {
         // still succeeds in removing the stale entry.
         let _ = handoff.confirm.send(());
         Some(key)
+    }
+
+    /// Start recording a session's viewport to `path`, encoded as `codec`
+    /// via ffmpeg reading the screencast JPEG stream on stdin. Ensures
+    /// screencast is on (remembering whether we turned it on) so a plain
+    /// `recording::start` works without a separate screencast call.
+    pub async fn start_recording(
+        &self,
+        session_id: &str,
+        path: &str,
+        codec: &str,
+    ) -> Result<(), String> {
+        let session = self
+            .get(session_id)
+            .ok_or_else(|| format!("unknown session '{session_id}'"))?;
+        {
+            let rec = session.recording.lock().await;
+            if rec.is_some() {
+                return Err(format!(
+                    "session '{session_id}' is already recording; stop it first"
+                ));
+            }
+        }
+
+        let started_screencast = !session
+            .screencast_active
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if started_screencast {
+            self.start_screencast(&session).await?;
+        }
+
+        let args = crate::functions::recording::ffmpeg_args(codec, path);
+        let mut child = tokio::process::Command::new("ffmpeg")
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| {
+                format!("failed to launch ffmpeg ({e}); install ffmpeg and put it on PATH")
+            })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "ffmpeg stdin unavailable".to_string())?;
+
+        let mut rec = session.recording.lock().await;
+        *rec = Some(Recording {
+            child,
+            stdin,
+            path: path.to_string(),
+            started_ms: now_ms(),
+            frames: 0,
+            started_screencast,
+        });
+        Ok(())
+    }
+
+    /// Stop a session's recording: close ffmpeg's stdin so it finalizes the
+    /// file, wait for it, and turn screencast back off if recording started
+    /// it. Returns None when nothing was recording.
+    pub async fn stop_recording(&self, session_id: &str) -> Option<(String, i64, u64)> {
+        let session = self.get(session_id)?;
+        let recording = session.recording.lock().await.take()?;
+        let Recording {
+            mut child,
+            stdin,
+            path,
+            started_ms,
+            frames,
+            started_screencast,
+        } = recording;
+        // Dropping stdin closes the pipe; ffmpeg then flushes and exits.
+        drop(stdin);
+        let _ = child.wait().await;
+        if started_screencast {
+            let _ = self.stop_screencast(&session).await;
+        }
+        Some((path, now_ms() - started_ms, frames))
+    }
+
+    /// Turn on Chromium screencast for a session (shared by the internal
+    /// screencast-start function and recording).
+    pub async fn start_screencast(&self, session: &Arc<Session>) -> Result<(), String> {
+        use chromiumoxide::cdp::browser_protocol::page as cdp_page;
+        let quality = self.config.load().screenshot_quality as i64;
+        let params = cdp_page::StartScreencastParams::builder()
+            .format(cdp_page::StartScreencastFormat::Jpeg)
+            .quality(quality)
+            .every_nth_frame(1)
+            .build();
+        session
+            .page
+            .execute(params)
+            .await
+            .map_err(|e| format!("screencast start failed: {e}"))?;
+        session
+            .screencast_active
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Turn off Chromium screencast for a session.
+    pub async fn stop_screencast(&self, session: &Arc<Session>) -> Result<(), String> {
+        use chromiumoxide::cdp::browser_protocol::page as cdp_page;
+        let _ = session
+            .page
+            .execute(cdp_page::StopScreencastParams::default())
+            .await;
+        session
+            .screencast_active
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
     }
 
     /// Stop sessions idle beyond the configured threshold. Called from the
@@ -1141,6 +1280,23 @@ async fn spawn_event_pumps(
                     // Push onto the stream (the console subscribes to it); the
                     // in-memory slot stays as the seed for a fresh subscriber.
                     push_frame_stream(&sx.iii, &s.id, &stream_frame).await;
+                    // Feed the recorder the same capped frame flow, decoded to
+                    // JPEG bytes on ffmpeg's stdin. A broken pipe (ffmpeg gone)
+                    // is logged and dropped; recording::stop reaps the child.
+                    {
+                        let mut rec = s.recording.lock().await;
+                        if let Some(recording) = rec.as_mut() {
+                            let data: &str = stream_frame.frame.data.as_ref();
+                            if let Ok(bytes) = STANDARD.decode(data) {
+                                use tokio::io::AsyncWriteExt;
+                                if recording.stdin.write_all(&bytes).await.is_ok() {
+                                    recording.frames += 1;
+                                } else {
+                                    tracing::debug!(session_id = %s.id, "recording write failed");
+                                }
+                            }
+                        }
+                    }
                     let mut slot = s.latest_frame.lock().unwrap_or_else(|p| p.into_inner());
                     *slot = Some(stream_frame);
                 }

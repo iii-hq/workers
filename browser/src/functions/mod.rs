@@ -15,7 +15,9 @@ pub mod hint;
 pub mod history;
 pub mod navigate;
 pub mod network;
+pub mod overlays;
 pub mod pick;
+pub mod recording;
 pub mod screenshot;
 pub mod sessions;
 pub mod snapshot;
@@ -144,6 +146,15 @@ pub const FRAME_ID: &str = "browser::frame";
 pub const FRAME_DESC: &str =
     "Internal: newest screencast frame, or nothing when since_frame is still current. No \
      capture round-trip; poll fast. Not an agent function.";
+pub const RECORDING_START_ID: &str = "browser::recording::start";
+pub const RECORDING_START_DESC: &str =
+    "Record a session's live viewport to a video file (webm or mp4) by piping the screencast \
+     through ffmpeg. Turns screencast on if needed. Requires ffmpeg on PATH; browser::doctor \
+     reports whether it is available.";
+pub const RECORDING_STOP_ID: &str = "browser::recording::stop";
+pub const RECORDING_STOP_DESC: &str =
+    "Stop a session's recording, finalize the file, and return its path, duration, and frame \
+     count. Idempotent: stopping when nothing is recording returns ok=false.";
 pub const PICK_HINT_ID: &str = "browser::pick::hint";
 pub const PICK_HINT_DESC: &str =
     "Internal: element preview at a viewport point (tag, id, classes, bounds) so the console \
@@ -233,6 +244,14 @@ pub fn catalog() -> Vec<FunctionSpec> {
             SCREENCAST_STOP_DESC,
         ),
         spec::<frame::FrameInput, frame::FrameOutput>(FRAME_ID, FRAME_DESC),
+        spec::<recording::RecordingStartInput, recording::RecordingStartOutput>(
+            RECORDING_START_ID,
+            RECORDING_START_DESC,
+        ),
+        spec::<recording::RecordingStopInput, recording::RecordingStopOutput>(
+            RECORDING_STOP_ID,
+            RECORDING_STOP_DESC,
+        ),
         spec::<hint::PickHintInput, hint::PickHintOutput>(PICK_HINT_ID, PICK_HINT_DESC),
         spec::<pick::PickStartInput, pick::AckOutput>(PICK_START_ID, PICK_START_DESC),
         spec::<pick::PickResolveInput, pick::AckOutput>(PICK_RESOLVE_ID, PICK_RESOLVE_DESC),
@@ -264,6 +283,8 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_screencast_start(iii, sessions);
     register_screencast_stop(iii, sessions);
     register_frame(iii, sessions);
+    register_recording_start(iii, sessions);
+    register_recording_stop(iii, sessions);
     register_pick_hint(iii, sessions);
     register_pick_start(iii, sessions);
     register_pick_resolve(iii, sessions);
@@ -643,6 +664,21 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     );
 }
 
+/// Best-effort: draw the ghost cursor at the acted point so a human watching
+/// the streamed viewport sees where the agent acted. Only injected while
+/// screencast is active (someone is watching); a failed injection is ignored.
+async fn move_ghost_cursor(session: &Session, x: f64, y: f64, click: bool) {
+    if session
+        .screencast_active
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        let _ = session
+            .page
+            .evaluate(overlays::ghost_cursor_script(x, y, click))
+            .await;
+    }
+}
+
 /// Resolve the target point for a ref- or coordinate-addressed action.
 async fn action_point(session: &Session, req: &act::ActInput) -> Result<(f64, f64), Error> {
     if let Some(r) = &req.r#ref {
@@ -756,11 +792,13 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                         let button = req.button.as_deref().unwrap_or("left");
                         let clicks = i64::from(req.click_count.unwrap_or(1));
                         dispatch_click(&session, x, y, button, clicks).await?;
+                        move_ghost_cursor(&session, x, y, true).await;
                         format!("clicked {button} x{clicks} at ({x:.0}, {y:.0})")
                     }
                     "hover" => {
                         let (x, y) = action_point(&session, &req).await?;
                         dispatch_hover(&session, x, y).await?;
+                        move_ghost_cursor(&session, x, y, false).await;
                         format!("hovering at ({x:.0}, {y:.0})")
                     }
                     "type" => {
@@ -1167,6 +1205,16 @@ fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     });
                 }
 
+                let recording_available = tokio::task::spawn_blocking(doctor::ffmpeg_available)
+                    .await
+                    .unwrap_or(false);
+                if !recording_available {
+                    issues.push(doctor::DoctorIssue {
+                        what: "ffmpeg not found; browser::recording is unavailable".to_string(),
+                        enable_how: "install ffmpeg and put it on PATH".to_string(),
+                    });
+                }
+
                 Ok::<_, Error>(doctor::DoctorOutput {
                     ok: chromium_path.is_some() && active_sessions < cfg.max_sessions,
                     chromium_path: chromium_path.map(|p| p.display().to_string()),
@@ -1175,6 +1223,8 @@ fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     max_sessions: cfg.max_sessions,
                     active_sessions,
                     allowed_schemes: cfg.allowed_schemes.clone(),
+                    attach_enabled: cfg.allow_attach,
+                    recording_available,
                     issues,
                 })
             }
@@ -1770,6 +1820,16 @@ fn register_screencast_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 session
                     .screencast_active
                     .store(true, std::sync::atomic::Ordering::Relaxed);
+                // A human is now watching: show the session-status badge.
+                let mode = if session.read_only {
+                    "read-only"
+                } else {
+                    "active"
+                };
+                let _ = session
+                    .page
+                    .evaluate(overlays::badge_script(&session.id, mode))
+                    .await;
                 Ok::<_, Error>(pick::AckOutput { ok: true })
             }
         })
@@ -1793,6 +1853,13 @@ fn register_screencast_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     session
                         .screencast_active
                         .store(false, std::sync::atomic::Ordering::Relaxed);
+                    // Nobody is watching now: remove the status badge and
+                    // ghost cursor so they do not linger in the page.
+                    let _ = session.page.evaluate(overlays::remove_badge_script()).await;
+                    let _ = session
+                        .page
+                        .evaluate(overlays::remove_ghost_cursor_script())
+                        .await;
                     // Drop the last frame from the stream so a later
                     // subscriber does not see a stale image.
                     let _ = sx
@@ -1813,6 +1880,58 @@ fn register_screencast_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         })
         .description(SCREENCAST_STOP_DESC)
         .metadata(json!({ "internal": true })),
+    );
+}
+
+fn register_recording_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        RECORDING_START_ID,
+        RegisterFunction::new_async(move |req: recording::RecordingStartInput| {
+            let sx = sx.clone();
+            async move {
+                get_session(&sx, &req.session_id)?;
+                let (format, codec) =
+                    recording::resolve_format(req.format.as_deref()).map_err(handler_err)?;
+                sx.start_recording(&req.session_id, &req.path, codec)
+                    .await
+                    .map_err(handler_err)?;
+                Ok::<_, Error>(recording::RecordingStartOutput {
+                    ok: true,
+                    path: req.path,
+                    format: format.to_string(),
+                })
+            }
+        })
+        .description(RECORDING_START_DESC),
+    );
+}
+
+fn register_recording_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        RECORDING_STOP_ID,
+        RegisterFunction::new_async(move |req: recording::RecordingStopInput| {
+            let sx = sx.clone();
+            async move {
+                let output = match sx.stop_recording(&req.session_id).await {
+                    Some((path, duration_ms, frames)) => recording::RecordingStopOutput {
+                        ok: true,
+                        path: Some(path),
+                        duration_ms,
+                        frames,
+                    },
+                    None => recording::RecordingStopOutput {
+                        ok: false,
+                        path: None,
+                        duration_ms: 0,
+                        frames: 0,
+                    },
+                };
+                Ok::<_, Error>(output)
+            }
+        })
+        .description(RECORDING_STOP_DESC),
     );
 }
 
