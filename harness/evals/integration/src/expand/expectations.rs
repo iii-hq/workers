@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
 use anyhow::Context;
-use serde_json::{json, Map, Value};
 
-use crate::types::scenario::{IntegrationScenarioV1, InvariantSpecV1, TerminalStatusV1};
+use crate::types::scenario::{
+    FunctionResultInvariantV1, IntegrationScenarioV1, InvariantSpecV1, TargetCallsInvariantV1,
+};
 
 use super::{CompiledFunctionCall, SYNTHETIC_FUNCTION_ALIAS};
 
@@ -14,26 +15,13 @@ pub(super) fn compile_expectations(
     generation_count: usize,
 ) -> anyhow::Result<Vec<InvariantSpecV1>> {
     let expect = &authored.expect;
-    let mut invariants = vec![invariant(
-        "send.flags",
-        json!({
-            "merged": expect.send_flags.merged,
-            "queued": expect.send_flags.queued,
-            "deduplicated": expect.send_flags.deduplicated
-        }),
-    )];
+    let mut invariants = vec![InvariantSpecV1::send_flags(expect.send_flags)];
 
     if let Some(counts) = expect.message_counts {
-        invariants.push(invariant(
-            "transcript.message_counts",
-            serde_json::to_value(counts)?,
-        ));
+        invariants.push(InvariantSpecV1::transcript_message_counts(counts));
     }
     if let Some(text) = &expect.assistant_text {
-        invariants.push(invariant(
-            "transcript.assistant_text",
-            json!({ "text": text }),
-        ));
+        invariants.push(InvariantSpecV1::transcript_assistant_text(text.clone()));
     }
     for result in &expect.function_results {
         let call = calls.iter().find(|call| call.id == result.function_call_id);
@@ -53,97 +41,50 @@ pub(super) fn compile_expectations(
                 );
             }
         }
-        let mut parameters = Map::new();
-        parameters.insert(
-            "function_call_id".to_string(),
-            json!(result.function_call_id),
-        );
-        if let Some(alias) = &result.function {
-            parameters.insert(
-                "function_id".to_string(),
-                json!(resolve_alias(function_ids, alias, "function result")?),
-            );
-        }
-        if let Some(content) = &result.content {
-            parameters.insert("content".to_string(), json!(content));
-        }
-        if let Some(is_error) = result.is_error {
-            parameters.insert("is_error".to_string(), json!(is_error));
-        }
-        invariants.push(InvariantSpecV1 {
-            id: "transcript.function_result".to_string(),
-            parameters,
-        });
+        invariants.push(InvariantSpecV1::transcript_function_result(
+            FunctionResultInvariantV1 {
+                function_call_id: result.function_call_id.clone(),
+                function_id: result
+                    .function
+                    .as_deref()
+                    .map(|alias| resolve_alias(function_ids, alias, "function result"))
+                    .transpose()?
+                    .map(str::to_string),
+                content: result.content.clone(),
+                is_error: result.is_error,
+            },
+        ));
     }
     if expect.calls_closed {
-        invariants.push(invariant("transcript.calls_closed", json!({})));
+        invariants.push(InvariantSpecV1::transcript_calls_closed());
     }
     if expect.no_duplicates {
-        invariants.push(invariant("transcript.no_duplicates", json!({})));
+        invariants.push(InvariantSpecV1::transcript_no_duplicates());
     }
-    invariants.push(invariant(
-        "status.terminal",
-        json!({
-            "status": terminal_status(expect.terminal.status),
-            "pending_calls": expect.terminal.pending_calls,
-            "queued_messages": expect.terminal.queued_messages
-        }),
-    ));
-    invariants.push(invariant(
-        "lifecycle.completed_once",
-        json!({
-            "allow_identical_duplicates": expect.lifecycle.allow_identical_duplicates
-        }),
-    ));
-    invariants.push(invariant(
-        "router.generations_consumed",
-        json!({
-            "count": generation_count as u64
-        }),
+    invariants.push(InvariantSpecV1::status_terminal(expect.terminal));
+    invariants.push(InvariantSpecV1::lifecycle_completed_once(expect.lifecycle));
+    invariants.push(InvariantSpecV1::router_generations_consumed(
+        generation_count as u64,
     ));
 
     for call in &expect.calls {
-        let mut parameters = Map::new();
-        parameters.insert(
-            "function_id".to_string(),
-            json!(resolve_alias(
-                function_ids,
-                &call.function,
-                "call expectation"
-            )?),
-        );
-        parameters.insert("count".to_string(), json!(call.count));
-        if let Some(payload) = &call.payload {
-            parameters.insert("payload".to_string(), payload.clone());
-        }
-        if let Some(payload_subset) = &call.payload_subset {
-            parameters.insert("payload_subset".to_string(), payload_subset.clone());
-        }
-        invariants.push(InvariantSpecV1 {
-            id: "target.calls".to_string(),
-            parameters,
-        });
+        invariants.push(InvariantSpecV1::target_calls(TargetCallsInvariantV1 {
+            function_id: resolve_alias(function_ids, &call.function, "call expectation")?
+                .to_string(),
+            count: call.count,
+            payload: call.payload.clone(),
+            payload_subset: call.payload_subset.clone(),
+        }));
     }
     if authored.functions.is_empty() {
-        invariants.push(invariant(
-            "target.calls",
-            json!({
-                "function_id": format!("{{{{run_id}}}}::{SYNTHETIC_FUNCTION_ALIAS}"),
-                "count": 0
-            }),
-        ));
+        invariants.push(InvariantSpecV1::target_calls(TargetCallsInvariantV1 {
+            function_id: format!("{{{{run_id}}}}::{SYNTHETIC_FUNCTION_ALIAS}"),
+            count: 0,
+            payload: None,
+            payload_subset: None,
+        }));
     }
     Ok(invariants)
-}
-
-fn invariant(id: &str, parameters: Value) -> InvariantSpecV1 {
-    InvariantSpecV1 {
-        id: id.to_string(),
-        parameters: parameters
-            .as_object()
-            .cloned()
-            .expect("invariant parameters are objects"),
-    }
 }
 
 fn resolve_alias<'a>(
@@ -155,12 +96,4 @@ fn resolve_alias<'a>(
         .get(alias)
         .map(String::as_str)
         .with_context(|| format!("{context} references unknown function alias {alias:?}"))
-}
-
-fn terminal_status(status: TerminalStatusV1) -> &'static str {
-    match status {
-        TerminalStatusV1::Completed => "completed",
-        TerminalStatusV1::Failed => "failed",
-        TerminalStatusV1::Cancelled => "cancelled",
-    }
 }

@@ -15,6 +15,12 @@ use crate::types::script::{
 
 use super::{validation::validate_reply, CompiledFunctionCall};
 
+struct CompiledReply {
+    frames: Vec<AssistantMessageEvent>,
+    response: RouterChatResponse,
+    history: Vec<Value>,
+}
+
 pub(super) fn compile_router(
     authored: &IntegrationScenarioV1,
     model: &ModelFixtureV1,
@@ -43,10 +49,15 @@ pub(super) fn compile_router(
             None
         };
         validate_reply(&authored_generation.reply, ordinal, authored, function_ids)?;
-        let (frames, response) = compile_reply(
+        let CompiledReply {
+            frames,
+            response,
+            history,
+        } = compile_reply(
             &authored_generation.reply,
             ordinal,
             model,
+            authored,
             function_ids,
             call_id,
         )?;
@@ -58,14 +69,7 @@ pub(super) fn compile_router(
             frames,
             response,
         });
-        extend_history(
-            &mut messages,
-            &authored_generation.reply,
-            model,
-            authored,
-            function_ids,
-            call_id,
-        )?;
+        messages.extend(history);
     }
 
     Ok(RouterScriptV1 {
@@ -157,9 +161,10 @@ fn compile_reply(
     reply: &RouterReplyV1,
     ordinal: u64,
     model: &ModelFixtureV1,
+    authored: &IntegrationScenarioV1,
     function_ids: &BTreeMap<String, String>,
     call_id: Option<&str>,
-) -> anyhow::Result<(Vec<AssistantMessageEvent>, RouterChatResponse)> {
+) -> anyhow::Result<CompiledReply> {
     match reply {
         RouterReplyV1::Text {
             text,
@@ -228,9 +233,9 @@ fn compile_reply(
                     message: message.clone(),
                 });
             }
-            Ok((
+            Ok(CompiledReply {
                 frames,
-                RouterChatResponse {
+                response: RouterChatResponse {
                     ok: true,
                     provider: model.provider.clone(),
                     model: model.id.clone(),
@@ -238,7 +243,14 @@ fn compile_reply(
                     usage: usage.clone(),
                     error: None,
                 },
-            ))
+                history: vec![json!({
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": text }],
+                    "stop_reason": "end",
+                    "model": model.id,
+                    "provider": model.provider
+                })],
+            })
         }
         RouterReplyV1::FunctionCall {
             function,
@@ -258,9 +270,12 @@ fn compile_reply(
                 model,
                 ordinal as i64,
             );
-            Ok((
-                vec![AssistantMessageEvent::Done { message }],
-                RouterChatResponse {
+            let function_id = &function_ids[function];
+            let function_response = &authored.functions[function].response;
+            let (content, is_error) = normalize_function_response(function_response);
+            Ok(CompiledReply {
+                frames: vec![AssistantMessageEvent::Done { message }],
+                response: RouterChatResponse {
                     ok: true,
                     provider: model.provider.clone(),
                     model: model.id.clone(),
@@ -268,9 +283,46 @@ fn compile_reply(
                     usage: usage.clone(),
                     error: None,
                 },
-            ))
+                history: vec![
+                    json!({
+                        "role": "assistant",
+                        "content": [{
+                            "type": "function_call",
+                            "id": call_id,
+                            "function_id": function_id,
+                            "arguments": arguments
+                        }],
+                        // The harness persists an open call with its default
+                        // stop reason; the wire response remains
+                        // `function_call`.
+                        "stop_reason": "end",
+                        "model": model.id,
+                        "provider": model.provider
+                    }),
+                    json!({
+                        "role": "function_result",
+                        "function_call_id": call_id,
+                        "function_id": function_id,
+                        "content": content,
+                        "details": function_response,
+                        "is_error": is_error
+                    }),
+                ],
+            })
         }
-        RouterReplyV1::Raw { frames, response } => Ok((frames.clone(), response.clone())),
+        RouterReplyV1::Raw { frames, response } => {
+            let history = match frames.last() {
+                Some(AssistantMessageEvent::Done { message }) => {
+                    vec![serde_json::to_value(message)?]
+                }
+                _ => Vec::new(),
+            };
+            Ok(CompiledReply {
+                frames: frames.clone(),
+                response: response.clone(),
+                history,
+            })
+        }
     }
 }
 
@@ -294,64 +346,6 @@ fn assistant_message(
         provider: model.provider.clone(),
         timestamp,
     }
-}
-
-fn extend_history(
-    messages: &mut Vec<Value>,
-    reply: &RouterReplyV1,
-    model: &ModelFixtureV1,
-    authored: &IntegrationScenarioV1,
-    function_ids: &BTreeMap<String, String>,
-    call_id: Option<&str>,
-) -> anyhow::Result<()> {
-    match reply {
-        RouterReplyV1::Text { text, .. } => messages.push(json!({
-            "role": "assistant",
-            "content": [{ "type": "text", "text": text }],
-            "stop_reason": "end",
-            "model": model.id,
-            "provider": model.provider
-        })),
-        RouterReplyV1::FunctionCall {
-            function,
-            arguments,
-            ..
-        } => {
-            let call_id = call_id.context("missing compiled function-call id")?;
-            let function_id = &function_ids[function];
-            messages.push(json!({
-                "role": "assistant",
-                "content": [{
-                    "type": "function_call",
-                    "id": call_id,
-                    "function_id": function_id,
-                    "arguments": arguments
-                }],
-                // The harness persists an open call with its default stop
-                // reason; the router wire response remains `function_call`.
-                "stop_reason": "end",
-                "model": model.id,
-                "provider": model.provider
-            }));
-            let response = &authored.functions[function].response;
-            let (content, is_error) = normalize_function_response(response);
-            messages.push(json!({
-                "role": "function_result",
-                "function_call_id": call_id,
-                "function_id": function_id,
-                "content": content,
-                "details": response,
-                "is_error": is_error
-            }));
-        }
-        RouterReplyV1::Raw { frames, .. } => {
-            let Some(AssistantMessageEvent::Done { message }) = frames.last() else {
-                return Ok(());
-            };
-            messages.push(serde_json::to_value(message)?);
-        }
-    }
-    Ok(())
 }
 
 /// Mirrors `harness::trigger::normalize`: the next router generation must
