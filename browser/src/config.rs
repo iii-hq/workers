@@ -50,6 +50,10 @@ pub struct WorkerConfig {
     pub allowed_schemes: Vec<String>,
     /// Maximum nodes serialized by `browser::snapshot` before truncation.
     pub max_snapshot_nodes: u64,
+    /// Allow `browser::sessions::attach` to connect to an already-running
+    /// browser and adopt its tabs. Off by default: attaching reaches the
+    /// user's real profile with its logged-in sessions, so it is opt-in.
+    pub allow_attach: bool,
 }
 
 impl Default for WorkerConfig {
@@ -69,6 +73,7 @@ impl Default for WorkerConfig {
             screenshot_quality: 60,
             allowed_schemes: vec!["http".to_string(), "https".to_string()],
             max_snapshot_nodes: 2_000,
+            allow_attach: false,
         }
     }
 }
@@ -125,6 +130,7 @@ mod tests {
         assert_eq!(c.screenshot_quality, 60);
         assert_eq!(c.allowed_schemes, vec!["http", "https"]);
         assert_eq!(c.max_snapshot_nodes, 2_000);
+        assert!(!c.allow_attach);
     }
 
     #[test]

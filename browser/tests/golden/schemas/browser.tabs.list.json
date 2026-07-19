@@ -1,0 +1,59 @@
+{
+  "description": "List the open tabs of a running browser reachable at a CDP endpoint (url, title, and whether a session already adopted each). Read-only; adopt one with browser::sessions::attach.",
+  "function_id": "browser::tabs::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "cdp_url": {
+        "description": "CDP endpoint of the running browser, as in browser::sessions::attach.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "cdp_url"
+    ],
+    "title": "TabsListInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "TabInfo": {
+        "description": "One open tab reported by `browser::tabs::list`.",
+        "properties": {
+          "adopted": {
+            "description": "True when a session already adopted this tab; it cannot be adopted again until that session stops.",
+            "type": "boolean"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "adopted",
+          "url"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "tabs": {
+        "items": {
+          "$ref": "#/definitions/TabInfo"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "tabs"
+    ],
+    "title": "TabsListOutput",
+    "type": "object"
+  }
+}
