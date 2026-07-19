@@ -122,6 +122,13 @@ releases it untouched on stop; `browser::tabs::list` enumerates a running
 browser's tabs. Attach reaches logged-in state, so it is off unless
 `allow_attach` is set in config, and adoption is exclusive per tab.
 
+`browser::handoff` pauses a session for a step only a human can do (CAPTCHA,
+2FA, payment): it mounts an in-page continue banner and blocks the call until
+the human clicks it, a `browser::handoff::confirm` call resolves it, or the
+timeout elapses, emitting `browser::handoff-requested` for the console to
+surface. Human acknowledgment is not proof, so the caller verifies the
+expected page state after it returns.
+
 ## Configuration
 
 Stored in the `configuration` worker under the `browser` key; every field is
@@ -159,6 +166,7 @@ bindings accept an optional `{ "session_id": "..." }` filter.
 | `browser::navigated` | The page committed a navigation | `{ session_id, url, timestamp }` |
 | `browser::console-event` | A console/log/exception entry was captured | `{ session_id, entry }` |
 | `browser::picked` | The human picked an element in inspect mode | `{ session_id, element, timestamp }` |
+| `browser::handoff-requested` | A session paused for a human step (CAPTCHA, 2FA, payment) | `{ session_id, handoff_id, instructions, timestamp }` |
 
 `browser::console-event` is high-volume; bind it with a `session_id` filter
 and treat `browser::console::read` as the durable record. `browser::picked`

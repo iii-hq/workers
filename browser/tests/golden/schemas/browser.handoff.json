@@ -1,0 +1,60 @@
+{
+  "description": "Pause a session for a step only a human can do (CAPTCHA, 2FA, payment): show an in-page continue banner and block until the human clicks it, a browser::handoff::confirm call resolves it, or the timeout elapses. Human acknowledgment is not proof — verify the expected page state after it returns.",
+  "function_id": "browser::handoff",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "instructions": {
+        "description": "What the human must do before the call continues. Shown in the in-page banner and the handoff-requested event.",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timeout_ms": {
+        "default": null,
+        "description": "Give up after this long and return timed_out. Defaults to the config default; clamped to `max_timeout_ms`. Set generously; a human is slow.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "instructions",
+      "session_id"
+    ],
+    "title": "HandoffInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "confirmed": {
+        "description": "True when a human confirmed; false when the wait timed out.",
+        "type": "boolean"
+      },
+      "handoff_id": {
+        "type": "string"
+      },
+      "url": {
+        "description": "The page URL when the wait ended, so the caller can verify the step actually landed (human acknowledgment is not proof).",
+        "type": "string"
+      },
+      "via": {
+        "description": "How the confirmation arrived: `in_page`, `confirm_call`, or `timeout`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "confirmed",
+      "handoff_id",
+      "url",
+      "via"
+    ],
+    "title": "HandoffOutput",
+    "type": "object"
+  }
+}
