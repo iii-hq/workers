@@ -4,7 +4,8 @@
 //! code the live probe runs.
 
 use harness_integration::readiness::{
-    config_failure, missing_functions, missing_trigger_types, topic_failures, ReadinessSpec,
+    config_failure, has_function, has_registered_trigger, missing_functions, missing_trigger_types,
+    topic_failures, ReadinessSpec,
 };
 use serde_json::json;
 
@@ -22,6 +23,43 @@ fn internal_functions_hidden_from_a_filtered_catalog_are_reported() {
     let filtered = json!({ "functions": [ { "function_id": "harness::status" } ] });
     let missing = missing_functions(&spec(), &filtered);
     assert_eq!(missing, vec!["function harness::send"]);
+}
+
+#[test]
+fn function_catalog_requires_every_structured_id() {
+    let required = ["recorder::target", "recorder::secondary"];
+    let complete = json!({ "functions": [
+        { "function_id": "recorder::target" },
+        { "id": "recorder::secondary" }
+    ]});
+    assert!(required.iter().all(|id| has_function(&complete, id)));
+
+    let incidental_text = json!({ "functions": [
+        {
+            "function_id": "recorder::target",
+            "description": "calls recorder::secondary"
+        }
+    ]});
+    assert!(!required.iter().all(|id| has_function(&incidental_text, id)));
+}
+
+#[test]
+fn registered_trigger_catalog_requires_every_bound_function_id() {
+    let required = ["integration-recorder::lifecycle", "recorder::binding"];
+    let complete = json!([
+        { "function_id": "integration-recorder::lifecycle" },
+        { "function_id": "recorder::binding" }
+    ]);
+    assert!(required
+        .iter()
+        .all(|id| has_registered_trigger(&complete, id)));
+
+    let incomplete = json!([
+        { "function_id": "integration-recorder::lifecycle" }
+    ]);
+    assert!(!required
+        .iter()
+        .all(|id| has_registered_trigger(&incomplete, id)));
 }
 
 #[test]
