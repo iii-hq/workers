@@ -4,4 +4,5 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: github
+tags: [github, gh, git, pull-requests, issues, actions, releases]
 description: GitHub CLI (gh) as an iii worker — typed github::pr/issue/repo/run/workflow/release/search functions, github::exec argv passthrough, and github::api for any GitHub REST endpoint.
