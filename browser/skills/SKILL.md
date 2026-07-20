@@ -50,6 +50,9 @@ on navigation; re-snapshot before acting after any page change.
   next navigation and never touch source files. Use them to find the right
   value, then edit the codebase.
 - `browser::pick::*`, `browser::screencast::*`, and `browser::frame` are console-UI plumbing, not agent surface.
+- The ghost cursor and session-status badge are in-page overlays for a human
+  watching the streamed viewport; they appear only while screencast is
+  active and never affect page content or the accessibility snapshot.
 - Navigation is limited to the configured URL schemes (http/https by
   default).
 
@@ -69,7 +72,11 @@ on navigation; re-snapshot before acting after any page change.
 - `browser::tabs::list` — open tabs of a running browser at a CDP endpoint,
   with which are already adopted; read-only.
 - `browser::doctor` — read-only environment report: which Chromium would
-  launch, its version, capacity, and anything degraded with how to enable it.
+  launch, its version, capacity, whether attach and recording are available,
+  and anything degraded with how to enable it.
+- `browser::recording::start` / `browser::recording::stop` — capture a
+  session's live viewport to a webm or mp4 file via ffmpeg; stop returns the
+  path, duration, and frame count. Requires ffmpeg on PATH.
 - `browser::navigate` — go to a URL and wait for the load.
 - `browser::snapshot` — the page as an accessibility outline with `[ref=eN]`
   handles; the default way to read a page. `diff: true` returns only what
