@@ -9,14 +9,18 @@
 //! registration emits.
 
 use llm_router::types::router::{
-    ProviderReadyAck, ProviderStreamInput, ProviderStreamOutput, RefreshModelsRequest,
-    RefreshModelsResponse, RouterReadyEvent,
+    ProviderAbortRequest, ProviderAbortResponse, ProviderReadyAck, ProviderStreamInput,
+    ProviderStreamOutput, RefreshModelsRequest, RefreshModelsResponse, RouterReadyEvent,
 };
 
 pub const STREAM_ID: &str = "provider::openai-codex::stream";
 pub const STREAM_DESC: &str = "Stream an OpenAI Codex completion: resolve a ChatGPT OAuth token \
      from the vault, call the upstream Responses API, and relay AssistantMessageEvent frames to \
      writer_ref.";
+
+pub const ABORT_ID: &str = "provider::openai-codex::abort";
+pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request_id \
+     (router::abort fan-out), stopping billed generation immediately.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::openai-codex::refresh_models";
 pub const REFRESH_MODELS_DESC: &str = "Fetch the authenticated Codex model catalog and replace \
@@ -59,6 +63,7 @@ where
 pub fn catalog() -> Vec<FunctionSpec> {
     vec![
         spec::<ProviderStreamInput, ProviderStreamOutput>(STREAM_ID, STREAM_DESC),
+        spec::<ProviderAbortRequest, ProviderAbortResponse>(ABORT_ID, ABORT_DESC),
         spec::<RefreshModelsRequest, RefreshModelsResponse>(REFRESH_MODELS_ID, REFRESH_MODELS_DESC),
         spec::<RouterReadyEvent, ProviderReadyAck>(ON_ROUTER_READY_ID, ON_ROUTER_READY_DESC),
     ]

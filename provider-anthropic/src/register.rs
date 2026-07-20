@@ -9,6 +9,8 @@ use crate::{router_client, state, PROVIDER_ID};
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
+use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
+use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
@@ -118,6 +120,11 @@ fn read_timeout() -> Duration {
 }
 
 pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
+    // Shared per-process cache for the registration token and the resolve
+    // response (see llm_router::provider_scaffold::cache). Invalidated on
+    // router::ready — a restarted router may carry new config and reissues
+    // declare/refresh anyway — and on upstream auth errors (stream_fn).
+    let cache = ScaffoldCache::new();
     // Streaming uses no total timeout (the router owns stream budgets), but
     // reads are silence-bounded: a stalled upstream otherwise pings the router
     // past its idle guard until the engine kills the call at stream_timeout
@@ -129,13 +136,26 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         .build()
         .expect("reqwest client");
 
+    // request_id → live upstream cancel, shared by stream (registers) and
+    // abort (signals) — see llm_router::provider_scaffold::aborts.
+    let aborts = StreamAborts::new();
+
     iii.register_function(
         surface::STREAM_ID,
         RegisterFunction::new_async_with_bad_request(
-            make_stream(iii.clone(), http.clone()),
+            make_stream(iii.clone(), http.clone(), cache.clone(), aborts.clone()),
             invalid_request_from_serde,
         )
         .description(surface::STREAM_DESC)
+        .metadata(json!({ "internal": true })),
+    );
+    iii.register_function(
+        surface::ABORT_ID,
+        RegisterFunction::new_async_with_bad_request(
+            make_abort(aborts),
+            invalid_request_from_serde,
+        )
+        .description(surface::ABORT_DESC)
         .metadata(json!({ "internal": true })),
     );
     iii.register_function(
@@ -149,10 +169,12 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     {
         let iii_ready = iii.clone();
         let http_ready = http.clone();
+        let cache_ready = cache.clone();
         iii.register_function(
             surface::ON_ROUTER_READY_ID,
             RegisterFunction::new_async(move |_event: RouterReadyEvent| {
                 let (iii, http) = (iii_ready.clone(), http_ready.clone());
+                cache_ready.invalidate();
                 async move {
                     tokio::spawn(declare_and_refresh(iii, http));
                     Ok::<_, Error>(ProviderReadyAck { ok: true })

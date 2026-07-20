@@ -160,23 +160,7 @@ impl SessionClient {
         entry_id: &str,
         origin: Option<&Value>,
     ) -> Result<(), HarnessError> {
-        // session-manager stores custom entries via a `custom` message wrapper
-        // with no model wire mapping; the harness reads them back with
-        // include_custom.
-        let mut payload = json!({
-            "session_id": session_id,
-            "entry_id": entry_id,
-            "message": {
-                "role": "custom",
-                "custom_type": custom_type,
-                "content": [],
-                "details": data,
-                "timestamp": AgentMessage::now_ms(),
-            },
-        });
-        if let Some(o) = origin {
-            payload["origin"] = o.clone();
-        }
+        let payload = custom_append_payload(session_id, custom_type, data, entry_id, origin);
         self.call("session::append", payload).await.map(|_| ())
     }
 
@@ -261,5 +245,116 @@ impl SessionClient {
             }
         }
         Ok(out)
+    }
+
+    /// Load only the entries strictly after `after_entry_id` on the active
+    /// path — the incremental form of [`Self::messages`] for callers holding
+    /// a watermark. `Ok(None)` means the watermark left the active path
+    /// (fork / `set_active_leaf`); the caller must fall back to a full load.
+    pub async fn messages_after(
+        &self,
+        session_id: &str,
+        after_entry_id: &str,
+        include_custom: bool,
+    ) -> Result<Option<Vec<LoadedEntry>>, HarnessError> {
+        const PAGE_LIMIT: u64 = 500;
+        let mut out: Vec<LoadedEntry> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut payload = json!({
+                "session_id": session_id,
+                "include_custom": include_custom,
+                "limit": PAGE_LIMIT,
+            });
+            match &cursor {
+                // Later pages resume from the server cursor; only the first
+                // page anchors on the caller's watermark.
+                Some(c) => payload["cursor"] = json!(c),
+                None => payload["after_entry_id"] = json!(after_entry_id),
+            }
+            let resp = match self.call("session::messages", payload).await {
+                Ok(resp) => resp,
+                Err(HarnessError::Dependency(msg)) if msg.contains("session/invalid_cursor") => {
+                    return Ok(None);
+                }
+                Err(e) => return Err(e),
+            };
+            let arr = resp
+                .get("messages")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for item in arr {
+                match serde_json::from_value::<LoadedEntry>(item) {
+                    Ok(entry) => out.push(entry),
+                    Err(e) => {
+                        tracing::warn!(session_id, error = %e, "skipping unparseable session entry")
+                    }
+                }
+            }
+            match resp.get("next_cursor").and_then(Value::as_str) {
+                Some(next) if !next.is_empty() => cursor = Some(next.to_string()),
+                _ => break,
+            }
+        }
+        Ok(Some(out))
+    }
+}
+
+/// The `session::append` request for a bookkeeping entry. The record MUST ride
+/// the dedicated `custom` field: `session::append` only creates a
+/// `kind: "custom"` entry from it — a `role: "custom"` message wrapper is
+/// stored as a plain `kind: "message"` entry, which `session::messages`
+/// returns with `custom: None`, so the record would never be found on
+/// read-back (the compaction round-trip depends on this).
+fn custom_append_payload(
+    session_id: &str,
+    custom_type: &str,
+    data: Value,
+    entry_id: &str,
+    origin: Option<&Value>,
+) -> Value {
+    let mut payload = json!({
+        "session_id": session_id,
+        "entry_id": entry_id,
+        "custom": {
+            "custom_type": custom_type,
+            "data": data,
+        },
+    });
+    if let Some(o) = origin {
+        payload["origin"] = o.clone();
+    }
+    payload
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Prevents: the compaction record silently persisting as a plain message
+    // entry — `session::append` only creates a `kind: "custom"` entry from
+    // the `custom` field, and the turn loop only reads the record back from
+    // `entry.custom` (a message-wrapped record makes every step reassemble
+    // the full transcript and recompact from scratch).
+    #[test]
+    fn custom_append_rides_the_custom_field() {
+        let origin = json!({ "turn_id": "t_1" });
+        let payload = custom_append_payload(
+            "s_1",
+            "compaction",
+            json!({ "summary": "s", "tail_start_entry_id": "e_9" }),
+            "e_compaction_1",
+            Some(&origin),
+        );
+        assert_eq!(payload["custom"]["custom_type"], "compaction");
+        assert_eq!(payload["custom"]["data"]["summary"], "s");
+        assert_eq!(payload["entry_id"], "e_compaction_1");
+        assert_eq!(payload["origin"], origin);
+        assert!(
+            payload.get("message").is_none(),
+            "custom records must not be message-wrapped (stored as kind: message, \
+             returned with custom: None, invisible to the read-back)"
+        );
     }
 }

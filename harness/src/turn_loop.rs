@@ -51,6 +51,15 @@ const CONTEXT_OVERFLOW_FAILURE: FailureInfo = FailureInfo {
 /// Keep a small fixed reserve in addition to the deterministic JSON estimate.
 const PROVIDER_FRAMING_ALLOWANCE_TOKENS: u64 = 64;
 
+/// Assembly headroom reserved when pre-generate hooks are bound: hook
+/// appends land AFTER assembly fits the context, so without a reservation
+/// any append overflows an exactly-full context and fails the turn.
+const PRE_GENERATE_HOOK_ALLOWANCE_TOKENS: u64 = 256;
+
+/// Extra margin folded into the one-shot re-assembly after a post-assembly
+/// overflow, covering hook-output variance on the retry.
+const REASSEMBLY_HEADROOM_MARGIN_TOKENS: u64 = 256;
+
 fn estimate_request_overhead_tokens(
     response_format: Option<&Value>,
     provider_options: Option<&Value>,
@@ -290,23 +299,162 @@ pub async fn run_step(
 
     // Assemble the model-ready context (+ compaction persistence). An
     // impossible fit is a terminal turn outcome, not an unexpected step error.
-    let assembled = match assemble_context(
-        deps,
-        &session,
-        &record,
-        &entries,
-        payload.step,
-        prev_watermark.as_deref(),
-        ContextAssemblyInputs {
-            system_prompt: assembly_system_prompt,
-            tools: &tools,
-            request_overhead_tokens,
-        },
-    )
-    .await
-    {
-        Ok(assembled) => assembled,
-        Err(HarnessError::ContextOverflow(reason)) => {
+    //
+    // Post-assembly, pre_generate hooks and orphan repair may GROW the
+    // request, while assembly fits to the exact usable ceiling — so on a
+    // full context even a tiny hook append overflows the final check
+    // (observed live: a ~20-token guidance injection over a 220k-usable
+    // request killed a 13-step turn). Two defenses, composable: when
+    // pre-generate hooks are bound, reserve a small allowance up front;
+    // and if the final count still overflows, re-assemble ONCE with the
+    // measured deficit folded into the overhead so assembly makes room —
+    // failing the turn only when even that is not enough.
+    let mut extra_overhead_tokens: u64 = if deps.hooks.pre_generate.is_empty() {
+        0
+    } else {
+        PRE_GENERATE_HOOK_ALLOWANCE_TOKENS
+    };
+    let mut reassembled = false;
+    let (gen_system_prompt, gen_annotations, gen_messages) = loop {
+        let assembled = match assemble_context(
+            deps,
+            &session,
+            &record,
+            &entries,
+            payload.step,
+            prev_watermark.as_deref(),
+            ContextAssemblyInputs {
+                system_prompt: assembly_system_prompt.clone(),
+                tools: &tools,
+                request_overhead_tokens: request_overhead_tokens
+                    .saturating_add(extra_overhead_tokens),
+            },
+        )
+        .await
+        {
+            Ok(assembled) => assembled,
+            Err(HarnessError::ContextOverflow(reason)) => {
+                return finalize_failed(
+                    deps,
+                    &session,
+                    &mut record,
+                    &reason,
+                    CONTEXT_OVERFLOW_FAILURE,
+                )
+                .await;
+            }
+            Err(error) => return Err(error),
+        };
+
+        // pre_generate hooks: extend the system prompt / append bounded messages,
+        // or veto. Annotations ride the assistant entry's origin (audit trail).
+        let (gen_system_prompt, appended, gen_annotations) = match deps
+            .hooks
+            .run_pre_generate(
+                &record,
+                payload.step,
+                assembled.system_prompt.clone(),
+                &assembled.messages,
+            )
+            .await
+        {
+            crate::hooks::runner::PreGenerateOutcome::Continue {
+                system_prompt,
+                append_messages,
+                annotations,
+            } => (system_prompt, append_messages, annotations),
+            crate::hooks::runner::PreGenerateOutcome::Deny(reason) => {
+                return finalize_failed(
+                    deps,
+                    &session,
+                    &mut record,
+                    &format!("pre_generate hook denied: {reason}"),
+                    FailureInfo {
+                        code: "harness.pre_generate_denied",
+                        phase: "pre_generate",
+                        retryable: false,
+                    },
+                )
+                .await;
+            }
+        };
+        let hook_appended = !appended.is_empty();
+        let mut gen_messages = assembled.messages.clone();
+        gen_messages.extend(appended);
+
+        // Post-assembly invariant guard: providers reject a context where an
+        // assistant function_call has no function_result. Compaction can cut a
+        // pair (result summarized away, call kept) even when the TRANSCRIPT is
+        // fully paired — patch the assembled copy only.
+        let patched = patch_orphaned_calls(&mut gen_messages);
+        if patched > 0 {
+            tracing::warn!(
+                session_id = %record.session_id,
+                turn_id = %record.turn_id,
+                patched,
+                "assembled context contained orphaned function_calls; injected elided results (compaction cut a call/result pair)"
+            );
+        }
+
+        // Never hand the provider an empty messages array (Anthropic 400:
+        // "messages: at least one message is required"). Assembly's own guards
+        // make this unreachable in practice; if it still happens (e.g. a
+        // transcript with no user message at all), fail the turn with a clear
+        // harness error instead of emitting a cryptic provider error.
+        if gen_messages.is_empty() {
+            return finalize_failed(
+                deps,
+                &session,
+                &mut record,
+                "assembled context is empty; refusing to call the provider with no messages",
+                FailureInfo {
+                    code: "harness.empty_context",
+                    phase: "context_assembly",
+                    retryable: false,
+                },
+            )
+            .await;
+        }
+
+        // Hooks and orphan repair can change the assembled request. When nothing
+        // did — no appended messages, no orphan patches, prompt unchanged — the
+        // request IS the assemble output, whose `token_count` already covers
+        // messages + prompt + tools + the request overhead, so the second
+        // full-payload count-tokens round trip is pure repetition. Re-count only
+        // when the request actually diverged. (The re-count compares against the
+        // BASE overhead: the extra reservation exists only to make assembly
+        // leave room; it is not part of the real request.)
+        let request_unchanged = final_request_unchanged(
+            hook_appended,
+            patched,
+            &gen_system_prompt,
+            &assembled.system_prompt,
+        );
+        let final_request_tokens = if request_unchanged {
+            assembled.token_count
+        } else {
+            let final_count = deps
+                .context()
+                .await
+                .count_tokens(crate::clients::context::CountTokensParams {
+                    messages: gen_messages.clone(),
+                    model_id: record.options.model.clone(),
+                    provider: record.options.provider.clone(),
+                    system_prompt: gen_system_prompt.clone(),
+                    tools: tools.clone(),
+                })
+                .await
+                .map_err(HarnessError::Dependency)?;
+            final_count.tokens.saturating_add(request_overhead_tokens)
+        };
+        if final_request_tokens <= assembled.usable {
+            break (gen_system_prompt, gen_annotations, gen_messages);
+        }
+        if reassembled {
+            let reason = format!(
+                "final model request exceeds the assembled usable budget: {final_request_tokens} tokens > {} usable (persists after re-assembly with reserved headroom)",
+                assembled.usable
+            );
             return finalize_failed(
                 deps,
                 &session,
@@ -316,108 +464,24 @@ pub async fn run_step(
             )
             .await;
         }
-        Err(error) => return Err(error),
-    };
-
-    // pre_generate hooks: extend the system prompt / append bounded messages,
-    // or veto. Annotations ride the assistant entry's origin (audit trail).
-    let (gen_system_prompt, appended, gen_annotations) = match deps
-        .hooks
-        .run_pre_generate(
-            &record,
-            payload.step,
-            assembled.system_prompt.clone(),
-            &assembled.messages,
-        )
-        .await
-    {
-        crate::hooks::runner::PreGenerateOutcome::Continue {
-            system_prompt,
-            append_messages,
-            annotations,
-        } => (system_prompt, append_messages, annotations),
-        crate::hooks::runner::PreGenerateOutcome::Deny(reason) => {
-            return finalize_failed(
-                deps,
-                &session,
-                &mut record,
-                &format!("pre_generate hook denied: {reason}"),
-                FailureInfo {
-                    code: "harness.pre_generate_denied",
-                    phase: "pre_generate",
-                    retryable: false,
-                },
-            )
-            .await;
-        }
-    };
-    let mut gen_messages = assembled.messages.clone();
-    gen_messages.extend(appended);
-
-    // Post-assembly invariant guard: providers reject a context where an
-    // assistant function_call has no function_result. Compaction can cut a
-    // pair (result summarized away, call kept) even when the TRANSCRIPT is
-    // fully paired — patch the assembled copy only.
-    let patched = patch_orphaned_calls(&mut gen_messages);
-    if patched > 0 {
+        // One-shot recovery: fold the measured overshoot (plus margin for
+        // hook variance on the retry — hooks re-run against the smaller
+        // context) into the reservation and re-assemble. The compaction
+        // bookkeeping entry id is per (turn, step), so a re-assembled
+        // compaction dedupes instead of double-writing.
+        reassembled = true;
+        let deficit = final_request_tokens - assembled.usable;
+        extra_overhead_tokens = extra_overhead_tokens
+            .saturating_add(deficit)
+            .saturating_add(REASSEMBLY_HEADROOM_MARGIN_TOKENS);
         tracing::warn!(
             session_id = %record.session_id,
             turn_id = %record.turn_id,
-            patched,
-            "assembled context contained orphaned function_calls; injected elided results (compaction cut a call/result pair)"
+            deficit,
+            extra_overhead_tokens,
+            "post-assembly additions exceeded the usable budget; re-assembling with reserved headroom"
         );
-    }
-
-    // Never hand the provider an empty messages array (Anthropic 400:
-    // "messages: at least one message is required"). Assembly's own guards
-    // make this unreachable in practice; if it still happens (e.g. a
-    // transcript with no user message at all), fail the turn with a clear
-    // harness error instead of emitting a cryptic provider error.
-    if gen_messages.is_empty() {
-        return finalize_failed(
-            deps,
-            &session,
-            &mut record,
-            "assembled context is empty; refusing to call the provider with no messages",
-            FailureInfo {
-                code: "harness.empty_context",
-                phase: "context_assembly",
-                retryable: false,
-            },
-        )
-        .await;
-    }
-
-    // Hooks and orphan repair can change the assembled request. Re-count the
-    // exact final prompt/messages/tools and include the same non-context
-    // overhead reserve before creating an assistant entry or calling router.
-    let final_count = deps
-        .context()
-        .await
-        .count_tokens(crate::clients::context::CountTokensParams {
-            messages: gen_messages.clone(),
-            model_id: record.options.model.clone(),
-            provider: record.options.provider.clone(),
-            system_prompt: gen_system_prompt.clone(),
-            tools: tools.clone(),
-        })
-        .await
-        .map_err(HarnessError::Dependency)?;
-    let final_request_tokens = final_count.tokens.saturating_add(request_overhead_tokens);
-    if final_request_tokens > assembled.usable {
-        let reason = format!(
-            "final model request exceeds the assembled usable budget: {final_request_tokens} tokens > {} usable",
-            assembled.usable
-        );
-        return finalize_failed(
-            deps,
-            &session,
-            &mut record,
-            &reason,
-            CONTEXT_OVERFLOW_FAILURE,
-        )
-        .await;
-    }
+    };
 
     let assistant_origin = origin_with(&record.turn_id, &gen_annotations);
 
@@ -456,6 +520,15 @@ pub async fn run_step(
     record.stream_request_id = Some(params.request_id.clone());
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
 
+    // A stop that landed during context assembly (its durable write blocked on
+    // the guard held here) is only visible via the in-process signal. Bail
+    // before dispatching generation at all — otherwise the provider starts a
+    // stream that is dead on arrival.
+    if deps.cancels.is_fired(&record.turn_id) {
+        record.abort = true;
+        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+    }
+
     // Release the per-session lock across the generation RPC. The loop writes no
     // turn record between here and the post-generation cancellation check
     // (router::chat streams into the SESSION, not the turn record), so dropping
@@ -472,7 +545,25 @@ pub async fn run_step(
         .await;
 
     let router = deps.router().await;
-    let outcome = router.chat(params, &sink).await?;
+    // Harness-local cancel backstop: cuts this await even when router::abort
+    // was a no-op (registration race / router restart). Level-triggered, so a
+    // stop fired before this subscribe is still observed.
+    let abort_rx = deps.cancels.watch(&record.turn_id);
+    let mut outcome = router.chat(params, &sink, abort_rx).await?;
+
+    // A stop mid-generation truncates tool-call blocks before their arguments
+    // stream. An argument-less call can never execute (the turn is cancelled)
+    // and renders as an empty generic card — drop it from the persisted
+    // partial. Calls with partial arguments are kept: they show what was
+    // forming when the user stopped.
+    if outcome.message.stop_reason == crate::types::event::StopReason::Aborted {
+        outcome.message.content.retain(|b| {
+            !matches!(b, ContentBlock::FunctionCall { arguments, .. }
+                if arguments.is_null()
+                    || arguments.as_str().is_some_and(str::is_empty)
+                    || arguments.as_object().is_some_and(serde_json::Map::is_empty))
+        });
+    }
 
     // Generation consumed: advance the steering watermark (persisted by the
     // advance()/finalize call that ends this step).
@@ -635,6 +726,16 @@ pub async fn run_step(
                 .await?;
         let filesystem_root = record.options.filesystem_root().map(str::to_string);
         for call in trigger_calls.iter().copied() {
+            // Cancel check between tool calls. Only the in-process signal can
+            // be observed here: this phase holds the session lock, so the
+            // durable abort write in harness::stop is blocked behind it by
+            // construction. Executed calls are already checkpointed per-call,
+            // so finalizing mid-loop loses nothing.
+            if deps.cancels.is_fired(&record.turn_id) {
+                record.abort = true;
+                return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+            }
+
             // Per-call checkpoint: skip done/pending, recover an interrupted
             // trigger.
             match record.calls.get(&call.id).map(|c| c.state) {
@@ -1097,6 +1198,7 @@ async fn finalize_completed(
     record.result_error = None;
     record.updated_at = AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    deps.cancels.clear(&record.turn_id);
     let _ = session.set_status(&record.session_id, "done", None).await;
     deps.events
         .emit_completed(
@@ -1140,6 +1242,7 @@ async fn finalize_failed(
     record.updated_at = AgentMessage::now_ms();
     record_failure_telemetry(record, reason, failure);
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    deps.cancels.clear(&record.turn_id);
     let _ = session
         .append_custom(
             &record.session_id,
@@ -1339,6 +1442,19 @@ async fn finalize_cancelled(
     record.status = TurnStatus::Cancelled;
     record.updated_at = AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    deps.cancels.clear(&record.turn_id);
+    // Durable stop marker: without it the transcript just ends mid-thought
+    // after a reload. Deterministic id so the live `stop-reason` notice
+    // (translate.ts) dedupes against this entry, mirroring `e_{turn}_error`.
+    let _ = session
+        .append_custom(
+            &record.session_id,
+            "notice",
+            json!({ "reason": "stopped", "message": "stopped by user." }),
+            &format!("e_{}_stopped", record.turn_id),
+            Some(&origin(&record.turn_id)),
+        )
+        .await;
     let _ = session.set_status(&record.session_id, "done", None).await;
     deps.events
         .emit_completed(
@@ -1378,6 +1494,11 @@ pub async fn fail_turn(
 ) -> TurnStepResult {
     let cfg = deps.cfg().await;
     let session = deps.session().await;
+    // Serialize with stop/resolve/sweep like every other turn-record writer
+    // (locks.rs). Safe: the only caller runs after run_step returned, so its
+    // guard is gone. Lock-free, this finalize could interleave with
+    // harness::stop's under-lock "stopping" ack and strand the session status.
+    let _guard = deps.locks.guard(session_id).await;
     let record = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
         .await
         .ok()
@@ -1509,7 +1630,17 @@ async fn has_user_after_watermark(
     };
     // include_custom must match the watermark's source list (the step entry
     // loads with `true`): a watermark landing on a custom entry would
-    // otherwise never be found and the steering check silently dies.
+    // otherwise be filtered off the path and the delta fetch would error.
+    // The incremental fetch returns only post-watermark entries; when the
+    // watermark left the active path (fork), fall back to the full scan.
+    if let Some(suffix) = session
+        .messages_after(&record.session_id, watermark, true)
+        .await?
+    {
+        return Ok(suffix
+            .iter()
+            .any(|entry| matches!(&entry.message, Some(AgentMessage::User(_)))));
+    }
     let entries = session.messages(&record.session_id, true).await?;
     let mut after = false;
     for entry in entries {
@@ -1669,10 +1800,13 @@ async fn assemble_context(
         .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
         .collect();
     rotate_mid_generation_users(&mut messages, new_suffix_len);
+    // Rotation only reorders; the estimator is an order-independent
+    // per-message sum, so assemble's count still describes this list.
     Ok(Assembled {
         system_prompt: Some(out.system_prompt),
         messages,
         usable: out.usable,
+        token_count: out.token_count,
     })
 }
 
@@ -1745,6 +1879,10 @@ struct Assembled {
     system_prompt: Option<String>,
     messages: Vec<Value>,
     usable: u64,
+    /// `context::assemble`'s estimate of this exact context (messages +
+    /// prompt + tools + request overhead). Reused as the final request
+    /// count when nothing mutates the request after assembly.
+    token_count: u64,
 }
 
 struct ContextAssemblyInputs<'a> {
@@ -1804,6 +1942,19 @@ fn rotate_mid_generation_users(messages: &mut Vec<Value>, new_suffix_len: usize)
 /// message directly after each orphaned call's assistant message. Returns how
 /// many results were injected. The durable transcript is never touched; the
 /// orphan usually means compaction cut a call/result pair.
+/// Whether the final model request is exactly the assemble output — no
+/// hook-appended messages, no orphan patches, prompt unchanged — so
+/// `context::assemble.token_count` already describes it and the second
+/// count-tokens round trip would be pure repetition.
+fn final_request_unchanged(
+    hook_appended: bool,
+    patched: usize,
+    gen_system_prompt: &Option<String>,
+    assembled_system_prompt: &Option<String>,
+) -> bool {
+    !hook_appended && patched == 0 && gen_system_prompt == assembled_system_prompt
+}
+
 fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
     let mut resolved: std::collections::HashSet<String> = std::collections::HashSet::new();
     for m in messages.iter() {
@@ -1994,6 +2145,24 @@ mod tests {
             ),
             super::PROVIDER_FRAMING_ALLOWANCE_TOKENS + serialized_tokens
         );
+    }
+
+    #[test]
+    fn final_count_is_skipped_only_when_nothing_mutated_the_request() {
+        let prompt = Some("base".to_string());
+        // Untouched request: assemble's token_count is authoritative.
+        assert!(super::final_request_unchanged(false, 0, &prompt, &prompt));
+        // Any mutation forces the re-count: hook append, orphan patch,
+        // or a hook-rewritten system prompt.
+        assert!(!super::final_request_unchanged(true, 0, &prompt, &prompt));
+        assert!(!super::final_request_unchanged(false, 1, &prompt, &prompt));
+        assert!(!super::final_request_unchanged(
+            false,
+            0,
+            &Some("hooked".to_string()),
+            &prompt
+        ));
+        assert!(!super::final_request_unchanged(false, 0, &None, &prompt));
     }
 
     #[test]

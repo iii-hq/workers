@@ -4,7 +4,7 @@ import {
   $getRoot,
   type LexicalEditor,
 } from 'lexical'
-import { ArrowUp, Square } from 'lucide-react'
+import { ArrowUp, Loader2, Square } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
@@ -87,6 +87,8 @@ interface ComposerProps {
   onPermissionModeChange: (next: PermissionMode) => void
   onSubmit: (payload: ComposerSubmitPayload) => void
   onStop?: () => void
+  /** A stop was requested and the server hasn't finalized the turn yet. */
+  stopping?: boolean
   isStreaming?: boolean
   /**
    * When true, the editor stays unlocked while streaming: a submit queues the
@@ -160,6 +162,7 @@ export function Composer({
   onPermissionModeChange,
   onSubmit,
   onStop,
+  stopping,
   isStreaming,
   queueWhileStreaming,
   blocked,
@@ -389,10 +392,15 @@ export function Composer({
             <button
               type="button"
               onClick={onStop}
-              aria-label="stop generating"
+              disabled={stopping}
+              aria-label={stopping ? 'stopping' : 'stop generating'}
               className={actionButtonClass}
             >
-              <Square size={16} aria-hidden className="fill-black/90" />
+              {stopping ? (
+                <Loader2 size={16} aria-hidden className="animate-spin" />
+              ) : (
+                <Square size={16} aria-hidden className="fill-black/90" />
+              )}
             </button>
           ) : (
             <button

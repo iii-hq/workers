@@ -7,11 +7,11 @@
 //! with no `--api-key` at all — and the catalog is only pruned on an actual
 //! 401/403 from the server (an operator-configured key we don't have).
 use crate::config::{credential_parts, DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
-use crate::errors::error_chain;
 use crate::{router_client, state, PROVIDER_ID};
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use llm_router::provider_scaffold::sse_transport::error_chain;
 use llm_router::types::model::Model;
 use llm_router::types::router::{RefreshModelsRequest, RefreshModelsResponse};
 use serde_json::Value;

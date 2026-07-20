@@ -172,7 +172,7 @@ pub fn handle_event(
                 }
                 state.thinking.push_str(delta);
                 out.push(AssistantMessageEvent::ThinkingDelta {
-                    partial: partial(state, model),
+                    partial: None,
                     delta: delta.to_string(),
                 });
             }
@@ -195,7 +195,7 @@ pub fn handle_event(
                 }
                 state.text.push_str(delta);
                 out.push(AssistantMessageEvent::TextDelta {
-                    partial: partial(state, model),
+                    partial: None,
                     delta: delta.to_string(),
                 });
             }
@@ -288,7 +288,16 @@ pub fn spawn_responses_upstream(
 ) -> mpsc::Receiver<AssistantMessageEvent> {
     let (tx, rx) = mpsc::channel(64);
     tokio::spawn(async move {
-        run_responses_upstream(client, args, tx).await;
+        // Race the call against receiver-side closure: send errors alone only
+        // observe a dropped receiver at the next send, so a silent upstream
+        // (parked in a chunk read, nothing to send) would otherwise keep the
+        // HTTP stream — and billed generation — alive until the next frame or
+        // the read timeout.
+        let closed = tx.clone();
+        tokio::select! {
+            _ = run_responses_upstream(client, args, tx) => {}
+            _ = closed.closed() => {}
+        }
     });
     rx
 }
@@ -475,6 +484,41 @@ mod tests {
                 _ => "other",
             })
             .collect()
+    }
+
+    /// Contract pin (llm-router types::events): delta frames are slim —
+    /// no cumulative partial per chunk — while block-boundary frames carry
+    /// the authoritative snapshot. Readers reconstruct via
+    /// llm_router::chat::accumulate.
+    #[test]
+    fn deltas_are_slim_and_boundary_snapshots_are_cumulative() {
+        let (_, evs) = run(&[
+            ("response.output_text.delta", json!({"delta":"He"})),
+            ("response.output_text.delta", json!({"delta":"llo"})),
+            ("response.output_text.done", json!({})),
+        ]);
+        for ev in &evs {
+            match ev {
+                AssistantMessageEvent::TextDelta { partial, .. }
+                | AssistantMessageEvent::ThinkingDelta { partial, .. } => {
+                    assert!(partial.is_none(), "delta frames must not carry partial");
+                }
+                _ => {}
+            }
+        }
+        let Some(AssistantMessageEvent::TextEnd { partial }) = evs
+            .iter()
+            .find(|e| matches!(e, AssistantMessageEvent::TextEnd { .. }))
+        else {
+            panic!("want a text_end frame");
+        };
+        assert!(
+            matches!(
+                &partial.content[0],
+                ContentBlock::Text { text } if text == "Hello"
+            ),
+            "the End snapshot must carry the cumulative block text"
+        );
     }
 
     #[test]

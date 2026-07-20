@@ -41,28 +41,62 @@ on navigation; re-snapshot before acting after any page change.
 - One-shot fetching and scraping belong to `web::fetch` (plain HTTP) and the
   scrapling worker (stealth fetching and bulk extraction). Do not start a
   browser session just to read a static page once.
+- Attach mode reaches the user's real browser profile with its logged-in
+  sessions. It is disabled unless `allow_attach` is set, and adoption is
+  exclusive (one session per tab) so two sessions never fight over a tab.
+  Reach for a launched session when you do not specifically need the user's
+  existing logins.
 - `browser::styles::write` edits are visual experiments only: they die on the
   next navigation and never touch source files. Use them to find the right
   value, then edit the codebase.
 - `browser::pick::*`, `browser::screencast::*`, and `browser::frame` are console-UI plumbing, not agent surface.
+- The ghost cursor and session-status badge are in-page overlays for a human
+  watching the streamed viewport; they appear only while screencast is
+  active and never affect page content or the accessibility snapshot.
 - Navigation is limited to the configured URL schemes (http/https by
   default).
 
 ## Functions
 
 - `browser::sessions::start` — launch a Chromium session; returns the
-  session_id every other function needs.
+  session_id every other function needs. `read_only: true` starts an
+  inspection-only session.
 - `browser::sessions::list` — live sessions with their current URL.
-- `browser::sessions::stop` — stop a session; idempotent.
+- `browser::sessions::stop` — stop a session; idempotent. A launched session
+  closes its browser; an attached session closes only a tab it opened and
+  releases an adopted user tab untouched.
+- `browser::sessions::attach` — bind a session to an already-running browser
+  over CDP (start Chrome with `--remote-debugging-port`): open a fresh tab
+  the session owns, or adopt an existing logged-in tab by URL substring.
+  Off unless `allow_attach` is set in config.
+- `browser::tabs::list` — open tabs of a running browser at a CDP endpoint,
+  with which are already adopted; read-only.
+- `browser::doctor` — read-only environment report: which Chromium would
+  launch, its version, capacity, whether attach and recording are available,
+  and anything degraded with how to enable it.
+- `browser::recording::start` / `browser::recording::stop` — capture a
+  session's live viewport to a webm or mp4 file via ffmpeg; stop returns the
+  path, duration, and frame count. Requires ffmpeg on PATH.
 - `browser::navigate` — go to a URL and wait for the load.
 - `browser::snapshot` — the page as an accessibility outline with `[ref=eN]`
-  handles; the default way to read a page.
+  handles; the default way to read a page. `diff: true` returns only what
+  changed since the previous snapshot.
 - `browser::act` — click, hover, type, press, or scroll, addressed by ref or
   viewport coordinates.
 - `browser::screenshot` — viewable JPEG of the viewport, for when layout or
   rendering matters.
 - `browser::evaluate` — run a JavaScript expression in the page and get the
   completion value.
+- `browser::execute` — run a multi-step async script in the page: top-level
+  await and return, `log(...)`, `sleep(ms)`, `waitFor(selector)`, and a
+  `state` object persisted across execute calls for the session. One call
+  replaces a chain of act/evaluate round-trips.
+- `browser::handoff` — pause the session for a human-only step (CAPTCHA,
+  2FA, payment): show an in-page continue banner and block until the human
+  clicks it, a `browser::handoff::confirm` call resolves it, or the timeout
+  elapses. Verify the expected page state after it returns.
+- `browser::handoff::confirm` — resolve a paused handoff from outside the
+  page (by handoff_id, or the one pending handoff for a session_id).
 - `browser::console::read` — captured console entries; filter with
   pattern/level and page with since_seq.
 - `browser::network::read` — captured requests; failed_only=true is the fast
@@ -72,6 +106,35 @@ on navigation; re-snapshot before acting after any page change.
   accessibility tree hides.
 - `browser::styles::read` / `browser::styles::write` — computed styles and
   live inline CSS edits on one element.
+
+## Workflow: inspect before acting
+
+1. Snapshot first; act on refs from the latest snapshot, never from memory
+   of an earlier one. Refs are unique per snapshot and die on navigation, so
+   a stale ref fails with an error instead of clicking the wrong element.
+2. After an action that changes the page, re-read with
+   `browser::snapshot { diff: true }`: it returns only added and removed
+   lines, which keeps loops cheap.
+3. Use `browser::execute` when a step needs waiting or several dependent
+   reads and writes; use `browser::act` for single trusted input events
+   (in-page script clicks are not trusted events).
+4. Pure inspection tasks (audits, scraping a logged-in page you must not
+   touch) belong in a `read_only: true` session.
+5. When a flow hits a step only a human can do (CAPTCHA, 2FA, payment
+   confirmation), call `browser::handoff` and wait, rather than trying to
+   automate it. After it returns confirmed, re-read the page and verify the
+   step actually landed — a human clicking Continue is not proof the step
+   succeeded.
+
+## Workflow: destructive UI actions
+
+For destructive page actions (deleting records, cancelling subscriptions)
+use two phases, never one script:
+
+1. Discovery: read candidates and return their exact stable text or ids for
+   the user to approve. Do not act in this call.
+2. Action: operate only on the approved identifiers, read any confirmation
+   dialog text, and abort unless it matches the approved action.
 
 ## Keeping context small
 
@@ -95,9 +158,11 @@ fill the context window and force a compaction. Read economically:
 Bind a `browser::*` trigger when another function should react to session
 activity as it happens instead of polling the read functions. The types:
 `browser::session-started`, `browser::session-stopped`, `browser::navigated`,
-`browser::console-event` (one captured entry per firing; high volume), and
+`browser::console-event` (one captured entry per firing; high volume),
 `browser::picked` (a human picked an element in the console UI; the payload
-carries a ref that `browser::act` accepts directly).
+carries a ref that `browser::act` accepts directly), and
+`browser::handoff-requested` (a session is paused waiting for a human; the
+console surfaces it beside the live viewport).
 
 If you just ran `browser::navigate` yourself, its return value already tells
 you the outcome; bind triggers when a different worker needs to observe

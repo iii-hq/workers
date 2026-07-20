@@ -90,3 +90,57 @@ pub async fn handle(
         },
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::core::estimate::{estimate_messages, Estimator, HeuristicEstimator};
+    use crate::types::{AgentFunction, AgentMessage};
+    use serde_json::json;
+
+    /// Callers (the harness) substitute `context::assemble.token_count`
+    /// for `count-tokens(...).tokens + overhead` when nothing mutated the
+    /// request after assembly. That substitution is only valid while the
+    /// two functions count the same inputs to the same number — pin it.
+    #[test]
+    fn count_tokens_and_assemble_count_the_same_context_identically() {
+        let messages: Vec<AgentMessage> = vec![
+            serde_json::from_value(json!({
+                "role": "user",
+                "content": [{ "type": "text", "text": "question" }],
+                "timestamp": 1
+            }))
+            .unwrap(),
+            serde_json::from_value(json!({
+                "role": "assistant",
+                "content": [{ "type": "text", "text": "answer" }],
+                "stop_reason": "end", "model": "m", "provider": "p", "timestamp": 2
+            }))
+            .unwrap(),
+        ];
+        let tools: Vec<AgentFunction> = vec![serde_json::from_value(json!({
+            "name": "agent_trigger",
+            "description": "Run an agent function",
+            "parameters": { "type": "object" }
+        }))
+        .unwrap()];
+        let prompt = "system prompt";
+        let overhead = 37u64;
+        let estimator = HeuristicEstimator;
+
+        // count-tokens' arithmetic (handle() above), plus the overhead the
+        // harness adds on top.
+        let mut count_tokens_total = estimate_messages(&estimator, &messages);
+        count_tokens_total += estimator.text(prompt);
+        for tool in &tools {
+            count_tokens_total += estimator.function(tool);
+        }
+        count_tokens_total += overhead;
+
+        // assemble's arithmetic (its overhead-inclusive count).
+        let assemble_total = crate::functions::assemble::count_context_for_tests(
+            &messages, prompt, &tools, overhead, &estimator,
+        );
+
+        assert_eq!(assemble_total, count_tokens_total);
+    }
+}

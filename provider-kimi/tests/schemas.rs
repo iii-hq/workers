@@ -40,6 +40,7 @@ fn catalog_lists_all_functions_in_registration_order() {
         ids,
         vec![
             "provider::kimi::stream",
+            "provider::kimi::abort",
             "provider::kimi::refresh_models",
             "provider::kimi::on_router_ready",
         ]

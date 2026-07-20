@@ -1,0 +1,206 @@
+//! Forward upstream events into the router-owned channel (spec § Provider
+//! stream contract): AssistantMessageEvent frames as JSON text messages,
+//! terminal done/error last, pings through silence. Previously a verbatim
+//! copy in every provider crate.
+use crate::chat::relay::FrameSink;
+use crate::types::events::{AssistantMessageEvent, ErrorKind};
+use std::time::Duration;
+use tokio::sync::mpsc;
+
+/// Heartbeat cadence while the upstream is silent (spec: at least every 30s).
+///
+/// Also the abort-detection bound: a failed ping write is how a provider
+/// notices the router closed the channel (`router::abort`) while the upstream
+/// is silent — e.g. Anthropic server-buffering a large tool_use input,
+/// generating (billed) tokens with no frames flowing. Worst-case waste after
+/// a stop is ~2 intervals (one ping trips the forwarder, the next observes
+/// it), so keep this small: 2s bounds it to ~4s where 30s allowed ~60s.
+pub const PING_INTERVAL: Duration = Duration::from_secs(2);
+
+/// `Err(())` means only "the sink is gone — stop writing"; there is no
+/// error detail to carry, so the unit error is the whole contract.
+#[allow(clippy::result_unit_err)]
+pub fn send_event(sink: &dyn FrameSink, ev: &AssistantMessageEvent) -> Result<(), ()> {
+    let frame = serde_json::to_string(ev).expect("serializable event");
+    sink.send(&frame).map_err(|_| ())
+}
+
+/// Forward upstream events to the sink; ping through silence; stop on the
+/// terminal event or on a failed write (caller gone → dropping `rx` aborts
+/// the upstream task and its in-flight HTTP request).
+///
+/// Returns the `error_kind` of a forwarded terminal Error frame (`None` for
+/// done / no terminal / caller gone) so providers can react to specific
+/// failures — e.g. dropping a cached credential on `AuthExpired`.
+pub async fn pump(
+    rx: mpsc::Receiver<AssistantMessageEvent>,
+    sink: &dyn FrameSink,
+    ping_interval: Duration,
+) -> Option<ErrorKind> {
+    // Held so the never-fired abort arm stays pending instead of erroring.
+    let (_hold, abort_rx) = tokio::sync::watch::channel(false);
+    pump_abortable(rx, sink, ping_interval, abort_rx).await
+}
+
+/// [`pump`] with an active cancel: returns immediately when `abort_rx` fires
+/// (`provider::<id>::abort` via [`super::aborts::StreamAborts`]) — even
+/// mid-silence, without waiting for a ping write to fail. Returning drops
+/// `rx`, which aborts the upstream task and its in-flight HTTP request.
+pub async fn pump_abortable(
+    mut rx: mpsc::Receiver<AssistantMessageEvent>,
+    sink: &dyn FrameSink,
+    ping_interval: Duration,
+    mut abort_rx: tokio::sync::watch::Receiver<bool>,
+) -> Option<ErrorKind> {
+    loop {
+        let recv = tokio::select! {
+            r = tokio::time::timeout(ping_interval, rx.recv()) => r,
+            // Level-triggered: a fire before this poll is still observed.
+            // Err (sender gone before firing) can only follow an abort's
+            // send_replace(true), so wait_for resolves Ok on the value first.
+            _ = abort_rx.wait_for(|a| *a) => return None,
+        };
+        match recv {
+            Ok(Some(ev)) => {
+                let terminal = ev.is_terminal();
+                let error_kind = match &ev {
+                    AssistantMessageEvent::Error { error } => error.error_kind,
+                    _ => None,
+                };
+                if send_event(sink, &ev).is_err() {
+                    return None;
+                }
+                if terminal {
+                    return error_kind;
+                }
+            }
+            // Upstream task ended without a terminal (panic/abort): the
+            // router synthesizes the terminal frame — never two terminals.
+            Ok(None) => return None,
+            // Silent stretch: heartbeat (also probes for a gone caller).
+            Err(_elapsed) => {
+                if send_event(sink, &AssistantMessageEvent::Ping).is_err() {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chat::relay::{ReadEvent, RelayRead};
+    use crate::chat::synthesize::empty_partial;
+    use crate::testkit::fake_channels::FakeChannel;
+    use crate::types::messages::AssistantMessage;
+    use serde_json::Value;
+
+    fn now_ms() -> i64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+
+    fn empty_assistant(model: &str) -> AssistantMessage {
+        empty_partial(model, "test-provider", now_ms())
+    }
+
+    fn done_event() -> AssistantMessageEvent {
+        AssistantMessageEvent::Done {
+            message: empty_assistant("model-test"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forwards_events_and_stops_at_terminal() {
+        let ch = FakeChannel::new();
+        let (tx, rx) = mpsc::channel(8);
+        tx.send(AssistantMessageEvent::Start {
+            partial: empty_assistant("m"),
+        })
+        .await
+        .unwrap();
+        tx.send(done_event()).await.unwrap();
+        // a frame after the terminal must never be forwarded
+        tx.send(AssistantMessageEvent::Ping).await.unwrap();
+        drop(tx);
+
+        pump(rx, &ch.writer, Duration::from_secs(30)).await;
+        ch.writer.close();
+
+        let mut frames = Vec::new();
+        let mut reader = ch.reader;
+        while let ReadEvent::Msg(m) = reader.next(Duration::from_millis(100)).await {
+            frames.push(m);
+        }
+        assert_eq!(frames.len(), 2);
+        let last: Value = serde_json::from_str(&frames[1]).unwrap();
+        assert_eq!(last["type"], "done");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pings_through_silence() {
+        let ch = FakeChannel::new();
+        let (tx, rx) = mpsc::channel::<AssistantMessageEvent>(8);
+        // hold tx open, send nothing for > 2 ping intervals, then terminate
+        let pump_task = {
+            let writer = ch.writer.clone();
+            tokio::spawn(async move { pump(rx, &writer, Duration::from_millis(50)).await })
+        };
+        tokio::time::sleep(Duration::from_millis(140)).await;
+        tx.send(done_event()).await.unwrap();
+        drop(tx);
+        pump_task.await.unwrap();
+        ch.writer.close();
+
+        let mut frames = Vec::new();
+        let mut reader = ch.reader;
+        while let ReadEvent::Msg(m) = reader.next(Duration::from_millis(100)).await {
+            frames.push(m);
+        }
+        let pings = frames
+            .iter()
+            .filter(|f| serde_json::from_str::<Value>(f).unwrap()["type"] == "ping")
+            .count();
+        assert!(
+            pings >= 2,
+            "want >=2 pings through 140ms of silence, got {pings}"
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(frames.last().unwrap()).unwrap()["type"],
+            "done"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn terminal_error_kind_is_returned_to_the_caller() {
+        let ch = FakeChannel::new();
+        let (tx, rx) = mpsc::channel(8);
+        let mut error = empty_assistant("m");
+        error.error_kind = Some(ErrorKind::AuthExpired);
+        tx.send(AssistantMessageEvent::Error { error })
+            .await
+            .unwrap();
+        drop(tx);
+        let kind = pump(rx, &ch.writer, Duration::from_secs(30)).await;
+        assert_eq!(kind, Some(ErrorKind::AuthExpired));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reader_close_stops_the_pump_and_drops_the_receiver() {
+        let ch = FakeChannel::new();
+        ch.reader.close(); // caller gone before anything is written
+        let (tx, rx) = mpsc::channel(8);
+        tx.send(AssistantMessageEvent::Start {
+            partial: empty_assistant("m"),
+        })
+        .await
+        .unwrap();
+        pump(rx, &ch.writer, Duration::from_secs(30)).await; // returns immediately
+                                                             // the receiver was consumed and dropped by pump → upstream send fails
+        assert!(tx.send(done_event()).await.is_err());
+    }
+}

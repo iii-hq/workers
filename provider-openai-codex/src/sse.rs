@@ -296,7 +296,7 @@ pub fn handle_chunk(
             open_text(state, model, &mut events);
             state.text.push_str(&delta);
             events.push(AssistantMessageEvent::TextDelta {
-                partial: build_partial(state, model),
+                partial: None,
                 delta,
             });
         }
@@ -308,7 +308,7 @@ pub fn handle_chunk(
             open_thinking(state, model, &mut events);
             state.thinking.push_str(&delta);
             events.push(AssistantMessageEvent::ThinkingDelta {
-                partial: build_partial(state, model),
+                partial: None,
                 delta,
             });
         }
@@ -326,7 +326,7 @@ pub fn handle_chunk(
                 last.args_json.push_str(&delta);
             }
             events.push(AssistantMessageEvent::FunctioncallDelta {
-                partial: build_partial(state, model),
+                partial: None,
                 delta,
                 id: state
                     .tool_calls
@@ -392,6 +392,34 @@ mod tests {
             out.extend(handle_chunk(c, &mut state, "codex/gpt-5.5"));
         }
         (state, out)
+    }
+
+    /// Contract pin (llm-router types::events): delta frames are slim —
+    /// no cumulative partial per chunk — while block-boundary frames carry
+    /// the authoritative snapshot (cumulative text here). Readers
+    /// reconstruct via llm_router::chat::accumulate.
+    #[test]
+    fn deltas_are_slim_and_boundary_snapshots_are_cumulative() {
+        let (_, events) = run(&[
+            json!({ "type": "response.output_text.delta", "delta": "He" }),
+            json!({ "type": "response.output_text.delta", "delta": "llo" }),
+            json!({ "type": "response.completed" }),
+        ]);
+        for ev in &events {
+            if let AssistantMessageEvent::TextDelta { partial, .. } = ev {
+                assert!(partial.is_none(), "delta frames must not carry partial");
+            }
+        }
+        let Some(AssistantMessageEvent::TextEnd { partial }) = events
+            .iter()
+            .find(|e| matches!(e, AssistantMessageEvent::TextEnd { .. }))
+        else {
+            panic!("want a text_end frame");
+        };
+        assert!(
+            matches!(&partial.content[0], ContentBlock::Text { text } if text == "Hello"),
+            "the End snapshot must carry the cumulative block text"
+        );
     }
 
     #[test]

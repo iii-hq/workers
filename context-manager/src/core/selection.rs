@@ -8,7 +8,6 @@
 //! `function_result` message, and never a user message carrying inline
 //! `function_result` blocks).
 
-use crate::core::estimate::Estimator;
 use crate::types::{AgentMessage, Role};
 
 /// One conversation turn: starts at a user message, ends right before
@@ -60,12 +59,9 @@ fn is_safe_cut(message: &AgentMessage) -> bool {
 
 /// Find a partial tail inside `turn` that fits `budget`, scanning from
 /// the oldest in-turn position forward; only safe cuts qualify.
-fn split_turn(
-    messages: &[AgentMessage],
-    turn: Turn,
-    budget: u64,
-    estimator: &dyn Estimator,
-) -> Option<usize> {
+/// `prefix[i]` is the token sum of `messages[..i]`, so a range costs
+/// one subtraction instead of a re-serializing scan per candidate cut.
+fn split_turn(messages: &[AgentMessage], prefix: &[u64], turn: Turn, budget: u64) -> Option<usize> {
     if budget == 0 || turn.end.saturating_sub(turn.start) <= 1 {
         return None;
     }
@@ -73,10 +69,7 @@ fn split_turn(
         if !is_safe_cut(&messages[start]) {
             continue;
         }
-        let size: u64 = messages[start..turn.end]
-            .iter()
-            .map(|m| estimator.message(m))
-            .sum();
+        let size = prefix[turn.end] - prefix[start];
         if size > budget {
             continue;
         }
@@ -89,12 +82,17 @@ fn split_turn(
 /// turns that fit `budget` (newest first); when a whole turn does not
 /// fit, fall back to a safe partial cut inside it. Everything before
 /// the kept tail is the head to summarise.
+///
+/// `sizes[i]` must be the estimated tokens of `messages[i]` — callers
+/// hold this memo anyway, and passing it keeps selection free of any
+/// per-candidate re-estimation.
 pub fn select(
     messages: &[AgentMessage],
+    sizes: &[u64],
     budget: u64,
     tail_turns: usize,
-    estimator: &dyn Estimator,
 ) -> Selection {
+    debug_assert_eq!(messages.len(), sizes.len());
     let whole_head = Selection {
         head_len: messages.len(),
         tail_start_index: None,
@@ -108,13 +106,16 @@ pub fn select(
     }
     let recent = &all[all.len().saturating_sub(tail_turns)..];
 
+    let mut prefix: Vec<u64> = Vec::with_capacity(sizes.len() + 1);
+    prefix.push(0);
+    for size in sizes {
+        prefix.push(prefix[prefix.len() - 1] + size);
+    }
+
     let mut total: u64 = 0;
     let mut keep: Option<usize> = None;
     for turn in recent.iter().rev() {
-        let size: u64 = messages[turn.start..turn.end]
-            .iter()
-            .map(|m| estimator.message(m))
-            .sum();
+        let size = prefix[turn.end] - prefix[turn.start];
         if total + size <= budget {
             total += size;
             // A turn whose user message carries inline function_result
@@ -127,7 +128,7 @@ pub fn select(
             continue;
         }
         let remaining = budget.saturating_sub(total);
-        if let Some(split) = split_turn(messages, *turn, remaining, estimator) {
+        if let Some(split) = split_turn(messages, &prefix, *turn, remaining) {
             keep = Some(split);
         }
         break;
@@ -167,8 +168,18 @@ pub fn select(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::estimate::HeuristicEstimator;
+    use crate::core::estimate::{Estimator, HeuristicEstimator};
     use serde_json::json;
+
+    /// Test shim preserving the old call shape: estimate every message
+    /// with the heuristic, exactly as production callers fill the memo.
+    fn select_est(messages: &[AgentMessage], budget: u64, tail_turns: usize) -> Selection {
+        let sizes: Vec<u64> = messages
+            .iter()
+            .map(|m| HeuristicEstimator.message(m))
+            .collect();
+        select(messages, &sizes, budget, tail_turns)
+    }
 
     fn user(text: &str, ts: i64) -> AgentMessage {
         serde_json::from_value(json!({
@@ -226,7 +237,7 @@ mod tests {
             user("recent question", 3),
             assistant("recent answer", 4),
         ];
-        let sel = select(&messages, 1_000, 1, &HeuristicEstimator);
+        let sel = select_est(&messages, 1_000, 1);
         assert_eq!(sel.tail_start_index, Some(2));
         assert_eq!(sel.head_len, 2);
     }
@@ -234,7 +245,7 @@ mod tests {
     #[test]
     fn zero_tail_turns_summarises_everything() {
         let messages = vec![user("a", 1), assistant("b", 2)];
-        let sel = select(&messages, 1_000, 0, &HeuristicEstimator);
+        let sel = select_est(&messages, 1_000, 0);
         assert_eq!(sel.tail_start_index, None);
         assert_eq!(sel.head_len, 2);
     }
@@ -246,7 +257,7 @@ mod tests {
         // (head_len 0 → the caller skips compaction) instead of summarising
         // the whole history into an empty model context.
         let messages = vec![user("a", 1), assistant("b", 2)];
-        let sel = select(&messages, u64::MAX, 2, &HeuristicEstimator);
+        let sel = select_est(&messages, u64::MAX, 2);
         assert_eq!(sel.head_len, 0);
         assert_eq!(sel.tail_start_index, Some(0));
     }
@@ -261,7 +272,7 @@ mod tests {
             user("recent question", 3),
             assistant("recent answer", 4),
         ];
-        let sel = select(&messages, u64::MAX, 2, &HeuristicEstimator);
+        let sel = select_est(&messages, u64::MAX, 2);
         assert_eq!(sel.head_len, 0);
         assert_eq!(sel.tail_start_index, Some(0));
     }
@@ -277,7 +288,7 @@ mod tests {
             result("c1", 4_000, 3),
             assistant("done", 4),
         ];
-        let sel = select(&messages, 100, 1, &HeuristicEstimator);
+        let sel = select_est(&messages, 100, 1);
         // Tail = just the final assistant message (index 3): the cut at
         // index 2 (the function_result) is unsafe even though it fits.
         assert_eq!(sel.tail_start_index, Some(3));
@@ -317,7 +328,7 @@ mod tests {
             inline_result_user,      // 4: turn 3 (UNSAFE start)
             assistant("done", 5),    // 5
         ];
-        let sel = select(&messages, 1_000, 2, &HeuristicEstimator);
+        let sel = select_est(&messages, 1_000, 2);
         assert_eq!(
             sel.tail_start_index,
             Some(2),
@@ -336,7 +347,7 @@ mod tests {
             user("q2", 3),
             assistant("a2", 4),
         ];
-        let sel = select(&messages, 0, 2, &HeuristicEstimator);
+        let sel = select_est(&messages, 0, 2);
         assert_eq!(sel.tail_start_index, Some(2));
         assert_eq!(sel.head_len, 2);
     }
@@ -354,7 +365,7 @@ mod tests {
             result("c1", 4_000, 5),
             assistant("done", 6),
         ];
-        let sel = select(&messages, 0, 2, &HeuristicEstimator);
+        let sel = select_est(&messages, 0, 2);
         assert_eq!(sel.tail_start_index, Some(2));
         assert!(sel.head_len > 0 && sel.head_len < messages.len());
     }
@@ -362,7 +373,7 @@ mod tests {
     #[test]
     fn history_without_user_messages_is_all_head() {
         let messages = vec![assistant("a", 1), assistant("b", 2)];
-        let sel = select(&messages, 1_000, 2, &HeuristicEstimator);
+        let sel = select_est(&messages, 1_000, 2);
         assert_eq!(sel.tail_start_index, None);
     }
 }

@@ -311,15 +311,41 @@ async fn configure_stub_no_key(router_iii: &IIIClient, stub_url: &str) {
     .expect("config set");
 }
 
+/// Call `provider::llamacpp::refresh_models`, retrying while the router's
+/// in-memory configuration snapshot has not yet absorbed the test's
+/// `configuration::set` (the engine delivers the configuration trigger
+/// asynchronously, so an immediate refresh can still resolve the pre-set
+/// default api_url and fail to connect). Unlike the keyed cloud providers —
+/// whose refresh no-ops until a credential is visible — llamacpp's
+/// credential-less refresh actually dials the default URL, so the
+/// propagation window surfaces as a transient error here. The retry never
+/// masks a real failure: discovery against the stub either succeeds within
+/// the deadline or the last error is surfaced.
+async fn refresh_models(provider_iii: &IIIClient) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match call(
+            provider_iii,
+            "provider::llamacpp::refresh_models",
+            json!({}),
+        )
+        .await
+        {
+            Ok(res) => return res,
+            Err(e) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "refresh_models kept failing (configuration never propagated?): {e:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
 /// Discover the live catalog and wait until routing can see it.
 async fn refresh_and_wait(router_iii: &IIIClient, provider_iii: &IIIClient, expect_id: &str) {
-    let res = call(
-        provider_iii,
-        "provider::llamacpp::refresh_models",
-        json!({}),
-    )
-    .await
-    .expect("refresh succeeds");
+    let res = refresh_models(provider_iii).await;
     assert_eq!(res["ok"], true, "refresh response: {res}");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -358,13 +384,7 @@ async fn provider_registers_with_persisted_token_and_discovers_catalog_without_a
 
     // Unlike every cloud provider here, no credential is required at all:
     // discovery succeeds and reconciles the stub's one model.
-    let res = call(
-        &provider_iii,
-        "provider::llamacpp::refresh_models",
-        json!({}),
-    )
-    .await
-    .expect("refresh succeeds without a credential");
+    let res = refresh_models(&provider_iii).await;
     assert_eq!(res["ok"], true, "refresh response: {res}");
     assert_eq!(
         res["count"], 1,

@@ -19,7 +19,7 @@ use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use tokio::sync::Notify;
+use tokio::sync::{watch, Notify};
 
 use crate::error::HarnessError;
 use crate::types::event::{AssistantMessageEvent, StopReason};
@@ -70,10 +70,17 @@ impl RouterClient {
     }
 
     /// Stream one assistant turn, forwarding coalesced partials to `sink`.
+    ///
+    /// `abort_rx` is the harness-local cancel backstop: `router::abort` is the
+    /// happy path (the router closes the stream → EOF), but it's a no-op when
+    /// it races ahead of the router's stream registration or after a router
+    /// restart — then only this local signal cuts the await (which otherwise
+    /// blocks up to `router_timeout_ms`).
     pub async fn chat(
         &self,
         params: ChatParams,
         sink: &dyn StreamSink,
+        mut abort_rx: watch::Receiver<bool>,
     ) -> Result<ChatOutcome, HarnessError> {
         let channel = create_channel(&self.iii, None)
             .await
@@ -113,6 +120,7 @@ impl RouterClient {
             }
         });
 
+        let request_id = params.request_id.clone();
         let mut payload = json!({
             "writer_ref": channel.writer_ref,
             "request_id": params.request_id,
@@ -173,6 +181,9 @@ impl RouterClient {
         // `_streaming` so UIs can show the command being formed.
         let mut args_acc: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+        // Cumulative message across slim delta frames (boundary snapshot +
+        // open-block deltas); fat frames just refresh the snapshot.
+        let mut tracker = PartialTracker::default();
 
         // Consume frames until reader EOF — but ALSO watch the held-open
         // trigger: when it resolves, the router is done (ack) or the dispatch
@@ -183,6 +194,15 @@ impl RouterClient {
         // then fall through to the outcome handling below.
         let mut response: Option<Result<Value, iii_sdk::errors::Error>> = None;
         let mut drain_deadline = Instant::now();
+        // Resolves when harness::stop fires the turn's local cancel; a dropped
+        // sender (registry cleared — no stop can arrive) parks forever instead
+        // of busy-looping the select.
+        let abort_fired = async move {
+            if abort_rx.wait_for(|a| *a).await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        };
+        tokio::pin!(abort_fired);
         loop {
             let frame = if response.is_some() {
                 match tokio::time::timeout(Duration::from_millis(750), rx.recv()).await {
@@ -205,6 +225,52 @@ impl RouterClient {
             } else {
                 tokio::select! {
                     f = rx.recv() => f,
+                    // Local cancel backstop: cut the await now, return the
+                    // partial as Aborted. No arm in the post-ack drain branch
+                    // above — that path is bounded (≤10s) already.
+                    _ = &mut abort_fired => {
+                        // notify_one, not notify_waiters: it stores a permit
+                        // when the pump task hasn't polled its notified() yet
+                        // (a pre-fired cancel can get here before the spawned
+                        // pump first runs), so the wakeup can't be lost and
+                        // pump.await can't hang on next_binary().
+                        cancel.notify_one();
+                        let _ = pump.await;
+                        // Kill the held-open router::chat task; the router's
+                        // own teardown was already requested via router::abort.
+                        trigger.abort();
+                        // Re-request the router abort: stop.rs's router::abort
+                        // can race ahead of the router's stream registration
+                        // and no-op — by now the stream is certainly
+                        // registered, so this lands and the provider stops
+                        // generating instead of streaming into the closed
+                        // channel until its own terminal. Detached: an abort
+                        // against a hung router must not block the stop path.
+                        let client = self.clone();
+                        let rid = request_id.clone();
+                        tokio::spawn(async move {
+                            client.abort(&rid).await;
+                        });
+                        // Prefer a terminal frame's complete message over the
+                        // tracker's partial: a stop landing between a Done
+                        // frame and EOF must not replace the full assistant
+                        // entry with the stale pre-Done partial.
+                        let mut message = final_message
+                            .or_else(|| tracker.current())
+                            .unwrap_or_else(|| {
+                                empty_assistant(
+                                    params.provider.as_deref().unwrap_or(""),
+                                    &params.model,
+                                )
+                            });
+                        message.stop_reason = StopReason::Aborted;
+                        return Ok(ChatOutcome {
+                            ok: false,
+                            stop_reason: Some(StopReason::Aborted),
+                            message,
+                            error: None,
+                        });
+                    }
                     r = &mut trigger => {
                         response = Some(r.map_err(|e| {
                             HarnessError::Internal(format!("router::chat task: {e}"))
@@ -239,20 +305,28 @@ impl RouterClient {
                 other => {
                     if let AssistantMessageEvent::FunctioncallDelta { partial, delta, id } = &other
                     {
+                        // Pre-id producers: guess from the frame's own fat
+                        // partial or, on slim frames, from the last boundary
+                        // snapshot (FunctioncallStart carries the call block).
                         let id = if id.is_empty() {
-                            open_call_id(partial) // pre-id producers: guess
+                            partial
+                                .as_ref()
+                                .or(tracker.base.as_ref())
+                                .and_then(open_call_id)
+                                .map(str::to_string)
                         } else {
-                            Some(id.as_str())
+                            Some(id.clone())
                         };
                         if let Some(id) = id {
-                            args_acc.entry(id.to_string()).or_default().push_str(delta);
+                            args_acc.entry(id).or_default().push_str(delta);
                         }
                     }
-                    if let Some(partial) = partial_of(&other) {
-                        if last_emit.elapsed() >= coalesce {
-                            match enrich_streaming_args(partial, &args_acc) {
+                    tracker.apply(&other);
+                    if other.is_content() && last_emit.elapsed() >= coalesce {
+                        if let Some(cum) = tracker.current() {
+                            match enrich_streaming_args(&cum, &args_acc) {
                                 Some(enriched) => sink.on_update(&enriched).await,
-                                None => sink.on_update(partial).await,
+                                None => sink.on_update(&cum).await,
                             }
                             last_emit = Instant::now();
                         }
@@ -262,7 +336,8 @@ impl RouterClient {
         }
 
         // Stream drained; stop the pump and collect the trigger ack.
-        cancel.notify_waiters();
+        // notify_one: latched — safe even if the pump task hasn't polled yet.
+        cancel.notify_one();
         let _ = pump.await;
         let response = match response {
             Some(r) => r,
@@ -453,6 +528,140 @@ impl StreamSink for CapturingSink {
     }
 }
 
+/// Cumulative-message view over the streamed frames: the last
+/// block-boundary snapshot plus the locally accumulated deltas of the open
+/// text/thinking block. Slim delta frames carry no `partial`, so this
+/// tracker is the only live view of the message between block boundaries;
+/// legacy fat deltas (partial present) simply replace the snapshot, which
+/// preserves the old behavior byte for byte. In-flight function-call
+/// arguments intentionally stay in `args_acc` (`enrich_streaming_args`).
+#[derive(Default)]
+struct PartialTracker {
+    base: Option<AssistantMessage>,
+    open: Option<OpenBlock>,
+}
+
+enum OpenBlock {
+    Text { seed: String, acc: String },
+    Thinking { seed: String, acc: String },
+}
+
+impl PartialTracker {
+    fn apply(&mut self, event: &AssistantMessageEvent) {
+        use crate::types::content::ContentBlock;
+        match event {
+            // Block boundaries carry authoritative snapshots (thinking
+            // signatures and finalized call args exist only here).
+            AssistantMessageEvent::Start { partial }
+            | AssistantMessageEvent::TextEnd { partial }
+            | AssistantMessageEvent::ThinkingEnd { partial }
+            | AssistantMessageEvent::FunctioncallStart { partial }
+            | AssistantMessageEvent::FunctioncallEnd { partial } => {
+                self.base = Some(partial.clone());
+                self.open = None;
+            }
+            // Producers may or may not include the just-opened (empty)
+            // block in the Start snapshot — pop a trailing match into the
+            // seed so the merge never duplicates it.
+            AssistantMessageEvent::TextStart { partial } => {
+                let mut base = partial.clone();
+                let seed = match base.content.last() {
+                    Some(ContentBlock::Text { text }) => {
+                        let text = text.clone();
+                        base.content.pop();
+                        text
+                    }
+                    _ => String::new(),
+                };
+                self.base = Some(base);
+                self.open = Some(OpenBlock::Text {
+                    seed,
+                    acc: String::new(),
+                });
+            }
+            AssistantMessageEvent::ThinkingStart { partial } => {
+                let mut base = partial.clone();
+                let seed = match base.content.last() {
+                    Some(ContentBlock::Thinking { text, .. }) => {
+                        let text = text.clone();
+                        base.content.pop();
+                        text
+                    }
+                    _ => String::new(),
+                };
+                self.base = Some(base);
+                self.open = Some(OpenBlock::Thinking {
+                    seed,
+                    acc: String::new(),
+                });
+            }
+            AssistantMessageEvent::TextDelta { partial, delta } => match partial {
+                Some(p) => {
+                    self.base = Some(p.clone());
+                    self.open = None;
+                }
+                None => match &mut self.open {
+                    Some(OpenBlock::Text { acc, .. }) => acc.push_str(delta),
+                    // Defensive: producer skipped TextStart.
+                    _ => {
+                        self.open = Some(OpenBlock::Text {
+                            seed: String::new(),
+                            acc: delta.clone(),
+                        })
+                    }
+                },
+            },
+            AssistantMessageEvent::ThinkingDelta { partial, delta } => match partial {
+                Some(p) => {
+                    self.base = Some(p.clone());
+                    self.open = None;
+                }
+                None => match &mut self.open {
+                    Some(OpenBlock::Thinking { acc, .. }) => acc.push_str(delta),
+                    _ => {
+                        self.open = Some(OpenBlock::Thinking {
+                            seed: String::new(),
+                            acc: delta.clone(),
+                        })
+                    }
+                },
+            },
+            // Raw args accumulate in args_acc; the call block itself is
+            // already in the FunctioncallStart snapshot. A fat frame
+            // still refreshes the snapshot (legacy behavior).
+            AssistantMessageEvent::FunctioncallDelta {
+                partial: Some(p), ..
+            } => {
+                self.base = Some(p.clone());
+                self.open = None;
+            }
+            AssistantMessageEvent::FunctioncallDelta { partial: None, .. } => {}
+            _ => {}
+        }
+    }
+
+    /// The cumulative message: snapshot + the open block's accumulated text.
+    fn current(&self) -> Option<AssistantMessage> {
+        use crate::types::content::ContentBlock;
+        let mut out = self.base.clone()?;
+        match &self.open {
+            Some(OpenBlock::Text { seed, acc }) if !(seed.is_empty() && acc.is_empty()) => {
+                out.content.push(ContentBlock::Text {
+                    text: format!("{seed}{acc}"),
+                });
+            }
+            Some(OpenBlock::Thinking { seed, acc }) if !(seed.is_empty() && acc.is_empty()) => {
+                out.content.push(ContentBlock::Thinking {
+                    text: format!("{seed}{acc}"),
+                    signature: None,
+                });
+            }
+            _ => {}
+        }
+        Some(out)
+    }
+}
+
 /// Fallback attribution for id-less delta frames (pre-id producers): blocks
 /// stream in order, so guess the last function_call block of the partial.
 fn open_call_id(partial: &AssistantMessage) -> Option<&str> {
@@ -510,22 +719,6 @@ fn utf8_tail(s: &str, max: usize) -> &str {
         start += 1;
     }
     &s[start..]
-}
-
-fn partial_of(event: &AssistantMessageEvent) -> Option<&AssistantMessage> {
-    match event {
-        AssistantMessageEvent::Start { partial }
-        | AssistantMessageEvent::TextStart { partial }
-        | AssistantMessageEvent::TextDelta { partial, .. }
-        | AssistantMessageEvent::TextEnd { partial }
-        | AssistantMessageEvent::ThinkingStart { partial }
-        | AssistantMessageEvent::ThinkingDelta { partial, .. }
-        | AssistantMessageEvent::ThinkingEnd { partial }
-        | AssistantMessageEvent::FunctioncallStart { partial }
-        | AssistantMessageEvent::FunctioncallDelta { partial, .. }
-        | AssistantMessageEvent::FunctioncallEnd { partial } => Some(partial),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -606,5 +799,122 @@ mod streaming_args_tests {
             AssistantMessageEvent::FunctioncallDelta { id, .. } => assert_eq!(id, "c1"),
             other => panic!("want functioncall_delta, got {other:?}"),
         }
+        // Slim frames (no partial at all) must parse too — they are the
+        // post-contract-change producer shape.
+        let slim = r#"{"type":"functioncall_delta","delta":"x","id":"c1"}"#;
+        match serde_json::from_str::<AssistantMessageEvent>(slim).unwrap() {
+            AssistantMessageEvent::FunctioncallDelta { partial, id, .. } => {
+                assert!(partial.is_none());
+                assert_eq!(id, "c1");
+            }
+            other => panic!("want functioncall_delta, got {other:?}"),
+        }
+        let slim_text = r#"{"type":"text_delta","delta":"hi"}"#;
+        assert!(matches!(
+            serde_json::from_str::<AssistantMessageEvent>(slim_text).unwrap(),
+            AssistantMessageEvent::TextDelta { partial: None, .. }
+        ));
+    }
+
+    #[test]
+    fn tracker_accumulates_slim_text_deltas_from_the_boundary_snapshot() {
+        use crate::types::content::ContentBlock;
+        let mut tracker = PartialTracker::default();
+        let base = empty_assistant("p", "m");
+        tracker.apply(&AssistantMessageEvent::Start {
+            partial: base.clone(),
+        });
+        tracker.apply(&AssistantMessageEvent::TextStart {
+            partial: base.clone(),
+        });
+        tracker.apply(&AssistantMessageEvent::TextDelta {
+            partial: None,
+            delta: "Hel".into(),
+        });
+        tracker.apply(&AssistantMessageEvent::TextDelta {
+            partial: None,
+            delta: "lo".into(),
+        });
+        let cum = tracker.current().expect("cumulative message");
+        assert_eq!(
+            cum.content,
+            vec![ContentBlock::Text {
+                text: "Hello".into()
+            }]
+        );
+        // The TextEnd snapshot is authoritative and replaces the open block.
+        let mut done = base.clone();
+        done.content = vec![ContentBlock::Text {
+            text: "Hello!".into(),
+        }];
+        tracker.apply(&AssistantMessageEvent::TextEnd {
+            partial: done.clone(),
+        });
+        assert_eq!(tracker.current().unwrap().content, done.content);
+    }
+
+    #[test]
+    fn tracker_treats_fat_deltas_as_authoritative_snapshots() {
+        use crate::types::content::ContentBlock;
+        let mut tracker = PartialTracker::default();
+        let mut fat = empty_assistant("p", "m");
+        fat.content = vec![ContentBlock::Text {
+            text: "cumulative".into(),
+        }];
+        tracker.apply(&AssistantMessageEvent::TextDelta {
+            partial: Some(fat.clone()),
+            delta: "e".into(),
+        });
+        // Legacy behavior: the fat partial IS the message; deltas are not
+        // re-applied on top of it.
+        assert_eq!(tracker.current().unwrap().content, fat.content);
+    }
+
+    #[test]
+    fn tracker_keeps_thinking_and_call_blocks_across_boundaries() {
+        use crate::types::content::ContentBlock;
+        use serde_json::json;
+        let mut tracker = PartialTracker::default();
+        let base = empty_assistant("p", "m");
+        tracker.apply(&AssistantMessageEvent::ThinkingStart {
+            partial: base.clone(),
+        });
+        tracker.apply(&AssistantMessageEvent::ThinkingDelta {
+            partial: None,
+            delta: "hmm".into(),
+        });
+        assert_eq!(
+            tracker.current().unwrap().content,
+            vec![ContentBlock::Thinking {
+                text: "hmm".into(),
+                signature: None
+            }]
+        );
+        // FunctioncallStart snapshot carries the call block; slim call-arg
+        // deltas leave the tracker alone (args live in args_acc) so the
+        // current view still shows the call block for open_call_id.
+        let mut with_call = base.clone();
+        with_call.content = vec![
+            ContentBlock::Thinking {
+                text: "hmm".into(),
+                signature: Some("sig".into()),
+            },
+            ContentBlock::FunctionCall {
+                id: "c1".into(),
+                function_id: "agent_trigger".into(),
+                arguments: json!({}),
+            },
+        ];
+        tracker.apply(&AssistantMessageEvent::FunctioncallStart {
+            partial: with_call.clone(),
+        });
+        tracker.apply(&AssistantMessageEvent::FunctioncallDelta {
+            partial: None,
+            delta: r#"{"x":1"#.into(),
+            id: "c1".into(),
+        });
+        let cum = tracker.current().unwrap();
+        assert_eq!(cum.content, with_call.content);
+        assert_eq!(open_call_id(&cum), Some("c1"));
     }
 }

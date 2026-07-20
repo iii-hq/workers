@@ -23,7 +23,16 @@ pub fn spawn_upstream(
 ) -> mpsc::Receiver<AssistantMessageEvent> {
     let (tx, rx) = mpsc::channel(64);
     tokio::spawn(async move {
-        run_upstream(client, args, tx).await;
+        // Race the call against receiver-side closure: send errors alone only
+        // observe a dropped receiver at the next send, so a silent upstream
+        // (parked in a chunk read, nothing to send) would otherwise keep the
+        // HTTP stream — and billed generation — alive until the next frame or
+        // the read timeout.
+        let closed = tx.clone();
+        tokio::select! {
+            _ = run_upstream(client, args, tx) => {}
+            _ = closed.closed() => {}
+        }
     });
     rx
 }

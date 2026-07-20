@@ -14,26 +14,34 @@ use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
-use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
+use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
+use llm_router::provider_scaffold::cache::ScaffoldCache;
+use llm_router::provider_scaffold::pump::{pump, pump_abortable, send_event, PING_INTERVAL};
+use llm_router::types::events::ErrorKind;
 use llm_router::types::router::{ProviderStreamInput, ProviderStreamOutput};
-use std::time::Duration;
-use tokio::sync::mpsc;
-
-/// Heartbeat cadence while the upstream is silent (spec: at least every 30s).
-pub const PING_INTERVAL: Duration = Duration::from_secs(30);
 
 pub fn make_stream(
     iii: IIIClient,
     http: reqwest::Client,
+    cache: ScaffoldCache,
+    aborts: StreamAborts,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
        + Send
        + Sync
        + 'static {
     move |input: ProviderStreamInput| {
-        let (iii, http) = (iii.clone(), http.clone());
+        let (iii, http, cache, aborts) = (iii.clone(), http.clone(), cache.clone(), aborts.clone());
         Box::pin(async move {
+            // Register BEFORE the first await: an abort landing while the sink
+            // opens must latch, not hit an unknown id. The RAII guard
+            // deregisters on every exit — early returns and an executor
+            // cancelling this future mid-await alike.
+            let abort_reg = input
+                .resolution_key
+                .as_ref()
+                .map(|rid| aborts.register(rid));
             let sink = open_sink(&iii, &input.writer_ref).await?;
-            run_stream_call(&iii, http, input, sink.as_ref()).await;
+            run_stream_call(&iii, http, &cache, abort_reg.as_ref(), input, sink.as_ref()).await;
             sink.close();
             // ProviderStreamOutput (spec § stream contract)
             Ok(ProviderStreamOutput { ok: true })
@@ -41,14 +49,11 @@ pub fn make_stream(
     }
 }
 
-fn send_event(sink: &dyn FrameSink, ev: &AssistantMessageEvent) -> Result<(), ()> {
-    let frame = serde_json::to_string(ev).expect("serializable event");
-    sink.send(&frame).map_err(|_| ())
-}
-
 async fn run_stream_call(
     iii: &IIIClient,
     http: reqwest::Client,
+    cache: &ScaffoldCache,
+    abort_reg: Option<&AbortGuard>,
     input: ProviderStreamInput,
     sink: &dyn FrameSink,
 ) {
@@ -63,16 +68,27 @@ async fn run_stream_call(
         );
     }
 
-    let token = state::load_token(iii).await;
-    let resolved = match router_client::resolve(iii, token.as_deref()).await {
+    // Token + resolve are cached (ScaffoldCache): zero engine round trips
+    // on the hot path within the TTL. An auth-classified resolve failure
+    // drops the cache so the next attempt re-resolves fresh — retrying
+    // stays the router's job.
+    let token = cache.load_token(iii, state::STATE_SCOPE).await;
+    let resolved = match cache
+        .resolve(iii, crate::PROVIDER_ID, token.as_deref())
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
+            let kind = classify_bus_error(&e);
+            if kind == ErrorKind::AuthExpired {
+                cache.invalidate();
+            }
             let _ = send_event(
                 sink,
                 &synthetic_error_event(
                     &format!("router::provider::resolve failed: {e}"),
                     &model,
-                    classify_bus_error(&e),
+                    kind,
                 ),
             );
             return;
@@ -131,6 +147,10 @@ async fn run_stream_call(
     );
     let headers = build_headers(&cfg);
 
+    // Aborted while we were setting up — never start the upstream request.
+    if abort_reg.is_some_and(|g| g.is_fired()) {
+        return;
+    }
     let rx = spawn_upstream(
         http,
         UpstreamArgs {
@@ -141,136 +161,13 @@ async fn run_stream_call(
             warnings,
         },
     );
-    pump(rx, sink, PING_INTERVAL).await;
-}
-
-/// Forward upstream events to the sink; ping through silence; stop on the
-/// terminal event or on a failed write (caller gone → dropping `rx` aborts
-/// the upstream task and its in-flight HTTP request).
-pub async fn pump(
-    mut rx: mpsc::Receiver<AssistantMessageEvent>,
-    sink: &dyn FrameSink,
-    ping_interval: Duration,
-) {
-    loop {
-        match tokio::time::timeout(ping_interval, rx.recv()).await {
-            Ok(Some(ev)) => {
-                let terminal = ev.is_terminal();
-                if send_event(sink, &ev).is_err() {
-                    return;
-                }
-                if terminal {
-                    return;
-                }
-            }
-            // Upstream task ended without a terminal (panic/abort): the
-            // router synthesizes the terminal frame — never two terminals.
-            Ok(None) => return,
-            // Silent stretch: heartbeat (also probes for a gone caller).
-            Err(_elapsed) => {
-                if send_event(sink, &AssistantMessageEvent::Ping).is_err() {
-                    return;
-                }
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use llm_router::chat::relay::RelayRead;
-    use llm_router::testkit::fake_channels::FakeChannel;
-    use llm_router::types::messages::AssistantMessage;
-    use serde_json::Value;
-
-    fn empty_assistant(model: &str) -> AssistantMessage {
-        llm_router::chat::synthesize::empty_partial(model, crate::PROVIDER_ID, crate::now_ms())
-    }
-
-    fn done_event() -> AssistantMessageEvent {
-        AssistantMessageEvent::Done {
-            message: empty_assistant("claude-test"),
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn forwards_events_and_stops_at_terminal() {
-        let ch = FakeChannel::new();
-        let (tx, rx) = mpsc::channel(8);
-        tx.send(AssistantMessageEvent::Start {
-            partial: empty_assistant("m"),
-        })
-        .await
-        .unwrap();
-        tx.send(done_event()).await.unwrap();
-        // a frame after the terminal must never be forwarded
-        tx.send(AssistantMessageEvent::Ping).await.unwrap();
-        drop(tx);
-
-        pump(rx, &ch.writer, Duration::from_secs(30)).await;
-        ch.writer.close();
-
-        let mut frames = Vec::new();
-        let mut reader = ch.reader;
-        while let llm_router::chat::relay::ReadEvent::Msg(m) =
-            reader.next(Duration::from_millis(100)).await
-        {
-            frames.push(m);
-        }
-        assert_eq!(frames.len(), 2);
-        let last: Value = serde_json::from_str(&frames[1]).unwrap();
-        assert_eq!(last["type"], "done");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn pings_through_silence() {
-        let ch = FakeChannel::new();
-        let (tx, rx) = mpsc::channel::<AssistantMessageEvent>(8);
-        // hold tx open, send nothing for > 2 ping intervals, then terminate
-        let pump_task = {
-            let writer = ch.writer.clone();
-            tokio::spawn(async move { pump(rx, &writer, Duration::from_millis(50)).await })
-        };
-        tokio::time::sleep(Duration::from_millis(140)).await;
-        tx.send(done_event()).await.unwrap();
-        drop(tx);
-        pump_task.await.unwrap();
-        ch.writer.close();
-
-        let mut frames = Vec::new();
-        let mut reader = ch.reader;
-        while let llm_router::chat::relay::ReadEvent::Msg(m) =
-            reader.next(Duration::from_millis(100)).await
-        {
-            frames.push(m);
-        }
-        let pings = frames
-            .iter()
-            .filter(|f| serde_json::from_str::<Value>(f).unwrap()["type"] == "ping")
-            .count();
-        assert!(
-            pings >= 2,
-            "want >=2 pings through 140ms of silence, got {pings}"
-        );
-        assert_eq!(
-            serde_json::from_str::<Value>(frames.last().unwrap()).unwrap()["type"],
-            "done"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn reader_close_stops_the_pump_and_drops_the_receiver() {
-        let ch = FakeChannel::new();
-        ch.reader.close(); // caller gone before anything is written
-        let (tx, rx) = mpsc::channel(8);
-        tx.send(AssistantMessageEvent::Start {
-            partial: empty_assistant("m"),
-        })
-        .await
-        .unwrap();
-        pump(rx, &ch.writer, Duration::from_secs(30)).await; // returns immediately
-                                                             // the receiver was consumed and dropped by pump → upstream send fails
-        assert!(tx.send(done_event()).await.is_err());
+    let kind = match abort_reg {
+        Some(g) => pump_abortable(rx, sink, PING_INTERVAL, g.watch()).await,
+        None => pump(rx, sink, PING_INTERVAL).await,
+    };
+    // An upstream auth terminal means the cached credential was rotated
+    // out from under us: drop the cache so the next attempt re-resolves.
+    if kind == Some(ErrorKind::AuthExpired) {
+        cache.invalidate();
     }
 }

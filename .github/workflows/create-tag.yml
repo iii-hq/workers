@@ -30,12 +30,14 @@ on:
           - lsp-vscode
           - image-resize
           - llm-router
+          - fp
           - mcp
           - memory
           - memory-consolidate
           - opencode
           - pi
           - provider-anthropic
+          - provider-kimi
           - provider-llamacpp
           - provider-openai
           - provider-openai-codex

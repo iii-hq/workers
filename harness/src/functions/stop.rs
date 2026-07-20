@@ -44,9 +44,20 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
     if record.status.is_terminal() {
         return Ok(StopResponse { stopping: false });
     }
+    // Idempotent: a prior stop already fired the cancel signal, cascaded to
+    // children, and requested the router abort — repeat clicks become one read.
+    if record.abort {
+        return Ok(StopResponse { stopping: true });
+    }
     // Pin the turn we observed so the write under the lock can't land on a newer
     // turn that started in between (matters when `turn_id` was omitted).
     let target_turn = record.turn_id.clone();
+
+    // In-process cancel signal, fired lock-free BEFORE anything that awaits:
+    // it cuts the in-flight `router.chat` await (backstop when router::abort
+    // is a no-op) and is observed between tool executions, where the durable
+    // flag write below is blocked on the session lock.
+    deps.cancels.fire(&target_turn);
 
     // Cascade to non-terminal spawned children BEFORE taking this session's
     // lock (harness.md § Cancellation cascade): each child stop acquires its
@@ -99,6 +110,16 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
     record.abort = true;
     record.updated_at = crate::types::message::AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+
+    // "stopping" ack on the existing phase-reason channel (status stays
+    // "working" — same semantics as "waiting for <model>"). UNDER the lock and
+    // after the terminal re-check: every finalizer emits its own set_status
+    // while holding this lock, so a lock-free ack here could land AFTER a
+    // concurrent finalize's "done" and leave the session stuck on "working".
+    let session = deps.session().await;
+    let _ = session
+        .set_status(&req.session_id, "working", Some("stopping"))
+        .await;
 
     Ok(StopResponse { stopping: true })
 }

@@ -106,26 +106,6 @@ pub fn invalid_request_from_serde(e: serde_json::Error) -> Error {
     invalid_request(format!("bad ProviderStreamInput: {e}"))
 }
 
-/// Flatten an error and its `source()` chain into one string. reqwest's
-/// top-level Display is often opaque ("builder error", "error sending request
-/// for url (…)"); the real cause (invalid header value, connection refused,
-/// "No route to host") lives in the source chain, so without this the message
-/// is undiagnosable.
-pub(crate) fn error_chain(e: &dyn std::error::Error) -> String {
-    let mut msg = e.to_string();
-    let mut src = e.source();
-    while let Some(s) = src {
-        let next = s.to_string();
-        // reqwest sometimes nests the same text; skip exact repeats.
-        if !msg.ends_with(&next) {
-            msg.push_str(": ");
-            msg.push_str(&next);
-        }
-        src = s.source();
-    }
-    msg
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

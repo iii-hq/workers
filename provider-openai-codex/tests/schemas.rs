@@ -40,6 +40,7 @@ fn catalog_lists_all_functions_in_registration_order() {
         ids,
         vec![
             "provider::openai-codex::stream",
+            "provider::openai-codex::abort",
             "provider::openai-codex::refresh_models",
             "provider::openai-codex::on_router_ready",
         ]
