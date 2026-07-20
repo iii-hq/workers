@@ -10,6 +10,7 @@ pub mod dom;
 pub mod evaluate;
 pub mod execute;
 pub mod frame;
+pub mod handoff;
 pub mod hint;
 pub mod history;
 pub mod navigate;
@@ -39,7 +40,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
 use tokio::time::timeout;
 
-use crate::events::{EventKind, SessionStartedEvent};
+use crate::events::{EventKind, HandoffRequestedEvent, SessionStartedEvent};
 use crate::session::{now_ms, Session, Sessions};
 
 pub const SESSIONS_START_ID: &str = "browser::sessions::start";
@@ -97,6 +98,16 @@ pub const DOCTOR_DESC: &str =
     "Read-only environment diagnostics: which Chromium the worker would launch, its version, \
      session capacity, and any degraded capability with how to enable it. Never starts a \
      browser.";
+pub const HANDOFF_ID: &str = "browser::handoff";
+pub const HANDOFF_DESC: &str =
+    "Pause a session for a step only a human can do (CAPTCHA, 2FA, payment): show an in-page \
+     continue banner and block until the human clicks it, a browser::handoff::confirm call \
+     resolves it, or the timeout elapses. Human acknowledgment is not proof — verify the \
+     expected page state after it returns.";
+pub const HANDOFF_CONFIRM_ID: &str = "browser::handoff::confirm";
+pub const HANDOFF_CONFIRM_DESC: &str =
+    "Resolve a paused browser::handoff by handoff_id, or the one pending handoff for a \
+     session_id. The console calls this when the human confirms outside the page.";
 pub const CONSOLE_READ_ID: &str = "browser::console::read";
 pub const CONSOLE_READ_DESC: &str =
     "Read the session's captured console: console.* calls, uncaught exceptions, and \
@@ -193,6 +204,11 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<act::ActInput, act::ActOutput>(ACT_ID, ACT_DESC),
         spec::<evaluate::EvaluateInput, evaluate::EvaluateOutput>(EVALUATE_ID, EVALUATE_DESC),
         spec::<execute::ExecuteInput, execute::ExecuteOutput>(EXECUTE_ID, EXECUTE_DESC),
+        spec::<handoff::HandoffInput, handoff::HandoffOutput>(HANDOFF_ID, HANDOFF_DESC),
+        spec::<handoff::HandoffConfirmInput, handoff::HandoffConfirmOutput>(
+            HANDOFF_CONFIRM_ID,
+            HANDOFF_CONFIRM_DESC,
+        ),
         spec::<console::ConsoleReadInput, console::ConsoleReadOutput>(
             CONSOLE_READ_ID,
             CONSOLE_READ_DESC,
@@ -237,6 +253,8 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_act(iii, sessions);
     register_evaluate(iii, sessions);
     register_execute(iii, sessions);
+    register_handoff(iii, sessions);
+    register_handoff_confirm(iii, sessions);
     register_console_read(iii, sessions);
     register_network_read(iii, sessions);
     register_history(iii, sessions);
@@ -1003,6 +1021,102 @@ fn register_execute(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(EXECUTE_DESC),
+    );
+}
+
+fn register_handoff(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        HANDOFF_ID,
+        RegisterFunction::new_async(move |req: handoff::HandoffInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+                let cfg = sx.config.load_full();
+                let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
+
+                let (handoff_id, mut confirm_rx) = sx.register_handoff(&req.session_id);
+                // Mount the in-page continue banner carrying the poll flag.
+                // Best-effort: on a page that rejects injection the
+                // confirm-call path still resolves the same handoff.
+                let _ = session
+                    .page
+                    .evaluate(handoff::banner_script(&handoff_id, &req.instructions))
+                    .await;
+
+                sx.emitter
+                    .emit(
+                        EventKind::HandoffRequested,
+                        &req.session_id,
+                        &HandoffRequestedEvent {
+                            session_id: req.session_id.clone(),
+                            handoff_id: handoff_id.clone(),
+                            instructions: req.instructions.clone(),
+                            timestamp: now_ms(),
+                        },
+                    )
+                    .await;
+
+                // Park until: a confirm call fires the oneshot, the human
+                // clicks the in-page control (polled), or the timeout fires.
+                let poll = handoff::poll_script(&handoff_id);
+                let deadline = tokio::time::Instant::now() + wait;
+                let via = loop {
+                    let tick = tokio::time::sleep(Duration::from_millis(handoff::POLL_INTERVAL_MS));
+                    tokio::select! {
+                        // Ok = a confirm call fired the sender; Err = the
+                        // sender was dropped (session stopped mid-handoff).
+                        res = &mut confirm_rx => break if res.is_ok() { "confirm_call" } else { "cancelled" },
+                        _ = tokio::time::sleep_until(deadline) => break "timeout",
+                        _ = tick => {
+                            if let Ok(v) = session.page.evaluate(poll.clone()).await {
+                                if v.value().and_then(|x| x.as_bool()).unwrap_or(false) {
+                                    break "in_page";
+                                }
+                            }
+                        }
+                    }
+                };
+
+                sx.drop_handoff(&handoff_id);
+                let _ = session
+                    .page
+                    .evaluate(handoff::remove_script(&handoff_id))
+                    .await;
+                session.touch();
+                let url = session.page.url().await.ok().flatten().unwrap_or_default();
+                Ok::<_, Error>(handoff::HandoffOutput {
+                    confirmed: via == "confirm_call" || via == "in_page",
+                    handoff_id,
+                    via: via.to_string(),
+                    url,
+                })
+            }
+        })
+        .description(HANDOFF_DESC),
+    );
+}
+
+fn register_handoff_confirm(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        HANDOFF_CONFIRM_ID,
+        RegisterFunction::new_async(move |req: handoff::HandoffConfirmInput| {
+            let sx = sx.clone();
+            async move {
+                if req.handoff_id.is_none() && req.session_id.is_none() {
+                    return Err(handler_err("pass handoff_id or session_id"));
+                }
+                let resolved =
+                    sx.confirm_handoff(req.handoff_id.as_deref(), req.session_id.as_deref());
+                Ok::<_, Error>(handoff::HandoffConfirmOutput {
+                    ok: resolved.is_some(),
+                    handoff_id: resolved,
+                })
+            }
+        })
+        .description(HANDOFF_CONFIRM_DESC),
     );
 }
 

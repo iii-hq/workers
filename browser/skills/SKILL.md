@@ -84,6 +84,12 @@ on navigation; re-snapshot before acting after any page change.
   await and return, `log(...)`, `sleep(ms)`, `waitFor(selector)`, and a
   `state` object persisted across execute calls for the session. One call
   replaces a chain of act/evaluate round-trips.
+- `browser::handoff` — pause the session for a human-only step (CAPTCHA,
+  2FA, payment): show an in-page continue banner and block until the human
+  clicks it, a `browser::handoff::confirm` call resolves it, or the timeout
+  elapses. Verify the expected page state after it returns.
+- `browser::handoff::confirm` — resolve a paused handoff from outside the
+  page (by handoff_id, or the one pending handoff for a session_id).
 - `browser::console::read` — captured console entries; filter with
   pattern/level and page with since_seq.
 - `browser::network::read` — captured requests; failed_only=true is the fast
@@ -107,6 +113,11 @@ on navigation; re-snapshot before acting after any page change.
    (in-page script clicks are not trusted events).
 4. Pure inspection tasks (audits, scraping a logged-in page you must not
    touch) belong in a `read_only: true` session.
+5. When a flow hits a step only a human can do (CAPTCHA, 2FA, payment
+   confirmation), call `browser::handoff` and wait, rather than trying to
+   automate it. After it returns confirmed, re-read the page and verify the
+   step actually landed — a human clicking Continue is not proof the step
+   succeeded.
 
 ## Workflow: destructive UI actions
 
@@ -140,9 +151,11 @@ fill the context window and force a compaction. Read economically:
 Bind a `browser::*` trigger when another function should react to session
 activity as it happens instead of polling the read functions. The types:
 `browser::session-started`, `browser::session-stopped`, `browser::navigated`,
-`browser::console-event` (one captured entry per firing; high volume), and
+`browser::console-event` (one captured entry per firing; high volume),
 `browser::picked` (a human picked an element in the console UI; the payload
-carries a ref that `browser::act` accepts directly).
+carries a ref that `browser::act` accepts directly), and
+`browser::handoff-requested` (a session is paused waiting for a human; the
+console surfaces it beside the live viewport).
 
 If you just ran `browser::navigate` yourself, its return value already tells
 you the outcome; bind triggers when a different worker needs to observe

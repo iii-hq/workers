@@ -400,6 +400,14 @@ impl Session {
     }
 }
 
+/// A paused handoff waiting for confirmation: the sender resolves the
+/// `browser::handoff` call that parked on it. `session_id` lets a confirm
+/// addressed to a session find its pending handoff.
+pub struct PendingHandoff {
+    pub session_id: String,
+    pub confirm: tokio::sync::oneshot::Sender<()>,
+}
+
 /// The live session table plus everything a pump task needs.
 pub struct Sessions {
     map: Mutex<HashMap<String, Arc<Session>>>,
@@ -408,6 +416,10 @@ pub struct Sessions {
     /// exclusive: a tab in this set cannot be adopted again until its
     /// session stops.
     adopted_targets: Mutex<std::collections::HashSet<String>>,
+    /// Handoffs currently paused, keyed by handoff id. A confirm removes and
+    /// fires the sender; the parked `browser::handoff` handler then returns.
+    pending_handoffs: Mutex<HashMap<String, PendingHandoff>>,
+    handoff_counter: AtomicU64,
     pub config: SharedConfig,
     pub emitter: Arc<Emitter>,
     /// For pushing screencast frames onto the `browser:frames` stream, which
@@ -425,6 +437,8 @@ impl Sessions {
             map: Mutex::new(HashMap::new()),
             counter: AtomicU64::new(0),
             adopted_targets: Mutex::new(std::collections::HashSet::new()),
+            pending_handoffs: Mutex::new(HashMap::new()),
+            handoff_counter: AtomicU64::new(0),
             config,
             emitter,
             iii,
@@ -720,6 +734,16 @@ impl Sessions {
                         .unwrap_or_else(|p| p.into_inner())
                         .remove(&target);
                 }
+                // Drop any handoff parked on this session so its call
+                // unblocks (its receiver errors) instead of waiting for the
+                // full timeout against a dead page.
+                {
+                    let mut pending = self
+                        .pending_handoffs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    pending.retain(|_, h| h.session_id != id);
+                }
                 session.shutdown().await;
                 self.emitter
                     .emit(
@@ -736,6 +760,66 @@ impl Sessions {
             }
             None => false,
         }
+    }
+
+    /// Register a paused handoff and return its id plus the receiver the
+    /// caller awaits. A confirm addressed to the same session (or this id)
+    /// fires the sender.
+    pub fn register_handoff(
+        &self,
+        session_id: &str,
+    ) -> (String, tokio::sync::oneshot::Receiver<()>) {
+        let id = format!(
+            "h{}",
+            self.handoff_counter.fetch_add(1, Ordering::Relaxed) + 1
+        );
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending_handoffs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(
+                id.clone(),
+                PendingHandoff {
+                    session_id: session_id.to_string(),
+                    confirm: tx,
+                },
+            );
+        (id, rx)
+    }
+
+    /// Drop a pending handoff without confirming (timeout or session stop).
+    pub fn drop_handoff(&self, handoff_id: &str) {
+        self.pending_handoffs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(handoff_id);
+    }
+
+    /// Confirm a paused handoff: by exact id, or the one pending handoff for
+    /// a session. Returns the resolved handoff id, or None when nothing
+    /// matched (already confirmed, timed out, or wrong session).
+    pub fn confirm_handoff(
+        &self,
+        handoff_id: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Option<String> {
+        let mut pending = self
+            .pending_handoffs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let key = match (handoff_id, session_id) {
+            (Some(id), _) => pending.contains_key(id).then(|| id.to_string()),
+            (None, Some(sid)) => pending
+                .iter()
+                .find(|(_, h)| h.session_id == sid)
+                .map(|(k, _)| k.clone()),
+            (None, None) => None,
+        }?;
+        let handoff = pending.remove(&key)?;
+        // A closed receiver (parked call already gone) is fine: the confirm
+        // still succeeds in removing the stale entry.
+        let _ = handoff.confirm.send(());
+        Some(key)
     }
 
     /// Stop sessions idle beyond the configured threshold. Called from the
