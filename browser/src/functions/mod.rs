@@ -4,8 +4,10 @@
 
 pub mod act;
 pub mod console;
+pub mod doctor;
 pub mod dom;
 pub mod evaluate;
+pub mod execute;
 pub mod frame;
 pub mod hint;
 pub mod history;
@@ -72,6 +74,17 @@ pub const EVALUATE_ID: &str = "browser::evaluate";
 pub const EVALUATE_DESC: &str =
     "Evaluate a JavaScript expression in the page and return its completion value. Use for \
      reads the snapshot can't express; prefer browser::act for interactions.";
+pub const EXECUTE_ID: &str = "browser::execute";
+pub const EXECUTE_DESC: &str =
+    "Run a multi-step async JavaScript script in the page: top-level await and return work, \
+     with log(...), sleep(ms), waitFor(selector), and a state object that persists across \
+     execute calls for the session. One call replaces a chain of act/evaluate round-trips; \
+     returns { result, logs, state }.";
+pub const DOCTOR_ID: &str = "browser::doctor";
+pub const DOCTOR_DESC: &str =
+    "Read-only environment diagnostics: which Chromium the worker would launch, its version, \
+     session capacity, and any degraded capability with how to enable it. Never starts a \
+     browser.";
 pub const CONSOLE_READ_ID: &str = "browser::console::read";
 pub const CONSOLE_READ_DESC: &str =
     "Read the session's captured console: console.* calls, uncaught exceptions, and \
@@ -156,6 +169,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<sessions::StartInput, sessions::StartOutput>(SESSIONS_START_ID, SESSIONS_START_DESC),
         spec::<sessions::ListInput, sessions::ListOutput>(SESSIONS_LIST_ID, SESSIONS_LIST_DESC),
         spec::<sessions::StopInput, sessions::StopOutput>(SESSIONS_STOP_ID, SESSIONS_STOP_DESC),
+        spec::<doctor::DoctorInput, doctor::DoctorOutput>(DOCTOR_ID, DOCTOR_DESC),
         spec::<navigate::NavigateInput, navigate::NavigateOutput>(NAVIGATE_ID, NAVIGATE_DESC),
         spec::<snapshot::SnapshotInput, snapshot::SnapshotOutput>(SNAPSHOT_ID, SNAPSHOT_DESC),
         spec::<screenshot::ScreenshotInput, screenshot::ScreenshotOutput>(
@@ -164,6 +178,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         ),
         spec::<act::ActInput, act::ActOutput>(ACT_ID, ACT_DESC),
         spec::<evaluate::EvaluateInput, evaluate::EvaluateOutput>(EVALUATE_ID, EVALUATE_DESC),
+        spec::<execute::ExecuteInput, execute::ExecuteOutput>(EXECUTE_ID, EXECUTE_DESC),
         spec::<console::ConsoleReadInput, console::ConsoleReadOutput>(
             CONSOLE_READ_ID,
             CONSOLE_READ_DESC,
@@ -199,11 +214,13 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_sessions_start(iii, sessions);
     register_sessions_list(iii, sessions);
     register_sessions_stop(iii, sessions);
+    register_doctor(iii, sessions);
     register_navigate(iii, sessions);
     register_snapshot(iii, sessions);
     register_screenshot(iii, sessions);
     register_act(iii, sessions);
     register_evaluate(iii, sessions);
+    register_execute(iii, sessions);
     register_console_read(iii, sessions);
     register_network_read(iii, sessions);
     register_history(iii, sessions);
@@ -232,6 +249,21 @@ fn get_session(sessions: &Sessions, id: &str) -> Result<Arc<Session>, Error> {
     })
 }
 
+/// Read-only guard shared by every interaction function. Inspection and
+/// navigation stay available on a read-only session; anything that dispatches
+/// input or runs script is rejected here.
+fn ensure_writable(session: &Session, what: &str) -> Result<(), Error> {
+    if session.read_only {
+        return Err(handler_err(format!(
+            "session '{}' is read-only: {what} is rejected. Navigation, snapshot, dom/styles \
+             reads, console/network reads, and screenshots still work; start a writable session \
+             with browser::sessions::start.",
+            session.id
+        )));
+    }
+    Ok(())
+}
+
 fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     let sx = sessions.clone();
     iii.register_function(
@@ -242,7 +274,10 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 if let Some(url) = &req.url {
                     sessions::check_scheme(&sx.config.load(), url).map_err(handler_err)?;
                 }
-                let session = sx.start(req.url, req.headful).await.map_err(handler_err)?;
+                let session = sx
+                    .start(req.url, req.headful, req.read_only.unwrap_or(false))
+                    .await
+                    .map_err(handler_err)?;
                 let url = session
                     .page
                     .url()
@@ -266,6 +301,7 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     session_id: session.id.clone(),
                     url,
                     headless: session.headless,
+                    read_only: session.read_only,
                 })
             }
         })
@@ -298,6 +334,7 @@ fn register_sessions_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             url: url.ok().flatten().unwrap_or_default(),
                             title: title.ok().flatten(),
                             headless: session.headless,
+                            read_only: session.read_only,
                             created_ms: session.created_ms,
                             last_used_ms: session.last_used_ms(),
                             console_entries,
@@ -384,17 +421,52 @@ fn register_snapshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .await
                     .map_err(|e| handler_err(format!("accessibility tree failed: {e}")))?;
 
-                let result =
-                    crate::snapshot::serialize(&tree.nodes, cfg.max_snapshot_nodes as usize);
-                session.store_refs(result.refs);
+                let result = crate::snapshot::serialize(
+                    &tree.nodes,
+                    cfg.max_snapshot_nodes as usize,
+                    &session.ref_counter,
+                );
+                session.append_refs(result.refs);
+
+                // Swap in this snapshot's keys as the next diff baseline,
+                // taking the previous baseline out in the same lock.
+                let previous_keys = {
+                    let mut baseline = session
+                        .snapshot_keys
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    baseline.replace(result.keys.clone())
+                };
+
+                let diff = match (req.diff.unwrap_or(false), previous_keys) {
+                    (true, Some(previous)) => {
+                        let d = crate::snapshot::diff_keys(&previous, &result.keys);
+                        Some(snapshot::SnapshotDiff {
+                            added: d
+                                .added
+                                .iter()
+                                .filter_map(|&i| result.lines.get(i).cloned())
+                                .collect(),
+                            removed: d.removed,
+                            unchanged: d.unchanged,
+                        })
+                    }
+                    _ => None,
+                };
 
                 let url = session.page.url().await.ok().flatten().unwrap_or_default();
                 let title = session.page.get_title().await.ok().flatten();
                 Ok::<_, Error>(snapshot::SnapshotOutput {
                     url,
                     title,
-                    tree: result.tree,
+                    tree: if diff.is_some() {
+                        String::new()
+                    } else {
+                        result.tree
+                    },
                     truncated: result.truncated,
+                    generation: session.generation(),
+                    diff,
                 })
             }
         })
@@ -558,6 +630,7 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::act")?;
                 session.touch();
 
                 let detail = match req.action.as_str() {
@@ -688,6 +761,7 @@ fn register_evaluate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::evaluate")?;
                 session.touch();
                 let cfg = sx.config.load();
                 let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
@@ -714,6 +788,185 @@ fn register_evaluate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(EVALUATE_DESC),
+    );
+}
+
+fn register_execute(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        EXECUTE_ID,
+        RegisterFunction::new_async(move |req: execute::ExecuteInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::execute")?;
+                session.touch();
+                let cfg = sx.config.load();
+                let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
+
+                let state_json = {
+                    let state = session.exec_state.lock().unwrap_or_else(|p| p.into_inner());
+                    serde_json::to_string(&*state).unwrap_or_else(|_| "{}".to_string())
+                };
+                let wrapped = execute::wrap_code(&req.code, &state_json);
+
+                let params = cdp_rt::EvaluateParams::builder()
+                    .expression(wrapped)
+                    .await_promise(true)
+                    .return_by_value(true)
+                    .build()
+                    .map_err(handler_err)?;
+                let evaluated = timeout(wait, session.page.execute(params)).await;
+                session.touch();
+
+                let current_state = || {
+                    session
+                        .exec_state
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone()
+                };
+                let response = match evaluated {
+                    Err(_) => {
+                        return Ok::<_, Error>(execute::ExecuteOutput {
+                            ok: false,
+                            result: None,
+                            error: Some(format!(
+                                "script timed out after {}ms; state was not updated",
+                                wait.as_millis()
+                            )),
+                            logs: Vec::new(),
+                            state: current_state(),
+                        })
+                    }
+                    Ok(Err(e)) => {
+                        let text = e.to_string();
+                        let hint = if text.contains("context") {
+                            "; the execution context was destroyed, which usually means the \
+                             script navigated — split the script at the navigation boundary"
+                        } else {
+                            ""
+                        };
+                        return Ok(execute::ExecuteOutput {
+                            ok: false,
+                            result: None,
+                            error: Some(format!("script failed: {text}{hint}")),
+                            logs: Vec::new(),
+                            state: current_state(),
+                        });
+                    }
+                    Ok(Ok(r)) => r,
+                };
+
+                if let Some(details) = &response.exception_details {
+                    return Ok(execute::ExecuteOutput {
+                        ok: false,
+                        result: None,
+                        error: Some(format!("script threw: {}", details.text)),
+                        logs: Vec::new(),
+                        state: current_state(),
+                    });
+                }
+                let raw = response
+                    .result
+                    .result
+                    .value
+                    .as_ref()
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| handler_err("script returned no envelope"))?;
+                if raw.len() > execute::MAX_ENVELOPE_BYTES {
+                    return Ok(execute::ExecuteOutput {
+                        ok: false,
+                        result: None,
+                        error: Some(format!(
+                            "script result is {} bytes (cap {}); return a summary, not a dump",
+                            raw.len(),
+                            execute::MAX_ENVELOPE_BYTES
+                        )),
+                        logs: Vec::new(),
+                        state: current_state(),
+                    });
+                }
+                let envelope: execute::Envelope = serde_json::from_str(raw)
+                    .map_err(|e| handler_err(format!("script envelope did not parse: {e}")))?;
+
+                if envelope.state.is_object() {
+                    *session.exec_state.lock().unwrap_or_else(|p| p.into_inner()) =
+                        envelope.state.clone();
+                }
+                Ok(execute::ExecuteOutput {
+                    ok: envelope.ok,
+                    result: envelope.result,
+                    error: envelope.error,
+                    logs: envelope.logs,
+                    state: envelope.state,
+                })
+            }
+        })
+        .description(EXECUTE_DESC),
+    );
+}
+
+fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        DOCTOR_ID,
+        RegisterFunction::new_async(move |_req: doctor::DoctorInput| {
+            let sx = sx.clone();
+            async move {
+                let cfg = sx.config.load_full();
+                let mut issues = Vec::new();
+
+                let chromium_path = doctor::detect_chromium(&cfg);
+                let chromium_version = match &chromium_path {
+                    Some(path) => {
+                        let path = path.clone();
+                        tokio::task::spawn_blocking(move || doctor::chromium_version(&path))
+                            .await
+                            .ok()
+                            .flatten()
+                    }
+                    None => None,
+                };
+                if chromium_path.is_none() {
+                    issues.push(doctor::DoctorIssue {
+                        what: if cfg.executable.is_empty() {
+                            "no Chromium/Chrome install found".to_string()
+                        } else {
+                            format!("configured executable '{}' does not exist", cfg.executable)
+                        },
+                        enable_how: "install Google Chrome or Chromium, or point the worker \
+                                     config `executable` at a browser binary"
+                            .to_string(),
+                    });
+                }
+
+                let active_sessions = sx.count() as u64;
+                if active_sessions >= cfg.max_sessions {
+                    issues.push(doctor::DoctorIssue {
+                        what: format!(
+                            "session capacity reached ({active_sessions}/{})",
+                            cfg.max_sessions
+                        ),
+                        enable_how: "stop a session with browser::sessions::stop, or raise \
+                                     `max_sessions` in the worker config"
+                            .to_string(),
+                    });
+                }
+
+                Ok::<_, Error>(doctor::DoctorOutput {
+                    ok: chromium_path.is_some() && active_sessions < cfg.max_sessions,
+                    chromium_path: chromium_path.map(|p| p.display().to_string()),
+                    chromium_version,
+                    headless_default: cfg.headless,
+                    max_sessions: cfg.max_sessions,
+                    active_sessions,
+                    allowed_schemes: cfg.allowed_schemes.clone(),
+                    issues,
+                })
+            }
+        })
+        .description(DOCTOR_DESC),
     );
 }
 
@@ -1133,6 +1386,7 @@ fn register_styles_write(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::styles::write")?;
                 session.touch();
                 let backend_id = session.resolve_ref_or_err(&req.r#ref)?;
 

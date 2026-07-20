@@ -191,9 +191,19 @@ impl LatestFrame {
     }
 }
 
+/// Refs kept per session before the safety valve clears the table. Only
+/// reachable without a navigation (navigation clears refs), so hitting it
+/// means thousands of snapshots against one document; clearing degrades to
+/// the fail-closed unknown-ref error, never to a wrong element.
+const MAX_REFS: usize = 20_000;
+
 pub struct Session {
     pub id: String,
     pub headless: bool,
+    /// Inspection-only session: interaction functions are rejected while
+    /// navigation and reads stay available. Immutable for the session's
+    /// lifetime.
+    pub read_only: bool,
     /// Viewport captured at launch. Config viewport is a session-start
     /// setting (a running session keeps the browser it launched with), so
     /// per-call consumers read these fields, not the live config.
@@ -213,8 +223,24 @@ pub struct Session {
     seq: AtomicU64,
     last_used_ms: AtomicU64,
     /// Snapshot/pick refs (`e1`, `p3`, …) → CDP backend node ids. Cleared on
-    /// navigation — backend ids do not survive a document swap.
+    /// navigation — backend ids do not survive a document swap. Snapshot
+    /// refs accumulate (names are session-monotonic), so a ref from an
+    /// earlier snapshot of the same document still resolves to the node it
+    /// named instead of colliding with a newer snapshot's numbering.
     pub refs: Mutex<HashMap<String, i64>>,
+    /// Session-monotonic counter behind snapshot ref names; never reset
+    /// within a session so ref names are unique across snapshots.
+    pub ref_counter: AtomicU64,
+    /// Bumped on every top-document navigation. Snapshots report it so a
+    /// caller can tell which document epoch its refs belong to.
+    generation: AtomicU64,
+    /// Ref-stripped outline lines of the latest snapshot, the baseline for
+    /// `browser::snapshot` diff mode. None before the first snapshot and
+    /// after a navigation.
+    pub snapshot_keys: Mutex<Option<Vec<String>>>,
+    /// Cross-call state for `browser::execute`; lives until the session
+    /// stops.
+    pub exec_state: Mutex<serde_json::Value>,
     pick_counter: AtomicU64,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -250,14 +276,28 @@ impl Session {
     pub fn resolve_ref_or_err(&self, r: &str) -> Result<i64, iii_sdk::errors::Error> {
         self.resolve_ref(r).ok_or_else(|| {
             iii_sdk::errors::Error::Handler(format!(
-                "unknown ref '{r}'; refs come from browser::snapshot / browser::dom::read / a \
-                 pick and die on navigation. Re-snapshot, then use a fresh ref."
+                "unknown ref '{r}' (document generation {}); refs come from browser::snapshot / \
+                 browser::dom::read / a pick and die on navigation. Re-snapshot, then use a \
+                 fresh ref.",
+                self.generation()
             ))
         })
     }
 
-    pub fn store_refs(&self, map: HashMap<String, i64>) {
-        *self.refs.lock().unwrap_or_else(|p| p.into_inner()) = map;
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
+    }
+
+    /// Merge new snapshot refs into the table. Names are session-monotonic
+    /// so this never overwrites an older snapshot's names; the safety valve
+    /// clears everything if the table grows past `MAX_REFS` (subsequent old
+    /// refs then fail closed as unknown).
+    pub fn append_refs(&self, map: HashMap<String, i64>) {
+        let mut refs = self.refs.lock().unwrap_or_else(|p| p.into_inner());
+        if refs.len().saturating_add(map.len()) > MAX_REFS {
+            refs.clear();
+        }
+        refs.extend(map);
     }
 
     pub fn add_ref(&self, r: String, backend_node_id: i64) {
@@ -267,8 +307,13 @@ impl Session {
             .insert(r, backend_node_id);
     }
 
+    /// Navigation invalidation: refs die, the diff baseline dies, and the
+    /// document generation advances. `exec_state` survives — it is session
+    /// state, not document state.
     fn clear_refs(&self) {
         self.refs.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        *self.snapshot_keys.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn push_console(&self, entry: ConsoleEntry) {
@@ -365,6 +410,7 @@ impl Sessions {
         self: &Arc<Self>,
         url: Option<String>,
         headful_override: Option<bool>,
+        read_only: bool,
     ) -> Result<Arc<Session>, String> {
         let cfg = self.config.load_full();
         if self.count() as u64 >= cfg.max_sessions {
@@ -415,6 +461,7 @@ impl Sessions {
         let session = Arc::new(Session {
             id: id.clone(),
             headless,
+            read_only,
             viewport_width: cfg.viewport_width,
             viewport_height: cfg.viewport_height,
             created_ms: now,
@@ -429,6 +476,10 @@ impl Sessions {
             seq: AtomicU64::new(1),
             last_used_ms: AtomicU64::new(now as u64),
             refs: Mutex::new(HashMap::new()),
+            ref_counter: AtomicU64::new(0),
+            generation: AtomicU64::new(1),
+            snapshot_keys: Mutex::new(None),
+            exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(vec![handler_task]),
         });
