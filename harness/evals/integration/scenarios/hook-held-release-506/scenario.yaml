@@ -3,7 +3,6 @@
 schema_version: "1"
 id: C-E2E-506
 description: A held call released for execution must run with the arguments produced by earlier hooks.
-quarantine: true
 
 send:
   message: Call the recorder once.

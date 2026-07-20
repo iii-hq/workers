@@ -143,11 +143,13 @@ async fn children_see_only_the_environment_allowlist() {
 async fn wait_for_pid(path: &std::path::Path) -> u32 {
     for _ in 0..50 {
         if let Ok(raw) = std::fs::read_to_string(path) {
-            return raw.trim().parse().expect("numeric descendant pid");
+            if let Ok(pid) = raw.trim().parse() {
+                return pid;
+            }
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    panic!("descendant pid was not written");
+    panic!("numeric descendant pid was not written");
 }
 
 async fn wait_until_not_running(pid: u32) -> bool {
