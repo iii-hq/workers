@@ -160,7 +160,7 @@ async fn scoped_scope_root_blocks_sibling_escape_across_handlers() {
     let scope_root = project.to_string_lossy().into_owned();
 
     // `../sibling.txt` is still inside the worker's allowed root, so a plain
-    // jail check is not enough. Session-scoped calls must reject it with C218.
+    // jail check is not enough. Session-scoped calls must reject it with C220.
     let read_err = read_handle(
         r.clone(),
         c.clone(),
@@ -176,7 +176,7 @@ async fn scoped_scope_root_blocks_sibling_escape_across_handlers() {
     )
     .await
     .expect_err("scoped read must not escape the session dir");
-    assert_eq!(wire_err_code(&read_err), "C218");
+    assert_eq!(wire_err_code(&read_err), "C220");
 
     let create_err = create_handle(
         r.clone(),
@@ -198,7 +198,7 @@ async fn scoped_scope_root_blocks_sibling_escape_across_handlers() {
     )
     .await
     .expect_err("scoped create must not escape the session dir");
-    assert_eq!(wire_err_code(&create_err), "C218");
+    assert_eq!(wire_err_code(&create_err), "C220");
     assert!(
         !tmp.path().join("created-outside.txt").exists(),
         "rejected create must not write into a sibling of the session dir"
@@ -218,7 +218,7 @@ async fn scoped_scope_root_blocks_sibling_escape_across_handlers() {
     )
     .await
     .expect_err("scoped delete must not escape the session dir");
-    assert_eq!(wire_err_code(&delete_err), "C218");
+    assert_eq!(wire_err_code(&delete_err), "C220");
     assert!(
         tmp.path().join("sibling.txt").exists(),
         "rejected delete must leave sibling files untouched"

@@ -52,4 +52,4 @@ Feature: coder path security
       """
       {"path":"../outside-session.txt","fs_scope":{"root":"{{session}}","boundary":"workspace"}}
       """
-    Then the call failed with code "C218"
+    Then the call failed with code "C220"

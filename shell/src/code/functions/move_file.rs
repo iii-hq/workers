@@ -94,7 +94,7 @@ pub struct MoveFileResult {
     pub moved: bool,
 
     /// Structured error for this entry. `code` is stable for programmatic
-    /// branching (e.g. `"C217"` means destination exists; pass `overwrite=true`
+    /// branching (e.g. `"C213"` means destination exists; pass `overwrite=true`
     /// to replace; `"C210"` for disallowed operations such as cross-root
     /// directory moves, moving a root itself, or a destination that is a
     /// directory — the message then names the corrected target path).
@@ -271,7 +271,7 @@ fn try_move_one(
         if dst_meta.is_dir() && !src_meta.is_dir() {
             // overwrite=true can't fix this (a file cannot replace a
             // directory via rename), so don't send the caller down the
-            // C217 dead end — tell them the actual corrective call.
+            // C213 dead end — tell them the actual corrective call.
             let fname = abs_from
                 .file_name()
                 .map(|f| f.to_string_lossy().into_owned())
@@ -673,7 +673,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // overwrite=false → C217
+    // overwrite=false → C213
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn overwrite_false_dst_exists_c217() {
@@ -696,8 +696,8 @@ mod tests {
         .unwrap();
         assert!(!out.results[0].success);
         let err = out.results[0].error.as_ref().unwrap();
-        assert_eq!(err.code, "C217");
-        // House C217 shape — identical format to create-file's (no colon).
+        assert_eq!(err.code, "C213");
+        // House C213 shape — identical format to create-file's (no colon).
         assert_eq!(
             err.message,
             "dst.txt already exists; pass overwrite=true to replace"
@@ -959,7 +959,7 @@ mod tests {
 
     // ------------------------------------------------------------------
     // dst is a directory + src is a file → prescriptive C210 (not the
-    // C217 "pass overwrite=true" dead end — overwrite can't fix it).
+    // C213 "pass overwrite=true" dead end — overwrite can't fix it).
     // ------------------------------------------------------------------
     #[tokio::test]
     async fn dst_is_directory_src_is_file_prescriptive_c210() {

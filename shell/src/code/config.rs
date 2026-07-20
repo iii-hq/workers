@@ -32,6 +32,25 @@ pub struct CoderConfig {
     #[schemars(skip)]
     pub base_paths: Vec<PathBuf>,
 
+    /// Runtime plumbing, NEVER read from config: true when the operator
+    /// explicitly opted into the unjailed mode (`fs.allow_unjailed: true`
+    /// with empty `fs.host_roots`). Copied here by
+    /// `ShellConfig::code_resolver_config` so the resolver applies the same
+    /// deny-only policy as `shell::fs::*`: absolute paths anywhere on the
+    /// host, confined only by `denylist_paths` and `non_accessible_globs`.
+    /// The `base_paths` fallback roots still anchor relative wire paths.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub unjailed: bool,
+
+    /// Runtime plumbing, NEVER read from config: `fs.denylist_paths` copied
+    /// here by `ShellConfig::code_resolver_config` so both surfaces honor
+    /// the same operator path denylist. Matching paths are rejected with
+    /// the redacted C211 (indistinguishable from missing).
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub denylist_paths: Vec<PathBuf>,
+
     /// Glob patterns matched against the path *relative to its containing
     /// root*. Matching files can be listed but not
     /// read/written/deleted/created.
@@ -48,13 +67,13 @@ pub struct CoderConfig {
     pub default_exclude_globs: Vec<String>,
 
     /// Per-file IO ceiling, in bytes, for `coder::read-file` in every mode
-    /// (full, windowed, batch). A larger file fails with C213 naming the
+    /// (full, windowed, batch). A larger file fails with C218 naming the
     /// size. Default 10485760 (10 MiB).
     #[serde(default = "default_max_read_bytes")]
     pub max_read_bytes: u64,
 
     /// Cap, in bytes, on the content of a single `coder::create-file` /
-    /// `coder::update-file` call (C213 when exceeded). Default 10485760
+    /// `coder::update-file` call (C218 when exceeded). Default 10485760
     /// (10 MiB).
     #[serde(default = "default_max_write_bytes")]
     pub max_write_bytes: u64,
@@ -95,7 +114,7 @@ pub struct CoderConfig {
     /// replacements before being counted, so the cap bounds what the
     /// caller actually receives). Entries are collected in request order
     /// until this budget is exhausted; an entry reached with zero budget
-    /// remaining gets a per-entry C213. Single-path FULL reads are
+    /// remaining gets a per-entry C218. Single-path FULL reads are
     /// budgeted by `max_output_bytes` instead; `max_read_bytes` remains
     /// the per-file IO ceiling in every mode.
     #[serde(default = "default_batch_read_budget_bytes")]
@@ -106,7 +125,7 @@ pub struct CoderConfig {
     /// RETURNED CONTENT after UTF-8 sanitization (numbered prefixes
     /// included) — the same accounting unit as `batch_read_budget_bytes`.
     /// A full read whose converted content would exceed this budget
-    /// fails with a C213 that reports the file's size and line count and
+    /// fails with a C218 that reports the file's size and line count and
     /// names the recovery paths (window, stat probe, or per-call
     /// `max_output_bytes` raise, clamped to `max_read_bytes`). Windowed
     /// reads and batch mode are NOT governed by this key.
@@ -185,6 +204,14 @@ pub struct JailSignature {
     /// boundary, so it is restart-required: the `PathResolver` canonicalizes
     /// these once at boot and refuses to swap them live.
     pub base_paths: Vec<PathBuf>,
+    /// The unjailed opt-in (`fs.allow_unjailed` + empty `fs.host_roots`).
+    /// Flipping it moves the security boundary wholesale, so it is
+    /// restart-required like the root set it derives from.
+    pub unjailed: bool,
+    /// The operator path denylist (`fs.denylist_paths`), canonicalized into
+    /// the resolver at boot. Part of the deny-only protection layer, so
+    /// restart-required.
+    pub denylist_paths: Vec<PathBuf>,
     /// The access-deny globs. These are the read/write/delete protection layer
     /// (e.g. `.env`, `*.pem`), compiled into the `PathResolver` at boot. A
     /// change alters the security posture, so it is restart-required — never
@@ -201,6 +228,8 @@ impl Default for CoderConfig {
     fn default() -> Self {
         Self {
             base_paths: Vec::new(),
+            unjailed: false,
+            denylist_paths: Vec::new(),
             non_accessible_globs: Vec::new(),
             default_exclude_globs: default_default_exclude_globs(),
             max_read_bytes: default_max_read_bytes(),
@@ -261,6 +290,8 @@ impl CoderConfig {
     pub fn jail_signature(&self) -> JailSignature {
         JailSignature {
             base_paths: self.base_paths.clone(),
+            unjailed: self.unjailed,
+            denylist_paths: self.denylist_paths.clone(),
             non_accessible_globs: self.non_accessible_globs.clone(),
             default_exclude_globs: self.default_exclude_globs.clone(),
         }

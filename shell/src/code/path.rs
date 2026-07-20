@@ -4,6 +4,11 @@
 //! runtime from `fs.host_roots`). Relative wire
 //! paths resolve against the FIRST root (the "primary"); absolute wire
 //! paths are accepted when they canonicalise inside ANY allowed root.
+//! When the operator opts into the unjailed mode (`fs.allow_unjailed: true`
+//! with empty `fs.host_roots`) the containment gate is skipped — matching
+//! `shell::fs::*`'s deny-only policy — and the roots become relative-path
+//! ANCHORS only; `fs.denylist_paths` and `non_accessible_globs` still
+//! apply everywhere.
 //! `PathResolver` canonicalises inputs (symlink-aware) and verifies
 //! containment so `..` and crafted symlinks cannot escape. A `GlobSet`
 //! built from `non_accessible_globs` further blocks read/write/delete on
@@ -53,6 +58,14 @@ pub struct PathResolver {
     /// or symlink merely NAMED like an excluded directory.
     default_exclude_dirs: GlobSet,
     grant_roots_canon: Vec<PathBuf>,
+    /// Deny-only permissive mode (`fs.allow_unjailed: true`, empty
+    /// `fs.host_roots`): the containment gate is skipped and `roots_canon`
+    /// only anchors relative wire paths, mirroring `shell::fs::*`.
+    unjailed: bool,
+    /// Canonical `fs.denylist_paths`. A resolved path under any entry is
+    /// rejected with the redacted C211 in every mode — the same operator
+    /// denylist `shell::fs::*` enforces.
+    denylist_canon: Vec<PathBuf>,
 }
 
 /// Effective roots when `base_paths` is empty: the engine workspace cwd
@@ -123,14 +136,38 @@ impl PathResolver {
             "default_exclude_glob",
         )?;
 
-        tracing::info!(roots = ?roots_canon, "path resolver roots");
+        let mut denylist_canon = Vec::with_capacity(cfg.denylist_paths.len());
+        for deny in &cfg.denylist_paths {
+            match canonicalize_with_fallback(deny) {
+                Ok(canon) => {
+                    if !denylist_canon.contains(&canon) {
+                        denylist_canon.push(canon);
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    path = %deny.display(),
+                    error = %e,
+                    "skipping denylist path: cannot canonicalize"
+                ),
+            }
+        }
+
+        tracing::info!(roots = ?roots_canon, unjailed = cfg.unjailed, "path resolver roots");
         Ok(Self {
             roots_canon,
             non_accessible,
             default_exclude,
             default_exclude_dirs,
             grant_roots_canon: Vec::new(),
+            unjailed: cfg.unjailed,
+            denylist_canon,
         })
+    }
+
+    /// True when the operator opted into the deny-only permissive mode
+    /// (`fs.allow_unjailed: true` with empty `fs.host_roots`).
+    pub fn unjailed(&self) -> bool {
+        self.unjailed
     }
 
     /// Primary root — the first configured (and reachable) root. Relative
@@ -190,6 +227,8 @@ impl PathResolver {
             default_exclude: self.default_exclude.clone(),
             default_exclude_dirs: self.default_exclude_dirs.clone(),
             grant_roots_canon,
+            unjailed: self.unjailed,
+            denylist_canon: self.denylist_canon.clone(),
         })
     }
 
@@ -225,9 +264,7 @@ impl PathResolver {
             return None;
         }
         let base_canon = self.canonicalize_wire(scope_root, base_path).ok()?;
-        self.containing_root(&base_canon)
-            .is_some()
-            .then_some(base_canon)
+        (self.unjailed || self.containing_root(&base_canon).is_some()).then_some(base_canon)
     }
 
     /// Comma-separated display of all allowed roots, for C215 messages.
@@ -253,11 +290,14 @@ impl PathResolver {
             self.base_root().join(wire)
         };
         let canon = self.canonicalize_wire(path, &joined)?;
-        let inside = if is_absolute {
-            self.containing_root(&canon).is_some()
-        } else {
-            canon.starts_with(self.base_root())
-        };
+        // Unjailed (deny-only) mode: no containment — the roots only anchored
+        // the relative join above. The denylist gate below still applies.
+        let inside = self.unjailed
+            || if is_absolute {
+                self.containing_root(&canon).is_some()
+            } else {
+                canon.starts_with(self.base_root())
+            };
         if !inside {
             if is_absolute {
                 // Absolute path outside every allowed root. The marker
@@ -279,7 +319,19 @@ impl PathResolver {
                 )));
             }
         }
+        self.deny_check(path, &canon)?;
         Ok(canon)
+    }
+
+    /// Reject a canonical path under any `fs.denylist_paths` entry with the
+    /// redacted C211 — the REDACTION INVARIANT applies to the operator
+    /// denylist exactly as it does to `non_accessible_globs`: a denylisted
+    /// path must be indistinguishable from a missing one.
+    fn deny_check(&self, path: &str, canon: &Path) -> Result<(), CoderError> {
+        if self.denylist_canon.iter().any(|d| canon.starts_with(d)) {
+            return Err(CoderError::not_found_or_denied(path));
+        }
+        Ok(())
     }
 
     /// Path's location relative to its CONTAINING root as a forward-slash
@@ -322,13 +374,19 @@ impl PathResolver {
     }
 
     fn matches_rel(&self, set: &GlobSet, abs: &Path) -> bool {
-        let Some(rel) = self.relative(abs) else {
-            return false;
-        };
-        if rel.is_empty() {
-            return false;
+        if let Some(rel) = self.relative(abs) {
+            return !rel.is_empty() && set.is_match(&rel);
         }
-        set.is_match(&rel)
+        // Unjailed mode resolves paths outside every anchor root, where no
+        // root-relative form exists. Match against the root-stripped absolute
+        // form instead so `**/`-style patterns keep protecting secrets
+        // anywhere on the host. Jailed resolutions never reach this branch.
+        if self.unjailed {
+            let abs_str = abs.to_string_lossy().replace('\\', "/");
+            let stripped = abs_str.trim_start_matches('/');
+            return !stripped.is_empty() && set.is_match(stripped);
+        }
+        false
     }
 
     /// Shared symlink-safe canonicalisation of a joined wire path, with the
@@ -374,7 +432,7 @@ impl PathResolver {
     ///    absolute `path` is taken as-is. Either form runs through the SAME
     ///    `canonicalize_wire` as `resolve`.
     /// 3. the canonical result must stay inside the canonical `scope_root` —
-    ///    else `C218` (DX-1), which NAMES the session directory rather than
+    ///    else `C220` (DX-1), which NAMES the session directory rather than
     ///    reusing the generic "outside every allowed root" wording.
     ///
     /// This is strictly NARROWER than `resolve`: it can only reject paths
@@ -425,7 +483,7 @@ impl PathResolver {
                     "this session is scoped to {base}; {path} is inside an \
                      allowed root but outside the session directory — use a \
                      path under {base}.{hint}",
-                    hint = crate::filesystem_access::request_suffix("C218", path, &canon),
+                    hint = crate::filesystem_access::request_suffix("C220", path, &canon),
                 )));
             }
             // Outside the session AND outside every allowed root: the
@@ -437,6 +495,7 @@ impl PathResolver {
                 hint = crate::filesystem_access::request_suffix("C215", path, &canon),
             )));
         }
+        self.deny_check(path, &canon)?;
         Ok(canon)
     }
 
@@ -448,7 +507,9 @@ impl PathResolver {
             )));
         }
         let anchor_canon = self.canonicalize_wire(anchor, anchor_path)?;
-        if self.containing_root(&anchor_canon).is_none() {
+        // Unjailed mode trusts the harness-stamped working directory anywhere
+        // on the host — the same contract shell::exec's cwd already honors.
+        if !self.unjailed && self.containing_root(&anchor_canon).is_none() {
             return Err(CoderError::OutsideBase(format!(
                 "scope_root is outside every allowed root: {anchor}. {C215_ROOTS_PREFIX}{roots}",
                 roots = self.roots_list()
@@ -1090,7 +1151,7 @@ mod tests {
     // -----------------------------------------------------------------------
     // Per-call scope_root (resolve_in / require_writable_scope): a containment
     // check + relative-anchor LAYERED on the existing jail core. These
-    // exercise the new C218 DX-1 error and prove scope_root=None is unchanged.
+    // exercise the new C220 DX-1 error and prove scope_root=None is unchanged.
     // -----------------------------------------------------------------------
 
     /// Relative wire paths anchor at scope_root, NOT the primary root — even
@@ -1137,7 +1198,7 @@ mod tests {
     }
 
     /// DX-1: an absolute path that IS inside a configured root but OUTSIDE
-    /// scope_root is rejected with the new C218 code, and the message NAMES
+    /// scope_root is rejected with the new C220 code, and the message NAMES
     /// the session directory (not the generic "outside every allowed root"
     /// wording, which would contradict coder::info's allowed-roots list).
     #[test]
@@ -1152,30 +1213,30 @@ mod tests {
         // sibling.txt is inside the allowed root but OUTSIDE session/.
         let sibling = tmp.path().join("sibling.txt").display().to_string();
         let err = r.resolve_in(&base, &sibling).unwrap_err();
-        assert_eq!(err.code(), "C218");
+        assert_eq!(err.code(), "C220");
         let msg = err.to_string();
         // DX-1: the session directory must be named in the rejection.
         assert!(
             msg.contains(&base),
-            "C218 must name the session dir ({base}); got: {msg}"
+            "C220 must name the session dir ({base}); got: {msg}"
         );
         // DX-1: it must NOT reuse the generic "outside every allowed root"
         // wording — that path genuinely lives in an allowed root.
         assert!(
             !msg.contains("outside every allowed root"),
-            "C218 must not contradict the allowed-roots list; got: {msg}"
+            "C220 must not contradict the allowed-roots list; got: {msg}"
         );
         // It should affirmatively explain the path is inside an allowed root.
         assert!(
             msg.contains("inside an allowed root"),
-            "C218 should clarify the path is inside a root but outside the \
+            "C220 should clarify the path is inside a root but outside the \
              session; got: {msg}"
         );
     }
 
     /// In a multi-root config, an absolute path inside the SECOND root but
     /// outside the scope_root (which lives in the FIRST root) is still the
-    /// DX-1 C218 case — it is inside *an* allowed root, just not the session.
+    /// DX-1 C220 case — it is inside *an* allowed root, just not the session.
     #[test]
     fn resolve_in_absolute_in_other_root_outside_scope_root_is_c218() {
         let a = tempdir().unwrap();
@@ -1190,7 +1251,7 @@ mod tests {
         let base = canon(a.path()).display().to_string();
         let in_b = b.path().join("y.txt").display().to_string();
         let err = r.resolve_in(&base, &in_b).unwrap_err();
-        assert_eq!(err.code(), "C218");
+        assert_eq!(err.code(), "C220");
         assert!(err.to_string().contains(&base));
     }
 
@@ -1295,14 +1356,14 @@ mod tests {
         // ../../ climbs above the allowed root entirely.
         let err = r.resolve_in(&base, "../../escape.txt").unwrap_err();
         assert!(
-            err.code() == "C215" || err.code() == "C218",
-            "escape must fail closed (C215/C218); got {}",
+            err.code() == "C215" || err.code() == "C220",
+            "escape must fail closed (C215/C220); got {}",
             err.code()
         );
     }
 
     /// A single `..` that stays inside the allowed root but climbs OUT of
-    /// scope_root is the DX-1 C218 case (inside a root, outside the session).
+    /// scope_root is the DX-1 C220 case (inside a root, outside the session).
     #[test]
     fn resolve_in_dotdot_within_root_but_outside_base_is_c218() {
         let tmp = tempdir().unwrap();
@@ -1313,7 +1374,7 @@ mod tests {
         // `../secret.txt` collapses to <root>/secret.txt — inside the root,
         // outside the session.
         let err = r.resolve_in(&base, "../secret.txt").unwrap_err();
-        assert_eq!(err.code(), "C218");
+        assert_eq!(err.code(), "C220");
         assert!(err.to_string().contains(&base));
     }
 
@@ -1330,8 +1391,8 @@ mod tests {
         let base = tmp.path().join("session").display().to_string();
         let err = r.resolve_in(&base, "escape/child.txt").unwrap_err();
         assert!(
-            err.code() == "C215" || err.code() == "C218",
-            "symlink escape must fail closed (C215/C218); got {}",
+            err.code() == "C215" || err.code() == "C220",
+            "symlink escape must fail closed (C215/C220); got {}",
             err.code()
         );
     }
@@ -1381,5 +1442,159 @@ mod tests {
                 .unwrap(),
             canon(&tmp.path().join("sibling/shared.txt"))
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Unjailed (deny-only) mode: fs.allow_unjailed + empty fs.host_roots.
+    // The roots become relative-path anchors; containment is skipped;
+    // denylist_paths and non_accessible_globs still protect everywhere.
+    // ------------------------------------------------------------------
+
+    fn cfg_unjailed(anchor: PathBuf, globs: Vec<&str>) -> CoderConfig {
+        CoderConfig {
+            unjailed: true,
+            ..cfg_with(anchor, globs)
+        }
+    }
+
+    #[test]
+    fn unjailed_accepts_absolute_path_outside_all_roots() {
+        let anchor = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        std::fs::write(outside.path().join("free.txt"), b"free").unwrap();
+        let r = PathResolver::new(&cfg_unjailed(anchor.path().to_path_buf(), vec![])).unwrap();
+        let got = r
+            .resolve(&outside.path().join("free.txt").display().to_string())
+            .unwrap();
+        assert_eq!(got, canon(&outside.path().join("free.txt")));
+    }
+
+    #[test]
+    fn unjailed_relative_still_anchors_at_primary_root() {
+        let anchor = tempdir().unwrap();
+        std::fs::write(anchor.path().join("here.txt"), b"here").unwrap();
+        let r = PathResolver::new(&cfg_unjailed(anchor.path().to_path_buf(), vec![])).unwrap();
+        let got = r.resolve("here.txt").unwrap();
+        assert_eq!(got, canon(&anchor.path().join("here.txt")));
+    }
+
+    #[test]
+    fn unjailed_configured_roots_scope_anchors_outside_all_roots() {
+        // Anthony's exact scenario (MOT-4099): the harness stamps a working
+        // directory OUTSIDE every anchor root under the degraded
+        // configured_roots boundary. Unjailed must trust it as the anchor.
+        let anchor = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        std::fs::write(workspace.path().join("doc.md"), b"doc").unwrap();
+        let r = PathResolver::new(&cfg_unjailed(anchor.path().to_path_buf(), vec![])).unwrap();
+        let scope = crate::fs::FsScope {
+            root: workspace.path().display().to_string(),
+            grants: Vec::new(),
+            boundary: crate::fs::FsBoundary::ConfiguredRoots,
+        };
+        assert_eq!(
+            r.resolve_scope(Some(&scope), "doc.md").unwrap(),
+            canon(&workspace.path().join("doc.md"))
+        );
+    }
+
+    #[test]
+    fn jailed_configured_roots_scope_outside_roots_still_rejected() {
+        // Without the opt-in the degraded boundary keeps failing closed —
+        // the pre-MOT-4099 behavior for explicitly jailed deployments.
+        let root = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let r = PathResolver::new(&cfg_with(root.path().to_path_buf(), vec![])).unwrap();
+        let scope = crate::fs::FsScope {
+            root: workspace.path().display().to_string(),
+            grants: Vec::new(),
+            boundary: crate::fs::FsBoundary::ConfiguredRoots,
+        };
+        let err = r.resolve_scope(Some(&scope), "doc.md").unwrap_err();
+        assert_eq!(err.code(), "C215");
+        assert!(err.to_string().contains("scope_root is outside"), "{err}");
+    }
+
+    #[test]
+    fn unjailed_non_accessible_globs_protect_outside_roots() {
+        // The REDACTION INVARIANT must hold anywhere on the host: a
+        // protected file outside every anchor root still returns C211.
+        let anchor = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        std::fs::write(outside.path().join(".env"), b"SECRET=1").unwrap();
+        let r =
+            PathResolver::new(&cfg_unjailed(anchor.path().to_path_buf(), vec!["**/.env"])).unwrap();
+        let abs = r
+            .resolve(&outside.path().join(".env").display().to_string())
+            .unwrap();
+        assert!(r.is_non_accessible(&abs), "glob must match outside roots");
+        let err = r
+            .require_writable_scope(None, &outside.path().join(".env").display().to_string())
+            .unwrap_err();
+        assert_eq!(err.code(), "C211");
+    }
+
+    #[test]
+    fn denylist_paths_reject_with_redacted_c211_in_both_modes() {
+        let anchor = tempdir().unwrap();
+        let denied = tempdir().unwrap();
+        std::fs::write(denied.path().join("passwd"), b"x").unwrap();
+        // Unjailed: the denylist is the only confinement — must hold.
+        let cfg = CoderConfig {
+            denylist_paths: vec![denied.path().to_path_buf()],
+            ..cfg_unjailed(anchor.path().to_path_buf(), vec![])
+        };
+        let r = PathResolver::new(&cfg).unwrap();
+        let err = r
+            .resolve(&denied.path().join("passwd").display().to_string())
+            .unwrap_err();
+        assert_eq!(err.code(), "C211", "denylisted must be redacted, not C215");
+
+        // Jailed with the denied dir INSIDE a root: the denylist still wins.
+        let jailed_cfg = CoderConfig {
+            base_paths: vec![denied.path().to_path_buf()],
+            denylist_paths: vec![denied.path().to_path_buf()],
+            ..CoderConfig::default()
+        };
+        let r = PathResolver::new(&jailed_cfg).unwrap();
+        let err = r.resolve("passwd").unwrap_err();
+        assert_eq!(err.code(), "C211");
+    }
+
+    #[test]
+    fn unjailed_session_root_resolves_outside_all_roots() {
+        // move/delete use session_root to refuse operating on the session
+        // dir itself; that protection must survive the unjailed mode where
+        // the stamped root sits outside every anchor root.
+        let anchor = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let r = PathResolver::new(&cfg_unjailed(anchor.path().to_path_buf(), vec![])).unwrap();
+        assert_eq!(
+            r.session_root(&workspace.path().display().to_string()),
+            Some(canon(workspace.path()))
+        );
+    }
+
+    #[test]
+    fn unjailed_workspace_boundary_still_scopes_to_session() {
+        // With the approval hook live (workspace boundary), unjailed does
+        // NOT bypass the session scope: escapes keep raising C220 so the
+        // grant flow still triggers.
+        let anchor = tempdir().unwrap();
+        std::fs::create_dir_all(anchor.path().join("session")).unwrap();
+        std::fs::create_dir_all(anchor.path().join("elsewhere")).unwrap();
+        std::fs::write(anchor.path().join("elsewhere/f.txt"), b"f").unwrap();
+        let r = Arc::new(
+            PathResolver::new(&cfg_unjailed(anchor.path().to_path_buf(), vec![])).unwrap(),
+        );
+        let session = anchor.path().join("session").display().to_string();
+        let scoped = r.session_scoped(Some(&session), None);
+        let err = scoped
+            .resolve_in(
+                &session,
+                &anchor.path().join("elsewhere/f.txt").display().to_string(),
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "C220");
     }
 }

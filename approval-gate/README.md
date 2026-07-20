@@ -106,7 +106,7 @@ restart, reconcile with one `approval::list-pending` call.
 ## Folder-access grant watch
 
 When a `shell::*` / `coder::*` call fails with a jail-scope error (`S215`,
-`S220`, `C215`, `C218`) whose message carries a `grant_hint=<json>` tail,
+`S220`, `C215`, `C220`) whose message carries a `grant_hint=<json>` tail,
 `approval::grant-watch` (a `post_trigger` hook, bound `on_error: "fail_open"`
 so a crashed/absent watch never turns an already-decided result into a stuck
 call) converts the failure into a `kind: "folder_access"` pending record

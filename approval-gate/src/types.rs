@@ -157,7 +157,7 @@ pub struct AccessRequest {
     /// The raw offending path from the request, as sent by the caller.
     pub attempted_path: String,
     /// The jail-scope rejection code that produced this hint (`S215`,
-    /// `S220`, `C215`, `C218`).
+    /// `S220`, `C215`, `C220`).
     pub error_code: String,
 }
 

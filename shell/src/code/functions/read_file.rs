@@ -12,7 +12,7 @@
 //! invalid bytes expand to 3-byte U+FFFD replacements BEFORE they are
 //! counted, so binary files can never deliver more than the budget). An
 //! entry cut short by the remaining budget succeeds with `more_lines:
-//! true`; an entry reached with zero budget gets a per-entry C213 (names
+//! true`; an entry reached with zero budget gets a per-entry C218 (names
 //! the config key + value, bytes consumed, and recovery guidance).
 //! Per-entry resolution/glob/stat failures return per-entry C211; budget
 //! is not consumed by failed entries.
@@ -21,7 +21,7 @@
 //! budget state — resolve + stat run BEFORE the zero-budget check, so a
 //! missing path and a glob-denied path both return C211 (identical
 //! wording, verbatim path echo) even after exhaustion. Only an existing,
-//! accessible regular file may receive the budget C213.
+//! accessible regular file may receive the budget C218.
 //!
 //! **XOR rule**: `path` XOR `paths` must be set; both or neither → C210.
 //!
@@ -33,9 +33,9 @@
 //! number; prefix bytes are charged against every byte cap/budget.
 //! Single-path FULL reads are additionally bounded by the
 //! `max_output_bytes` config (per-call override clamped to
-//! `max_read_bytes`); the C213 carries size + total_lines + the
+//! `max_read_bytes`); the C218 carries size + total_lines + the
 //! corrective calls. REDACTION ORDERING everywhere: resolve → deny
-//! (C211) → metadata syscalls → budget (C213) — classification must
+//! (C211) → metadata syscalls → budget (C218) — classification must
 //! never depend on budget state, and deny must precede any metadata
 //! syscall so stat/budget can't become an existence or size oracle.
 //!
@@ -199,7 +199,7 @@ pub struct ReadFileInput {
     /// content bytes after UTF-8 conversion (numbered prefixes included).
     /// Values above `max_read_bytes` are silently clamped to it. When the
     /// full content would exceed the effective budget the call fails with
-    /// a C213 naming the file's size and `total_lines` — recover by
+    /// a C218 naming the file's size and `total_lines` — recover by
     /// windowing with `line_from`/`line_to`, probing with `stat: true`,
     /// or raising this field. Full reads only: combining it with
     /// `line_from`/`line_to` is C210 (windows are bounded by
@@ -568,12 +568,12 @@ fn parse_window(
 
 /// Full (non-windowed) read: the whole file, pre-checked against
 /// `max_read_bytes`, then against the `max_output_bytes` context budget
-/// (converted wire bytes, numbered prefixes included). Both C213s are
+/// (converted wire bytes, numbered prefixes included). Both C218s are
 /// recovery tools: they name the actual sizes and the corrective calls.
 ///
 /// ORDERING (REDACTION RULE): callers run resolve → deny → metadata
 /// before reaching here, so by construction only an existing, accessible
-/// regular file can ever receive either C213.
+/// regular file can ever receive either C218.
 fn full_read(
     abs: &Path,
     wire_path: &str,
@@ -694,7 +694,7 @@ fn stat_counts(
 /// Windowed read (single-path mode): stream lines `from..=to` via
 /// `BufReader`. The `max_read_bytes` cap bounds the COLLECTED window's
 /// RAW bytes — the T7 contract — never the file size (windowed mode
-/// never returns C213 for an oversize file).
+/// never returns C218 for an oversize file).
 fn windowed_read(
     abs: &Path,
     wire_path: &str,
@@ -784,7 +784,7 @@ fn entry_failure(path: String, error: WireError) -> ReadEntryResult {
 /// regular-file check all run BEFORE the zero-budget check, so error
 /// classification never depends on budget state. Otherwise an agent
 /// could exhaust the budget and then distinguish a missing path (which
-/// would hit the budget C213) from a glob-denied one (C211 at resolve).
+/// would hit the budget C218) from a glob-denied one (C211 at resolve).
 fn batch_read(
     resolver: &PathResolver,
     cfg: &CoderConfig,
@@ -861,7 +861,7 @@ fn batch_read(
         }
 
         // Stat probe: metadata only, no content — consumes no budget and
-        // is deliberately exempt from the zero-budget C213 below (stat is
+        // is deliberately exempt from the zero-budget C218 below (stat is
         // the cheap probe; an exhausted batch can still size files).
         // Resolve + deny + metadata already ran, so classification stays
         // budget-independent (REDACTION INVARIANT).
@@ -892,7 +892,7 @@ fn batch_read(
         let consumed = cfg.batch_read_budget_bytes - remaining_budget;
 
         // Zero-budget check — only an existing, accessible regular file
-        // can reach this point, so C213 leaks nothing about protected or
+        // can reach this point, so C218 leaks nothing about protected or
         // missing paths. The message reports the ACTUAL accounted
         // consumption.
         if remaining_budget == 0 {
@@ -1165,7 +1165,7 @@ mod tests {
         let (tmp, r, c) = setup();
         std::fs::write(tmp.path().join("big.bin"), vec![0u8; 2048]).unwrap();
         let err = handle(r, c, full("big.bin")).await.unwrap_err();
-        assert!(err.contains("C213"), "got: {err}");
+        assert!(err.contains("C218"), "got: {err}");
         assert!(err.contains("line_from"), "got: {err}");
         assert!(err.contains("line_to"), "got: {err}");
     }
@@ -1434,7 +1434,7 @@ mod tests {
     #[tokio::test]
     async fn batch_budget_partial_entry_has_more_lines_true() {
         // Budget: 10 bytes. Each line is 5 bytes. First entry consumes 10
-        // bytes (2 lines). Second entry has zero budget → C213.
+        // bytes (2 lines). Second entry has zero budget → C218.
         let (tmp, r, c) = setup_with_batch_budget(10);
         std::fs::write(tmp.path().join("a.txt"), "aaaa\nbbbb\ncccc\n").unwrap();
         std::fs::write(tmp.path().join("b.txt"), "data\n").unwrap();
@@ -1453,24 +1453,24 @@ mod tests {
         assert!(results[0].success);
         assert_eq!(results[0].more_lines, Some(true));
         assert_eq!(results[0].lines_returned, Some(2));
-        // Second entry: zero budget → C213
+        // Second entry: zero budget → C218
         assert!(!results[1].success);
         let wire = results[1].error.as_ref().unwrap();
-        assert_eq!(wire.code, "C213");
+        assert_eq!(wire.code, "C218");
         assert!(
             wire.message.contains("batch_read_budget_bytes"),
-            "C213 must name the config key: {}",
+            "C218 must name the config key: {}",
             wire.message
         );
         assert!(
             wire.message.contains("10"),
-            "C213 must name the budget value: {}",
+            "C218 must name the budget value: {}",
             wire.message
         );
     }
 
     // -----------------------------------------------------------------------
-    // Batch mode — zero-budget C213 details
+    // Batch mode — zero-budget C218 details
     // -----------------------------------------------------------------------
 
     #[tokio::test]
@@ -1493,7 +1493,7 @@ mod tests {
         assert!(results[0].success);
         assert!(!results[1].success);
         let wire = results[1].error.as_ref().unwrap();
-        assert_eq!(wire.code, "C213");
+        assert_eq!(wire.code, "C218");
         assert!(wire.message.contains("batch_read_budget_bytes"));
         assert!(wire.message.contains('5'), "must name the value");
         // Recovery guidance
@@ -1511,7 +1511,7 @@ mod tests {
     #[tokio::test]
     async fn batch_budget_smaller_than_first_line_succeeds_with_empty_more_lines() {
         // Budget of 2 bytes; first line is "aaaaaaaa\n" (9 bytes).
-        // No-torn-lines: empty content, more_lines=true — NOT a C213 error.
+        // No-torn-lines: empty content, more_lines=true — NOT a C218 error.
         let (tmp, r, c) = setup_with_batch_budget(2);
         std::fs::write(tmp.path().join("f.txt"), "aaaaaaaa\nb\n").unwrap();
         let out = handle(r, c, batch(vec![ReadTarget::Path("f.txt".into())]))
@@ -1562,19 +1562,19 @@ mod tests {
         assert_eq!(results[0].more_lines, Some(true));
         assert_eq!(results[0].is_utf8, Some(false));
 
-        // Entry 1: zero wire budget remains → C213 reporting the ACTUAL
+        // Entry 1: zero wire budget remains → C218 reporting the ACTUAL
         // accounted consumption, not a hardcoded value.
         assert!(!results[1].success);
         let wire = results[1].error.as_ref().unwrap();
-        assert_eq!(wire.code, "C213");
+        assert_eq!(wire.code, "C218");
         assert!(
             wire.message.contains("batch_read_budget_bytes is 10"),
-            "C213 must name the key + value: {}",
+            "C218 must name the key + value: {}",
             wire.message
         );
         assert!(
             wire.message.contains("returned 10 bytes"),
-            "C213 must report actual accounted consumption: {}",
+            "C218 must report actual accounted consumption: {}",
             wire.message
         );
 
@@ -1628,7 +1628,7 @@ mod tests {
     async fn batch_post_exhaustion_missing_and_denied_indistinguishable() {
         // After the budget hits zero, a missing path and a glob-denied
         // path must BOTH return C211 with byte-identical message suffixes
-        // and verbatim path echoes — C213 may only reach an existing,
+        // and verbatim path echoes — C218 may only reach an existing,
         // accessible entry, or an agent could probe for protected files
         // by exhausting the budget first.
         let (tmp, r, c) = setup_with_batch_budget(5);
@@ -1640,9 +1640,9 @@ mod tests {
             c,
             batch(vec![
                 ReadTarget::Path("eat.txt".into()), // consumes the whole budget
-                ReadTarget::Path("missing.txt".into()), // must be C211, NOT C213
+                ReadTarget::Path("missing.txt".into()), // must be C211, NOT C218
                 ReadTarget::Path(".env".into()),    // C211 (glob-denied)
-                ReadTarget::Path("exists.txt".into()), // C213 — exists + accessible
+                ReadTarget::Path("exists.txt".into()), // C218 — exists + accessible
             ]),
         )
         .await
@@ -1677,8 +1677,8 @@ mod tests {
         assert_eq!(results[1].path, "missing.txt");
         assert_eq!(results[2].path, ".env");
 
-        // Only the existing, accessible entry receives the budget C213.
-        assert_eq!(results[3].error.as_ref().unwrap().code, "C213");
+        // Only the existing, accessible entry receives the budget C218.
+        assert_eq!(results[3].error.as_ref().unwrap().code, "C218");
     }
 
     // -----------------------------------------------------------------------
@@ -1956,7 +1956,7 @@ mod tests {
             batch(vec![
                 ReadTarget::Path("eat.txt".into()),   // consumes the whole budget
                 target_stat("probe.txt"),             // still succeeds
-                ReadTarget::Path("probe.txt".into()), // C213 — budget gone
+                ReadTarget::Path("probe.txt".into()), // C218 — budget gone
             ]),
         )
         .await
@@ -1967,7 +1967,7 @@ mod tests {
         assert_eq!(results[1].total_lines, Some(2));
         assert_eq!(results[1].size, Some(6));
         assert!(results[1].content.is_none());
-        assert_eq!(results[2].error.as_ref().unwrap().code, "C213");
+        assert_eq!(results[2].error.as_ref().unwrap().code, "C218");
     }
 
     // -----------------------------------------------------------------------
@@ -2018,7 +2018,7 @@ mod tests {
     async fn numbered_prefix_charged_to_batch_budget() {
         // a.txt prefixed = "1→aaaa\n2→bbbb\n" = 18 wire bytes, exactly the
         // budget; unprefixed it is only 10 and b.txt would still fit. The
-        // prefix bytes must consume the budget → b.txt gets C213.
+        // prefix bytes must consume the budget → b.txt gets C218.
         let (tmp, r, c) = setup_with_batch_budget(18);
         std::fs::write(tmp.path().join("a.txt"), "aaaa\nbbbb\n").unwrap();
         std::fs::write(tmp.path().join("b.txt"), "x\n").unwrap();
@@ -2039,7 +2039,7 @@ mod tests {
             Some("1\u{2192}aaaa\n2\u{2192}bbbb\n")
         );
         assert!(!results[1].success, "prefix bytes must consume budget");
-        assert_eq!(results[1].error.as_ref().unwrap().code, "C213");
+        assert_eq!(results[1].error.as_ref().unwrap().code, "C218");
 
         // Control: the same batch unprefixed fits both entries.
         let out = handle(
@@ -2084,7 +2084,7 @@ mod tests {
         std::fs::write(tmp.path().join("big.txt"), "aaaa\nbbbb\ncccc\ndddd\n").unwrap();
         let err = handle(r, c, full("big.txt")).await.unwrap_err();
         let (code, msg) = parse_wire(&err);
-        assert_eq!(code, "C213");
+        assert_eq!(code, "C218");
         // The message is itself the recovery tool: size, total_lines, the
         // config key + per-call override, and every corrective call.
         assert!(msg.contains("20 bytes"), "must carry file size: {msg}");
@@ -2109,7 +2109,7 @@ mod tests {
             .unwrap();
         assert_eq!(out.content.unwrap().len(), 131_072);
         let err = handle(r, c, full("over.txt")).await.unwrap_err();
-        assert!(err.contains("C213"), "got: {err}");
+        assert!(err.contains("C218"), "got: {err}");
         assert!(err.contains("max_output_bytes"), "got: {err}");
     }
 
@@ -2131,7 +2131,7 @@ mod tests {
     async fn per_call_max_output_bytes_clamps_to_max_read_bytes() {
         // File: 8 invalid bytes + '\n' = 9 raw bytes (under max_read_bytes
         // 15) but 25 CONVERTED wire bytes. Per-call budget 1000 silently
-        // clamps to max_read_bytes (15) → 25 > 15 → C213. The config
+        // clamps to max_read_bytes (15) → 25 > 15 → C218. The config
         // budget (1000) alone would have admitted it — the clamp applies
         // to the per-call override.
         let (tmp, r, c) = setup_with_output_budget(1000, 15);
@@ -2150,7 +2150,7 @@ mod tests {
             ..ReadFileInput::default()
         };
         let err = handle(r, c, req).await.unwrap_err();
-        assert!(err.contains("C213"), "clamped per-call must refuse: {err}");
+        assert!(err.contains("C218"), "clamped per-call must refuse: {err}");
     }
 
     #[tokio::test]
@@ -2162,7 +2162,7 @@ mod tests {
         let err = handle(r.clone(), c.clone(), full("big.txt"))
             .await
             .unwrap_err();
-        assert!(err.contains("C213"));
+        assert!(err.contains("C218"));
         let out = handle(r, c, window_req("big.txt", Some(1), Some(4)))
             .await
             .unwrap();
@@ -2186,7 +2186,7 @@ mod tests {
     }
 
     /// REDACTION ORDERING regression: resolve → deny (C211) → size → budget
-    /// (C213). A denied or missing path must classify C211 no matter how
+    /// (C218). A denied or missing path must classify C211 no matter how
     /// the budget relates to the file.
     #[tokio::test]
     async fn denied_huge_file_is_c211_not_c213() {
