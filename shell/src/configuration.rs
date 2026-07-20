@@ -877,7 +877,10 @@ mod tests {
                 std::fs::canonicalize("/tmp").expect("/tmp exists"),
             ]
         );
-        assert!(after.unjailed(), "seed reload must widen coder to deny-only");
+        assert!(
+            after.unjailed(),
+            "seed reload must widen coder to deny-only"
+        );
         assert!(cells.config.read().await.base_paths.is_empty());
     }
 

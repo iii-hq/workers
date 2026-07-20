@@ -109,7 +109,11 @@ mod tests {
         // not leak raw OS text distinguishing it from "missing".
         let e = FsError::from_io("/x", io::Error::new(ErrorKind::PermissionDenied, "no"));
         assert_eq!(e.code, "S211");
-        assert!(e.message.contains("not found or not accessible"), "{}", e.message);
+        assert!(
+            e.message.contains("not found or not accessible"),
+            "{}",
+            e.message
+        );
         let e = FsError::from_io("/x", io::Error::other("io"));
         assert_eq!(e.code, "S216");
     }
