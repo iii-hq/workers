@@ -67,6 +67,43 @@ const fcallDoneMulti: FCallType = {
   createdAt: Date.now(),
 }
 
+/** Denied at the approval gate: the gate's DenialEnvelope rides in the error
+ *  details — the call never ran, so the header makes no "triggered" claim. */
+const fcallDenied: FCallType = {
+  id: 'f3b',
+  role: 'function-call',
+  functionId: 'shell::run',
+  input: { command: 'rm -rf /tmp/cache' },
+  output: {
+    error: {
+      kind: 'function_error',
+      message: 'Rejected by operator.',
+      details: {
+        schema_version: 1,
+        status: 'denied',
+        denied_by: 'user',
+        function_id: 'shell::run',
+        reason: 'Rejected by operator.',
+      },
+    },
+  },
+  createdAt: Date.now(),
+}
+
+/** TracesV2 sub-span that inherited its function id from the enclosing
+ *  invocation: its 3ms measure machinery inside the call, so the header
+ *  stays verb-less — no "triggered ƒ …" claim. */
+const fcallInheritedIdentity: FCallType = {
+  id: 'f3c',
+  role: 'function-call',
+  functionId: 'directory::index',
+  input: { path: '/repo/src' },
+  output: { rows: 12 },
+  durationMs: 3,
+  identityInherited: true,
+  createdAt: Date.now(),
+}
+
 const fcallError: FCallType = {
   id: 'f4',
   role: 'function-call',
@@ -129,18 +166,28 @@ export const Running: Story = {
 }
 
 export const DoneCollapsed: Story = {
-  name: 'done (collapsed)',
+  name: 'triggered (collapsed)',
   args: { message: fcallDone },
 }
 
 export const DoneExpanded: Story = {
-  name: 'done · single-field (expanded)',
+  name: 'triggered · single-field (expanded)',
   args: { message: fcallDone, defaultOpen: true },
 }
 
 export const DoneMultiFieldExpanded: Story = {
-  name: 'done · multi-field (expanded)',
+  name: 'triggered · multi-field (expanded)',
   args: { message: fcallDoneMulti, defaultOpen: true },
+}
+
+export const DeniedNeverRan: Story = {
+  name: 'denied (never ran)',
+  args: { message: fcallDenied, defaultOpen: true },
+}
+
+export const InheritedIdentity: Story = {
+  name: 'inherited identity (traces sub-span)',
+  args: { message: fcallInheritedIdentity },
 }
 
 export const ErrorCollapsed: Story = {

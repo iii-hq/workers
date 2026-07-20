@@ -186,6 +186,12 @@ export function ChatView({
   // inside updaters — Strict Mode double-invokes them).
   const [stopping, setStopping] = useState(false)
   const stopRequestedRef = useRef(false)
+  // Sibling latch for the queue-drain flag: unlike stopRequestedRef it is
+  // NEVER reset by the abortRun-failure retry path or the indicator effect —
+  // only by the next stream this tab opens. A stream that saw ANY stop
+  // attempt must not claim its leftovers are `triggering…` (a cancelled
+  // turn's queue lands in the transcript unreacted).
+  const stopSeenRef = useRef(false)
   useEffect(() => {
     if (!streamingIndicator) {
       stopRequestedRef.current = false
@@ -197,11 +203,16 @@ export function ChatView({
   // harness drains them into the transcript. Each draft carries the predicted
   // entry id of its eventual transcript row.
   const [queuedDrafts, setQueuedDrafts] = useState<UserMessage[]>([])
+  // Queue rows read `triggering…` instead of `queued` while this is set —
+  // see the drain-window block below `queuedStrip` for who sets/clears it.
+  const [drainingQueue, setDrainingQueue] = useState(false)
 
-  // Drafts belong to one conversation; never leak across switches.
+  // Drafts belong to one conversation; never leak across switches. The
+  // drain flag rides along — it describes the previous conversation's turn.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on id change only
   useEffect(() => {
     setQueuedDrafts([])
+    setDrainingQueue(false)
   }, [conversation.id])
 
   // Pop a draft into the chat the moment its drained row (same predicted
@@ -375,6 +386,30 @@ export function ChatView({
       .map((row) => ({ id: row.id, text: row.text || '(notification)' }))
     return [...drafts, ...server]
   }, [queuedDrafts, serverQueued, conversation.messages])
+
+  // Delivery window: the turn stream this tab owned finished normally while
+  // messages were still parked — the harness is draining them into the
+  // transcript now (`serverWorking` keeps the strip mounted until each
+  // drained row arrives and pops its entry). Rows read `triggering…` instead
+  // of `queued` for that stretch. The flag is set only by the stream loop's
+  // own clean exit — never by /compact's isStreaming toggle, a stream error,
+  // or a user stop (a cancelled turn's leftovers land in the transcript
+  // unreacted, so `queued` stays truthful there) — and a tab that never
+  // owned the stream just keeps `queued` until the rows pop.
+  const queuedStripCountRef = useRef(0)
+  queuedStripCountRef.current = queuedStrip.length
+  // Empty strip: the drain finished. GROWING strip: a fresh message parked
+  // (this tab or another) — it belongs to the follow-on turn's queue, so the
+  // whole strip honestly reverts to `queued`. Rows popping out (shrinking)
+  // keep the flag.
+  const prevStripLenRef = useRef(0)
+  useEffect(() => {
+    const prev = prevStripLenRef.current
+    prevStripLenRef.current = queuedStrip.length
+    if (queuedStrip.length === 0 || queuedStrip.length > prev) {
+      setDrainingQueue(false)
+    }
+  }, [queuedStrip.length])
 
   // The conversation id IS the engine session_id (console-<uuid> for chats
   // created here). Matches iii.session.id on every span so the traces UI can
@@ -991,6 +1026,8 @@ export function ChatView({
       const controller = new AbortController()
       abortRef.current = controller
       setIsStreaming(true)
+      setDrainingQueue(false)
+      stopSeenRef.current = false
       setTurnPhase('sending')
 
       let thoughtId: string | null = null
@@ -999,6 +1036,7 @@ export function ChatView({
       const fcallMap = new Map<string, string>()
       let assistantId: string | null = null
       let assistantBuffer = ''
+      let streamEndedNormally = false
 
       try {
         for await (const event of backend.stream(
@@ -1236,6 +1274,10 @@ export function ChatView({
             setTurnPhase(null)
           }
         }
+        // NOTE: an aborted generator also exits the loop without throwing;
+        // the stop/rescue cases are filtered below via stopSeenRef and the
+        // strip emptying when the session leaves `working`.
+        streamEndedNormally = true
       } catch (err) {
         if (!isAbortError(err)) {
           console.warn('[chat] stream errored', err)
@@ -1266,6 +1308,15 @@ export function ChatView({
         }
         setIsStreaming(false)
         setTurnPhase(null)
+        // Turn finished cleanly with messages still parked: the harness is
+        // delivering them now — flip the strip's rows to `triggering…`.
+        if (
+          streamEndedNormally &&
+          !stopSeenRef.current &&
+          queuedStripCountRef.current > 0
+        ) {
+          setDrainingQueue(true)
+        }
         abortRef.current = null
       }
     },
@@ -1294,6 +1345,7 @@ export function ChatView({
   const handleStop = useCallback(() => {
     if (stopRequestedRef.current) return
     stopRequestedRef.current = true
+    stopSeenRef.current = true
     setStopping(true)
     abortRef.current?.abort()
     // Re-enable the button if the stop RPC fails while the server still
@@ -1700,11 +1752,15 @@ export function ChatView({
                   >
                     <span className="min-w-0 flex-1 truncate">{row.text}</span>
                     <span className="shrink-0 lowercase text-ink-ghost">
-                      queued
+                      {drainingQueue ? 'triggering…' : 'queued'}
                     </span>
                   </div>
                 ))}
-              {backend.editQueued && queuedDrafts.length > 0 ? (
+              {/* No edit hint while draining — the rows are being delivered,
+                  so inviting an edit would be a race the user loses. */}
+              {backend.editQueued &&
+              queuedDrafts.length > 0 &&
+              !drainingQueue ? (
                 <div className="px-3 py-0.5 text-right text-[10px] lowercase text-ink-ghost">
                   {browsedQueuedId
                     ? '↑ / ↓ cycle · enter saves in place · empty + enter removes'

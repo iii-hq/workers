@@ -83,11 +83,11 @@ export const InFlight: Story = {
 }
 
 export const DoneCollapsed: Story = {
-  name: 'done (3 functions, collapsed)',
+  name: 'triggered (3 functions, collapsed)',
   args: { messages: groupDone },
 }
 
 export const DoneExpanded: Story = {
-  name: 'done (3 functions, expanded)',
+  name: 'triggered (3 functions, expanded)',
   args: { messages: groupDone, defaultOpen: true },
 }
