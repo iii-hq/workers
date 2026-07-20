@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::cdp::browser_protocol::dom;
 use chromiumoxide::cdp::browser_protocol::log as cdp_log;
@@ -84,6 +86,17 @@ pub struct ConsoleEntry {
     /// `url:line` of the emitting frame, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+}
+
+/// One open tab reported by `browser::tabs::list`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TabInfo {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// True when a session already adopted this tab; it cannot be adopted
+    /// again until that session stops.
+    pub adopted: bool,
 }
 
 /// One captured network request.
@@ -191,9 +204,74 @@ impl LatestFrame {
     }
 }
 
+/// Refs kept per session before the safety valve clears the table. Only
+/// reachable without a navigation (navigation clears refs), so hitting it
+/// means thousands of snapshots against one document; clearing degrades to
+/// the fail-closed unknown-ref error, never to a wrong element.
+const MAX_REFS: usize = 20_000;
+
+/// How a session came to hold its browser, which decides what shutdown may
+/// destroy. A launched session owns its Chromium process outright. An
+/// attached session holds a CDP connection into the user's own running
+/// browser: shutdown closes at most the one tab the session created
+/// (`owns_page`), and an adopted user tab is always released untouched. The
+/// browser process itself is never closed or killed in attached mode.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SessionKind {
+    Launched,
+    Attached { owns_page: bool },
+}
+
+/// An in-progress screen recording: the ffmpeg child the screencast pump
+/// feeds decoded JPEG frames, plus the bookkeeping `recording::stop` returns.
+pub struct Recording {
+    pub child: tokio::process::Child,
+    /// Bounded queue the screencast pump feeds decoded JPEG frames onto with
+    /// `try_send` (dropping frames when full) so the pump never awaits ffmpeg
+    /// I/O. Drained by `writer`.
+    pub tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    /// Dedicated task that writes queued frames to ffmpeg's stdin and bumps
+    /// `frames` per successful write.
+    pub writer: tokio::task::JoinHandle<()>,
+    /// Frames actually written to ffmpeg, shared with the writer task.
+    pub frames: Arc<AtomicU64>,
+    pub path: String,
+    pub started_ms: i64,
+}
+
+/// Bounded frame queue depth: a few frames of slack so a brief ffmpeg stall
+/// doesn't drop everything, small enough that memory stays bounded and stale
+/// frames are dropped rather than buffered forever.
+const RECORDING_QUEUE_DEPTH: usize = 8;
+
+/// Drain decoded frames onto ffmpeg's stdin, counting successful writes.
+/// Exits when the channel closes (recording stopped) or the pipe breaks
+/// (ffmpeg gone), shutting stdin so ffmpeg can finalize the file.
+async fn recording_writer(
+    mut stdin: tokio::process::ChildStdin,
+    mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    frames: Arc<AtomicU64>,
+) {
+    use tokio::io::AsyncWriteExt;
+    while let Some(bytes) = rx.recv().await {
+        if stdin.write_all(&bytes).await.is_ok() {
+            frames.fetch_add(1, Ordering::Relaxed);
+        } else {
+            break;
+        }
+    }
+    let _ = stdin.shutdown().await;
+}
+
 pub struct Session {
     pub id: String,
     pub headless: bool,
+    /// Ownership model deciding what shutdown may destroy; see `SessionKind`.
+    pub kind: SessionKind,
+    /// Inspection-only session: interaction functions are rejected while
+    /// navigation and reads stay available. Immutable for the session's
+    /// lifetime.
+    pub read_only: bool,
     /// Viewport captured at launch. Config viewport is a session-start
     /// setting (a running session keeps the browser it launched with), so
     /// per-call consumers read these fields, not the live config.
@@ -204,7 +282,15 @@ pub struct Session {
     /// `user_data_dir` mode.
     ephemeral_profile: Option<std::path::PathBuf>,
     pub latest_frame: Mutex<Option<LatestFrame>>,
-    pub screencast_active: std::sync::atomic::AtomicBool,
+    /// Number of live consumers of the Chromium screencast: each console
+    /// viewer and each recording counts as one. The CDP screencast runs
+    /// while this is > 0; it starts on the 0->1 transition and stops on
+    /// 1->0, so stopping a recording never cuts off a UI viewer (and vice
+    /// versa).
+    pub screencast_consumers: std::sync::atomic::AtomicUsize,
+    /// Set while a `browser::recording` is capturing; the screencast pump
+    /// writes decoded frames into it.
+    pub recording: tokio::sync::Mutex<Option<Recording>>,
     frame_seq: AtomicU64,
     browser: tokio::sync::Mutex<Browser>,
     pub page: Page,
@@ -213,8 +299,24 @@ pub struct Session {
     seq: AtomicU64,
     last_used_ms: AtomicU64,
     /// Snapshot/pick refs (`e1`, `p3`, …) → CDP backend node ids. Cleared on
-    /// navigation — backend ids do not survive a document swap.
+    /// navigation — backend ids do not survive a document swap. Snapshot
+    /// refs accumulate (names are session-monotonic), so a ref from an
+    /// earlier snapshot of the same document still resolves to the node it
+    /// named instead of colliding with a newer snapshot's numbering.
     pub refs: Mutex<HashMap<String, i64>>,
+    /// Session-monotonic counter behind snapshot ref names; never reset
+    /// within a session so ref names are unique across snapshots.
+    pub ref_counter: AtomicU64,
+    /// Bumped on every top-document navigation. Snapshots report it so a
+    /// caller can tell which document epoch its refs belong to.
+    generation: AtomicU64,
+    /// Ref-stripped outline lines of the latest snapshot, the baseline for
+    /// `browser::snapshot` diff mode. None before the first snapshot and
+    /// after a navigation.
+    pub snapshot_keys: Mutex<Option<Vec<String>>>,
+    /// Cross-call state for `browser::execute`; lives until the session
+    /// stops.
+    pub exec_state: Mutex<serde_json::Value>,
     pick_counter: AtomicU64,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -250,14 +352,34 @@ impl Session {
     pub fn resolve_ref_or_err(&self, r: &str) -> Result<i64, iii_sdk::errors::Error> {
         self.resolve_ref(r).ok_or_else(|| {
             iii_sdk::errors::Error::Handler(format!(
-                "unknown ref '{r}'; refs come from browser::snapshot / browser::dom::read / a \
-                 pick and die on navigation. Re-snapshot, then use a fresh ref."
+                "unknown ref '{r}' (document generation {}); refs come from browser::snapshot / \
+                 browser::dom::read / a pick and die on navigation. Re-snapshot, then use a \
+                 fresh ref.",
+                self.generation()
             ))
         })
     }
 
-    pub fn store_refs(&self, map: HashMap<String, i64>) {
-        *self.refs.lock().unwrap_or_else(|p| p.into_inner()) = map;
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
+    }
+
+    /// True while the Chromium screencast is running (at least one consumer:
+    /// a console viewer and/or a recording).
+    pub fn screencast_on(&self) -> bool {
+        self.screencast_consumers.load(Ordering::Relaxed) > 0
+    }
+
+    /// Merge new snapshot refs into the table. Names are session-monotonic
+    /// so this never overwrites an older snapshot's names; the safety valve
+    /// clears everything if the table grows past `MAX_REFS` (subsequent old
+    /// refs then fail closed as unknown).
+    pub fn append_refs(&self, map: HashMap<String, i64>) {
+        let mut refs = self.refs.lock().unwrap_or_else(|p| p.into_inner());
+        if refs.len().saturating_add(map.len()) > MAX_REFS {
+            refs.clear();
+        }
+        refs.extend(map);
     }
 
     pub fn add_ref(&self, r: String, backend_node_id: i64) {
@@ -267,8 +389,13 @@ impl Session {
             .insert(r, backend_node_id);
     }
 
+    /// Navigation invalidation: refs die, the diff baseline dies, and the
+    /// document generation advances. `exec_state` survives — it is session
+    /// state, not document state.
     fn clear_refs(&self) {
         self.refs.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        *self.snapshot_keys.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn push_console(&self, entry: ConsoleEntry) {
@@ -290,10 +417,31 @@ impl Session {
         errors
     }
 
-    /// Close the page + Chromium process and abort the event pumps.
-    /// Idempotent at the caller level: `Sessions::stop` removes the session
-    /// from the map first, so a second stop never reaches here.
+    /// Tear down what this session owns and abort the event pumps.
+    /// Launched: close (or kill) the whole Chromium process and remove the
+    /// ephemeral profile. Attached: close only a tab the session itself
+    /// created; an adopted user tab is released untouched, and the user's
+    /// browser process is never closed. Idempotent at the caller level:
+    /// `Sessions::stop` removes the session from the map first, so a second
+    /// stop never reaches here.
     pub async fn shutdown(&self) {
+        // Finalize any recording first: closing the sender ends the writer,
+        // which shuts ffmpeg's stdin so it flushes the file; then reap the
+        // child so it is not orphaned. Bound the wait so an ffmpeg that
+        // ignores its closed stdin cannot block shutdown forever; on timeout,
+        // kill it and reap the terminated process.
+        if let Some(recording) = self.recording.lock().await.take() {
+            let mut child = recording.child;
+            drop(recording.tx);
+            if tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+                .await
+                .is_err()
+            {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
+            let _ = recording.writer.await;
+        }
         for task in self
             .tasks
             .lock()
@@ -302,23 +450,50 @@ impl Session {
         {
             task.abort();
         }
-        let mut browser = self.browser.lock().await;
-        if browser.close().await.is_err() {
-            if let Some(Err(e)) = browser.kill().await {
-                tracing::warn!(session_id = %self.id, error = %e, "browser kill failed");
+        match self.kind {
+            SessionKind::Launched => {
+                let mut browser = self.browser.lock().await;
+                if browser.close().await.is_err() {
+                    if let Some(Err(e)) = browser.kill().await {
+                        tracing::warn!(session_id = %self.id, error = %e, "browser kill failed");
+                    }
+                }
+                let _ = browser.wait().await;
+                if let Some(dir) = &self.ephemeral_profile {
+                    let _ = std::fs::remove_dir_all(dir);
+                }
+            }
+            SessionKind::Attached { owns_page } => {
+                if owns_page {
+                    if let Err(e) = self.page.clone().close().await {
+                        tracing::debug!(session_id = %self.id, error = %e, "tab close failed");
+                    }
+                }
             }
         }
-        let _ = browser.wait().await;
-        if let Some(dir) = &self.ephemeral_profile {
-            let _ = std::fs::remove_dir_all(dir);
-        }
     }
+}
+
+/// A paused handoff waiting for confirmation: the sender resolves the
+/// `browser::handoff` call that parked on it. `session_id` lets a confirm
+/// addressed to a session find its pending handoff.
+pub struct PendingHandoff {
+    pub session_id: String,
+    pub confirm: tokio::sync::oneshot::Sender<()>,
 }
 
 /// The live session table plus everything a pump task needs.
 pub struct Sessions {
     map: Mutex<HashMap<String, Arc<Session>>>,
     counter: AtomicU64,
+    /// Target ids of user tabs currently adopted by a session. Adoption is
+    /// exclusive: a tab in this set cannot be adopted again until its
+    /// session stops.
+    adopted_targets: Mutex<std::collections::HashSet<String>>,
+    /// Handoffs currently paused, keyed by handoff id. A confirm removes and
+    /// fires the sender; the parked `browser::handoff` handler then returns.
+    pending_handoffs: Mutex<HashMap<String, PendingHandoff>>,
+    handoff_counter: AtomicU64,
     pub config: SharedConfig,
     pub emitter: Arc<Emitter>,
     /// For pushing screencast frames onto the `browser:frames` stream, which
@@ -335,6 +510,9 @@ impl Sessions {
         Arc::new(Self {
             map: Mutex::new(HashMap::new()),
             counter: AtomicU64::new(0),
+            adopted_targets: Mutex::new(std::collections::HashSet::new()),
+            pending_handoffs: Mutex::new(HashMap::new()),
+            handoff_counter: AtomicU64::new(0),
             config,
             emitter,
             iii,
@@ -365,6 +543,7 @@ impl Sessions {
         self: &Arc<Self>,
         url: Option<String>,
         headful_override: Option<bool>,
+        read_only: bool,
     ) -> Result<Arc<Session>, String> {
         let cfg = self.config.load_full();
         if self.count() as u64 >= cfg.max_sessions {
@@ -415,12 +594,15 @@ impl Sessions {
         let session = Arc::new(Session {
             id: id.clone(),
             headless,
+            kind: SessionKind::Launched,
+            read_only,
             viewport_width: cfg.viewport_width,
             viewport_height: cfg.viewport_height,
             created_ms: now,
             ephemeral_profile,
             latest_frame: Mutex::new(None),
-            screencast_active: std::sync::atomic::AtomicBool::new(false),
+            screencast_consumers: std::sync::atomic::AtomicUsize::new(0),
+            recording: tokio::sync::Mutex::new(None),
             frame_seq: AtomicU64::new(0),
             browser: tokio::sync::Mutex::new(browser),
             page: page.clone(),
@@ -429,6 +611,10 @@ impl Sessions {
             seq: AtomicU64::new(1),
             last_used_ms: AtomicU64::new(now as u64),
             refs: Mutex::new(HashMap::new()),
+            ref_counter: AtomicU64::new(0),
+            generation: AtomicU64::new(1),
+            snapshot_keys: Mutex::new(None),
+            exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(vec![handler_task]),
         });
@@ -444,6 +630,183 @@ impl Sessions {
         Ok(session)
     }
 
+    /// Attach to an already-running browser over CDP and bind a session to
+    /// one of its tabs: a fresh tab (`adopt_url_substring` absent, session
+    /// owns and later closes it) or an existing user tab matched by URL
+    /// substring (adopted exclusively, released untouched on stop). The
+    /// caller has already gated on `allow_attach` and scheme-checked `url`.
+    pub async fn attach(
+        self: &Arc<Self>,
+        cdp_url: String,
+        url: Option<String>,
+        adopt_url_substring: Option<String>,
+        read_only: bool,
+    ) -> Result<Arc<Session>, String> {
+        let cfg = self.config.load_full();
+        if self.count() as u64 >= cfg.max_sessions {
+            return Err(format!(
+                "session limit reached ({}); stop one with browser::sessions::stop",
+                cfg.max_sessions
+            ));
+        }
+
+        let (browser, mut handler) = Browser::connect(cdp_url.clone())
+            .await
+            .map_err(|e| format!("failed to connect to '{cdp_url}': {e}"))?;
+        let handler_task = tokio::spawn(async move {
+            while let Some(event) = handler.next().await {
+                if let Err(e) = event {
+                    tracing::debug!(error = %e, "cdp handler event error");
+                }
+            }
+        });
+
+        let outcome: Result<(Page, bool), String> = match &adopt_url_substring {
+            Some(needle) => match self.find_adoptable(&browser, needle).await {
+                Ok(page) => Ok((page, false)),
+                Err(e) => Err(e),
+            },
+            None => browser
+                .new_page(url.as_deref().unwrap_or("about:blank"))
+                .await
+                .map(|p| (p, true))
+                .map_err(|e| format!("failed to open tab: {e}")),
+        };
+        let (page, owns_page) = match outcome {
+            Ok(v) => v,
+            Err(e) => {
+                handler_task.abort();
+                return Err(e);
+            }
+        };
+
+        let _ = page.execute(cdp_log::EnableParams::default()).await;
+        let _ = page.execute(cdp_network::EnableParams::default()).await;
+
+        let slot = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = format!("b{slot}");
+        let now = now_ms();
+        let session = Arc::new(Session {
+            id: id.clone(),
+            headless: false,
+            kind: SessionKind::Attached { owns_page },
+            read_only,
+            viewport_width: cfg.viewport_width,
+            viewport_height: cfg.viewport_height,
+            created_ms: now,
+            ephemeral_profile: None,
+            latest_frame: Mutex::new(None),
+            screencast_consumers: std::sync::atomic::AtomicUsize::new(0),
+            recording: tokio::sync::Mutex::new(None),
+            frame_seq: AtomicU64::new(0),
+            browser: tokio::sync::Mutex::new(browser),
+            page: page.clone(),
+            console: Mutex::new(RingBuffer::new(cfg.console_buffer as usize)),
+            network: Mutex::new(RingBuffer::new(cfg.network_buffer as usize)),
+            seq: AtomicU64::new(1),
+            last_used_ms: AtomicU64::new(now as u64),
+            refs: Mutex::new(HashMap::new()),
+            ref_counter: AtomicU64::new(0),
+            generation: AtomicU64::new(1),
+            snapshot_keys: Mutex::new(None),
+            exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
+            pick_counter: AtomicU64::new(0),
+            tasks: Mutex::new(vec![handler_task]),
+        });
+
+        let pumps = spawn_event_pumps(self.clone(), session.clone()).await;
+        session
+            .tasks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .extend(pumps);
+
+        self.lock().insert(id, session.clone());
+        Ok(session)
+    }
+
+    /// Connect to a running browser and report its open tabs (url, title,
+    /// and whether a session already adopted each). Read-only: opens a
+    /// throwaway CDP connection, lists, and drops it without touching any
+    /// tab. Used by `browser::tabs::list`.
+    pub async fn list_tabs(&self, cdp_url: &str) -> Result<Vec<TabInfo>, String> {
+        let (browser, mut handler) = Browser::connect(cdp_url.to_string())
+            .await
+            .map_err(|e| format!("failed to connect to '{cdp_url}': {e}"))?;
+        let pump = tokio::spawn(async move { while handler.next().await.is_some() {} });
+        let pages = discovered_pages(&browser).await?;
+        let mut tabs = Vec::new();
+        for page in pages {
+            let url = page.url().await.ok().flatten().unwrap_or_default();
+            let title = page.get_title().await.ok().flatten();
+            let target = page.target_id().as_ref().to_string();
+            let adopted = self
+                .adopted_targets
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(&target);
+            tabs.push(TabInfo {
+                url,
+                title,
+                adopted,
+            });
+        }
+        pump.abort();
+        Ok(tabs)
+    }
+
+    /// Resolve a user tab by URL substring for adoption. Exactly one match
+    /// is required; zero or several fail closed with the candidate list so
+    /// the caller can narrow the substring. A tab already adopted by another
+    /// session is excluded up front.
+    async fn find_adoptable(&self, browser: &Browser, needle: &str) -> Result<Page, String> {
+        let pages = discovered_pages(browser).await?;
+        let mut candidates = Vec::new();
+        let mut urls = Vec::new();
+        for page in pages {
+            let url = page.url().await.ok().flatten().unwrap_or_default();
+            let target = page.target_id().as_ref().to_string();
+            let taken = self
+                .adopted_targets
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(&target);
+            if url.contains(needle) && !taken {
+                candidates.push((page, target));
+            }
+            urls.push(url);
+        }
+        match candidates.len() {
+            1 => {
+                let (page, target) = candidates.into_iter().next().expect("one candidate");
+                // Authoritative claim: test-and-set under one lock so two
+                // concurrent attaches cannot both adopt the same tab. The
+                // per-page `taken` filter above only narrows the candidate
+                // set; this is what actually guarantees exclusivity.
+                let mut adopted = self
+                    .adopted_targets
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                if adopted.contains(&target) {
+                    return Err(format!(
+                        "no adoptable tab matches '{needle}' (open tabs: {})",
+                        urls.join(", ")
+                    ));
+                }
+                adopted.insert(target);
+                Ok(page)
+            }
+            0 => Err(format!(
+                "no adoptable tab matches '{needle}' (open tabs: {})",
+                urls.join(", ")
+            )),
+            n => Err(format!(
+                "'{needle}' matches {n} tabs; use a longer substring (open tabs: {})",
+                urls.join(", ")
+            )),
+        }
+    }
+
     /// Remove + shut down. Returns whether the session was running —
     /// stopping an unknown id succeeds (delete semantics: the caller wants
     /// it gone, and it is).
@@ -451,6 +814,23 @@ impl Sessions {
         let session = self.lock().remove(id);
         match session {
             Some(session) => {
+                if let SessionKind::Attached { owns_page: false } = session.kind {
+                    let target = session.page.target_id().as_ref().to_string();
+                    self.adopted_targets
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .remove(&target);
+                }
+                // Drop any handoff parked on this session so its call
+                // unblocks (its receiver errors) instead of waiting for the
+                // full timeout against a dead page.
+                {
+                    let mut pending = self
+                        .pending_handoffs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    pending.retain(|_, h| h.session_id != id);
+                }
                 session.shutdown().await;
                 self.emitter
                     .emit(
@@ -466,6 +846,216 @@ impl Sessions {
                 true
             }
             None => false,
+        }
+    }
+
+    /// Register a paused handoff and return its id plus the receiver the
+    /// caller awaits. A confirm addressed to the same session (or this id)
+    /// fires the sender.
+    pub fn register_handoff(
+        &self,
+        session_id: &str,
+    ) -> (String, tokio::sync::oneshot::Receiver<()>) {
+        let id = format!(
+            "h{}",
+            self.handoff_counter.fetch_add(1, Ordering::Relaxed) + 1
+        );
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending_handoffs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(
+                id.clone(),
+                PendingHandoff {
+                    session_id: session_id.to_string(),
+                    confirm: tx,
+                },
+            );
+        (id, rx)
+    }
+
+    /// Drop a pending handoff without confirming (timeout or session stop).
+    pub fn drop_handoff(&self, handoff_id: &str) {
+        self.pending_handoffs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(handoff_id);
+    }
+
+    /// Confirm a paused handoff: by exact id, or the one pending handoff for
+    /// a session. Returns the resolved handoff id, or None when nothing
+    /// matched (already confirmed, timed out, or wrong session).
+    pub fn confirm_handoff(
+        &self,
+        handoff_id: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Option<String> {
+        let mut pending = self
+            .pending_handoffs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let key = match (handoff_id, session_id) {
+            (Some(id), _) => pending.contains_key(id).then(|| id.to_string()),
+            (None, Some(sid)) => pending
+                .iter()
+                .find(|(_, h)| h.session_id == sid)
+                .map(|(k, _)| k.clone()),
+            (None, None) => None,
+        }?;
+        let handoff = pending.remove(&key)?;
+        // A closed receiver (parked call already gone) is fine: the confirm
+        // still succeeds in removing the stale entry.
+        let _ = handoff.confirm.send(());
+        Some(key)
+    }
+
+    /// Start recording a session's viewport to `path`, encoded as `codec`
+    /// via ffmpeg reading the screencast JPEG stream on stdin. Ensures
+    /// screencast is on (remembering whether we turned it on) so a plain
+    /// `recording::start` works without a separate screencast call.
+    pub async fn start_recording(
+        &self,
+        session_id: &str,
+        path: &str,
+        codec: &str,
+    ) -> Result<(), String> {
+        let session = self
+            .get(session_id)
+            .ok_or_else(|| format!("unknown session '{session_id}'"))?;
+
+        // Hold the recording lock across the whole check-and-set so two
+        // concurrent starts cannot both spawn ffmpeg and overwrite each
+        // other's Recording (leaking a process).
+        let mut guard = session.recording.lock().await;
+        if guard.is_some() {
+            return Err(format!(
+                "session '{session_id}' is already recording; stop it first"
+            ));
+        }
+
+        // Acquire a screencast consumer (starts CDP screencast if we are the
+        // first). Released again on any failure below.
+        self.acquire_screencast(&session).await?;
+
+        let args = crate::functions::recording::ffmpeg_args(codec, path);
+        let spawn = tokio::process::Command::new("ffmpeg")
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let mut child = match spawn {
+            Ok(c) => c,
+            Err(e) => {
+                self.release_screencast(&session).await;
+                return Err(format!(
+                    "failed to launch ffmpeg ({e}); install ffmpeg and put it on PATH"
+                ));
+            }
+        };
+        let stdin = match child.stdin.take() {
+            Some(s) => s,
+            None => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                self.release_screencast(&session).await;
+                return Err("ffmpeg stdin unavailable".to_string());
+            }
+        };
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(RECORDING_QUEUE_DEPTH);
+        let frames = Arc::new(AtomicU64::new(0));
+        let writer = tokio::spawn(recording_writer(stdin, rx, frames.clone()));
+
+        *guard = Some(Recording {
+            child,
+            tx,
+            writer,
+            frames,
+            path: path.to_string(),
+            started_ms: now_ms(),
+        });
+        Ok(())
+    }
+
+    /// Stop a session's recording: close ffmpeg's stdin so it finalizes the
+    /// file, wait for it, and turn screencast back off if recording started
+    /// it. Returns None when nothing was recording.
+    pub async fn stop_recording(&self, session_id: &str) -> Option<(String, i64, u64)> {
+        let session = self.get(session_id)?;
+        let recording = session.recording.lock().await.take()?;
+        let Recording {
+            mut child,
+            tx,
+            writer,
+            frames,
+            path,
+            started_ms,
+        } = recording;
+        // Closing the sender ends the writer, which drains queued frames and
+        // shuts ffmpeg's stdin so ffmpeg finalizes the file.
+        drop(tx);
+        // Bound the reap so an ffmpeg that ignores its closed stdin cannot
+        // hang the caller; on timeout kill and reap the terminated process.
+        if tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+            .await
+            .is_err()
+        {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+        // The child is done (or killed), so the writer's pipe is closed and
+        // it exits promptly; awaiting it makes the frame count final.
+        let _ = writer.await;
+        self.release_screencast(&session).await;
+        Some((path, now_ms() - started_ms, frames.load(Ordering::Relaxed)))
+    }
+
+    /// Register a screencast consumer (a console viewer or a recording).
+    /// Starts the Chromium screencast on the 0->1 transition; later
+    /// acquisitions just bump the count. On a CDP start failure the count is
+    /// rolled back so it stays honest.
+    pub async fn acquire_screencast(&self, session: &Arc<Session>) -> Result<(), String> {
+        use chromiumoxide::cdp::browser_protocol::page as cdp_page;
+        let prev = session
+            .screencast_consumers
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if prev > 0 {
+            return Ok(());
+        }
+        let quality = self.config.load().screenshot_quality as i64;
+        let params = cdp_page::StartScreencastParams::builder()
+            .format(cdp_page::StartScreencastFormat::Jpeg)
+            .quality(quality)
+            .every_nth_frame(1)
+            .build();
+        if let Err(e) = session.page.execute(params).await {
+            session
+                .screencast_consumers
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            return Err(format!("screencast start failed: {e}"));
+        }
+        Ok(())
+    }
+
+    /// Release a screencast consumer. Stops the Chromium screencast on the
+    /// 1->0 transition, leaving it running while any other consumer remains
+    /// (so stopping a recording never cuts off a UI viewer). Never underflows.
+    pub async fn release_screencast(&self, session: &Arc<Session>) {
+        use chromiumoxide::cdp::browser_protocol::page as cdp_page;
+        let prev = session
+            .screencast_consumers
+            .fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |n| n.checked_sub(1),
+            )
+            .unwrap_or(0);
+        if prev == 1 {
+            let _ = session
+                .page
+                .execute(cdp_page::StopScreencastParams::default())
+                .await;
         }
     }
 
@@ -495,6 +1085,26 @@ impl Sessions {
             self.stop(&id, "stopped").await;
         }
     }
+}
+
+/// `Browser::pages()` reads the handler's tracked targets, which populate
+/// asynchronously from `Target.targetCreated` events fired after connect.
+/// Called immediately, it races those events and returns empty against a
+/// browser that has tabs. Poll briefly until a page target appears (or the
+/// budget expires — a browser with genuinely no page tabs returns empty).
+async fn discovered_pages(browser: &Browser) -> Result<Vec<Page>, String> {
+    const ATTEMPTS: u32 = 20;
+    for attempt in 0..ATTEMPTS {
+        let pages = browser
+            .pages()
+            .await
+            .map_err(|e| format!("failed to list tabs: {e}"))?;
+        if !pages.is_empty() || attempt == ATTEMPTS - 1 {
+            return Ok(pages);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    Ok(Vec::new())
 }
 
 /// Every session gets its own profile dir: Chromium holds a process
@@ -768,6 +1378,20 @@ async fn spawn_event_pumps(
                     // Push onto the stream (the console subscribes to it); the
                     // in-memory slot stays as the seed for a fresh subscriber.
                     push_frame_stream(&sx.iii, &s.id, &stream_frame).await;
+                    // Feed the recorder the same capped frame flow. Decode to
+                    // JPEG bytes and hand them to the writer task via a bounded
+                    // queue with try_send: the pump never awaits ffmpeg I/O
+                    // (nor holds a lock across it), and frames are dropped
+                    // rather than backing up if the encoder falls behind.
+                    {
+                        let rec = s.recording.lock().await;
+                        if let Some(recording) = rec.as_ref() {
+                            let data: &str = stream_frame.frame.data.as_ref();
+                            if let Ok(bytes) = STANDARD.decode(data) {
+                                let _ = recording.tx.try_send(bytes);
+                            }
+                        }
+                    }
                     let mut slot = s.latest_frame.lock().unwrap_or_else(|p| p.into_inner());
                     *slot = Some(stream_frame);
                 }

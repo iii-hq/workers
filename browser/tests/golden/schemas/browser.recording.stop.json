@@ -1,0 +1,50 @@
+{
+  "description": "Stop a session's recording, finalize the file, and return its path, duration, and frame count. Idempotent: stopping when nothing is recording returns ok=false.",
+  "function_id": "browser::recording::stop",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "RecordingStopInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "duration_ms": {
+        "description": "Wall-clock duration captured, milliseconds.",
+        "format": "int64",
+        "type": "integer"
+      },
+      "frames": {
+        "description": "Frames written to the encoder.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "ok": {
+        "description": "False when no recording was running.",
+        "type": "boolean"
+      },
+      "path": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "duration_ms",
+      "frames",
+      "ok"
+    ],
+    "title": "RecordingStopOutput",
+    "type": "object"
+  }
+}

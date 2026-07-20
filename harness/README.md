@@ -142,9 +142,9 @@ field hot-reloads (no restart). The fields a deployment is most likely to tune:
 
 ```yaml
 default_max_turns: 16            # per-turn generate-step cap when a send omits it
-default_pending_timeout_ms: 1800000  # parked pending-call (sub-agent / hold) wait guard
+default_pending_timeout_ms: 1800000  # legacy parked-call (hold / pre-deploy child) wait guard
 max_depth: 3                     # sub-agent depth budget
-max_children: 5                  # sub-agent fan-out budget
+max_children: 8                  # sub-agent spawns-per-turn budget
 max_transient_resumes: 1         # recovery generations after a partial stream failure
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 ```
@@ -154,14 +154,20 @@ retries) and their defaults live in [`src/config.rs`](src/config.rs).
 
 ## System prompt
 
-The identity prompt is assembled once at send/spawn time. The harness asks the
-llm-router for the effective per-provider prompt (`router::system_prompt::get`
-with the request's `provider`): provider workers declare their own identity
-prompt at registration, and operators can override it per provider by setting
+The identity prompt is assembled once at send/spawn time. For a TOP-LEVEL turn
+(`harness::send`) the harness asks the llm-router for the effective
+per-provider prompt (`router::system_prompt::get` with the request's
+`provider`): provider workers declare their own identity prompt at
+registration, and operators can override it per provider by setting
 `system_prompt` in the `llm-router` configuration entry (unset = provider
 default). When the router serves nothing — router absent, unknown provider,
 or no declared prompt — the harness falls back to its embedded step-by-step
-default prompt ([`prompts/default.txt`](prompts/default.txt)).
+default prompt ([`prompts/default.txt`](prompts/default.txt)). Spawned
+CHILDREN never get the orchestrator prompt: every child is seeded with the
+embedded minimal sub-agent identity
+([`prompts/subagent.txt`](prompts/subagent.txt)) — do the one task, write the
+named state destination, stop — with spawn `options.system_prompt` as the
+escape hatch.
 
 An optional `mode` (`plan` | `ask` | `agent`) prepends a short operating-mode
 paragraph. A non-empty `options.system_prompt` is combined with the built-in
@@ -179,7 +185,7 @@ plug into in-path. Bind with the standard two-step pattern.
 | Trigger type | Kind | Fires / runs |
 |---|---|---|
 | `harness::turn-started` | async event | A turn began executing (first loop step). |
-| `harness::turn-completed` | async event | A turn reached a terminal status (`completed` / `cancelled` / `failed`), carrying the result. |
+| `harness::turn-completed` | async event | A turn reached a terminal status (`completed` / `cancelled` / `failed`), carrying the result and `terminal: bool` — `false` while the session still owns an armed wake (a one-shot notify), meaning a later turn carries the run's real outcome; consumers finalize a logical exchange only on `terminal: true`. |
 | `harness::hook::pre-turn` | sync hook | First step of a turn, before any model spend. May veto. |
 | `harness::hook::pre-generate` | sync hook | After context assembly, before generation. May extend the system prompt, append messages, or veto. |
 | `harness::hook::post-generate` | sync hook | After the final assistant message. Observe only. |

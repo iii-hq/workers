@@ -1,0 +1,74 @@
+{
+  "description": "Merge a pull request: { repo, number, method: merge|squash|rebase, delete_branch?, auto? } -> { output }. auto enables auto-merge once requirements pass.",
+  "function_id": "github::pr::merge",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "MergeMethod": {
+        "description": "Merge method.",
+        "enum": [
+          "merge",
+          "squash",
+          "rebase"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "auto": {
+        "description": "Enable auto-merge: merge automatically once requirements pass.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "delete_branch": {
+        "description": "Delete the head branch after merging.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "method": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/MergeMethod"
+          }
+        ],
+        "description": "Merge method."
+      },
+      "number": {
+        "description": "Pull request number.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "repo": {
+        "description": "Target repository, \"owner/name\".",
+        "type": "string"
+      }
+    },
+    "required": [
+      "method",
+      "number",
+      "repo"
+    ],
+    "title": "MergeRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Trimmed stdout of a mutating gh command (gh prints the created/updated URL or a confirmation line; some commands print nothing).",
+    "properties": {
+      "output": {
+        "description": "gh's stdout, trimmed.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "output"
+    ],
+    "title": "TextResponse",
+    "type": "object"
+  }
+}

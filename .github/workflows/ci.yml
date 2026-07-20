@@ -256,7 +256,10 @@ jobs:
       - name: Install iii CLI + engine
         if: steps.optout.outputs.skip != 'true'
         env:
-          VERSION: '0.17.0'
+          # Must be a tag that still exists on iii-hq/iii (old releases get
+          # pruned — 0.17.0 vanished and broke every boot smoke). Keep aligned
+          # with the workers' iii-sdk pin.
+          VERSION: '0.21.6'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail

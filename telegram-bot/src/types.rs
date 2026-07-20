@@ -130,6 +130,15 @@ pub struct TurnCompletedEvent {
     pub result_error: Option<String>,
     #[serde(default)]
     pub reason: Option<String>,
+    /// `false` while the session still owns an armed wake: the run continues
+    /// and a later turn carries the real outcome. Missing (legacy harness) →
+    /// terminal.
+    #[serde(default = "default_true")]
+    pub terminal: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

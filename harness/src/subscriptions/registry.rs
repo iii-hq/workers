@@ -35,15 +35,21 @@ pub struct SubEntry {
     /// ([`find_duplicate`](SubscriptionRegistry::find_duplicate)); `Null` when
     /// the caller opted out of dedup.
     dedup_key: Value,
+    /// A one-shot notify subscription: the owning session expects to be woken
+    /// by its firing to continue work. Drives the `terminal` flag on
+    /// `harness::turn-completed` — a session with an armed wake completes
+    /// non-terminally. Standing watchers and react bindings don't count.
+    wake: bool,
 }
 
 impl SubEntry {
-    fn new(session_id: String, dedup_key: Value) -> Self {
+    fn new(session_id: String, dedup_key: Value, wake: bool) -> Self {
         Self {
             session_id,
             seq: AtomicU64::new(0),
             trigger_id: Mutex::new(None),
             dedup_key,
+            wake,
         }
     }
 }
@@ -90,18 +96,20 @@ impl SubscriptionRegistry {
         session_id: &str,
         max: usize,
     ) -> Result<(), CapExceeded> {
-        self.try_insert_keyed(sub_id, session_id, max, Value::Null)
+        self.try_insert_keyed(sub_id, session_id, max, Value::Null, false)
     }
 
     /// [`try_insert`](Self::try_insert) with a canonicalized request key so a
     /// later identical registration can be answered idempotently via
-    /// [`find_duplicate`](Self::find_duplicate).
+    /// [`find_duplicate`](Self::find_duplicate). `wake` marks a one-shot
+    /// notify the owning session is waiting on (see [`SubEntry::wake`]).
     pub fn try_insert_keyed(
         &self,
         sub_id: &str,
         session_id: &str,
         max: usize,
         dedup_key: Value,
+        wake: bool,
     ) -> Result<(), CapExceeded> {
         let mut inner = self.lock();
         let count = inner
@@ -119,9 +127,22 @@ impl SubscriptionRegistry {
             .insert(sub_id.to_string());
         inner.by_id.insert(
             sub_id.to_string(),
-            Arc::new(SubEntry::new(session_id.to_string(), dedup_key)),
+            Arc::new(SubEntry::new(session_id.to_string(), dedup_key, wake)),
         );
         Ok(())
+    }
+
+    /// Whether the session owns an armed wake (a live one-shot notify
+    /// subscription). `false` means nothing will wake this session to continue
+    /// — its next completion is terminal. Notify delivery requires a live
+    /// registry entry (`claim_fire` drops unknown ids), so this is the truth
+    /// about whether a wake can still arrive, restarts included.
+    pub fn session_expects_wake(&self, session_id: &str) -> bool {
+        let inner = self.lock();
+        inner.by_session.get(session_id).is_some_and(|subs| {
+            subs.iter()
+                .any(|id| inner.by_id.get(id).is_some_and(|e| e.wake))
+        })
     }
 
     /// The standing subscription in `session_id` registered with an identical
@@ -289,10 +310,28 @@ mod tests {
     }
 
     #[test]
+    fn session_expects_wake_tracks_only_wake_entries() {
+        let reg = SubscriptionRegistry::new();
+        // A standing watcher / react binding is not a wake.
+        reg.try_insert("sub_watch", "s", 8).unwrap();
+        assert!(!reg.session_expects_wake("s"));
+        // A one-shot notify is.
+        reg.try_insert_keyed("sub_wake", "s", 8, serde_json::Value::Null, true)
+            .unwrap();
+        assert!(reg.session_expects_wake("s"));
+        assert!(!reg.session_expects_wake("other"));
+        // Consuming the one-shot fire clears the expectation.
+        reg.set_trigger_id("sub_wake", "trig_1");
+        assert!(reg.claim_fire("sub_wake", "s", true).is_some());
+        assert!(!reg.session_expects_wake("s"));
+    }
+
+    #[test]
     fn find_duplicate_matches_only_bound_identical_same_session_requests() {
         let reg = SubscriptionRegistry::new();
         let key = serde_json::json!({"trigger_type":"state","config":{"scope":"a","key":"k"}});
-        reg.try_insert_keyed("sub_1", "s", 8, key.clone()).unwrap();
+        reg.try_insert_keyed("sub_1", "s", 8, key.clone(), false)
+            .unwrap();
         // Unbound (engine registration in flight): allowed to race, no match.
         assert_eq!(reg.find_duplicate("s", &key), None);
         assert!(reg.set_trigger_id("sub_1", "t-1"));

@@ -25,6 +25,15 @@ pub async fn query(
     // query (e.g., per-row SLEEP, or a slow scan) would silently bypass
     // `timeout_ms`. Wrap the whole prepare→stream pipeline.
     let work = async {
+        // `database::query` is the READ surface a narrowed agent policy
+        // grants; the server enforces it: SET TRANSACTION READ ONLY applies
+        // to the statement's implicit transaction, so a write fails with
+        // ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION instead of landing. The
+        // flag is consumed by that transaction — the pooled conn reverts to
+        // normal afterwards.
+        conn.query_drop("SET TRANSACTION READ ONLY")
+            .await
+            .map_err(map_err)?;
         let mut result = conn.exec_iter(sql, bound).await.map_err(map_err)?;
         let cols: Vec<ColumnMeta> = result
             .columns_ref()

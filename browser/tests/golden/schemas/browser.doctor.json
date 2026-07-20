@@ -1,0 +1,93 @@
+{
+  "description": "Read-only environment diagnostics: which Chromium the worker would launch, its version, session capacity, and any degraded capability with how to enable it. Never starts a browser.",
+  "function_id": "browser::doctor",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DoctorInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "DoctorIssue": {
+        "description": "One degraded capability plus the way to enable it.",
+        "properties": {
+          "enable_how": {
+            "type": "string"
+          },
+          "what": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "enable_how",
+          "what"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "active_sessions": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "allowed_schemes": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "attach_enabled": {
+        "description": "Whether attach mode is enabled (allow_attach).",
+        "type": "boolean"
+      },
+      "chromium_path": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "chromium_version": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "headless_default": {
+        "type": "boolean"
+      },
+      "issues": {
+        "items": {
+          "$ref": "#/definitions/DoctorIssue"
+        },
+        "type": "array"
+      },
+      "max_sessions": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "ok": {
+        "description": "True when sessions can start right now.",
+        "type": "boolean"
+      },
+      "recording_available": {
+        "description": "Whether ffmpeg is on PATH, which browser::recording requires.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "active_sessions",
+      "allowed_schemes",
+      "attach_enabled",
+      "headless_default",
+      "issues",
+      "max_sessions",
+      "ok",
+      "recording_available"
+    ],
+    "title": "DoctorOutput",
+    "type": "object"
+  }
+}

@@ -4,6 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: state
+tags: [key-value, kv, state, distributed, cache]
 description: Distributed key-value state management with reactive change triggers — registers the `state` trigger type and the `state::*` functions.
 config:
   adapter:

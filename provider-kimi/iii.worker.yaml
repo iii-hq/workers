@@ -4,6 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: provider-kimi
+tags: [llm, kimi, moonshot, chat-completions, provider]
 description: Moonshot (Kimi) Chat Completions provider worker; implements provider::kimi::stream and provider::kimi::refresh_models behind llm-router.
 
 dependencies:

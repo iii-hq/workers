@@ -25,7 +25,7 @@ pub struct StopResponse {
 pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, HarnessError> {
     let cfg = deps.cfg().await;
 
-    // Lock-free pre-read: discover the in-flight stream + live children and
+    // Lock-free pre-read: discover the in-flight stream + spawned children and
     // fast-out for a missing/mismatched/terminal turn. This drives the prompt,
     // lock-free part of cancellation (child cascade + router::abort) so
     // generation is interrupted immediately, even while the running step holds
@@ -44,17 +44,29 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
     if record.status.is_terminal() {
         return Ok(StopResponse { stopping: false });
     }
+    // Idempotent: a prior stop already fired the cancel signal, cascaded to
+    // children, and requested the router abort — repeat clicks become one read.
+    if record.abort {
+        return Ok(StopResponse { stopping: true });
+    }
     // Pin the turn we observed so the write under the lock can't land on a newer
     // turn that started in between (matters when `turn_id` was omitted).
     let target_turn = record.turn_id.clone();
 
-    // Cascade to non-terminal spawned children BEFORE taking this session's
-    // lock (harness.md § Cancellation cascade): each child stop acquires its
-    // OWN session lock, so holding the parent lock here could deadlock against a
-    // child→parent resolve. Holding at most one session lock at a time keeps
-    // cancellation lock-order-free. Each child stop resolves the child's parent
-    // call with an error when the child finalises.
-    for child in record.live_children() {
+    // In-process cancel signal, fired lock-free BEFORE anything that awaits:
+    // it cuts the in-flight `router.chat` await (backstop when router::abort
+    // is a no-op) and is observed between tool executions, where the durable
+    // flag write below is blocked on the session lock.
+    deps.cancels.fire(&target_turn);
+
+    // Cascade to spawned children BEFORE taking this session's lock
+    // (harness.md § Cancellation cascade): each child stop acquires its OWN
+    // session lock, so holding the parent lock here could deadlock against a
+    // child-side write. Holding at most one session lock at a time keeps
+    // cancellation lock-order-free. Stopping a child that already finished is
+    // a harmless no-op (fire-and-forget spawns settle Done instantly, so the
+    // checkpoint no longer tracks child liveness).
+    for child in record.spawned_children() {
         Box::pin(handle(
             deps,
             StopRequest {
@@ -99,6 +111,16 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
     record.abort = true;
     record.updated_at = crate::types::message::AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+
+    // "stopping" ack on the existing phase-reason channel (status stays
+    // "working" — same semantics as "waiting for <model>"). UNDER the lock and
+    // after the terminal re-check: every finalizer emits its own set_status
+    // while holding this lock, so a lock-free ack here could land AFTER a
+    // concurrent finalize's "done" and leave the session stuck on "working".
+    let session = deps.session().await;
+    let _ = session
+        .set_status(&req.session_id, "working", Some("stopping"))
+        .await;
 
     Ok(StopResponse { stopping: true })
 }

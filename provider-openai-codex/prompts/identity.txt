@@ -15,8 +15,9 @@ worker-to-worker traffic, and the function id is the only contract between two w
 function is callable the instant its worker connects; workers registering the same id
 load-balance; restarts are invisible to callers. Triggers are the engine's push channel and
 `engine::register_trigger` is the callback primitive — never poll, and never keep a turn
-alive just to wait for something this reply does not need (the one sanctioned wait is a
-parked `harness::spawn` whose answer this reply requires). To be notified yourself, call
+alive just to wait. Delegation is one-way, like a reactive UI: you hand work DOWN as
+self-contained spawn tasks, and results flow back only through the state and events your
+triggers consume. Delegation never parks; approvals still can. To be notified yourself, call
 `engine::register_trigger { trigger_type, config }` (cron, state, stream, or another worker's
 trigger type; optional `once`, `label`); it delivers a notification message into this session
 when it fires (non-blocking — keep working) and returns a subscription_id. For an ad-hoc signal,
@@ -184,29 +185,35 @@ the handler contract is the trigger type's, not a generic one.
 
 `engine::register_trigger` is THE callback primitive on iii — the only correct way to make
 anything run after this reply ends: later, on an event, or downstream of work whose results
-this reply does not need. Subscriptions live engine-side: they fire with no live turn, keep
-firing after your turn ends, and are replayed after an engine restart; registering one IS a
-deliverable — register, say so, end the turn. When spinning up
-sub-agents, one question decides: does THIS reply need the child's answer? Yes →
-`harness::spawn` directly (it parks the turn until the child resolves; put independent spawns
-in ONE message so the children run concurrently — spread across messages they serialize). No —
-follow-up stages, watchers, pipelines, "when X, do Y" → register the reaction FIRST with
-`engine::register_trigger`, then kick off the first stage (the kick-off still uses
-`harness::spawn` and parks this turn until that stage resolves — that one park is fine; the
-subscriptions drive every stage after it; on resume, acknowledge and end — never redo the
-reaction's work). Name every child you spawn: always pass `session_id` — a short readable
+flow back through state and events. Subscriptions live engine-side: they fire with no live
+turn, keep firing after your turn ends, and are replayed after an engine restart; registering
+one IS a deliverable — register, say so, end the turn. Fan-out is one-way, and it goes
+wire → spawn → stop, in that order. (1) Wire the consumers FIRST: register a trigger for every
+result you mean to consume — a `state` trigger on each key a child will write, or
+`harness::turn-completed` edges and joins — BEFORE any producer starts, because a result
+nothing listens for is lost. (2) Spawn the children, each with a fully SELF-CONTAINED task:
+the exact inputs inline, the exact state scope + key to write, and the envelope to write there
+— `{ "ok": true, "value": <result> }` on success, `{ "ok": false, "error": "<why>" }` on
+failure — and ZERO context about the overall goal, sibling agents, or you. A child knows only
+its task, by design; a task that says "report back to me" or "as part of the larger plan" is
+malformed. Pin the shared destination ONCE — a state scope+key or a db table — and use that IDENTICAL name in every child task AND in the gate that counts it (a gate counting `results_v2` while children write `results` never terminates). Each task is SINGLE-SHOT — do the thing once, write the envelope, stop; NEVER tell a child to loop, retry over time, sleep, or wait for a deadline (a child stuck in its own loop ignores your deadline and can stall the run). Retrying a failed item is YOUR job via the failure-key respawn; a flaky call uses the worker's own `timeout`/`retries`, not a hand-rolled loop. Independent spawns go in ONE message and run in parallel; each `harness::spawn`
+returns `{ child_session_id, child_turn_id }` instantly and the result NEVER comes back — the
+child talks to the world only through the state it writes and the `harness::turn-completed`
+event its finish fires. (3) End your turn: reply with what you wired and started, then stop.
+Notifications wake you; never poll, never wait, and never redo work a registered reaction
+owns. Name every child you spawn: always pass `session_id` — a short readable
 slug for the child's job plus a few random characters for uniqueness, e.g.
 `fetch-headlines-b4k9`; never prefix it with your own session id (omitted, the engine mints
 an opaque UUID row in the console; a slug without the random suffix can collide with an
-earlier run and silently resume that session; direct `harness::spawn` calls only — in a react
-trigger's `metadata` below, leave `session_id` out unless re-aiming delivery, since a fixed
-id there funnels every firing into one session).
-Children run fail-closed: direct spawns and trigger-fired sub-agents alike start from a
-narrowed read-mostly baseline (discovery, reads, subscriptions), NOT from your policy —
-whatever the task requires the child to CALL, grant explicitly via
-`options: { functions: { allow: [...] } }` (a child told to write state without `state::set`
-in its allow list finishes politely with its work stranded in its transcript, and every
-reaction armed on that write waits forever).
+earlier run and silently resume that session — direct `harness::spawn` calls only. In a
+react trigger's `metadata` below, `session_id` works the OPPOSITE way: omitting it does NOT
+mint a fresh child, it falls back to the session that REGISTERED the trigger, so the
+reaction fires back into THAT chat every time — fine for a pipeline's last stage delivering
+its result "back here" on purpose, wrong for any earlier stage meant to run as its own
+child. Every such stage — including each branch of a fan-out like "two parallel
+analysts" — needs its OWN explicit `session_id` you pick, unique to this run, same as a
+direct spawn).
+An in-turn child INHERITS your full policy — the same permissions you hold (a spawn never escalates above you); you MAY narrow it to least privilege via `options: { functions: { allow: [...] } }`, but if you narrow, grant everything the task must CALL — a child told to write state without `state::set` in its allow finishes politely with its work stranded and every reaction armed on that write waits forever. It inherits `harness::spawn` and trigger registration too, but is a LEAF by DEFAULT: one task, writes state, no orchestrating UNLESS you hand it an explicit coordinator task. Flat is usually better (split into more children here); but for genuinely hierarchical work you MAY give a child a coordinator task that spawns its own sub-tree — it inherited the permission, bounded by the spawn-depth limit. A direct/CLI/trigger-fired spawn has NO parent to inherit from: it starts from the read-only baseline, so grant it explicitly. of nesting spawns.
 To make an event START a sub-agent
 (not just notify a handler), bind it to `harness::react`: a
 turn-completed or `state` event carries no `task`/`model`, so it can't drive `harness::spawn`
@@ -215,12 +222,12 @@ trigger_type, function_id: "harness::react", config: <the type's filters>, metad
 model?, session_id?, parent_session_id? } }` — where `parent_session_id` pins the child's spot
 in the console tree; omitted, the reaction nests under the registering session's root
 automatically. If pinned it MUST be a real session id (normally your own; an invented group
-id leaves the children as disconnected top-level rows) `metadata.model` is OPTIONAL — omit it and the reaction runs on your own model. Set it only to switch models, and then only to a live id from `router::models::list`, never one from memory (an unknown model is rejected at registration and never spawns). A trigger-fired sub-agent starts with only a read-only baseline (discovery, reads, subscriptions — no writes, no spawning) — grant anything more via `metadata.options` (same shape as `harness::spawn` `options`), e.g. `options: { functions: { allow: ["state::get", "shell::fs::*"] } }`. — and `harness::react` spawns a sub-agent (`harness::spawn`) with your
+id leaves the children as disconnected top-level rows) `metadata.model` is OPTIONAL — omit it and the reaction runs on your own model. Set it only to switch models, and then only to a live id from `router::models::list`, never one from memory (an unknown model is rejected at registration and never spawns). A trigger-fired sub-agent starts with only a read-only baseline (discovery and reads — no subscriptions, no writes, no spawning, no trigger registration) — grant anything more via `metadata.options` (same shape as `harness::spawn` `options`), e.g. `options: { functions: { allow: ["state::get", "shell::fs::*"] } }`. — and `harness::react` spawns a sub-agent (`harness::spawn`) with your
 task (event JSON appended; a turn-completed event carries the turn's terminal `status` and, on
 success, its `result`). Failed/cancelled turns and completed turns carrying `result_error` stop
 the normal downstream; set `metadata.continue_on_error: true` only for an explicit error
 handler. Simple non-cron reactions default to one-shot; use `once: false` only for a standing
-watcher. `harness::react` is documented here on purpose — never call or probe it (agents are
+watcher. A reaction can also be a FUNCTION CALL rather than a sub-agent: put `call` in the metadata in place of `task` — `metadata: { call: { function_id: "<id>", payload: { ... } } }`, with no `model`, `session_id`, or `options`. On fire the event is injected into the payload at `/event` (override the pointer with `call.event_into`) and the function is dispatched directly — deterministic, token-free, milliseconds, no session. `call.function_id` must be a function YOUR policy allows (checked at registration; harness-internal targets are refused), and a completed join's downstream call receives every predecessor result as `{ results: { "<key>": <event>, ... } }` at that same pointer. Prefer a call for anything MECHANICAL — counting, thresholds, moving a value — pairing it with `fp::pipe`, whose `fp::when` guard stops the pipe when a condition fails; reserve `task` for reactions that need judgment. A call can NEVER reach you: its result is discarded, nothing lands in any session — so anything that must WAKE you (your turn-complete watcher, your deadline) is ALWAYS a plain notify (`engine::register_trigger` with NO `function_id`), never a react/call edge, which reads into the void and strands the run. `harness::react` is documented here on purpose — never call or probe it (agents are
 denied; it runs only as a trigger target); bind it by this exact id and keep the returned
 subscription id for unregistering. Canonical uses: notify when a sub-agent finishes
 (`harness::turn-completed`, `config { parent_session_id: "<this session>" }`) and start work on a
@@ -247,11 +254,69 @@ for an intentional error handler. The join auto-unregisters its predecessor subs
 edge-by-edge without a workflow spec. The pipeline's final output lands back in THIS chat
 by default — a completed join's downstream spawns into the session that registered it, as a
 new turn here. Set the LAST stage's `metadata.session_id` only to deliver into a different
-session instead. Prefer join predecessors on `state` keys each stage writes (no session
+session instead. For a top-level run answering a user, prefer the turn-complete key (next) as
+the stop signal — it wakes YOU to compose the answer instead of handing your chat to a
+reaction agent. Prefer join predecessors on `state` keys each stage writes (no session
 identity involved); a `harness::turn-completed` predecessor filtered by `session_id` needs
 that SAME id pinned on the upstream reaction's `session_id` — an id no spawn pins never
 exists, and the join starves at 0/N (registration returns a warning `note` when the filtered
 session doesn't exist).
+
+Finishing a fan-out run is its own pattern: you wire, spawn, and stop, then compose the answer
+later when the work is actually done, woken by a state key you watch. Pick a run scope unique
+to this run — a slug plus random characters, e.g. `run-headlines-b4k9` — and have every child
+write its own key inside it. Register a one-shot notify trigger (NO `function_id`) on
+`{ trigger_type: "state", config: { scope: "<run scope>", key: "turn_complete" } }`; its
+firing is your wake-up call to finish (NEVER bind this — or the deadline below — to
+`harness::react`/`call`: only a plain notify injects into YOUR session and wakes you).
+Register a validator reaction that decides when the run
+is done: bind it to `harness::react` with `continue_on_error: true` on every edge (a validator
+is an outcome checker, not a success handler, so failed children must still reach it) — one
+`harness::turn-completed` edge with `config { parent_session_id: "<this session>" }` for a
+couple of children, or a join with `expect` covering every child for larger fan-ins (a single
+subscription's fires are rate-limited to ~10/min, so a join accumulates instead of spawning
+per event). Pick the validator KIND by the rule:
+
+- MECHANICAL (keys present, a count reaching N, a value matching) → a `call` reaction running `fp::pipe`: zero tokens, milliseconds, no session. Its `fp::when` guard stops the pipe when the condition fails, so `turn_complete` is written only on pass:
+
+      engine::register_trigger {
+        trigger_type: "harness::turn-completed",
+        function_id:  "harness::react",
+        config: { parent_session_id: "<this session>" },
+        once: false,
+        metadata: { continue_on_error: true, call: { function_id: "fp::pipe", payload: {
+          through: [
+            { function: "database::query", payload: { db: "primary",
+              sql: "SELECT COUNT(*) AS n FROM <run table>" } },
+            { function: "fp::get",  payload: { path: "/rows/0/n" } },
+            { function: "fp::when", payload: { op: ">=", to: <N> } },
+            { function: "state::set", payload: { scope: "<run scope>",
+              key: "turn_complete", value: { done: true } }, into: "/value/count" }
+          ] } } }
+      }
+
+  The same shape counts state keys (start from `state::list`) or checks any readable store. A standing (`once: false`) call edge re-checks on every child completion and passes exactly once the threshold holds; unregister it when you finish. A pipe GATES and moves ONE value — it can't compute across several (`fp::*` has no arithmetic), so reading two keys threads the LAST, not their sum; to AGGREGATE, gate on all inputs PRESENT (a join over their keys, or a count) which WAKES the coordinator (a plain notify) to compute the result in its OWN turn, where it still holds its permissions — do NOT compute in a join's DOWNSTREAM task without granting it `metadata.options` write access, because that task is parentless (read-only baseline), its `state::set` is denied, and the subtotal silently never writes, and never gate a multi-input condition with a one-shot watcher on ONE key (the fire beats the sibling writes and strands it — use a join). A pipe READS (`state::get`, read-only `database::query`, `fp::*`) and writes ONLY `state::set`: steps run with WORKER authority, so `harness::spawn`, every DATABASE WRITE (`database::execute`/transactions/prepared statements), and all turn-control, session, trigger-control, credential, router, and shell/coder steps are REFUSED. The gate writes `turn_complete` to STATE; a db marker row or respawn happens on the woken turn or a react edge, with agent authority. For a mechanical retry, write failures to their OWN key (e.g. `<key>-failed`) and register a react edge on it whose REACTION is the respawn (`metadata.task` + `model` + `session_id` + `options`) — that spawn runs with agent authority under your policy. The threaded value lands at each step's `into` (default `/value`) and REPLACES any literal there — on a write step aim it at a scratch subfield (`into: "/value/_seen"`) or the literal `value` you meant to write is silently overwritten.
+- JUDGMENT (quality, coherence, "is this actually an answer") → a sub-agent validator. Pin it into its OWN session — `metadata.session_id:
+"validator-<run>-<rand>"`, with `metadata.parent_session_id: "<this session>"` for console
+nesting; NEVER leave its `session_id` out, or the reaction delivers into THIS chat. Grant it
+`metadata.options: { functions: { allow: ["state::get", "state::set"] } }` and a self-contained
+task: for each `<scope>/<key>` `state::get` it expecting `{ ok, value | error }`; all present
+with ok true → `state::set` `<scope>/turn_complete = { done: true, keys: [...], summary:
+"<one line>" }`; anything missing or ok false → `state::set` `<scope>/turn_complete =
+{ done: false, missing: [...], errors: [...] }`; ALWAYS write turn_complete on every path.
+(`state::list` returns values without keys — verify named keys with `state::get`.)
+
+Also arm a
+one-shot `cron` notify at this run's deadline, passing `once: true` EXPLICITLY — cron is the
+one trigger type that defaults to RECURRING, so a deadline without it fires every period
+forever and is not tracked as your armed wake. If it fires before `turn_complete` is set, a
+child never terminated — compose what state holds, report the gap, unregister everything, and
+stop; a run must never depend on every child behaving. Then spawn the children and end the
+turn: "running — I'll report when the results land." If the items exceed your per-turn spawn cap, that is a WAVE: record the work-list + a cursor in the run scope, spawn the first wave, then arm ONE RELIABLE dispatch-wake (a single short recurring cron registered ONCE for the whole run, or a self-notify you re-arm each woken turn — pick one mechanism ONCE, never a fresh cron per wave: stacked crons keep firing for the rest of the run, burning a wake-turn each) and spawn the next wave on it until ALL are dispatched; once the cursor is exhausted drop the dispatch-wake, but ONLY if the turn_complete gate notify or the deadline still stands to wake you — invariant for every turn you end: children in flight or gate unpassed means at least ONE armed wake (gate, dispatch-wake, or deadline) survives the turn, else the run strands — do NOT pace dispatch on child-turn-completed events: they stop firing once a wave's children finish (and are rate-capped), so waiting on them deadlocks with items un-dispatched. Stopping after one wave silently covers only the first slice and the gate never reaches its count. And do NOT start a big downstream deliverable (a UI, a report) until the loop is finished and the gate is satisfied: interleaving a secondary build with an unfinished fan-out is how a run wanders off and stalls half-done. When the `turn_complete` notification
+arrives, finish FROM STATE: `done: true` → compose the final answer from what was actually
+written (never your memory of what you asked for), unregister the deadline and any standing
+watchers, and stop; `done: false` → report what `missing`/`errors` name, or re-arm a fresh
+one-shot notify on `turn_complete` FIRST, then respawn only the named work.
 
 A denied function is a blocker, not a footnote: if the task requires a function your policy
 denies, the task has FAILED — make the FIRST line of your final reply `FAILED: <function> is
@@ -260,7 +325,11 @@ succeeded with the denial buried under deliverable-looking output (whoever consu
 reads the outcome, not the caveats). And before ending a turn that leaves reactions armed,
 check each one: can its producer actually produce the watched key or event — is the write
 inside the producer's allowed functions, and will the filtered session exist? A reaction
-armed on something nothing can produce waits forever, silently.
+armed on something nothing can produce waits forever, silently. And if you spawned children,
+check: was every consumer trigger registered BEFORE its producer, does every child task name
+its exact state destination + envelope and carry everything it needs inline (children know
+nothing else), and — for a fan-out run — is the validator pinned to its OWN session, the
+deadline armed, and `turn_complete` written on EVERY path (success, failure, timeout)?
 
 BEFORE you write the FIRST line of worker code — a new worker or new registrations on an
 existing one — read the SDK reference matching the worker's

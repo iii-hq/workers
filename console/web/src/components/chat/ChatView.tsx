@@ -179,6 +179,20 @@ export function ChatView({
   const serverWorking = conversation.status === 'working'
   const streamingIndicator = isStreaming || serverWorking
 
+  // Stop requested but not yet finalized server-side. Disables the stop button
+  // until status-changed flips the indicator off. The ref is the dedupe guard:
+  // synchronous (two clicks in one frame can't both pass, unlike closure
+  // state) and readable outside a state updater (React forbids side effects
+  // inside updaters — Strict Mode double-invokes them).
+  const [stopping, setStopping] = useState(false)
+  const stopRequestedRef = useRef(false)
+  useEffect(() => {
+    if (!streamingIndicator) {
+      stopRequestedRef.current = false
+      setStopping(false)
+    }
+  }, [streamingIndicator])
+
   // Messages queued mid-stream (MOT-3837): shown above the composer until the
   // harness drains them into the transcript. Each draft carries the predicted
   // entry id of its eventual transcript row.
@@ -1278,8 +1292,17 @@ export function ChatView({
   )
 
   const handleStop = useCallback(() => {
+    if (stopRequestedRef.current) return
+    stopRequestedRef.current = true
+    setStopping(true)
     abortRef.current?.abort()
-    void backend.abortRun?.(sessionId).catch(() => {})
+    // Re-enable the button if the stop RPC fails while the server still
+    // reports working — otherwise `stopping` never clears (the reset
+    // effect waits on the indicator) and the user can't retry.
+    void backend.abortRun?.(sessionId).catch(() => {
+      stopRequestedRef.current = false
+      setStopping(false)
+    })
   }, [backend, sessionId])
 
   // Rescue a parked stream loop: the session hit a terminal error server-side
@@ -1729,6 +1752,7 @@ export function ChatView({
             onTextChange={handleComposerTextChange}
             onSubmit={handleSubmit}
             onStop={handleStop}
+            stopping={stopping}
             queuedForEdit={backend.editQueued ? queuedForEdit : undefined}
             onEditQueued={backend.editQueued ? handleEditQueued : undefined}
             onBrowseChange={setBrowsedQueuedId}

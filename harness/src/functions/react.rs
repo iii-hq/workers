@@ -155,19 +155,51 @@ pub struct JoinSpec {
     pub rearm: bool,
 }
 
-/// The sub-agent to spawn when the subscription fires, carried in the trigger's
-/// `metadata` and delivered to this handler as the metadata sidecar.
+/// A function-call reaction: on fire, dispatch `function_id` with the fired
+/// event injected into `payload` at `event_into` instead of spawning a
+/// sub-agent. Deterministic, zero-token reactions — the mechanical-validator
+/// primitive (e.g. a `fp::pipe` that counts rows and conditionally writes a
+/// `turn_complete` state key). The target is validated against the
+/// REGISTRANT's dispatch policy when the registration comes through the
+/// harness interceptor; raw engine-side registrations are operator-trusted,
+/// exactly like spawn-mode `options` today.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct CallSpec {
+    /// The function to dispatch when the subscription fires.
+    pub function_id: String,
+    /// Base payload for the call (default `{}`).
+    #[serde(default)]
+    pub payload: Option<Value>,
+    /// JSON pointer where the fired event lands inside the payload (default
+    /// `/event`). A completed join's downstream call receives
+    /// `{ results: { <key>: <event>, … } }` at the same pointer instead.
+    #[serde(default)]
+    pub event_into: Option<String>,
+}
+
+/// The reaction to run when the subscription fires, carried in the trigger's
+/// `metadata` and delivered to this handler as the metadata sidecar. Two
+/// modes, exactly one of which must be set: `task` spawns a sub-agent;
+/// `call` dispatches a function.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ReactSpec {
-    /// Model for the reacting sub-agent (required by `harness::spawn`). Agent
-    /// registrations that omit it inherit the registering turn's model — and
-    /// its provider, when `provider` is also unset — stamped by the
-    /// `engine::register_trigger` interceptor. Raw engine-side registrations
-    /// have no turn to inherit from and must pass one.
-    pub model: String,
+    /// Model for the reacting sub-agent (task mode; required by
+    /// `harness::spawn`). Agent registrations that omit it inherit the
+    /// registering turn's model — and its provider, when `provider` is also
+    /// unset — stamped by the `engine::register_trigger` interceptor. Raw
+    /// engine-side registrations have no turn to inherit from and must pass
+    /// one. Meaningless (and rejected) in call mode.
+    #[serde(default)]
+    pub model: Option<String>,
     /// The sub-agent's opening task; the event (simple) or all predecessor
-    /// results (join) are appended fenced so it sees its inputs.
-    pub task: String,
+    /// results (join) are appended fenced so it sees its inputs. Mutually
+    /// exclusive with `call`.
+    #[serde(default)]
+    pub task: Option<String>,
+    /// Function-call reaction (no sub-agent, no model). Mutually exclusive
+    /// with `task`.
+    #[serde(default)]
+    pub call: Option<CallSpec>,
     /// Spawn into this session (e.g. a fork); when omitted, defaults to the
     /// registering session (the pipeline's owner) so the result lands back
     /// as a turn in that chat — a fresh detached child only for raw
@@ -217,13 +249,16 @@ pub struct ReactSpec {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReactResult {
-    /// Whether a `harness::spawn` was dispatched this call.
+    /// Whether a `harness::spawn` was dispatched this call (task mode).
     pub spawned: bool,
+    /// Whether a function was dispatched this call (call mode).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub called: bool,
     /// The spawned sub-agent's child session id, when spawn returned one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child_session_id: Option<String>,
-    /// Why nothing spawned (missing spec, join not yet complete, already fired,
-    /// error). Present iff `!spawned`.
+    /// Why nothing spawned/called (missing spec, join not yet complete,
+    /// already fired, error). Present iff `!spawned && !called`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// The spawned turn id — per-fire unique even when delivery reuses the
@@ -238,14 +273,25 @@ impl ReactResult {
     fn spawned(child: Option<String>, turn: Option<String>) -> Self {
         Self {
             spawned: true,
+            called: false,
             child_session_id: child,
             note: None,
             child_turn_id: turn,
         }
     }
+    fn called() -> Self {
+        Self {
+            spawned: false,
+            called: true,
+            child_session_id: None,
+            note: None,
+            child_turn_id: None,
+        }
+    }
     fn note(msg: impl Into<String>) -> Self {
         Self {
             spawned: false,
+            called: false,
             child_session_id: None,
             note: Some(msg.into()),
             child_turn_id: None,
@@ -259,8 +305,10 @@ impl ReactResult {
 pub fn validate_spec(metadata: Option<&Value>) -> Result<(), String> {
     let Some(m) = metadata else {
         return Err(
-            "harness::react needs the sub-agent spec in the registration `metadata`: \
-             { model, task, session_id?, join?: { id, expect: [\"key\", ...], key } }"
+            "harness::react needs the reaction spec in the registration `metadata`: \
+             { model, task, session_id?, join?: { id, expect: [\"key\", ...], key } } for an \
+             agent reaction, or { call: { function_id, payload? }, join? } for a function \
+             reaction"
                 .into(),
         );
     };
@@ -268,9 +316,52 @@ pub fn validate_spec(metadata: Option<&Value>) -> Result<(), String> {
         format!(
             "invalid harness::react metadata spec: {e}. Expected \
              {{ model, task, session_id?, join?: {{ id, expect: [\"key\", ...], key }} }} — \
-             `join.expect` is the array of ALL predecessor keys, not a count."
+             `join.expect` is the array of ALL predecessor keys, not a count — or \
+             {{ call: {{ function_id, payload? }}, join? }} for a function reaction."
         )
     })?;
+    match (&spec.task, &spec.call) {
+        (None, None) => {
+            return Err(
+                "a react spec needs exactly one reaction: `task` (spawn a sub-agent) or \
+                 `call` (dispatch a function)"
+                    .into(),
+            )
+        }
+        (Some(_), Some(_)) => {
+            return Err("`task` and `call` are mutually exclusive — pick one reaction".into())
+        }
+        (Some(_), None) => {
+            if spec.model.as_deref().is_none_or(str::is_empty) {
+                return Err(
+                    "a task reaction needs a `model` (agent registrations inherit the \
+                     registering turn's automatically)"
+                        .into(),
+                );
+            }
+        }
+        (None, Some(call)) => {
+            if call.function_id.is_empty() {
+                return Err("`call.function_id` must name the function to dispatch".into());
+            }
+            // Spawn-only knobs are meaningless without a sub-agent; rejecting
+            // them loudly beats silently ignoring a mis-designed spec.
+            for (set, name) in [
+                (spec.model.is_some(), "model"),
+                (spec.session_id.is_some(), "session_id"),
+                (spec.parent_session_id.is_some(), "parent_session_id"),
+                (spec.options.is_some(), "options"),
+                (spec.provider.is_some(), "provider"),
+            ] {
+                if set {
+                    return Err(format!(
+                        "`{name}` is a sub-agent (task-mode) field — a call reaction takes \
+                         only {{ call, join?, continue_on_error? }}"
+                    ));
+                }
+            }
+        }
+    }
     if let Some(j) = &spec.join {
         if j.expect.is_empty() {
             return Err(format!(
@@ -322,6 +413,9 @@ pub async fn handle(
             &spec.model,
             &spec.task,
             &spec.session_id,
+            spec.call
+                .as_ref()
+                .map(|c| (&c.function_id, c.payload.as_ref().map(Value::to_string))),
             spec.join.as_ref().map(|j| (&j.id, &j.key)),
         )
             .hash(&mut h);
@@ -343,32 +437,44 @@ pub async fn handle(
         return Ok(ReactResult::note(note));
     }
 
-    // Fire-time model check: registrations made through OTHER trigger-type
-    // providers (e.g. `state`) never pass the harness's registration-time
-    // validation, so a memory-written model id ("gpt-4o") would spawn a turn
-    // that instantly fails on every event. Refuse to spawn instead; fail open
-    // when the catalog is unreachable.
-    if let Some(ids) = known_model_ids(&deps.iii).await {
-        if !ids.iter().any(|id| id == &spec.model) {
-            tracing::warn!(
-                model = %spec.model,
-                "harness::react: unknown model in reaction spec; not spawning"
-            );
-            let note = format!(
-                "unknown model \"{}\" (not in router::models::list); not spawning",
-                spec.model
-            );
+    // Fire-time model check (task mode only — call reactions have no model):
+    // registrations made through OTHER trigger-type providers (e.g. `state`)
+    // never pass the harness's registration-time validation, so a
+    // memory-written model id ("gpt-4o") would spawn a turn that instantly
+    // fails on every event. Refuse to spawn instead; fail open when the
+    // catalog is unreachable.
+    if spec.call.is_none() {
+        let model = spec.model.clone().unwrap_or_default();
+        if model.is_empty() {
+            // Raw registrations skip registration-time validation; a task
+            // reaction without a model can never spawn.
+            let note = "task reaction without a model; not spawning".to_string();
             record_reaction_outcome(deps, &spec, &event, "failed", &note, None).await;
             return Ok(ReactResult::note(note));
+        }
+        if let Some(ids) = known_model_ids(&deps.iii).await {
+            if !ids.iter().any(|id| id == &model) {
+                tracing::warn!(
+                    model = %model,
+                    "harness::react: unknown model in reaction spec; not spawning"
+                );
+                let note = format!(
+                    "unknown model \"{model}\" (not in router::models::list); not spawning"
+                );
+                record_reaction_outcome(deps, &spec, &event, "failed", &note, None).await;
+                return Ok(ReactResult::note(note));
+            }
         }
     }
 
     // Loop breaker #2 (backstop): every react-spawned turn carries a reactive
     // depth; its completion event echoes it. A chain past the cap is refused
     // no matter which subscriptions form it (self-edge, A→B→A ping-pong,
-    // instant-fail respawn storms).
+    // instant-fail respawn storms). Call reactions spawn nothing and carry no
+    // depth — their runaway shape (call → state write → another call edge) is
+    // bounded by the per-subscription fire-rate gate above.
     let incoming_depth = event_reactive_depth(&event);
-    if incoming_depth >= MAX_REACTIVE_DEPTH {
+    if spec.call.is_none() && incoming_depth >= MAX_REACTIVE_DEPTH {
         tracing::warn!(
             reactive_depth = incoming_depth,
             "harness::react: reactive depth cap reached; refusing to spawn"
@@ -411,10 +517,15 @@ pub async fn handle(
             record_reaction_outcome(deps, &spec, &event, "blocked", &note, None).await;
             Ok(ReactResult::note(note))
         }
+        None if spec.call.is_some() => {
+            let call = spec.call.clone().expect("guarded");
+            call_edge(deps, &spec, &call, &event, event.clone()).await
+        }
         None => {
+            let task = spec.task.clone().unwrap_or_default();
             let res = spawn_reaction(
                 deps,
-                single_event_task(&spec.task, &event),
+                single_event_task(&task, &event),
                 &spec,
                 parent,
                 spawn_depth,
@@ -607,11 +718,23 @@ async fn join_edge(
         return Ok(ReactResult::note(note));
     }
 
-    // Fire the downstream sub-agent fed ALL predecessors' results, then GC the
+    // Fire the downstream fed ALL predecessors' results, then GC the
     // accumulator record. The delivery session (owner fallback when unpinned)
     // is already resolved by the caller. Joins fire once, so this cannot spam.
-    let task = gather_inputs_task(&spec.task, &rec);
-    let res = spawn_reaction(deps, task, spec, parent, spawn_depth).await;
+    let res = match spec.call.clone() {
+        // Call downstream: the accumulated results map replaces the single
+        // fired event as the injected value.
+        Some(call) => {
+            let results = json!({
+                "results": rec.get("results").cloned().unwrap_or_else(|| json!({}))
+            });
+            dispatch_call(deps, spec, &call, &event, results).await
+        }
+        None => {
+            let task = gather_inputs_task(spec.task.as_deref().unwrap_or_default(), &rec);
+            spawn_reaction(deps, task, spec, parent, spawn_depth).await
+        }
+    };
     // The join committed: the downstream spawned and (unless re-armed) the
     // predecessors were torn down above — `retired` carries the real outcome,
     // so a failed unregister is never reported as gone. One completion record
@@ -620,8 +743,12 @@ async fn join_edge(
     // swallows dispatch errors into `spawned: false`, and a record claiming
     // "spawned" for a spawn that never happened would mislead the chat.
     if let Ok(r) = &res {
-        if r.spawned {
-            let note = format!("{expected}/{expected} arrived — spawned");
+        if r.spawned || r.called {
+            let note = if r.called {
+                format!("{expected}/{expected} arrived — called")
+            } else {
+                format!("{expected}/{expected} arrived — spawned")
+            };
             emit_fired(
                 deps,
                 spec,
@@ -643,13 +770,28 @@ async fn join_edge(
         }
     }
     if let Ok(outcome) = &res {
-        let status = if outcome.spawned { "spawned" } else { "failed" };
+        let status = if outcome.spawned {
+            "spawned"
+        } else if outcome.called {
+            "called"
+        } else {
+            "failed"
+        };
         let summary = outcome.note.clone().unwrap_or_else(|| {
-            outcome
-                .child_session_id
-                .as_deref()
-                .map(|id| format!("Join {} spawned child session {id}.", join.id))
-                .unwrap_or_else(|| format!("Join {} spawned its downstream turn.", join.id))
+            if outcome.called {
+                let target = spec
+                    .call
+                    .as_ref()
+                    .map(|c| c.function_id.as_str())
+                    .unwrap_or("function");
+                format!("Join {} dispatched {target}.", join.id)
+            } else {
+                outcome
+                    .child_session_id
+                    .as_deref()
+                    .map(|id| format!("Join {} spawned child session {id}.", join.id))
+                    .unwrap_or_else(|| format!("Join {} spawned its downstream turn.", join.id))
+            }
         });
         record_reaction_outcome(
             deps,
@@ -691,6 +833,150 @@ async fn cleanup_join_record(deps: &Deps, join: &JoinSpec) {
 
 /// Build + fire the `harness::spawn`. Fire-and-forget; swallow errors so one bad
 /// reaction never wedges the engine's trigger dispatch.
+/// A simple call edge fired: dispatch the function, then handle the
+/// once-retire + fired record + outcome record — the call-mode mirror of the
+/// simple spawn edge.
+async fn call_edge(
+    deps: &Deps,
+    spec: &ReactSpec,
+    call: &CallSpec,
+    event: &Value,
+    injected: Value,
+) -> Result<ReactResult, HarnessError> {
+    let res = dispatch_call(deps, spec, call, event, injected).await;
+    if let Ok(r) = &res {
+        if r.called {
+            let sub = spec.subscription_id.as_deref().unwrap_or("sub");
+            // Per-fire suffix: calls have no child ids, so a random suffix
+            // keeps recurring fires from deduping into one record.
+            let entry_id = format!("e_trigfired_{sub}_{}", uuid::Uuid::new_v4().simple());
+            let trigger_id = spec
+                .subscription_id
+                .as_deref()
+                .and_then(|s| deps.subscriptions.trigger_id_of(s));
+            let retired = spec.once && once_unregister(deps, spec).await;
+            emit_fired(
+                deps, spec, event, &entry_id, None, retired, trigger_id, None, None,
+            )
+            .await;
+        }
+        let status = if r.called { "called" } else { "failed" };
+        let summary = r
+            .note
+            .clone()
+            .unwrap_or_else(|| format!("Reaction dispatched {}.", call.function_id));
+        record_reaction_outcome(deps, spec, event, status, &summary, None).await;
+    }
+    res
+}
+
+/// Dispatch a call reaction: the injected value (the fired event, or a
+/// completed join's results map) lands in the base payload at `event_into`
+/// (default `/event`), then the function is triggered with worker authority —
+/// the registrant's policy was enforced at registration. Errors are swallowed
+/// into a note, mirroring spawn_reaction: one bad reaction must never wedge
+/// the engine's trigger dispatch.
+async fn dispatch_call(
+    deps: &Deps,
+    spec: &ReactSpec,
+    call: &CallSpec,
+    _event: &Value,
+    injected: Value,
+) -> Result<ReactResult, HarnessError> {
+    let base = call.payload.clone().unwrap_or_else(|| json!({}));
+    let pointer = call.event_into.as_deref().unwrap_or("/event");
+    let payload = match inject_at(base, pointer, injected) {
+        Ok(p) => p,
+        Err(msg) => {
+            tracing::warn!(function_id = %call.function_id, error = %msg, "harness::react: call payload injection failed");
+            return Ok(ReactResult::note(format!(
+                "call payload injection failed: {msg}"
+            )));
+        }
+    };
+    match deps
+        .iii
+        .trigger(TriggerRequest {
+            function_id: call.function_id.clone(),
+            payload,
+            action: None,
+            timeout_ms: Some(CALL_TIMEOUT_MS),
+        })
+        .await
+    {
+        Ok(_) => {
+            tracing::info!(
+                function_id = %call.function_id,
+                subscription = spec.subscription_id.as_deref(),
+                "harness::react: reaction called"
+            );
+            Ok(ReactResult::called())
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, function_id = %call.function_id, "harness::react: call dispatch failed");
+            Ok(ReactResult::note(format!(
+                "call {} failed: {e}",
+                call.function_id
+            )))
+        }
+    }
+}
+
+/// Reaction calls are bounded — a hung target must not pin the fire handler.
+const CALL_TIMEOUT_MS: u64 = 120_000;
+
+/// Set `value` at `pointer` inside `payload`, creating intermediate objects
+/// (object keys only — same rules as fp::pipe's `into`).
+fn inject_at(payload: Value, pointer: &str, value: Value) -> Result<Value, String> {
+    let parts: Vec<String> = pointer
+        .strip_prefix('/')
+        .map(|p| {
+            p.split('/')
+                .map(|t| t.replace("~1", "/").replace("~0", "~"))
+                .collect()
+        })
+        .unwrap_or_default();
+    if parts.is_empty() || parts.iter().any(|p| p.is_empty()) {
+        return Err(format!(
+            "`event_into` must be a JSON pointer like \"/event\", got {pointer:?}"
+        ));
+    }
+    let mut root = match payload {
+        Value::Object(m) => Value::Object(m),
+        Value::Null => json!({}),
+        other => {
+            return Err(format!(
+                "call payload must be an object to receive `event_into`, got {}",
+                kind_name(&other)
+            ))
+        }
+    };
+    let mut cursor = &mut root;
+    for part in &parts[..parts.len() - 1] {
+        let map = cursor.as_object_mut().expect("object cursor");
+        cursor = map.entry(part.clone()).or_insert_with(|| json!({}));
+        if !cursor.is_object() {
+            return Err(format!(
+                "`event_into` path {pointer:?} crosses a non-object at {part:?}"
+            ));
+        }
+    }
+    let map = cursor.as_object_mut().expect("object cursor");
+    map.insert(parts[parts.len() - 1].clone(), value);
+    Ok(root)
+}
+
+pub(crate) fn kind_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 async fn spawn_reaction(
     deps: &Deps,
     task: String,
@@ -721,7 +1007,7 @@ async fn spawn_reaction(
                 .map(str::to_string);
             tracing::info!(
                 child_session_id = child.as_deref(),
-                model = %spec.model,
+                model = spec.model.as_deref(),
                 subscription = spec.subscription_id.as_deref(),
                 reactive_depth,
                 "harness::react: reaction spawned"
@@ -997,9 +1283,9 @@ async fn emit_fired(
         fired::TriggerFired {
             subscription_id: sub,
             trigger_id: trigger_id.as_deref(),
-            target: "spawn",
+            target: if spec.call.is_some() { "call" } else { "spawn" },
             label: None,
-            model: Some(&spec.model),
+            model: spec.model.as_deref(),
             once: spec.once,
             retired,
             scope,
@@ -1255,8 +1541,9 @@ mod tests {
 
     fn spec() -> ReactSpec {
         ReactSpec {
-            model: "claude-sonnet-5".into(),
-            task: "summarize".into(),
+            model: Some("claude-sonnet-5".into()),
+            task: Some("summarize".into()),
+            call: None,
             session_id: Some("s_run".into()),
             provider: None,
             options: None,
@@ -1267,6 +1554,74 @@ mod tests {
             once: false,
             owner_session_id: None,
         }
+    }
+
+    #[test]
+    fn validate_spec_call_mode_exclusivity_and_spawn_knob_rejection() {
+        // A call reaction needs no model/task.
+        assert!(validate_spec(Some(&json!({
+            "call": { "function_id": "fp::pipe", "payload": { "through": [] } }
+        })))
+        .is_ok());
+        // Join downstreams may be calls too.
+        assert!(validate_spec(Some(&json!({
+            "call": { "function_id": "state::set" },
+            "join": { "id": "J", "expect": ["a"], "key": "a" }
+        })))
+        .is_ok());
+        // Exactly one of task | call.
+        assert!(validate_spec(Some(&json!({})))
+            .unwrap_err()
+            .contains("exactly one reaction"));
+        assert!(validate_spec(Some(&json!({
+            "model": "m", "task": "t", "call": { "function_id": "state::set" }
+        })))
+        .unwrap_err()
+        .contains("mutually exclusive"));
+        // Task mode still requires a model.
+        assert!(validate_spec(Some(&json!({ "task": "t" })))
+            .unwrap_err()
+            .contains("needs a `model`"));
+        // Spawn-only knobs are rejected in call mode, teachably.
+        for knob in [
+            json!({ "call": { "function_id": "f::g" }, "model": "m" }),
+            json!({ "call": { "function_id": "f::g" }, "session_id": "s" }),
+            json!({ "call": { "function_id": "f::g" }, "options": {} }),
+            json!({ "call": { "function_id": "f::g" }, "parent_session_id": "p" }),
+        ] {
+            assert!(validate_spec(Some(&knob))
+                .unwrap_err()
+                .contains("task-mode"));
+        }
+        assert!(
+            validate_spec(Some(&json!({ "call": { "function_id": "" } })))
+                .unwrap_err()
+                .contains("must name the function")
+        );
+    }
+
+    #[test]
+    fn inject_at_places_the_event_and_creates_intermediates() {
+        let out = inject_at(
+            json!({ "through": [1] }),
+            "/event",
+            json!({ "session_id": "s" }),
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            json!({ "through": [1], "event": { "session_id": "s" } })
+        );
+        // Nested pointer creates intermediate objects; null base becomes {}.
+        let out = inject_at(Value::Null, "/meta/event", json!(1)).unwrap();
+        assert_eq!(out, json!({ "meta": { "event": 1 } }));
+        // Teachable failures: bad pointer, non-object payload.
+        assert!(inject_at(json!({}), "value", json!(1))
+            .unwrap_err()
+            .contains("JSON pointer"));
+        assert!(inject_at(json!([1]), "/event", json!(1))
+            .unwrap_err()
+            .contains("must be an object"));
     }
 
     #[test]
@@ -1311,7 +1666,7 @@ mod tests {
     #[test]
     fn simple_event_task_embeds_event() {
         let ev = json!({ "session_id": "s_child", "turn_id": "t1", "status": "completed" });
-        let t = single_event_task(&spec().task, &ev);
+        let t = single_event_task(spec().task.as_deref().unwrap(), &ev);
         assert!(t.contains("summarize"));
         assert!(t.contains("\"turn_id\""));
         assert!(t.contains("<event>"));

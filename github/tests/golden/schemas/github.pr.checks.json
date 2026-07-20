@@ -1,0 +1,39 @@
+{
+  "description": "CI check rollup for a pull request: { repo, number } -> { value: [{bucket, name, state, link, workflow, description, startedAt, completedAt}] }. Failing or pending checks are data, not errors.",
+  "function_id": "github::pr::checks",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "number": {
+        "description": "Pull request number.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "repo": {
+        "description": "Target repository, \"owner/name\".",
+        "type": "string"
+      }
+    },
+    "required": [
+      "number",
+      "repo"
+    ],
+    "title": "ChecksRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Parsed `--json` output of a gh command.",
+    "properties": {
+      "value": {
+        "description": "The JSON gh printed for the requested `--json` fields."
+      }
+    },
+    "required": [
+      "value"
+    ],
+    "title": "ValueResponse",
+    "type": "object"
+  }
+}

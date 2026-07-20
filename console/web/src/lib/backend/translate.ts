@@ -38,7 +38,11 @@ export type TurnSourceEvent =
 
 /** True once this event ends the turn (the generator should stop after it). */
 export function isTerminalSource(event: TurnSourceEvent): boolean {
-  return event.kind === 'turn-completed'
+  // A non-terminal completion (`terminal: false`) is a wiring turn of a
+  // one-way run: the session still owns an armed wake and a later turn in the
+  // same session carries the real outcome — keep streaming until it lands.
+  // Legacy events without the flag are terminal.
+  return event.kind === 'turn-completed' && event.event.terminal !== false
 }
 
 export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
@@ -108,7 +112,14 @@ export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
 function translateTurnCompleted(event: TurnCompletedEvent): StreamEvent[] {
   const out: StreamEvent[] = []
   if (event.status === 'cancelled') {
-    out.push({ kind: 'stop-reason', reason: 'aborted', message: event.reason })
+    out.push({
+      kind: 'stop-reason',
+      reason: 'aborted',
+      message: event.reason,
+      // Same id as the harness's durable "stopped" notice entry, so the live
+      // notice and the reconciled transcript row dedupe instead of doubling.
+      entryId: `e_${event.turn_id}_stopped`,
+    })
   } else if (event.status === 'failed' || event.result_error) {
     const message = event.result_error ?? event.reason
     out.push({

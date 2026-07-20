@@ -40,6 +40,7 @@ fn catalog_lists_all_functions_in_registration_order() {
         ids,
         vec![
             "provider::zai::stream",
+            "provider::zai::abort",
             "provider::zai::refresh_models",
             "provider::zai::on_router_ready",
         ]

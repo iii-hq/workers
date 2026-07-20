@@ -1,6 +1,8 @@
 //! `harness::spawn` — spawn a sub-agent in a child session (harness.md §
-//! Sub-agents). Designed to be called by the model through `agent_trigger`;
-//! the dispatch layer records the child linkage and reports the call pending.
+//! Sub-agents). Fire-and-forget: the caller gets the child's ids immediately
+//! and never its result. Designed to be called by the model through
+//! `agent_trigger`; the dispatch layer records the child linkage on a `Done`
+//! checkpoint (fan-out guard, status, stop cascade).
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -37,9 +39,6 @@ pub struct SpawnOptions {
     /// Fan-out guard for the child's own spawns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_children: Option<u32>,
-    /// Parent-side wait guard for this child.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_timeout_ms: Option<u64>,
     /// Absolute filesystem root for the child turn (e.g. an isolated
     /// `worktree::create` checkout), written to the child's
     /// `metadata.fs_scope.root`. When set it overrides the inherited scope
@@ -90,7 +89,7 @@ pub struct SpawnResponse {
 }
 
 /// Direct-call entry (a consumer starting a linked child). Dispatched from a
-/// turn, the dispatch layer handles linkage + pending; here we start a child
+/// turn, the dispatch layer handles linkage + guards; here we start a child
 /// and return its ids. Parent linkage is injected by the dispatcher, never
 /// trusted from model arguments — a direct call has no parent.
 pub async fn handle(deps: &Deps, req: SpawnRequest) -> Result<SpawnResponse, HarnessError> {

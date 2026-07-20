@@ -4,4 +4,5 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: grok
+tags: [coding-agent, grok, xai, cli, headless]
 description: xAI Grok CLI as an iii worker; grok::run/start/stop/status/sessions::list spawn the grok CLI for headless turns, mirror raw streaming-json events onto grok::events, and stream AgentEvent frames onto agent::events.

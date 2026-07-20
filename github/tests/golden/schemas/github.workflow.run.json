@@ -1,0 +1,55 @@
+{
+  "description": "Dispatch a workflow (workflow_dispatch): { repo, workflow: <file name or id>, ref?, inputs? } -> { output }. inputs become -f key=value pairs.",
+  "function_id": "github::workflow::run",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "inputs": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "workflow_dispatch inputs, each passed as `-f key=value`.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "ref": {
+        "description": "Branch or tag to run on (gh default: the repo default branch).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "repo": {
+        "description": "Target repository, \"owner/name\".",
+        "type": "string"
+      },
+      "workflow": {
+        "description": "Workflow file name (e.g. \"release.yml\") or numeric id.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "repo",
+      "workflow"
+    ],
+    "title": "WorkflowRunRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Trimmed stdout of a mutating gh command (gh prints the created/updated URL or a confirmation line; some commands print nothing).",
+    "properties": {
+      "output": {
+        "description": "gh's stdout, trimmed.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "output"
+    ],
+    "title": "TextResponse",
+    "type": "object"
+  }
+}

@@ -1,4 +1,4 @@
-//! The five custom trigger types this worker emits, and the fan-out behind
+//! The custom trigger types this worker emits, and the fan-out behind
 //! them. Consumers bind handlers with the standard two-step pattern; the
 //! engine routes each registration to our [`TriggerHandler`]. Delivery is
 //! fire-and-forget (`TriggerAction::Void`) and at-least-once; per-binding
@@ -23,6 +23,7 @@ pub const NAVIGATED: &str = "browser::navigated";
 pub const CONSOLE_EVENT: &str = "browser::console-event";
 pub const NETWORK_EVENT: &str = "browser::network-event";
 pub const PICKED: &str = "browser::picked";
+pub const HANDOFF_REQUESTED: &str = "browser::handoff-requested";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventKind {
@@ -32,6 +33,7 @@ pub enum EventKind {
     ConsoleEvent,
     NetworkEvent,
     Picked,
+    HandoffRequested,
 }
 
 impl EventKind {
@@ -43,10 +45,11 @@ impl EventKind {
             EventKind::ConsoleEvent => CONSOLE_EVENT,
             EventKind::NetworkEvent => NETWORK_EVENT,
             EventKind::Picked => PICKED,
+            EventKind::HandoffRequested => HANDOFF_REQUESTED,
         }
     }
 
-    pub fn all() -> [EventKind; 6] {
+    pub fn all() -> [EventKind; 7] {
         [
             EventKind::SessionStarted,
             EventKind::SessionStopped,
@@ -54,6 +57,7 @@ impl EventKind {
             EventKind::ConsoleEvent,
             EventKind::NetworkEvent,
             EventKind::Picked,
+            EventKind::HandoffRequested,
         ]
     }
 }
@@ -133,6 +137,19 @@ pub struct NetworkEventPayload {
 pub struct PickedEvent {
     pub session_id: String,
     pub element: PickedElement,
+    pub timestamp: i64,
+}
+
+/// `browser::handoff-requested` — a session is paused waiting for a human to
+/// complete a step (CAPTCHA, 2FA, payment). The console surfaces this beside
+/// the live viewport; resolve it with `browser::handoff::confirm` (or the
+/// human clicks the in-page continue control).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HandoffRequestedEvent {
+    pub session_id: String,
+    pub handoff_id: String,
+    /// What the human must do before the paused call continues.
+    pub instructions: String,
     pub timestamp: i64,
 }
 
@@ -224,7 +241,7 @@ impl SubscriberSet {
     }
 }
 
-/// The five subscriber sets, one per trigger type.
+/// The subscriber sets, one per trigger type.
 #[derive(Clone)]
 pub struct TriggerSets {
     inner: HashMap<&'static str, SubscriberSet>,
@@ -273,11 +290,11 @@ impl TriggerHandler for BrowserTriggerHandler {
     }
 }
 
-/// Register the six custom trigger types with the engine. Must run before
+/// Register the custom trigger types with the engine. Must run before
 /// `functions::register_all` so handlers can capture the subscriber sets.
 pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
     let sets = TriggerSets::new();
-    let descriptions: [(EventKind, &str); 6] = [
+    let descriptions: [(EventKind, &str); 7] = [
         (
             EventKind::SessionStarted,
             "A Chromium session is up and ready.",
@@ -301,6 +318,10 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
         (
             EventKind::Picked,
             "The human picked an element in inspect mode.",
+        ),
+        (
+            EventKind::HandoffRequested,
+            "A session is paused waiting for a human to complete a step (CAPTCHA, 2FA, payment).",
         ),
     ];
     for (kind, description) in descriptions {

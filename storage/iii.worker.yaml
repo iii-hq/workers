@@ -4,4 +4,5 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: storage
+tags: [s3, object-storage, gcs, r2, blob]
 description: S3-compatible object storage across AWS S3, GCS, Cloudflare R2, and a managed local rustfs backend. Streamed uploads, presigned URLs, and object change triggers.

@@ -4,6 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: queue
+tags: [queue, async, jobs, retry, rabbitmq, redis]
 description: Durable function queues - registers the `durable:subscriber` trigger type and the queue/DLQ service functions.
 # `config` seeds the `configuration` worker's `queue` entry on first boot;
 # runtime edits after that go through the configuration worker, not this

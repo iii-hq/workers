@@ -22,6 +22,7 @@ import { buildViewOptions } from '@/lib/nav-options'
 import { cn } from '@/lib/utils'
 import { Browser } from '@/pages/Browser'
 import { Configuration } from '@/pages/Configuration'
+import { Github } from '@/pages/Github'
 import { Memory } from '@/pages/Memory'
 import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
@@ -100,6 +101,8 @@ export function App() {
               <Browser />
             ) : view === 'memory' ? (
               <Memory />
+            ) : view === 'github' ? (
+              <Github />
             ) : (
               <TracesV2 />
             )}
@@ -129,12 +132,17 @@ function Header({
   // Optional-worker entries appear only while their worker is present; a
   // direct #/worktrees or #/browser hit still lands on that page's install
   // notice.
-  const { worktreeAvailable, browserAvailable, memoryAvailable } =
-    useConversationsCtx()
+  const {
+    worktreeAvailable,
+    browserAvailable,
+    memoryAvailable,
+    githubAvailable,
+  } = useConversationsCtx()
   const viewOptions = buildViewOptions(
     worktreeAvailable,
     browserAvailable,
     memoryAvailable,
+    githubAvailable,
   )
   const onConsoleSettings = view === 'configuration'
   return (

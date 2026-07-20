@@ -1,0 +1,8 @@
+iii: v1
+name: fp
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: fp
+tags: [fp, functional, pipeline, transform, lodash]
+description: Lodash-style value transforms (fp::get/pick/take/…) and fp::pipe — worker-side pipelines that move big values function→function without routing them through the model.

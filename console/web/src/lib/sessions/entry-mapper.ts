@@ -210,11 +210,13 @@ function lifecycleNotice(
     const label =
       status === 'spawned'
         ? 'reaction spawned'
-        : status === 'waiting'
-          ? 'reaction waiting'
-          : status === 'blocked'
-            ? 'reaction blocked'
-            : 'reaction failed'
+        : status === 'called'
+          ? 'reaction called'
+          : status === 'waiting'
+            ? 'reaction waiting'
+            : status === 'blocked'
+              ? 'reaction blocked'
+              : 'reaction failed'
     return {
       id: entryId,
       role: 'system',

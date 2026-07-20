@@ -177,7 +177,12 @@ describe('translateTurnSource — turn-completed', () => {
         completed({ status: 'cancelled', reason: 'stopped' }),
       ),
     ).toEqual([
-      { kind: 'stop-reason', reason: 'aborted', message: 'stopped' },
+      {
+        kind: 'stop-reason',
+        reason: 'aborted',
+        message: 'stopped',
+        entryId: 'e_t-1_stopped',
+      },
       { kind: 'assistant-end' },
     ])
   })
@@ -238,6 +243,16 @@ describe('translateTurnSource — turn-completed', () => {
     expect(
       isTerminalSource({ kind: 'approval-created', record: pendingRecord() }),
     ).toBe(false)
+  })
+
+  it('keeps streaming past a non-terminal completion (armed wake)', () => {
+    expect(
+      isTerminalSource(completed({ status: 'completed', terminal: false })),
+    ).toBe(false)
+    // Explicit terminal and legacy flag-less events both end the stream.
+    expect(
+      isTerminalSource(completed({ status: 'completed', terminal: true })),
+    ).toBe(true)
   })
 })
 

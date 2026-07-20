@@ -37,6 +37,14 @@ pub struct StatusReport {
     pub depth: u32,
     pub pending_function_calls: Vec<String>,
     pub children: Vec<ChildRef>,
+    /// The session owns an armed wake (a one-shot notify subscription): a
+    /// completed turn here is NOT the run's outcome — a later turn in this
+    /// session carries it. Mirrors the `terminal` flag on
+    /// `harness::turn-completed` (`expects_wake == !terminal`). Pollers
+    /// (e.g. workflow reconcile) must treat `completed && expects_wake` as
+    /// still running.
+    #[serde(default)]
+    pub expects_wake: bool,
     /// Messages queued while a step streams, in arrival order; they land in
     /// the transcript when the stream ends.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -58,7 +66,7 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
     let queued =
         crate::state::list_queued(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
     let children = record
-        .live_children()
+        .spawned_children()
         .into_iter()
         .map(|c| ChildRef {
             function_call_id: c.function_call_id,
@@ -84,5 +92,6 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
         queued,
         result: record.result.clone(),
         result_error: record.result_error.clone(),
+        expects_wake: deps.subscriptions.session_expects_wake(&req.session_id),
     }))
 }

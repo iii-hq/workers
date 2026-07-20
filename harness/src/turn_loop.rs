@@ -520,6 +520,15 @@ pub async fn run_step(
     record.stream_request_id = Some(params.request_id.clone());
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
 
+    // A stop that landed during context assembly (its durable write blocked on
+    // the guard held here) is only visible via the in-process signal. Bail
+    // before dispatching generation at all — otherwise the provider starts a
+    // stream that is dead on arrival.
+    if deps.cancels.is_fired(&record.turn_id) {
+        record.abort = true;
+        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+    }
+
     // Release the per-session lock across the generation RPC. The loop writes no
     // turn record between here and the post-generation cancellation check
     // (router::chat streams into the SESSION, not the turn record), so dropping
@@ -536,7 +545,25 @@ pub async fn run_step(
         .await;
 
     let router = deps.router().await;
-    let outcome = router.chat(params, &sink).await?;
+    // Harness-local cancel backstop: cuts this await even when router::abort
+    // was a no-op (registration race / router restart). Level-triggered, so a
+    // stop fired before this subscribe is still observed.
+    let abort_rx = deps.cancels.watch(&record.turn_id);
+    let mut outcome = router.chat(params, &sink, abort_rx).await?;
+
+    // A stop mid-generation truncates tool-call blocks before their arguments
+    // stream. An argument-less call can never execute (the turn is cancelled)
+    // and renders as an empty generic card — drop it from the persisted
+    // partial. Calls with partial arguments are kept: they show what was
+    // forming when the user stopped.
+    if outcome.message.stop_reason == crate::types::event::StopReason::Aborted {
+        outcome.message.content.retain(|b| {
+            !matches!(b, ContentBlock::FunctionCall { arguments, .. }
+                if arguments.is_null()
+                    || arguments.as_str().is_some_and(str::is_empty)
+                    || arguments.as_object().is_some_and(serde_json::Map::is_empty))
+        });
+    }
 
     // Generation consumed: advance the steering watermark (persisted by the
     // advance()/finalize call that ends this step).
@@ -699,6 +726,16 @@ pub async fn run_step(
                 .await?;
         let filesystem_root = record.options.filesystem_root().map(str::to_string);
         for call in trigger_calls.iter().copied() {
+            // Cancel check between tool calls. Only the in-process signal can
+            // be observed here: this phase holds the session lock, so the
+            // durable abort write in harness::stop is blocked behind it by
+            // construction. Executed calls are already checkpointed per-call,
+            // so finalizing mid-loop loses nothing.
+            if deps.cancels.is_fired(&record.turn_id) {
+                record.abort = true;
+                return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+            }
+
             // Per-call checkpoint: skip done/pending, recover an interrupted
             // trigger.
             match record.calls.get(&call.id).map(|c| c.state) {
@@ -845,29 +882,46 @@ pub async fn run_step(
                 }
             };
 
-            // harness::spawn is the built-in pending trigger: seed a child and
-            // park (never invoke a target). Guard failures skip post_trigger.
+            // harness::spawn is fire-and-forget: seed a child and return its
+            // ids immediately (never invoke a target, never park). The child's
+            // result reaches consumers only through registered triggers/state.
+            // Guard failures skip post_trigger.
             if call.function_id == crate::functions::SPAWN_ID {
-                match crate::subagent::spawn_pending(deps, &record, &call.id, &eff_args).await {
-                    Ok(info) => {
-                        checkpoint_pending(&mut record, &call.id, call, &info);
-                        crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
-                    }
-                    Err(data) => {
-                        let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
-                        append_function_result(
-                            &session,
-                            &record,
-                            call,
-                            &data,
-                            &entry_id,
-                            &origin(&record.turn_id),
-                        )
-                        .await?;
-                        mark_done(&mut record, &call.id, &entry_id);
-                        crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
-                    }
-                }
+                let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
+                let (data, child) = match crate::subagent::spawn_from_turn(
+                    deps, &record, &call.id, &eff_args,
+                )
+                .await
+                {
+                    Ok(child) => (crate::subagent::spawned_result(&child), Some(child)),
+                    Err(data) => (data, None),
+                };
+                append_function_result(
+                    &session,
+                    &record,
+                    call,
+                    &data,
+                    &entry_id,
+                    &origin(&record.turn_id),
+                )
+                .await?;
+                // Done immediately, but the child ids stay on the checkpoint:
+                // they feed the fan-out guard, `harness::status` children, and
+                // the stop cascade.
+                record.calls.insert(
+                    call.id.clone(),
+                    CallCheckpoint {
+                        state: CallState::Done,
+                        function_id: Some(call.function_id.clone()),
+                        entry_id: Some(entry_id),
+                        child_session_id: child.as_ref().map(|c| c.session_id.clone()),
+                        child_turn_id: child.as_ref().map(|c| c.turn_id.clone()),
+                        held_by: None,
+                        pending_timeout_ms: None,
+                        pending_at: None,
+                    },
+                );
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                 continue;
             }
 
@@ -1148,6 +1202,15 @@ async fn advance(deps: &Deps, record: &mut TurnRecord) -> Result<TurnStepResult,
     })
 }
 
+/// A completing turn is terminal unless its session still owns an armed wake
+/// (a one-shot notify subscription): the wiring turn of a one-way run ends
+/// with its `turn_complete` watcher armed and completes non-terminally; the
+/// final compose turn (wake consumed, nothing re-armed) is terminal.
+/// Consumers finalize a logical exchange only on `terminal: true`.
+fn turn_is_terminal(deps: &Deps, session_id: &str) -> bool {
+    !deps.subscriptions.session_expects_wake(session_id)
+}
+
 async fn finalize_completed(
     deps: &Deps,
     session: &SessionClient,
@@ -1161,6 +1224,7 @@ async fn finalize_completed(
     record.result_error = None;
     record.updated_at = AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    deps.cancels.clear(&record.turn_id);
     let _ = session.set_status(&record.session_id, "done", None).await;
     deps.events
         .emit_completed(
@@ -1176,6 +1240,7 @@ async fn finalize_completed(
                 spawned_by: record.spawned_by_subscription_id.as_deref(),
                 depth: record.reactive_depth,
             },
+            turn_is_terminal(deps, &record.session_id),
         )
         .await;
     // Sub-agent turns resolve the parent's pending call with their result.
@@ -1204,6 +1269,7 @@ async fn finalize_failed(
     record.updated_at = AgentMessage::now_ms();
     record_failure_telemetry(record, reason, failure);
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    deps.cancels.clear(&record.turn_id);
     let _ = session
         .append_custom(
             &record.session_id,
@@ -1253,6 +1319,7 @@ async fn finalize_failed(
                 spawned_by: record.spawned_by_subscription_id.as_deref(),
                 depth: record.reactive_depth,
             },
+            turn_is_terminal(deps, &record.session_id),
         )
         .await;
     if let Some(parent) = record.parent.clone() {
@@ -1403,6 +1470,19 @@ async fn finalize_cancelled(
     record.status = TurnStatus::Cancelled;
     record.updated_at = AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    deps.cancels.clear(&record.turn_id);
+    // Durable stop marker: without it the transcript just ends mid-thought
+    // after a reload. Deterministic id so the live `stop-reason` notice
+    // (translate.ts) dedupes against this entry, mirroring `e_{turn}_error`.
+    let _ = session
+        .append_custom(
+            &record.session_id,
+            "notice",
+            json!({ "reason": "stopped", "message": "stopped by user." }),
+            &format!("e_{}_stopped", record.turn_id),
+            Some(&origin(&record.turn_id)),
+        )
+        .await;
     let _ = session.set_status(&record.session_id, "done", None).await;
     deps.events
         .emit_completed(
@@ -1418,6 +1498,7 @@ async fn finalize_cancelled(
                 spawned_by: record.spawned_by_subscription_id.as_deref(),
                 depth: record.reactive_depth,
             },
+            turn_is_terminal(deps, &record.session_id),
         )
         .await;
     if let Some(parent) = record.parent.clone() {
@@ -1442,6 +1523,11 @@ pub async fn fail_turn(
 ) -> TurnStepResult {
     let cfg = deps.cfg().await;
     let session = deps.session().await;
+    // Serialize with stop/resolve/sweep like every other turn-record writer
+    // (locks.rs). Safe: the only caller runs after run_step returned, so its
+    // guard is gone. Lock-free, this finalize could interleave with
+    // harness::stop's under-lock "stopping" ack and strand the session status.
+    let _guard = deps.locks.guard(session_id).await;
     let record = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
         .await
         .ok()

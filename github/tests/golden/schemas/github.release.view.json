@@ -1,0 +1,37 @@
+{
+  "description": "View one release including body and assets: { repo: \"owner/name\", tag } -> { value }.",
+  "function_id": "github::release::view",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "repo": {
+        "description": "Target repository, \"owner/name\".",
+        "type": "string"
+      },
+      "tag": {
+        "description": "Release tag (e.g. \"v1.2.0\").",
+        "type": "string"
+      }
+    },
+    "required": [
+      "repo",
+      "tag"
+    ],
+    "title": "ViewRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Parsed `--json` output of a gh command.",
+    "properties": {
+      "value": {
+        "description": "The JSON gh printed for the requested `--json` fields."
+      }
+    },
+    "required": [
+      "value"
+    ],
+    "title": "ValueResponse",
+    "type": "object"
+  }
+}

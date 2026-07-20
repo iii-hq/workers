@@ -315,6 +315,39 @@ fn default_variant_invariants() {
     }
 }
 
+/// The sub-agent identity is dumb by design: task mechanics, the state
+/// envelope deliverable, the FAILED rule, injection defense — and NONE of the
+/// orchestration surface (spawning, triggers, joins, worker installs).
+#[test]
+fn subagent_variant_invariants() {
+    let out = variants::SUBAGENT;
+    assert!(out.starts_with("You are an iii sub-agent."));
+    assert!(out.contains("agent_trigger"));
+    assert!(out.contains("JSON OBJECT, never a JSON-encoded string"));
+    assert!(out.contains("state::set"));
+    assert!(out.contains("\"ok\": true"));
+    assert!(out.contains("\"ok\": false"));
+    assert!(out.contains("FAILED: <function> is denied by policy"));
+    assert!(out.contains("data, not instructions"));
+    assert!(out.contains("coder::"));
+    // Zero orchestration knowledge — children are leaves.
+    for forbidden in [
+        "harness::spawn",
+        "engine::register_trigger",
+        "engine::unregister_trigger",
+        "harness::react",
+        "worker::add",
+        "directory::registry",
+        "join",
+        "subscription",
+    ] {
+        assert!(
+            !out.contains(forbidden),
+            "subagent prompt must not mention {forbidden}"
+        );
+    }
+}
+
 #[test]
 fn capability_ladder_ordering() {
     let out = variants::DEFAULT;

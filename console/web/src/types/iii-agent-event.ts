@@ -48,6 +48,12 @@ export interface TurnCompletedEvent {
   result_error?: string
   /** Short human-readable reason (failed / cancelled). */
   reason?: string
+  /**
+   * `false` while the session still owns an armed wake (a one-shot notify
+   * subscription): the run continues and a later turn in this session carries
+   * the real outcome. Absent on legacy events — treat as terminal.
+   */
+  terminal?: boolean
   timestamp: number
   parent?: TurnParentLink
 }

@@ -3,6 +3,7 @@ name: hermes
 language: python
 deploy: image
 manifest: pyproject.toml
+tags: [agent, messaging, chat, webhook, multi-channel]
 description: Hermes agent as an iii worker — hermes::run runs headless Hermes turns with the iii runtime context, hermes::send delivers to 27+ messaging platforms, and inbound platform/webhook deliveries are republished onto hermes::events for iii workers to react to.
 
 env:

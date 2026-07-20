@@ -1,0 +1,80 @@
+{
+  "description": "Create a release: { repo, tag, title?, notes?, generate_notes?, draft?, prerelease?, target? } -> { output: <release url> }. generate_notes autogenerates from merged PRs.",
+  "function_id": "github::release::create",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "draft": {
+        "description": "Create as draft.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "generate_notes": {
+        "description": "Autogenerate notes from merged PRs since the last release.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "notes": {
+        "description": "Release notes body (markdown).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "prerelease": {
+        "description": "Mark as prerelease.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "repo": {
+        "description": "Target repository, \"owner/name\".",
+        "type": "string"
+      },
+      "tag": {
+        "description": "Tag to release (created at target if it does not exist).",
+        "type": "string"
+      },
+      "target": {
+        "description": "Target branch or commit SHA for the tag (gh default: the default branch).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "title": {
+        "description": "Release title.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "repo",
+      "tag"
+    ],
+    "title": "CreateRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Trimmed stdout of a mutating gh command (gh prints the created/updated URL or a confirmation line; some commands print nothing).",
+    "properties": {
+      "output": {
+        "description": "gh's stdout, trimmed.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "output"
+    ],
+    "title": "TextResponse",
+    "type": "object"
+  }
+}

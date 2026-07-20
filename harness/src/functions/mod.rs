@@ -36,10 +36,10 @@ pub const SEND_DESC: &str =
 
 pub const SPAWN_ID: &str = "harness::spawn";
 pub const SPAWN_DESC: &str =
-    "Spawn a sub-agent in a child session; the model-facing pending trigger — parks the calling \
-     turn until the child resolves. Call it directly ONLY when the current turn needs the \
-     child's answer; for callbacks, follow-up stages, and fan-in, register the reaction via \
-     engine::register_trigger -> harness::react instead.";
+    "Spawn a sub-agent fire-and-forget: seeds a child session/turn and returns \
+     {child_session_id, child_turn_id} immediately. The child's result is NEVER delivered back \
+     to the caller — register consumers (state triggers, or harness::turn-completed -> \
+     harness::react) BEFORE spawning.";
 
 pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =

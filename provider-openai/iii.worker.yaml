@@ -4,6 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: provider-openai
+tags: [llm, openai, responses, chat-completions, provider]
 description: OpenAI Responses provider worker with Chat Completions compatibility; implements provider::openai::stream and provider::openai::refresh_models behind llm-router.
 
 dependencies:

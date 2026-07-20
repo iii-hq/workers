@@ -30,6 +30,8 @@ on:
           - lsp-vscode
           - image-resize
           - llm-router
+          - fp
+          - github
           - mcp
           - memory
           - memory-consolidate

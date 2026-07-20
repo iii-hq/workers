@@ -201,7 +201,11 @@ fn default_max_depth() -> u32 {
     3
 }
 fn default_max_children() -> u32 {
-    5
+    // Per-turn spawn total (fire-and-forget spawns settle instantly). Live
+    // testing showed 6-wide fan-outs are a mundane ask ("one worker per
+    // planet") that forced workarounds at 5; 8 covers the ordinary case
+    // while the guard still stops runaways.
+    8
 }
 fn default_max_validation_retries() -> u32 {
     2
@@ -233,10 +237,12 @@ fn default_sweep_expression() -> String {
     "0 0 0 * * *".to_string()
 }
 fn default_functions() -> Option<FunctionPolicy> {
-    // Read-only baseline for parentless spawns: discovery, reads, and
-    // subscription management. Deliberately excludes every write surface,
-    // router spend, and harness::spawn — a pipeline author grants those
-    // explicitly via options / react metadata.options.
+    // Read-only baseline for PARENTLESS spawns (direct/CLI/trigger-fired) —
+    // the only children with no parent policy to inherit. Discovery and reads
+    // only: excludes every write surface, router spend, spawning, and trigger
+    // registration; a caller grants anything more explicitly via options /
+    // react metadata.options. (In-turn children instead inherit their parent's
+    // full policy — see `subagent::seed_child`.)
     Some(FunctionPolicy {
         allow: [
             "engine::functions::list",
@@ -247,8 +253,6 @@ fn default_functions() -> Option<FunctionPolicy> {
             "engine::workers::info",
             "engine::registered-triggers::list",
             "engine::registered-triggers::info",
-            "engine::register_trigger",
-            "engine::unregister_trigger",
             "state::get",
             "state::list",
             "router::models::list",
@@ -330,7 +334,7 @@ mod tests {
         assert_eq!(cfg, WorkerConfig::default());
         assert_eq!(cfg.default_max_turns, 500);
         assert_eq!(cfg.max_depth, 3);
-        assert_eq!(cfg.max_children, 5);
+        assert_eq!(cfg.max_children, 8);
         assert_eq!(cfg.max_transient_resumes, 1);
         assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
     }
@@ -342,14 +346,14 @@ mod tests {
         assert!(policy
             .allow
             .contains(&"engine::functions::list".to_string()));
-        assert!(policy
-            .allow
-            .contains(&"engine::register_trigger".to_string()));
         assert!(policy.allow.contains(&"state::get".to_string()));
-        // No write surface, no spend, no spawning in the baseline.
+        // No write surface, no spend, no spawning, no trigger registration in
+        // the baseline — children are leaves.
         for denied in [
             "state::set",
             "harness::spawn",
+            "engine::register_trigger",
+            "engine::unregister_trigger",
             "router::chat",
             "shell::exec",
         ] {

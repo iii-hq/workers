@@ -4,4 +4,5 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: workflow
+tags: [workflow, orchestration, multi-agent, durable, automation]
 description: Deterministic, crash-resumable multi-agent workflow orchestrator over harness turns.
