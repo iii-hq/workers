@@ -15,8 +15,9 @@ pub struct HandoffInput {
     /// What the human must do before the call continues. Shown in the
     /// in-page banner and the handoff-requested event.
     pub instructions: String,
-    /// Give up after this long and return timed_out. Defaults to the config
-    /// default; clamped to `max_timeout_ms`. Set generously; a human is slow.
+    /// Give up after this long and return with `via: "timeout"`. Defaults to
+    /// the config default; clamped to `max_timeout_ms`. Set generously; a
+    /// human is slow.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
@@ -79,7 +80,7 @@ pub fn banner_script(handoff_id: &str, instructions: &str) -> String {
   btn.addEventListener('click', () => {{ window.__iiiHandoff[id] = true; bar.remove(); }});
   bar.appendChild(msg);
   bar.appendChild(btn);
-  document.body.appendChild(bar);
+  (document.body || document.documentElement).appendChild(bar);
 }})()"#
     )
 }

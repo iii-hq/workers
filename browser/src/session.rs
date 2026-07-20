@@ -703,10 +703,21 @@ impl Sessions {
         match candidates.len() {
             1 => {
                 let (page, target) = candidates.into_iter().next().expect("one candidate");
-                self.adopted_targets
+                // Authoritative claim: test-and-set under one lock so two
+                // concurrent attaches cannot both adopt the same tab. The
+                // per-page `taken` filter above only narrows the candidate
+                // set; this is what actually guarantees exclusivity.
+                let mut adopted = self
+                    .adopted_targets
                     .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .insert(target);
+                    .unwrap_or_else(|p| p.into_inner());
+                if adopted.contains(&target) {
+                    return Err(format!(
+                        "no adoptable tab matches '{needle}' (open tabs: {})",
+                        urls.join(", ")
+                    ));
+                }
+                adopted.insert(target);
                 Ok(page)
             }
             0 => Err(format!(

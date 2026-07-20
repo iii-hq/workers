@@ -13,7 +13,7 @@
       },
       "timeout_ms": {
         "default": null,
-        "description": "Give up after this long and return timed_out. Defaults to the config default; clamped to `max_timeout_ms`. Set generously; a human is slow.",
+        "description": "Give up after this long and return with `via: \"timeout\"`. Defaults to the config default; clamped to `max_timeout_ms`. Set generously; a human is slow.",
         "format": "uint64",
         "minimum": 0.0,
         "type": [
