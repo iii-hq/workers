@@ -319,6 +319,7 @@ impl TurnEvents {
         parent: Option<&ParentLink>,
         display_parent: Option<&str>,
         reactive: ReactiveMeta<'_>,
+        terminal: bool,
     ) {
         tracing::info!(
             session_id,
@@ -327,12 +328,19 @@ impl TurnEvents {
             reactive_depth = reactive.depth,
             spawned_by = reactive.spawned_by,
             result_error,
+            terminal,
             "turn completed"
         );
+        // `terminal: false` marks a turn whose session still owns an armed
+        // wake (a one-shot notify) — the run continues and a later turn in the
+        // same session carries the real outcome. Consumers should treat
+        // non-terminal completions as progress and finalize only on
+        // `terminal: true`.
         let mut payload = serde_json::json!({
             "session_id": session_id,
             "turn_id": turn_id,
             "status": status,
+            "terminal": terminal,
             "timestamp": now_ms(),
         });
         if let Some(r) = result {

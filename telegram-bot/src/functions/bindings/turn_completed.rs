@@ -28,6 +28,15 @@ async fn handle(deps: &Deps, evt: TurnCompletedEvent) -> Result<BindingAck, Erro
 
         stream::finalize_session(deps, &evt.session_id).await?;
 
+        // A non-terminal completion is a wiring turn of a one-way run: the
+        // session awaits a wake and a later turn carries the real outcome.
+        // Its text is already flushed above — but the exchange stays open:
+        // no outcome toast, no FIFO drain, and the session stays "active" so
+        // FIFO steering keeps queueing until the terminal turn lands.
+        if !evt.terminal {
+            return Ok(BindingAck { ok: true });
+        }
+
         deps.runtime.active_turns.remove(&evt.session_id);
 
         let Some(chat_id) = kv::chat_id_for_session(deps, &evt.session_id).await else {

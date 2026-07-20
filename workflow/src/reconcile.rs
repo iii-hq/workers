@@ -83,29 +83,26 @@ pub fn classify_terminal(
 
 /// For each `Running` checkpoint that has a `session_id`, poll
 /// `harness::status` and advance the checkpoint to its terminal state (Done /
-/// Failed / Cancelled).  Skips unknown sessions (null response) and mismatched
-/// `turn_id` values (re-seed guard).
+/// Failed / Cancelled).  Skips unknown sessions (null response) and sessions
+/// still awaiting a wake (`expects_wake` — the run's outcome arrives on a
+/// later turn in the same session).
 pub async fn reconcile_run(
     deps: &crate::functions::Deps,
     record: &mut WorkflowRunRecord,
 ) -> Result<(), WorkflowError> {
-    // Collect the (uid, session_id, turn_id) tuples for all Running nodes so
-    // we don't hold a &mut reference across .await points.
-    let running: Vec<(String, String, Option<String>)> = record
+    // Collect the (uid, session_id) tuples for all Running nodes so we don't
+    // hold a &mut reference across .await points.
+    let running: Vec<(String, String)> = record
         .nodes
         .iter()
         .filter(|(_, cp)| cp.state == NodeState::Running)
-        .filter_map(|(uid, cp)| {
-            cp.session_id
-                .as_ref()
-                .map(|sid| (uid.clone(), sid.clone(), cp.turn_id.clone()))
-        })
+        .filter_map(|(uid, cp)| cp.session_id.as_ref().map(|sid| (uid.clone(), sid.clone())))
         .collect();
 
     let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
     let now = deps.now_ms();
 
-    for (uid, session_id, expected_turn_id) in running {
+    for (uid, session_id) in running {
         // Poll harness::status. A transient/timeout error polling ONE node must NOT
         // abort reconciliation of the rest of the run (which previously bubbled up,
         // failed the whole tick, and dead-lettered). Log and move on — the node
@@ -138,10 +135,20 @@ pub async fn reconcile_run(
             continue;
         }
 
-        // Turn-id guard: skip if the session has been re-seeded
-        let reported_turn_id = resp.get("turn_id").and_then(|v| v.as_str());
-        let expected_str = expected_turn_id.as_deref();
-        if reported_turn_id != expected_str {
+        // The node's outcome is the SESSION's terminal turn, not necessarily
+        // the turn harness::send started: a one-way agent completes its first
+        // turn as a wiring ack (with a wake armed) and a later
+        // notification-woken turn in the same session carries the real result.
+        // `expects_wake` mirrors the `terminal` flag on turn-completed; while
+        // it holds, the node stays Running whatever the current turn reports.
+        // Node sessions are deterministic per-attempt ids (`…@r<n>`), so a
+        // later turn in this session is still this node — the old exact
+        // turn-id guard would have skipped the woken turns forever.
+        if resp
+            .get("expects_wake")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             continue;
         }
 

@@ -49,7 +49,10 @@ pub struct SendOptions {
     /// The turn's deliverable; default `{ type: "text" }`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputContract>,
-    /// The fail-closed dispatch policy; omit to deny every call.
+    /// The fail-closed dispatch policy. Omitted on a NEW session → deny every
+    /// call; omitted when steering an EXISTING session → inherit the prior
+    /// turn's policy (a nudge must not disarm a live run). Pass
+    /// `{ allow: [] }` to strip explicitly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
     /// Tracing passthrough.
@@ -74,7 +77,12 @@ pub struct SendRequest {
     /// The incoming message; a string is sugar for a user text message. The
     /// role must be `user` or `custom`.
     pub message: MessageInput,
-    pub model: String,
+    /// Required to start a NEW session. Steering or waking an EXISTING
+    /// session may omit it — the session's last turn's model (and provider,
+    /// unless overridden) is inherited, the same rule the notification
+    /// inject path uses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     /// Webhook dedupe: a repeated key returns the original `{session_id,
@@ -131,14 +139,56 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
     let cfg = deps.cfg().await;
     let session = deps.session().await;
 
+    // Steering an EXISTING session may omit `model`: inherit the last turn's
+    // model (and provider, unless overridden) instead of failing on a raw
+    // missing-field error — a user nudging a live run should not have to
+    // re-name the model every time. A NEW session has nothing to inherit.
+    let prev = match req.session_id.as_deref() {
+        Some(sid) => crate::state::get_turn(&deps.iii, sid, cfg.session_timeout_ms).await?,
+        None => None,
+    };
+    let (model, provider) = match (req.model.clone(), &prev) {
+        (Some(m), _) => (m, req.provider.clone()),
+        (None, Some(prev)) => (
+            prev.options.model.clone(),
+            req.provider
+                .clone()
+                .or_else(|| prev.options.provider.clone()),
+        ),
+        (None, None) if req.session_id.is_some() => {
+            return Err(HarnessError::InvalidRequest(
+                "harness::send without `model` inherits from the session's prior \
+                 turn, but this session has none — name a `model`"
+                    .into(),
+            ))
+        }
+        (None, None) => {
+            return Err(HarnessError::InvalidRequest(
+                "harness::send creating a NEW session requires `model` (steering an \
+                 existing session may omit it)"
+                    .into(),
+            ))
+        }
+    };
+
     // Freeze the per-send options before moving the message out of `req`.
     // The provider identity prompt is fetched once here and frozen with them.
     let identity = deps
         .router()
         .await
-        .system_prompt_get(req.provider.as_deref())
+        .system_prompt_get(provider.as_deref())
         .await;
-    let options = build_options(&cfg, &req, identity.as_deref());
+    let mut options = build_options(&cfg, &req, model, provider, identity.as_deref());
+    // A steer also inherits the prior turn's dispatch policy unless this send
+    // names its own: `functions` is fail-closed, so leaving it `None` on a
+    // fresh steer record would silently DISARM a live run — every turn from
+    // the nudge onward denied all dispatch. Explicit strip stays possible
+    // (`options.functions: { allow: [] }`).
+    if options.functions.is_none() {
+        if let Some(prev) = &prev {
+            options.functions = prev.options.functions.clone();
+        }
+    }
 
     // Normalise the incoming message and validate its role.
     let message = normalize_message(req.message)?;
@@ -224,8 +274,8 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
 /// Inject a message into an EXISTING session and wake/steer a turn, reusing the
 /// session's last turn options (model / provider / dispatch policy / prompt) so
 /// a woken turn keeps the agent's capabilities. Used by ephemeral subscriptions
-/// to deliver a notification without polling — the opposite of `harness::spawn`:
-/// the agent is never parked; the event arrives as a message.
+/// to deliver a notification without polling — agents are never parked; events
+/// arrive as messages.
 ///
 /// Unlike [`start`], this never creates a session. It errors if the session has
 /// no prior turn to inherit options from — in practice a session always has a
@@ -443,11 +493,17 @@ pub(crate) fn message_preview(message: &AgentMessage) -> Option<String> {
     (!preview.is_empty()).then_some(preview)
 }
 
-fn build_options(cfg: &WorkerConfig, req: &SendRequest, identity: Option<&str>) -> TurnOptions {
+fn build_options(
+    cfg: &WorkerConfig,
+    req: &SendRequest,
+    model: String,
+    provider: Option<String>,
+    identity: Option<&str>,
+) -> TurnOptions {
     let opts = req.options.clone().unwrap_or_default();
     TurnOptions {
-        model: req.model.clone(),
-        provider: req.provider.clone(),
+        model,
+        provider,
         system_prompt: prompt::resolve_system_prompt(
             opts.system_prompt,
             opts.system_prompt_strategy,
@@ -700,7 +756,7 @@ mod tests {
         let req = SendRequest {
             session_id: None,
             message: MessageInput::Text("hi".into()),
-            model: "claude-sonnet-4".into(),
+            model: Some("claude-sonnet-4".into()),
             provider: Some("anthropic".into()),
             idempotency_key: None,
             session: None,
@@ -710,12 +766,18 @@ mod tests {
             }),
         };
         // Router-served identity used when present…
-        let opts = build_options(&cfg, &req, Some("You are an iii agent worker. VOICE."));
+        let opts = build_options(
+            &cfg,
+            &req,
+            "claude-sonnet-4".into(),
+            req.provider.clone(),
+            Some("You are an iii agent worker. VOICE."),
+        );
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("operating in agent mode"));
         assert!(prompt.ends_with("You are an iii agent worker. VOICE."));
         // …embedded default when the router serves none.
-        let opts = build_options(&cfg, &req, None);
+        let opts = build_options(&cfg, &req, "m".into(), req.provider.clone(), None);
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("operating in agent mode"));
         assert!(prompt.contains("# The steps for every action"));
@@ -727,7 +789,7 @@ mod tests {
         let req = SendRequest {
             session_id: None,
             message: MessageInput::Text("hi".into()),
-            model: "m".into(),
+            model: Some("m".into()),
             provider: Some("anthropic".into()),
             idempotency_key: None,
             session: None,
@@ -738,7 +800,13 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, Some("You are an iii agent worker. VOICE."));
+        let opts = build_options(
+            &cfg,
+            &req,
+            "claude-sonnet-4".into(),
+            req.provider.clone(),
+            Some("You are an iii agent worker. VOICE."),
+        );
         assert_eq!(opts.system_prompt.as_deref(), Some("custom"));
     }
 
@@ -748,7 +816,7 @@ mod tests {
         let req = SendRequest {
             session_id: None,
             message: MessageInput::Text("hi".into()),
-            model: "m".into(),
+            model: Some("m".into()),
             provider: Some("anthropic".into()),
             idempotency_key: None,
             session: None,
@@ -758,7 +826,13 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, Some("You are an iii agent worker. VOICE."));
+        let opts = build_options(
+            &cfg,
+            &req,
+            "claude-sonnet-4".into(),
+            req.provider.clone(),
+            Some("You are an iii agent worker. VOICE."),
+        );
         let prompt = opts.system_prompt.expect("enriched prompt");
         assert!(prompt.starts_with("You are an iii agent worker. VOICE."));
         assert!(prompt.ends_with("Speak only in haiku."));
@@ -770,12 +844,14 @@ mod tests {
             &SendRequest {
                 session_id: None,
                 message: MessageInput::Text("hi".into()),
-                model: "m".into(),
+                model: Some("m".into()),
                 provider: None,
                 idempotency_key: None,
                 session: None,
                 options: None,
             },
+            "m".into(),
+            None,
             None,
         )
     }

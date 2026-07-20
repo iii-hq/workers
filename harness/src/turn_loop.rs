@@ -882,29 +882,46 @@ pub async fn run_step(
                 }
             };
 
-            // harness::spawn is the built-in pending trigger: seed a child and
-            // park (never invoke a target). Guard failures skip post_trigger.
+            // harness::spawn is fire-and-forget: seed a child and return its
+            // ids immediately (never invoke a target, never park). The child's
+            // result reaches consumers only through registered triggers/state.
+            // Guard failures skip post_trigger.
             if call.function_id == crate::functions::SPAWN_ID {
-                match crate::subagent::spawn_pending(deps, &record, &call.id, &eff_args).await {
-                    Ok(info) => {
-                        checkpoint_pending(&mut record, &call.id, call, &info);
-                        crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
-                    }
-                    Err(data) => {
-                        let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
-                        append_function_result(
-                            &session,
-                            &record,
-                            call,
-                            &data,
-                            &entry_id,
-                            &origin(&record.turn_id),
-                        )
-                        .await?;
-                        mark_done(&mut record, &call.id, &entry_id);
-                        crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
-                    }
-                }
+                let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
+                let (data, child) = match crate::subagent::spawn_from_turn(
+                    deps, &record, &call.id, &eff_args,
+                )
+                .await
+                {
+                    Ok(child) => (crate::subagent::spawned_result(&child), Some(child)),
+                    Err(data) => (data, None),
+                };
+                append_function_result(
+                    &session,
+                    &record,
+                    call,
+                    &data,
+                    &entry_id,
+                    &origin(&record.turn_id),
+                )
+                .await?;
+                // Done immediately, but the child ids stay on the checkpoint:
+                // they feed the fan-out guard, `harness::status` children, and
+                // the stop cascade.
+                record.calls.insert(
+                    call.id.clone(),
+                    CallCheckpoint {
+                        state: CallState::Done,
+                        function_id: Some(call.function_id.clone()),
+                        entry_id: Some(entry_id),
+                        child_session_id: child.as_ref().map(|c| c.session_id.clone()),
+                        child_turn_id: child.as_ref().map(|c| c.turn_id.clone()),
+                        held_by: None,
+                        pending_timeout_ms: None,
+                        pending_at: None,
+                    },
+                );
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                 continue;
             }
 
@@ -1185,6 +1202,15 @@ async fn advance(deps: &Deps, record: &mut TurnRecord) -> Result<TurnStepResult,
     })
 }
 
+/// A completing turn is terminal unless its session still owns an armed wake
+/// (a one-shot notify subscription): the wiring turn of a one-way run ends
+/// with its `turn_complete` watcher armed and completes non-terminally; the
+/// final compose turn (wake consumed, nothing re-armed) is terminal.
+/// Consumers finalize a logical exchange only on `terminal: true`.
+fn turn_is_terminal(deps: &Deps, session_id: &str) -> bool {
+    !deps.subscriptions.session_expects_wake(session_id)
+}
+
 async fn finalize_completed(
     deps: &Deps,
     session: &SessionClient,
@@ -1214,6 +1240,7 @@ async fn finalize_completed(
                 spawned_by: record.spawned_by_subscription_id.as_deref(),
                 depth: record.reactive_depth,
             },
+            turn_is_terminal(deps, &record.session_id),
         )
         .await;
     // Sub-agent turns resolve the parent's pending call with their result.
@@ -1292,6 +1319,7 @@ async fn finalize_failed(
                 spawned_by: record.spawned_by_subscription_id.as_deref(),
                 depth: record.reactive_depth,
             },
+            turn_is_terminal(deps, &record.session_id),
         )
         .await;
     if let Some(parent) = record.parent.clone() {
@@ -1470,6 +1498,7 @@ async fn finalize_cancelled(
                 spawned_by: record.spawned_by_subscription_id.as_deref(),
                 depth: record.reactive_depth,
             },
+            turn_is_terminal(deps, &record.session_id),
         )
         .await;
     if let Some(parent) = record.parent.clone() {

@@ -76,7 +76,10 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             if let Err(e) = stream::finalize(&d, &evt.session_id).await {
                 tracing::warn!(error = %e, "finalize stream failed");
             }
-            if evt.status != "completed" && evt.status != "ok" {
+            // Non-terminal completion (armed wake): the run continues in a
+            // later turn — flush the stream above but hold outcome reporting
+            // for the terminal turn.
+            if evt.terminal && evt.status != "completed" && evt.status != "ok" {
                 if let Some(target) = kv::session_target(&d, &evt.session_id).await {
                     let reason = evt
                         .result_error

@@ -1,6 +1,5 @@
-//! `fp` binary entry: connect, register the ten transforms +
-//! `fp::pipe`, bind the harness pre-generate guidance hook, then sleep
-//! until Ctrl+C.
+//! `fp` binary entry: connect, register the transforms + `fp::pipe`, bind
+//! the harness pre-generate guidance hook, then sleep until Ctrl+C.
 
 use std::sync::Arc;
 
@@ -54,7 +53,7 @@ async fn main() -> Result<()> {
     register_functions(&iii);
     guidance::setup(&iii);
 
-    tracing::info!("fp ready: fp::pipe + 10 transforms + guidance injection");
+    tracing::info!("fp ready: fp::pipe + 18 transforms + guidance injection");
     tokio::signal::ctrl_c().await?;
     tracing::info!("fp shutting down");
     iii.shutdown_async().await;
@@ -164,6 +163,21 @@ fn register_functions(iii: &Arc<IIIClient>) {
         util::REVERSE_ID,
         util::REVERSE_DESC,
         |r: util::ValueRequest| util::reverse(r.value),
+    );
+
+    // when returns { passed, value } instead of the UtilResponse wrapper —
+    // a guard's verdict must be visible on direct calls too.
+    iii.register_function(
+        util::WHEN_ID,
+        RegisterFunction::new_async(|req: util::WhenRequest| async move {
+            util::when(&req.value, req.path.as_deref(), req.op, req.to.as_ref())
+                .map(|passed| util::WhenResponse {
+                    passed,
+                    value: req.value,
+                })
+                .map_err(Error::Handler)
+        })
+        .description(util::WHEN_DESC),
     );
 }
 

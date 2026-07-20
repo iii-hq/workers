@@ -486,15 +486,6 @@
             ],
             "description": "The child's deliverable: text / json / json+schema."
           },
-          "pending_timeout_ms": {
-            "description": "Parent-side wait guard for this child.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
           "system_prompt": {
             "type": [
               "string",

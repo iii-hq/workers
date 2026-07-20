@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use mode::{paragraph, Mode};
-pub use variants::DEFAULT;
+pub use variants::{DEFAULT, SUBAGENT};
 
 /// How a caller-supplied system prompt combines with the built-in identity prompt.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

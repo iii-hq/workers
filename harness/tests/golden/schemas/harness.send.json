@@ -439,7 +439,7 @@
                 "type": "null"
               }
             ],
-            "description": "The fail-closed dispatch policy; omit to deny every call."
+            "description": "The fail-closed dispatch policy. Omitted on a NEW session → deny every call; omitted when steering an EXISTING session → inherit the prior turn's policy (a nudge must not disarm a live run). Pass `{ allow: [] }` to strip explicitly."
           },
           "max_turns": {
             "format": "uint32",
@@ -660,7 +660,11 @@
         "description": "The incoming message; a string is sugar for a user text message. The role must be `user` or `custom`."
       },
       "model": {
-        "type": "string"
+        "description": "Required to start a NEW session. Steering or waking an EXISTING session may omit it — the session's last turn's model (and provider, unless overridden) is inherited, the same rule the notification inject path uses.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "options": {
         "anyOf": [
@@ -698,8 +702,7 @@
       }
     },
     "required": [
-      "message",
-      "model"
+      "message"
     ],
     "title": "SendRequest",
     "type": "object"

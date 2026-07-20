@@ -17,19 +17,36 @@ pub async fn query(
     params: &[JsonParam],
     timeout_ms: u64,
 ) -> Result<QueryResult, DbError> {
-    let client = pool.acquire().await?;
+    let mut client = pool.acquire().await?;
     let bound = bind_params(params);
     let bound_refs: Vec<&(dyn ToSql + Sync)> =
         bound.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
 
-    let fut = client.query(sql, bound_refs.as_slice());
-    let rows = tokio::time::timeout(Duration::from_millis(timeout_ms), fut)
+    // `database::query` is the READ surface a narrowed agent policy grants;
+    // a read-only transaction makes the server enforce it (writes fail with
+    // 25006 read_only_sql_transaction) — this also catches data-modifying
+    // CTEs (`WITH ... INSERT`) that keyword classification misses. Dropped
+    // on timeout (implicit rollback); committed after rows are collected.
+    let work = async {
+        let tx = client
+            .build_transaction()
+            .read_only(true)
+            .start()
+            .await
+            .map_err(map_err)?;
+        let rows = tx
+            .query(sql, bound_refs.as_slice())
+            .await
+            .map_err(map_err)?;
+        tx.commit().await.map_err(map_err)?;
+        Ok::<_, DbError>(rows)
+    };
+    let rows = tokio::time::timeout(Duration::from_millis(timeout_ms), work)
         .await
         .map_err(|_| DbError::QueryTimeout {
             db: "(pg)".into(),
             timeout_ms,
-        })?
-        .map_err(map_err)?;
+        })??;
 
     if rows.is_empty() {
         return Ok(QueryResult {
