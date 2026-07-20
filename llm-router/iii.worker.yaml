@@ -4,6 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: llm-router
+tags: [llm, router, models, providers]
 description: One front door + provider protocol in front of every LLM provider.
 
 dependencies:

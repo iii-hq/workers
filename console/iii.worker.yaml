@@ -4,4 +4,5 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: console
+tags: [console, dashboard, ui, web, admin]
 description: Web console for iii — bundles the React UI and proxies the engine WebSocket on a single port.

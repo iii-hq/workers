@@ -4,6 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: web
+tags: [http, client, fetch, rest, api]
 description: Outbound HTTP client on the iii bus (web::fetch).
 
 dependencies:

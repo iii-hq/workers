@@ -4,6 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: rbac-proxy
+tags: [rbac, authorization, security, proxy, middleware]
 description: "RBAC boundary proxy for the iii worker protocol — auth, gating, namespacing, middleware, and engine:: result filtering on its own port."
 
 dependencies:

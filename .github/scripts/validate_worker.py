@@ -118,6 +118,12 @@ def main(argv: list[str] | None = None) -> int:
             hard(
                 f"{worker}/iii.worker.yaml language must be 'rust' | 'node' | 'python' | 'javascript'"
             )
+        tags = m.raw.get("tags")
+        if tags is not None:
+            if not isinstance(tags, list):
+                hard(f"{worker}/iii.worker.yaml tags must be a list")
+            elif any(not isinstance(tag, str) for tag in tags):
+                hard(f"{worker}/iii.worker.yaml tags entries must be strings")
         # The release archive's binary is named after `bin` (defaulting to the
         # worker name); the resolver looks it up by worker name. They must match
         # or `iii worker add {worker}` fails with "Binary not found in archive".
