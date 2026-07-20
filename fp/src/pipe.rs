@@ -315,8 +315,15 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
             // Injection REPLACES whatever sits at the pointer. Overwriting a
             // literal the author spelled out is almost always an omitted
             // `into` on a write step — flag it on the receipt so the clobber
-            // is visible instead of silent.
-            if matches!(args.pointer(pointer), Some(v) if !v.is_null()) {
+            // is visible instead of silent. Empty containers don't count: a
+            // `{}`/`[]` placeholder is padding, not an authored literal.
+            let occupied = args.pointer(pointer).is_some_and(|v| match v {
+                Value::Null => false,
+                Value::Object(m) => !m.is_empty(),
+                Value::Array(a) => !a.is_empty(),
+                _ => true,
+            });
+            if occupied {
                 clobber_note = Some(format!(
                     "piped value REPLACED the literal at `{pointer}` — aim `into` at a \
                      subfield (e.g. `{pointer}/_piped`) to keep your literal payload"
