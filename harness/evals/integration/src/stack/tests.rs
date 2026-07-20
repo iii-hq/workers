@@ -56,8 +56,45 @@ fn manifest_is_canonical_and_uses_layout_paths() {
 
     manifest::write_stack_manifest(&bins, &layout, 3210).unwrap();
     let committed = std::fs::read_to_string(layout.stack_manifest_path()).unwrap();
-    let value = manifest::stack_info(&bins, &layout, 3210);
+    let value = manifest::stack_info(&bins, &layout, 3210).unwrap();
     assert_eq!(committed, crate::canonical::canonical_json_pretty(&value));
+    assert_eq!(value["profile"], "harness-core-v1");
+    assert_eq!(
+        value["components"]["controlled_services"],
+        serde_json::json!(["scripted-router", "integration-recorder"])
+    );
     assert_eq!(value["run_root"], layout.root.to_string_lossy().as_ref());
     assert_eq!(value["port"], 3210);
+}
+
+#[test]
+fn manifest_fails_when_a_binary_cannot_be_identified() {
+    let artifacts = tempfile::tempdir().unwrap();
+    let layout = RunLayout::allocate(artifacts.path(), "run-001").unwrap();
+    let missing = artifacts.path().join("missing-bin");
+    let bins = StackBins {
+        engine: missing.clone(),
+        harness: missing.clone(),
+        workers: BTreeMap::new(),
+    };
+    let error = manifest::stack_info(&bins, &layout, 3210).unwrap_err();
+    assert!(format!("{error:#}").contains("resolve engine binary"));
+}
+
+#[tokio::test]
+async fn boot_failure_carries_a_complete_typed_teardown() {
+    let artifacts = tempfile::tempdir().unwrap();
+    let layout = RunLayout::allocate(artifacts.path(), "run-boot-failure").unwrap();
+    let bins = StackBins {
+        engine: PathBuf::from("/bin/true"),
+        harness: PathBuf::from("/bin/true"),
+        workers: BTreeMap::new(),
+    };
+
+    let failure = match Stack::boot(&bins, layout).await {
+        Ok(_) => panic!("missing workers must fail before boot"),
+        Err(failure) => failure,
+    };
+    assert!(failure.teardown.complete());
+    assert!(format!("{:#}", failure.error).contains("missing --worker-bin"));
 }

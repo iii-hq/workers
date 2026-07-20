@@ -14,9 +14,10 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::types::scenario::{CompiledScenarioV1, IntegrationScenarioV1};
+use crate::types::scenario::{AuthoredScenarioV1, CompiledScenarioV1};
 use crate::types::script::{ModelFixtureV1, RouterScriptV1};
 
 pub use render::{render_authored_yaml, render_compiled};
@@ -27,7 +28,7 @@ const DEFAULT_MODEL: &str = "fixture-model";
 const DEFAULT_PROVIDER: &str = "scripted";
 const SYNTHETIC_FUNCTION_ALIAS: &str = "unused";
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CompiledFixtureV1 {
     pub scenario: CompiledScenarioV1,
@@ -82,7 +83,7 @@ struct CompiledFunctionCall {
 /// Compile the concise authored contract to the strict structures consumed by
 /// the runner and scripted router.
 pub fn compile_scenario(
-    authored: &IntegrationScenarioV1,
+    authored: &AuthoredScenarioV1,
     system_prompt_base: &str,
 ) -> anyhow::Result<CompiledFixtureV1> {
     validation::validate_identity(authored)?;
@@ -105,11 +106,14 @@ pub fn compile_scenario(
         .map(|alias| function_ids[alias].clone())
         .collect();
     let tools = functions::compile_tools(authored, &allowed_aliases, &function_ids);
-    let recorder = functions::compile_recorder(authored, &allowed_aliases, &function_ids);
+    let mut recorder = functions::compile_recorder(authored, &allowed_aliases, &function_ids);
     let bindings = functions::compile_bindings(authored, &allowed_aliases, &function_ids)?;
     let calls = functions::function_call_ids(authored, &function_ids, &allowed_aliases)?;
     validation::validate_release(authored, &calls)?;
     let fault = functions::compile_fault(authored, &function_ids, &calls)?;
+    if let Some(fault) = &fault {
+        functions::hold_fault_target(&mut recorder, &fault.function_id, fault.after_target_calls)?;
+    }
 
     let send = functions::compile_send(authored, &model, &allowed_ids)?;
     let script = router::compile_router(authored, &model, &tools, &function_ids, &calls)?;

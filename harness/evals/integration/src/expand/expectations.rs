@@ -3,13 +3,13 @@ use std::collections::BTreeMap;
 use anyhow::Context;
 
 use crate::types::scenario::{
-    FunctionResultInvariantV1, IntegrationScenarioV1, InvariantSpecV1, TargetCallsInvariantV1,
+    AuthoredScenarioV1, FunctionResultInvariantV1, InvariantSpecV1, TargetCallsInvariantV1,
 };
 
 use super::{CompiledFunctionCall, SYNTHETIC_FUNCTION_ALIAS};
 
 pub(super) fn compile_expectations(
-    authored: &IntegrationScenarioV1,
+    authored: &AuthoredScenarioV1,
     function_ids: &BTreeMap<String, String>,
     calls: &[CompiledFunctionCall],
     generation_count: usize,
@@ -62,7 +62,10 @@ pub(super) fn compile_expectations(
         invariants.push(InvariantSpecV1::transcript_no_duplicates());
     }
     invariants.push(InvariantSpecV1::status_terminal(expect.terminal));
-    invariants.push(InvariantSpecV1::lifecycle_completed_once(expect.lifecycle));
+    invariants.push(InvariantSpecV1::lifecycle_completed_once(
+        expect.lifecycle,
+        expect.terminal.status,
+    ));
     invariants.push(InvariantSpecV1::router_generations_consumed(
         generation_count as u64,
     ));

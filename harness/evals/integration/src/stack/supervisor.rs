@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::process::{ProcessSpec, ProcessSupervisor, DEFAULT_TEARDOWN_BUDGET};
+use crate::process::{ProcessSpec, ProcessSupervisor, TeardownReport, DEFAULT_TEARDOWN_BUDGET};
 
 use super::config::{write_engine_config, write_seed, ENV_ALLOWLIST, WORKER_START_ORDER};
 use super::manifest::write_stack_manifest;
@@ -17,37 +17,48 @@ pub struct Stack {
     engine_restarts: u32,
 }
 
+#[derive(Debug)]
+pub struct StackBootFailure {
+    pub error: anyhow::Error,
+    pub teardown: TeardownReport,
+}
+
 impl Stack {
     /// Spawn the engine and every pre-harness worker in declared order.
-    pub async fn boot(bins: &StackBins, paths: RunLayout) -> anyhow::Result<Stack> {
+    pub async fn boot(bins: &StackBins, paths: RunLayout) -> Result<Stack, StackBootFailure> {
         match Self::boot_once(bins, &paths).await {
             Ok(stack) => Ok(stack),
-            Err(BootError::BindRace) => {
+            Err(BootError::BindRace(teardown)) if teardown.complete() => {
                 tracing::warn!(
                     target: "harness_integration::stack",
                     "engine bind race; retrying with a fresh port set"
                 );
                 Self::boot_once(bins, &paths)
                     .await
-                    .map_err(BootError::into_anyhow)
+                    .map_err(BootError::into_failure)
             }
-            Err(error) => Err(error.into_anyhow()),
+            Err(BootError::BindRace(teardown)) => Err(StackBootFailure {
+                error: anyhow::anyhow!("engine bind race cleanup was incomplete"),
+                teardown,
+            }),
+            Err(error) => Err(error.into_failure()),
         }
     }
 
     async fn boot_once(bins: &StackBins, paths: &RunLayout) -> Result<Stack, BootError> {
         let missing = bins.missing_workers();
         if !missing.is_empty() {
-            return Err(BootError::Other(anyhow::anyhow!(
+            return Err(BootError::without_processes(anyhow::anyhow!(
                 "missing --worker-bin for: {}",
                 missing.join(", ")
             )));
         }
 
-        let port = free_loopback_port().map_err(BootError::Other)?;
+        let port = free_loopback_port().map_err(BootError::without_processes)?;
         let ws_url = format!("ws://127.0.0.1:{port}");
-        let engine_yaml_path = write_engine_config(paths, port).map_err(BootError::Other)?;
-        write_stack_manifest(bins, paths, port).map_err(BootError::Other)?;
+        let engine_yaml_path =
+            write_engine_config(paths, port).map_err(BootError::without_processes)?;
+        write_stack_manifest(bins, paths, port).map_err(BootError::without_processes)?;
 
         let engine_args = vec![
             "--config".to_string(),
@@ -66,22 +77,27 @@ impl Stack {
             engine_restarts: 0,
         };
 
-        stack
-            .spawn_child("engine", &bins.engine, &engine_args, &paths.engine_dir)
-            .map_err(BootError::Other)?;
+        if let Err(error) =
+            stack.spawn_child("engine", &bins.engine, &engine_args, &paths.engine_dir)
+        {
+            let teardown = stack.teardown().await;
+            return Err(BootError::Other { error, teardown });
+        }
 
-        // Classify an immediate engine death as the one retryable bind race.
+        // Retry only an explicit address-in-use failure. Other immediate
+        // exits are configuration/binary failures, not port collisions.
         tokio::time::sleep(Duration::from_millis(600)).await;
         if let Some(exit) = stack.early_exit() {
-            stack.teardown().await;
-            if exit.name == "engine" {
-                return Err(BootError::BindRace);
+            let retryable_bind_race =
+                exit.name == "engine" && stderr_indicates_bind_race(&exit.stderr_log);
+            let teardown = stack.teardown().await;
+            if retryable_bind_race {
+                return Err(BootError::BindRace(teardown));
             }
-            return Err(BootError::Other(anyhow::anyhow!(
-                "{} exited during boot: {}",
-                exit.name,
-                exit.status
-            )));
+            return Err(BootError::Other {
+                error: anyhow::anyhow!("{} exited during boot: {}", exit.name, exit.status),
+                teardown,
+            });
         }
 
         for worker in WORKER_START_ORDER {
@@ -89,7 +105,10 @@ impl Stack {
                 .resolve(worker)
                 .expect("presence checked above")
                 .to_path_buf();
-            stack.spawn_worker(worker, &bin).map_err(BootError::Other)?;
+            if let Err(error) = stack.spawn_worker(worker, &bin) {
+                let teardown = stack.teardown().await;
+                return Err(BootError::Other { error, teardown });
+            }
         }
 
         Ok(stack)
@@ -195,8 +214,8 @@ impl Stack {
         self.processes.early_exit()
     }
 
-    pub async fn teardown(&mut self) {
-        self.processes.teardown().await;
+    pub async fn teardown(&mut self) -> TeardownReport {
+        self.processes.teardown().await
     }
 }
 
@@ -208,15 +227,44 @@ pub fn free_loopback_port() -> anyhow::Result<u16> {
 }
 
 enum BootError {
-    BindRace,
-    Other(anyhow::Error),
+    BindRace(TeardownReport),
+    Other {
+        error: anyhow::Error,
+        teardown: TeardownReport,
+    },
 }
 
 impl BootError {
-    fn into_anyhow(self) -> anyhow::Error {
-        match self {
-            BootError::BindRace => anyhow::anyhow!("engine failed to bind twice in a row"),
-            BootError::Other(error) => error,
+    fn without_processes(error: anyhow::Error) -> Self {
+        Self::Other {
+            error,
+            teardown: TeardownReport::default(),
         }
     }
+
+    fn into_failure(self) -> StackBootFailure {
+        match self {
+            BootError::BindRace(teardown) => StackBootFailure {
+                error: anyhow::anyhow!("engine failed to bind twice in a row"),
+                teardown,
+            },
+            BootError::Other { error, teardown } => StackBootFailure { error, teardown },
+        }
+    }
+}
+
+fn stderr_indicates_bind_race(path: &Path) -> bool {
+    let Ok(stderr) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let stderr = stderr.to_ascii_lowercase();
+    [
+        "address already in use",
+        "addrinuse",
+        "os error 48",
+        "os error 98",
+        "failed to bind",
+    ]
+    .iter()
+    .any(|needle| stderr.contains(needle))
 }

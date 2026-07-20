@@ -1,16 +1,20 @@
 use serde_json::Value;
 
+use super::contracts::{harness_contracts, pre_harness_contracts};
+use super::ExpectedFunctionContract;
+
 #[derive(Debug, Clone)]
 pub struct ReadinessSpec {
-    /// Exact function ids that must be registered. Internal functions are
-    /// visible because the probe passes `include_internal: true`.
-    pub functions: Vec<String>,
+    /// Exact live function contracts that must be registered. Internal
+    /// functions are visible because discovery passes
+    /// `include_internal: true`.
+    pub functions: Vec<ExpectedFunctionContract>,
     /// Trigger types that must be registered (e.g. `harness::turn-completed`).
     pub trigger_types: Vec<String>,
     /// Queue topics that must exist as (name, expected broker type).
     pub queue_topics: Vec<(String, String)>,
-    /// `configuration::get` id → expected seeded value (canonical-JSON
-    /// byte-compare).
+    /// `configuration::get` id → authoritative seeded subset. Every seeded
+    /// value must match canonically; worker-installed defaults may add fields.
     pub config_entries: Vec<(String, Value)>,
 }
 
@@ -18,30 +22,8 @@ impl ReadinessSpec {
     /// The surface required before Arm — everything except the harness,
     /// which is spawned after Arm (see `stack::WORKER_START_ORDER`).
     pub fn pre_harness(config_entries: Vec<(String, Value)>) -> Self {
-        let functions = [
-            // Session durability.
-            "session::messages",
-            // Context manager is mandatory and fails closed when absent.
-            "context::assemble",
-            "context::count-tokens",
-            // The scripted router owns the fixed router ids.
-            "router::chat",
-            "router::abort",
-            "router::models::list",
-            "router::models::get",
-            "router::models::supports",
-            "router::system_prompt::get",
-            // Recorder's only public engine surface. Configuration,
-            // reset, and snapshots stay inside the runner process.
-            "integration-recorder::lifecycle",
-            // Queue surface consumed by the probe itself.
-            "engine::queue::list_topics",
-        ]
-        .into_iter()
-        .map(String::from)
-        .collect();
         Self {
-            functions,
+            functions: pre_harness_contracts(),
             trigger_types: Vec::new(),
             queue_topics: Vec::new(),
             config_entries,
@@ -53,7 +35,7 @@ impl ReadinessSpec {
     /// `harness-turn` topic, and the harness's own seeded config entry.
     pub fn harness_surface(config_entries: Vec<(String, Value)>) -> Self {
         Self {
-            functions: vec!["harness::send".to_string(), "harness::status".to_string()],
+            functions: harness_contracts(),
             trigger_types: vec![
                 "harness::turn-started".to_string(),
                 "harness::turn-completed".to_string(),

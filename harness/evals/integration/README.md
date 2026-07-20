@@ -24,7 +24,8 @@ harness-integration run \
   --worker-bin session-manager=<session-manager> \
   --worker-bin context-manager=<context-manager> \
   --worker-bin iii-directory=<iii-directory> \
-  --scenario C-E2E-001
+  --scenario C-E2E-001 \
+  --repeat 2
 ```
 
 The engine is never downloaded by the runner. CI builds the source revision
@@ -36,6 +37,9 @@ Exit codes are:
 - `0`: every selected scenario passed;
 - `2`: contract failure or scenario timeout;
 - `3`: setup, process, or runner error.
+
+`--repeat N` boots a fresh stack for every repetition and requires the
+byte-stable result contract to be identical. A mismatch is a runner error.
 
 ## Create a scenario
 
@@ -143,11 +147,13 @@ release → await → collect → grade → teardown → report.
   one hard cleanup budget.
 - Router and grader comparisons use explicit JSON array policies.
 
-Each run writes detailed evidence below
-`target/integration/<run-id>/scenarios/<scenario-id>/`. `result.json` contains
-the stable byte-comparable verdict; `execution.json` contains the run id,
-timestamps, and duration. Passing runs retain the compact reports and remove
-heavyweight stack state unless `--retain-success` is supplied.
+Each run writes `result.json`, `execution.json`, `teardown.json`, and
+`stack.json` below `target/integration/<run-id>/`; scenario evidence lives
+under `scenarios/<scenario-id>/`. `result.json` contains the stable
+byte-comparable verdict. `execution.json` contains the run id, timing,
+scenario id, and SHA-256 of the exact `result.json` bytes. Passing runs retain
+the compact reports and remove heavyweight stack state unless
+`--retain-success` is supplied.
 
 The shared `scenarios/system-prompt.txt` is the single prompt golden. The
 compiler appends the inferred session and function policy, then hashes the

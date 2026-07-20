@@ -10,6 +10,7 @@
 mod service;
 mod store;
 
+pub(crate) use service::const_response_schema;
 pub use service::Recorder;
 
 #[cfg(test)]

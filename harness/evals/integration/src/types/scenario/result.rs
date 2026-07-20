@@ -74,9 +74,11 @@ pub struct IntegrationResultV1 {
 pub struct ExecutionReportV1 {
     pub schema_version: SchemaVersion1,
     pub run_id: String,
+    pub scenario_id: String,
     pub started_at: String,
     pub duration_ms: u64,
     pub result_path: String,
+    pub result_sha256: String,
 }
 
 #[cfg(test)]

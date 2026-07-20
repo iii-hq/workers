@@ -4,13 +4,13 @@ use anyhow::Context;
 
 use super::script_validation::validate_script;
 use crate::expand::{compile_scenario, CompiledFixtureV1};
-use crate::types::scenario::{CompiledScenarioV1, IntegrationScenarioV1};
+use crate::types::scenario::{AuthoredScenarioV1, CompiledScenarioV1};
 use crate::types::script::RouterScriptV1;
 
 #[derive(Debug, Clone)]
 pub struct ScenarioFixture {
     pub dir: PathBuf,
-    pub authored: IntegrationScenarioV1,
+    pub authored: AuthoredScenarioV1,
     pub scenario: CompiledScenarioV1,
     pub script: RouterScriptV1,
     /// Compiled shared golden plus inferred session/policy aid.
@@ -20,7 +20,7 @@ pub struct ScenarioFixture {
 impl ScenarioFixture {
     pub fn load(dir: &Path) -> anyhow::Result<Self> {
         let scenario_path = dir.join("scenario.yaml");
-        let scenario: IntegrationScenarioV1 = serde_yaml::from_str(
+        let scenario: AuthoredScenarioV1 = serde_yaml::from_str(
             &std::fs::read_to_string(&scenario_path)
                 .with_context(|| format!("reading {}", scenario_path.display()))?,
         )

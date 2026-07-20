@@ -11,7 +11,7 @@ use super::ExpectationsV1;
 /// The single-file scenario authors maintain in `scenarios/<slug>/scenario.yaml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct IntegrationScenarioV1 {
+pub struct AuthoredScenarioV1 {
     pub schema_version: SchemaVersion1,
     #[schemars(length(min = 1, max = 128), regex(pattern = "^[A-Za-z0-9_-]+$"))]
     pub id: String,
@@ -36,6 +36,10 @@ pub struct IntegrationScenarioV1 {
     #[serde(default, skip_serializing_if = "ExpectationsV1::is_default")]
     pub expect: ExpectationsV1,
 }
+
+/// Compatibility name retained for callers compiled against the first
+/// single-file authoring API. New code should use [`AuthoredScenarioV1`].
+pub type IntegrationScenarioV1 = AuthoredScenarioV1;
 
 /// Scenario ids are also artifact directory names, so keep them to one safe,
 /// portable path component.
@@ -71,8 +75,6 @@ pub struct ScenarioFunctionV1 {
     pub description: String,
     pub request_schema: serde_json::Map<String, serde_json::Value>,
     pub response: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_delay_ms: Option<u64>,
     /// Exposed to the model by default. Hook-only controlled functions set
     /// this to false.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]

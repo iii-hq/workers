@@ -30,6 +30,83 @@
       ],
       "type": "object"
     },
+    "CompiledFunctionExposureV1": {
+      "enum": [
+        "native"
+      ],
+      "type": "string"
+    },
+    "CompiledFunctionPolicyV1": {
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "deny": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "expose": {
+          "$ref": "#/definitions/CompiledFunctionExposureV1"
+        }
+      },
+      "required": [
+        "allow",
+        "deny",
+        "expose"
+      ],
+      "type": "object"
+    },
+    "CompiledSendOptionsV1": {
+      "additionalProperties": false,
+      "properties": {
+        "functions": {
+          "$ref": "#/definitions/CompiledFunctionPolicyV1"
+        }
+      },
+      "required": [
+        "functions"
+      ],
+      "type": "object"
+    },
+    "CompiledSendV1": {
+      "additionalProperties": false,
+      "description": "The deliberately narrow `harness::send` request emitted by the scenario compiler. Keeping this typed prevents compiler changes from silently introducing fields outside the live harness contract.",
+      "properties": {
+        "idempotency_key": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "options": {
+          "$ref": "#/definitions/CompiledSendOptionsV1"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "message",
+        "model",
+        "options",
+        "provider",
+        "session_id"
+      ],
+      "type": "object"
+    },
     "DeadlinesV1": {
       "additionalProperties": false,
       "properties": {
@@ -86,7 +163,6 @@
     },
     "LifecycleTriggerType": {
       "enum": [
-        "harness::turn-started",
         "harness::turn-completed"
       ],
       "type": "string"
@@ -140,6 +216,15 @@
           "description": "Must be prefixed by `<run_id>::` — enforced by `configure`.",
           "type": "string"
         },
+        "hold_response_at": {
+          "description": "One-based call ordinal whose response is held behind a runner-owned, in-process gate after the call has been durably appended. Derived from `fault.after_target_calls`; never authored directly.",
+          "format": "uint64",
+          "minimum": 1.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "request_schema": {
           "additionalProperties": true,
           "description": "Registered verbatim; the same schema must appear in native tool exposure (that registration is part of the oracle).",
@@ -147,15 +232,6 @@
         },
         "response": {
           "description": "Declared response returned for every target call."
-        },
-        "response_delay_ms": {
-          "description": "Delay between the durable append and the response, opening a window for fault injection while the dispatched call is executing (crash-recovery scenarios). Omitted = respond immediately.",
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": [
-            "integer",
-            "null"
-          ]
         }
       },
       "required": [
@@ -214,7 +290,7 @@
       "type": "object"
     }
   },
-  "description": "Strict runtime scenario produced from [`super::IntegrationScenarioV1`].",
+  "description": "Strict runtime scenario produced from [`super::AuthoredScenarioV1`].",
   "properties": {
     "bindings": {
       "items": {
@@ -269,7 +345,9 @@
     "schema_version": {
       "$ref": "#/definitions/SchemaVersion1"
     },
-    "send": true
+    "send": {
+      "$ref": "#/definitions/CompiledSendV1"
+    }
   },
   "required": [
     "deadlines",

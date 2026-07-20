@@ -24,11 +24,13 @@ impl ScenarioRunner<'_> {
         let phase = RunPhase::Await;
         let deadline = active.deadline;
         let last_status = Arc::new(Mutex::new(Value::Null));
+        let last_status_error = Arc::new(Mutex::new(None::<String>));
         let session_id = self.session_id.clone();
 
         let terminal = deadline
             .poll_until("terminal harness status", STATUS_POLL_INTERVAL, || {
                 let last_status = Arc::clone(&last_status);
+                let last_status_error = Arc::clone(&last_status_error);
                 let session_id = session_id.clone();
                 async move {
                     let response = services
@@ -40,8 +42,19 @@ impl ScenarioRunner<'_> {
                             DEFAULT_CALL_TIMEOUT_MS,
                         )
                         .await;
-                    let Ok(status) = response else {
-                        return Ok(None);
+                    let status = match response {
+                        Ok(status) => {
+                            *last_status_error.lock().map_err(|_| {
+                                anyhow::anyhow!("last status error lock poisoned")
+                            })? = None;
+                            status
+                        }
+                        Err(error) => {
+                            *last_status_error.lock().map_err(|_| {
+                                anyhow::anyhow!("last status error lock poisoned")
+                            })? = Some(error);
+                            return Ok(None);
+                        }
                     };
                     *last_status
                         .lock()
@@ -59,6 +72,24 @@ impl ScenarioRunner<'_> {
         match terminal {
             Ok(status) => active.final_status = status,
             Err(error) if deadline.is_expired() => {
+                if let Some(status_error) = last_status_error
+                    .lock()
+                    .map_err(|_| {
+                        RunError::new(
+                            phase,
+                            RunErrorKind::Runner,
+                            "last status error lock poisoned",
+                        )
+                    })?
+                    .clone()
+                {
+                    return Err(RunError::with_source(
+                        phase,
+                        RunErrorKind::Runner,
+                        "harness::status remained unavailable at the scenario deadline",
+                        anyhow::anyhow!(status_error),
+                    ));
+                }
                 active.timed_out = true;
                 active.final_status = last_status
                     .lock()

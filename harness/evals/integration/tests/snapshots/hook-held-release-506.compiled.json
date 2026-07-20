@@ -273,7 +273,8 @@
       {
         "id": "lifecycle.completed_once",
         "parameters": {
-          "allow_identical_duplicates": true
+          "allow_identical_duplicates": true,
+          "status": "completed"
         }
       },
       {

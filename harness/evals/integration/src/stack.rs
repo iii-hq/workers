@@ -21,7 +21,7 @@ pub use config::{
     WORKER_START_ORDER,
 };
 pub use layout::RunLayout;
-pub use supervisor::{free_loopback_port, Stack};
+pub use supervisor::{free_loopback_port, Stack, StackBootFailure};
 
 /// Compatibility name retained for callers of the original stack API.
 pub type RunPaths = RunLayout;

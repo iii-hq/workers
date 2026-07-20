@@ -2,7 +2,7 @@ use anyhow::Context;
 use serde_json::json;
 
 use super::{expand_compiled_fixture, CompiledFixtureV1};
-use crate::types::scenario::IntegrationScenarioV1;
+use crate::types::scenario::AuthoredScenarioV1;
 
 pub(super) fn validate_placeholders(fixture: &CompiledFixtureV1) -> anyhow::Result<()> {
     render_compiled(fixture)
@@ -26,7 +26,7 @@ pub fn render_compiled(fixture: &CompiledFixtureV1) -> anyhow::Result<String> {
 }
 
 /// Serialize an authored scenario in stable YAML for `init`.
-pub fn render_authored_yaml(scenario: &IntegrationScenarioV1) -> anyhow::Result<String> {
+pub fn render_authored_yaml(scenario: &AuthoredScenarioV1) -> anyhow::Result<String> {
     let mut rendered = serde_yaml::to_string(scenario)?;
     if !rendered.ends_with('\n') {
         rendered.push('\n');

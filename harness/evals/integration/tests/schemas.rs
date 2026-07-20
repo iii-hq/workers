@@ -7,11 +7,12 @@
 //! `REGEN_SCHEMAS=1 cargo test --test schemas`
 
 use harness_integration::canonical::canonical_json_pretty;
-use harness_integration::types::recorder::RecorderEventV1;
+use harness_integration::expand::CompiledFixtureV1;
+use harness_integration::types::recorder::{RecorderEventKind, RecorderEventV1};
 use harness_integration::types::scenario::{
-    CompiledScenarioV1, ExecutionReportV1, IntegrationResultV1, IntegrationScenarioV1,
+    AuthoredScenarioV1, Classification, CompiledScenarioV1, ExecutionReportV1, IntegrationResultV1,
 };
-use harness_integration::types::script::RouterScriptV1;
+use harness_integration::types::script::{RouterScriptV1, SchemaVersion1};
 
 fn goldens() -> Vec<(&'static str, serde_json::Value)> {
     fn schema<T: schemars::JsonSchema>() -> serde_json::Value {
@@ -19,8 +20,9 @@ fn goldens() -> Vec<(&'static str, serde_json::Value)> {
     }
     vec![
         ("router-script.v1", schema::<RouterScriptV1>()),
-        ("authored-scenario.v1", schema::<IntegrationScenarioV1>()),
+        ("authored-scenario.v1", schema::<AuthoredScenarioV1>()),
         ("compiled-scenario.v1", schema::<CompiledScenarioV1>()),
+        ("compiled-fixture.v1", schema::<CompiledFixtureV1>()),
         ("integration-result.v1", schema::<IntegrationResultV1>()),
         ("execution-report.v1", schema::<ExecutionReportV1>()),
         ("recorder-event.v1", schema::<RecorderEventV1>()),
@@ -75,7 +77,7 @@ fn committed_scenarios_compile_and_round_trip() {
         }
         let fixture = ScenarioFixture::load(&dir).unwrap();
         let authored_value = serde_json::to_value(&fixture.authored).unwrap();
-        let authored_again: IntegrationScenarioV1 = serde_json::from_value(authored_value).unwrap();
+        let authored_again: AuthoredScenarioV1 = serde_json::from_value(authored_value).unwrap();
         assert_eq!(fixture.authored, authored_again);
 
         let compiled_value = serde_json::to_value(&fixture.scenario).unwrap();
@@ -85,16 +87,90 @@ fn committed_scenarios_compile_and_round_trip() {
         let script_value = serde_json::to_value(&fixture.script).unwrap();
         let script_again: RouterScriptV1 = serde_json::from_value(script_value).unwrap();
         assert_eq!(fixture.script, script_again);
+
+        let compiled_fixture = fixture.compiled();
+        let fixture_value = serde_json::to_value(&compiled_fixture).unwrap();
+        let fixture_again: CompiledFixtureV1 = serde_json::from_value(fixture_value).unwrap();
+        assert_eq!(compiled_fixture, fixture_again);
         checked += 1;
     }
     assert!(checked > 0, "expected at least one committed scenario");
 }
 
 #[test]
+fn evidence_and_report_contracts_round_trip() {
+    fn round_trip<T>(value: T)
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+    {
+        let encoded = serde_json::to_value(&value).unwrap();
+        let decoded: T = serde_json::from_value(encoded).unwrap();
+        assert_eq!(value, decoded);
+    }
+
+    round_trip(RecorderEventV1 {
+        schema_version: SchemaVersion1::V1,
+        run_id: "run-1".into(),
+        sequence: 1,
+        kind: RecorderEventKind::TargetCall,
+        function_id: "run-1::target".into(),
+        payload: serde_json::json!({ "value": "expected" }),
+        received_at: "2026-07-19T00:00:00Z".into(),
+    });
+    round_trip(IntegrationResultV1 {
+        schema_version: SchemaVersion1::V1,
+        scenario_id: "C-E2E-ROUND-TRIP".into(),
+        classification: Classification::Pass,
+        invariants: Vec::new(),
+        artifacts: vec!["teardown.json".into()],
+    });
+    round_trip(ExecutionReportV1 {
+        schema_version: SchemaVersion1::V1,
+        run_id: "run-1".into(),
+        scenario_id: "C-E2E-ROUND-TRIP".into(),
+        started_at: "2026-07-19T00:00:00Z".into(),
+        duration_ms: 1,
+        result_path: "result.json".into(),
+        result_sha256: "0".repeat(64),
+    });
+}
+
+#[test]
+fn compiled_send_is_accepted_by_the_authoritative_harness_contract() {
+    use harness_integration::fixtures::ScenarioFixture;
+
+    let golden: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../harness/tests/golden/schemas/harness.send.json"
+    )))
+    .unwrap();
+    let validator = jsonschema::JSONSchema::compile(&golden["request_schema"]).unwrap();
+    let scenarios = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios");
+    for entry in std::fs::read_dir(scenarios).unwrap() {
+        let dir = entry.unwrap().path();
+        if !dir.join("scenario.yaml").is_file() {
+            continue;
+        }
+        let fixture = ScenarioFixture::load(&dir).unwrap();
+        let send = serde_json::to_value(&fixture.scenario.send).unwrap();
+        let errors = validator
+            .validate(&send)
+            .err()
+            .map(|errors| errors.map(|error| error.to_string()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert!(
+            errors.is_empty(),
+            "{} compiled an invalid harness::send request: {errors:?}",
+            fixture.scenario.id
+        );
+    }
+}
+
+#[test]
 fn authored_schema_matches_compiler_safety_constraints() {
     use harness_integration::expand::{scenario_template, ScenarioTemplateKind};
 
-    let schema = serde_json::to_value(schemars::schema_for!(IntegrationScenarioV1)).unwrap();
+    let schema = serde_json::to_value(schemars::schema_for!(AuthoredScenarioV1)).unwrap();
     let validator = jsonschema::JSONSchema::compile(&schema).unwrap();
     let valid = serde_json::to_value(scenario_template(
         "C-E2E-SCHEMA",
