@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::scenario::{AuthoredScenarioV1, CompiledScenarioV1};
 use crate::types::script::{ModelFixtureV1, RouterScriptV1};
 
-pub use render::{render_authored_yaml, render_compiled};
+pub use render::render_compiled;
 pub use templates::{scenario_template, ScenarioTemplateKind};
 pub use tokens::Placeholders;
 

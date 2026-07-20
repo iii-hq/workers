@@ -16,7 +16,9 @@ pub enum ScenarioTemplateKind {
     Crash,
 }
 
-/// Minimal valid authored scenario used by the non-interactive `init` CLI.
+/// Minimal valid authored scenario used as a compact factory by unit and
+/// contract tests. New checked-in scenarios are builder modules under
+/// `src/scenarios`, not templates.
 pub fn scenario_template(
     id: &str,
     description: &str,

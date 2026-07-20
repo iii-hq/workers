@@ -2,14 +2,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use clap::{Args, Parser, Subcommand, ValueEnum};
-use harness_integration::expand::{
-    compile_scenario, render_authored_yaml, render_compiled, scenario_template,
-    ScenarioTemplateKind,
-};
-use harness_integration::fixtures::{
-    ensure_scenario_id_available, scenario_fixtures, ScenarioFixture,
-};
+use clap::{Args, Parser, Subcommand};
+use harness_integration::expand::render_compiled;
+use harness_integration::fixtures::{scenario_fixtures, ScenarioFixture};
 use harness_integration::scenario::run_scenario;
 use harness_integration::stack::StackBins;
 use harness_integration::types::scenario::Classification;
@@ -30,12 +25,11 @@ struct Cli {
 enum Command {
     /// Run one scenario or every non-quarantined scenario.
     Run(RunArgs),
-    /// Compile and validate fixtures without booting a stack.
+    /// Compile and validate every registered scenario without booting a
+    /// stack.
     Validate(SelectionArgs),
     /// Print one deterministic, fully expanded compiled scenario.
     Render(RenderArgs),
-    /// Create one valid single-file scenario without overwriting files.
-    Init(InitArgs),
 }
 
 #[derive(Debug, Args)]
@@ -71,60 +65,22 @@ struct RunArgs {
 
 #[derive(Debug, Clone, Args)]
 struct SelectionArgs {
-    /// Scenario id, scenario directory name, or `all`.
+    /// Scenario id, scenario slug, or `all`.
     #[arg(long, default_value = "all")]
     scenario: String,
 
-    /// Directory containing the checked-in scenarios.
+    /// Directory containing the shared system prompt template.
     #[arg(long, default_value = DEFAULT_SCENARIOS_DIR)]
     scenarios_dir: PathBuf,
 }
 
 #[derive(Debug, Args)]
 struct RenderArgs {
-    /// Scenario id or directory name.
+    /// Scenario id or slug.
     scenario: String,
 
     #[arg(long, default_value = DEFAULT_SCENARIOS_DIR)]
     scenarios_dir: PathBuf,
-}
-
-#[derive(Debug, Args)]
-struct InitArgs {
-    #[arg(long)]
-    id: String,
-
-    /// Directory slug created below the scenarios directory.
-    #[arg(long)]
-    name: String,
-
-    #[arg(long)]
-    description: String,
-
-    #[arg(long, value_enum)]
-    kind: TemplateKind,
-
-    #[arg(long, default_value = DEFAULT_SCENARIOS_DIR)]
-    scenarios_dir: PathBuf,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum TemplateKind {
-    Text,
-    Function,
-    Hook,
-    Crash,
-}
-
-impl From<TemplateKind> for ScenarioTemplateKind {
-    fn from(value: TemplateKind) -> Self {
-        match value {
-            TemplateKind::Text => Self::Text,
-            TemplateKind::Function => Self::Function,
-            TemplateKind::Hook => Self::Hook,
-            TemplateKind::Crash => Self::Crash,
-        }
-    }
 }
 
 fn parse_worker_bin(raw: &str) -> Result<(String, PathBuf), String> {
@@ -164,7 +120,6 @@ async fn dispatch(cli: Cli) -> i32 {
         Command::Run(args) => return run(args).await,
         Command::Validate(args) => validate(args),
         Command::Render(args) => render(args),
-        Command::Init(args) => init(args),
     };
     match result {
         Ok(message) => {
@@ -289,76 +244,6 @@ fn render(args: RenderArgs) -> anyhow::Result<String> {
     render_compiled(&fixture.compiled())
 }
 
-fn init(args: InitArgs) -> anyhow::Result<String> {
-    validate_slug(&args.name)?;
-    anyhow::ensure!(!args.id.trim().is_empty(), "--id must not be empty");
-    anyhow::ensure!(
-        !args.description.trim().is_empty(),
-        "--description must not be empty"
-    );
-
-    let target = args.scenarios_dir.join(&args.name);
-    anyhow::ensure!(
-        !target.exists(),
-        "refusing to overwrite existing scenario directory {}",
-        target.display()
-    );
-    let authored = scenario_template(&args.id, &args.description, args.kind.into());
-    let prompt_path = args.scenarios_dir.join("system-prompt.txt");
-    let prompt = std::fs::read_to_string(&prompt_path)
-        .with_context(|| format!("reading shared prompt {}", prompt_path.display()))?;
-    compile_scenario(&authored, &prompt).context("generated scenario is invalid")?;
-    ensure_scenario_id_available(&args.scenarios_dir, &args.id)?;
-    let yaml = render_authored_yaml(&authored)?;
-
-    let scenario_path = write_scenario_atomically(&target, &yaml)?;
-    Ok(format!("created {}", scenario_path.display()))
-}
-
-fn write_scenario_atomically(target: &Path, yaml: &str) -> anyhow::Result<PathBuf> {
-    let parent = target
-        .parent()
-        .context("scenario target has no parent directory")?;
-    let name = target
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("scenario target name is not UTF-8")?;
-    let temporary = parent.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
-    std::fs::create_dir(&temporary)
-        .with_context(|| format!("creating temporary scenario {}", temporary.display()))?;
-    let temporary_file = temporary.join("scenario.yaml");
-    let outcome = std::fs::write(&temporary_file, yaml)
-        .with_context(|| format!("writing {}", temporary_file.display()))
-        .and_then(|()| {
-            std::fs::rename(&temporary, target).with_context(|| {
-                format!(
-                    "publishing temporary scenario {} as {}",
-                    temporary.display(),
-                    target.display()
-                )
-            })
-        });
-    if let Err(error) = outcome {
-        let _ = std::fs::remove_dir_all(&temporary);
-        return Err(error);
-    }
-    Ok(target.join("scenario.yaml"))
-}
-
-fn validate_slug(slug: &str) -> anyhow::Result<()> {
-    let valid = !slug.is_empty()
-        && slug != "."
-        && slug != ".."
-        && slug
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
-    anyhow::ensure!(
-        valid,
-        "--name must contain only ASCII letters, digits, '-' or '_'"
-    );
-    Ok(())
-}
-
 fn load_fixtures(
     selection: &SelectionArgs,
     include_quarantined: bool,
@@ -417,16 +302,6 @@ fn resolve_bins(args: &RunArgs) -> anyhow::Result<StackBins> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn scenario_names_cannot_escape_the_root() {
-        for invalid in ["", ".", "..", "../escape", "nested/name", "with space"] {
-            assert!(validate_slug(invalid).is_err(), "{invalid:?}");
-        }
-        for valid in ["streamed-text", "case_507", "C505"] {
-            validate_slug(valid).unwrap();
-        }
-    }
 
     #[test]
     fn repeat_count_must_be_positive() {

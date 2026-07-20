@@ -1,16 +1,15 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Context;
 
 use super::script_validation::validate_script;
 use crate::expand::{compile_scenario, CompiledFixtureV1};
-use crate::types::scenario::{AuthoredScenarioV1, CompiledScenarioV1};
+use crate::scenarios::RegisteredScenario;
+use crate::types::scenario::CompiledScenarioV1;
 use crate::types::script::RouterScriptV1;
 
 #[derive(Debug, Clone)]
 pub struct ScenarioFixture {
-    pub dir: PathBuf,
-    pub authored: AuthoredScenarioV1,
     pub scenario: CompiledScenarioV1,
     pub script: RouterScriptV1,
     /// Compiled shared golden plus inferred session/policy aid.
@@ -18,17 +17,12 @@ pub struct ScenarioFixture {
 }
 
 impl ScenarioFixture {
-    pub fn load(dir: &Path) -> anyhow::Result<Self> {
-        let scenario_path = dir.join("scenario.yaml");
-        let scenario: AuthoredScenarioV1 = serde_yaml::from_str(
-            &std::fs::read_to_string(&scenario_path)
-                .with_context(|| format!("reading {}", scenario_path.display()))?,
-        )
-        .with_context(|| format!("parsing {}", scenario_path.display()))?;
-
-        let scenarios_root = dir.parent().with_context(|| {
-            format!("scenario directory {} has no scenarios root", dir.display())
-        })?;
+    /// Compile one registered scenario against the shared system prompt in
+    /// `scenarios_root`.
+    pub fn from_registered(
+        entry: &RegisteredScenario,
+        scenarios_root: &Path,
+    ) -> anyhow::Result<Self> {
         let prompt_path = scenarios_root.join("system-prompt.txt");
         let system_prompt_base = std::fs::read_to_string(&prompt_path)
             .with_context(|| format!("reading {}", prompt_path.display()))?;
@@ -36,12 +30,10 @@ impl ScenarioFixture {
             scenario: compiled,
             script,
             system_prompt_template,
-        } = compile_scenario(&scenario, &system_prompt_base)
-            .with_context(|| format!("compiling {}", scenario_path.display()))?;
+        } = compile_scenario(&entry.authored, &system_prompt_base)
+            .with_context(|| format!("compiling scenario {}", entry.slug))?;
 
         let fixture = ScenarioFixture {
-            dir: dir.to_path_buf(),
-            authored: scenario,
             scenario: compiled,
             script,
             system_prompt_template,

@@ -18,6 +18,7 @@ pub mod readiness;
 pub mod recorder;
 pub mod runtime;
 pub mod scenario;
+pub mod scenarios;
 pub mod scripted_router;
 pub mod services;
 pub mod stack;

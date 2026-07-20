@@ -43,84 +43,80 @@ byte-stable result contract to be identical. A mismatch is a runner error.
 
 ## Create a scenario
 
-Each scenario is one file: `scenarios/<slug>/scenario.yaml`. Model/provider,
-session id, idempotency key, native function policy, run-scoped function ids,
-request matchers, response frames, common completion checks, and system
-prompt hash are inferred.
-
-```bash
-harness-integration init \
-  --id C-E2E-010 \
-  --name my-function-case \
-  --description "The allowed function runs once." \
-  --kind function
-
-harness-integration validate --scenario my-function-case
-harness-integration render C-E2E-010
-```
-
-`init` supports `text`, `function`, `hook`, and `crash` templates and refuses
-to overwrite an existing directory or reuse an existing scenario id. New
-templates are runnable by default; set `quarantine: true` only for a known
-reproduction that should be excluded from `run --scenario all`. `render`
-prints deterministic canonical JSON with the complete compiled request,
-router script, expectations, and system prompt.
+Each scenario is one Rust builder module: `src/scenarios/<slug>.rs`, a
+function that builds the authored data through the typed builders in
+`src/scenarios/builder.rs` and registers it in `src/scenarios/mod.rs`. There
+is no YAML layer — the authored shape is enforced by the type system at
+`cargo build` and is never serialized. Model/provider, session id,
+idempotency key, native function policy, run-scoped function ids, request
+matchers, response frames, common completion checks, and system prompt hash
+are inferred by the compiler.
 
 A typical authored function scenario is:
 
-```yaml
-schema_version: "1"
-id: C-E2E-010
-description: The allowed function runs once.
-
-send:
-  message: Call the recorder once.
-
-functions:
-  record:
-    description: Record one value.
-    request_schema:
-      type: object
-      additionalProperties: false
-      properties:
-        value: { type: string }
-      required: [value]
-    response:
-      content:
-        - { type: text, text: recorded }
-      is_error: false
-
-router:
-  generations:
-    - reply:
-        type: function_call
-        function: record
-        arguments: { value: expected }
-    - reply:
-        type: text
-        text: recorded once
-
-expect:
-  assistant_text: recorded once
-  calls:
-    - function: record
-      count: 1
-      payload: { value: expected }
+```rust
+// src/scenarios/my_function_case.rs
+pub(super) fn scenario() -> AuthoredScenario {
+    AuthoredScenario::new("C-E2E-010", "The allowed function runs once.")
+        .send(Send::message("Call the recorder once."))
+        .function(
+            "record",
+            Function::new(
+                "Record one value.",
+                json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "value": { "type": "string" } },
+                    "required": ["value"]
+                }),
+                json!({
+                    "content": [{ "type": "text", "text": "recorded" }],
+                    "is_error": false
+                }),
+            ),
+        )
+        .generation(Reply::function_call("record", json!({ "value": "expected" })))
+        .generation(Reply::text("recorded once"))
+        .expect(
+            Expect::new()
+                .assistant_text("recorded once")
+                .call(TargetCall::counted("record", 1).payload(json!({ "value": "expected" }))),
+        )
+}
 ```
 
-Function aliases become `<run_id>::<alias>`. Set `expose: false` for
-hook-only functions. `send.allow` can narrow the exposed aliases or be an
-empty list to disable dispatch. Typed text and function-call replies cover
-normal cases; `match_overrides` and `type: raw` remain escape hatches for
-recovery boundaries and unusual wire contracts.
+Add the module and its slug to the list in `src/scenarios/mod.rs`, then:
+
+```bash
+cargo test                                     # builder, snapshot, and contract tests
+REGEN_SCENARIO_SNAPSHOTS=1 cargo test --test scenario_compilation
+harness-integration validate --scenario all
+harness-integration render C-E2E-010
+```
+
+Builders produce data only — a builder that derives scenario content from
+control flow is rejected in review. The compiled snapshot under
+`tests/snapshots/<slug>.compiled.json` is the review artifact; commit the
+regenerated snapshot with the new module. New scenarios are runnable by
+default; chain `.quarantine()` only for a known reproduction that should be
+excluded from `run --scenario all`. `render` prints deterministic canonical
+JSON with the complete compiled request, router script, expectations, and
+system prompt.
+
+Function aliases become `<run_id>::<alias>`. Chain `.hidden()` for hook-only
+functions. `Send::message(...).allow([...])` can narrow the exposed aliases
+or be an empty list to disable dispatch. Typed text and function-call replies
+cover normal cases; `.match_overrides(...)` and `RouterReplyV1::Raw` remain
+escape hatches for recovery boundaries and unusual wire contracts.
 
 Timeout defaults are 60 seconds for readiness, 60 seconds for the scenario,
-and 15 seconds for teardown. Positive values can be overridden under
-`timeouts`; one readiness budget is shared by the full probe/arm sequence.
+and 15 seconds for teardown. Positive values can be overridden with the
+`*_timeout_ms` builders; one readiness budget is shared by the full probe/arm
+sequence.
 
 ## Checked-in scenarios
 
-| id | directory | status |
+| id | slug | status |
 |---|---|---|
 | C-E2E-001 | `streamed-text` | streamed text reaches durable completion |
 | C-E2E-002 | `exactly-once-function` | a native function executes exactly once |

@@ -10,7 +10,7 @@ use harness_integration::canonical::canonical_json_pretty;
 use harness_integration::expand::CompiledFixtureV1;
 use harness_integration::types::recorder::{RecorderEventKind, RecorderEventV1};
 use harness_integration::types::scenario::{
-    AuthoredScenarioV1, Classification, CompiledScenarioV1, ExecutionReportV1, IntegrationResultV1,
+    Classification, CompiledScenarioV1, ExecutionReportV1, IntegrationResultV1,
 };
 use harness_integration::types::script::{RouterScriptV1, SchemaVersion1};
 
@@ -18,9 +18,9 @@ fn goldens() -> Vec<(&'static str, serde_json::Value)> {
     fn schema<T: schemars::JsonSchema>() -> serde_json::Value {
         serde_json::to_value(schemars::schema_for!(T)).expect("schema serializes")
     }
+    // The authored layer is code and never serialized, so it has no golden.
     vec![
         ("router-script.v1", schema::<RouterScriptV1>()),
-        ("authored-scenario.v1", schema::<AuthoredScenarioV1>()),
         ("compiled-scenario.v1", schema::<CompiledScenarioV1>()),
         ("compiled-fixture.v1", schema::<CompiledFixtureV1>()),
         ("integration-result.v1", schema::<IntegrationResultV1>()),
@@ -62,23 +62,18 @@ fn committed_schemas_match_the_types() {
     }
 }
 
-/// Every committed single-file scenario compiles and its authored and strict
-/// runtime representations round-trip through their typed mirrors.
+/// Every registered scenario compiles and its strict runtime representation
+/// round-trips through its typed mirror. The authored layer is code and has
+/// no round trip.
 #[test]
-fn committed_scenarios_compile_and_round_trip() {
+fn registered_scenarios_compile_and_round_trip() {
     use harness_integration::fixtures::ScenarioFixture;
 
     let scenarios = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios");
-    let mut checked = 0;
-    for entry in std::fs::read_dir(&scenarios).unwrap() {
-        let dir = entry.unwrap().path();
-        if !dir.join("scenario.yaml").is_file() {
-            continue;
-        }
-        let fixture = ScenarioFixture::load(&dir).unwrap();
-        let authored_value = serde_json::to_value(&fixture.authored).unwrap();
-        let authored_again: AuthoredScenarioV1 = serde_json::from_value(authored_value).unwrap();
-        assert_eq!(fixture.authored, authored_again);
+    let registered = harness_integration::scenarios::all();
+    assert!(!registered.is_empty(), "expected at least one scenario");
+    for entry in &registered {
+        let fixture = ScenarioFixture::from_registered(entry, &scenarios).unwrap();
 
         let compiled_value = serde_json::to_value(&fixture.scenario).unwrap();
         let compiled_again: CompiledScenarioV1 = serde_json::from_value(compiled_value).unwrap();
@@ -92,9 +87,7 @@ fn committed_scenarios_compile_and_round_trip() {
         let fixture_value = serde_json::to_value(&compiled_fixture).unwrap();
         let fixture_again: CompiledFixtureV1 = serde_json::from_value(fixture_value).unwrap();
         assert_eq!(compiled_fixture, fixture_again);
-        checked += 1;
     }
-    assert!(checked > 0, "expected at least one committed scenario");
 }
 
 #[test]
@@ -146,12 +139,8 @@ fn compiled_send_is_accepted_by_the_authoritative_harness_contract() {
     .unwrap();
     let validator = jsonschema::JSONSchema::compile(&golden["request_schema"]).unwrap();
     let scenarios = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios");
-    for entry in std::fs::read_dir(scenarios).unwrap() {
-        let dir = entry.unwrap().path();
-        if !dir.join("scenario.yaml").is_file() {
-            continue;
-        }
-        let fixture = ScenarioFixture::load(&dir).unwrap();
+    for entry in &harness_integration::scenarios::all() {
+        let fixture = ScenarioFixture::from_registered(entry, &scenarios).unwrap();
         let send = serde_json::to_value(&fixture.scenario.send).unwrap();
         let errors = validator
             .validate(&send)
@@ -164,39 +153,6 @@ fn compiled_send_is_accepted_by_the_authoritative_harness_contract() {
             fixture.scenario.id
         );
     }
-}
-
-#[test]
-fn authored_schema_matches_compiler_safety_constraints() {
-    use harness_integration::expand::{scenario_template, ScenarioTemplateKind};
-
-    let schema = serde_json::to_value(schemars::schema_for!(AuthoredScenarioV1)).unwrap();
-    let validator = jsonschema::JSONSchema::compile(&schema).unwrap();
-    let valid = serde_json::to_value(scenario_template(
-        "C-E2E-SCHEMA",
-        "Validate authored schema constraints.",
-        ScenarioTemplateKind::Crash,
-    ))
-    .unwrap();
-    assert!(validator.is_valid(&valid));
-
-    let mut unsafe_id = valid.clone();
-    unsafe_id["id"] = serde_json::json!("../../escape");
-    assert!(!validator.is_valid(&unsafe_id));
-
-    let mut unsafe_alias = valid.clone();
-    let functions = unsafe_alias["functions"].as_object_mut().unwrap();
-    let function = functions.remove("record").unwrap();
-    functions.insert("../record".to_string(), function);
-    assert!(!validator.is_valid(&unsafe_alias));
-
-    let mut zero_timeout = valid.clone();
-    zero_timeout["timeouts"]["teardown_ms"] = serde_json::json!(0);
-    assert!(!validator.is_valid(&zero_timeout));
-
-    let mut zero_fault_threshold = valid;
-    zero_fault_threshold["fault"]["after_target_calls"] = serde_json::json!(0);
-    assert!(!validator.is_valid(&zero_fault_threshold));
 }
 
 #[test]

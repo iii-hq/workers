@@ -1,0 +1,77 @@
+//! C-E2E-505 — a holding hook's mutation reaches the released call.
+//!
+//! Reproduction of <https://github.com/iii-hq/workers/issues/505>.
+
+use serde_json::json;
+
+use crate::types::scenario::GenerationMatchOverridesV1;
+
+use super::builder::*;
+
+pub(super) fn scenario() -> AuthoredScenario {
+    AuthoredScenario::new(
+        "C-E2E-505",
+        "A pre-trigger hook that holds and mutates must apply its mutation to the released call.",
+    )
+    .quarantine()
+    .send(Send::message("Call the recorder once."))
+    .function(
+        "record",
+        Function::new(
+            "Record one integration fixture value.",
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "value": { "type": "string" } },
+                "required": ["value"]
+            }),
+            json!({
+                "content": [{ "type": "text", "text": "recorded" }],
+                "is_error": false
+            }),
+        ),
+    )
+    .function(
+        "hook-gate",
+        Function::new(
+            "Hold the call and stamp approval context onto its arguments.",
+            json!({ "type": "object" }),
+            json!({
+                "decision": "hold",
+                "mutations": { "arguments": { "value": "expected+approved" } }
+            }),
+        )
+        .hidden(),
+    )
+    .binding(Binding::hook_pre_trigger("hook-gate", ["record"], 10))
+    .release(crate::types::scenario::ReleaseActionV1::Execute)
+    .generation(Reply::function_call("record", json!({ "value": "expected" })).usage(8, 4))
+    .generation(
+        Reply::text("approved and recorded")
+            .usage(20, 3)
+            .match_overrides(GenerationMatchOverridesV1 {
+                request_id: Some(regex("^t_[0-9a-f]{32}:[0-9]+$")),
+                system_prompt: Some(present()),
+                messages: Some(present()),
+                tools: Some(present()),
+                ..Default::default()
+            }),
+    )
+    .expect(
+        Expect::new()
+            .calls_closed()
+            .call(
+                TargetCall::counted("record", 1).payload(json!({ "value": "expected+approved" })),
+            )
+            .call(
+                TargetCall::counted("hook-gate", 1).payload_subset(json!({
+                    "point": "pre_trigger",
+                    "call": {
+                        "id": "call-1",
+                        "function_id": "{{run_id}}::record",
+                        "arguments": { "value": "expected" }
+                    }
+                })),
+            ),
+    )
+}

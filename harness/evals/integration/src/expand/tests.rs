@@ -8,8 +8,7 @@ use crate::types::scenario::{
 use crate::types::script::{JsonMatcherV1, SchemaVersion1};
 
 use super::{
-    compile_scenario, render_authored_yaml, render_compiled, scenario_template, Placeholders,
-    ScenarioTemplateKind,
+    compile_scenario, render_compiled, scenario_template, Placeholders, ScenarioTemplateKind,
 };
 
 fn minimal(reply: RouterReplyV1) -> AuthoredScenarioV1 {
@@ -293,9 +292,7 @@ fn templates_compile_and_render_deterministically() {
         ScenarioTemplateKind::Crash,
     ] {
         let authored = scenario_template("C-E2E-NEW", "A generated scenario.", kind);
-        let yaml = render_authored_yaml(&authored).unwrap();
-        let reparsed: AuthoredScenarioV1 = serde_yaml::from_str(&yaml).unwrap();
-        let fixture = compile_scenario(&reparsed, "base\n").unwrap();
+        let fixture = compile_scenario(&authored, "base\n").unwrap();
         assert_eq!(
             render_compiled(&fixture).unwrap(),
             render_compiled(&fixture).unwrap()
