@@ -1,0 +1,34 @@
+# Agent permissions for the github worker.
+# Spec: docs/sops/new-worker.md § 7. First-match-wins.
+#
+# Read-only queries (list/view/diff/checks/search) are safe reads and allowed
+# without approval. Mutations (create/edit/merge/comment/review/close/rerun/
+# cancel/workflow run/release create) and both escape hatches (github::exec
+# runs arbitrary gh commands; github::api reaches any REST endpoint including
+# writes) deliberately stay at the needs_approval default.
+# github::on-config-change is the internal hot-reload hook and is denied.
+#
+# NOTE: the policy the checked-in harness actually loads is the repo-root
+# iii-permissions.yaml, which carries these same rules. This per-worker copy
+# documents the worker's intended posture for other deployments.
+version: 1
+
+rules:
+  - '!github::on-config-change'
+  - github::pr::list
+  - github::pr::view
+  - github::pr::diff
+  - github::pr::checks
+  - github::issue::list
+  - github::issue::view
+  - github::repo::view
+  - github::repo::list
+  - github::run::list
+  - github::run::view
+  - github::workflow::list
+  - github::release::list
+  - github::release::view
+  - github::search::repos
+  - github::search::issues
+  - github::search::prs
+  - github::search::code

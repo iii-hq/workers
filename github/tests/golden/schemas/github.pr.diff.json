@@ -1,0 +1,45 @@
+{
+  "description": "Unified diff of a pull request: { repo, number } -> { diff, truncated }. truncated is true when the diff exceeded the capture cap.",
+  "function_id": "github::pr::diff",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "number": {
+        "description": "Pull request number.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "repo": {
+        "description": "Target repository, \"owner/name\".",
+        "type": "string"
+      }
+    },
+    "required": [
+      "number",
+      "repo"
+    ],
+    "title": "DiffRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`github::pr::diff` response.",
+    "properties": {
+      "diff": {
+        "description": "The unified diff as printed by `gh pr diff`.",
+        "type": "string"
+      },
+      "truncated": {
+        "description": "True when the diff exceeded the capture cap and was cut off.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "diff",
+      "truncated"
+    ],
+    "title": "DiffResponse",
+    "type": "object"
+  }
+}

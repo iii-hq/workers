@@ -1,0 +1,39 @@
+{
+  "description": "View one workflow run including its jobs and their steps: { repo: \"owner/name\", run_id } -> { value }.",
+  "function_id": "github::run::view",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "repo": {
+        "description": "Target repository, \"owner/name\".",
+        "type": "string"
+      },
+      "run_id": {
+        "description": "Workflow run id (databaseId from github::run::list).",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "repo",
+      "run_id"
+    ],
+    "title": "RunViewRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Parsed `--json` output of a gh command.",
+    "properties": {
+      "value": {
+        "description": "The JSON gh printed for the requested `--json` fields."
+      }
+    },
+    "required": [
+      "value"
+    ],
+    "title": "ValueResponse",
+    "type": "object"
+  }
+}

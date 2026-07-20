@@ -152,6 +152,9 @@ rules:
   - '!slack::on-turn-completed'
   - '!slack::on-pending-created'
   - '!slack::on-pending-resolved'
+  # github: internal hot-reload hook — invoked only by the engine's
+  # configuration:updated trigger dispatch, never agent-callable.
+  - '!github::on-config-change'
 
   # Read-only / introspection (extend below for your tools).
   - state::get
@@ -218,6 +221,28 @@ rules:
   - fp::flatten
   - fp::sortBy
   - fp::reverse
+  # github: read-only GitHub queries (list/view/diff/checks/search) are safe
+  # reads. Mutations (create/edit/merge/comment/review/close/rerun/cancel/
+  # workflow run/release create) and the escape hatches (github::exec —
+  # arbitrary gh commands; github::api — any REST endpoint including writes)
+  # stay at the needs_approval default.
+  - github::pr::list
+  - github::pr::view
+  - github::pr::diff
+  - github::pr::checks
+  - github::issue::list
+  - github::issue::view
+  - github::repo::view
+  - github::repo::list
+  - github::run::list
+  - github::run::view
+  - github::workflow::list
+  - github::release::list
+  - github::release::view
+  - github::search::repos
+  - github::search::issues
+  - github::search::prs
+  - github::search::code
   # web::fetch is load-bearing for the system prompt's SDK-reference gate and
   # HTTP-trigger verification; it enforces size/timeout caps and server-side
   # SSRF protection, so it is allowed by default.

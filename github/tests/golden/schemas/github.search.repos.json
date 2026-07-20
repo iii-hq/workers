@@ -1,0 +1,41 @@
+{
+  "description": "Search repositories: { query, limit? } -> { value: [{fullName, description, url, visibility, stargazersCount, language, updatedAt, ...}] }. GitHub search syntax (e.g. \"language:rust stars:>100 topic:cli\").",
+  "function_id": "github::search::repos",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "limit": {
+        "description": "Maximum number of results (gh default: 30).",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "query": {
+        "description": "Search query (GitHub search syntax, qualifiers included).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "title": "ReposRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Parsed `--json` output of a gh command.",
+    "properties": {
+      "value": {
+        "description": "The JSON gh printed for the requested `--json` fields."
+      }
+    },
+    "required": [
+      "value"
+    ],
+    "title": "ValueResponse",
+    "type": "object"
+  }
+}

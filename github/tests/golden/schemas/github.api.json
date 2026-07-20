@@ -1,0 +1,75 @@
+{
+  "description": "Call any GitHub REST endpoint via gh api: { path: \"repos/OWNER/REPO/issues\", method?, fields?, body?, jq?, paginate?, timeout_ms? } -> { value: <parsed JSON> }. fields become -f key=value form fields (default method flips to POST); body is sent verbatim as the JSON request body. Non-2xx responses are errors carrying gh's stderr.",
+  "function_id": "github::api",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "body": {
+        "description": "Raw JSON request body, piped to gh via `--input -`. Mutually exclusive with fields (gh rejects the combination)."
+      },
+      "fields": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Form fields, each passed as `-f key=value` (string-typed on the wire).",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "jq": {
+        "description": "jq expression gh applies to the response (`--jq`); keeps large responses small.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "method": {
+        "description": "HTTP method. gh defaults to GET, or POST when fields/body are present.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "paginate": {
+        "description": "Follow pagination to the end (`--paginate`); combine with jq.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "path": {
+        "description": "Endpoint path, with concrete owner/repo values (e.g. \"rate_limit\" or \"repos/cli/cli/issues\") — placeholder expansion needs a checkout the worker does not have.",
+        "type": "string"
+      },
+      "timeout_ms": {
+        "description": "Per-call timeout in ms, clamped to the configured max_timeout_ms.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "title": "ApiRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Parsed `--json` output of a gh command.",
+    "properties": {
+      "value": {
+        "description": "The JSON gh printed for the requested `--json` fields."
+      }
+    },
+    "required": [
+      "value"
+    ],
+    "title": "ValueResponse",
+    "type": "object"
+  }
+}

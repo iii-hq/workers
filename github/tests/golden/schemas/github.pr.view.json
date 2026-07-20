@@ -1,0 +1,39 @@
+{
+  "description": "View one pull request with body, mergeability, review decision, and diff stats: { repo: \"owner/name\", number } -> { value }.",
+  "function_id": "github::pr::view",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "number": {
+        "description": "Pull request number.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "repo": {
+        "description": "Target repository, \"owner/name\".",
+        "type": "string"
+      }
+    },
+    "required": [
+      "number",
+      "repo"
+    ],
+    "title": "ViewRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Parsed `--json` output of a gh command.",
+    "properties": {
+      "value": {
+        "description": "The JSON gh printed for the requested `--json` fields."
+      }
+    },
+    "required": [
+      "value"
+    ],
+    "title": "ValueResponse",
+    "type": "object"
+  }
+}
