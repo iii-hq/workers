@@ -1,0 +1,51 @@
+{
+  "description": "Record a session's live viewport to a video file (webm or mp4) by piping the screencast through ffmpeg. Turns screencast on if needed. Requires ffmpeg on PATH; browser::doctor reports whether it is available.",
+  "function_id": "browser::recording::start",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "format": {
+        "default": null,
+        "description": "`webm` (VP9) or `mp4` (H.264). Defaults to webm.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "path": {
+        "description": "Output file path. The extension should match `format`.",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "path",
+      "session_id"
+    ],
+    "title": "RecordingStartInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "format": {
+        "type": "string"
+      },
+      "ok": {
+        "type": "boolean"
+      },
+      "path": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "format",
+      "ok",
+      "path"
+    ],
+    "title": "RecordingStartOutput",
+    "type": "object"
+  }
+}

@@ -30,7 +30,23 @@ pub struct DoctorOutput {
     pub max_sessions: u64,
     pub active_sessions: u64,
     pub allowed_schemes: Vec<String>,
+    /// Whether attach mode is enabled (allow_attach).
+    pub attach_enabled: bool,
+    /// Whether ffmpeg is on PATH, which browser::recording requires.
+    pub recording_available: bool,
     pub issues: Vec<DoctorIssue>,
+}
+
+/// Whether ffmpeg is invokable, gating `browser::recording`. Blocking; call
+/// from spawn_blocking.
+pub fn ffmpeg_available() -> bool {
+    std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Candidate system installs checked when config `executable` is empty, in

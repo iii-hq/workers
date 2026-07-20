@@ -31,12 +31,18 @@ pub struct SnapshotOutput {
     /// Indented outline; lines carry `[ref=eN]` handles for `browser::act`.
     /// Empty when `diff` is populated.
     pub tree: String,
-    /// True when the tree hit `max_snapshot_nodes` and was cut short.
+    /// True when the tree hit `max_snapshot_nodes` and was cut short. Also
+    /// the signal that a `diff` may be incomplete: the diff is computed over
+    /// emitted nodes only, so when either snapshot was truncated a node that
+    /// was emitted before and capped out now can show up in `removed` even
+    /// though it still exists (and vice versa for `added`).
     pub truncated: bool,
     /// Document generation the refs belong to; navigation advances it and
     /// kills every ref from earlier generations.
     pub generation: u64,
     /// Present when the caller asked for `diff: true` and a baseline existed.
+    /// Covers only the emitted nodes of both snapshots; check `truncated`
+    /// before trusting it as a complete change set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diff: Option<SnapshotDiff>,
 }

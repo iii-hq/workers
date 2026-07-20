@@ -64,7 +64,7 @@
             "type": "null"
           }
         ],
-        "description": "Present when the caller asked for `diff: true` and a baseline existed."
+        "description": "Present when the caller asked for `diff: true` and a baseline existed. Covers only the emitted nodes of both snapshots; check `truncated` before trusting it as a complete change set."
       },
       "generation": {
         "description": "Document generation the refs belong to; navigation advances it and kills every ref from earlier generations.",
@@ -83,7 +83,7 @@
         "type": "string"
       },
       "truncated": {
-        "description": "True when the tree hit `max_snapshot_nodes` and was cut short.",
+        "description": "True when the tree hit `max_snapshot_nodes` and was cut short. Also the signal that a `diff` may be incomplete: the diff is computed over emitted nodes only, so when either snapshot was truncated a node that was emitted before and capped out now can show up in `removed` even though it still exists (and vice versa for `added`).",
         "type": "boolean"
       },
       "url": {
