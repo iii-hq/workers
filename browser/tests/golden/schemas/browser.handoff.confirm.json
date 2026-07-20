@@ -1,0 +1,46 @@
+{
+  "description": "Resolve a paused browser::handoff by handoff_id, or the one pending handoff for a session_id. The console calls this when the human confirms outside the page.",
+  "function_id": "browser::handoff::confirm",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "handoff_id": {
+        "default": null,
+        "description": "Confirm a specific handoff by id. Omit to confirm the one pending handoff for `session_id`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "HandoffConfirmInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "handoff_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "ok": {
+        "description": "True when a pending handoff matched and was resolved.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "HandoffConfirmOutput",
+    "type": "object"
+  }
+}

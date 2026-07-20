@@ -114,6 +114,21 @@ for inspection-only sessions where act/evaluate/execute/styles::write are
 rejected. `browser::doctor` reports the environment — detected Chromium,
 version, capacity — with an `enable_how` string for anything degraded.
 
+`browser::sessions::attach` binds a session to an already-running browser
+over CDP (start Chrome with `--remote-debugging-port`) instead of launching
+one, so it reaches the real profile with its logins and extensions. It opens
+a fresh tab the session owns, or adopts an existing tab by URL substring and
+releases it untouched on stop; `browser::tabs::list` enumerates a running
+browser's tabs. Attach reaches logged-in state, so it is off unless
+`allow_attach` is set in config, and adoption is exclusive per tab.
+
+`browser::handoff` pauses a session for a step only a human can do (CAPTCHA,
+2FA, payment): it mounts an in-page continue banner and blocks the call until
+the human clicks it, a `browser::handoff::confirm` call resolves it, or the
+timeout elapses, emitting `browser::handoff-requested` for the console to
+surface. Human acknowledgment is not proof, so the caller verifies the
+expected page state after it returns.
+
 ## Configuration
 
 Stored in the `configuration` worker under the `browser` key; every field is
@@ -136,6 +151,7 @@ browser:
   screenshot_quality: 60    # JPEG quality 1-100
   allowed_schemes: [http, https]
   max_snapshot_nodes: 2000  # a11y outline size cap
+  allow_attach: false       # true = allow sessions::attach into a running browser's real profile
 ```
 
 ## Custom trigger types
@@ -150,6 +166,7 @@ bindings accept an optional `{ "session_id": "..." }` filter.
 | `browser::navigated` | The page committed a navigation | `{ session_id, url, timestamp }` |
 | `browser::console-event` | A console/log/exception entry was captured | `{ session_id, entry }` |
 | `browser::picked` | The human picked an element in inspect mode | `{ session_id, element, timestamp }` |
+| `browser::handoff-requested` | A session paused for a human step (CAPTCHA, 2FA, payment) | `{ session_id, handoff_id, instructions, timestamp }` |
 
 `browser::console-event` is high-volume; bind it with a `session_id` filter
 and treat `browser::console::read` as the durable record. `browser::picked`

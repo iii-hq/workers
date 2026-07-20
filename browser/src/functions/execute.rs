@@ -46,7 +46,7 @@ pub struct ExecuteOutput {
 pub fn wrap_code(code: &str, state_json: &str) -> String {
     format!(
         r#"(async () => {{
-  const state = {state_json};
+  let state = {state_json};
   const logs = [];
   const log = (...args) => {{
     if (logs.length >= 200) return;
@@ -66,19 +66,34 @@ pub fn wrap_code(code: &str, state_json: &str) -> String {
     }}
     throw new Error('waitFor timed out after ' + timeout + 'ms: ' + selector);
   }};
+  // Serialize the envelope, never throwing: a circular or otherwise
+  // non-serializable state or result must not turn into a missing envelope.
+  // On failure, keep the logs and the error, drop `state` to null, and keep
+  // the result only if it serializes on its own.
+  const serialize = (ok, result, error) => {{
+    try {{
+      return JSON.stringify({{ ok, result, error, logs, state }});
+    }} catch (e) {{
+      let safeResult = null;
+      try {{ JSON.stringify(result); safeResult = result; }} catch (_) {{}}
+      return JSON.stringify({{
+        ok: false,
+        result: safeResult,
+        error: (error ? error + '; ' : '') + 'value not JSON-serializable: ' + String(e),
+        logs,
+        state: null,
+      }});
+    }}
+  }};
   let result;
   try {{
     result = await (async () => {{
 {code}
     }})();
   }} catch (e) {{
-    return JSON.stringify({{ ok: false, error: String((e && e.stack) || e), logs, state }});
+    return serialize(false, undefined, String((e && e.stack) || e));
   }}
-  try {{
-    return JSON.stringify({{ ok: true, result, logs, state }});
-  }} catch (e) {{
-    return JSON.stringify({{ ok: false, error: 'result is not JSON-serializable: ' + String(e), logs, state }});
-  }}
+  return serialize(true, result, undefined);
 }})()"#
     )
 }
@@ -104,7 +119,8 @@ mod tests {
     #[test]
     fn wrapped_code_embeds_state_and_body() {
         let wrapped = wrap_code("return state.n;", "{\"n\":7}");
-        assert!(wrapped.contains("const state = {\"n\":7};"));
+        // `let` (not `const`) so user code may reassign `state = ...`.
+        assert!(wrapped.contains("let state = {\"n\":7};"));
         assert!(wrapped.contains("return state.n;"));
         assert!(wrapped.starts_with("(async () => {"));
     }

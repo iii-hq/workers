@@ -3,12 +3,14 @@
 //! registration lives here so `register_all` reads as the product surface.
 
 pub mod act;
+pub mod attach;
 pub mod console;
 pub mod doctor;
 pub mod dom;
 pub mod evaluate;
 pub mod execute;
 pub mod frame;
+pub mod handoff;
 pub mod hint;
 pub mod history;
 pub mod navigate;
@@ -38,7 +40,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
 use tokio::time::timeout;
 
-use crate::events::{EventKind, SessionStartedEvent};
+use crate::events::{EventKind, HandoffRequestedEvent, SessionStartedEvent};
 use crate::session::{now_ms, Session, Sessions};
 
 pub const SESSIONS_START_ID: &str = "browser::sessions::start";
@@ -52,6 +54,17 @@ pub const SESSIONS_STOP_ID: &str = "browser::sessions::stop";
 pub const SESSIONS_STOP_DESC: &str =
     "Stop a browser session and its Chromium process. Idempotent: stopping an unknown or \
      already-stopped session succeeds with was_running=false.";
+pub const SESSIONS_ATTACH_ID: &str = "browser::sessions::attach";
+pub const SESSIONS_ATTACH_DESC: &str =
+    "Attach a session to an already-running browser over CDP (start Chrome with \
+     --remote-debugging-port). Opens a fresh tab the session owns, or adopts an existing user \
+     tab by URL substring and releases it untouched on stop. Reaches the real profile with its \
+     logins; disabled unless allow_attach is set in config.";
+pub const TABS_LIST_ID: &str = "browser::tabs::list";
+pub const TABS_LIST_DESC: &str =
+    "List the open tabs of a running browser reachable at a CDP endpoint (url, title, and \
+     whether a session already adopted each). Read-only; adopt one with \
+     browser::sessions::attach.";
 pub const NAVIGATE_ID: &str = "browser::navigate";
 pub const NAVIGATE_DESC: &str =
     "Navigate a session to a URL and wait for the page to load. Element refs from earlier \
@@ -85,6 +98,16 @@ pub const DOCTOR_DESC: &str =
     "Read-only environment diagnostics: which Chromium the worker would launch, its version, \
      session capacity, and any degraded capability with how to enable it. Never starts a \
      browser.";
+pub const HANDOFF_ID: &str = "browser::handoff";
+pub const HANDOFF_DESC: &str =
+    "Pause a session for a step only a human can do (CAPTCHA, 2FA, payment): show an in-page \
+     continue banner and block until the human clicks it, a browser::handoff::confirm call \
+     resolves it, or the timeout elapses. Human acknowledgment is not proof — verify the \
+     expected page state after it returns.";
+pub const HANDOFF_CONFIRM_ID: &str = "browser::handoff::confirm";
+pub const HANDOFF_CONFIRM_DESC: &str =
+    "Resolve a paused browser::handoff by handoff_id, or the one pending handoff for a \
+     session_id. The console calls this when the human confirms outside the page.";
 pub const CONSOLE_READ_ID: &str = "browser::console::read";
 pub const CONSOLE_READ_DESC: &str =
     "Read the session's captured console: console.* calls, uncaught exceptions, and \
@@ -169,6 +192,8 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<sessions::StartInput, sessions::StartOutput>(SESSIONS_START_ID, SESSIONS_START_DESC),
         spec::<sessions::ListInput, sessions::ListOutput>(SESSIONS_LIST_ID, SESSIONS_LIST_DESC),
         spec::<sessions::StopInput, sessions::StopOutput>(SESSIONS_STOP_ID, SESSIONS_STOP_DESC),
+        spec::<attach::AttachInput, attach::AttachOutput>(SESSIONS_ATTACH_ID, SESSIONS_ATTACH_DESC),
+        spec::<attach::TabsListInput, attach::TabsListOutput>(TABS_LIST_ID, TABS_LIST_DESC),
         spec::<doctor::DoctorInput, doctor::DoctorOutput>(DOCTOR_ID, DOCTOR_DESC),
         spec::<navigate::NavigateInput, navigate::NavigateOutput>(NAVIGATE_ID, NAVIGATE_DESC),
         spec::<snapshot::SnapshotInput, snapshot::SnapshotOutput>(SNAPSHOT_ID, SNAPSHOT_DESC),
@@ -179,6 +204,11 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<act::ActInput, act::ActOutput>(ACT_ID, ACT_DESC),
         spec::<evaluate::EvaluateInput, evaluate::EvaluateOutput>(EVALUATE_ID, EVALUATE_DESC),
         spec::<execute::ExecuteInput, execute::ExecuteOutput>(EXECUTE_ID, EXECUTE_DESC),
+        spec::<handoff::HandoffInput, handoff::HandoffOutput>(HANDOFF_ID, HANDOFF_DESC),
+        spec::<handoff::HandoffConfirmInput, handoff::HandoffConfirmOutput>(
+            HANDOFF_CONFIRM_ID,
+            HANDOFF_CONFIRM_DESC,
+        ),
         spec::<console::ConsoleReadInput, console::ConsoleReadOutput>(
             CONSOLE_READ_ID,
             CONSOLE_READ_DESC,
@@ -214,6 +244,8 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_sessions_start(iii, sessions);
     register_sessions_list(iii, sessions);
     register_sessions_stop(iii, sessions);
+    register_sessions_attach(iii, sessions);
+    register_tabs_list(iii, sessions);
     register_doctor(iii, sessions);
     register_navigate(iii, sessions);
     register_snapshot(iii, sessions);
@@ -221,6 +253,8 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_act(iii, sessions);
     register_evaluate(iii, sessions);
     register_execute(iii, sessions);
+    register_handoff(iii, sessions);
+    register_handoff_confirm(iii, sessions);
     register_console_read(iii, sessions);
     register_network_read(iii, sessions);
     register_history(iii, sessions);
@@ -363,6 +397,89 @@ fn register_sessions_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(SESSIONS_STOP_DESC),
+    );
+}
+
+fn register_sessions_attach(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        SESSIONS_ATTACH_ID,
+        RegisterFunction::new_async(move |req: attach::AttachInput| {
+            let sx = sx.clone();
+            async move {
+                let cfg = sx.config.load_full();
+                if !cfg.allow_attach {
+                    return Err(handler_err(
+                        "attach mode is disabled; set `allow_attach: true` in the browser worker \
+                         config to connect to a running browser. It reaches the real profile with \
+                         its logins, so it is opt-in.",
+                    ));
+                }
+                if let Some(url) = &req.url {
+                    sessions::check_scheme(&cfg, url).map_err(handler_err)?;
+                }
+                let session = sx
+                    .attach(
+                        req.cdp_url,
+                        req.url,
+                        req.adopt_url_substring,
+                        req.read_only.unwrap_or(false),
+                    )
+                    .await
+                    .map_err(handler_err)?;
+                let adopted = matches!(
+                    session.kind,
+                    crate::session::SessionKind::Attached { owns_page: false }
+                );
+                let url = session
+                    .page
+                    .url()
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "about:blank".to_string());
+                sx.emitter
+                    .emit(
+                        EventKind::SessionStarted,
+                        &session.id,
+                        &SessionStartedEvent {
+                            session_id: session.id.clone(),
+                            url: url.clone(),
+                            headless: session.headless,
+                            timestamp: now_ms(),
+                        },
+                    )
+                    .await;
+                Ok::<_, Error>(attach::AttachOutput {
+                    session_id: session.id.clone(),
+                    url,
+                    read_only: session.read_only,
+                    adopted,
+                })
+            }
+        })
+        .description(SESSIONS_ATTACH_DESC),
+    );
+}
+
+fn register_tabs_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        TABS_LIST_ID,
+        RegisterFunction::new_async(move |req: attach::TabsListInput| {
+            let sx = sx.clone();
+            async move {
+                if !sx.config.load().allow_attach {
+                    return Err(handler_err(
+                        "attach mode is disabled; set `allow_attach: true` in the browser worker \
+                         config to inspect a running browser's tabs.",
+                    ));
+                }
+                let tabs = sx.list_tabs(&req.cdp_url).await.map_err(handler_err)?;
+                Ok::<_, Error>(attach::TabsListOutput { tabs })
+            }
+        })
+        .description(TABS_LIST_DESC),
     );
 }
 
@@ -904,6 +1021,102 @@ fn register_execute(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(EXECUTE_DESC),
+    );
+}
+
+fn register_handoff(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        HANDOFF_ID,
+        RegisterFunction::new_async(move |req: handoff::HandoffInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+                let cfg = sx.config.load_full();
+                let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
+
+                let (handoff_id, mut confirm_rx) = sx.register_handoff(&req.session_id);
+                // Mount the in-page continue banner carrying the poll flag.
+                // Best-effort: on a page that rejects injection the
+                // confirm-call path still resolves the same handoff.
+                let _ = session
+                    .page
+                    .evaluate(handoff::banner_script(&handoff_id, &req.instructions))
+                    .await;
+
+                sx.emitter
+                    .emit(
+                        EventKind::HandoffRequested,
+                        &req.session_id,
+                        &HandoffRequestedEvent {
+                            session_id: req.session_id.clone(),
+                            handoff_id: handoff_id.clone(),
+                            instructions: req.instructions.clone(),
+                            timestamp: now_ms(),
+                        },
+                    )
+                    .await;
+
+                // Park until: a confirm call fires the oneshot, the human
+                // clicks the in-page control (polled), or the timeout fires.
+                let poll = handoff::poll_script(&handoff_id);
+                let deadline = tokio::time::Instant::now() + wait;
+                let via = loop {
+                    let tick = tokio::time::sleep(Duration::from_millis(handoff::POLL_INTERVAL_MS));
+                    tokio::select! {
+                        // Ok = a confirm call fired the sender; Err = the
+                        // sender was dropped (session stopped mid-handoff).
+                        res = &mut confirm_rx => break if res.is_ok() { "confirm_call" } else { "cancelled" },
+                        _ = tokio::time::sleep_until(deadline) => break "timeout",
+                        _ = tick => {
+                            if let Ok(v) = session.page.evaluate(poll.clone()).await {
+                                if v.value().and_then(|x| x.as_bool()).unwrap_or(false) {
+                                    break "in_page";
+                                }
+                            }
+                        }
+                    }
+                };
+
+                sx.drop_handoff(&handoff_id);
+                let _ = session
+                    .page
+                    .evaluate(handoff::remove_script(&handoff_id))
+                    .await;
+                session.touch();
+                let url = session.page.url().await.ok().flatten().unwrap_or_default();
+                Ok::<_, Error>(handoff::HandoffOutput {
+                    confirmed: via == "confirm_call" || via == "in_page",
+                    handoff_id,
+                    via: via.to_string(),
+                    url,
+                })
+            }
+        })
+        .description(HANDOFF_DESC),
+    );
+}
+
+fn register_handoff_confirm(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        HANDOFF_CONFIRM_ID,
+        RegisterFunction::new_async(move |req: handoff::HandoffConfirmInput| {
+            let sx = sx.clone();
+            async move {
+                if req.handoff_id.is_none() && req.session_id.is_none() {
+                    return Err(handler_err("pass handoff_id or session_id"));
+                }
+                let resolved =
+                    sx.confirm_handoff(req.handoff_id.as_deref(), req.session_id.as_deref());
+                Ok::<_, Error>(handoff::HandoffConfirmOutput {
+                    ok: resolved.is_some(),
+                    handoff_id: resolved,
+                })
+            }
+        })
+        .description(HANDOFF_CONFIRM_DESC),
     );
 }
 
