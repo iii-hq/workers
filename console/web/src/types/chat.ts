@@ -115,6 +115,13 @@ export interface FunctionCallMessage extends BaseMessage {
    * the literal `agent_trigger` while running.
    */
   unresolvedTarget?: boolean
+  /**
+   * The function id was resolved from an enclosing invocation rather than
+   * this record itself — e.g. TracesV2 rendering an inner span of
+   * `execute <fn>`. The card header stays verb-less: "triggering/triggered
+   * ƒ <fn>" would claim an invocation this card's timing doesn't measure.
+   */
+  identityInherited?: boolean
   /** awaiting user approval before execution; lifecycle: pending → running → done */
   pendingApproval?: boolean
   /** iii function_call_id — set on pending entries so the approve/deny UI can resolve. */

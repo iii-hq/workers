@@ -192,12 +192,12 @@ export function functionCallFromSpan(
   // or baggage above — is machinery inside that call (scope spans, queue
   // wrappers, HTTP/DB clients); the SDK attaches `iii.payload.json` events
   // to the invocation span only, so an inherited span without captured
-  // data would render a card whose panes both read "empty".
-  if (
-    explicitFunctionId(span) === null &&
-    input === undefined &&
-    output === undefined
-  ) {
+  // data would render a card whose panes both read "empty". One that DID
+  // capture data keeps its card but is flagged `identityInherited` — its
+  // duration measures the sub-span, not the invocation, so the card must
+  // not claim "triggering/triggered ƒ <fn>".
+  const inherited = explicitFunctionId(span) === null
+  if (inherited && input === undefined && output === undefined) {
     return null
   }
 
@@ -211,6 +211,7 @@ export function functionCallFromSpan(
       functionId,
       input,
       running: true,
+      ...(inherited ? { identityInherited: true } : {}),
     }
   }
 
@@ -222,5 +223,6 @@ export function functionCallFromSpan(
     input,
     output,
     durationMs: Math.round(span.duration_ms),
+    ...(inherited ? { identityInherited: true } : {}),
   }
 }

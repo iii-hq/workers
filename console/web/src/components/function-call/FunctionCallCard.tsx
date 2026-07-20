@@ -106,6 +106,26 @@ export function isErrorOutput(v: unknown): boolean {
   )
 }
 
+/**
+ * A deny/timeout resolution from the approval gate: the call was stopped at
+ * the gate and never executed. The gate's structured DenialEnvelope
+ * (approval-gate `denial.rs` — `{ status: "denied", denied_by, reason, … }`)
+ * rides in the result's `details`, which `functionResultOutput` preserves
+ * under `error.details` on both the live pairing and the reload path — so
+ * this is detectable from the output alone, unlike a genuine run error.
+ */
+export function isDeniedOutput(v: unknown): boolean {
+  if (!isErrorOutput(v)) return false
+  const details = (v as { error?: { details?: unknown } }).error?.details
+  return (
+    !!details &&
+    typeof details === 'object' &&
+    !Array.isArray(details) &&
+    (details as Record<string, unknown>).status === 'denied' &&
+    'denied_by' in (details as Record<string, unknown>)
+  )
+}
+
 function formatJson(value: unknown): string {
   try {
     return JSON.stringify(value, null, 2)
@@ -343,6 +363,14 @@ export function FunctionCallCard({
   }, [pending])
 
   const errored = !pending && !running && isErrorOutput(message.output)
+  // "triggered" is an execution claim, so a settled card only makes it when
+  // the call actually ran. Denials are recognized by the gate's envelope in
+  // the error details (see isDeniedOutput) — a plain run error keeps the
+  // verb. A card with neither output nor duration (deny/abort cleared the
+  // approval but no result paired in yet) stays verb-less too.
+  const ran =
+    !isDeniedOutput(message.output) &&
+    (message.output !== undefined || typeof message.durationMs === 'number')
 
   return (
     <div
@@ -390,6 +418,10 @@ export function FunctionCallCard({
                     : 'waiting for your approval to run'}
                 </span>{' '}
               </>
+            ) : message.identityInherited ? null : running ? (
+              <>triggering </>
+            ) : ran ? (
+              <>triggered </>
             ) : null}
             <span className="text-accent italic font-semibold">ƒ</span>{' '}
             {running && message.unresolvedTarget ? (
