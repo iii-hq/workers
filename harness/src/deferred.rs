@@ -101,6 +101,15 @@ pub async fn resolve(
             // unguarded child). Fire-and-forget: the result is the child ids;
             // post_trigger is skipped, mirroring the loop's spawn branch.
             if function_id == crate::functions::SPAWN_ID {
+                // Triggered + persist BEFORE the spawn (mirrors the non-spawn
+                // path below): a crash or redelivered resolve between a
+                // successful spawn and the Done persist would otherwise still
+                // see Pending and seed a SECOND child for the same call.
+                if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
+                    cp.state = CallState::Triggered;
+                }
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+
                 let (data, child) = match crate::subagent::spawn_from_turn(
                     deps,
                     &record,
