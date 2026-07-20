@@ -151,7 +151,9 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
         (Some(m), _) => (m, req.provider.clone()),
         (None, Some(prev)) => (
             prev.options.model.clone(),
-            req.provider.clone().or_else(|| prev.options.provider.clone()),
+            req.provider
+                .clone()
+                .or_else(|| prev.options.provider.clone()),
         ),
         (None, None) if req.session_id.is_some() => {
             return Err(HarnessError::InvalidRequest(
@@ -171,7 +173,11 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
 
     // Freeze the per-send options before moving the message out of `req`.
     // The provider identity prompt is fetched once here and frozen with them.
-    let identity = deps.router().await.system_prompt_get(provider.as_deref()).await;
+    let identity = deps
+        .router()
+        .await
+        .system_prompt_get(provider.as_deref())
+        .await;
     let mut options = build_options(&cfg, &req, model, provider, identity.as_deref());
     // A steer also inherits the prior turn's dispatch policy unless this send
     // names its own: `functions` is fail-closed, so leaving it `None` on a
@@ -760,7 +766,13 @@ mod tests {
             }),
         };
         // Router-served identity used when present…
-        let opts = build_options(&cfg, &req, "claude-sonnet-4".into(), req.provider.clone(), Some("You are an iii agent worker. VOICE."));
+        let opts = build_options(
+            &cfg,
+            &req,
+            "claude-sonnet-4".into(),
+            req.provider.clone(),
+            Some("You are an iii agent worker. VOICE."),
+        );
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("operating in agent mode"));
         assert!(prompt.ends_with("You are an iii agent worker. VOICE."));
@@ -788,7 +800,13 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, "claude-sonnet-4".into(), req.provider.clone(), Some("You are an iii agent worker. VOICE."));
+        let opts = build_options(
+            &cfg,
+            &req,
+            "claude-sonnet-4".into(),
+            req.provider.clone(),
+            Some("You are an iii agent worker. VOICE."),
+        );
         assert_eq!(opts.system_prompt.as_deref(), Some("custom"));
     }
 
@@ -808,7 +826,13 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, "claude-sonnet-4".into(), req.provider.clone(), Some("You are an iii agent worker. VOICE."));
+        let opts = build_options(
+            &cfg,
+            &req,
+            "claude-sonnet-4".into(),
+            req.provider.clone(),
+            Some("You are an iii agent worker. VOICE."),
+        );
         let prompt = opts.system_prompt.expect("enriched prompt");
         assert!(prompt.starts_with("You are an iii agent worker. VOICE."));
         assert!(prompt.ends_with("Speak only in haiku."));

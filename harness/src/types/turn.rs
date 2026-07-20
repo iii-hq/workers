@@ -375,7 +375,7 @@ mod tests {
         r.calls
             .insert("a".into(), cp(CallState::Pending, Some("s_child")));
         r.calls.insert("b".into(), cp(CallState::Pending, None)); // hook hold, no child
-        // Fire-and-forget spawn: Done instantly, still counts.
+                                                                  // Fire-and-forget spawn: Done instantly, still counts.
         r.calls
             .insert("c".into(), cp(CallState::Done, Some("s_done")));
         let children = r.spawned_children();

@@ -888,13 +888,14 @@ pub async fn run_step(
             // Guard failures skip post_trigger.
             if call.function_id == crate::functions::SPAWN_ID {
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
-                let (data, child) =
-                    match crate::subagent::spawn_from_turn(deps, &record, &call.id, &eff_args)
-                        .await
-                    {
-                        Ok(child) => (crate::subagent::spawned_result(&child), Some(child)),
-                        Err(data) => (data, None),
-                    };
+                let (data, child) = match crate::subagent::spawn_from_turn(
+                    deps, &record, &call.id, &eff_args,
+                )
+                .await
+                {
+                    Ok(child) => (crate::subagent::spawned_result(&child), Some(child)),
+                    Err(data) => (data, None),
+                };
                 append_function_result(
                     &session,
                     &record,

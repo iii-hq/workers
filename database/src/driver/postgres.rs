@@ -34,7 +34,10 @@ pub async fn query(
             .start()
             .await
             .map_err(map_err)?;
-        let rows = tx.query(sql, bound_refs.as_slice()).await.map_err(map_err)?;
+        let rows = tx
+            .query(sql, bound_refs.as_slice())
+            .await
+            .map_err(map_err)?;
         tx.commit().await.map_err(map_err)?;
         Ok::<_, DbError>(rows)
     };

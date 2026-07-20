@@ -708,9 +708,11 @@ mod tests {
             );
         }
         // Reads still pass, including read-only PRAGMA-free CTEs.
-        assert!(query(&p, "WITH x(n) AS (VALUES (1)) SELECT n FROM x", &[], 30_000)
-            .await
-            .is_ok());
+        assert!(
+            query(&p, "WITH x(n) AS (VALUES (1)) SELECT n FROM x", &[], 30_000)
+                .await
+                .is_ok()
+        );
         assert_eq!(
             query(&p, "SELECT COUNT(*) AS n FROM t", &[], 30_000)
                 .await

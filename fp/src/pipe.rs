@@ -331,8 +331,8 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
         // whole purpose — a trailing write step must not run). A passing
         // guard threads the ORIGINAL value onward unchanged.
         if step.function == util::WHEN_ID {
-            let (passed, value) =
-                util::eval_when(&args).map_err(|msg| step_error(i, &step.function, &msg, &receipts))?;
+            let (passed, value) = util::eval_when(&args)
+                .map_err(|msg| step_error(i, &step.function, &msg, &receipts))?;
             receipts.push(StepReceipt {
                 function: step.function.clone(),
                 chars: chars_of(&value),

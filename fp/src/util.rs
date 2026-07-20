@@ -994,9 +994,7 @@ mod tests {
     #[test]
     fn when_guards_compare_exist_and_fail_on_misses() {
         let v = json!({ "rows": [{ "n": 3 }], "empty": [], "name": "x", "nil": null });
-        let w = |path: Option<&str>, op: WhenOp, to: Option<Value>| {
-            when(&v, path, op, to.as_ref())
-        };
+        let w = |path: Option<&str>, op: WhenOp, to: Option<Value>| when(&v, path, op, to.as_ref());
         // Ordering over a pointer.
         assert_eq!(w(Some("/rows/0/n"), WhenOp::Ge, Some(json!(3))), Ok(true));
         assert_eq!(w(Some("/rows/0/n"), WhenOp::Gt, Some(json!(3))), Ok(false));
@@ -1016,7 +1014,9 @@ mod tests {
         // Default path tests the whole value.
         assert_eq!(w(None, WhenOp::Exists, None), Ok(true));
         // Teachable errors: missing/extra `to`, non-number ordering.
-        assert!(w(Some("/name"), WhenOp::Ge, None).unwrap_err().contains("needs `to`"));
+        assert!(w(Some("/name"), WhenOp::Ge, None)
+            .unwrap_err()
+            .contains("needs `to`"));
         assert!(w(Some("/name"), WhenOp::Exists, Some(json!(1)))
             .unwrap_err()
             .contains("meaningless"));

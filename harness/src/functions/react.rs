@@ -849,16 +849,16 @@ async fn call_edge(
             let sub = spec.subscription_id.as_deref().unwrap_or("sub");
             // Per-fire suffix: calls have no child ids, so a random suffix
             // keeps recurring fires from deduping into one record.
-            let entry_id = format!(
-                "e_trigfired_{sub}_{}",
-                uuid::Uuid::new_v4().simple()
-            );
+            let entry_id = format!("e_trigfired_{sub}_{}", uuid::Uuid::new_v4().simple());
             let trigger_id = spec
                 .subscription_id
                 .as_deref()
                 .and_then(|s| deps.subscriptions.trigger_id_of(s));
             let retired = spec.once && once_unregister(deps, spec).await;
-            emit_fired(deps, spec, event, &entry_id, None, retired, trigger_id, None, None).await;
+            emit_fired(
+                deps, spec, event, &entry_id, None, retired, trigger_id, None, None,
+            )
+            .await;
         }
         let status = if r.called { "called" } else { "failed" };
         let summary = r
@@ -889,7 +889,9 @@ async fn dispatch_call(
         Ok(p) => p,
         Err(msg) => {
             tracing::warn!(function_id = %call.function_id, error = %msg, "harness::react: call payload injection failed");
-            return Ok(ReactResult::note(format!("call payload injection failed: {msg}")));
+            return Ok(ReactResult::note(format!(
+                "call payload injection failed: {msg}"
+            )));
         }
     };
     match deps
@@ -1591,9 +1593,11 @@ mod tests {
                 .unwrap_err()
                 .contains("task-mode"));
         }
-        assert!(validate_spec(Some(&json!({ "call": { "function_id": "" } })))
-            .unwrap_err()
-            .contains("must name the function"));
+        assert!(
+            validate_spec(Some(&json!({ "call": { "function_id": "" } })))
+                .unwrap_err()
+                .contains("must name the function")
+        );
     }
 
     #[test]
