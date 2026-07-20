@@ -38,6 +38,10 @@
         },
         "type": "array"
       },
+      "attach_enabled": {
+        "description": "Whether attach mode is enabled (allow_attach).",
+        "type": "boolean"
+      },
       "chromium_path": {
         "type": [
           "string",
@@ -67,15 +71,21 @@
       "ok": {
         "description": "True when sessions can start right now.",
         "type": "boolean"
+      },
+      "recording_available": {
+        "description": "Whether ffmpeg is on PATH, which browser::recording requires.",
+        "type": "boolean"
       }
     },
     "required": [
       "active_sessions",
       "allowed_schemes",
+      "attach_enabled",
       "headless_default",
       "issues",
       "max_sessions",
-      "ok"
+      "ok",
+      "recording_available"
     ],
     "title": "DoctorOutput",
     "type": "object"
