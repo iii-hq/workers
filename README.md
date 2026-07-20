@@ -159,7 +159,10 @@ reading each worker's `iii.worker.yaml`, then routes:
 
 The `pr-checks` job additionally enforces, per changed worker: `README.md`
 present, `iii.worker.yaml` valid, `tests/` non-empty, and the manifest
-version is greater than the version on the PR's base branch.
+version is greater than the version on the PR's base branch. It also requires
+a non-empty `tags:` list on every publishable worker for registry discovery
+(workers with `interface_smoke: false` are exempt) — see the
+[Discovery tags step](docs/sops/new-worker.md#discovery-tags-required).
 
 Full reference (discovery buckets, interface boot smoke, e2e workflows):
 [`docs/architecture/testing-and-ci.md`](docs/architecture/testing-and-ci.md).

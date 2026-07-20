@@ -14,15 +14,31 @@ SCRIPT = Path(__file__).resolve().parents[1] / "validate_worker.py"
 def make_worker(tmp_path: Path, name: str, version: str = "0.1.0",
                 language: str = "rust", deploy: str = "binary",
                 manifest_name: str = "Cargo.toml",
-                tests_dir: bool = True) -> Path:
-    """Returns the repo-root path; worker lives at <root>/<name>/."""
+                tests_dir: bool = True,
+                tags: list[str] | None = ("example",),
+                interface_smoke: bool | None = None) -> Path:
+    """Returns the repo-root path; worker lives at <root>/<name>/.
+
+    `tags` defaults to a valid non-empty list so the fixture is publishable and
+    passes the discovery-tags gate. Pass `tags=None` to omit the key entirely
+    or `tags=[]` for an empty list. `interface_smoke=False` marks the worker as
+    a publish opt-out (tags become optional).
+    """
     w = tmp_path / name
     w.mkdir()
     (w / "README.md").write_text(f"# {name}\nhello\n")
-    (w / "iii.worker.yaml").write_text(
+    manifest = (
         f'iii: v1\nname: {name}\nlanguage: {language}\n'
         f'deploy: {deploy}\nmanifest: {manifest_name}\n'
     )
+    if interface_smoke is not None:
+        manifest += f'interface_smoke: {"true" if interface_smoke else "false"}\n'
+    if tags is not None:
+        if tags:
+            manifest += "tags:\n" + "".join(f"  - {tag}\n" for tag in tags)
+        else:
+            manifest += "tags: []\n"
+    (w / "iii.worker.yaml").write_text(manifest)
     if manifest_name == "Cargo.toml":
         (w / manifest_name).write_text(f'[package]\nname = "{name}"\nversion = "{version}"\n')
     elif manifest_name == "package.json":
@@ -106,7 +122,7 @@ class TestValidateWorker:
         ]:
             case_root = tmp_path / case
             case_root.mkdir()
-            repo = make_worker(case_root, "smoke")
+            repo = make_worker(case_root, "smoke", tags=None)
             meta = repo / "smoke" / "iii.worker.yaml"
             meta.write_text(meta.read_text() + tags_yaml)
             init_git(repo)
@@ -177,3 +193,33 @@ class TestValidateWorker:
         assert r.returncode != 0
         assert "version" in r.stdout + r.stderr
         assert "less" in r.stdout + r.stderr
+
+    def test_publishable_missing_tags_fails(self, tmp_path):
+        # A publishable worker (no interface_smoke opt-out) with no `tags:` key
+        # is not discoverable in the registry, so the gate rejects it.
+        repo = make_worker(tmp_path, "smoke", tags=None)
+        init_git(repo)
+        r = run_script(repo, "smoke", source_changed=["smoke"])
+        assert r.returncode != 0, r.stdout + r.stderr
+        assert "non-empty tags" in r.stdout + r.stderr
+
+    def test_publishable_empty_tags_fails(self, tmp_path):
+        repo = make_worker(tmp_path, "smoke", tags=[])
+        init_git(repo)
+        r = run_script(repo, "smoke", source_changed=["smoke"])
+        assert r.returncode != 0, r.stdout + r.stderr
+        assert "non-empty tags" in r.stdout + r.stderr
+
+    def test_publishable_with_tags_passes(self, tmp_path):
+        repo = make_worker(tmp_path, "smoke", tags=["x"])
+        init_git(repo)
+        r = run_script(repo, "smoke", source_changed=["smoke"])
+        assert r.returncode == 0, r.stdout + r.stderr
+
+    def test_interface_smoke_optout_missing_tags_passes(self, tmp_path):
+        # `interface_smoke: false` workers skip registry publish, so tags stay
+        # optional for them (mirrors acp/lsp in the tree).
+        repo = make_worker(tmp_path, "smoke", tags=None, interface_smoke=False)
+        init_git(repo)
+        r = run_script(repo, "smoke", source_changed=["smoke"])
+        assert r.returncode == 0, r.stdout + r.stderr
