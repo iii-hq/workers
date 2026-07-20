@@ -64,8 +64,19 @@ pub fn ffmpeg_args(codec: &str, path: &str) -> Vec<String> {
         codec.into(),
         "-pix_fmt".into(),
         "yuv420p".into(),
-        path.into(),
+        sanitize_output_path(path),
     ]
+}
+
+/// Keep a relative path that begins with `-` from being read as an ffmpeg
+/// option by prefixing `./`. Absolute paths and ordinary relative paths pass
+/// through unchanged.
+fn sanitize_output_path(path: &str) -> String {
+    if path.starts_with('-') && !std::path::Path::new(path).is_absolute() {
+        format!("./{path}")
+    } else {
+        path.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -85,5 +96,14 @@ mod tests {
         assert!(args.contains(&"image2pipe".to_string()));
         assert_eq!(args.last().unwrap(), "/tmp/out.mp4");
         assert!(args.windows(2).any(|w| w == ["-c:v", "libx264"]));
+    }
+
+    #[test]
+    fn dash_prefixed_relative_path_is_escaped() {
+        // A leading dash would otherwise be read as an ffmpeg option.
+        assert_eq!(sanitize_output_path("-weird.mp4"), "./-weird.mp4");
+        // Absolute and ordinary relative paths are untouched.
+        assert_eq!(sanitize_output_path("/tmp/-weird.mp4"), "/tmp/-weird.mp4");
+        assert_eq!(sanitize_output_path("out.mp4"), "out.mp4");
     }
 }

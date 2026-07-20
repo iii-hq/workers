@@ -668,10 +668,7 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
 /// the streamed viewport sees where the agent acted. Only injected while
 /// screencast is active (someone is watching); a failed injection is ignored.
 async fn move_ghost_cursor(session: &Session, x: f64, y: f64, click: bool) {
-    if session
-        .screencast_active
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
+    if session.screencast_on() {
         let _ = session
             .page
             .evaluate(overlays::ghost_cursor_script(x, y, click))
@@ -1801,25 +1798,11 @@ fn register_screencast_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             async move {
                 let session = get_session(&sx, &req.session_id)?;
                 session.touch();
-                let cfg = sx.config.load();
-                // every_nth_frame counts COMPOSITOR frames, not wall-clock, so
-                // a value > 1 starves a static page (which may never produce
-                // that many repaints and would then emit no frame at all). Take
-                // every frame and cap the push rate by time in the pump
-                // instead (see FRAME_MIN_INTERVAL_MS).
-                let params = cdp_page::StartScreencastParams::builder()
-                    .format(cdp_page::StartScreencastFormat::Jpeg)
-                    .quality(cfg.screenshot_quality as i64)
-                    .every_nth_frame(1)
-                    .build();
-                session
-                    .page
-                    .execute(params)
-                    .await
-                    .map_err(|e| handler_err(format!("screencast start failed: {e}")))?;
-                session
-                    .screencast_active
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                // Register a console viewer as a screencast consumer; the CDP
+                // screencast starts on the first consumer (see
+                // Sessions::acquire_screencast, which uses every_nth_frame(1)
+                // and caps the push rate by time in the pump).
+                sx.acquire_screencast(&session).await.map_err(handler_err)?;
                 // A human is now watching: show the session-status badge.
                 let mode = if session.read_only {
                     "read-only"
@@ -1846,15 +1829,11 @@ fn register_screencast_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 if let Some(session) = sx.get(&req.session_id) {
-                    let _ = session
-                        .page
-                        .execute(cdp_page::StopScreencastParams::default())
-                        .await;
-                    session
-                        .screencast_active
-                        .store(false, std::sync::atomic::Ordering::Relaxed);
-                    // Nobody is watching now: remove the status badge and
-                    // ghost cursor so they do not linger in the page.
+                    // Release this console viewer; the CDP screencast stops
+                    // only if no other consumer (e.g. a recording) remains.
+                    sx.release_screencast(&session).await;
+                    // The viewer's overlays go regardless; they belong to the
+                    // watching human, not to a recording consumer.
                     let _ = session.page.evaluate(overlays::remove_badge_script()).await;
                     let _ = session
                         .page
@@ -1943,9 +1922,7 @@ fn register_frame(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
-                let active = session
-                    .screencast_active
-                    .load(std::sync::atomic::Ordering::Relaxed);
+                let active = session.screencast_on();
                 // Clone the Arc under the lock and release it before copying
                 // the base64 payload, so the push-rate pump never waits
                 // behind this poll-rate copy.
