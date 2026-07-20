@@ -1,5 +1,5 @@
 {
-  "description": "Open a pull request: { repo: \"owner/name\", title, body, base?, head?, draft? } -> { output: <pr url> }. head defaults to the repo's current branch on the gh side — pass it explicitly.",
+  "description": "Open a pull request: { repo: \"owner/name\", title, body, head, base?, draft? } -> { output: <pr url> }. head is required: the worker runs outside any checkout, so gh cannot infer a current branch.",
   "function_id": "github::pr::create",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -23,11 +23,8 @@
         ]
       },
       "head": {
-        "description": "Head branch the PR ships (pass explicitly; the worker has no checkout).",
-        "type": [
-          "string",
-          "null"
-        ]
+        "description": "Head branch the PR ships. Required: the worker runs outside any checkout, so gh cannot infer a current branch.",
+        "type": "string"
       },
       "repo": {
         "description": "Target repository, \"owner/name\".",
@@ -40,6 +37,7 @@
     },
     "required": [
       "body",
+      "head",
       "repo",
       "title"
     ],

@@ -16,7 +16,7 @@ pub const VIEW_DESC: &str = "View one pull request with body, mergeability, revi
 pub const VIEW_JSON: &str = "number,title,state,url,author,headRefName,baseRefName,isDraft,labels,createdAt,updatedAt,body,mergeable,mergeStateStatus,reviewDecision,additions,deletions,changedFiles,assignees,milestone,mergedAt,closedAt";
 
 pub const CREATE_ID: &str = "github::pr::create";
-pub const CREATE_DESC: &str = "Open a pull request: { repo: \"owner/name\", title, body, base?, head?, draft? } -> { output: <pr url> }. head defaults to the repo's current branch on the gh side — pass it explicitly.";
+pub const CREATE_DESC: &str = "Open a pull request: { repo: \"owner/name\", title, body, head, base?, draft? } -> { output: <pr url> }. head is required: the worker runs outside any checkout, so gh cannot infer a current branch.";
 
 pub const EDIT_ID: &str = "github::pr::edit";
 pub const EDIT_DESC: &str = "Edit a pull request's title/body/base/labels: { repo, number, title?, body?, base?, add_labels?, remove_labels? } -> { output }.";
@@ -154,10 +154,11 @@ pub struct CreateRequest {
     pub title: String,
     /// Pull request body (markdown).
     pub body: String,
+    /// Head branch the PR ships. Required: the worker runs outside any
+    /// checkout, so gh cannot infer a current branch.
+    pub head: String,
     /// Base branch to merge into (gh default: the repo default branch).
     pub base: Option<String>,
-    /// Head branch the PR ships (pass explicitly; the worker has no checkout).
-    pub head: Option<String>,
     /// Open as draft.
     pub draft: Option<bool>,
 }
@@ -172,9 +173,10 @@ pub fn create_args(r: &CreateRequest) -> Vec<String> {
         r.title.as_str(),
         "--body",
         r.body.as_str(),
+        "--head",
+        r.head.as_str(),
     ]);
     push_opt(&mut a, "--base", r.base.as_deref());
-    push_opt(&mut a, "--head", r.head.as_deref());
     push_bool(&mut a, "--draft", r.draft);
     a
 }
@@ -376,6 +378,21 @@ mod tests {
         assert_eq!(
             list_args(&r),
             vec!["pr", "list", "-R", "o/r", "--json", LIST_JSON]
+        );
+    }
+
+    #[test]
+    fn create_always_passes_head() {
+        let r: CreateRequest = serde_json::from_value(json!({
+            "repo": "o/r", "title": "t", "body": "b", "head": "feat/x", "draft": true
+        }))
+        .unwrap();
+        assert_eq!(
+            create_args(&r),
+            vec![
+                "pr", "create", "-R", "o/r", "--title", "t", "--body", "b", "--head", "feat/x",
+                "--draft",
+            ]
         );
     }
 

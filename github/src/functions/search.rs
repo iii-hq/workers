@@ -43,8 +43,12 @@ search_request!(PrsRequest);
 search_request!(CodeRequest);
 
 fn search_args(kind: &str, json: &str, query: &str, limit: Option<u32>) -> Vec<String> {
-    let mut a = argv(["search", kind, query, "--json", json]);
+    let mut a = argv(["search", kind, "--json", json]);
     push_opt(&mut a, "--limit", limit);
+    // `--` ends option parsing: a query starting with a negative qualifier
+    // (e.g. "-label:bug") would otherwise be swallowed as a flag by gh.
+    a.push("--".to_string());
+    a.push(query.to_string());
     a
 }
 
@@ -80,11 +84,31 @@ mod tests {
             vec![
                 "search",
                 "code",
-                "repo:cli/cli read_bounded",
                 "--json",
                 CODE_JSON,
                 "--limit",
                 "5",
+                "--",
+                "repo:cli/cli read_bounded",
+            ]
+        );
+    }
+
+    #[test]
+    fn leading_negative_qualifier_stays_positional() {
+        let r: ReposRequest = serde_json::from_value(json!({
+            "query": "-topic:python cli"
+        }))
+        .unwrap();
+        assert_eq!(
+            repos_args(&r),
+            vec![
+                "search",
+                "repos",
+                "--json",
+                REPOS_JSON,
+                "--",
+                "-topic:python cli"
             ]
         );
     }
