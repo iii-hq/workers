@@ -1,136 +1,95 @@
-# C-E2E-506 — releasing a hook-held call must execute the MUTATED arguments
-# (reproduction of https://github.com/iii-hq/workers/issues/506).
-#
-# Two pre-trigger hooks bind to the run-scoped target (issue Case A: the
-# argument injector runs before the holding gate — priorities ascend):
-#   priority 10  {{run_id}}::hook-mutate  → continue + arguments {value: "expected+scope"}
-#   priority 20  {{run_id}}::hook-hold    → hold
-# The turn's call parks pending; the runner releases it with the public
-# approval surface `harness::function::resolve { action: "execute" }`.
-#
-# QUARANTINED: the invariants assert the issue's EXPECTED behavior — the
-# target executes with the hook-mutated arguments. Source inspection
-# (harness/src/deferred.rs `find_call_arguments`) shows the execute path
-# recovers the ORIGINAL arguments from the transcript and skips the
-# pre-trigger chain, so this fails until #506 lands. The hook-envelope
-# invariants double as chain-order evidence: the mutator saw the original
-# args, the holder saw the mutated args.
+# C-E2E-506 — released held calls retain hook-mutated arguments.
+# Reproduction of https://github.com/iii-hq/workers/issues/506.
 schema_version: "1"
 id: C-E2E-506
-description: A held call released with resolve(action=execute) must run with hook-mutated arguments.
-stack_profile: harness-core
+description: A held call released for execution must run with the arguments produced by earlier hooks.
 quarantine: true
+
 send:
-  session_id: "{{session_id}}"
-  message: "Call the recorder once."
-  model: fixture-model
-  provider: scripted
-  idempotency_key: "{{run_id}}:hook-held-release"
-  options:
-    functions:
-      allow: ["{{run_id}}::record"]
-      deny: []
-      expose: native
-router_script: router-script.json
-recorder:
-  target:
-    function_id: "{{run_id}}::record"
-    description: "Record one integration fixture value."
+  message: Call the recorder once.
+
+functions:
+  record:
+    description: Record one integration fixture value.
     request_schema:
       type: object
       additionalProperties: false
       properties:
-        value:
-          type: string
-      required: ["value"]
+        value: { type: string }
+      required: [value]
     response:
       content:
-        - type: text
-          text: recorded
+        - { type: text, text: recorded }
       is_error: false
-  extra_functions:
-    - function_id: "{{run_id}}::hook-mutate"
-      description: "Pre-trigger hook: inject validated scope into the arguments."
-      request_schema:
-        type: object
-      response:
-        decision: continue
-        mutations:
-          arguments:
-            value: "expected+scope"
-    - function_id: "{{run_id}}::hook-hold"
-      description: "Pre-trigger hook: approval gate, holds every consulted call."
-      request_schema:
-        type: object
-      response:
-        decision: hold
-  lifecycle:
-    trigger_type: "harness::turn-completed"
-    function_id: "integration-recorder::lifecycle"
+  hook-mutate:
+    description: Inject validated scope into the arguments.
+    request_schema:
+      type: object
+    response:
+      decision: continue
+      mutations:
+        arguments:
+          value: expected+scope
+    expose: false
+  hook-hold:
+    description: Hold every consulted call for explicit approval.
+    request_schema:
+      type: object
+    response:
+      decision: hold
+    expose: false
+
 bindings:
-  - trigger_type: "harness::hook::pre-trigger"
-    function_id: "{{run_id}}::hook-mutate"
-    config:
-      functions: ["{{run_id}}::record"]
-      priority: 10
-  - trigger_type: "harness::hook::pre-trigger"
-    function_id: "{{run_id}}::hook-hold"
-    config:
-      functions: ["{{run_id}}::record"]
-      priority: 20
+  - trigger: hook_pre_trigger
+    function: hook-mutate
+    functions: [record]
+    priority: 10
+  - trigger: hook_pre_trigger
+    function: hook-hold
+    functions: [record]
+    priority: 20
+
 release:
-  function_call_id: call-1
   action: execute
-deadlines:
-  readiness_ms: 60000
-  scenario_ms: 60000
-  teardown_ms: 15000
-invariants:
-  # THE issue-506 assertion: the released call executes the hook-mutated
-  # arguments, exactly once. (Today it receives {value: "expected"}.)
-  - id: target.calls
-    parameters:
-      function_id: "{{run_id}}::record"
+
+router:
+  generations:
+    - reply:
+        type: function_call
+        function: record
+        arguments: { value: expected }
+        usage: { input: 8, output: 4 }
+    - reply:
+        type: text
+        text: released and recorded
+        usage: { input: 20, output: 3 }
+      match_overrides:
+        request_id:
+          mode: regex
+          pattern: "^t_[0-9a-f]{32}:[0-9]+$"
+        system_prompt: { mode: present }
+        messages: { mode: present }
+        tools: { mode: present }
+
+expect:
+  calls_closed: true
+  calls:
+    - function: record
       count: 1
-      payload:
-        value: "expected+scope"
-  # Chain-order evidence: the mutator ran once and saw the ORIGINAL args.
-  - id: target.calls
-    parameters:
-      function_id: "{{run_id}}::hook-mutate"
-      count: 1
-      payload_subset:
-        point: pre_trigger
-        call:
-          id: call-1
-          function_id: "{{run_id}}::record"
-          arguments:
-            value: expected
-  # ...and the holding gate ran once, seeing the MUTATED args (proves the
-  # mutation existed in the chain before the hold).
-  - id: target.calls
-    parameters:
-      function_id: "{{run_id}}::hook-hold"
+      payload: { value: expected+scope }
+    - function: hook-mutate
       count: 1
       payload_subset:
         point: pre_trigger
         call:
           id: call-1
           function_id: "{{run_id}}::record"
-          arguments:
-            value: "expected+scope"
-  - id: transcript.calls_closed
-    parameters: {}
-  - id: status.terminal
-    parameters:
-      status: completed
-      pending_calls: 0
-      queued_messages: 0
-  - id: transcript.no_duplicates
-    parameters: {}
-  - id: lifecycle.completed_once
-    parameters:
-      allow_identical_duplicates: true
-  - id: router.generations_consumed
-    parameters:
-      count: 2
+          arguments: { value: expected }
+    - function: hook-hold
+      count: 1
+      payload_subset:
+        point: pre_trigger
+        call:
+          id: call-1
+          function_id: "{{run_id}}::record"
+          arguments: { value: expected+scope }

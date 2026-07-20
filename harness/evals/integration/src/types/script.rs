@@ -117,8 +117,8 @@ pub enum NormalizerOperation {
     Replace,
 }
 
-/// The 12 router-request fields; every one carries an explicit matcher —
-/// there is no runner default (spec § First implementation slice).
+/// The 12 router-request fields; compiled scenarios always make every
+/// matcher explicit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GenerationMatchV1 {
@@ -136,22 +136,24 @@ pub struct GenerationMatchV1 {
     pub metadata: JsonMatcherV1,
 }
 
-pub const MATCH_FIELDS: [&str; 12] = [
-    "writer_ref",
-    "request_id",
-    "model",
-    "provider",
-    "system_prompt",
-    "messages",
-    "tools",
-    "response_format",
-    "thinking_level",
-    "max_output_tokens",
-    "provider_options",
-    "metadata",
-];
-
 impl GenerationMatchV1 {
+    pub fn uniform(matcher: JsonMatcherV1) -> Self {
+        Self {
+            writer_ref: matcher.clone(),
+            request_id: matcher.clone(),
+            model: matcher.clone(),
+            provider: matcher.clone(),
+            system_prompt: matcher.clone(),
+            messages: matcher.clone(),
+            tools: matcher.clone(),
+            response_format: matcher.clone(),
+            thinking_level: matcher.clone(),
+            max_output_tokens: matcher.clone(),
+            provider_options: matcher.clone(),
+            metadata: matcher,
+        }
+    }
+
     /// Field name → matcher, in the canonical field order.
     pub fn fields(&self) -> [(&'static str, &JsonMatcherV1); 12] {
         [
@@ -173,21 +175,10 @@ impl GenerationMatchV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct BarrierV1 {
-    /// Frame index the stream pauses before (0-based into `frames`).
-    pub before_frame: usize,
-    pub id: String,
-    pub timeout_ms: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct ScriptedGenerationV1 {
     pub ordinal: u64,
     #[serde(rename = "match")]
     pub match_: GenerationMatchV1,
     pub frames: Vec<AssistantMessageEvent>,
     pub response: RouterChatResponse,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub barriers: Option<Vec<BarrierV1>>,
 }

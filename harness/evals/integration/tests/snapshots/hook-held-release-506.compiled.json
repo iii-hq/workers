@@ -1,0 +1,411 @@
+{
+  "router_script": {
+    "generations": [
+      {
+        "frames": [
+          {
+            "message": {
+              "content": [
+                {
+                  "arguments": {
+                    "value": "expected"
+                  },
+                  "function_id": "{{run_id}}::record",
+                  "id": "call-1",
+                  "type": "function_call"
+                }
+              ],
+              "model": "fixture-model",
+              "provider": "scripted",
+              "role": "assistant",
+              "stop_reason": "function_call",
+              "timestamp": 1,
+              "usage": {
+                "input": 8,
+                "output": 4
+              }
+            },
+            "type": "done"
+          }
+        ],
+        "match": {
+          "max_output_tokens": {
+            "mode": "absent"
+          },
+          "messages": {
+            "expected": [
+              {
+                "content": [
+                  {
+                    "text": "Call the recorder once.",
+                    "type": "text"
+                  }
+                ],
+                "role": "user"
+              }
+            ],
+            "mode": "exact",
+            "normalize": [
+              {
+                "operation": "delete",
+                "pointer": "/0/timestamp"
+              }
+            ]
+          },
+          "metadata": {
+            "mode": "absent"
+          },
+          "model": {
+            "expected": "fixture-model",
+            "mode": "exact"
+          },
+          "provider": {
+            "expected": "scripted",
+            "mode": "exact"
+          },
+          "provider_options": {
+            "mode": "absent"
+          },
+          "request_id": {
+            "mode": "regex",
+            "pattern": "^t_[0-9a-f]{32}:[0-9]+$"
+          },
+          "response_format": {
+            "mode": "absent"
+          },
+          "system_prompt": {
+            "expected": "{{system_prompt_sha256}}",
+            "mode": "sha256"
+          },
+          "thinking_level": {
+            "mode": "absent"
+          },
+          "tools": {
+            "expected": [
+              {
+                "description": "Record one integration fixture value.",
+                "execution_mode": "sequential",
+                "name": "{{run_id}}::record",
+                "parameters": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              }
+            ],
+            "mode": "exact"
+          },
+          "writer_ref": {
+            "expected": {
+              "direction": "write"
+            },
+            "mode": "subset"
+          }
+        },
+        "ordinal": 1,
+        "response": {
+          "model": "fixture-model",
+          "ok": true,
+          "provider": "scripted",
+          "stop_reason": "function_call",
+          "usage": {
+            "input": 8,
+            "output": 4
+          }
+        }
+      },
+      {
+        "frames": [
+          {
+            "message": {
+              "content": [
+                {
+                  "text": "released and recorded",
+                  "type": "text"
+                }
+              ],
+              "model": "fixture-model",
+              "provider": "scripted",
+              "role": "assistant",
+              "stop_reason": "end",
+              "timestamp": 2,
+              "usage": {
+                "input": 20,
+                "output": 3
+              }
+            },
+            "type": "done"
+          }
+        ],
+        "match": {
+          "max_output_tokens": {
+            "mode": "absent"
+          },
+          "messages": {
+            "mode": "present"
+          },
+          "metadata": {
+            "mode": "absent"
+          },
+          "model": {
+            "expected": "fixture-model",
+            "mode": "exact"
+          },
+          "provider": {
+            "expected": "scripted",
+            "mode": "exact"
+          },
+          "provider_options": {
+            "mode": "absent"
+          },
+          "request_id": {
+            "mode": "regex",
+            "pattern": "^t_[0-9a-f]{32}:[0-9]+$"
+          },
+          "response_format": {
+            "mode": "absent"
+          },
+          "system_prompt": {
+            "mode": "present"
+          },
+          "thinking_level": {
+            "mode": "absent"
+          },
+          "tools": {
+            "mode": "present"
+          },
+          "writer_ref": {
+            "expected": {
+              "direction": "write"
+            },
+            "mode": "subset"
+          }
+        },
+        "ordinal": 2,
+        "response": {
+          "model": "fixture-model",
+          "ok": true,
+          "provider": "scripted",
+          "stop_reason": "end",
+          "usage": {
+            "input": 20,
+            "output": 3
+          }
+        }
+      }
+    ],
+    "model": {
+      "context_window": 32768,
+      "id": "fixture-model",
+      "max_output_tokens": 4096,
+      "provider": "scripted",
+      "supports_cache": false,
+      "supports_structured_output": true,
+      "supports_thinking": false,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "scenario_id": "C-E2E-506",
+    "schema_version": "1"
+  },
+  "scenario": {
+    "bindings": [
+      {
+        "config": {
+          "functions": [
+            "{{run_id}}::record"
+          ],
+          "priority": 10
+        },
+        "function_id": "{{run_id}}::hook-mutate",
+        "trigger_type": "harness::hook::pre-trigger"
+      },
+      {
+        "config": {
+          "functions": [
+            "{{run_id}}::record"
+          ],
+          "priority": 20
+        },
+        "function_id": "{{run_id}}::hook-hold",
+        "trigger_type": "harness::hook::pre-trigger"
+      }
+    ],
+    "deadlines": {
+      "readiness_ms": 60000,
+      "scenario_ms": 60000,
+      "teardown_ms": 15000
+    },
+    "description": "A held call released for execution must run with the arguments produced by earlier hooks.",
+    "id": "C-E2E-506",
+    "invariants": [
+      {
+        "id": "send.flags",
+        "parameters": {
+          "deduplicated": false,
+          "merged": false,
+          "queued": false
+        }
+      },
+      {
+        "id": "transcript.calls_closed",
+        "parameters": {}
+      },
+      {
+        "id": "transcript.no_duplicates",
+        "parameters": {}
+      },
+      {
+        "id": "status.terminal",
+        "parameters": {
+          "pending_calls": 0,
+          "queued_messages": 0,
+          "status": "completed"
+        }
+      },
+      {
+        "id": "lifecycle.completed_once",
+        "parameters": {
+          "allow_identical_duplicates": true
+        }
+      },
+      {
+        "id": "router.generations_consumed",
+        "parameters": {
+          "count": 2
+        }
+      },
+      {
+        "id": "target.calls",
+        "parameters": {
+          "count": 1,
+          "function_id": "{{run_id}}::record",
+          "payload": {
+            "value": "expected+scope"
+          }
+        }
+      },
+      {
+        "id": "target.calls",
+        "parameters": {
+          "count": 1,
+          "function_id": "{{run_id}}::hook-mutate",
+          "payload_subset": {
+            "call": {
+              "arguments": {
+                "value": "expected"
+              },
+              "function_id": "{{run_id}}::record",
+              "id": "call-1"
+            },
+            "point": "pre_trigger"
+          }
+        }
+      },
+      {
+        "id": "target.calls",
+        "parameters": {
+          "count": 1,
+          "function_id": "{{run_id}}::hook-hold",
+          "payload_subset": {
+            "call": {
+              "arguments": {
+                "value": "expected+scope"
+              },
+              "function_id": "{{run_id}}::record",
+              "id": "call-1"
+            },
+            "point": "pre_trigger"
+          }
+        }
+      }
+    ],
+    "quarantine": true,
+    "recorder": {
+      "extra_functions": [
+        {
+          "description": "Hold every consulted call for explicit approval.",
+          "function_id": "{{run_id}}::hook-hold",
+          "request_schema": {
+            "type": "object"
+          },
+          "response": {
+            "decision": "hold"
+          }
+        },
+        {
+          "description": "Inject validated scope into the arguments.",
+          "function_id": "{{run_id}}::hook-mutate",
+          "request_schema": {
+            "type": "object"
+          },
+          "response": {
+            "decision": "continue",
+            "mutations": {
+              "arguments": {
+                "value": "expected+scope"
+              }
+            }
+          }
+        }
+      ],
+      "lifecycle": {
+        "function_id": "integration-recorder::lifecycle",
+        "trigger_type": "harness::turn-completed"
+      },
+      "target": {
+        "description": "Record one integration fixture value.",
+        "function_id": "{{run_id}}::record",
+        "request_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "type": "object"
+        },
+        "response": {
+          "content": [
+            {
+              "text": "recorded",
+              "type": "text"
+            }
+          ],
+          "is_error": false
+        }
+      }
+    },
+    "release": {
+      "action": "execute"
+    },
+    "schema_version": "1",
+    "send": {
+      "idempotency_key": "{{run_id}}:c-e2e-506",
+      "message": "Call the recorder once.",
+      "model": "fixture-model",
+      "options": {
+        "functions": {
+          "allow": [
+            "{{run_id}}::record"
+          ],
+          "deny": [],
+          "expose": "native"
+        }
+      },
+      "provider": "scripted",
+      "session_id": "{{session_id}}"
+    }
+  },
+  "system_prompt_template_sha256": "2e9e35a3503b6f90bac8ae53dee151d8926cb196255283b719aa78a58c44e6b3"
+}

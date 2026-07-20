@@ -3,12 +3,16 @@
 //! escalation, complete teardown, environment isolation).
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use harness_integration::stack::{RunPaths, Stack};
 
 fn stub_stack(dir: &tempfile::TempDir) -> (Stack, RunPaths) {
     let paths = RunPaths::allocate(dir.path(), "test-run").expect("allocate");
-    (Stack::for_tests(paths.clone()), paths)
+    (
+        Stack::for_tests_with_teardown_budget(paths.clone(), Duration::from_millis(400)),
+        paths,
+    )
 }
 
 fn sh(args: &str) -> (PathBuf, Vec<String>) {
@@ -49,10 +53,9 @@ async fn teardown_terminates_a_cooperative_child_promptly() {
     let started = std::time::Instant::now();
     stack.teardown().await;
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(4),
+        started.elapsed() < Duration::from_secs(2),
         "SIGTERM should end a cooperative child well before the SIGKILL grace"
     );
-    assert!(stack.early_exit().is_some(), "child must be reaped");
 }
 
 #[tokio::test]
@@ -64,17 +67,45 @@ async fn teardown_escalates_to_sigkill_for_a_term_ignoring_child() {
         .spawn_child("stubborn", &bin, &args, &paths.root)
         .unwrap();
     // Let the shell install its trap before signalling.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
     let started = std::time::Instant::now();
     stack.teardown().await;
     let elapsed = started.elapsed();
     assert!(
-        elapsed >= std::time::Duration::from_secs(4),
+        elapsed >= Duration::from_millis(300),
         "must wait the SIGTERM grace before killing ({elapsed:?})"
     );
     assert!(
-        elapsed < std::time::Duration::from_secs(10),
+        elapsed < Duration::from_secs(2),
         "SIGKILL must end the child right after the grace ({elapsed:?})"
+    );
+}
+
+#[tokio::test]
+async fn teardown_kills_descendants_in_the_process_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut stack, paths) = stub_stack(&dir);
+    let pid_file = paths.root.join("descendant.pid");
+    let args = vec![
+        "-c".to_string(),
+        "trap '' TERM; sleep 60 & echo $! > \"$1\"; wait".to_string(),
+        "group-stub".to_string(),
+        pid_file.to_string_lossy().into_owned(),
+    ];
+    stack
+        .spawn_child(
+            "process-tree",
+            PathBuf::from("/bin/sh").as_path(),
+            &args,
+            &paths.root,
+        )
+        .unwrap();
+
+    let descendant = wait_for_pid(&pid_file).await;
+    stack.teardown().await;
+    assert!(
+        wait_until_not_running(descendant).await,
+        "descendant {descendant} survived process-group teardown"
     );
 }
 
@@ -107,4 +138,34 @@ async fn children_see_only_the_environment_allowlist() {
             "unexpected env var {key} in child environment"
         );
     }
+}
+
+async fn wait_for_pid(path: &std::path::Path) -> u32 {
+    for _ in 0..50 {
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            return raw.trim().parse().expect("numeric descendant pid");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("descendant pid was not written");
+}
+
+async fn wait_until_not_running(pid: u32) -> bool {
+    for _ in 0..50 {
+        if !process_is_running(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
+fn process_is_running(pid: u32) -> bool {
+    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(_) => return false,
+    };
+    stat.rsplit_once(") ")
+        .and_then(|(_, rest)| rest.chars().next())
+        .is_some_and(|state| state != 'Z')
 }

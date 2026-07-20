@@ -210,18 +210,46 @@ fn split_pointer(pointer: &str) -> (&str, String) {
 /// Public subset check for non-matcher consumers (readiness compares each
 /// seeded configuration key against the worker's stored resolved config).
 pub fn subset_of(expected: &Value, actual: &Value) -> Option<String> {
-    subset_mismatch(expected, actual, "")
+    subset_with_array_policy(expected, actual, ArrayPolicy::Prefix)
+}
+
+/// Array semantics for structural subset comparisons. Objects are always
+/// recursive subsets; callers must choose whether arrays may have an
+/// unmatched suffix or must match in full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrayPolicy {
+    Exact,
+    Prefix,
+}
+
+pub fn subset_with_array_policy(
+    expected: &Value,
+    actual: &Value,
+    arrays: ArrayPolicy,
+) -> Option<String> {
+    subset_mismatch_with_arrays(expected, actual, "", arrays)
 }
 
 /// `None` when `expected` is a positional subset of `actual`; otherwise a
 /// description of the first mismatch.
 fn subset_mismatch(expected: &Value, actual: &Value, path: &str) -> Option<String> {
+    subset_mismatch_with_arrays(expected, actual, path, ArrayPolicy::Prefix)
+}
+
+fn subset_mismatch_with_arrays(
+    expected: &Value,
+    actual: &Value,
+    path: &str,
+    arrays: ArrayPolicy,
+) -> Option<String> {
     match (expected, actual) {
         (Value::Object(exp), Value::Object(act)) => {
             for (k, ev) in exp {
                 match act.get(k) {
                     Some(av) => {
-                        if let Some(detail) = subset_mismatch(ev, av, &format!("{path}/{k}")) {
+                        if let Some(detail) =
+                            subset_mismatch_with_arrays(ev, av, &format!("{path}/{k}"), arrays)
+                        {
                             return Some(detail);
                         }
                     }
@@ -231,15 +259,21 @@ fn subset_mismatch(expected: &Value, actual: &Value, path: &str) -> Option<Strin
             None
         }
         (Value::Array(exp), Value::Array(act)) => {
-            if exp.len() > act.len() {
+            let wrong_length = match arrays {
+                ArrayPolicy::Exact => exp.len() != act.len(),
+                ArrayPolicy::Prefix => exp.len() > act.len(),
+            };
+            if wrong_length {
                 return Some(format!(
-                    "subset: expected at least {} array elements at {path}, got {}",
+                    "subset: expected {} array elements at {path}, got {}",
                     exp.len(),
                     act.len()
                 ));
             }
             for (i, ev) in exp.iter().enumerate() {
-                if let Some(detail) = subset_mismatch(ev, &act[i], &format!("{path}/{i}")) {
+                if let Some(detail) =
+                    subset_mismatch_with_arrays(ev, &act[i], &format!("{path}/{i}"), arrays)
+                {
                     return Some(detail);
                 }
             }

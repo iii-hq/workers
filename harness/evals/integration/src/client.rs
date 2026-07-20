@@ -8,6 +8,8 @@ use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::Value;
 
+use crate::deadline::Deadline;
+
 pub const DEFAULT_CALL_TIMEOUT_MS: u64 = 10_000;
 
 #[derive(Clone)]
@@ -75,6 +77,27 @@ impl Client {
                 self.name
             )),
         }
+    }
+
+    /// Call an engine function without allowing either the SDK timeout or
+    /// its connection wrapper to outlive the scenario deadline.
+    pub async fn call_with_deadline(
+        &self,
+        function_id: &str,
+        payload: Value,
+        deadline: Deadline,
+        maximum_ms: u64,
+    ) -> Result<Value, String> {
+        let timeout_ms = deadline
+            .timeout_ms(maximum_ms, function_id)
+            .map_err(|error| error.to_string())?;
+        deadline
+            .timeout(
+                function_id,
+                self.call_with_timeout(function_id, payload, timeout_ms),
+            )
+            .await
+            .map_err(|error| error.to_string())?
     }
 
     pub async fn shutdown(&self) {

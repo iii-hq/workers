@@ -1,95 +1,184 @@
-//! Placeholder expansion. Authored fixtures are run-agnostic; the runner
-//! stamps run-scoped identity at **Arm** by replacing `{{run_id}}`,
-//! `{{session_id}}`, and `{{system_prompt_sha256}}` inside every fixture
-//! string. Unknown `{{...}}` tokens are rejected so a typo cannot silently
-//! ship an unexpanded literal to the subject.
+//! Compilation and placeholder expansion for authored scenarios.
+//!
+//! Authors work with aliases and typed replies. Compilation produces the
+//! exact, strict runtime structures before any process is started.
 
-use serde_json::Value;
-use std::collections::BTreeMap;
-
-#[derive(Debug, Clone, Default)]
-pub struct Placeholders {
-    values: BTreeMap<&'static str, String>,
-}
-
-impl Placeholders {
-    pub fn new(run_id: &str, session_id: &str) -> Self {
-        let mut values = BTreeMap::new();
-        values.insert("run_id", run_id.to_string());
-        values.insert("session_id", session_id.to_string());
-        Self { values }
-    }
-
-    /// Available only after the expected system prompt is rendered at Arm.
-    pub fn with_system_prompt_sha256(mut self, digest: &str) -> Self {
-        self.values
-            .insert("system_prompt_sha256", digest.to_string());
-        self
-    }
-
-    pub fn expand_str(&self, text: &str) -> anyhow::Result<String> {
-        let mut out = text.to_string();
-        for (key, value) in &self.values {
-            out = out.replace(&format!("{{{{{key}}}}}"), value);
-        }
-        if let Some(start) = out.find("{{") {
-            let tail: String = out[start..].chars().take(40).collect();
-            anyhow::bail!("unexpanded placeholder near {tail:?}");
-        }
-        Ok(out)
-    }
-
-    pub fn expand_value(&self, value: &mut Value) -> anyhow::Result<()> {
-        match value {
-            Value::String(s) => {
-                *s = self.expand_str(s)?;
-            }
-            Value::Array(items) => {
-                for item in items {
-                    self.expand_value(item)?;
-                }
-            }
-            Value::Object(map) => {
-                // Keys may carry placeholders too (e.g. a run-scoped function
-                // id used as a map key in evidence expectations).
-                let needs_key_rewrite = map.keys().any(|k| k.contains("{{"));
-                if needs_key_rewrite {
-                    let old = std::mem::take(map);
-                    for (k, mut v) in old {
-                        self.expand_value(&mut v)?;
-                        map.insert(self.expand_str(&k)?, v);
-                    }
-                } else {
-                    for (_, v) in map.iter_mut() {
-                        self.expand_value(v)?;
-                    }
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-}
+mod expectations;
+mod functions;
+mod render;
+mod router;
+mod templates;
+mod tokens;
+mod validation;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
+mod tests;
 
-    #[test]
-    fn expands_strings_keys_and_rejects_unknown_tokens() {
-        let p = Placeholders::new("r1", "s_abc");
-        let mut v = json!({
-            "idempotency_key": "{{run_id}}:streamed-text",
-            "session_id": "{{session_id}}",
-            "{{run_id}}::record": { "count": 1 }
-        });
-        p.expand_value(&mut v).unwrap();
-        assert_eq!(v["idempotency_key"], "r1:streamed-text");
-        assert_eq!(v["session_id"], "s_abc");
-        assert!(v.get("r1::record").is_some());
+use serde::{Deserialize, Serialize};
 
-        let mut bad = json!("{{unknown_token}}");
-        assert!(p.expand_value(&mut bad).is_err());
+use crate::types::scenario::{CompiledScenarioV1, IntegrationScenarioV1};
+use crate::types::script::{ModelFixtureV1, RouterScriptV1};
+
+pub use render::{render_authored_yaml, render_compiled};
+pub use templates::{scenario_template, ScenarioTemplateKind};
+pub use tokens::Placeholders;
+
+const DEFAULT_MODEL: &str = "fixture-model";
+const DEFAULT_PROVIDER: &str = "scripted";
+const SYNTHETIC_FUNCTION_ALIAS: &str = "unused";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompiledFixtureV1 {
+    pub scenario: CompiledScenarioV1,
+    pub script: RouterScriptV1,
+    pub system_prompt_template: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct ExpandedFixtureV1 {
+    pub(crate) scenario: CompiledScenarioV1,
+    pub(crate) script: RouterScriptV1,
+    pub(crate) system_prompt: String,
+}
+
+/// Resolve all run-scoped placeholders in a compiled fixture.
+///
+/// The system prompt must be expanded first because its digest is itself a
+/// placeholder consumed by the router script.
+pub(crate) fn expand_compiled_fixture(
+    fixture: &CompiledFixtureV1,
+    run_id: &str,
+    session_id: &str,
+) -> anyhow::Result<ExpandedFixtureV1> {
+    let base = Placeholders::new(run_id, session_id);
+    let system_prompt = base.expand_str(&fixture.system_prompt_template)?;
+    let digest = crate::canonical::sha256_of_bytes(system_prompt.as_bytes());
+    let placeholders = base.with_system_prompt_sha256(&digest);
+
+    let mut scenario = serde_json::to_value(&fixture.scenario)?;
+    placeholders.expand_value(&mut scenario)?;
+    let scenario = serde_json::from_value(scenario)?;
+
+    let mut script = serde_json::to_value(&fixture.script)?;
+    placeholders.expand_value(&mut script)?;
+    let script = serde_json::from_value(script)?;
+
+    Ok(ExpandedFixtureV1 {
+        scenario,
+        script,
+        system_prompt,
+    })
+}
+
+#[derive(Debug)]
+struct CompiledFunctionCall {
+    id: String,
+    function: String,
+    generation_index: usize,
+    typed: bool,
+}
+
+/// Compile the concise authored contract to the strict structures consumed by
+/// the runner and scripted router.
+pub fn compile_scenario(
+    authored: &IntegrationScenarioV1,
+    system_prompt_base: &str,
+) -> anyhow::Result<CompiledFixtureV1> {
+    validation::validate_identity(authored)?;
+    let model = authored
+        .router
+        .model
+        .clone()
+        .unwrap_or_else(default_model_fixture);
+    if model.id.is_empty() || model.provider.is_empty() {
+        anyhow::bail!("router model id and provider must be non-empty");
+    }
+    if authored.router.generations.is_empty() {
+        anyhow::bail!("router has no generations");
+    }
+
+    let allowed_aliases = functions::allowed_aliases(authored)?;
+    let function_ids = functions::function_ids(authored);
+    let allowed_ids: Vec<String> = allowed_aliases
+        .iter()
+        .map(|alias| function_ids[alias].clone())
+        .collect();
+    let tools = functions::compile_tools(authored, &allowed_aliases, &function_ids);
+    let recorder = functions::compile_recorder(authored, &allowed_aliases, &function_ids);
+    let bindings = functions::compile_bindings(authored, &allowed_aliases, &function_ids)?;
+    let calls = functions::function_call_ids(authored, &function_ids, &allowed_aliases)?;
+    validation::validate_release(authored, &calls)?;
+    let fault = functions::compile_fault(authored, &function_ids, &calls)?;
+
+    let send = functions::compile_send(authored, &model, &allowed_ids)?;
+    let script = router::compile_router(authored, &model, &tools, &function_ids, &calls)?;
+    let invariants = expectations::compile_expectations(
+        authored,
+        &function_ids,
+        &calls,
+        script.generations.len(),
+    )?;
+    let system_prompt_template = compile_system_prompt(system_prompt_base, &allowed_ids);
+
+    let fixture = CompiledFixtureV1 {
+        scenario: CompiledScenarioV1 {
+            schema_version: authored.schema_version,
+            id: authored.id.clone(),
+            description: authored.description.clone(),
+            send,
+            recorder,
+            deadlines: authored.timeouts,
+            invariants,
+            fault,
+            bindings,
+            release: authored.release.clone(),
+            quarantine: authored.quarantine,
+        },
+        script,
+        system_prompt_template,
+    };
+    render::validate_placeholders(&fixture)?;
+    Ok(fixture)
+}
+
+fn compile_system_prompt(base: &str, allowed_ids: &[String]) -> String {
+    let base = base.strip_suffix('\n').unwrap_or(base);
+    let policy = if allowed_ids.is_empty() {
+        "Function dispatch is entirely disabled this turn — do not call any function.".to_string()
+    } else {
+        let mut allowed = allowed_ids.to_vec();
+        allowed.sort();
+        allowed.dedup();
+        format!(
+            "Your dispatch policy allows ONLY these functions: {}. This narrowed-policy \
+             instruction OVERRIDES the general discovery requirement for this turn: call the \
+             listed target ids directly when the task already supplies their arguments. Anything \
+             else — including discovery (engine::functions::list / ::info) unless listed above — \
+             is denied. Do not probe: if the task genuinely needs an unlisted function or an \
+             unknown contract, report that blocker and finish.",
+            allowed.join(", ")
+        )
+    };
+    format!("{base}\n\nYour session id is {{{{session_id}}}}.\n{policy}")
+}
+
+fn default_model_fixture() -> ModelFixtureV1 {
+    ModelFixtureV1 {
+        id: DEFAULT_MODEL.to_string(),
+        provider: DEFAULT_PROVIDER.to_string(),
+        display_name: None,
+        context_window: 32_768,
+        max_output_tokens: 4_096,
+        input_limit: None,
+        supports_thinking: Some(false),
+        supports_xhigh: None,
+        reasoning_efforts: None,
+        supports_tools: Some(true),
+        supports_vision: Some(false),
+        supports_cache: Some(false),
+        supports_structured_output: Some(true),
+        thinking_budgets: None,
+        pricing: None,
     }
 }

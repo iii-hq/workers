@@ -1,9 +1,0 @@
-{
-  "name": "integration-console-recorder",
-  "private": true,
-  "type": "module",
-  "description": "Diagnostics-only screen recorder: captures the iii console chat view during a integration scenario. Uses the system Chrome via playwright-core (no browser download).",
-  "dependencies": {
-    "playwright-core": "^1.49.0"
-  }
-}

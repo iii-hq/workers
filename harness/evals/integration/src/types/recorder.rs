@@ -1,5 +1,6 @@
-//! Recorder control-plane types (spec § Proposed recorder contract). The
-//! five `integration-recorder::*` functions speak exactly these shapes.
+//! Recorder configuration and durable event types. Configuration and
+//! evidence collection are in-process runner operations; only controlled
+//! target functions and the lifecycle sink are exposed through the engine.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -65,69 +66,6 @@ impl LifecycleTriggerType {
 pub enum LifecycleFunctionId {
     #[serde(rename = "integration-recorder::lifecycle")]
     Lifecycle,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RecorderConfigureRequestV1 {
-    pub schema_version: SchemaVersion1,
-    pub run_id: String,
-    pub config: RecorderConfigV1,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RecorderConfigureResponseV1 {
-    pub schema_version: SchemaVersion1,
-    /// SHA-256 of the canonical JSON of the registered request schema.
-    pub target_schema_sha256: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RecorderResetRequestV1 {
-    pub schema_version: SchemaVersion1,
-    pub run_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RecorderResetResponseV1 {
-    pub schema_version: SchemaVersion1,
-    pub next_sequence: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RecorderSnapshotRequestV1 {
-    pub schema_version: SchemaVersion1,
-    pub run_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub after_sequence: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RecorderSnapshotResponseV1 {
-    pub schema_version: SchemaVersion1,
-    pub events: Vec<RecorderEventV1>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RecorderAwaitRequestV1 {
-    pub schema_version: SchemaVersion1,
-    pub run_id: String,
-    pub kind: RecorderEventKind,
-    pub count: u64,
-    pub timeout_ms: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RecorderAwaitResponseV1 {
-    pub schema_version: SchemaVersion1,
-    pub observed: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

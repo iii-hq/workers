@@ -405,15 +405,42 @@ jobs:
         run: |
           set -euo pipefail
           lock=harness/evals/integration/engine.lock
-          read_field() { sed -n "s/^$1 = \"\(.*\)\"$/\1/p" "$lock"; }
+          read_field() {
+            local field=$1 values
+            values=$(sed -n "s/^${field} = \"\\([^\"]*\\)\"$/\\1/p" "$lock")
+            [[ $(printf '%s\n' "$values" | sed '/^$/d' | wc -l) -eq 1 ]] || {
+              echo "engine.lock: $field must appear exactly once"
+              exit 3
+            }
+            printf '%s' "$values"
+          }
+          invalid=$(sed \
+            -e '/^[[:space:]]*$/d' \
+            -e '/^[[:space:]]*#/d' \
+            -e '/^\(repository\|revision\|package\|binary\) = "[^"]*"$/d' \
+            "$lock")
+          [[ -z "$invalid" ]] || {
+            echo "engine.lock: unsupported or malformed entry"
+            printf '%s\n' "$invalid"
+            exit 3
+          }
           repository=$(read_field repository)
           revision=$(read_field revision)
           package=$(read_field package)
           binary=$(read_field binary)
-          for f in repository revision package binary; do
-            [[ -n "${!f}" ]] || { echo "engine.lock: missing $f"; exit 3; }
-          done
+          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+            echo "engine.lock: repository must be an owner/name slug"
+            exit 3
+          }
           [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "engine.lock: revision must be 40-hex"; exit 3; }
+          [[ "$package" =~ ^[A-Za-z0-9_-]+$ ]] || {
+            echo "engine.lock: package contains unsupported characters"
+            exit 3
+          }
+          [[ "$binary" =~ ^target/(debug|release)/[A-Za-z0-9_.-]+$ ]] || {
+            echo "engine.lock: binary must be a target profile path"
+            exit 3
+          }
           {
             echo "repository=$repository"
             echo "revision=$revision"
@@ -461,6 +488,9 @@ jobs:
 
       - name: Integration crate unit tests
         run: cargo test --manifest-path harness/evals/integration/Cargo.toml
+
+      - name: Validate integration scenarios
+        run: make -C harness integration-validate
 
       - name: Run integration scenarios
         run: make -C harness integration-e2e III_BIN="${{ steps.engine.outputs.bin }}"

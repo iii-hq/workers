@@ -1,111 +1,76 @@
-# C-E2E-505 — a holding hook's own argument mutations must survive the hold
-# (reproduction of https://github.com/iii-hq/workers/issues/505).
-#
-# ONE pre-trigger hook binds to the run-scoped target and returns BOTH a hold
-# and a mutation (the approval-gate pattern: gate the call and stamp the
-# validated approval context onto it):
-#   {{run_id}}::hook-gate → {decision: hold, mutations: {arguments: {value: "expected+approved"}}}
-# The runner releases the parked call with
-# `harness::function::resolve { action: "execute" }`.
-#
-# QUARANTINED: the invariants assert the issue's EXPECTED behavior — the
-# released call executes with the gate's mutated arguments. Source inspection
-# shows the mutations are discarded at parse time (`parse_output` in
-# harness/src/hooks/runner.rs maps `decision: "hold"` to a mutation-less
-# outcome), and the release path re-reads the transcript's original args
-# regardless (#506). Unquarantine when #505 lands.
+# C-E2E-505 — a holding hook's mutation reaches the released call.
+# Reproduction of https://github.com/iii-hq/workers/issues/505.
 schema_version: "1"
 id: C-E2E-505
-description: A pre-trigger hook that holds AND mutates must have its mutation applied to the released call.
-stack_profile: harness-core
+description: A pre-trigger hook that holds and mutates must apply its mutation to the released call.
 quarantine: true
+
 send:
-  session_id: "{{session_id}}"
-  message: "Call the recorder once."
-  model: fixture-model
-  provider: scripted
-  idempotency_key: "{{run_id}}:hold-mutation"
-  options:
-    functions:
-      allow: ["{{run_id}}::record"]
-      deny: []
-      expose: native
-router_script: router-script.json
-recorder:
-  target:
-    function_id: "{{run_id}}::record"
-    description: "Record one integration fixture value."
+  message: Call the recorder once.
+
+functions:
+  record:
+    description: Record one integration fixture value.
     request_schema:
       type: object
       additionalProperties: false
       properties:
-        value:
-          type: string
-      required: ["value"]
+        value: { type: string }
+      required: [value]
     response:
       content:
-        - type: text
-          text: recorded
+        - { type: text, text: recorded }
       is_error: false
-  extra_functions:
-    - function_id: "{{run_id}}::hook-gate"
-      description: "Pre-trigger approval gate: holds the call AND stamps approval context onto its arguments."
-      request_schema:
-        type: object
-      response:
-        decision: hold
-        mutations:
-          arguments:
-            value: "expected+approved"
-  lifecycle:
-    trigger_type: "harness::turn-completed"
-    function_id: "integration-recorder::lifecycle"
+  hook-gate:
+    description: Hold the call and stamp approval context onto its arguments.
+    request_schema:
+      type: object
+    response:
+      decision: hold
+      mutations:
+        arguments:
+          value: expected+approved
+    expose: false
+
 bindings:
-  - trigger_type: "harness::hook::pre-trigger"
-    function_id: "{{run_id}}::hook-gate"
-    config:
-      functions: ["{{run_id}}::record"]
-      priority: 10
+  - trigger: hook_pre_trigger
+    function: hook-gate
+    functions: [record]
+    priority: 10
+
 release:
-  function_call_id: call-1
   action: execute
-deadlines:
-  readiness_ms: 60000
-  scenario_ms: 60000
-  teardown_ms: 15000
-invariants:
-  # THE issue-505 assertion: the holding gate's mutation reaches the released
-  # execution, exactly once. (Today the target receives {value: "expected"}.)
-  - id: target.calls
-    parameters:
-      function_id: "{{run_id}}::record"
+
+router:
+  generations:
+    - reply:
+        type: function_call
+        function: record
+        arguments: { value: expected }
+        usage: { input: 8, output: 4 }
+    - reply:
+        type: text
+        text: approved and recorded
+        usage: { input: 20, output: 3 }
+      match_overrides:
+        request_id:
+          mode: regex
+          pattern: "^t_[0-9a-f]{32}:[0-9]+$"
+        system_prompt: { mode: present }
+        messages: { mode: present }
+        tools: { mode: present }
+
+expect:
+  calls_closed: true
+  calls:
+    - function: record
       count: 1
-      payload:
-        value: "expected+approved"
-  # The gate ran exactly once and saw the original model arguments.
-  - id: target.calls
-    parameters:
-      function_id: "{{run_id}}::hook-gate"
+      payload: { value: expected+approved }
+    - function: hook-gate
       count: 1
       payload_subset:
         point: pre_trigger
         call:
           id: call-1
           function_id: "{{run_id}}::record"
-          arguments:
-            value: expected
-  - id: transcript.calls_closed
-    parameters: {}
-  - id: status.terminal
-    parameters:
-      status: completed
-      pending_calls: 0
-      queued_messages: 0
-  - id: transcript.no_duplicates
-    parameters: {}
-  - id: lifecycle.completed_once
-    parameters:
-      allow_identical_duplicates: true
-  - id: router.generations_consumed
-    parameters:
-      count: 2
+          arguments: { value: expected }

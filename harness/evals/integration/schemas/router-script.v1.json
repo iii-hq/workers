@@ -420,31 +420,6 @@
       ],
       "type": "string"
     },
-    "BarrierV1": {
-      "additionalProperties": false,
-      "properties": {
-        "before_frame": {
-          "description": "Frame index the stream pauses before (0-based into `frames`).",
-          "format": "uint",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "id": {
-          "type": "string"
-        },
-        "timeout_ms": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "before_frame",
-        "id",
-        "timeout_ms"
-      ],
-      "type": "object"
-    },
     "ContentBlock": {
       "oneOf": [
         {
@@ -620,7 +595,7 @@
     },
     "GenerationMatchV1": {
       "additionalProperties": false,
-      "description": "The 12 router-request fields; every one carries an explicit matcher — there is no runner default (spec § First implementation slice).",
+      "description": "The 12 router-request fields; compiled scenarios always make every matcher explicit.",
       "properties": {
         "max_output_tokens": {
           "$ref": "#/definitions/JsonMatcherV1"
@@ -1048,15 +1023,6 @@
     "ScriptedGenerationV1": {
       "additionalProperties": false,
       "properties": {
-        "barriers": {
-          "items": {
-            "$ref": "#/definitions/BarrierV1"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
         "frames": {
           "items": {
             "$ref": "#/definitions/AssistantMessageEvent"
