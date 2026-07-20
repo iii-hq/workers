@@ -3,11 +3,11 @@ use std::collections::BTreeMap;
 use anyhow::Context;
 use serde_json::Value;
 
-use crate::types::scenario::{validate_scenario_id, IntegrationScenarioV1, RouterReplyV1};
+use crate::types::scenario::{validate_scenario_id, AuthoredScenarioV1, RouterReplyV1};
 
 use super::CompiledFunctionCall;
 
-pub(super) fn validate_identity(authored: &IntegrationScenarioV1) -> anyhow::Result<()> {
+pub(super) fn validate_identity(authored: &AuthoredScenarioV1) -> anyhow::Result<()> {
     validate_scenario_id(&authored.id)?;
     if authored.description.trim().is_empty() {
         anyhow::bail!("scenario description must not be empty");
@@ -38,7 +38,7 @@ fn validate_alias(alias: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_function_schemas(authored: &IntegrationScenarioV1) -> anyhow::Result<()> {
+fn validate_function_schemas(authored: &AuthoredScenarioV1) -> anyhow::Result<()> {
     for (alias, function) in &authored.functions {
         let schema = Value::Object(function.request_schema.clone());
         jsonschema::JSONSchema::compile(&schema).map_err(|error| {
@@ -49,7 +49,7 @@ fn validate_function_schemas(authored: &IntegrationScenarioV1) -> anyhow::Result
 }
 
 pub(super) fn validate_function_arguments(
-    authored: &IntegrationScenarioV1,
+    authored: &AuthoredScenarioV1,
     function: &str,
     arguments: &Value,
     context: &str,
@@ -96,7 +96,7 @@ pub(super) fn validate_hook_response(alias: &str, response: &Value) -> anyhow::R
 }
 
 pub(super) fn validate_release(
-    authored: &IntegrationScenarioV1,
+    authored: &AuthoredScenarioV1,
     calls: &[CompiledFunctionCall],
 ) -> anyhow::Result<()> {
     let Some(release) = &authored.release else {
@@ -131,7 +131,7 @@ pub(super) fn validate_release(
 pub(super) fn validate_reply(
     reply: &RouterReplyV1,
     ordinal: u64,
-    authored: &IntegrationScenarioV1,
+    authored: &AuthoredScenarioV1,
     function_ids: &BTreeMap<String, String>,
 ) -> anyhow::Result<()> {
     match reply {

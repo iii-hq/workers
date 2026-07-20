@@ -20,7 +20,13 @@
     "result_path": {
       "type": "string"
     },
+    "result_sha256": {
+      "type": "string"
+    },
     "run_id": {
+      "type": "string"
+    },
+    "scenario_id": {
       "type": "string"
     },
     "schema_version": {
@@ -33,7 +39,9 @@
   "required": [
     "duration_ms",
     "result_path",
+    "result_sha256",
     "run_id",
+    "scenario_id",
     "schema_version",
     "started_at"
   ],

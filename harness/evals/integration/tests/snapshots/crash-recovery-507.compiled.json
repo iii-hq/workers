@@ -277,7 +277,8 @@
       {
         "id": "lifecycle.completed_once",
         "parameters": {
-          "allow_identical_duplicates": true
+          "allow_identical_duplicates": true,
+          "status": "completed"
         }
       },
       {
@@ -306,6 +307,7 @@
       "target": {
         "description": "Record one integration fixture value.",
         "function_id": "{{run_id}}::record",
+        "hold_response_at": 1,
         "request_schema": {
           "additionalProperties": false,
           "properties": {
@@ -326,8 +328,7 @@
             }
           ],
           "is_error": false
-        },
-        "response_delay_ms": 8000
+        }
       }
     },
     "schema_version": "1",

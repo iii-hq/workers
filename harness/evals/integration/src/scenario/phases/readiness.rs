@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::readiness::{self, ReadinessSpec};
 use crate::runtime::{RunError, RunErrorKind, RunPhase};
@@ -44,7 +44,7 @@ impl ScenarioRunner<'_> {
         let recorder = services.recorder();
         let scenario = &prepared.scenario;
 
-        let digest = recorder
+        recorder
             .configure(&self.run_id, &scenario.recorder)
             .map_err(|error| {
                 RunError::with_source(
@@ -54,16 +54,6 @@ impl ScenarioRunner<'_> {
                     error,
                 )
             })?;
-        let expected_digest = crate::canonical::sha256_of_canonical(&Value::Object(
-            scenario.recorder.target.request_schema.clone(),
-        ));
-        if digest != expected_digest {
-            return Err(RunError::new(
-                phase,
-                RunErrorKind::Setup,
-                format!("target schema digest mismatch: {digest} != {expected_digest}"),
-            ));
-        }
 
         recorder.reset(&self.run_id).map_err(|error| {
             RunError::with_source(
@@ -92,25 +82,27 @@ impl ScenarioRunner<'_> {
             ));
         }
 
-        let controlled_function_ids: Vec<String> = std::iter::once(&scenario.recorder.target)
-            .chain(scenario.recorder.extra_functions.iter())
-            .map(|function| function.function_id.clone())
-            .collect();
+        let controlled_contracts = readiness::controlled_contracts(&scenario.recorder);
         let discovery_deadline = prepared.readiness_deadline;
-        readiness::wait_for_functions(
+        if let Err(report) = readiness::wait_for_contracts(
             services.client(),
-            &controlled_function_ids,
+            &controlled_contracts,
             discovery_deadline,
         )
         .await
-        .map_err(|error| {
-            RunError::with_source(
+        {
+            self.write_artifact(
+                &scenario.id,
+                "readiness-failure.json",
+                &json!({ "phase": "controlled_functions", "missing": report.missing }),
+                phase,
+            )?;
+            return Err(RunError::new(
                 phase,
                 RunErrorKind::Setup,
-                "controlled functions did not appear in discovery",
-                error,
-            )
-        })?;
+                "controlled function contracts did not match live discovery",
+            ));
+        }
 
         stack.spawn_harness(self.bins).map_err(|error| {
             RunError::with_source(
@@ -167,30 +159,27 @@ impl ScenarioRunner<'_> {
                 })?;
         }
 
-        let bound_function_ids: Vec<String> =
-            std::iter::once("integration-recorder::lifecycle".to_string())
-                .chain(
-                    scenario
-                        .bindings
-                        .iter()
-                        .map(|binding| binding.function_id.clone()),
-                )
-                .collect();
+        let expected_bindings = super::expected_trigger_bindings(scenario, &self.session_id);
         let binding_deadline = prepared.readiness_deadline;
-        readiness::wait_for_registered_triggers(
+        if let Err(report) = readiness::wait_for_registered_triggers(
             services.client(),
-            &bound_function_ids,
+            &expected_bindings,
             binding_deadline,
         )
         .await
-        .map_err(|error| {
-            RunError::with_source(
+        {
+            self.write_artifact(
+                &scenario.id,
+                "readiness-failure.json",
+                &json!({ "phase": "trigger_bindings", "missing": report.missing }),
+                phase,
+            )?;
+            return Err(RunError::new(
                 phase,
                 RunErrorKind::Setup,
-                "trigger bindings did not appear in discovery",
-                error,
-            )
-        })?;
+                "trigger bindings did not match live discovery",
+            ));
+        }
 
         self.sink
             .as_mut()

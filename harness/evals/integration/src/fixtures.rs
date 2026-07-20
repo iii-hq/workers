@@ -7,6 +7,7 @@
 mod discovery;
 mod loading;
 mod script_validation;
+mod stream_validation;
 
 pub use discovery::{ensure_scenario_id_available, scenario_fixtures};
 pub use loading::ScenarioFixture;

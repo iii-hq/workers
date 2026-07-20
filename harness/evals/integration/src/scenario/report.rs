@@ -4,7 +4,6 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::artifacts::write_json;
-use crate::deadline::Deadline;
 use crate::runtime::{RunError, RunErrorKind, RunPhase};
 use crate::stack::EarlyExit;
 use crate::types::scenario::{Classification, ExecutionReportV1, IntegrationResultV1};
@@ -13,6 +12,36 @@ use crate::types::script::SchemaVersion1;
 use super::runner::ScenarioRunner;
 
 impl ScenarioRunner<'_> {
+    pub(super) fn write_run_artifact<T>(
+        &mut self,
+        name: &str,
+        value: &T,
+        phase: RunPhase,
+    ) -> Result<(), RunError>
+    where
+        T: Serialize + ?Sized,
+    {
+        self.sink
+            .as_mut()
+            .ok_or_else(|| {
+                RunError::new(
+                    phase,
+                    RunErrorKind::Runner,
+                    "artifact sink is not initialized",
+                )
+            })?
+            .write_json(name, value)
+            .map(|_| ())
+            .map_err(|error| {
+                RunError::with_source(
+                    phase,
+                    RunErrorKind::Runner,
+                    format!("write run artifact {name}"),
+                    error,
+                )
+            })
+    }
+
     pub(super) fn write_artifact<T>(
         &mut self,
         scenario_id: &str,
@@ -76,6 +105,15 @@ impl ScenarioRunner<'_> {
                     stderr = %exit.stderr_log.display(),
                     "subject process exited before teardown"
                 );
+                if let Err(artifact_error) =
+                    self.write_run_artifact("process-exit.json", &exit, RunPhase::Teardown)
+                {
+                    tracing::error!(
+                        target: "harness_integration::scenario",
+                        "process-exit artifact could not be written: {artifact_error:#}"
+                    );
+                    error = Some(artifact_error);
+                }
                 ProcessState::Crashed
             }
             None => ProcessState::Running,
@@ -170,16 +208,10 @@ pub(super) fn classify(error: Option<&RunError>, process_state: ProcessState) ->
 
 pub(super) fn rpc_failure(
     phase: RunPhase,
-    default_kind: RunErrorKind,
-    deadline: Deadline,
+    kind: RunErrorKind,
     message: impl Into<String>,
     error: String,
 ) -> RunError {
-    let kind = if deadline.is_expired() {
-        RunErrorKind::Timeout
-    } else {
-        default_kind
-    };
     RunError::with_source(phase, kind, message, anyhow::anyhow!(error))
 }
 

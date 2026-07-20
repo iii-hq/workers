@@ -88,12 +88,14 @@ impl ScriptedRouter {
             let address = address.clone();
             iii.register_function(
                 "router::chat",
-                RegisterFunction::new_async(move |input: Value| {
-                    let state = state.clone();
-                    let address = address.clone();
-                    async move { chat(state, address, input).await }
-                })
-                .description("Scripted integration chat: replays fixture generations.")
+                with_router_contract(
+                    RegisterFunction::new_async(move |input: Value| {
+                        let state = state.clone();
+                        let address = address.clone();
+                        async move { chat(state, address, input).await }
+                    }),
+                    "router::chat",
+                )
                 .metadata(json!({ "internal": true })),
             );
         }
@@ -101,26 +103,28 @@ impl ScriptedRouter {
             let state = self.state.clone();
             iii.register_function(
                 "router::abort",
-                RegisterFunction::new_async(move |input: Value| {
-                    let state = state.clone();
-                    async move {
-                        let request_id = input
-                            .get("request_id")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string();
-                        let mut state = state.lock().expect("router state");
-                        let aborted = match state.live.get_mut(&request_id) {
-                            Some(already @ false) => {
-                                *already = true;
-                                true
-                            }
-                            _ => false,
-                        };
-                        Ok::<Value, Error>(json!({ "aborted": aborted }))
-                    }
-                })
-                .description("Scripted integration abort: first abort of a live call wins.")
+                with_router_contract(
+                    RegisterFunction::new_async(move |input: Value| {
+                        let state = state.clone();
+                        async move {
+                            let request_id = input
+                                .get("request_id")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string();
+                            let mut state = state.lock().expect("router state");
+                            let aborted = match state.live.get_mut(&request_id) {
+                                Some(already @ false) => {
+                                    *already = true;
+                                    true
+                                }
+                                _ => false,
+                            };
+                            Ok::<Value, Error>(json!({ "aborted": aborted }))
+                        }
+                    }),
+                    "router::abort",
+                )
                 .metadata(json!({ "internal": true })),
             );
         }
@@ -128,84 +132,92 @@ impl ScriptedRouter {
             let state = self.state.clone();
             iii.register_function(
                 "router::models::list",
-                RegisterFunction::new_async(move |input: Value| {
-                    let state = state.clone();
-                    async move {
-                        let model = fixture_model(&state);
-                        let provider = input.get("provider").and_then(Value::as_str);
-                        let capability = input.get("capability").and_then(Value::as_str);
-                        let matches_provider =
-                            provider.is_none_or(|p| p.is_empty() || p == model.provider);
-                        let matches_capability =
-                            capability.is_none_or(|c| model_supports(&model, c));
-                        let models: Vec<ModelFixtureV1> = if matches_provider && matches_capability
-                        {
-                            vec![model]
-                        } else {
-                            vec![]
-                        };
-                        Ok::<Value, Error>(json!({ "models": models }))
-                    }
-                })
-                .description("Scripted integration catalog: the single fixture model."),
+                with_router_contract(
+                    RegisterFunction::new_async(move |input: Value| {
+                        let state = state.clone();
+                        async move {
+                            let model = fixture_model(&state);
+                            let provider = input.get("provider").and_then(Value::as_str);
+                            let capability = input.get("capability").and_then(Value::as_str);
+                            let matches_provider =
+                                provider.is_none_or(|p| p.is_empty() || p == model.provider);
+                            let matches_capability =
+                                capability.is_none_or(|c| model_supports(&model, c));
+                            let models: Vec<ModelFixtureV1> =
+                                if matches_provider && matches_capability {
+                                    vec![model]
+                                } else {
+                                    vec![]
+                                };
+                            Ok::<Value, Error>(json!({ "models": models }))
+                        }
+                    }),
+                    "router::models::list",
+                ),
             );
         }
         {
             let state = self.state.clone();
             iii.register_function(
                 "router::models::get",
-                RegisterFunction::new_async(move |input: Value| {
-                    let state = state.clone();
-                    async move {
-                        let model = fixture_model(&state);
-                        let provider = input.get("provider").and_then(Value::as_str);
-                        let id = input.get("id").and_then(Value::as_str).unwrap_or_default();
-                        let provider_ok =
-                            provider.is_none_or(|p| p.is_empty() || p == model.provider);
-                        if provider_ok && id == model.id {
-                            Ok::<Value, Error>(json!({ "model": model }))
-                        } else {
-                            Ok(Value::Null)
+                with_router_contract(
+                    RegisterFunction::new_async(move |input: Value| {
+                        let state = state.clone();
+                        async move {
+                            let model = fixture_model(&state);
+                            let provider = input.get("provider").and_then(Value::as_str);
+                            let id = input.get("id").and_then(Value::as_str).unwrap_or_default();
+                            let provider_ok =
+                                provider.is_none_or(|p| p.is_empty() || p == model.provider);
+                            if provider_ok && id == model.id {
+                                Ok::<Value, Error>(json!({ "model": model }))
+                            } else {
+                                Ok(Value::Null)
+                            }
                         }
-                    }
-                })
-                .description("Scripted integration catalog lookup."),
+                    }),
+                    "router::models::get",
+                ),
             );
         }
         {
             let state = self.state.clone();
             iii.register_function(
                 "router::models::supports",
-                RegisterFunction::new_async(move |input: Value| {
-                    let state = state.clone();
-                    async move {
-                        let model = fixture_model(&state);
-                        let provider = input
-                            .get("provider")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default();
-                        let id = input.get("id").and_then(Value::as_str).unwrap_or_default();
-                        let capability = input
-                            .get("capability")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default();
-                        let supported = (provider.is_empty() || provider == model.provider)
-                            && id == model.id
-                            && model_supports(&model, capability);
-                        Ok::<Value, Error>(json!({ "supported": supported }))
-                    }
-                })
-                .description("Scripted integration capability check."),
+                with_router_contract(
+                    RegisterFunction::new_async(move |input: Value| {
+                        let state = state.clone();
+                        async move {
+                            let model = fixture_model(&state);
+                            let provider = input
+                                .get("provider")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default();
+                            let id = input.get("id").and_then(Value::as_str).unwrap_or_default();
+                            let capability = input
+                                .get("capability")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default();
+                            let supported = (provider.is_empty() || provider == model.provider)
+                                && id == model.id
+                                && model_supports(&model, capability);
+                            Ok::<Value, Error>(json!({ "supported": supported }))
+                        }
+                    }),
+                    "router::models::supports",
+                ),
             );
         }
         iii.register_function(
             "router::system_prompt::get",
-            RegisterFunction::new_async(move |_input: Value| async move {
-                // `system_prompt` omitted: the harness falls back to its
-                // checked-in built-in prompt (spec § scripted-router contract).
-                Ok::<Value, Error>(json!({ "provider": "scripted" }))
-            })
-            .description("Scripted integration system prompt: defers to the harness built-in."),
+            with_router_contract(
+                RegisterFunction::new_async(move |_input: Value| async move {
+                    // `system_prompt` omitted: the harness falls back to its
+                    // checked-in built-in prompt (spec § scripted-router contract).
+                    Ok::<Value, Error>(json!({ "provider": "scripted" }))
+                }),
+                "router::system_prompt::get",
+            ),
         );
     }
 
@@ -246,6 +258,26 @@ impl ScriptedRouter {
     pub async fn shutdown(&self) {
         self.client.shutdown().await;
     }
+}
+
+fn with_router_contract(registration: RegisterFunction, function_id: &str) -> RegisterFunction {
+    let contract = crate::readiness::router_contract(function_id);
+    registration
+        .description(
+            contract
+                .description
+                .expect("router golden must declare a description"),
+        )
+        .request_format(
+            contract
+                .request_schema
+                .expect("router golden must declare a request schema"),
+        )
+        .response_format(
+            contract
+                .response_schema
+                .expect("router golden must declare a response schema"),
+        )
 }
 
 fn fixture_model(state: &Arc<Mutex<State>>) -> ModelFixtureV1 {

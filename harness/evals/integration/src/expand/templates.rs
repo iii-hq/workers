@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde_json::json;
 
 use crate::types::scenario::{
-    ExpectationsV1, FunctionResultExpectationV1, IntegrationScenarioV1, MessageCountsExpectationV1,
+    AuthoredScenarioV1, ExpectationsV1, FunctionResultExpectationV1, MessageCountsExpectationV1,
     RouterReplyV1, ScenarioFunctionV1, TargetCallsExpectationV1,
 };
 use crate::types::script::{JsonMatcherV1, SchemaVersion1};
@@ -21,7 +21,7 @@ pub fn scenario_template(
     id: &str,
     description: &str,
     kind: ScenarioTemplateKind,
-) -> IntegrationScenarioV1 {
+) -> AuthoredScenarioV1 {
     let mut functions = BTreeMap::new();
     let record = ScenarioFunctionV1 {
         description: "Record one integration fixture value.".to_string(),
@@ -38,7 +38,6 @@ pub fn scenario_template(
             "content": [{ "type": "text", "text": "recorded" }],
             "is_error": false
         }),
-        response_delay_ms: None,
         expose: true,
     };
     if kind != ScenarioTemplateKind::Text {
@@ -59,7 +58,6 @@ pub fn scenario_template(
                     .cloned()
                     .expect("object"),
                 response: json!({ "decision": "hold" }),
-                response_delay_ms: None,
                 expose: false,
             },
         );
@@ -75,10 +73,6 @@ pub fn scenario_template(
         });
     }
     if kind == ScenarioTemplateKind::Crash {
-        functions
-            .get_mut("record")
-            .expect("crash template has record")
-            .response_delay_ms = Some(8_000);
         fault = Some(crate::types::scenario::FaultV1 {
             kind: crate::types::scenario::FaultKind::EngineSigkill,
             function: Some("record".to_string()),
@@ -178,7 +172,7 @@ pub fn scenario_template(
         }
     };
 
-    IntegrationScenarioV1 {
+    AuthoredScenarioV1 {
         schema_version: SchemaVersion1::V1,
         id: id.to_string(),
         description: description.to_string(),

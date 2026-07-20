@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -9,9 +10,10 @@ use crate::runtime::{RunError, RunErrorKind, RunPhase};
 use crate::services::RunServices;
 use crate::types::recorder::RecorderEventKind;
 
-use super::super::report::rpc_failure;
 use super::super::runner::ScenarioRunner;
 use super::super::state::{ActiveTurn, PreparedRun};
+
+const COLLECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl ScenarioRunner<'_> {
     pub(in crate::scenario) async fn collect(
@@ -21,14 +23,12 @@ impl ScenarioRunner<'_> {
         active: &mut ActiveTurn,
     ) -> Result<(), RunError> {
         let phase = RunPhase::Collect;
-        let deadline = active.deadline;
-
-        if deadline.is_expired() {
-            active.timed_out = true;
-            active.transcript = Vec::new();
-        } else {
-            active.transcript = self.collect_transcript(services.client(), deadline).await?;
-        }
+        // Evidence transport is runner infrastructure, not subject
+        // completion. Give it an independent bounded deadline so an RPC
+        // failure here is runner_error even when the subject deadline has
+        // already elapsed in Await.
+        let deadline = Deadline::after(COLLECTION_TIMEOUT);
+        active.transcript = self.collect_transcript(services.client(), deadline).await?;
         self.write_artifact(
             &prepared.scenario.id,
             "transcript.json",
@@ -72,9 +72,6 @@ impl ScenarioRunner<'_> {
             &lifecycle_events,
             phase,
         )?;
-        if deadline.is_expired() {
-            active.timed_out = true;
-        }
         Ok(())
     }
 
@@ -102,9 +99,9 @@ impl ScenarioRunner<'_> {
 
         if active.timed_out {
             return Err(RunError::new(
-                phase,
+                RunPhase::Await,
                 RunErrorKind::Timeout,
-                "scenario deadline elapsed before evidence collection completed",
+                "terminal status did not arrive before the scenario deadline",
             ));
         }
         if self.invariants.iter().any(|invariant| !invariant.passed)
@@ -147,12 +144,11 @@ impl ScenarioRunner<'_> {
                 )
                 .await
                 .map_err(|error| {
-                    rpc_failure(
+                    RunError::with_source(
                         phase,
                         RunErrorKind::Runner,
-                        deadline,
                         "collect session transcript",
-                        error,
+                        anyhow::anyhow!(error),
                     )
                 })?;
             if let Some(items) = page.get("messages").and_then(Value::as_array) {

@@ -108,6 +108,7 @@ fn lifecycle_accepts_identical_duplicates_and_rejects_conflicts() {
             duplicate,
         ),
     ];
+    evidence.recorder_events[1].sequence = 2;
     let ok = grade(
         &[spec(
             "lifecycle.completed_once",
@@ -131,13 +132,74 @@ fn lifecycle_accepts_identical_duplicates_and_rejects_conflicts() {
 
     let mut conflicting = completed;
     conflicting["status"] = json!("failed");
-    evidence.recorder_events.push(event(
+    let mut conflicting_event = event(
         RecorderEventKind::Lifecycle,
         "integration-recorder::lifecycle",
         conflicting,
-    ));
+    );
+    conflicting_event.sequence = 3;
+    evidence.recorder_events.push(conflicting_event);
     let bad = grade(&[spec("lifecycle.completed_once", json!({}))], &evidence);
     assert!(!bad[0].passed, "conflicting terminals must fail");
+}
+
+#[test]
+fn lifecycle_rejects_wrong_sink_shape_and_order() {
+    let mut evidence = base_evidence();
+    let payload = json!({
+        "session_id": "s_1",
+        "turn_id": "t_1",
+        "status": "completed",
+        "timestamp": 1
+    });
+    let mut target = event(
+        RecorderEventKind::TargetCall,
+        "r::record",
+        json!({ "value": "expected" }),
+    );
+    target.sequence = 2;
+    let lifecycle = event(RecorderEventKind::Lifecycle, "wrong::sink", payload);
+    evidence.recorder_events = vec![lifecycle, target];
+
+    let result = grade(&[spec("lifecycle.completed_once", json!({}))], &evidence);
+    assert!(!result[0].passed);
+    assert_eq!(
+        result[0].actual["function_status_session_and_turn_match"],
+        false
+    );
+    assert_eq!(result[0].actual["sequence_order_valid"], false);
+
+    evidence.recorder_events[0].function_id = "integration-recorder::lifecycle".into();
+    evidence.recorder_events[0].payload["unexpected"] = json!(true);
+    let result = grade(&[spec("lifecycle.completed_once", json!({}))], &evidence);
+    assert!(!result[0].actual["contract_shape_valid"].as_bool().unwrap());
+}
+
+#[test]
+fn lifecycle_status_uses_the_compiled_terminal_expectation() {
+    let mut evidence = base_evidence();
+    evidence.recorder_events = vec![event(
+        RecorderEventKind::Lifecycle,
+        "integration-recorder::lifecycle",
+        json!({
+            "session_id": "s_1",
+            "turn_id": "t_1",
+            "status": "failed",
+            "timestamp": 1
+        }),
+    )];
+
+    let result = grade(
+        &[spec(
+            "lifecycle.completed_once",
+            json!({
+                "allow_identical_duplicates": true,
+                "status": "failed"
+            }),
+        )],
+        &evidence,
+    );
+    assert!(result[0].passed, "{:?}", result[0]);
 }
 
 #[test]

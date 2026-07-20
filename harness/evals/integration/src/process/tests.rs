@@ -127,3 +127,22 @@ fn process_is_running(pid: u32) -> bool {
         .and_then(|(_, rest)| rest.chars().next())
         .is_some_and(|state| state != 'Z')
 }
+
+#[tokio::test]
+async fn teardown_reports_complete_cleanup() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut supervisor = ProcessSupervisor::new(Duration::from_secs(1));
+    let running = ProcessSpec::new(
+        "running",
+        "/bin/sh",
+        dir.path(),
+        dir.path().join("running.out"),
+        dir.path().join("running.err"),
+    )
+    .args(["-c", "exec sleep 60"]);
+    supervisor.spawn(running).unwrap();
+
+    let report = supervisor.teardown().await;
+    assert!(report.complete(), "{report:?}");
+    assert!(report.remaining_processes.is_empty());
+}

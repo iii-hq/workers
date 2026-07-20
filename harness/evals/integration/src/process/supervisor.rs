@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use nix::sys::signal::Signal;
+use serde::Serialize;
 
 use super::child::{SupervisedChild, REAP_INTERVAL};
 use super::spec::ProcessSpec;
@@ -9,11 +10,32 @@ use super::spec::ProcessSpec;
 pub const DEFAULT_TEARDOWN_BUDGET: Duration = Duration::from_secs(15);
 const SIGTERM_GRACE: Duration = Duration::from_secs(5);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct EarlyExit {
     pub name: String,
     pub status: String,
     pub stderr_log: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TeardownIssue {
+    pub process: String,
+    pub operation: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct TeardownReport {
+    pub deadline_exceeded: bool,
+    pub escalated_to_sigkill: Vec<String>,
+    pub remaining_processes: Vec<String>,
+    pub issues: Vec<TeardownIssue>,
+}
+
+impl TeardownReport {
+    pub fn complete(&self) -> bool {
+        !self.deadline_exceeded && self.remaining_processes.is_empty() && self.issues.is_empty()
+    }
 }
 
 pub struct ProcessSupervisor {
@@ -80,10 +102,11 @@ impl ProcessSupervisor {
     /// SIGTERM all process groups in reverse start order, then SIGKILL any
     /// group that survives the grace period. The grace and final reap are
     /// both bounded by `teardown_budget`.
-    pub async fn teardown(&mut self) {
+    pub async fn teardown(&mut self) -> TeardownReport {
         let started = tokio::time::Instant::now();
         let final_deadline = started + self.teardown_budget;
         let term_deadline = started + SIGTERM_GRACE.min(self.teardown_budget);
+        let mut report = TeardownReport::default();
 
         for supervised in self.children.iter().rev() {
             if supervised.group_is_alive() {
@@ -93,6 +116,11 @@ impl ProcessSupervisor {
                         worker = %supervised.name(),
                         "SIGTERM failed: {error}"
                     );
+                    report.issues.push(TeardownIssue {
+                        process: supervised.name().to_string(),
+                        operation: "sigterm".to_string(),
+                        error: format!("{error:#}"),
+                    });
                 }
             }
         }
@@ -101,6 +129,9 @@ impl ProcessSupervisor {
 
         for supervised in self.children.iter().rev() {
             if supervised.group_is_alive() {
+                report
+                    .escalated_to_sigkill
+                    .push(supervised.name().to_string());
                 tracing::warn!(
                     target: "harness_integration::process",
                     worker = %supervised.name(),
@@ -112,13 +143,28 @@ impl ProcessSupervisor {
                         worker = %supervised.name(),
                         "SIGKILL failed: {error}"
                     );
+                    report.issues.push(TeardownIssue {
+                        process: supervised.name().to_string(),
+                        operation: "sigkill".to_string(),
+                        error: format!("{error:#}"),
+                    });
                 }
             }
         }
 
         self.wait_for_groups_until(final_deadline).await;
-        self.finalize_direct_children();
+        for supervised in &mut self.children {
+            if supervised.child_is_alive() || supervised.group_is_alive() {
+                report
+                    .remaining_processes
+                    .push(supervised.name().to_string());
+            }
+        }
+        report.deadline_exceeded =
+            !report.remaining_processes.is_empty() && tokio::time::Instant::now() >= final_deadline;
+        report.issues.extend(self.finalize_direct_children());
         self.children.clear();
+        report
     }
 
     async fn wait_for_groups_until(&mut self, deadline: tokio::time::Instant) {
@@ -139,7 +185,8 @@ impl ProcessSupervisor {
         }
     }
 
-    fn finalize_direct_children(&mut self) {
+    fn finalize_direct_children(&mut self) -> Vec<TeardownIssue> {
+        let mut issues = Vec::new();
         for supervised in &mut self.children {
             if let Err(error) = supervised.finalize_direct_child(true) {
                 tracing::warn!(
@@ -147,9 +194,15 @@ impl ProcessSupervisor {
                     worker = %supervised.name(),
                     "reaping child failed: {error}"
                 );
+                issues.push(TeardownIssue {
+                    process: supervised.name().to_string(),
+                    operation: "reap".to_string(),
+                    error: error.to_string(),
+                });
                 supervised.defer_reap();
             }
         }
+        issues
     }
 }
 
@@ -178,6 +231,6 @@ impl Drop for ProcessSupervisor {
         {
             std::thread::sleep(Duration::from_millis(1));
         }
-        self.finalize_direct_children();
+        let _ = self.finalize_direct_children();
     }
 }
