@@ -983,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "provider-xai"
-version = "1.2.2"
+version = "1.2.3"
 dependencies = [
  "clap",
  "futures",
