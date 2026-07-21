@@ -13,7 +13,7 @@ use serde_json::Value;
 #[derive(Deserialize, JsonSchema)]
 pub struct RunReq {
     pub handle_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::handlers::lenient_params")]
     pub params: Vec<Value>,
 }
 

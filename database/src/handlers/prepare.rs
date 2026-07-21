@@ -11,6 +11,7 @@ use std::time::Duration;
 #[derive(Deserialize, JsonSchema)]
 pub struct PrepareReq {
     pub db: String,
+    #[serde(alias = "query")]
     pub sql: String,
     #[serde(default = "default_ttl")]
     pub ttl_seconds: u64,

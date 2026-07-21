@@ -19,8 +19,9 @@ pub struct TxReq {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct TxStmtReq {
+    #[serde(alias = "query")]
     pub sql: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::handlers::lenient_params")]
     pub params: Vec<Value>,
 }
 
@@ -144,6 +145,16 @@ mod tests {
 
     fn tx_req(v: Value) -> TxReq {
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn request_accepts_string_params_in_nested_statement() {
+        let request = tx_req(json!({
+            "db": "primary",
+            "statements": [{"sql": "SELECT 1", "params": "[1]"}]
+        }));
+
+        assert_eq!(request.statements[0].params, vec![json!(1)]);
     }
 
     /// Regression: `failed_index` must stay None for non-step failures

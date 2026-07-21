@@ -12,8 +12,9 @@ use serde_json::Value;
 #[derive(Deserialize, JsonSchema)]
 pub struct ExecuteReq {
     pub db: String,
+    #[serde(alias = "query")]
     pub sql: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::handlers::lenient_params")]
     pub params: Vec<Value>,
     #[serde(default)]
     pub returning: Vec<String>,
@@ -85,6 +86,80 @@ mod tests {
 
     fn req(v: Value) -> ExecuteReq {
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn request_accepts_query_alias_and_string_params() {
+        let request = req(json!({
+            "db": "primary",
+            "query": "SELECT 1",
+            "params": "[1,\"a\"]"
+        }));
+
+        assert_eq!(request.sql, "SELECT 1");
+        assert_eq!(request.params, vec![json!(1), json!("a")]);
+    }
+
+    #[test]
+    fn request_does_not_recursively_decode_string_items_inside_array() {
+        let request = req(json!({
+            "db": "primary",
+            "sql": "SELECT 1",
+            "params": ["[1]", "{\"a\":1}"]
+        }));
+
+        assert_eq!(request.params, vec![json!("[1]"), json!("{\"a\":1}")]);
+    }
+
+    #[test]
+    fn request_rejects_invalid_params_forms() {
+        let cases = [
+            (json!(null), "params must be a JSON array"),
+            (json!(""), "params string is not a JSON array"),
+            (json!("   "), "params string is not a JSON array"),
+            (json!("not json"), "params string is not a JSON array"),
+            (json!("null"), "params string is not a JSON array"),
+            (json!("{}"), "params string is not a JSON array"),
+        ];
+
+        for (params, expected) in cases {
+            let error = serde_json::from_value::<ExecuteReq>(json!({
+                "db": "primary",
+                "sql": "SELECT 1",
+                "params": params
+            }))
+            .err()
+            .expect("invalid params should be rejected");
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected:?} in {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn request_rejects_sql_and_query_together() {
+        let error = serde_json::from_value::<ExecuteReq>(json!({
+            "db": "primary",
+            "sql": "SELECT 1",
+            "query": "SELECT 2"
+        }))
+        .err()
+        .expect("duplicate SQL fields should be rejected");
+
+        assert!(error.to_string().contains("duplicate field"));
+    }
+
+    #[test]
+    fn request_schema_stays_canonical() {
+        let schema = serde_json::to_value(schemars::schema_for!(ExecuteReq).schema).unwrap();
+        let properties = schema["properties"]
+            .as_object()
+            .expect("request schema should have object properties");
+
+        assert!(properties.contains_key("sql"));
+        assert!(!properties.contains_key("query"));
+        assert_eq!(properties["params"]["type"], "array");
     }
 
     #[tokio::test(flavor = "multi_thread")]
