@@ -626,10 +626,12 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
          coder::create-file (batched) avoids the streaming channel."
     );
     fs_fn!("shell::fs::read", fs_read, fs::ReadRequest, fs::ReadResponseWire,
-        "Stream a file from a path. Returns a ContentRef the caller reads from, plus size/mode/mtime. \
-         Errors return { code, message }; common: S211 not found or not accessible, S212 path is a \
-         directory, S215 jail escape, S218 file exceeds max_read_bytes, S216 channel/IO error. For \
-         text files, coder::read-file returns content inline (windowed, batched) with no channel.");
+        "Stream a file from a path — returns a ContentRef HANDLE (channel_id/access_key), NOT the \
+         file text. For reading TEXT files use coder::read-file instead: it returns the content \
+         inline (windowed, batched) with no channel. This function is for binary/streamed payloads; \
+         the response carries the ContentRef plus size/mode/mtime. Errors return { code, message }; \
+         common: S211 not found or not accessible, S212 path is a directory, S215 jail escape, \
+         S218 file exceeds max_read_bytes, S216 channel/IO error.");
 }
 
 /// Wait for SIGINT or, on Unix, SIGTERM so `docker stop` / `kubectl delete`

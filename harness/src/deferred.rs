@@ -337,13 +337,20 @@ async fn find_call_arguments(
 /// Resolve a parked parent call from a finishing child (harness.md §
 /// Sub-agents). `completed` delivers the child's result; `failed`/`cancelled`
 /// deliver an `is_error`.
+///
+/// Returns whether the parent turn actually consumed the resolution. A
+/// fire-and-forget spawn settles its call `Done` at spawn time and the parent
+/// turn has usually completed by the time the child finishes, so both
+/// `resolve` gates return `not_resolved` — the caller must then pick another
+/// channel if the outcome matters (see the child-failure notification in
+/// `finalize_failed`).
 pub async fn resolve_parent(
     deps: &Deps,
     parent: &crate::types::turn::ParentLink,
     status: &str,
     result: Option<&Value>,
     reason: Option<&str>,
-) {
+) -> bool {
     let (content, details, is_error) = if status == "completed" {
         let text = result.map(render_text).unwrap_or_default();
         (
@@ -369,12 +376,16 @@ pub async fn resolve_parent(
         is_error: Some(is_error),
         details: Some(details),
     };
-    if let Err(e) = resolve(deps, req).await {
-        tracing::warn!(
-            parent_session = %parent.session_id,
-            error = %e,
-            "resolving parent call from child completion failed"
-        );
+    match resolve(deps, req).await {
+        Ok(resp) => resp.resolved,
+        Err(e) => {
+            tracing::warn!(
+                parent_session = %parent.session_id,
+                error = %e,
+                "resolving parent call from child completion failed"
+            );
+            false
+        }
     }
 }
 

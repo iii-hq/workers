@@ -101,7 +101,10 @@ fn default_max_validation_retries() -> u32 {
 }
 
 fn default_max_transient_resumes() -> u32 {
-    1
+    // Keep in lockstep with `config::default_max_transient_resumes` —
+    // overload bursts cluster; a budget of 1 dies on the second
+    // mid-stream 529 in a turn.
+    3
 }
 
 impl TurnOptions {
@@ -413,7 +416,7 @@ mod tests {
         assert!(!r.abort);
         assert!(r.calls.is_empty());
         assert_eq!(r.options.max_validation_retries, 2);
-        assert_eq!(r.options.max_transient_resumes, 1);
+        assert_eq!(r.options.max_transient_resumes, 3);
         assert_eq!(r.transient_resumes, 0);
         assert_eq!(r.options.output, OutputContract::Text);
     }

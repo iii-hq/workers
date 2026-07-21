@@ -464,13 +464,13 @@ pub async fn run_step(
             )
             .await;
         }
-        // One-shot recovery: fold the measured overshoot (plus margin for
-        // hook variance on the retry — hooks re-run against the smaller
-        // context) into the reservation and re-assemble. The compaction
-        // bookkeeping entry id is per (turn, step), so a re-assembled
-        // compaction dedupes instead of double-writing.
+        // One-shot recovery: fold the measured post-assembly additions (plus
+        // margin for hook variance on the retry — hooks re-run against the
+        // smaller context) into the reservation and re-assemble. The
+        // compaction bookkeeping entry id is per (turn, step), so a
+        // re-assembled compaction dedupes instead of double-writing.
         reassembled = true;
-        let deficit = final_request_tokens - assembled.usable;
+        let deficit = reassembly_deficit(final_request_tokens, assembled.token_count);
         extra_overhead_tokens = extra_overhead_tokens
             .saturating_add(deficit)
             .saturating_add(REASSEMBLY_HEADROOM_MARGIN_TOKENS);
@@ -1323,7 +1323,7 @@ async fn finalize_failed(
         )
         .await;
     if let Some(parent) = record.parent.clone() {
-        crate::deferred::resolve_parent(
+        let delivered = crate::deferred::resolve_parent(
             deps,
             &parent,
             "failed",
@@ -1331,6 +1331,17 @@ async fn finalize_failed(
             Some(reason),
         )
         .await;
+        // Fire-and-forget spawns settle their call `Done` at spawn time and
+        // the parent turn has usually completed by now, so the resolve above
+        // no-ops — and a dead child can never write the state keys or
+        // completion markers its spawner is watching. Wake the parent SESSION
+        // with the failure instead: spawned-child death must be loud by
+        // default, not structurally silent (observed live 2026-07-21: two
+        // spawned scanners died instantly and their coordinator waited
+        // forever on state triggers that could never fire).
+        if !delivered {
+            notify_parent_of_child_failure(deps, &parent.session_id, record, reason, failure).await;
+        }
     }
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
@@ -1338,6 +1349,61 @@ async fn finalize_failed(
         next_step: None,
         skipped: false,
     })
+}
+
+/// Best-effort child-failure wake-up: send a user-visible failure notice to
+/// the spawner's session, starting (or steering) a turn there so the model
+/// can respawn, reroute, or report. Idempotent per child turn.
+async fn notify_parent_of_child_failure(
+    deps: &Deps,
+    parent_session_id: &str,
+    record: &TurnRecord,
+    reason: &str,
+    failure: FailureInfo,
+) {
+    let notice = child_failure_notice(
+        &record.session_id,
+        &record.turn_id,
+        failure.code,
+        failure.retryable,
+        reason,
+    );
+    let req = crate::functions::send::SendRequest {
+        session_id: Some(parent_session_id.to_string()),
+        message: crate::functions::send::MessageInput::Text(notice),
+        model: None,
+        provider: None,
+        idempotency_key: Some(format!("child_failure_{}", record.turn_id)),
+        session: None,
+        options: None,
+    };
+    if let Err(e) = crate::functions::send::handle(deps, req).await {
+        tracing::warn!(
+            parent_session = %parent_session_id,
+            child_session = %record.session_id,
+            child_turn = %record.turn_id,
+            error = %e,
+            "child-failure notification to the parent session failed"
+        );
+    }
+}
+
+/// The wake-up text the spawner's model sees when a spawned child dies
+/// terminally without a parked parent call to deliver into.
+fn child_failure_notice(
+    child_session_id: &str,
+    child_turn_id: &str,
+    code: &str,
+    retryable: bool,
+    reason: &str,
+) -> String {
+    format!(
+        "[child-failure] Spawned child session '{child_session_id}' (turn {child_turn_id}) \
+         FAILED terminally [{code}] and will deliver no result: {reason} (retryable: \
+         {retryable}). Any state keys or completion markers that child was expected to write \
+         will never arrive — stop waiting on them. Recover now: respawn the work, reassign \
+         it, or report the failure."
+    )
 }
 
 fn llm_failure_info(error_kind: Option<ErrorKind>) -> FailureInfo {
@@ -1984,6 +2050,17 @@ fn final_request_unchanged(
     !hook_appended && patched == 0 && gen_system_prompt == assembled_system_prompt
 }
 
+/// The reservation fold for the one-shot re-assembly: everything the final
+/// request grew beyond what assembly believed it built (`token_count`), NOT
+/// merely the overshoot past `usable`. Post-assembly additions can dwarf both
+/// the up-front allowance and the ceiling overshoot (fp::inject-guidance
+/// appends ~2.5k tokens vs the 256-token allowance); folding only the
+/// overshoot can leave assembly under its own ceiling, so it rebuilds the
+/// identical request and the turn dies terminally on the same count.
+fn reassembly_deficit(final_request_tokens: u64, believed_token_count: u64) -> u64 {
+    final_request_tokens.saturating_sub(believed_token_count)
+}
+
 fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
     let mut resolved: std::collections::HashSet<String> = std::collections::HashSet::new();
     for m in messages.iter() {
@@ -2192,6 +2269,43 @@ mod tests {
             &prompt
         ));
         assert!(!super::final_request_unchanged(false, 0, &None, &prompt));
+    }
+
+    #[test]
+    fn child_failure_notice_names_the_child_and_the_consequence() {
+        // Live incident (2026-07-21, console-42ae032b): two fire-and-forget
+        // spawned scanners failed instantly; their coordinator had only
+        // success-path state triggers and waited forever. The wake-up notice
+        // must name the child, the failure code, and the key consequence —
+        // the child's completion markers will never arrive.
+        let notice = super::child_failure_notice(
+            "dcmcp-scan-a2k9",
+            "t_6d37d87e",
+            "llm.permanent",
+            false,
+            "model not found: gpt-4o-mini",
+        );
+        assert!(notice.contains("dcmcp-scan-a2k9"));
+        assert!(notice.contains("t_6d37d87e"));
+        assert!(notice.contains("[llm.permanent]"));
+        assert!(notice.contains("retryable: false"));
+        assert!(notice.contains("will never arrive"));
+        assert!(notice.contains("model not found: gpt-4o-mini"));
+    }
+
+    #[test]
+    fn reassembly_deficit_covers_post_assembly_additions_not_just_the_overshoot() {
+        // Live incident (2026-07-21, session scan-x7k2-c11-l2): assembly
+        // measured ~146_050 under a 148_000 ceiling, the guidance hook
+        // appended ~2_552 tokens, final count 148_602. The old
+        // ceiling-relative fold (148_602 - 148_000 = 602) left re-assembly
+        // a no-op — assembly stayed under its own ceiling, rebuilt the
+        // identical request, and the turn died terminally on the same
+        // count. The believed-relative fold reserves the full addition.
+        assert_eq!(super::reassembly_deficit(148_602, 146_050), 2_552);
+        assert!(super::reassembly_deficit(148_602, 146_050) > 148_602 - 148_000);
+        // Saturates if the final request came out smaller than believed.
+        assert_eq!(super::reassembly_deficit(100, 200), 0);
     }
 
     #[test]

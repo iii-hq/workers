@@ -211,7 +211,12 @@ fn default_max_validation_retries() -> u32 {
     2
 }
 fn default_max_transient_resumes() -> u32 {
-    1
+    // Provider overloads (Anthropic 529s) cluster in bursts, and only
+    // mid-stream errors burn this budget (pre-stream errors are retried
+    // with backoff inside llm-router). A budget of 1 killed a turn that
+    // was one generation step from done when a second overload landed
+    // (observed live 2026-07-21, session dcmcp-scan-p6w4-c-aq).
+    3
 }
 fn default_idem_ttl_secs() -> u64 {
     86_400
@@ -335,7 +340,7 @@ mod tests {
         assert_eq!(cfg.default_max_turns, 500);
         assert_eq!(cfg.max_depth, 3);
         assert_eq!(cfg.max_children, 8);
-        assert_eq!(cfg.max_transient_resumes, 1);
+        assert_eq!(cfg.max_transient_resumes, 3);
         assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
     }
 
