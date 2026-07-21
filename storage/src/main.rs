@@ -27,7 +27,7 @@ struct Cli {
     /// Optional seed config.yaml used to populate `initial_value` on first register.
     #[arg(long)]
     config: Option<String>,
-    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
     /// Print the registry publish manifest as JSON and exit. No engine connection.
     #[arg(long)]

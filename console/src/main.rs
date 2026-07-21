@@ -30,7 +30,7 @@ struct Cli {
     config: String,
 
     /// iii engine WebSocket URL.
-    #[arg(long, default_value = config::DEFAULT_ENGINE_URL)]
+    #[arg(long, env = "III_URL", default_value = config::DEFAULT_ENGINE_URL)]
     url: String,
 
     /// TCP port for `/`, `/assets/*`, and `/ws`. Overrides `http_port`

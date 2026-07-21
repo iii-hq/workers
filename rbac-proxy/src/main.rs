@@ -31,7 +31,7 @@ use rbac_proxy::{functions, manifest, redact_url};
 struct Cli {
     /// iii engine WebSocket URL for the control connection (and the default
     /// upstream for the data plane).
-    #[arg(long, default_value = config::DEFAULT_ENGINE_URL)]
+    #[arg(long, env = "III_URL", default_value = config::DEFAULT_ENGINE_URL)]
     url: String,
 
     /// Optional one-time seed config (YAML) installed as the `configuration`

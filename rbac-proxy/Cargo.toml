@@ -24,7 +24,7 @@ anyhow = "1"
 thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 async-trait = "0.1"
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }

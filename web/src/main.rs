@@ -21,7 +21,7 @@ struct Cli {
     /// Optional YAML seed used to populate `initial_value` on first registration.
     #[arg(long)]
     config: Option<String>,
-    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
     #[arg(long)]
     manifest: bool,

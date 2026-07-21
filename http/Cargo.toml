@@ -38,7 +38,7 @@ colored = "3"
 chrono = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 axum = "0.7"
 tower = { version = "0.5", features = ["limit"] }
