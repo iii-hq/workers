@@ -58,7 +58,9 @@ impl Estimator for HeuristicEstimator {
                 if let AgentMessage::FunctionResult { details, .. } = &mut wire_view {
                     *details = serde_json::Value::Null;
                 }
-                serde_json::to_string(&wire_view).map(|s| s.len()).unwrap_or(0)
+                serde_json::to_string(&wire_view)
+                    .map(|s| s.len())
+                    .unwrap_or(0)
             }
             _ => serde_json::to_string(message).map(|s| s.len()).unwrap_or(0),
         };
