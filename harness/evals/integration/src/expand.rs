@@ -3,7 +3,6 @@
 //! Authors work with aliases and typed replies. Compilation produces the
 //! exact, strict runtime structures before any process is started.
 
-mod expectations;
 mod functions;
 mod render;
 mod router;
@@ -18,11 +17,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::types::scenario::{AuthoredScenarioV1, CompiledScenarioV1};
-use crate::types::script::{ModelFixtureV1, RouterScriptV1};
+use crate::types::script::{ModelFixtureV1, RouterScriptV1, SchemaVersion1};
 
-pub use render::{render_authored_yaml, render_compiled};
+pub use render::render_compiled;
 pub use templates::{scenario_template, ScenarioTemplateKind};
-pub use tokens::Placeholders;
+pub(crate) use tokens::Placeholders;
 
 const DEFAULT_MODEL: &str = "fixture-model";
 const DEFAULT_PROVIDER: &str = "scripted";
@@ -77,7 +76,6 @@ struct CompiledFunctionCall {
     id: String,
     function: String,
     generation_index: usize,
-    typed: bool,
 }
 
 /// Compile the concise authored contract to the strict structures consumed by
@@ -99,7 +97,7 @@ pub fn compile_scenario(
         anyhow::bail!("router has no generations");
     }
 
-    let allowed_aliases = functions::allowed_aliases(authored)?;
+    let allowed_aliases = functions::allowed_aliases(authored);
     let function_ids = functions::function_ids(authored);
     let allowed_ids: Vec<String> = allowed_aliases
         .iter()
@@ -108,7 +106,7 @@ pub fn compile_scenario(
     let tools = functions::compile_tools(authored, &allowed_aliases, &function_ids);
     let mut recorder = functions::compile_recorder(authored, &allowed_aliases, &function_ids);
     let bindings = functions::compile_bindings(authored, &allowed_aliases, &function_ids)?;
-    let calls = functions::function_call_ids(authored, &function_ids, &allowed_aliases)?;
+    let calls = functions::function_call_ids(authored)?;
     validation::validate_release(authored, &calls)?;
     let fault = functions::compile_fault(authored, &function_ids, &calls)?;
     if let Some(fault) = &fault {
@@ -117,27 +115,19 @@ pub fn compile_scenario(
 
     let send = functions::compile_send(authored, &model, &allowed_ids)?;
     let script = router::compile_router(authored, &model, &tools, &function_ids, &calls)?;
-    let invariants = expectations::compile_expectations(
-        authored,
-        &function_ids,
-        &calls,
-        script.generations.len(),
-    )?;
     let system_prompt_template = compile_system_prompt(system_prompt_base, &allowed_ids);
 
     let fixture = CompiledFixtureV1 {
         scenario: CompiledScenarioV1 {
-            schema_version: authored.schema_version,
+            schema_version: SchemaVersion1::V1,
             id: authored.id.clone(),
             description: authored.description.clone(),
             send,
             recorder,
             deadlines: authored.timeouts,
-            invariants,
             fault,
             bindings,
             release: authored.release.clone(),
-            quarantine: authored.quarantine,
         },
         script,
         system_prompt_template,

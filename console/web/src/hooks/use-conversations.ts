@@ -226,6 +226,32 @@ export function mergeConversationMeta(
   }
 }
 
+/** Merge the boot-time session list without dropping sessions discovered by
+ * a concurrent `session::created` event. The list RPC may have been captured
+ * before that event, so treating it as a replacement can invalidate the
+ * active conversation and send the user back to the local draft. */
+export function mergeSessionListSnapshot(
+  previous: Conversation[],
+  metas: SessionMeta[],
+): Conversation[] {
+  const drafts = previous.filter((conversation) => conversation.draft)
+  const byId = new Map(
+    previous.map((conversation) => [conversation.id, conversation]),
+  )
+  const listed = metas.map((meta) =>
+    mergeConversationMeta(byId.get(meta.session_id), meta),
+  )
+  const listedIds = new Set(listed.map((conversation) => conversation.id))
+  const concurrent = previous.filter(
+    (conversation) => !conversation.draft && !listedIds.has(conversation.id),
+  )
+  return [
+    ...drafts.filter((conversation) => !listedIds.has(conversation.id)),
+    ...concurrent,
+    ...listed,
+  ]
+}
+
 export function appendMessageToConversation(
   c: Conversation,
   message: Message,
@@ -395,15 +421,7 @@ export function useConversations(
     void listSessions()
       .then((metas) => {
         if (cancelled) return
-        setConversations((prev) => {
-          const drafts = prev.filter((c) => c.draft)
-          const byId = new Map(prev.map((c) => [c.id, c]))
-          const listed = metas.map((meta) =>
-            mergeConversationMeta(byId.get(meta.session_id), meta),
-          )
-          const listedIds = new Set(listed.map((c) => c.id))
-          return [...drafts.filter((c) => !listedIds.has(c.id)), ...listed]
-        })
+        setConversations((prev) => mergeSessionListSnapshot(prev, metas))
       })
       .catch((err) => {
         if (import.meta.env.DEV) {

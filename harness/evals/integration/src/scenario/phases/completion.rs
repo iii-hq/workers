@@ -83,9 +83,8 @@ impl ScenarioRunner<'_> {
                     })?
                     .clone()
                 {
-                    return Err(RunError::with_source(
+                    return Err(RunError::runner(
                         phase,
-                        RunErrorKind::Runner,
                         "harness::status remained unavailable at the scenario deadline",
                         anyhow::anyhow!(status_error),
                     ));
@@ -104,9 +103,8 @@ impl ScenarioRunner<'_> {
                 return Ok(());
             }
             Err(error) => {
-                return Err(RunError::with_source(
+                return Err(RunError::runner(
                     phase,
-                    RunErrorKind::Runner,
                     "poll terminal harness status",
                     error,
                 ));
@@ -128,12 +126,7 @@ impl ScenarioRunner<'_> {
                 .await;
             if let Err(error) = lifecycle {
                 if !grace.is_expired() {
-                    return Err(RunError::with_source(
-                        phase,
-                        RunErrorKind::Runner,
-                        "poll lifecycle delivery",
-                        error,
-                    ));
+                    return Err(RunError::runner(phase, "poll lifecycle delivery", error));
                 }
             }
         }

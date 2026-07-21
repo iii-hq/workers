@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
@@ -243,105 +242,84 @@ fn function_call_end_cannot_hide_incorrect_argument_deltas() {
     assert!(error_chain(script).contains("deltas disagree"));
 }
 
-#[test]
-fn all_selector_with_no_runnable_scenario_is_an_error() {
-    let empty = tempfile::tempdir().unwrap();
-    let error = scenario_fixtures(empty.path(), "all", false).unwrap_err();
-    assert!(format!("{error:#}").contains("no non-quarantined scenario"));
+fn registered_text_scenario(slug: &str, id: &str) -> crate::scenarios::RegisteredScenario {
+    crate::scenarios::RegisteredScenario {
+        slug: slug.to_string(),
+        authored: crate::expand::scenario_template(
+            id,
+            "A fixture selection test.",
+            crate::expand::ScenarioTemplateKind::Text,
+        ),
+        driver: crate::scenarios::ScenarioDriver::Direct,
+        verify: |_| Ok(()),
+    }
 }
 
-fn write_text_scenario(root: &Path, slug: &str, id: &str) {
-    let dir = root.join(slug);
-    std::fs::create_dir(&dir).unwrap();
-    let authored = crate::expand::scenario_template(
-        id,
-        "A fixture selection test.",
-        crate::expand::ScenarioTemplateKind::Text,
-    );
-    std::fs::write(
-        dir.join("scenario.yaml"),
-        crate::expand::render_authored_yaml(&authored).unwrap(),
-    )
-    .unwrap();
+#[test]
+fn all_selector_with_no_runnable_scenario_is_an_error() {
+    let empty_error = super::discovery::select_fixtures(Vec::new(), "all", true).unwrap_err();
+    assert!(format!("{empty_error:#}").contains("matched no registered scenario"));
+
+    let mut quarantined = registered_text_scenario("only-quarantined", "E2E-Q");
+    quarantined.authored.quarantine = true;
+    let error = super::discovery::select_fixtures(vec![quarantined], "all", false).unwrap_err();
+    assert!(format!("{error:#}").contains("no non-quarantined registered scenario"));
 }
 
 #[test]
 fn explicit_selection_isolated_from_unrelated_invalid_fixtures() {
-    let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("system-prompt.txt"), "base").unwrap();
-    let invalid = root.path().join("a-invalid");
-    std::fs::create_dir(&invalid).unwrap();
-    std::fs::write(invalid.join("scenario.yaml"), "not: [valid").unwrap();
-    write_text_scenario(root.path(), "z-selected", "C-E2E-SELECTED");
+    // Well-typed but semantically broken: the function call resolves no
+    // registered alias, so only compilation can reject it.
+    let mut invalid = registered_text_scenario("a-invalid", "E2E-INVALID");
+    invalid.authored.router.generations[0].reply =
+        crate::types::scenario::RouterReplyV1::FunctionCall {
+            id: None,
+            function: "missing".to_string(),
+            arguments: json!({}),
+            usage: None,
+        };
+    let registered = vec![
+        invalid,
+        registered_text_scenario("z-selected", "E2E-SELECTED"),
+    ];
 
-    assert_eq!(
-        scenario_fixtures(root.path(), "z-selected", false).unwrap()[0]
-            .scenario
-            .id,
-        "C-E2E-SELECTED"
-    );
-    assert_eq!(
-        scenario_fixtures(root.path(), "C-E2E-SELECTED", false).unwrap()[0]
-            .scenario
-            .id,
-        "C-E2E-SELECTED"
-    );
-    assert!(scenario_fixtures(root.path(), "all", true).is_err());
+    let by_slug =
+        super::discovery::select_fixtures(registered.clone(), "z-selected", false).unwrap();
+    assert_eq!(by_slug[0].scenario.id, "E2E-SELECTED");
+    let by_id =
+        super::discovery::select_fixtures(registered.clone(), "E2E-SELECTED", false).unwrap();
+    assert_eq!(by_id[0].scenario.id, "E2E-SELECTED");
+    assert!(super::discovery::select_fixtures(registered, "all", true).is_err());
 }
 
 #[test]
-fn duplicate_ids_are_rejected_and_unavailable_to_init() {
-    let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("system-prompt.txt"), "base").unwrap();
-    write_text_scenario(root.path(), "first", "C-E2E-DUPLICATE");
-    write_text_scenario(root.path(), "second", "C-E2E-DUPLICATE");
+fn duplicate_identities_are_rejected_for_every_selector() {
+    let registered = vec![
+        registered_text_scenario("first", "E2E-DUPLICATE"),
+        registered_text_scenario("second", "E2E-DUPLICATE"),
+    ];
 
-    let all_error = scenario_fixtures(root.path(), "all", true).unwrap_err();
-    assert!(format!("{all_error:#}").contains("duplicate scenario id"));
-    let id_error = scenario_fixtures(root.path(), "C-E2E-DUPLICATE", true).unwrap_err();
-    assert!(format!("{id_error:#}").contains("duplicated"));
-    let slug_error = scenario_fixtures(root.path(), "first", true).unwrap_err();
-    assert!(format!("{slug_error:#}").contains("duplicated"));
-    let init_error = ensure_scenario_id_available(root.path(), "C-E2E-DUPLICATE").unwrap_err();
-    assert!(format!("{init_error:#}").contains("already exists"));
-}
-
-#[test]
-fn checked_in_scenarios_are_single_file_and_compile() {
-    fn files_under(dir: &Path, files: &mut Vec<PathBuf>) {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                files_under(&path, files);
-            } else {
-                files.push(path);
-            }
-        }
-    }
-
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios");
-    let fixtures = scenario_fixtures(&root, "all", true).unwrap();
-    assert!(
-        !fixtures.is_empty(),
-        "expected at least one checked-in scenario"
-    );
-    for fixture in fixtures {
-        let mut files = Vec::new();
-        files_under(&fixture.dir, &mut files);
-        assert_eq!(
-            files,
-            vec![fixture.dir.join("scenario.yaml")],
-            "{} must contain only scenario.yaml",
-            fixture.dir.display()
+    for selector in ["all", "E2E-DUPLICATE", "first"] {
+        let error =
+            super::discovery::select_fixtures(registered.clone(), selector, true).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("duplicate scenario id"),
+            "{selector}: {error:#}"
         );
     }
+
+    let duplicate_slug = vec![
+        registered_text_scenario("twice", "E2E-FIRST"),
+        registered_text_scenario("twice", "E2E-SECOND"),
+    ];
+    let error = super::discovery::select_fixtures(duplicate_slug, "all", true).unwrap_err();
+    assert!(format!("{error:#}").contains("duplicate scenario slug"));
 }
 
 #[test]
 fn all_selection_can_include_quarantines_for_validation() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios");
-    let all = scenario_fixtures(&root, "all", true).unwrap();
-    let runnable = scenario_fixtures(&root, "all", false).unwrap();
+    let all = scenario_fixtures("all", true).unwrap();
+    let runnable = scenario_fixtures("all", false).unwrap();
     let all_ids = all
         .iter()
         .map(|fixture| fixture.scenario.id.as_str())
@@ -352,7 +330,7 @@ fn all_selection_can_include_quarantines_for_validation() {
         .collect::<BTreeSet<_>>();
     let quarantined_ids = all
         .iter()
-        .filter(|fixture| fixture.scenario.quarantine)
+        .filter(|fixture| fixture.quarantine)
         .map(|fixture| fixture.scenario.id.as_str())
         .collect::<BTreeSet<_>>();
     let partition = runnable_ids
@@ -366,9 +344,5 @@ fn all_selection_can_include_quarantines_for_validation() {
     );
     assert!(runnable_ids.is_disjoint(&quarantined_ids));
     assert_eq!(partition, all_ids);
-    assert!(
-        scenario_fixtures(&root, "crash-recovery-507", false).unwrap()[0]
-            .scenario
-            .quarantine
-    );
+    assert!(scenario_fixtures("crash-recovery-507", false).unwrap()[0].quarantine);
 }

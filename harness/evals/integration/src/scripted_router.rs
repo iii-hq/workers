@@ -1,12 +1,12 @@
 //! The scripted router: a strict, deterministic implementation of the fixed
-//! `router::*` functions (spec § Proposed scripted-router contract). It runs
+//! `router::*` functions. It runs
 //! in-process as its own worker connection; the real llm-router is absent so
 //! function ownership is unambiguous.
 //!
 //! `router::chat` consumes generations in ordinal order. An unexpected call
 //! or matcher failure records `contract_failure` evidence, streams nothing,
-//! and returns a bus error; an unused expectation is detected by the grader
-//! via `generations_consumed`.
+//! and returns a bus error; an unused generation is detected by the runner
+//! floor via `generations_consumed`.
 //!
 //! Deviation from the spec text (folded into the spec amendment): absent or
 //! empty `provider` on `models::get` resolves by id alone — that is
@@ -213,7 +213,7 @@ impl ScriptedRouter {
             with_router_contract(
                 RegisterFunction::new_async(move |_input: Value| async move {
                     // `system_prompt` omitted: the harness falls back to its
-                    // checked-in built-in prompt (spec § scripted-router contract).
+                    // checked-in built-in prompt.
                     Ok::<Value, Error>(json!({ "provider": "scripted" }))
                 }),
                 "router::system_prompt::get",
@@ -371,8 +371,7 @@ async fn chat(state: Arc<Mutex<State>>, address: String, input: Value) -> Result
     state.lock().expect("router state").live.remove(&request_id);
 
     stream_result?;
-    // Response only after terminal streaming has been relayed (spec § Router
-    // response contract).
+    // Response only after terminal streaming has been relayed.
     serde_json::to_value(&generation.response)
         .map_err(|e| Error::Handler(format!("integration/response_serialize: {e}")))
 }

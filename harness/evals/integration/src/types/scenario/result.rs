@@ -47,16 +47,6 @@ impl Classification {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct InvariantResultV1 {
-    pub id: String,
-    pub passed: bool,
-    pub expected: serde_json::Value,
-    pub actual: serde_json::Value,
-    pub evidence_refs: Vec<String>,
-}
-
 /// Stable, byte-comparable scenario result.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -64,7 +54,10 @@ pub struct IntegrationResultV1 {
     pub schema_version: SchemaVersion1,
     pub scenario_id: String,
     pub classification: Classification,
-    pub invariants: Vec<InvariantResultV1>,
+    /// First floor or verify failure, with run/session/turn ids scrubbed to
+    /// `{{run_id}}`/`{{session_id}}`/`{{turn_id}}` placeholders so `--repeat`
+    /// stays byte-stable.
+    pub failure: Option<String>,
     pub artifacts: Vec<String>,
 }
 
@@ -97,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    fn exit_codes_match_spec_table() {
+    fn exit_codes_match_the_documented_contract() {
         use Classification::*;
         assert_eq!(Pass.exit_code(), 0);
         assert_eq!(ContractFailure.exit_code(), 2);

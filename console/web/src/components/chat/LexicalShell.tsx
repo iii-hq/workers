@@ -252,6 +252,7 @@ export function LexicalShell({
         <PlainTextPlugin
           contentEditable={
             <ContentEditable
+              aria-label="message composer"
               aria-placeholder={placeholder}
               placeholder={
                 <div className="composer-placeholder px-3 py-2">

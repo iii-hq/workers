@@ -2,19 +2,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use clap::{Args, Parser, Subcommand, ValueEnum};
-use harness_integration::expand::{
-    compile_scenario, render_authored_yaml, render_compiled, scenario_template,
-    ScenarioTemplateKind,
-};
-use harness_integration::fixtures::{
-    ensure_scenario_id_available, scenario_fixtures, ScenarioFixture,
-};
-use harness_integration::scenario::run_scenario;
+use clap::{Args, Parser, Subcommand};
+use harness_integration::expand::render_compiled;
+use harness_integration::fixtures::{scenario_fixtures, ScenarioFixture};
+use harness_integration::scenario::{run_scenario, serve_scenario};
+use harness_integration::scenarios::ScenarioDriver;
 use harness_integration::stack::StackBins;
 use harness_integration::types::scenario::Classification;
-
-const DEFAULT_SCENARIOS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/scenarios");
 
 #[derive(Debug, Parser)]
 #[command(
@@ -30,12 +24,13 @@ struct Cli {
 enum Command {
     /// Run one scenario or every non-quarantined scenario.
     Run(RunArgs),
-    /// Compile and validate fixtures without booting a stack.
+    /// Compile and validate every registered scenario without booting a
+    /// stack.
     Validate(SelectionArgs),
     /// Print one deterministic, fully expanded compiled scenario.
     Render(RenderArgs),
-    /// Create one valid single-file scenario without overwriting files.
-    Init(InitArgs),
+    /// Boot one armed stack and the production Console for a browser test.
+    Serve(ServeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -69,62 +64,47 @@ struct RunArgs {
     repeat: u16,
 }
 
+#[derive(Debug, Args)]
+struct ServeArgs {
+    #[command(flatten)]
+    selection: SelectionArgs,
+
+    /// Path to the pinned iii engine binary. Falls back to $III_BIN.
+    #[arg(long, env = "III_BIN")]
+    engine_bin: Option<PathBuf>,
+
+    /// Path to the harness binary under test.
+    #[arg(long)]
+    harness_bin: Option<PathBuf>,
+
+    /// Path to the production Console binary under test.
+    #[arg(long)]
+    console_bin: Option<PathBuf>,
+
+    /// Real worker binaries as name=path.
+    #[arg(long = "worker-bin", value_parser = parse_worker_bin)]
+    worker_bins: Vec<(String, PathBuf)>,
+
+    /// File atomically published after the stack and Console are ready.
+    #[arg(long)]
+    ready_file: PathBuf,
+
+    /// Root directory for run artifacts.
+    #[arg(long, default_value = "target/console-e2e")]
+    artifacts_dir: PathBuf,
+}
+
 #[derive(Debug, Clone, Args)]
 struct SelectionArgs {
-    /// Scenario id, scenario directory name, or `all`.
+    /// Scenario id, scenario slug, or `all`.
     #[arg(long, default_value = "all")]
     scenario: String,
-
-    /// Directory containing the checked-in scenarios.
-    #[arg(long, default_value = DEFAULT_SCENARIOS_DIR)]
-    scenarios_dir: PathBuf,
 }
 
 #[derive(Debug, Args)]
 struct RenderArgs {
-    /// Scenario id or directory name.
+    /// Scenario id or slug.
     scenario: String,
-
-    #[arg(long, default_value = DEFAULT_SCENARIOS_DIR)]
-    scenarios_dir: PathBuf,
-}
-
-#[derive(Debug, Args)]
-struct InitArgs {
-    #[arg(long)]
-    id: String,
-
-    /// Directory slug created below the scenarios directory.
-    #[arg(long)]
-    name: String,
-
-    #[arg(long)]
-    description: String,
-
-    #[arg(long, value_enum)]
-    kind: TemplateKind,
-
-    #[arg(long, default_value = DEFAULT_SCENARIOS_DIR)]
-    scenarios_dir: PathBuf,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum TemplateKind {
-    Text,
-    Function,
-    Hook,
-    Crash,
-}
-
-impl From<TemplateKind> for ScenarioTemplateKind {
-    fn from(value: TemplateKind) -> Self {
-        match value {
-            TemplateKind::Text => Self::Text,
-            TemplateKind::Function => Self::Function,
-            TemplateKind::Hook => Self::Hook,
-            TemplateKind::Crash => Self::Crash,
-        }
-    }
 }
 
 fn parse_worker_bin(raw: &str) -> Result<(String, PathBuf), String> {
@@ -164,7 +144,7 @@ async fn dispatch(cli: Cli) -> i32 {
         Command::Run(args) => return run(args).await,
         Command::Validate(args) => validate(args),
         Command::Render(args) => render(args),
-        Command::Init(args) => init(args),
+        Command::Serve(args) => return serve(args).await,
     };
     match result {
         Ok(message) => {
@@ -181,34 +161,41 @@ async fn dispatch(cli: Cli) -> i32 {
 }
 
 async fn run(args: RunArgs) -> i32 {
-    let fixtures = match load_fixtures(&args.selection, false) {
+    let mut fixtures = match load_fixtures(&args.selection, false) {
         Ok(fixtures) => fixtures,
         Err(error) => {
             eprintln!("runner_error: {error:#}");
             return 3;
         }
     };
-    let bins = match resolve_bins(&args) {
+    if args.selection.scenario == "all" {
+        fixtures.retain(|fixture| fixture.driver == ScenarioDriver::Direct);
+    } else if fixtures
+        .iter()
+        .any(|fixture| fixture.driver != ScenarioDriver::Direct)
+    {
+        eprintln!(
+            "runner_error: scenario {:?} is driven by the Console; use `serve`",
+            args.selection.scenario
+        );
+        return 3;
+    }
+    let bins = match resolve_stack_bins(
+        args.engine_bin.as_deref(),
+        args.harness_bin.as_deref(),
+        None,
+        &args.worker_bins,
+    ) {
         Ok(bins) => bins,
         Err(error) => {
             eprintln!("runner_error: {error:#}");
             return 3;
         }
     };
-    if let Err(error) = std::fs::create_dir_all(&args.artifacts_dir) {
-        eprintln!(
-            "runner_error: creating {}: {error}",
-            args.artifacts_dir.display()
-        );
-        return 3;
-    }
-    let artifacts_dir = match args.artifacts_dir.canonicalize() {
+    let artifacts_dir = match prepare_artifacts_dir(&args.artifacts_dir) {
         Ok(dir) => dir,
         Err(error) => {
-            eprintln!(
-                "runner_error: resolving {}: {error}",
-                args.artifacts_dir.display()
-            );
+            eprintln!("runner_error: {error:#}");
             return 3;
         }
     };
@@ -226,13 +213,6 @@ async fn run(args: RunArgs) -> i32 {
             );
             let outcome = run_scenario(&bins, fixture, &artifacts_dir, args.retain_success).await;
             let classification = outcome.result.classification;
-            let failed: Vec<&str> = outcome
-                .result
-                .invariants
-                .iter()
-                .filter(|invariant| !invariant.passed)
-                .map(|invariant| invariant.id.as_str())
-                .collect();
             let repetition_label = if args.repeat > 1 {
                 format!(" [{repetition}/{}]", args.repeat)
             } else {
@@ -241,10 +221,9 @@ async fn run(args: RunArgs) -> i32 {
             println!(
                 "{scenario_id}{repetition_label}: {}{} — run {} ({} ms), artifacts: {}",
                 classification_str(classification),
-                if failed.is_empty() {
-                    String::new()
-                } else {
-                    format!(" — failed invariants: {}", failed.join(", "))
+                match &outcome.result.failure {
+                    Some(failure) => format!(" — {failure}"),
+                    None => String::new(),
                 },
                 outcome.run_id,
                 outcome.duration_ms,
@@ -267,6 +246,59 @@ async fn run(args: RunArgs) -> i32 {
     exit_code
 }
 
+async fn serve(args: ServeArgs) -> i32 {
+    if args.selection.scenario == "all" {
+        eprintln!("runner_error: serve requires one scenario id or slug");
+        return 3;
+    }
+    let fixture = match load_fixtures(&args.selection, true).and_then(|fixtures| {
+        fixtures
+            .into_iter()
+            .next()
+            .context("serve selector returned no scenario")
+    }) {
+        Ok(fixture) => fixture,
+        Err(error) => {
+            eprintln!("runner_error: {error:#}");
+            return 3;
+        }
+    };
+    let Some(console_bin) = args.console_bin.as_deref() else {
+        eprintln!("runner_error: --console-bin is required");
+        return 3;
+    };
+    let bins = match resolve_stack_bins(
+        args.engine_bin.as_deref(),
+        args.harness_bin.as_deref(),
+        Some(console_bin),
+        &args.worker_bins,
+    ) {
+        Ok(bins) => bins,
+        Err(error) => {
+            eprintln!("runner_error: {error:#}");
+            return 3;
+        }
+    };
+    let artifacts_dir = match prepare_artifacts_dir(&args.artifacts_dir) {
+        Ok(dir) => dir,
+        Err(error) => {
+            eprintln!("runner_error: {error:#}");
+            return 3;
+        }
+    };
+
+    let outcome = serve_scenario(&bins, &fixture, &artifacts_dir, &args.ready_file).await;
+    println!(
+        "{}: {} — run {} ({} ms), artifacts: {}",
+        fixture.scenario.id,
+        classification_str(outcome.result.classification),
+        outcome.run_id,
+        outcome.duration_ms,
+        outcome.run_root.display(),
+    );
+    outcome.result.classification.exit_code()
+}
+
 fn validate(args: SelectionArgs) -> anyhow::Result<String> {
     let fixtures = load_fixtures(&args, true)?;
     Ok(format!("{} scenario fixture(s) valid", fixtures.len()))
@@ -279,7 +311,6 @@ fn render(args: RenderArgs) -> anyhow::Result<String> {
     );
     let selection = SelectionArgs {
         scenario: args.scenario,
-        scenarios_dir: args.scenarios_dir,
     };
     let fixtures = load_fixtures(&selection, true)?;
     let fixture = fixtures
@@ -289,85 +320,11 @@ fn render(args: RenderArgs) -> anyhow::Result<String> {
     render_compiled(&fixture.compiled())
 }
 
-fn init(args: InitArgs) -> anyhow::Result<String> {
-    validate_slug(&args.name)?;
-    anyhow::ensure!(!args.id.trim().is_empty(), "--id must not be empty");
-    anyhow::ensure!(
-        !args.description.trim().is_empty(),
-        "--description must not be empty"
-    );
-
-    let target = args.scenarios_dir.join(&args.name);
-    anyhow::ensure!(
-        !target.exists(),
-        "refusing to overwrite existing scenario directory {}",
-        target.display()
-    );
-    let authored = scenario_template(&args.id, &args.description, args.kind.into());
-    let prompt_path = args.scenarios_dir.join("system-prompt.txt");
-    let prompt = std::fs::read_to_string(&prompt_path)
-        .with_context(|| format!("reading shared prompt {}", prompt_path.display()))?;
-    compile_scenario(&authored, &prompt).context("generated scenario is invalid")?;
-    ensure_scenario_id_available(&args.scenarios_dir, &args.id)?;
-    let yaml = render_authored_yaml(&authored)?;
-
-    let scenario_path = write_scenario_atomically(&target, &yaml)?;
-    Ok(format!("created {}", scenario_path.display()))
-}
-
-fn write_scenario_atomically(target: &Path, yaml: &str) -> anyhow::Result<PathBuf> {
-    let parent = target
-        .parent()
-        .context("scenario target has no parent directory")?;
-    let name = target
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("scenario target name is not UTF-8")?;
-    let temporary = parent.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
-    std::fs::create_dir(&temporary)
-        .with_context(|| format!("creating temporary scenario {}", temporary.display()))?;
-    let temporary_file = temporary.join("scenario.yaml");
-    let outcome = std::fs::write(&temporary_file, yaml)
-        .with_context(|| format!("writing {}", temporary_file.display()))
-        .and_then(|()| {
-            std::fs::rename(&temporary, target).with_context(|| {
-                format!(
-                    "publishing temporary scenario {} as {}",
-                    temporary.display(),
-                    target.display()
-                )
-            })
-        });
-    if let Err(error) = outcome {
-        let _ = std::fs::remove_dir_all(&temporary);
-        return Err(error);
-    }
-    Ok(target.join("scenario.yaml"))
-}
-
-fn validate_slug(slug: &str) -> anyhow::Result<()> {
-    let valid = !slug.is_empty()
-        && slug != "."
-        && slug != ".."
-        && slug
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
-    anyhow::ensure!(
-        valid,
-        "--name must contain only ASCII letters, digits, '-' or '_'"
-    );
-    Ok(())
-}
-
 fn load_fixtures(
     selection: &SelectionArgs,
     include_quarantined: bool,
 ) -> anyhow::Result<Vec<ScenarioFixture>> {
-    scenario_fixtures(
-        &selection.scenarios_dir,
-        &selection.scenario,
-        include_quarantined,
-    )
+    scenario_fixtures(&selection.scenario, include_quarantined)
 }
 
 fn classification_str(classification: Classification) -> &'static str {
@@ -381,30 +338,30 @@ fn classification_str(classification: Classification) -> &'static str {
     }
 }
 
-fn resolve_bins(args: &RunArgs) -> anyhow::Result<StackBins> {
-    fn absolute(name: &str, path: &Path) -> anyhow::Result<PathBuf> {
-        if !path.is_file() {
-            anyhow::bail!("{name} binary not found at {}", path.display());
-        }
-        path.canonicalize()
-            .with_context(|| format!("resolving {name} binary {}", path.display()))
-    }
+fn prepare_artifacts_dir(dir: &Path) -> anyhow::Result<PathBuf> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    dir.canonicalize()
+        .with_context(|| format!("resolving {}", dir.display()))
+}
 
-    let engine = args
-        .engine_bin
-        .as_deref()
+fn resolve_stack_bins(
+    engine: Option<&Path>,
+    harness: Option<&Path>,
+    console: Option<&Path>,
+    worker_bins: &[(String, PathBuf)],
+) -> anyhow::Result<StackBins> {
+    let engine = engine
         .ok_or_else(|| anyhow::anyhow!("--engine-bin (or III_BIN) is required; see engine.lock"))?;
-    let harness = args
-        .harness_bin
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("--harness-bin is required"))?;
+    let harness = harness.ok_or_else(|| anyhow::anyhow!("--harness-bin is required"))?;
     let bins = StackBins {
-        engine: absolute("engine", engine)?,
-        harness: absolute("harness", harness)?,
-        workers: args
-            .worker_bins
+        engine: absolute_binary("engine", engine)?,
+        harness: absolute_binary("harness", harness)?,
+        console: console
+            .map(|path| absolute_binary("console", path))
+            .transpose()?,
+        workers: worker_bins
             .iter()
-            .map(|(name, path)| Ok((name.clone(), absolute(name, path)?)))
+            .map(|(name, path)| Ok((name.clone(), absolute_binary(name, path)?)))
             .collect::<anyhow::Result<BTreeMap<String, PathBuf>>>()?,
     };
     let missing = bins.missing_workers();
@@ -414,19 +371,17 @@ fn resolve_bins(args: &RunArgs) -> anyhow::Result<StackBins> {
     Ok(bins)
 }
 
+fn absolute_binary(name: &str, path: &Path) -> anyhow::Result<PathBuf> {
+    if !path.is_file() {
+        anyhow::bail!("{name} binary not found at {}", path.display());
+    }
+    path.canonicalize()
+        .with_context(|| format!("resolving {name} binary {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn scenario_names_cannot_escape_the_root() {
-        for invalid in ["", ".", "..", "../escape", "nested/name", "with space"] {
-            assert!(validate_slug(invalid).is_err(), "{invalid:?}");
-        }
-        for valid in ["streamed-text", "case_507", "C505"] {
-            validate_slug(valid).unwrap();
-        }
-    }
 
     #[test]
     fn repeat_count_must_be_positive() {

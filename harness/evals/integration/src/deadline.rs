@@ -76,35 +76,14 @@ impl Deadline {
     where
         F: Future,
     {
-        self.timeout_within(operation, self.remaining(), future)
-            .await
-    }
-
-    /// Run a future until the earlier of an operation-specific maximum and
-    /// the global deadline.
-    pub async fn timeout_within<F>(
-        self,
-        operation: impl Into<String>,
-        maximum: Duration,
-        future: F,
-    ) -> Result<F::Output, DeadlineExceeded>
-    where
-        F: Future,
-    {
         let operation = operation.into();
-        let duration = self.cap(maximum, operation.clone())?;
-        tokio::time::timeout(duration, future)
+        let remaining = self.remaining();
+        if remaining.is_zero() {
+            return Err(DeadlineExceeded::new(operation));
+        }
+        tokio::time::timeout(remaining, future)
             .await
             .map_err(|_| DeadlineExceeded::new(operation))
-    }
-
-    /// Run an anyhow-returning future and flatten timeout and operation
-    /// failures into the same result type.
-    pub async fn run<T, F>(self, operation: impl Into<String>, future: F) -> anyhow::Result<T>
-    where
-        F: Future<Output = anyhow::Result<T>>,
-    {
-        self.timeout(operation, future).await?
     }
 
     /// Poll until the probe returns a value or the deadline expires.
@@ -167,22 +146,6 @@ mod tests {
             .expect_err("deadline should fire");
         assert_eq!(error.operation(), "hung rpc");
         assert!(deadline.is_expired());
-    }
-
-    #[tokio::test]
-    async fn operation_timeout_is_capped_by_global_remaining_time() {
-        let deadline = Deadline::after(Duration::from_millis(30));
-        let started = Instant::now();
-        let error = deadline
-            .timeout_within(
-                "bounded rpc",
-                Duration::from_secs(30),
-                std::future::pending::<()>(),
-            )
-            .await
-            .expect_err("global deadline should win");
-        assert_eq!(error.operation(), "bounded rpc");
-        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[tokio::test]

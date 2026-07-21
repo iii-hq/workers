@@ -21,8 +21,8 @@ fn layout_allocates_the_stable_run_tree() {
     assert!(layout.seeds_dir.is_dir());
     assert!(layout.logs_dir.is_dir());
 
-    let scenario = layout.scenario_dir("C-E2E-001").unwrap();
-    assert_eq!(scenario, layout.root.join("scenarios/C-E2E-001"));
+    let scenario = layout.scenario_dir("E2E-001").unwrap();
+    assert_eq!(scenario, layout.root.join("scenarios/E2E-001"));
     assert!(scenario.is_dir());
 }
 
@@ -51,6 +51,7 @@ fn manifest_is_canonical_and_uses_layout_paths() {
     let bins = StackBins {
         engine: binary.clone(),
         harness: binary.clone(),
+        console: None,
         workers: BTreeMap::from([("queue".to_string(), PathBuf::from(&binary))]),
     };
 
@@ -75,6 +76,7 @@ fn manifest_fails_when_a_binary_cannot_be_identified() {
     let bins = StackBins {
         engine: missing.clone(),
         harness: missing.clone(),
+        console: None,
         workers: BTreeMap::new(),
     };
     let error = manifest::stack_info(&bins, &layout, 3210).unwrap_err();
@@ -88,6 +90,7 @@ async fn boot_failure_carries_a_complete_typed_teardown() {
     let bins = StackBins {
         engine: PathBuf::from("/bin/true"),
         harness: PathBuf::from("/bin/true"),
+        console: None,
         workers: BTreeMap::new(),
     };
 

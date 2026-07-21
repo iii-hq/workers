@@ -3,8 +3,7 @@
 //! Interop with the harness is JSON-on-the-wire only (each worker keeps its
 //! own copy of these enums), so the integration crate mirrors them instead of
 //! taking a cargo dependency on llm-router. Fidelity is enforced by golden
-//! tests against `llm-router/tests/golden/schemas/` and the spec's literal
-//! frame tables. Mirrors: `llm-router/src/types/{events,messages,content,router}.rs`.
+//! tests against `llm-router/tests/golden/schemas/`. Mirrors: `llm-router/src/types/{events,messages,content,router}.rs`.
 //!
 //! Unlike the originals, these deny unknown fields: they only ever
 //! deserialize authored fixtures, where an unknown field is an authoring

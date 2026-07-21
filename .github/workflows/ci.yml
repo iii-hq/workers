@@ -489,9 +489,6 @@ jobs:
       - name: Integration crate unit tests
         run: cargo test --manifest-path harness/evals/integration/Cargo.toml
 
-      - name: Validate integration scenarios
-        run: make -C harness integration-validate
-
       - name: Run integration scenarios
         run: make -C harness integration-e2e III_BIN="${{ steps.engine.outputs.bin }}" INTEGRATION_REPEAT=2
 

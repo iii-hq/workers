@@ -2,11 +2,8 @@ use std::collections::BTreeMap;
 
 use serde_json::json;
 
-use crate::types::scenario::{
-    AuthoredScenarioV1, ExpectationsV1, FunctionResultExpectationV1, MessageCountsExpectationV1,
-    RouterReplyV1, ScenarioFunctionV1, TargetCallsExpectationV1,
-};
-use crate::types::script::{JsonMatcherV1, SchemaVersion1};
+use crate::types::scenario::{AuthoredScenarioV1, RouterReplyV1, ScenarioFunctionV1};
+use crate::types::script::JsonMatcherV1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScenarioTemplateKind {
@@ -16,7 +13,9 @@ pub enum ScenarioTemplateKind {
     Crash,
 }
 
-/// Minimal valid authored scenario used by the non-interactive `init` CLI.
+/// Minimal valid authored scenario used as a compact factory by unit and
+/// contract tests. New checked-in scenarios are builder modules under
+/// `src/scenarios`, not templates.
 pub fn scenario_template(
     id: &str,
     description: &str,
@@ -75,7 +74,6 @@ pub fn scenario_template(
     if kind == ScenarioTemplateKind::Crash {
         fault = Some(crate::types::scenario::FaultV1 {
             kind: crate::types::scenario::FaultKind::EngineSigkill,
-            function: Some("record".to_string()),
             after_target_calls: 1,
             restart_delay_ms: 1_500,
         });
@@ -111,7 +109,6 @@ pub fn scenario_template(
                 system_prompt: Some(JsonMatcherV1::Present),
                 messages: Some(JsonMatcherV1::Present),
                 tools: Some(JsonMatcherV1::Present),
-                ..Default::default()
             }
         } else {
             Default::default()
@@ -126,54 +123,7 @@ pub fn scenario_template(
         });
     }
 
-    let expect = if kind == ScenarioTemplateKind::Text {
-        ExpectationsV1 {
-            message_counts: Some(MessageCountsExpectationV1 {
-                user: 1,
-                assistant: 1,
-                function_result: 0,
-            }),
-            assistant_text: Some("fixture complete".to_string()),
-            ..Default::default()
-        }
-    } else {
-        let function_result = FunctionResultExpectationV1 {
-            function_call_id: "call-1".to_string(),
-            function: (kind != ScenarioTemplateKind::Crash).then(|| "record".to_string()),
-            content: (kind != ScenarioTemplateKind::Crash)
-                .then(|| vec![json!({ "type": "text", "text": "recorded" })]),
-            is_error: (kind != ScenarioTemplateKind::Crash).then_some(false),
-        };
-        let mut calls = vec![TargetCallsExpectationV1 {
-            function: "record".to_string(),
-            count: 1,
-            payload: Some(json!({ "value": "expected" })),
-            payload_subset: None,
-        }];
-        if kind == ScenarioTemplateKind::Hook {
-            calls.push(TargetCallsExpectationV1 {
-                function: "hook".to_string(),
-                count: 1,
-                payload: None,
-                payload_subset: None,
-            });
-        }
-        ExpectationsV1 {
-            message_counts: Some(MessageCountsExpectationV1 {
-                user: 1,
-                assistant: 2,
-                function_result: 1,
-            }),
-            assistant_text: Some("recorded once".to_string()),
-            function_results: vec![function_result],
-            calls_closed: true,
-            calls,
-            ..Default::default()
-        }
-    };
-
     AuthoredScenarioV1 {
-        schema_version: SchemaVersion1::V1,
         id: id.to_string(),
         description: description.to_string(),
         quarantine: false,
@@ -183,8 +133,6 @@ pub fn scenario_template(
             } else {
                 "Call the recorder once.".to_string()
             },
-            allow: None,
-            idempotency_key: None,
         },
         functions,
         router: crate::types::scenario::ScenarioRouterV1 {
@@ -195,6 +143,5 @@ pub fn scenario_template(
         release,
         fault,
         timeouts,
-        expect,
     }
 }

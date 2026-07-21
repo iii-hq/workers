@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::recorder::RecorderConfigV1;
 use crate::types::script::SchemaVersion1;
 
-use super::{DeadlinesV1, FaultKind, InvariantSpecV1, ReleaseV1};
+use super::{DeadlinesV1, FaultKind, ReleaseV1};
 
 /// Strict runtime scenario produced from [`super::AuthoredScenarioV1`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -17,15 +17,12 @@ pub struct CompiledScenarioV1 {
     pub send: CompiledSendV1,
     pub recorder: RecorderConfigV1,
     pub deadlines: DeadlinesV1,
-    pub invariants: Vec<InvariantSpecV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fault: Option<CompiledFaultV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<TriggerBindingV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release: Option<ReleaseV1>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub quarantine: bool,
 }
 
 /// The deliberately narrow `harness::send` request emitted by the scenario
