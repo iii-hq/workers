@@ -43,7 +43,25 @@ impl Estimator for HeuristicEstimator {
     }
 
     fn message(&self, message: &AgentMessage) -> u64 {
-        let chars = serde_json::to_string(message).map(|s| s.len()).unwrap_or(0);
+        // Provider wire adapters send a function result's rendered `content`
+        // only — `details` never crosses the wire except inside the denied
+        // envelope (see provider-*/src/wire `format_function_result_content`).
+        // A fat details payload (file reads duplicate the whole file there)
+        // must not consume budget, or the effective window halves.
+        let chars = match message {
+            AgentMessage::FunctionResult { details, .. }
+                if !details.is_null()
+                    && details.get("status").and_then(serde_json::Value::as_str)
+                        != Some("denied") =>
+            {
+                let mut wire_view = message.clone();
+                if let AgentMessage::FunctionResult { details, .. } = &mut wire_view {
+                    *details = serde_json::Value::Null;
+                }
+                serde_json::to_string(&wire_view).map(|s| s.len()).unwrap_or(0)
+            }
+            _ => serde_json::to_string(message).map(|s| s.len()).unwrap_or(0),
+        };
         (chars / 4) as u64
     }
 
@@ -118,6 +136,45 @@ mod tests {
     fn text_estimate_is_chars_over_four() {
         assert_eq!(HeuristicEstimator.text("x".repeat(400).as_str()), 100);
         assert_eq!(HeuristicEstimator.text(""), 0);
+    }
+
+    #[test]
+    fn function_result_details_are_not_counted() {
+        // Live incident (2026-07-21, session scan-x7k2-c11-l2): 22 file reads
+        // carried the full file in BOTH content and details; the double bill
+        // inflated an ~88k wire request to 148_602 estimated > 148_000 usable
+        // and killed the turn terminally. Details never cross the provider
+        // wire, so they must not weigh in.
+        let est = HeuristicEstimator;
+        let fat = msg(json!({
+            "role": "function_result", "function_call_id": "c", "function_id": "f",
+            "content": [{ "type": "text", "text": "body" }],
+            "details": { "content": "x".repeat(4000) }, "timestamp": 3
+        }));
+        let null_details = msg(json!({
+            "role": "function_result", "function_call_id": "c", "function_id": "f",
+            "content": [{ "type": "text", "text": "body" }],
+            "details": null, "timestamp": 3
+        }));
+        assert_eq!(est.message(&fat), est.message(&null_details));
+    }
+
+    #[test]
+    fn denied_details_envelope_is_counted() {
+        // The denied envelope IS serialized into the wire body
+        // ([PERMISSION_DENIED] + JSON), so it keeps weighing in.
+        let est = HeuristicEstimator;
+        let denied = msg(json!({
+            "role": "function_result", "function_call_id": "c", "function_id": "f",
+            "content": [], "details": { "status": "denied", "reason": "x".repeat(400) },
+            "timestamp": 3
+        }));
+        let plain = msg(json!({
+            "role": "function_result", "function_call_id": "c", "function_id": "f",
+            "content": [], "details": { "status": "ok", "reason": "x".repeat(400) },
+            "timestamp": 3
+        }));
+        assert!(est.message(&denied) > est.message(&plain));
     }
 
     #[test]
