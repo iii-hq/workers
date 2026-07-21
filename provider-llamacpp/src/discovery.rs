@@ -59,14 +59,22 @@ fn parse_props(json: &Value) -> Props {
 /// Conservative defaults, never vanish: llama.cpp's `/v1/models` carries no
 /// capability metadata, so every id it serves is listed — there's no
 /// "gpt-"-style family gate to apply against an arbitrary GGUF alias.
-fn enrich(id: &str, props: &Props) -> Model {
-    let context_window = props.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW);
+fn enrich(id: &str, model_context_length: Option<u64>, props: &Props) -> Model {
+    let context_window = model_context_length
+        .filter(|&n| n > 0)
+        .or(props.context_window)
+        .unwrap_or(DEFAULT_CONTEXT_WINDOW);
     Model {
         id: id.to_string(),
         provider: PROVIDER_ID.to_string(),
         display_name: None,
         context_window,
-        max_output_tokens: context_window.min(DEFAULT_MAX_TOKENS),
+        // llama.cpp shares n_ctx between prompt and generation; claiming
+        // the whole window as output leaves a zero input budget (usable =
+        // window - max_output = 0) and every turn dies with
+        // context/overflow. Cap output at half the window so small-n_ctx
+        // servers (llama-server defaults to 4096) stay usable.
+        max_output_tokens: (context_window / 2).min(DEFAULT_MAX_TOKENS),
         input_limit: None,
         supports_thinking: None,
         supports_xhigh: None,
@@ -91,9 +99,16 @@ fn parse_live_models(json: &Value, props: &Props) -> Vec<Model> {
         .and_then(Value::as_array)
         .map(|rows| {
             rows.iter()
-                .filter_map(|raw| raw.get("id").and_then(Value::as_str))
-                .filter(|id| !id.is_empty())
-                .map(|id| enrich(id, props))
+                .filter_map(|raw| {
+                    let id = raw.get("id").and_then(Value::as_str)?;
+                    // llama.cpp-compatible frontends (e.g. Unsloth Studio)
+                    // have no /props but declare the configured window
+                    // per model here; vanilla llama-server omits it.
+                    let context_length = raw.get("context_length").and_then(Value::as_u64);
+                    Some((id, context_length))
+                })
+                .filter(|(id, _)| !id.is_empty())
+                .map(|(id, context_length)| enrich(id, context_length, props))
                 .collect()
         })
         .unwrap_or_default()
@@ -273,6 +288,67 @@ mod tests {
         let models = parse_live_models(&json, &Props::default());
         assert_eq!(models[0].context_window, DEFAULT_CONTEXT_WINDOW);
         assert_eq!(models[0].supports_vision, None);
+    }
+
+    #[test]
+    fn per_model_context_length_beats_props_and_default() {
+        // Real /v1/models shape from Unsloth Studio: no /props endpoint
+        // exists (it serves the web UI's HTML), but each model row carries
+        // the configured window. Regression: this used to fall back to
+        // 4096 and register a zero usable budget for a 128k server.
+        let json = serde_json::json!({
+            "data": [
+                { "id": "unsloth/gemma-4-26B-A4B-it-qat-GGUF", "object": "model",
+                  "context_length": 128_000, "max_context_length": 4096,
+                  "native_context_length": 262_144, "loaded": true },
+                { "id": "no-metadata", "object": "model" },
+            ]
+        });
+        let models = parse_live_models(&json, &Props::default());
+        assert_eq!(models[0].context_window, 128_000);
+        assert_eq!(models[0].max_output_tokens, DEFAULT_MAX_TOKENS);
+        // Rows without context_length still fall back (props, then 4096).
+        assert_eq!(models[1].context_window, DEFAULT_CONTEXT_WINDOW);
+
+        // Props n_ctx loses to an explicit per-model window, wins over
+        // the default; a zero context_length is ignored, not trusted.
+        let props = Props {
+            context_window: Some(16_384),
+            supports_vision: None,
+        };
+        let models = parse_live_models(&json, &props);
+        assert_eq!(models[0].context_window, 128_000);
+        assert_eq!(models[1].context_window, 16_384);
+        let zero = serde_json::json!({ "data": [{ "id": "z", "context_length": 0 }] });
+        assert_eq!(
+            parse_live_models(&zero, &Props::default())[0].context_window,
+            DEFAULT_CONTEXT_WINDOW
+        );
+    }
+
+    #[test]
+    fn small_n_ctx_leaves_a_nonzero_input_budget() {
+        // Regression: with n_ctx <= DEFAULT_MAX_TOKENS the old
+        // `context_window.min(DEFAULT_MAX_TOKENS)` made output == window,
+        // so context-manager's usable budget (window - output - reserve)
+        // clamped to 0 and every turn failed with context/overflow.
+        let json = serde_json::json!({ "data": [{ "id": "m" }] });
+        for n_ctx in [2048_u64, 4096, 8192] {
+            let props = Props {
+                context_window: Some(n_ctx),
+                supports_vision: None,
+            };
+            let m = &parse_live_models(&json, &props)[0];
+            assert!(
+                m.max_output_tokens < m.context_window,
+                "n_ctx={n_ctx}: output {} must leave input room in window {}",
+                m.max_output_tokens,
+                m.context_window
+            );
+        }
+        // Props fetch failed -> 4096 fallback must also leave room.
+        let m = &parse_live_models(&json, &Props::default())[0];
+        assert!(m.max_output_tokens < m.context_window);
     }
 
     #[test]
