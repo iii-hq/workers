@@ -7,5 +7,5 @@ bin: llm-router
 description: One front door + provider protocol in front of every LLM provider.
 
 dependencies:
-  iii-state: "^0.21.6"
+  state: "^0.21.0"
   configuration: "^0.21.6"

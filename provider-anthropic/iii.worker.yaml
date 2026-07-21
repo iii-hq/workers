@@ -7,5 +7,5 @@ bin: provider-anthropic
 description: Anthropic Messages API provider worker; implements provider::anthropic::stream and provider::anthropic::refresh_models behind llm-router.
 
 dependencies:
-  iii-state: "^0.21.6"
+  state: "^0.21.0"
   llm-router: "^1.0.0"

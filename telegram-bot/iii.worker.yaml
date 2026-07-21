@@ -7,7 +7,7 @@ bin: telegram-bot
 description: Telegram bridge to the harness stack — polling or webhook ingress, live message edits, approvals, and configurable verbosity.
 
 dependencies:
-  iii-state: "^0.21.6"
+  state: "^0.21.0"
   queue: "^0.2.0"
   configuration: "^0.21.6"
   session-manager: "^1.0.0"

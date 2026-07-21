@@ -7,5 +7,5 @@ bin: provider-zai
 description: Z.AI Chat Completions provider worker; implements provider::zai::stream and provider::zai::refresh_models behind llm-router.
 
 dependencies:
-  iii-state: "^0.21.6"
+  state: "^0.21.0"
   llm-router: "^1.0.0"

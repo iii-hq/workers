@@ -8,5 +8,5 @@ description: Git worktree lifecycle for parallel agents — mint, claim, and tra
 
 dependencies:
   configuration: "^0.21.6"
-  iii-state: "^0.21.6"
+  state: "^0.21.0"
   shell: "^0.7.0"
