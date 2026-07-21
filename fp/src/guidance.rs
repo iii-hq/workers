@@ -48,6 +48,9 @@ in the next step's payload at `into` (default "/value"). Pure transforms run inl
 getOr, flatten, sortBy, reverse, when}` with lodash
 semantics — their input arrives at `value`, and what they thread onward is the transformed
 value itself (the `{value}` wrapper appears only on direct calls, never between steps).
+Producer steps too: `state::get` in a pipe hands the stored value onward BARE — never follow
+it with `fp::get { path: "/value" }`; state::get's response IS the stored value (the `{value}`
+wrapper is the transforms' direct-call shape, never a producer's).
 `fp::when { path?, op, to? }` is the guard step: a failing comparison STOPS the pipe
 (`short_circuited: true`), so a trailing write (e.g. `state::set`) runs only when the
 condition holds — the primitive for mechanical threshold checks.
@@ -245,6 +248,8 @@ mod tests {
             "getOr, flatten, sortBy, reverse, when}",
             "short_circuited",
             "wrapper appears only on direct calls",
+            "hands the stored value onward BARE",
+            "never a producer's",
             "The FIRST step has no previous value to receive",
             "preview_chars",
             "the rule is about bulk, not ceremony",

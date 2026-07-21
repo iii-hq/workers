@@ -128,6 +128,29 @@ impl SubscriberSet {
     }
 }
 
+/// A task reaction that runs detached (no `session_id` pin, no
+/// `__owner_session_id` stamp — [`crate::subscriptions::OWNER_SESSION_KEY`],
+/// the pin fallback `reaction_delivery_session` actually reads) cannot chain
+/// through a `parent_session_id` filter: children it spawns are parented to
+/// the fresh reaction session, so their completion events never match the
+/// binding and the chain silently stalls after the first reaction-spawned
+/// child. Presence-only by design: a pin that MISMATCHES the filtered parent
+/// also cannot chain, but may be a deliberate non-chaining collector, so it
+/// is not flagged.
+fn detached_task_with_parent_filter(metadata: Option<&Value>, config: &Value) -> bool {
+    let has_task = metadata.is_some_and(|m| m.get("task").is_some());
+    let pinned = metadata.is_some_and(|m| {
+        m.get("session_id")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty())
+            || m.get(crate::subscriptions::OWNER_SESSION_KEY)
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.is_empty())
+    });
+    let parent_filtered = BindingFilter::parse(config).is_ok_and(|f| f.parent_session_id.is_some());
+    has_task && !pinned && parent_filtered
+}
+
 struct TurnEventTriggerHandler {
     type_id: &'static str,
     set: SubscriberSet,
@@ -150,6 +173,22 @@ impl TriggerHandler for TurnEventTriggerHandler {
             crate::functions::react::validate_model(&self.iii, config.metadata.as_ref())
                 .await
                 .map_err(Error::Handler)?;
+            // Turn-event types only: `message-queued` fires carry no parent
+            // (`emit_queued` fans out with parent/display both `None`), so a
+            // parent filter there never matches at all and the pin advice
+            // below would be wrong.
+            if self.type_id != MESSAGE_QUEUED
+                && detached_task_with_parent_filter(config.metadata.as_ref(), &config.config)
+            {
+                tracing::warn!(
+                    trigger_type = self.type_id,
+                    %id,
+                    "task reaction is filtered on parent_session_id but delivery is detached \
+                     (no metadata.session_id / owner stamp): sub-agents spawned by the reaction \
+                     will not match this filter and the chain will stall — pin \
+                     metadata.session_id to the filtered session"
+                );
+            }
         }
         self.set.add(config).map_err(Error::Handler)?;
         tracing::info!(trigger_type = self.type_id, %id, %function_id, "turn-event subscription registered");
@@ -498,5 +537,47 @@ mod tests {
             BindingFilter::parse(&Value::Null).unwrap(),
             BindingFilter::default()
         );
+    }
+
+    #[test]
+    fn detached_task_parent_filter_predicate() {
+        let filter = json!({ "parent_session_id": "s_p" });
+        // Raw registration, no pin of any kind: detached, warn.
+        assert!(detached_task_with_parent_filter(
+            Some(&json!({ "task": "t" })),
+            &filter
+        ));
+        // The subscribe/interceptor owner stamp pins delivery
+        // (reaction_delivery_session falls back to it) — no warn.
+        assert!(!detached_task_with_parent_filter(
+            Some(&json!({ "task": "t", "__owner_session_id": "s_o" })),
+            &filter
+        ));
+        // Explicit session pin — no warn. Presence-only: a pin that does not
+        // match the filtered parent still suppresses (deliberate collector).
+        assert!(!detached_task_with_parent_filter(
+            Some(&json!({ "task": "t", "session_id": "s_p" })),
+            &filter
+        ));
+        assert!(!detached_task_with_parent_filter(
+            Some(&json!({ "task": "t", "session_id": "s_elsewhere" })),
+            &filter
+        ));
+        // An empty-string pin is no pin (matches the `model` "" precedent in
+        // `validate_spec`) — still detached, warn.
+        assert!(detached_task_with_parent_filter(
+            Some(&json!({ "task": "t", "session_id": "", "__owner_session_id": "" })),
+            &filter
+        ));
+        // Call-mode reaction (no sub-agent chain) — no warn.
+        assert!(!detached_task_with_parent_filter(
+            Some(&json!({ "call": { "function_id": "f::g" } })),
+            &filter
+        ));
+        // No parent filter — no warn.
+        assert!(!detached_task_with_parent_filter(
+            Some(&json!({ "task": "t" })),
+            &json!({})
+        ));
     }
 }
