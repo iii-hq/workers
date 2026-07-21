@@ -41,6 +41,53 @@ function StepFunctionLabel({ functionId }: { functionId: string }) {
   )
 }
 
+/** The numbered step route of a pipe — one row per step: function id,
+    optional `into` chip, payload one-liner, and (when receipts exist) the
+    per-step threaded size. Shared between the `fp::pipe` call card and the
+    register-trigger THEN pane (a reaction whose call target is a pipe). */
+export function PipeStepList({
+  through,
+  receipts,
+}: {
+  through: { function: string; payload?: unknown; into?: string | null }[]
+  receipts?: { chars: number }[] | null
+}) {
+  return (
+    <ul className="divide-y divide-rule-2">
+      {through.map((step, i) => {
+        const receipt = receipts?.[i]
+        const payload = compactPayload(step.payload)
+        return (
+          <li
+            key={`${i}-${step.function}`}
+            className="px-3 py-1.5 font-mono text-[12.5px]"
+          >
+            <div className="flex items-center gap-2">
+              <span className="w-4 shrink-0 text-right text-ink-ghost">
+                {i + 1}
+              </span>
+              <span className="min-w-0 truncate">
+                <StepFunctionLabel functionId={step.function} />
+              </span>
+              {step.into ? <FilterChip label="into" value={step.into} /> : null}
+              {receipt?.chars != null ? (
+                <span className="ml-auto shrink-0 text-[11px] text-ink-faint">
+                  → {receipt.chars.toLocaleString()} chars
+                </span>
+              ) : null}
+            </div>
+            {payload ? (
+              <div className="mt-0.5 break-all pl-6 text-[11px] leading-[1.5] text-ink-faint line-clamp-2">
+                {payload}
+              </div>
+            ) : null}
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
 /** `fp::pipe` — the step route with per-step receipt sizes, then the
     final value preview. The threaded values themselves never reach the chat
     (that is the point of the pipe), so there is no value pane. */
@@ -72,40 +119,7 @@ export function PipeView({ input, output, running }: PipeViewProps) {
           />
         ) : null}
       </MetaRow>
-      <ul className="divide-y divide-rule-2">
-        {req.through.map((step, i) => {
-          const receipt = receipts?.[i]
-          const payload = compactPayload(step.payload)
-          return (
-            <li
-              key={`${i}-${step.function}`}
-              className="px-3 py-1.5 font-mono text-[12.5px]"
-            >
-              <div className="flex items-center gap-2">
-                <span className="w-4 shrink-0 text-right text-ink-ghost">
-                  {i + 1}
-                </span>
-                <span className="min-w-0 truncate">
-                  <StepFunctionLabel functionId={step.function} />
-                </span>
-                {step.into ? (
-                  <FilterChip label="into" value={step.into} />
-                ) : null}
-                {receipt?.chars != null ? (
-                  <span className="ml-auto shrink-0 text-[11px] text-ink-faint">
-                    → {receipt.chars.toLocaleString()} chars
-                  </span>
-                ) : null}
-              </div>
-              {payload ? (
-                <div className="mt-0.5 break-all pl-6 text-[11px] leading-[1.5] text-ink-faint line-clamp-2">
-                  {payload}
-                </div>
-              ) : null}
-            </li>
-          )
-        })}
-      </ul>
+      <PipeStepList through={req.through} receipts={receipts} />
       {running ? (
         <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost animate-pulse">
           · piping…
