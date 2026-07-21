@@ -10,7 +10,7 @@
 //! chunks emits one terminal `done` frame, faults interrupt the first target
 //! call after 1500 ms, and releases target `call-1`.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::types::frames::Usage;
 use crate::types::scenario::{
@@ -157,6 +157,25 @@ impl ScenarioFunctionV1 {
         }
     }
 
+    /// The canonical recorder fixture: one required string `value`, returning
+    /// a durable `recorded` text result. It is the most common controlled
+    /// function; chain [`Self::hidden`] for a hook-only variant.
+    pub fn recorder() -> Self {
+        Self::new(
+            "Record one integration fixture value.",
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "value": { "type": "string" } },
+                "required": ["value"]
+            }),
+            json!({
+                "content": [{ "type": "text", "text": "recorded" }],
+                "is_error": false
+            }),
+        )
+    }
+
     /// Hook-only controlled functions are never exposed to the model.
     pub fn hidden(mut self) -> Self {
         self.expose = false;
@@ -209,6 +228,14 @@ impl TextReply {
     pub fn match_overrides(self, overrides: GenerationMatchOverridesV1) -> ScenarioGenerationV1 {
         with_overrides(self.into(), overrides)
     }
+
+    /// Grade this reply against the durable outcome only, at a recovery
+    /// boundary (fault restart or hook release) where the engine may rebuild
+    /// the request differently. Shorthand for [`Self::match_overrides`] with
+    /// the recovery policy.
+    pub fn recovery_boundary(self) -> ScenarioGenerationV1 {
+        with_overrides(self.into(), recovery_overrides())
+    }
 }
 
 impl From<TextReply> for ScenarioGenerationV1 {
@@ -236,6 +263,14 @@ impl FunctionCallReply {
     pub fn match_overrides(self, overrides: GenerationMatchOverridesV1) -> ScenarioGenerationV1 {
         with_overrides(self.into(), overrides)
     }
+
+    /// Grade this reply against the durable outcome only, at a recovery
+    /// boundary (fault restart or hook release) where the engine may rebuild
+    /// the request differently. Shorthand for [`Self::match_overrides`] with
+    /// the recovery policy.
+    pub fn recovery_boundary(self) -> ScenarioGenerationV1 {
+        with_overrides(self.into(), recovery_overrides())
+    }
 }
 
 impl From<FunctionCallReply> for ScenarioGenerationV1 {
@@ -262,6 +297,20 @@ fn with_overrides(
 ) -> ScenarioGenerationV1 {
     generation.match_overrides = overrides;
     generation
+}
+
+/// The loose match a recovery-boundary reply needs. After a fault restart or a
+/// hook release the engine may legitimately reconstruct the request
+/// differently, so grade the durable shape and leave the reconstructed request
+/// id and body free.
+fn recovery_overrides() -> GenerationMatchOverridesV1 {
+    GenerationMatchOverridesV1 {
+        request_id: Some(regex("^t_[0-9a-f]{32}:[0-9]+$")),
+        system_prompt: Some(present()),
+        messages: Some(present()),
+        tools: Some(present()),
+        ..Default::default()
+    }
 }
 
 fn input_output_usage(input: u64, output: u64) -> Usage {
@@ -322,6 +371,23 @@ impl FaultV1 {
     pub fn restart_delay_ms(mut self, delay_ms: u64) -> Self {
         self.restart_delay_ms = delay_ms;
         self
+    }
+}
+
+/// Entry point for [`ReleaseActionV1`], the action applied to the held
+/// deterministic first call by [`AuthoredScenarioV1::release`].
+pub struct Release;
+
+impl Release {
+    /// Release the held call for execution against its target function.
+    pub fn execute() -> ReleaseActionV1 {
+        ReleaseActionV1::Execute
+    }
+
+    /// Release the held call by delivering its recorded result without
+    /// re-execution.
+    pub fn deliver() -> ReleaseActionV1 {
+        ReleaseActionV1::Deliver
     }
 }
 

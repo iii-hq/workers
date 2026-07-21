@@ -10,22 +10,7 @@ pub(super) fn scenario() -> AuthoredScenario {
         "An allow-listed native function executes exactly once with a durable result.",
     )
     .send(Send::message("Call the recorder once."))
-    .function(
-        "record",
-        Function::new(
-            "Record one integration fixture value.",
-            json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": { "value": { "type": "string" } },
-                "required": ["value"]
-            }),
-            json!({
-                "content": [{ "type": "text", "text": "recorded" }],
-                "is_error": false
-            }),
-        ),
-    )
+    .function("record", Function::recorder())
     .generation(Reply::function_call("record", json!({ "value": "expected" })).usage(8, 4))
     .generation(Reply::text("recorded once").usage(18, 2))
     .expect(

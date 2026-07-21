@@ -103,11 +103,16 @@ excluded from `run --scenario all`. `render` prints deterministic canonical
 JSON with the complete compiled request, router script, expectations, and
 system prompt.
 
-Function aliases become `<run_id>::<alias>`. Chain `.hidden()` for hook-only
-functions. `Send::message(...).allow([...])` can narrow the exposed aliases
-or be an empty list to disable dispatch. Typed text and function-call replies
-cover normal cases; `.match_overrides(...)` and `RouterReplyV1::Raw` remain
-escape hatches for recovery boundaries and unusual wire contracts.
+`Function::recorder()` is the canonical string-in/`recorded`-out fixture;
+`Function::new(...)` builds any other controlled function and `.hidden()`
+marks a hook-only one. Function aliases become `<run_id>::<alias>`.
+`Send::message(...).allow([...])` can narrow the exposed aliases or be an
+empty list to disable dispatch. `Release::execute()` and `Release::deliver()`
+name the held-call action. Typed text and function-call replies cover normal
+cases; `.recovery_boundary()` grades a reply against the durable outcome only,
+where a fault restart or hook release may rebuild the request. `.match_overrides(...)`
+and `RouterReplyV1::Raw` remain the deeper escape hatches for unusual wire
+contracts.
 
 Timeout defaults are 60 seconds for readiness, 60 seconds for the scenario,
 and 15 seconds for teardown. Positive values can be overridden with the

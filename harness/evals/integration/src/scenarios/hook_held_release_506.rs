@@ -4,8 +4,6 @@
 
 use serde_json::json;
 
-use crate::types::scenario::GenerationMatchOverridesV1;
-
 use super::builder::*;
 
 pub(super) fn scenario() -> AuthoredScenario {
@@ -15,22 +13,7 @@ pub(super) fn scenario() -> AuthoredScenario {
     )
     .quarantine()
     .send(Send::message("Call the recorder once."))
-    .function(
-        "record",
-        Function::new(
-            "Record one integration fixture value.",
-            json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": { "value": { "type": "string" } },
-                "required": ["value"]
-            }),
-            json!({
-                "content": [{ "type": "text", "text": "recorded" }],
-                "is_error": false
-            }),
-        ),
-    )
+    .function("record", Function::recorder())
     .function(
         "hook-mutate",
         Function::new(
@@ -54,19 +37,9 @@ pub(super) fn scenario() -> AuthoredScenario {
     )
     .binding(Binding::hook_pre_trigger("hook-mutate", ["record"], 10))
     .binding(Binding::hook_pre_trigger("hook-hold", ["record"], 20))
-    .release(crate::types::scenario::ReleaseActionV1::Execute)
+    .release(Release::execute())
     .generation(Reply::function_call("record", json!({ "value": "expected" })).usage(8, 4))
-    .generation(
-        Reply::text("released and recorded")
-            .usage(20, 3)
-            .match_overrides(GenerationMatchOverridesV1 {
-                request_id: Some(regex("^t_[0-9a-f]{32}:[0-9]+$")),
-                system_prompt: Some(present()),
-                messages: Some(present()),
-                tools: Some(present()),
-                ..Default::default()
-            }),
-    )
+    .generation(Reply::text("released and recorded").usage(20, 3).recovery_boundary())
     .expect(
         Expect::new()
             .calls_closed()
