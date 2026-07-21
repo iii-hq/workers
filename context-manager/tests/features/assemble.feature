@@ -178,6 +178,26 @@ Feature: context::assemble — the model-ready context pipeline
     And the response messages are not empty
     And the response messages start at request message 2
 
+  # Prevents: a candidate window with NO user turn (the harness opens
+  # windows at a prior compaction's tail_start, which may be an assistant
+  # boundary) being summarised into an EMPTY model context. select()
+  # returns a whole-head selection for a user-less view; compaction must
+  # skip it and leave the shrinking to emergency reduction. Observed live
+  # 2026-07-21: turn failed "context::assemble returned an empty
+  # model-facing context".
+  Scenario: a user-less window is never compacted to empty
+    Given inline model "small" with context window 5000 and max output 500
+    And the summariser returns "## Goal\n- never used"
+    And an assistant function call "c1" to "coder::read-file"
+    And a function result for call "c1" from "coder::read-file" of ~6000 tokens
+    When I assemble the history with model "small"
+    Then the call succeeds
+    And the response field "applied.compacted" is false
+    And the response messages are not empty
+    And the response field "token_count" does not exceed 4000
+    And the summariser was invoked 0 times
+    And call/result pairing is intact in the response messages
+
   # Prevents: both passes fighting instead of stacking — prune frees
   # the tool output, compaction then folds the rest of the head.
   Scenario: prune and compaction stack when one is not enough
