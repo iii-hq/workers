@@ -91,6 +91,16 @@ fn response_frame_disagreement_is_rejected() {
         script["generations"][0]["response"]["stop_reason"] = json!("length");
     });
     assert!(error_chain(script).contains("disagrees"));
+
+    let script = minimal_script(|script| {
+        script["generations"][0]["response"]["provider"] = json!("other");
+    });
+    assert!(error_chain(script).contains("provider"));
+
+    let script = minimal_script(|script| {
+        script["generations"][0]["response"]["usage"] = json!({ "input": 1 });
+    });
+    assert!(error_chain(script).contains("usage"));
 }
 
 #[test]
@@ -146,18 +156,91 @@ fn removed_barriers_are_rejected_as_unknown_fields() {
 #[test]
 fn slim_and_fat_deltas_both_validate() {
     let slim = minimal_script(|script| {
-        let done = script["generations"][0]["frames"][0].clone();
+        let mut done = script["generations"][0]["frames"][0].clone();
+        done["message"]["content"] = json!([{ "type": "text", "text": "x" }]);
         script["generations"][0]["frames"] = json!([{ "type": "text_delta", "delta": "x" }, done]);
     });
     validate(slim).unwrap();
 
     let fat = minimal_script(|script| {
-        let done = script["generations"][0]["frames"][0].clone();
+        let mut done = script["generations"][0]["frames"][0].clone();
+        done["message"]["content"] = json!([{ "type": "text", "text": "x" }]);
         let partial = done["message"].clone();
         script["generations"][0]["frames"] =
             json!([{ "type": "text_delta", "partial": partial, "delta": "x" }, done]);
     });
     validate(fat).unwrap();
+}
+
+#[test]
+fn streamed_text_must_agree_with_terminal_message() {
+    let script = minimal_script(|script| {
+        let mut done = script["generations"][0]["frames"][0].clone();
+        done["message"]["content"] = json!([{ "type": "text", "text": "different" }]);
+        script["generations"][0]["frames"] =
+            json!([{ "type": "text_delta", "delta": "streamed" }, done]);
+    });
+    assert!(error_chain(script).contains("streamed content disagrees"));
+}
+
+#[test]
+fn block_end_cannot_hide_incorrect_text_or_thinking_deltas() {
+    for (start_type, delta_type, end_type, block_type) in [
+        ("text_start", "text_delta", "text_end", "text"),
+        (
+            "thinking_start",
+            "thinking_delta",
+            "thinking_end",
+            "thinking",
+        ),
+    ] {
+        let script = minimal_script(|script| {
+            let mut done = script["generations"][0]["frames"][0].clone();
+            done["message"]["content"] = json!([{ "type": block_type, "text": "authoritative" }]);
+            let mut start = done["message"].clone();
+            start["content"] = json!([{ "type": block_type, "text": "" }]);
+            let end = done["message"].clone();
+            script["generations"][0]["frames"] = json!([
+                { "type": start_type, "partial": start },
+                { "type": delta_type, "delta": "contradictory" },
+                { "type": end_type, "partial": end },
+                done
+            ]);
+        });
+        assert!(
+            error_chain(script).contains("deltas disagree"),
+            "{block_type} stream was accepted"
+        );
+    }
+}
+
+#[test]
+fn function_call_end_cannot_hide_incorrect_argument_deltas() {
+    let script = minimal_script(|script| {
+        let mut done = script["generations"][0]["frames"][0].clone();
+        done["message"]["stop_reason"] = json!("function_call");
+        done["message"]["content"] = json!([{
+            "type": "function_call",
+            "id": "call-1",
+            "function_id": "run::target",
+            "arguments": { "value": "authoritative" }
+        }]);
+        script["generations"][0]["response"]["stop_reason"] = json!("function_call");
+        let mut start = done["message"].clone();
+        start["content"][0]["arguments"] = json!({});
+        let end = done["message"].clone();
+        script["generations"][0]["frames"] = json!([
+            { "type": "functioncall_start", "partial": start },
+            {
+                "type": "functioncall_delta",
+                "id": "call-1",
+                "delta": "{\"value\":\"contradictory\"}"
+            },
+            { "type": "functioncall_end", "partial": end },
+            done
+        ]);
+    });
+    assert!(error_chain(script).contains("deltas disagree"));
 }
 
 #[test]

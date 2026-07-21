@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde_json::json;
 
 use crate::types::scenario::{
-    IntegrationScenarioV1, RouterReplyV1, ScenarioGenerationV1, ScenarioRouterV1, ScenarioSendV1,
+    AuthoredScenarioV1, RouterReplyV1, ScenarioGenerationV1, ScenarioRouterV1, ScenarioSendV1,
 };
 use crate::types::script::{JsonMatcherV1, SchemaVersion1};
 
@@ -12,8 +12,8 @@ use super::{
     ScenarioTemplateKind,
 };
 
-fn minimal(reply: RouterReplyV1) -> IntegrationScenarioV1 {
-    IntegrationScenarioV1 {
+fn minimal(reply: RouterReplyV1) -> AuthoredScenarioV1 {
+    AuthoredScenarioV1 {
         schema_version: SchemaVersion1::V1,
         id: "C-E2E-T".to_string(),
         description: "A focused compiler fixture.".to_string(),
@@ -48,10 +48,7 @@ fn text_reply_compiles_stream_and_common_defaults() {
     });
     let compiled = compile_scenario(&authored, "base\n").unwrap();
     assert_eq!(compiled.script.generations[0].frames.len(), 7);
-    assert_eq!(
-        compiled.scenario.send["options"]["functions"]["allow"],
-        json!([])
-    );
+    assert!(compiled.scenario.send.options.functions.allow.is_empty());
     assert_eq!(compiled.scenario.deadlines.teardown_ms, 15_000);
     assert!(compiled
         .scenario
@@ -161,15 +158,13 @@ fn tools_are_canonicalized_and_function_contracts_validate() {
         "alpha".to_string(),
     ]);
     let compiled = compile_scenario(&authored, "base").unwrap();
-    let allowed = compiled.scenario.send["options"]["functions"]["allow"]
-        .as_array()
-        .unwrap();
+    let allowed = &compiled.scenario.send.options.functions.allow;
     assert_eq!(
         allowed,
         &[
-            json!("{{run_id}}::alpha"),
-            json!("{{run_id}}::record"),
-            json!("{{run_id}}::zeta")
+            "{{run_id}}::alpha".to_string(),
+            "{{run_id}}::record".to_string(),
+            "{{run_id}}::zeta".to_string()
         ]
     );
     let JsonMatcherV1::Exact { expected, .. } = &compiled.script.generations[0].match_.tools else {
@@ -265,13 +260,23 @@ fn bindings_release_and_fault_fail_fast_when_incoherent() {
         "Validate fault relationships.",
         ScenarioTemplateKind::Crash,
     );
-    crash.functions.get_mut("record").unwrap().response_delay_ms = None;
-    assert!(
-        format!("{:#}", compile_scenario(&crash, "base").unwrap_err())
-            .contains("response_delay_ms > 0")
+    let compiled = compile_scenario(&crash, "base").unwrap();
+    assert_eq!(
+        compiled.scenario.recorder.target.hold_response_at,
+        Some(1),
+        "fault targets receive the compiler-owned response-gate ordinal"
     );
 
-    crash.functions.get_mut("record").unwrap().response_delay_ms = Some(1);
+    let second_call = crash.router.generations[0].clone();
+    crash.router.generations.insert(1, second_call);
+    crash.fault.as_mut().unwrap().after_target_calls = 2;
+    let compiled = compile_scenario(&crash, "base").unwrap();
+    assert_eq!(
+        compiled.scenario.recorder.target.hold_response_at,
+        Some(2),
+        "earlier calls must return before the selected fault ordinal is held"
+    );
+
     crash.fault.as_mut().unwrap().after_target_calls = 0;
     assert!(
         format!("{:#}", compile_scenario(&crash, "base").unwrap_err())
@@ -289,7 +294,7 @@ fn templates_compile_and_render_deterministically() {
     ] {
         let authored = scenario_template("C-E2E-NEW", "A generated scenario.", kind);
         let yaml = render_authored_yaml(&authored).unwrap();
-        let reparsed: IntegrationScenarioV1 = serde_yaml::from_str(&yaml).unwrap();
+        let reparsed: AuthoredScenarioV1 = serde_yaml::from_str(&yaml).unwrap();
         let fixture = compile_scenario(&reparsed, "base\n").unwrap();
         assert_eq!(
             render_compiled(&fixture).unwrap(),

@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 
 use super::{
     LifecycleExpectationV1, MessageCountsExpectationV1, SendFlagsExpectationV1,
-    TerminalExpectationV1,
+    TerminalExpectationV1, TerminalStatusV1,
 };
 
 macro_rules! invariant_registry {
@@ -73,6 +73,13 @@ pub struct FunctionResultInvariantV1 {
 #[serde(deny_unknown_fields)]
 pub struct GenerationsConsumedInvariantV1 {
     pub count: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LifecycleInvariantV1 {
+    pub allow_identical_duplicates: bool,
+    pub status: TerminalStatusV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -157,8 +164,17 @@ impl InvariantSpecV1 {
         Self::typed(InvariantKind::StatusTerminal, parameters)
     }
 
-    pub fn lifecycle_completed_once(parameters: LifecycleExpectationV1) -> Self {
-        Self::typed(InvariantKind::LifecycleCompletedOnce, parameters)
+    pub fn lifecycle_completed_once(
+        parameters: LifecycleExpectationV1,
+        status: TerminalStatusV1,
+    ) -> Self {
+        Self::typed(
+            InvariantKind::LifecycleCompletedOnce,
+            LifecycleInvariantV1 {
+                allow_identical_duplicates: parameters.allow_identical_duplicates,
+                status,
+            },
+        )
     }
 
     pub fn router_generations_consumed(count: u64) -> Self {

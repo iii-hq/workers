@@ -7,7 +7,7 @@ use crate::types::frames::{
     AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, RouterChatResponse,
     StopReason,
 };
-use crate::types::scenario::{IntegrationScenarioV1, RouterReplyV1};
+use crate::types::scenario::{AuthoredScenarioV1, RouterReplyV1};
 use crate::types::script::{
     GenerationMatchV1, JsonMatcherV1, JsonNormalizerV1, ModelFixtureV1, NormalizerOperation,
     RouterScriptV1, SchemaVersion1, ScriptedGenerationV1,
@@ -22,7 +22,7 @@ struct CompiledReply {
 }
 
 pub(super) fn compile_router(
-    authored: &IntegrationScenarioV1,
+    authored: &AuthoredScenarioV1,
     model: &ModelFixtureV1,
     tools: &Value,
     function_ids: &BTreeMap<String, String>,
@@ -161,7 +161,7 @@ fn compile_reply(
     reply: &RouterReplyV1,
     ordinal: u64,
     model: &ModelFixtureV1,
-    authored: &IntegrationScenarioV1,
+    authored: &AuthoredScenarioV1,
     function_ids: &BTreeMap<String, String>,
     call_id: Option<&str>,
 ) -> anyhow::Result<CompiledReply> {

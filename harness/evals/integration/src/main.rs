@@ -62,6 +62,11 @@ struct RunArgs {
     /// Keep heavyweight artifacts for passing scenarios.
     #[arg(long)]
     retain_success: bool,
+
+    /// Run every selected scenario this many times and require an identical
+    /// stable result from each repetition.
+    #[arg(long, default_value_t = 1, value_parser = parse_repeat)]
+    repeat: u16,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -130,6 +135,16 @@ fn parse_worker_bin(raw: &str) -> Result<(String, PathBuf), String> {
         return Err(format!("expected name=path, got {raw:?}"));
     }
     Ok((name.to_string(), PathBuf::from(path)))
+}
+
+fn parse_repeat(raw: &str) -> Result<u16, String> {
+    let repeat = raw
+        .parse::<u16>()
+        .map_err(|error| format!("invalid repeat count {raw:?}: {error}"))?;
+    if repeat == 0 {
+        return Err("repeat count must be at least 1".to_string());
+    }
+    Ok(repeat)
 }
 
 fn main() {
@@ -201,29 +216,53 @@ async fn run(args: RunArgs) -> i32 {
     let mut exit_code = 0;
     for fixture in &fixtures {
         let scenario_id = fixture.scenario.id.clone();
-        tracing::info!(scenario = %scenario_id, "running");
-        let outcome = run_scenario(&bins, fixture, &artifacts_dir, args.retain_success).await;
-        let classification = outcome.result.classification;
-        let failed: Vec<&str> = outcome
-            .result
-            .invariants
-            .iter()
-            .filter(|invariant| !invariant.passed)
-            .map(|invariant| invariant.id.as_str())
-            .collect();
-        println!(
-            "{scenario_id}: {}{} — run {} ({} ms), artifacts: {}",
-            classification_str(classification),
-            if failed.is_empty() {
-                String::new()
+        let mut stable_result = None;
+        for repetition in 1..=args.repeat {
+            tracing::info!(
+                scenario = %scenario_id,
+                repetition,
+                repeat = args.repeat,
+                "running"
+            );
+            let outcome = run_scenario(&bins, fixture, &artifacts_dir, args.retain_success).await;
+            let classification = outcome.result.classification;
+            let failed: Vec<&str> = outcome
+                .result
+                .invariants
+                .iter()
+                .filter(|invariant| !invariant.passed)
+                .map(|invariant| invariant.id.as_str())
+                .collect();
+            let repetition_label = if args.repeat > 1 {
+                format!(" [{repetition}/{}]", args.repeat)
             } else {
-                format!(" — failed invariants: {}", failed.join(", "))
-            },
-            outcome.run_id,
-            outcome.duration_ms,
-            outcome.run_root.display(),
-        );
-        exit_code = exit_code.max(classification.exit_code());
+                String::new()
+            };
+            println!(
+                "{scenario_id}{repetition_label}: {}{} — run {} ({} ms), artifacts: {}",
+                classification_str(classification),
+                if failed.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — failed invariants: {}", failed.join(", "))
+                },
+                outcome.run_id,
+                outcome.duration_ms,
+                outcome.run_root.display(),
+            );
+            exit_code = exit_code.max(classification.exit_code());
+
+            match &stable_result {
+                None => stable_result = Some(outcome.result),
+                Some(expected) if expected == &outcome.result => {}
+                Some(_) => {
+                    eprintln!(
+                        "runner_error: {scenario_id} produced a different stable result on repetition {repetition}"
+                    );
+                    exit_code = exit_code.max(3);
+                }
+            }
+        }
     }
     exit_code
 }
@@ -387,5 +426,13 @@ mod tests {
         for valid in ["streamed-text", "case_507", "C505"] {
             validate_slug(valid).unwrap();
         }
+    }
+
+    #[test]
+    fn repeat_count_must_be_positive() {
+        assert_eq!(parse_repeat("1").unwrap(), 1);
+        assert_eq!(parse_repeat("2").unwrap(), 2);
+        assert!(parse_repeat("0").is_err());
+        assert!(parse_repeat("many").is_err());
     }
 }

@@ -21,8 +21,6 @@ functions:
       content:
         - { type: text, text: recorded }
       is_error: false
-    # Leaves a deterministic fault-injection window after durable recording.
-    response_delay_ms: 8000
 
 router:
   generations:

@@ -10,7 +10,9 @@ mod supervisor;
 
 pub use child::SupervisedChild;
 pub use spec::ProcessSpec;
-pub use supervisor::{EarlyExit, ProcessSupervisor, DEFAULT_TEARDOWN_BUDGET};
+pub use supervisor::{
+    EarlyExit, ProcessSupervisor, TeardownIssue, TeardownReport, DEFAULT_TEARDOWN_BUDGET,
+};
 
 #[cfg(test)]
 mod tests;

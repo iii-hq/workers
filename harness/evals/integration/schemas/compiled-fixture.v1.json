@@ -420,6 +420,183 @@
       ],
       "type": "string"
     },
+    "CompiledFaultV1": {
+      "additionalProperties": false,
+      "properties": {
+        "after_target_calls": {
+          "format": "uint64",
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "function_id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/FaultKind"
+        },
+        "restart_delay_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "after_target_calls",
+        "function_id",
+        "kind",
+        "restart_delay_ms"
+      ],
+      "type": "object"
+    },
+    "CompiledFunctionExposureV1": {
+      "enum": [
+        "native"
+      ],
+      "type": "string"
+    },
+    "CompiledFunctionPolicyV1": {
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "deny": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "expose": {
+          "$ref": "#/definitions/CompiledFunctionExposureV1"
+        }
+      },
+      "required": [
+        "allow",
+        "deny",
+        "expose"
+      ],
+      "type": "object"
+    },
+    "CompiledScenarioV1": {
+      "additionalProperties": false,
+      "description": "Strict runtime scenario produced from [`super::AuthoredScenarioV1`].",
+      "properties": {
+        "bindings": {
+          "items": {
+            "$ref": "#/definitions/TriggerBindingV1"
+          },
+          "type": "array"
+        },
+        "deadlines": {
+          "$ref": "#/definitions/DeadlinesV1"
+        },
+        "description": {
+          "type": "string"
+        },
+        "fault": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CompiledFaultV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "invariants": {
+          "items": {
+            "$ref": "#/definitions/InvariantSpecV1"
+          },
+          "type": "array"
+        },
+        "quarantine": {
+          "type": "boolean"
+        },
+        "recorder": {
+          "$ref": "#/definitions/RecorderConfigV1"
+        },
+        "release": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReleaseV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "schema_version": {
+          "$ref": "#/definitions/SchemaVersion1"
+        },
+        "send": {
+          "$ref": "#/definitions/CompiledSendV1"
+        }
+      },
+      "required": [
+        "deadlines",
+        "description",
+        "id",
+        "invariants",
+        "recorder",
+        "schema_version",
+        "send"
+      ],
+      "type": "object"
+    },
+    "CompiledSendOptionsV1": {
+      "additionalProperties": false,
+      "properties": {
+        "functions": {
+          "$ref": "#/definitions/CompiledFunctionPolicyV1"
+        }
+      },
+      "required": [
+        "functions"
+      ],
+      "type": "object"
+    },
+    "CompiledSendV1": {
+      "additionalProperties": false,
+      "description": "The deliberately narrow `harness::send` request emitted by the scenario compiler. Keeping this typed prevents compiler changes from silently introducing fields outside the live harness contract.",
+      "properties": {
+        "idempotency_key": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "options": {
+          "$ref": "#/definitions/CompiledSendOptionsV1"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "message",
+        "model",
+        "options",
+        "provider",
+        "session_id"
+      ],
+      "type": "object"
+    },
     "ContentBlock": {
       "oneOf": [
         {
@@ -617,245 +794,85 @@
       ],
       "type": "object"
     },
-    "ExpectationsV1": {
-      "additionalProperties": false,
-      "description": "Typed oracle vocabulary. Common send/completion/lifecycle/router checks have defaults, leaving each fixture to state only scenario-specific facts.",
-      "properties": {
-        "assistant_text": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "calls": {
-          "items": {
-            "$ref": "#/definitions/TargetCallsExpectationV1"
-          },
-          "type": "array"
-        },
-        "calls_closed": {
-          "type": "boolean"
-        },
-        "function_results": {
-          "items": {
-            "$ref": "#/definitions/FunctionResultExpectationV1"
-          },
-          "type": "array"
-        },
-        "lifecycle": {
-          "$ref": "#/definitions/LifecycleExpectationV1"
-        },
-        "message_counts": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/MessageCountsExpectationV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "no_duplicates": {
-          "type": "boolean"
-        },
-        "send_flags": {
-          "$ref": "#/definitions/SendFlagsExpectationV1"
-        },
-        "terminal": {
-          "$ref": "#/definitions/TerminalExpectationV1"
-        }
-      },
-      "type": "object"
-    },
     "FaultKind": {
       "enum": [
         "engine_sigkill"
       ],
       "type": "string"
     },
-    "FaultV1": {
+    "GenerationMatchV1": {
       "additionalProperties": false,
+      "description": "The 12 router-request fields; compiled scenarios always make every matcher explicit.",
       "properties": {
-        "after_target_calls": {
-          "format": "uint64",
-          "minimum": 1.0,
-          "type": "integer"
+        "max_output_tokens": {
+          "$ref": "#/definitions/JsonMatcherV1"
         },
-        "function": {
-          "description": "Controlled function alias to interrupt. Omitted means the first authored function call.",
-          "type": [
-            "string",
-            "null"
-          ]
+        "messages": {
+          "$ref": "#/definitions/JsonMatcherV1"
         },
-        "kind": {
-          "$ref": "#/definitions/FaultKind"
+        "metadata": {
+          "$ref": "#/definitions/JsonMatcherV1"
         },
-        "restart_delay_ms": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+        "model": {
+          "$ref": "#/definitions/JsonMatcherV1"
+        },
+        "provider": {
+          "$ref": "#/definitions/JsonMatcherV1"
+        },
+        "provider_options": {
+          "$ref": "#/definitions/JsonMatcherV1"
+        },
+        "request_id": {
+          "$ref": "#/definitions/JsonMatcherV1"
+        },
+        "response_format": {
+          "$ref": "#/definitions/JsonMatcherV1"
+        },
+        "system_prompt": {
+          "$ref": "#/definitions/JsonMatcherV1"
+        },
+        "thinking_level": {
+          "$ref": "#/definitions/JsonMatcherV1"
+        },
+        "tools": {
+          "$ref": "#/definitions/JsonMatcherV1"
+        },
+        "writer_ref": {
+          "$ref": "#/definitions/JsonMatcherV1"
         }
       },
       "required": [
-        "kind"
+        "max_output_tokens",
+        "messages",
+        "metadata",
+        "model",
+        "provider",
+        "provider_options",
+        "request_id",
+        "response_format",
+        "system_prompt",
+        "thinking_level",
+        "tools",
+        "writer_ref"
       ],
       "type": "object"
     },
-    "FunctionResultExpectationV1": {
+    "InvariantSpecV1": {
       "additionalProperties": false,
+      "description": "Stable wire form persisted in compiled scenarios.",
       "properties": {
-        "content": {
-          "items": true,
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "function": {
-          "description": "Optional function alias; omitted when any result closing the call is acceptable (for example, a synthesized crash-recovery error).",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "function_call_id": {
-          "default": "call-1",
+        "id": {
           "type": "string"
         },
-        "is_error": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+        "parameters": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
         }
       },
-      "type": "object"
-    },
-    "GenerationMatchOverridesV1": {
-      "additionalProperties": false,
-      "properties": {
-        "max_output_tokens": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/JsonMatcherV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "messages": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/JsonMatcherV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "metadata": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/JsonMatcherV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "model": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/JsonMatcherV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "provider": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/JsonMatcherV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "provider_options": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/JsonMatcherV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "request_id": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/JsonMatcherV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "response_format": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/JsonMatcherV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "system_prompt": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/JsonMatcherV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "thinking_level": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/JsonMatcherV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "tools": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/JsonMatcherV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "writer_ref": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/JsonMatcherV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
+      "required": [
+        "id"
+      ],
       "type": "object"
     },
     "JsonMatcherV1": {
@@ -1002,41 +1019,17 @@
       ],
       "type": "object"
     },
-    "LifecycleExpectationV1": {
-      "additionalProperties": false,
-      "properties": {
-        "allow_identical_duplicates": {
-          "default": true,
-          "type": "boolean"
-        }
-      },
-      "type": "object"
-    },
-    "MessageCountsExpectationV1": {
-      "additionalProperties": false,
-      "properties": {
-        "assistant": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "function_result": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "user": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "assistant",
-        "function_result",
-        "user"
+    "LifecycleFunctionId": {
+      "enum": [
+        "integration-recorder::lifecycle"
       ],
-      "type": "object"
+      "type": "string"
+    },
+    "LifecycleTriggerType": {
+      "enum": [
+        "harness::turn-completed"
+      ],
+      "type": "string"
     },
     "ModelFixtureV1": {
       "additionalProperties": false,
@@ -1206,6 +1199,81 @@
       ],
       "type": "object"
     },
+    "RecorderConfigV1": {
+      "additionalProperties": false,
+      "properties": {
+        "extra_functions": {
+          "description": "Additional run-scoped controlled functions (e.g. hook implementations for `harness::hook::*` scenarios). Registered exactly like the target: declared description/schema verbatim, every call durably recorded, declared response returned.",
+          "items": {
+            "$ref": "#/definitions/RecorderTargetV1"
+          },
+          "type": "array"
+        },
+        "lifecycle": {
+          "$ref": "#/definitions/RecorderLifecycleV1"
+        },
+        "target": {
+          "$ref": "#/definitions/RecorderTargetV1"
+        }
+      },
+      "required": [
+        "lifecycle",
+        "target"
+      ],
+      "type": "object"
+    },
+    "RecorderLifecycleV1": {
+      "additionalProperties": false,
+      "properties": {
+        "function_id": {
+          "$ref": "#/definitions/LifecycleFunctionId"
+        },
+        "trigger_type": {
+          "$ref": "#/definitions/LifecycleTriggerType"
+        }
+      },
+      "required": [
+        "function_id",
+        "trigger_type"
+      ],
+      "type": "object"
+    },
+    "RecorderTargetV1": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "function_id": {
+          "description": "Must be prefixed by `<run_id>::` — enforced by `configure`.",
+          "type": "string"
+        },
+        "hold_response_at": {
+          "description": "One-based call ordinal whose response is held behind a runner-owned, in-process gate after the call has been durably appended. Derived from `fault.after_target_calls`; never authored directly.",
+          "format": "uint64",
+          "minimum": 1.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "request_schema": {
+          "additionalProperties": true,
+          "description": "Registered verbatim; the same schema must appear in native tool exposure (that registration is part of the oracle).",
+          "type": "object"
+        },
+        "response": {
+          "description": "Declared response returned for every target call."
+        }
+      },
+      "required": [
+        "description",
+        "function_id",
+        "request_schema",
+        "response"
+      ],
+      "type": "object"
+    },
     "ReleaseActionV1": {
       "enum": [
         "execute",
@@ -1279,207 +1347,30 @@
       ],
       "type": "object"
     },
-    "RouterReplyV1": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "chunks": {
-              "description": "Non-empty chunks produce the complete streaming frame sequence. Omitted chunks produce one terminal `done` frame.",
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "text": {
-              "type": "string"
-            },
-            "type": {
-              "enum": [
-                "text"
-              ],
-              "type": "string"
-            },
-            "usage": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/Usage"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "text",
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "arguments": true,
-            "function": {
-              "description": "Function alias from `functions`.",
-              "type": "string"
-            },
-            "id": {
-              "description": "Defaults to `call-<function-call ordinal>`.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "function_call"
-              ],
-              "type": "string"
-            },
-            "usage": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/Usage"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "arguments",
-            "function",
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Full strict wire contract for cases the typed replies cannot express.",
-          "properties": {
-            "frames": {
-              "items": {
-                "$ref": "#/definitions/AssistantMessageEvent"
-              },
-              "type": "array"
-            },
-            "response": {
-              "$ref": "#/definitions/RouterChatResponse"
-            },
-            "type": {
-              "enum": [
-                "raw"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "frames",
-            "response",
-            "type"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "ScenarioFunctionV1": {
-      "additionalProperties": false,
-      "properties": {
-        "description": {
-          "type": "string"
-        },
-        "expose": {
-          "description": "Exposed to the model by default. Hook-only controlled functions set this to false.",
-          "type": "boolean"
-        },
-        "request_schema": {
-          "additionalProperties": true,
-          "type": "object"
-        },
-        "response": true
-      },
-      "required": [
-        "description",
-        "request_schema",
-        "response"
-      ],
-      "type": "object"
-    },
-    "ScenarioGenerationV1": {
-      "additionalProperties": false,
-      "properties": {
-        "match_overrides": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/GenerationMatchOverridesV1"
-            }
-          ],
-          "description": "Escape hatch for fields whose history is intentionally unstable, such as the post-crash request in a recovery reproduction."
-        },
-        "reply": {
-          "$ref": "#/definitions/RouterReplyV1"
-        }
-      },
-      "required": [
-        "reply"
-      ],
-      "type": "object"
-    },
-    "ScenarioRouterV1": {
+    "RouterScriptV1": {
       "additionalProperties": false,
       "properties": {
         "generations": {
           "items": {
-            "$ref": "#/definitions/ScenarioGenerationV1"
+            "$ref": "#/definitions/ScriptedGenerationV1"
           },
           "type": "array"
         },
         "model": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ModelFixtureV1"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Omitted for the deterministic `fixture-model` / `scripted` catalog entry used by the integration stack."
-        }
-      },
-      "required": [
-        "generations"
-      ],
-      "type": "object"
-    },
-    "ScenarioSendV1": {
-      "additionalProperties": false,
-      "properties": {
-        "allow": {
-          "description": "Allowed function aliases. Omitted means every function whose `expose` flag is true; an empty list disables function dispatch.",
-          "items": {
-            "type": "string"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
+          "$ref": "#/definitions/ModelFixtureV1"
         },
-        "idempotency_key": {
-          "description": "Omitted values are derived deterministically from the scenario id.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "message": {
+        "scenario_id": {
           "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/SchemaVersion1"
         }
       },
       "required": [
-        "message"
+        "generations",
+        "model",
+        "scenario_id",
+        "schema_version"
       ],
       "type": "object"
     },
@@ -1490,22 +1381,33 @@
       ],
       "type": "string"
     },
-    "SendFlagsExpectationV1": {
+    "ScriptedGenerationV1": {
       "additionalProperties": false,
       "properties": {
-        "deduplicated": {
-          "default": false,
-          "type": "boolean"
+        "frames": {
+          "items": {
+            "$ref": "#/definitions/AssistantMessageEvent"
+          },
+          "type": "array"
         },
-        "merged": {
-          "default": false,
-          "type": "boolean"
+        "match": {
+          "$ref": "#/definitions/GenerationMatchV1"
         },
-        "queued": {
-          "default": false,
-          "type": "boolean"
+        "ordinal": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "response": {
+          "$ref": "#/definitions/RouterChatResponse"
         }
       },
+      "required": [
+        "frames",
+        "match",
+        "ordinal",
+        "response"
+      ],
       "type": "object"
     },
     "StopReason": {
@@ -1518,93 +1420,23 @@
       ],
       "type": "string"
     },
-    "TargetCallsExpectationV1": {
+    "TriggerBindingV1": {
       "additionalProperties": false,
       "properties": {
-        "count": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "function": {
+        "config": true,
+        "function_id": {
           "type": "string"
         },
-        "payload": true,
-        "payload_subset": true
-      },
-      "required": [
-        "count",
-        "function"
-      ],
-      "type": "object"
-    },
-    "TerminalExpectationV1": {
-      "additionalProperties": false,
-      "properties": {
-        "pending_calls": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "queued_messages": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "status": {
-          "$ref": "#/definitions/TerminalStatusV1"
+        "trigger_type": {
+          "type": "string"
         }
       },
       "required": [
-        "pending_calls",
-        "queued_messages",
-        "status"
+        "config",
+        "function_id",
+        "trigger_type"
       ],
       "type": "object"
-    },
-    "TerminalStatusV1": {
-      "enum": [
-        "completed",
-        "failed",
-        "cancelled"
-      ],
-      "type": "string"
-    },
-    "TriggerBindingSpecV1": {
-      "additionalProperties": false,
-      "properties": {
-        "function": {
-          "description": "Controlled function alias invoked by the trigger.",
-          "type": "string"
-        },
-        "functions": {
-          "description": "Exposed function aliases selected by this hook.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "priority": {
-          "format": "int64",
-          "type": "integer"
-        },
-        "trigger": {
-          "$ref": "#/definitions/TriggerKindV1"
-        }
-      },
-      "required": [
-        "function",
-        "functions",
-        "priority",
-        "trigger"
-      ],
-      "type": "object"
-    },
-    "TriggerKindV1": {
-      "enum": [
-        "hook_pre_trigger"
-      ],
-      "type": "string"
     },
     "Usage": {
       "additionalProperties": false,
@@ -1660,81 +1492,22 @@
       "type": "object"
     }
   },
-  "description": "The single-file scenario authors maintain in `scenarios/<slug>/scenario.yaml`.",
   "properties": {
-    "bindings": {
-      "items": {
-        "$ref": "#/definitions/TriggerBindingSpecV1"
-      },
-      "type": "array"
+    "scenario": {
+      "$ref": "#/definitions/CompiledScenarioV1"
     },
-    "description": {
+    "script": {
+      "$ref": "#/definitions/RouterScriptV1"
+    },
+    "system_prompt_template": {
       "type": "string"
-    },
-    "expect": {
-      "$ref": "#/definitions/ExpectationsV1"
-    },
-    "fault": {
-      "anyOf": [
-        {
-          "$ref": "#/definitions/FaultV1"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "functions": {
-      "additionalProperties": {
-        "$ref": "#/definitions/ScenarioFunctionV1"
-      },
-      "description": "Alias → controlled function. Aliases are expanded to `{{run_id}}::<alias>` by the compiler.",
-      "propertyNames": {
-        "minLength": 1,
-        "pattern": "^[A-Za-z0-9_-]+$",
-        "type": "string"
-      },
-      "type": "object"
-    },
-    "id": {
-      "maxLength": 128,
-      "minLength": 1,
-      "pattern": "^[A-Za-z0-9_-]+$",
-      "type": "string"
-    },
-    "quarantine": {
-      "type": "boolean"
-    },
-    "release": {
-      "anyOf": [
-        {
-          "$ref": "#/definitions/ReleaseV1"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "router": {
-      "$ref": "#/definitions/ScenarioRouterV1"
-    },
-    "schema_version": {
-      "$ref": "#/definitions/SchemaVersion1"
-    },
-    "send": {
-      "$ref": "#/definitions/ScenarioSendV1"
-    },
-    "timeouts": {
-      "$ref": "#/definitions/DeadlinesV1"
     }
   },
   "required": [
-    "description",
-    "id",
-    "router",
-    "schema_version",
-    "send"
+    "scenario",
+    "script",
+    "system_prompt_template"
   ],
-  "title": "AuthoredScenarioV1",
+  "title": "CompiledFixtureV1",
   "type": "object"
 }
