@@ -12,8 +12,9 @@ use serde_json::Value;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct QueryReq {
     pub db: String,
+    #[serde(alias = "query")]
     pub sql: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::handlers::lenient_params")]
     pub params: Vec<Value>,
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,

@@ -71,13 +71,18 @@ export const PROTOCOL_CASES: TestCase[] = [
     },
   },
   {
-    name: 'execute() with SELECT returns 0 affected_rows (does not throw)',
-    async run({ driver, call }) {
+    name: 'execute() accepts query alias and string-encoded params',
+    async run({ driver, dialect, call }) {
+      const ph1 = dialect.placeholder(1)
       // Contract: execute() is for write-shape SQL but should accept SELECT
       // gracefully. affected_rows is undefined for SELECT in most drivers; the
       // worker normalizes that to 0. Asserting "no throw" is the main goal —
       // the value of affected_rows is a softer assertion.
-      const r = await call('database::execute', { db: driver, sql: 'SELECT 1 AS v' })
+      const r = await call('database::execute', {
+        db: driver,
+        query: `SELECT ${ph1} + 0 AS v`,
+        params: '[42]',
+      })
       expect(typeof r === 'object' && r !== null, 'response is object')
       expectEqual(typeof r.affected_rows, 'number', 'affected_rows is a number')
     },
