@@ -99,7 +99,8 @@ pub fn spawned_result(child: &ChildIds) -> ResultData {
     });
     let text = format!(
         "{ids}\nfire-and-forget: this turn will NOT receive the child's result; consume it via \
-         the triggers/state you registered."
+         the triggers/state you registered. If the child FAILS terminally, a [child-failure] \
+         message is delivered to this session automatically — no failure listener needed."
     );
     ResultData {
         content: vec![ContentBlock::text(text)],
