@@ -26,6 +26,24 @@ def normalize_dependencies(raw_deps: Any) -> list[dict[str, Any]]:
     raise ValueError(f"`dependencies` must be a map or list, got {type(raw_deps).__name__}")
 
 
+def normalize_tags(raw_tags: Any) -> list[str]:
+    if raw_tags is None:
+        return []
+    if not isinstance(raw_tags, list):
+        raise ValueError(f"`tags` must be a list, got {type(raw_tags).__name__}")
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for tag in raw_tags:
+        if not isinstance(tag, str):
+            raise ValueError("tags entries must be strings")
+        value = tag.strip().lower()
+        if value and value not in seen:
+            normalized.append(value)
+            seen.add(value)
+    return normalized
+
+
 def derive_registry_function_name(function_id: str, metadata: dict[str, Any] | None) -> str:
     metadata = metadata or {}
     for key in ("registry_name", "name"):
@@ -347,6 +365,10 @@ def build_payload(
             for trigger in interface.get("triggers") or []
         ],
     }
+
+    tags = normalize_tags(meta.get("tags"))
+    if tags:
+        payload["tags"] = tags
 
     if deploy == "binary":
         if not binaries:

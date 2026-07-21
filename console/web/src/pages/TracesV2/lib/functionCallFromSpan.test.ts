@@ -164,7 +164,7 @@ describe('functionCallFromSpan', () => {
     expect(functionCallFromSpan(inner, byId(execute, inner))).toBeNull()
   })
 
-  it('keeps the card for an inherited-identity span that captured payload data', () => {
+  it('keeps the card for an inherited-identity span that captured payload data, flagged as inherited', () => {
     const execute = vis({
       span_id: 'execute',
       name: 'execute worker::list',
@@ -178,9 +178,12 @@ describe('functionCallFromSpan', () => {
     const call = functionCallFromSpan(inner, byId(execute, inner))
     expect(call?.functionId).toBe('worker::list')
     expect(call?.input).toEqual({ query: 'x' })
+    // The id names the enclosing invocation, not this sub-span — the card
+    // must not claim "triggered ƒ worker::list" off the sub-span's timing.
+    expect(call?.identityInherited).toBe(true)
   })
 
-  it('keeps the card for an inherited-identity span that errored', () => {
+  it('keeps the card for an inherited-identity span that errored, flagged as inherited', () => {
     const execute = vis({
       span_id: 'execute',
       name: 'execute worker::list',
@@ -200,9 +203,27 @@ describe('functionCallFromSpan', () => {
     })
     const call = functionCallFromSpan(inner, byId(execute, inner))
     expect(call?.output).toEqual({ error: 'boom' })
+    expect(call?.identityInherited).toBe(true)
   })
 
-  it('still renders an empty card for a true invocation span', () => {
+  it('flags a pending inherited-identity span too', () => {
+    const execute = vis({
+      span_id: 'execute',
+      name: 'execute worker::list',
+    })
+    const inner = vis({
+      span_id: 'inner',
+      parent_span_id: 'execute',
+      name: 'tool call',
+      pending: true,
+      attributes: { 'tool.arguments': '{"query":"x"}' },
+    })
+    const call = functionCallFromSpan(inner, byId(execute, inner))
+    expect(call?.running).toBe(true)
+    expect(call?.identityInherited).toBe(true)
+  })
+
+  it('still renders an empty card for a true invocation span, not flagged', () => {
     // The invocation span is the one place "empty" is honest — payload
     // capture may be disabled (III_DISABLE_TRACE_PAYLOADS) yet the call
     // itself is real and worth a card.
@@ -211,5 +232,6 @@ describe('functionCallFromSpan', () => {
     )
     expect(call?.functionId).toBe('worker::list')
     expect(call?.input).toBeUndefined()
+    expect(call?.identityInherited).toBeUndefined()
   })
 })

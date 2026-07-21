@@ -25,9 +25,10 @@ pub const PIPE_DESC: &str =
      lands in the next step's payload at `into` (default \"/value\") — large values flow \
      worker→worker and never enter the chat. fp::* transform steps \
      (get/pick/omit/take/drop/map/filter/split/join/uniq/size/compact/nth/getOr/flatten/\
-     sortBy/reverse, lodash semantics) run inline and \
+     sortBy/reverse/when, lodash semantics) run inline and \
      thread the transformed value itself — the {value} wrapper they return when called \
-     directly never appears between steps. \
+     directly never appears between steps. A failing fp::when guard STOPS the pipe \
+     (`short_circuited: true`), so a trailing write step runs only when its condition holds. \
      The FIRST step receives no threaded value: start with a producing function (a fetch, a \
      state::get) or seed a leading transform via payload.value. \
      Example: fetch an article and persist it trimmed: \
@@ -91,12 +92,21 @@ pub struct StepReceipt {
     /// Size of the value threaded OUT of this step (chars of its string or
     /// serialized form).
     pub chars: usize,
+    /// Set when the threaded value REPLACED a non-null literal already in this
+    /// step's payload at the `into` pointer — almost always an omitted `into`
+    /// on a write step clobbering the value it meant to write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct PipeResponse {
     pub steps: Vec<StepReceipt>,
     pub value_preview: Option<String>,
+    /// True when a `fp::when` guard failed and stopped the pipe: the receipts
+    /// end at the guard and NO later step ran. Absent (false) on a full run.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub short_circuited: bool,
 }
 
 /// Step functions a pipe refuses. Steps run with THIS worker's authority, so
@@ -149,6 +159,18 @@ fn forbidden_step(function_id: &str) -> Option<&'static str> {
         || function_id.starts_with("iii::")
     {
         return Some("bus-internal functions are not supported in a pipe");
+    }
+    // Only the read-only `database::query` may ride a pipe. Every other
+    // `database::*` — execute, the transaction handles, prepared statements —
+    // can WRITE, and a pipe step runs with THIS worker's authority: a child
+    // capped at read-only `database::query` could otherwise wrap a
+    // `database::execute` here and defeat the query/execute split entirely.
+    if function_id.starts_with("database::") && function_id != "database::query" {
+        return Some(
+            "only database::query (read-only) is supported in a pipe — writes, transactions, \
+             and prepared statements run with worker authority, which would bypass the \
+             agent-level deny on them; call them directly",
+        );
     }
     if function_id.ends_with("::on-config-change") {
         return Some("lifecycle hooks are engine-dispatched, never pipe steps");
@@ -283,13 +305,52 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
 
     let mut receipts: Vec<StepReceipt> = Vec::with_capacity(req.through.len());
     let mut piped: Option<Value> = None;
+    let mut short_circuited = false;
 
     for (i, step) in req.through.iter().enumerate() {
         let mut args = step.payload.clone().unwrap_or_else(|| json!({}));
+        let mut clobber_note = None;
         if let Some(value) = piped.take() {
             let pointer = step.into.as_deref().unwrap_or("/value");
+            // Injection REPLACES whatever sits at the pointer. Overwriting a
+            // literal the author spelled out is almost always an omitted
+            // `into` on a write step — flag it on the receipt so the clobber
+            // is visible instead of silent. Empty containers don't count: a
+            // `{}`/`[]` placeholder is padding, not an authored literal.
+            let occupied = args.pointer(pointer).is_some_and(|v| match v {
+                Value::Null => false,
+                Value::Object(m) => !m.is_empty(),
+                Value::Array(a) => !a.is_empty(),
+                _ => true,
+            });
+            if occupied {
+                clobber_note = Some(format!(
+                    "piped value REPLACED the literal at `{pointer}` — aim `into` at a \
+                     subfield (e.g. `{pointer}/_piped`) to keep your literal payload"
+                ));
+            }
             args = inject(args, pointer, value)
                 .map_err(|msg| step_error(i, &step.function, &msg, &receipts))?;
+        }
+
+        // fp::when is the pipe's guard, dispatched here rather than through
+        // util::apply because a failing guard must STOP the pipe (that is its
+        // whole purpose — a trailing write step must not run). A passing
+        // guard threads the ORIGINAL value onward unchanged.
+        if step.function == util::WHEN_ID {
+            let (passed, value) = util::eval_when(&args)
+                .map_err(|msg| step_error(i, &step.function, &msg, &receipts))?;
+            receipts.push(StepReceipt {
+                function: step.function.clone(),
+                chars: chars_of(&value),
+                note: clobber_note,
+            });
+            piped = Some(value);
+            if !passed {
+                short_circuited = true;
+                break;
+            }
+            continue;
         }
 
         let value = match util::apply(&step.function, &args) {
@@ -308,6 +369,7 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
         receipts.push(StepReceipt {
             function: step.function.clone(),
             chars: chars_of(&value),
+            note: clobber_note,
         });
         piped = Some(value);
     }
@@ -319,6 +381,7 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
     Ok(PipeResponse {
         value_preview: Some(preview_of(&final_value, preview_chars)),
         steps: receipts,
+        short_circuited,
     })
 }
 
@@ -438,10 +501,22 @@ mod tests {
             ("stream::set", "bus-internal"),
             ("iii::durable::publish", "bus-internal"),
             ("storage::on-config-change", "lifecycle"),
+            ("database::execute", "read-only"),
+            ("database::transaction", "read-only"),
+            ("database::transactionExecute", "read-only"),
+            ("database::beginTransaction", "read-only"),
+            ("database::runStatement", "read-only"),
         ] {
             let req = parse(json!({ "through": [{ "function": function }] })).unwrap();
             assert!(validate(&req).unwrap_err().contains(needle), "{function}");
         }
+
+        // …but the read-only query is the whole point of a validator pipe.
+        let ok = parse(json!({ "through": [
+            { "function": "database::query", "payload": { "db": "primary", "sql": "SELECT 1" } },
+        ]}))
+        .unwrap();
+        assert!(validate(&ok).is_ok());
 
         let empty = parse(json!({ "through": [] })).unwrap();
         assert!(validate(&empty).is_err());
@@ -515,10 +590,12 @@ mod tests {
             StepReceipt {
                 function: "scrapling::fetch".into(),
                 chars: 184_232,
+                note: None,
             },
             StepReceipt {
                 function: "fp::get".into(),
                 chars: 180_101,
+                note: None,
             },
         ];
         // loop index 2 = the third step; the message is 1-based like the UI

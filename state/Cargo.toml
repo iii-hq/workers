@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-state"
-version = "0.21.0"
+version = "0.21.2"
 edition = "2024"
 description = "State worker for iii — key-value state with reactive change triggers (state trigger type, state::* functions)"
 license = "Apache-2.0"
@@ -30,7 +30,7 @@ serde_yaml = "0.9"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 # Store port (engine/src/builtins/kv.rs): insertion-ordered scope maps + the
 # byte-identical rkyv on-disk format.

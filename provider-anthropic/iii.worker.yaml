@@ -4,8 +4,9 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: provider-anthropic
+tags: [llm, anthropic, claude, messages, provider]
 description: Anthropic Messages API provider worker; implements provider::anthropic::stream and provider::anthropic::refresh_models behind llm-router.
 
 dependencies:
-  iii-state: "^0.21.6"
+  state: "^0.21.2"
   llm-router: "^1.0.0"

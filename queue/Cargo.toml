@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-queue"
-version = "0.21.0"
+version = "0.21.1"
 edition = "2021"
 description = "Durable queue worker for iii - durable:subscriber trigger type and queue service functions"
 license = "Apache-2.0"
@@ -38,7 +38,7 @@ anyhow = "1"
 tracing = "0.1"
 tracing-opentelemetry = "0.32"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 uuid = { version = "1", features = ["v4"] }
 futures = "0.3"

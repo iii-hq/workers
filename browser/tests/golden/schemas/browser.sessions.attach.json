@@ -1,0 +1,68 @@
+{
+  "description": "Attach a session to an already-running browser over CDP (start Chrome with --remote-debugging-port). Opens a fresh tab the session owns, or adopts an existing user tab by URL substring and releases it untouched on stop. Reaches the real profile with its logins; disabled unless allow_attach is set in config.",
+  "function_id": "browser::sessions::attach",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "adopt_url_substring": {
+        "default": null,
+        "description": "Adopt the existing tab whose URL contains this substring, exclusively, and release it untouched on stop. Omit to open a fresh tab the session owns and closes on stop. Must match exactly one open tab.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "cdp_url": {
+        "description": "CDP endpoint of the running browser: `http://127.0.0.1:9222` (the worker resolves the WebSocket URL from `/json/version`) or a `ws://` debugger URL directly. Start Chrome with `--remote-debugging-port=9222` to expose one.",
+        "type": "string"
+      },
+      "read_only": {
+        "default": null,
+        "description": "Inspection-only session; see browser::sessions::start.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "url": {
+        "default": null,
+        "description": "URL to open in the fresh tab (ignored when adopting). Omit for about:blank.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "cdp_url"
+    ],
+    "title": "AttachInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "adopted": {
+        "description": "True when the session adopted an existing user tab (released, not closed, on stop); false when it opened a fresh tab it owns.",
+        "type": "boolean"
+      },
+      "read_only": {
+        "type": "boolean"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "url": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "adopted",
+      "read_only",
+      "session_id",
+      "url"
+    ],
+    "title": "AttachOutput",
+    "type": "object"
+  }
+}

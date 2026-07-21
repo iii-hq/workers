@@ -10,7 +10,7 @@
 use crate::types::{AccessRequest, HookInput, HookResult};
 
 /// The jail-scope rejection codes a `filesystem_access_request` can ride on.
-pub const JAIL_SCOPE_CODES: [&str; 4] = ["S215", "S220", "C215", "C218"];
+pub const JAIL_SCOPE_CODES: [&str; 4] = ["S215", "S220", "C215", "C220"];
 
 const ACCESS_REQUEST_MARKER: &str = "filesystem_access_request=";
 

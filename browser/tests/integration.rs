@@ -224,6 +224,38 @@ async fn session_lifecycle_console_and_snapshot() {
     .await;
     assert_eq!(reloaded["ok"], true, "{reloaded}");
 
+    // doctor reports a usable environment (Chromium is present; we launched)
+    let doctor = call("browser::doctor", json!({}), 10_000).await;
+    assert_eq!(doctor["ok"], true, "{doctor}");
+    assert!(doctor["chromium_path"].is_string(), "{doctor}");
+
+    // attach is gated off by default (allow_attach false): both attach
+    // functions must refuse rather than reach the real profile
+    let attach = client
+        .trigger(TriggerRequest {
+            function_id: "browser::sessions::attach".into(),
+            payload: json!({ "cdp_url": "http://127.0.0.1:9222" }),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await;
+    assert!(
+        attach.is_err(),
+        "attach must be refused when allow_attach is false: {attach:?}"
+    );
+    let tabs = client
+        .trigger(TriggerRequest {
+            function_id: "browser::tabs::list".into(),
+            payload: json!({ "cdp_url": "http://127.0.0.1:9222" }),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await;
+    assert!(
+        tabs.is_err(),
+        "tabs::list must be refused when allow_attach is false: {tabs:?}"
+    );
+
     // stop is idempotent
     let stopped = call(
         "browser::sessions::stop",

@@ -421,6 +421,11 @@
             "minimum": 0.0,
             "type": "integer"
           },
+          "expects_wake": {
+            "default": false,
+            "description": "The session owns an armed wake (a one-shot notify subscription): a completed turn here is NOT the run's outcome — a later turn in this session carries it. Mirrors the `terminal` flag on `harness::turn-completed` (`expects_wake == !terminal`). Pollers (e.g. workflow reconcile) must treat `completed && expects_wake` as still running.",
+            "type": "boolean"
+          },
           "max_transient_resumes": {
             "format": "uint32",
             "minimum": 0.0,

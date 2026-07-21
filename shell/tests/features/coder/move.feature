@@ -29,7 +29,7 @@ Feature: coder move adversarial behavior
       """
       {"files":[{"from":"from.txt","to":"to.txt","overwrite":false}]}
       """
-    Then the move from "from.txt" to "to.txt" failed with code "C217"
+    Then the move from "from.txt" to "to.txt" failed with code "C213"
     And the file "from.txt" exists
     And the file "to.txt" equals:
       """

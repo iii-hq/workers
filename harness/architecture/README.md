@@ -76,5 +76,6 @@ flowchart LR
 | **Exposure mode** | How allowed functions reach the model: one generic `agent_trigger` schema (default) or one schema per allowed function (`native`). |
 | **Output contract** | The turn's deliverable: free `text` (default) or `json` validated against a schema; the result rides `harness::turn-completed` and `harness::run`. |
 | **Hook** | A synchronous extension point (`harness::hook::*`) a sibling binds to veto / hold / mutate in-path. Hook *logic* lives in the sibling, never the harness. |
-| **Pending / parked** | A dispatch that cannot resolve inline (a sub-agent, or an approval hold) checkpoints `pending`; the turn parks and `harness::function::resolve` resumes it later. |
-| **Sub-agent** | A child turn in a child session, started by `harness::spawn` from a parent turn; its completion resolves the parent's parked call. |
+| **Pending / parked** | An approval/hook hold checkpoints `pending`; the turn parks and `harness::function::resolve` resumes it later. Delegation never parks; approvals still can. |
+| **Sub-agent** | A child turn in a child session, started fire-and-forget by `harness::spawn` from a parent turn. Its completion is observable only via its `harness::turn-completed` event and the state it writes — the result is never delivered back to the caller. |
+| **Terminal turn** | `harness::turn-completed` carries `terminal: bool` — `false` while the session still owns an armed wake (a one-shot notify subscription), meaning a later turn in the same session carries the real outcome. Consumers finalize a logical exchange only on `terminal: true`. |

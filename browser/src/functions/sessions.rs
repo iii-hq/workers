@@ -14,6 +14,11 @@ pub struct StartInput {
     /// `headless` default.
     #[serde(default)]
     pub headful: Option<bool>,
+    /// Inspection-only session: act, evaluate, execute, and styles::write
+    /// are rejected while navigation, snapshots, reads, and screenshots
+    /// work. Immutable for the session's lifetime.
+    #[serde(default)]
+    pub read_only: Option<bool>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -22,6 +27,7 @@ pub struct StartOutput {
     pub session_id: String,
     pub url: String,
     pub headless: bool,
+    pub read_only: bool,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -34,6 +40,7 @@ pub struct SessionInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub headless: bool,
+    pub read_only: bool,
     pub created_ms: i64,
     pub last_used_ms: i64,
     pub console_entries: u64,

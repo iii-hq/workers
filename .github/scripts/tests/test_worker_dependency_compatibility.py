@@ -20,7 +20,7 @@ def test_approval_gate_uses_shared_runtime_dependency_ranges() -> None:
 
     expected_ranges = {
         "configuration": dependencies("iii-directory")["configuration"],
-        "iii-state": dependencies("harness")["iii-state"],
+        "state": dependencies("harness")["state"],
     }
 
     for dependency, expected in expected_ranges.items():

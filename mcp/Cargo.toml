@@ -2,7 +2,7 @@
 
 [package]
 name = "mcp"
-version = "0.5.8"
+version = "0.5.9"
 edition = "2021"
 publish = false
 
@@ -24,7 +24,7 @@ serde_yaml = "0.9"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 regex = "1"
 

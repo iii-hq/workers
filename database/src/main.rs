@@ -35,7 +35,7 @@ struct Cli {
     config: Option<String>,
 
     /// WebSocket URL of the iii engine
-    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
 }
 

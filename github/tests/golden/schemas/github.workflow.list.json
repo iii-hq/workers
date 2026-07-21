@@ -1,0 +1,39 @@
+{
+  "description": "List workflows in a repo: { repo: \"owner/name\", all? } -> { value: [{id, name, path, state}] }. all includes disabled workflows.",
+  "function_id": "github::workflow::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "all": {
+        "description": "Include disabled workflows.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "repo": {
+        "description": "Target repository, \"owner/name\".",
+        "type": "string"
+      }
+    },
+    "required": [
+      "repo"
+    ],
+    "title": "WorkflowListRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Parsed `--json` output of a gh command.",
+    "properties": {
+      "value": {
+        "description": "The JSON gh printed for the requested `--json` fields."
+      }
+    },
+    "required": [
+      "value"
+    ],
+    "title": "ValueResponse",
+    "type": "object"
+  }
+}

@@ -23,8 +23,9 @@ use serde_json::{json, Value};
 #[derive(Deserialize, JsonSchema)]
 pub struct TxExecuteReq {
     pub transaction_id: String,
+    #[serde(alias = "query")]
     pub sql: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::handlers::lenient_params")]
     pub params: Vec<Value>,
     #[serde(default)]
     pub returning: Vec<String>,

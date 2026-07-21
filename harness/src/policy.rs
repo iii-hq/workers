@@ -264,6 +264,26 @@ mod tests {
     }
 
     #[test]
+    fn children_inherit_parent_policy_including_orchestration() {
+        // A child that requests nothing inherits the parent's FULL policy —
+        // same permissions as the main agent, orchestration included.
+        let inherited = subset_policy(Some(&policy(&["*"], &[])), None).unwrap();
+        let compiled = CompiledPolicy::from(Some(&inherited));
+        for id in ["state::set", "harness::spawn", "engine::register_trigger"] {
+            assert!(compiled.allows(id), "{id} must be inherited by default");
+        }
+
+        // Escalation is still impossible: a narrow parent doesn't grant
+        // orchestration just because the child asks for it.
+        let requested = policy(&["harness::spawn"], &[]);
+        let capped = subset_policy(Some(&policy(&["state::*"], &[])), Some(&requested)).unwrap();
+        assert!(!CompiledPolicy::from(Some(&capped)).allows("harness::spawn"));
+
+        // A parentless spawn has nothing to inherit — deny-all stays deny-all.
+        assert!(subset_policy(None, None).is_none());
+    }
+
+    #[test]
     fn empty_allow_denies_everything() {
         let p = CompiledPolicy::from(Some(&policy(&[], &[])));
         assert!(!p.allows("shell::run"));

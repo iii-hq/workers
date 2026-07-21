@@ -23,12 +23,32 @@ fn example_info_input() -> serde_json::Value {
     serde_json::json!({})
 }
 
+/// Effective access mode of the coder surface — the same deny-only policy
+/// switch `shell::fs::*` runs under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessMode {
+    /// Paths are confined to `base_paths`; anything outside is rejected.
+    Jailed,
+    /// Operator opt-in (`fs.allow_unjailed: true`, empty `fs.host_roots`):
+    /// absolute paths anywhere on the host are accepted, confined only by
+    /// `fs.denylist_paths` and `non_accessible_globs`. `base_paths` only
+    /// anchor relative wire paths.
+    Unjailed,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct InfoOutput {
+    /// `jailed`: paths must stay inside `base_paths`. `unjailed`: absolute
+    /// paths anywhere on the host are accepted (deny-only, like
+    /// `shell::fs::*`) and `base_paths` only anchor relative paths.
+    pub mode: AccessMode,
+
     /// Canonical absolute paths of the allowed roots, in configuration order.
     /// The primary root (index 0) is where relative wire paths resolve; an
-    /// absolute path is accepted when it canonicalises inside ANY of these.
-    /// Paths outside every root are rejected — use `shell::fs::*` instead.
+    /// absolute path is accepted when it canonicalises inside ANY of these
+    /// (in `unjailed` mode: anywhere on the host). In `jailed` mode paths
+    /// outside every root are rejected — use `shell::fs::*` instead.
     pub base_paths: Vec<String>,
 
     /// Convenience duplicate of `base_paths[0]` — the primary allowed root.
@@ -49,14 +69,14 @@ pub struct InfoOutput {
     pub default_exclude_globs: Vec<String>,
 
     /// Per-file IO ceiling for `coder::read-file`. Full reads of files
-    /// larger than this are rejected with C213; windowed reads cap the
+    /// larger than this are rejected with C218; windowed reads cap the
     /// returned window bytes instead, so larger files stay readable
     /// window by window. Also the ceiling for `coder::search` content
     /// scanning — larger files are silently skipped during search.
     pub max_read_bytes: u64,
 
     /// Maximum bytes that `coder::create-file` or `coder::update-file` will
-    /// accept for a single file write. Larger writes are rejected with C213.
+    /// accept for a single file write. Larger writes are rejected with C218.
     pub max_write_bytes: u64,
 
     /// Default `max_depth` used by `coder::tree` when the caller omits it.
@@ -94,7 +114,7 @@ pub struct InfoOutput {
     /// counted, so the cap bounds what the caller actually receives).
     /// Entries are collected in request order; each entry may consume up
     /// to `min(remaining_budget, max_read_bytes)`. An entry reached with
-    /// zero remaining budget receives a per-entry C213 naming this key,
+    /// zero remaining budget receives a per-entry C218 naming this key,
     /// its value, and the bytes already consumed, with recovery guidance.
     /// Budget topology: batch reads are governed by this key; single-path
     /// full reads by `max_output_bytes`; windowed reads by `max_read_bytes`
@@ -104,7 +124,7 @@ pub struct InfoOutput {
 
     /// Context budget for single-path FULL reads in `coder::read-file`,
     /// in bytes of returned content. Full reads larger than this return
-    /// C213 with the file's size/line count and window/stat recovery
+    /// C218 with the file's size/line count and window/stat recovery
     /// guidance; a per-call `max_output_bytes` override is available on
     /// `coder::read-file` (clamped to `max_read_bytes`).
     pub max_output_bytes: u64,
@@ -133,6 +153,11 @@ fn inner(resolver: &PathResolver, cfg: &CoderConfig) -> InfoOutput {
     let primary_root = base_paths[0].clone();
 
     InfoOutput {
+        mode: if resolver.unjailed() {
+            AccessMode::Unjailed
+        } else {
+            AccessMode::Jailed
+        },
         base_paths,
         primary_root,
         non_accessible_globs: cfg.non_accessible_globs.clone(),
@@ -219,6 +244,7 @@ mod tests {
             search_response_budget_bytes: 29,
             batch_read_budget_bytes: 23,
             max_output_bytes: 31,
+            ..CoderConfig::default()
         });
         let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
 
@@ -227,6 +253,7 @@ mod tests {
         // primary_root == base_paths[0]
         assert!(!out.base_paths.is_empty());
         assert_eq!(out.primary_root, out.base_paths[0]);
+        assert_eq!(out.mode, AccessMode::Jailed);
 
         // globs
         assert_eq!(

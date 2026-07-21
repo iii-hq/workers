@@ -244,6 +244,16 @@ describe('translateTurnSource — turn-completed', () => {
       isTerminalSource({ kind: 'approval-created', record: pendingRecord() }),
     ).toBe(false)
   })
+
+  it('keeps streaming past a non-terminal completion (armed wake)', () => {
+    expect(
+      isTerminalSource(completed({ status: 'completed', terminal: false })),
+    ).toBe(false)
+    // Explicit terminal and legacy flag-less events both end the stream.
+    expect(
+      isTerminalSource(completed({ status: 'completed', terminal: true })),
+    ).toBe(true)
+  })
 })
 
 describe('translateTurnSource — pre-content turn status', () => {

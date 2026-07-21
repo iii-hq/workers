@@ -288,6 +288,23 @@ describe('entrySegments', () => {
     })
   })
 
+  it('maps a called reaction outcome as info, never the failed fallback', () => {
+    const [notice] = entrySegments({
+      entry_id: 'e-r',
+      custom: {
+        custom_type: 'reaction',
+        data: { status: 'called', summary: 'Reaction dispatched fp::pipe.' },
+      },
+    })
+    expect(notice).toMatchObject({
+      id: 'e-r',
+      role: 'system',
+      kind: 'notice',
+      content: 'reaction called — Reaction dispatched fp::pipe.',
+      tone: 'info',
+    })
+  })
+
   it('maps role:custom read-back messages through the same typed dispatch', () => {
     // The exact `session::messages` wire shape: kind:custom entries come back
     // as a `role: 'custom'` MESSAGE (custom_type + details), not `item.custom`.

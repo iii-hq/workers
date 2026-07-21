@@ -12,6 +12,23 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+pub(crate) fn lenient_params<'de, D>(de: D) -> Result<Vec<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    use serde::Deserialize as _;
+
+    match serde_json::Value::deserialize(de)? {
+        serde_json::Value::Array(items) => Ok(items),
+        serde_json::Value::String(s) => serde_json::from_str(&s)
+            .map_err(|e| D::Error::custom(format!("params string is not a JSON array: {e}"))),
+        _ => Err(D::Error::custom(
+            "params must be a JSON array or a string containing one",
+        )),
+    }
+}
+
 pub mod begin_transaction;
 pub mod commit_transaction;
 pub mod execute;

@@ -534,15 +534,30 @@ pub async fn dynamic_handler(
         let iii = state.iii.clone();
         let function_id = route.function_id.clone();
         let timeout_ms = config.default_timeout;
-        tokio::spawn(async move {
-            iii.trigger(TriggerRequest {
-                function_id,
-                payload,
-                action: None,
-                timeout_ms: Some(timeout_ms),
-            })
-            .await
-        })
+        // Propagate THIS request's HTTP-span trace context onto the outbound
+        // trigger so `request -> worker -> function` is one unified trace. The
+        // enclosing block is `.instrument(span)`, but `tokio::spawn` starts a
+        // detached task that inherits neither the tracing span nor the OTel
+        // `Context::current()` that the SDK's `inject_traceparent` reads. Capture
+        // the span's OTel context here (still inside the instrumented scope) and
+        // attach it to the spawned future via `with_context`, mirroring the SDK's
+        // own invocation handler (iii `iii.rs`). Without this the SDK injects no
+        // `traceparent` and the callee starts a disconnected trace.
+        use iii_helpers::observability::opentelemetry::trace::FutureExt as OtelFutureExt;
+        use tracing_opentelemetry::OpenTelemetrySpanExt;
+        let otel_cx = tracing::Span::current().context();
+        tokio::spawn(
+            async move {
+                iii.trigger(TriggerRequest {
+                    function_id,
+                    payload,
+                    action: None,
+                    timeout_ms: Some(timeout_ms),
+                })
+                .await
+            }
+            .with_context(otel_cx),
+        )
     };
 
     // Overall bound for the streaming drain. The engine bounds an open response

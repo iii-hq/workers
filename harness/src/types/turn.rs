@@ -101,7 +101,10 @@ fn default_max_validation_retries() -> u32 {
 }
 
 fn default_max_transient_resumes() -> u32 {
-    1
+    // Keep in lockstep with `config::default_max_transient_resumes` —
+    // overload bursts cluster; a budget of 1 dies on the second
+    // mid-stream 529 in a turn.
+    3
 }
 
 impl TurnOptions {
@@ -260,15 +263,14 @@ impl TurnRecord {
             .collect()
     }
 
-    /// Non-terminal spawned children of this turn (for the stop cascade).
-    pub fn live_children(&self) -> Vec<ParentLink> {
+    /// Children spawned by this turn, regardless of checkpoint state
+    /// (fire-and-forget spawns settle `Done` instantly). Feeds the per-turn
+    /// fan-out guard, `harness::status` children, and the stop cascade —
+    /// stopping an already-finished child is a harmless no-op.
+    pub fn spawned_children(&self) -> Vec<ParentLink> {
         self.calls
             .iter()
-            .filter(|(_, c)| {
-                c.state == CallState::Pending
-                    && c.child_session_id.is_some()
-                    && c.child_turn_id.is_some()
-            })
+            .filter(|(_, c)| c.child_session_id.is_some() && c.child_turn_id.is_some())
             .map(|(call_id, c)| ParentLink {
                 session_id: c.child_session_id.clone().unwrap_or_default(),
                 turn_id: c.child_turn_id.clone().unwrap_or_default(),
@@ -377,17 +379,21 @@ mod tests {
     }
 
     #[test]
-    fn live_children_lists_only_pending_children() {
+    fn spawned_children_lists_every_checkpoint_with_child_ids() {
         let mut r = record();
+        // Legacy parked spawn (pre-deploy record).
         r.calls
             .insert("a".into(), cp(CallState::Pending, Some("s_child")));
         r.calls.insert("b".into(), cp(CallState::Pending, None)); // hook hold, no child
+                                                                  // Fire-and-forget spawn: Done instantly, still counts.
         r.calls
             .insert("c".into(), cp(CallState::Done, Some("s_done")));
-        let children = r.live_children();
-        assert_eq!(children.len(), 1);
+        let children = r.spawned_children();
+        assert_eq!(children.len(), 2);
         assert_eq!(children[0].session_id, "s_child");
         assert_eq!(children[0].function_call_id, "a");
+        assert_eq!(children[1].session_id, "s_done");
+        assert_eq!(children[1].function_call_id, "c");
     }
 
     #[test]
@@ -417,7 +423,7 @@ mod tests {
         assert!(!r.abort);
         assert!(r.calls.is_empty());
         assert_eq!(r.options.max_validation_retries, 2);
-        assert_eq!(r.options.max_transient_resumes, 1);
+        assert_eq!(r.options.max_transient_resumes, 3);
         assert_eq!(r.transient_resumes, 0);
         assert_eq!(r.options.output, OutputContract::Text);
     }

@@ -22,7 +22,7 @@ Feature: coder create-file adversarial behavior
       """
       {"files":[{"path":"same.txt","content":"new","overwrite":false}]}
       """
-    Then the result for "same.txt" failed with code "C217"
+    Then the result for "same.txt" failed with code "C213"
     And the file "same.txt" equals:
       """
       old

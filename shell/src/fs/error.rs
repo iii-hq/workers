@@ -11,6 +11,15 @@ pub struct FsError {
     pub message: String,
 }
 
+/// The one allowed S211 redaction suffix, mirroring the coder surface's
+/// C211 REDACTION INVARIANT: "not found", "permission denied",
+/// glob-protected, and operator-denylisted all fold into this single
+/// wording so callers cannot probe for the existence of a protected path.
+/// Shared with `exec`'s scope_root denylist rejection — keep the wordings
+/// in lockstep.
+pub const S211_REDACTED_SUFFIX: &str =
+    "not found or not accessible. Verify the path with shell::fs::ls.";
+
 impl FsError {
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
@@ -19,15 +28,27 @@ impl FsError {
         }
     }
 
+    /// The single S211 constructor (REDACTION INVARIANT — see
+    /// [`S211_REDACTED_SUFFIX`]): missing, permission-denied,
+    /// glob-protected, and denylisted paths all produce this exact shape.
+    pub fn not_found_or_denied(path: &str) -> Self {
+        Self::new("S211", format!("{path}: {S211_REDACTED_SUFFIX}"))
+    }
+
     /// Mirrors the engine daemon's `SandboxError::from_io` so wire codes
     /// match across host and sandbox backends.
     pub fn from_io(path: &str, err: io::Error) -> Self {
         match err.kind() {
-            io::ErrorKind::NotFound => Self::new("S211", format!("path not found: {path}")),
+            // NotFound and PermissionDenied fold into the redacted S211 —
+            // raw OS text ("Permission denied (os error 13)") would let a
+            // caller distinguish "missing" from "denied" and probe for
+            // protected files.
+            io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied => {
+                Self::not_found_or_denied(path)
+            }
             io::ErrorKind::AlreadyExists => {
                 Self::new("S213", format!("path already exists: {path}"))
             }
-            io::ErrorKind::PermissionDenied => Self::new("S215", format!("{path}: {err}")),
             // S212 (wrong file type) and S214 (dir not empty) are checked
             // at the op level — they don't map to stable `ErrorKind` variants.
             _ => Self::new("S216", format!("{path}: {err}")),
@@ -84,8 +105,15 @@ mod tests {
         assert_eq!(e.code, "S211");
         let e = FsError::from_io("/x", io::Error::new(ErrorKind::AlreadyExists, "dupe"));
         assert_eq!(e.code, "S213");
+        // REDACTION INVARIANT: PermissionDenied folds into S211 and must
+        // not leak raw OS text distinguishing it from "missing".
         let e = FsError::from_io("/x", io::Error::new(ErrorKind::PermissionDenied, "no"));
-        assert_eq!(e.code, "S215");
+        assert_eq!(e.code, "S211");
+        assert!(
+            e.message.contains("not found or not accessible"),
+            "{}",
+            e.message
+        );
         let e = FsError::from_io("/x", io::Error::other("io"));
         assert_eq!(e.code, "S216");
     }

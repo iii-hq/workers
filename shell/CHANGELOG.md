@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.10.0
+
+### Breaking
+
+- **`coder::*` error codes renumbered to align with the `S2xx` scheme** —
+  equal digits now mean the same failure class on both surfaces:
+  already-exists `C217` → `C213`; too-large `C213` → `C218`;
+  outside-session `C218` → `C220`. The approval-gate's jail-scope
+  allowlist (`C218` → `C220`) ships in the same release wave; a stale
+  approval-gate will not prompt on coder session-escapes until upgraded.
+- **`shell::fs::*` existence redaction unified with coder's** —
+  permission-denied, protected-glob, and `fs.denylist_paths` rejections
+  fold into `S211` with the single "not found or not accessible" wording
+  (previously `S215`). `S215` is now exclusively a jail-confinement
+  escape. This closes an existence-probing side channel.
+
+### Changed
+
+- **`coder::*` follows the deny-only policy when unjailed (MOT-4099)** —
+  with `fs.allow_unjailed: true` and empty `fs.host_roots`, coder accepts
+  absolute paths anywhere on the host; the cwd + `/tmp` fallback roots
+  only anchor relative paths, and the harness-stamped working directory
+  is trusted as the anchor under both filesystem boundaries (matching
+  `shell::exec`'s cwd contract). `fs.denylist_paths` now applies to
+  `coder::*` in every mode (redacted `C211`). Jailed deployments are
+  unchanged; the `workspace` boundary keeps session scoping so the
+  folder-approval flow still triggers.
+- **Unjailed `shell::fs::*` now enforces `code.non_accessible_globs`** —
+  previously the glob check silently skipped paths outside every
+  configured root, leaving secrets unprotected in unjailed mode.
+- `coder::info` reports the effective access `mode` (`jailed` |
+  `unjailed`).
+
+### Migration
+
+- Update any consumer branching on `C213`/`C217`/`C218` to the new
+  numbers (`C218`/`C213`/`C220` respectively).
+- Update any consumer that distinguished `S215` permission/denylist
+  rejections from `S211` not-found — both are now `S211` by design.
+
 ## 0.8.0
 
 Deny-only, permissive-first policy across the board: the shell no longer

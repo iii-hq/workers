@@ -1,3 +1,4 @@
+import { FunctionMentionPill } from '@/components/chat/lexical/FunctionMentionNode'
 import { CopyCommandButton } from '@/components/chat/sandbox/terminal/CopyCommandButton'
 import { Terminal } from '@/components/chat/sandbox/terminal/Terminal'
 import { Button } from '@/components/ui/Button'
@@ -90,34 +91,44 @@ export function EmptyState({
   )
 }
 
-/* ---------------- ready (unchanged hero) ---------------- */
+/* ---------------- ready (welcome hero) ---------------- */
+
+const EXPLORE_FUNCTIONS = [
+  { id: 'engine::functions::list', hint: 'see all callable functions' },
+  { id: 'engine::workers::list', hint: 'check connected workers' },
+  { id: 'engine::triggers::list', hint: 'discover trigger types' },
+] as const
 
 function ReadyBody() {
   return (
     <>
-      <h1 className={HEADING_CLASS}>how can i help.</h1>
+      <h1 className={HEADING_CLASS}>welcome to iii! 👋</h1>
+      <div className="flex flex-col gap-2">
+        <p className={BODY_CLASS}>
+          You're in an agent-oriented workspace where you can
+          leverage the power of a full-featured agentic system:
+        </p>
+        <ul className="font-mono text-[13px] leading-[1.7] text-ink-faint flex flex-col gap-1">
+          <li>· trigger functions via the function registry</li>
+          <li>· spawn sub-agents for parallel/async work</li>
+          <li>· register triggers for callbacks &amp; automation</li>
+          <li>· query state and subscribe to events</li>
+        </ul>
+      </div>
+      <div className="flex flex-col gap-2">
+        <p className={BODY_CLASS}>start by exploring what's available:</p>
+        <ul className="font-mono text-[13px] leading-[1.7] text-ink-faint flex flex-col gap-1.5">
+          {EXPLORE_FUNCTIONS.map(({ id, hint }) => (
+            <li key={id}>
+              <FunctionMentionPill functionId={id} /> — {hint}
+            </li>
+          ))}
+        </ul>
+      </div>
       <p className={BODY_CLASS}>
-        pick a mode and a model, attach files if you need to, then send a
-        message. responses are mocked locally — swap{' '}
-        <code className="font-mono text-[12.5px] border border-rule-2 bg-paper-2 text-ink px-1">
-          lib/backend/real.ts
-        </code>{' '}
-        for a real provider when you're ready.
+        need help? ask away. the agent will discover apis on the fly and show
+        you what's possible.
       </p>
-      <ul className="font-mono text-[13px] leading-[1.7] text-ink-faint flex flex-col gap-1">
-        <li>
-          · <span className="text-ink">plan</span> — outline an approach before
-          doing.
-        </li>
-        <li>
-          · <span className="text-ink">ask</span> — answer a question with
-          context.
-        </li>
-        <li>
-          · <span className="text-ink">agent</span> — take action and report
-          back.
-        </li>
-      </ul>
     </>
   )
 }

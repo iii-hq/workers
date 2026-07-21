@@ -198,10 +198,11 @@ async fn main() -> Result<()> {
         );
     }
 
-    // coder::* remains jailed even when shell::fs::* is explicitly unjailed:
-    // an empty fs.host_roots uses the code resolver's narrow cwd + /tmp
-    // fallback. Building the cells unconditionally keeps the zero-config
-    // worker useful while preserving the coder path boundary.
+    // coder::* follows the same policy switch as shell::fs::*: with the
+    // explicit unjailed opt-in (fs.allow_unjailed + empty fs.host_roots) the
+    // resolver runs deny-only against the real filesystem, keeping the narrow
+    // cwd + /tmp fallback roots as relative-path anchors; without the opt-in
+    // an empty fs.host_roots stays jailed to that fallback.
     let code_cells = configuration::build_code_cells(&cfg)
         .map_err(anyhow::Error::msg)
         .context("building initial code surface state (coder::*)")?;
@@ -237,8 +238,9 @@ async fn main() -> Result<()> {
 
     // Code surface (folded coder::*): explicit fs.host_roots are shared with
     // shell::fs::*; when they are empty, PathResolver supplies its own narrow
-    // cwd + /tmp defaults. In both cases the resolver is a jail. A bad glob or
-    // unreachable root aborts startup so the worker never half-boots.
+    // cwd + /tmp defaults — as the jail without the unjailed opt-in, as
+    // relative-path anchors with it. A bad glob or unreachable root aborts
+    // startup so the worker never half-boots.
     code::register_all(&iii, code_cells);
     tracing::info!("code surface (coder::*) registered");
 
@@ -554,36 +556,41 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
         "List directory contents. `path` is relative to the primary fs jail root (the first \
          fs.host_roots entry) when set, otherwise absolute. `target` defaults to host; pass \
          { kind: \"sandbox\", sandbox_id } \
-         to run in a microVM. Errors return { code, message }; common: S210 bad path, S211 not found, \
-         S212 not a directory, S215 jail/denylist.");
+         to run in a microVM. Errors return { code, message }; common: S210 bad path, S211 not found \
+         or not accessible, S212 not a directory, S215 jail escape. For paginated or recursive \
+         listings with noise filtering, prefer coder::list-folder / coder::tree.");
     fs_fn!("shell::fs::stat", fs_stat, fs::StatRequest, fs::StatResponse,
         "Stat a single path (jail-relative when fs.host_roots are set). Returns the entry's type, size, \
-         mode, and mtime. Errors return { code, message }; common: S211 not found, S215 jail/denylist.");
+         mode, and mtime. Errors return { code, message }; common: S211 not found or not accessible, \
+         S215 jail escape. coder::read-file with stat: true additionally reports total_lines.");
     fs_fn!("shell::fs::mkdir", fs_mkdir, fs::MkdirRequest, fs::MkdirResponse,
         "Create a directory. `mode` is an octal string like \"0755\". `parents: true` creates missing \
          parents and is idempotent. Returns { created, path, already_existed }. Errors return \
-         { code, message }; common: S210 bad mode, S213 exists, S215 jail/denylist.");
+         { code, message }; common: S210 bad mode, S213 exists, S215 jail escape.");
     fs_fn!(
         "shell::fs::rm",
         fs_rm,
         fs::RmRequest,
         fs::RmResponse,
         "Remove a path. `recursive: true` is required to delete a non-empty directory. Returns \
-         { removed, path, was_present }. Errors return { code, message }; common: S211 not found, \
-         S214 dir not empty (pass recursive), S215 jail/denylist."
+         { removed, path, was_present }. Errors return { code, message }; common: S211 not found or \
+         not accessible, S214 dir not empty (pass recursive), S215 jail escape. To remove several \
+         paths in one call, use coder::delete-file (batched, per-entry errors)."
     );
     fs_fn!("shell::fs::chmod", fs_chmod, fs::ChmodRequest, fs::ChmodResponse,
         "Change permissions. `mode` is an octal string like \"0644\". `uid`/`gid` optionally chown. \
          `recursive: true` walks the tree (symlinks skipped). Returns { entries_changed, path, recursive }. \
-         Errors return { code, message }; common: S210 bad mode, S211 not found, S215 jail/denylist.");
+         Errors return { code, message }; common: S210 bad mode, S211 not found or not accessible, \
+         S215 jail escape.");
     fs_fn!(
         "shell::fs::mv",
         fs_mv,
         fs::MvRequest,
         fs::MvResponse,
         "Move/rename a path. `overwrite: true` allows replacing an existing dst. Returns \
-         { moved, src, dst, overwrote }. Errors return { code, message }; common: S211 src not found, \
-         S213 dst exists, S215 jail/denylist."
+         { moved, src, dst, overwrote }. Errors return { code, message }; common: S211 src not found \
+         or not accessible, S213 dst exists, S215 jail escape. To move several paths in one call, \
+         use coder::move (batched, per-entry errors)."
     );
     fs_fn!(
         "shell::fs::grep",
@@ -592,13 +599,15 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
         fs::GrepResponse,
         "Search file contents. `pattern` is a Rust regex (RE2-like). `recursive` defaults true. \
          `include_glob`/`exclude_glob` filter paths. Returns { matches, truncated }. Errors return \
-         { code, message }; common: S217 bad regex, S215 jail/denylist."
+         { code, message }; common: S217 bad regex, S215 jail escape. For token-budgeted search with \
+         context lines and noise filtering, prefer coder::search."
     );
     fs_fn!("shell::fs::sed", fs_sed, fs::SedRequest, fs::SedResponse,
         "Find-and-replace across files. `pattern` is a Rust regex by default (set regex:false for a \
          literal). Provide either `files` (explicit list) or `path` (+ recursive). Returns \
          { results, total_replacements }. Errors return { code, message }; common: S217 bad regex, \
-         S211 not found, S215 jail/denylist.");
+         S211 not found or not accessible, S215 jail escape. For line-oriented edits with post-apply \
+         echoes (no re-read needed), prefer coder::update-file.");
     fs_fn!(
         "shell::fs::write",
         fs_write,
@@ -612,13 +621,17 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
          content, mode?, parents? }, ...]` instead of the single-file fields (host target, inline \
          content) — the response then carries per-file results in `files`. `mode` is octal \
          (default \"0644\"); `parents: true` creates missing parents. Errors return { code, message }; \
-         common: S210 bad mode/payload or inline-on-sandbox, S215 jail/denylist, S218 payload exceeds \
-         max_write_bytes, S216 channel/IO error."
+         common: S210 bad mode/payload or inline-on-sandbox, S211 not accessible, S215 jail escape, \
+         S218 payload exceeds max_write_bytes, S216 channel/IO error. For plain text files, \
+         coder::create-file (batched) avoids the streaming channel."
     );
     fs_fn!("shell::fs::read", fs_read, fs::ReadRequest, fs::ReadResponseWire,
-        "Stream a file from a path. Returns a ContentRef the caller reads from, plus size/mode/mtime. \
-         Errors return { code, message }; common: S211 not found, S212 path is a directory, S215 \
-         jail/denylist, S218 file exceeds max_read_bytes, S216 channel/IO error.");
+        "Stream a file from a path — returns a ContentRef HANDLE (channel_id/access_key), NOT the \
+         file text. For reading TEXT files use coder::read-file instead: it returns the content \
+         inline (windowed, batched) with no channel. This function is for binary/streamed payloads; \
+         the response carries the ContentRef plus size/mode/mtime. Errors return { code, message }; \
+         common: S211 not found or not accessible, S212 path is a directory, S215 jail escape, \
+         S218 file exceeds max_read_bytes, S216 channel/IO error.");
 }
 
 /// Wait for SIGINT or, on Unix, SIGTERM so `docker stop` / `kubectl delete`

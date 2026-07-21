@@ -1,8 +1,11 @@
 //! Deferred trigger (harness.md § Deferred trigger): a pending call parks the
-//! turn; `harness::function::resolve` settles it (delivering a result or
-//! releasing a hook-held call) and resumes the parked turn; a cron sweep
-//! expires stragglers so a lost child or abandoned approval can never park a
-//! turn forever.
+//! turn — an approval/hook hold, or a legacy pre-fire-and-forget child spawn.
+//! `harness::function::resolve` settles it (delivering a result or releasing a
+//! hook-held call) and resumes the parked turn; a cron sweep expires
+//! stragglers so a lost legacy child or abandoned approval can never park a
+//! turn forever. New spawns never park (see `crate::subagent`); the
+//! parent-resolve path below survives only so turns parked before the
+//! fire-and-forget deploy still resolve.
 
 use std::collections::BTreeSet;
 
@@ -173,6 +176,65 @@ pub async fn resolve(
                     });
                 }
             };
+            // An approved spawn releases through the SAME guarded path as the
+            // turn loop — depth/fan-out guards, policy subsetting, ParentLink
+            // — never the generic dispatcher (which would seed a parentless,
+            // unguarded child). Fire-and-forget: the result is the child ids;
+            // post_trigger is skipped, mirroring the loop's spawn branch.
+            if function_id == crate::functions::SPAWN_ID {
+                // Triggered + persist BEFORE the spawn (mirrors the non-spawn
+                // path below): a crash or redelivered resolve between a
+                // successful spawn and the Done persist would otherwise still
+                // see Pending and seed a SECOND child for the same call.
+                if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
+                    cp.state = CallState::Triggered;
+                }
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+
+                let (data, child) = match crate::subagent::spawn_from_turn(
+                    deps,
+                    &record,
+                    &req.function_call_id,
+                    &arguments,
+                )
+                .await
+                {
+                    Ok(child) => (crate::subagent::spawned_result(&child), Some(child)),
+                    Err(data) => (data, None),
+                };
+                let entry_id =
+                    ids::function_result_entry_id(&record.turn_id, &req.function_call_id);
+                let message = AgentMessage::FunctionResult(FunctionResultMessage {
+                    role: FunctionResultRoleTag::FunctionResult,
+                    function_call_id: req.function_call_id.clone(),
+                    function_id,
+                    content: data.content,
+                    details: data.details,
+                    is_error: data.is_error,
+                    timestamp: AgentMessage::now_ms(),
+                });
+                session
+                    .append(
+                        &record.session_id,
+                        &message,
+                        Some(&entry_id),
+                        None,
+                        Some(&json!({ "turn_id": record.turn_id })),
+                    )
+                    .await?;
+                if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
+                    cp.state = CallState::Done;
+                    cp.entry_id = Some(entry_id);
+                    cp.held_by = None;
+                    cp.child_session_id = child.as_ref().map(|c| c.session_id.clone());
+                    cp.child_turn_id = child.as_ref().map(|c| c.turn_id.clone());
+                }
+                let turn_resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await?;
+                return Ok(FunctionResolveResponse {
+                    resolved: true,
+                    turn_resumed,
+                });
+            }
             // The release path runs OUTSIDE the turn loop, so re-apply the
             // filesystem scope stamp the loop would have added: without it an
             // approved shell/coder call runs un-scoped (the session's picked
@@ -361,13 +423,20 @@ async fn find_call_arguments(
 /// Resolve a parked parent call from a finishing child (harness.md §
 /// Sub-agents). `completed` delivers the child's result; `failed`/`cancelled`
 /// deliver an `is_error`.
+///
+/// Returns whether the parent turn actually consumed the resolution. A
+/// fire-and-forget spawn settles its call `Done` at spawn time and the parent
+/// turn has usually completed by the time the child finishes, so both
+/// `resolve` gates return `not_resolved` — the caller must then pick another
+/// channel if the outcome matters (see the child-failure notification in
+/// `finalize_failed`).
 pub async fn resolve_parent(
     deps: &Deps,
     parent: &crate::types::turn::ParentLink,
     status: &str,
     result: Option<&Value>,
     reason: Option<&str>,
-) {
+) -> bool {
     let (content, details, is_error) = if status == "completed" {
         let text = result.map(render_text).unwrap_or_default();
         (
@@ -393,12 +462,16 @@ pub async fn resolve_parent(
         is_error: Some(is_error),
         details: Some(details),
     };
-    if let Err(e) = resolve(deps, req).await {
-        tracing::warn!(
-            parent_session = %parent.session_id,
-            error = %e,
-            "resolving parent call from child completion failed"
-        );
+    match resolve(deps, req).await {
+        Ok(resp) => resp.resolved,
+        Err(e) => {
+            tracing::warn!(
+                parent_session = %parent.session_id,
+                error = %e,
+                "resolving parent call from child completion failed"
+            );
+            false
+        }
     }
 }
 

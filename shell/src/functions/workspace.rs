@@ -135,7 +135,9 @@ fn canonical_workspace_dir(path: &str, cfg: &ShellConfig) -> Result<PathBuf, FsE
         return Err(FsError::new("S212", format!("not a directory: {path}")));
     }
     if is_denylisted(&canon, cfg) {
-        return Err(FsError::new("S215", format!("path is denylisted: {path}")));
+        // REDACTION INVARIANT: denylisted folds into the same S211 as
+        // missing (see fs::error::S211_REDACTED_SUFFIX).
+        return Err(FsError::not_found_or_denied(path));
     }
     Ok(canon)
 }
@@ -214,7 +216,13 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(err.code, "S215");
+        // REDACTION INVARIANT: denylisted reads exactly like missing.
+        assert_eq!(err.code, "S211");
+        assert!(
+            err.message.contains("not found or not accessible"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]

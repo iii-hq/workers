@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hermes"
-version = "0.1.4"
+version = "0.1.5"
 description = "Hermes agent as an iii worker: headless turns over the iii bus, omnichannel send, and inbound platform events as iii triggers."
 authors = [{ name = "iii" }]
 license = "Apache-2.0"

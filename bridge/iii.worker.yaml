@@ -4,6 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: bridge
+tags: [bridge, remote, websocket, federation, engine]
 description: Bridge two iii engines — expose local functions on a remote engine and invoke/forward remote functions locally.
 config:
   url: ws://0.0.0.0:49134

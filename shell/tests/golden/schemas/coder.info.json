@@ -1,5 +1,5 @@
 {
-  "description": "Report the coder jail: canonical allowed roots (primary first), per-file size caps, response budgets (max_output_bytes, batch_read_budget_bytes, search_response_budget_bytes), listing/search limits, the non-accessible glob patterns, and the default_exclude_globs noise filter applied by tree/search. Call this FIRST when unsure where coder may read or write, or when a path was rejected — paths outside every allowed root need the shell worker's shell::fs::* instead.",
+  "description": "Report the coder access contract: the effective mode (jailed = paths confined to the allowed roots; unjailed = deny-only, absolute paths anywhere on the host, roots anchor relative paths only), canonical allowed roots (primary first), per-file size caps, response budgets (max_output_bytes, batch_read_budget_bytes, search_response_budget_bytes), listing/search limits, the non-accessible glob patterns, and the default_exclude_globs noise filter applied by tree/search. Call this FIRST when unsure where coder may read or write, or when a path was rejected — in jailed mode, paths outside every allowed root need the shell worker's shell::fs::* instead.",
   "function_id": "coder::info",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -12,16 +12,37 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AccessMode": {
+        "description": "Effective access mode of the coder surface — the same deny-only policy switch `shell::fs::*` runs under.",
+        "oneOf": [
+          {
+            "description": "Paths are confined to `base_paths`; anything outside is rejected.",
+            "enum": [
+              "jailed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Operator opt-in (`fs.allow_unjailed: true`, empty `fs.host_roots`): absolute paths anywhere on the host are accepted, confined only by `fs.denylist_paths` and `non_accessible_globs`. `base_paths` only anchor relative wire paths.",
+            "enum": [
+              "unjailed"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
     "properties": {
       "base_paths": {
-        "description": "Canonical absolute paths of the allowed roots, in configuration order. The primary root (index 0) is where relative wire paths resolve; an absolute path is accepted when it canonicalises inside ANY of these. Paths outside every root are rejected — use `shell::fs::*` instead.",
+        "description": "Canonical absolute paths of the allowed roots, in configuration order. The primary root (index 0) is where relative wire paths resolve; an absolute path is accepted when it canonicalises inside ANY of these (in `unjailed` mode: anywhere on the host). In `jailed` mode paths outside every root are rejected — use `shell::fs::*` instead.",
         "items": {
           "type": "string"
         },
         "type": "array"
       },
       "batch_read_budget_bytes": {
-        "description": "Aggregate budget across a single `paths[]` batch call to `coder::read-file`, measured in bytes of returned content (after UTF-8 sanitization — invalid bytes expand to U+FFFD before being counted, so the cap bounds what the caller actually receives). Entries are collected in request order; each entry may consume up to `min(remaining_budget, max_read_bytes)`. An entry reached with zero remaining budget receives a per-entry C213 naming this key, its value, and the bytes already consumed, with recovery guidance. Budget topology: batch reads are governed by this key; single-path full reads by `max_output_bytes`; windowed reads by `max_read_bytes` applied per returned window — `max_read_bytes` is also the per-file IO ceiling for all of them.",
+        "description": "Aggregate budget across a single `paths[]` batch call to `coder::read-file`, measured in bytes of returned content (after UTF-8 sanitization — invalid bytes expand to U+FFFD before being counted, so the cap bounds what the caller actually receives). Entries are collected in request order; each entry may consume up to `min(remaining_budget, max_read_bytes)`. An entry reached with zero remaining budget receives a per-entry C218 naming this key, its value, and the bytes already consumed, with recovery guidance. Budget topology: batch reads are governed by this key; single-path full reads by `max_output_bytes`; windowed reads by `max_read_bytes` applied per returned window — `max_read_bytes` is also the per-file IO ceiling for all of them.",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"
@@ -46,22 +67,30 @@
         "type": "integer"
       },
       "max_output_bytes": {
-        "description": "Context budget for single-path FULL reads in `coder::read-file`, in bytes of returned content. Full reads larger than this return C213 with the file's size/line count and window/stat recovery guidance; a per-call `max_output_bytes` override is available on `coder::read-file` (clamped to `max_read_bytes`).",
+        "description": "Context budget for single-path FULL reads in `coder::read-file`, in bytes of returned content. Full reads larger than this return C218 with the file's size/line count and window/stat recovery guidance; a per-call `max_output_bytes` override is available on `coder::read-file` (clamped to `max_read_bytes`).",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"
       },
       "max_read_bytes": {
-        "description": "Per-file IO ceiling for `coder::read-file`. Full reads of files larger than this are rejected with C213; windowed reads cap the returned window bytes instead, so larger files stay readable window by window. Also the ceiling for `coder::search` content scanning — larger files are silently skipped during search.",
+        "description": "Per-file IO ceiling for `coder::read-file`. Full reads of files larger than this are rejected with C218; windowed reads cap the returned window bytes instead, so larger files stay readable window by window. Also the ceiling for `coder::search` content scanning — larger files are silently skipped during search.",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"
       },
       "max_write_bytes": {
-        "description": "Maximum bytes that `coder::create-file` or `coder::update-file` will accept for a single file write. Larger writes are rejected with C213.",
+        "description": "Maximum bytes that `coder::create-file` or `coder::update-file` will accept for a single file write. Larger writes are rejected with C218.",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"
+      },
+      "mode": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/AccessMode"
+          }
+        ],
+        "description": "`jailed`: paths must stay inside `base_paths`. `unjailed`: absolute paths anywhere on the host are accepted (deny-only, like `shell::fs::*`) and `base_paths` only anchor relative paths."
       },
       "non_accessible_globs": {
         "description": "Glob patterns matched per root (root-relative). Files whose root-relative path matches are listable but not readable/writable/deletable/creatable; they return C211.",
@@ -118,6 +147,7 @@
       "max_output_bytes",
       "max_read_bytes",
       "max_write_bytes",
+      "mode",
       "non_accessible_globs",
       "primary_root",
       "search_default_max_line_bytes",

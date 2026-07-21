@@ -3,15 +3,21 @@
 //! registration lives here so `register_all` reads as the product surface.
 
 pub mod act;
+pub mod attach;
 pub mod console;
+pub mod doctor;
 pub mod dom;
 pub mod evaluate;
+pub mod execute;
 pub mod frame;
+pub mod handoff;
 pub mod hint;
 pub mod history;
 pub mod navigate;
 pub mod network;
+pub mod overlays;
 pub mod pick;
+pub mod recording;
 pub mod screenshot;
 pub mod sessions;
 pub mod snapshot;
@@ -36,7 +42,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
 use tokio::time::timeout;
 
-use crate::events::{EventKind, SessionStartedEvent};
+use crate::events::{EventKind, HandoffRequestedEvent, SessionStartedEvent};
 use crate::session::{now_ms, Session, Sessions};
 
 pub const SESSIONS_START_ID: &str = "browser::sessions::start";
@@ -50,6 +56,17 @@ pub const SESSIONS_STOP_ID: &str = "browser::sessions::stop";
 pub const SESSIONS_STOP_DESC: &str =
     "Stop a browser session and its Chromium process. Idempotent: stopping an unknown or \
      already-stopped session succeeds with was_running=false.";
+pub const SESSIONS_ATTACH_ID: &str = "browser::sessions::attach";
+pub const SESSIONS_ATTACH_DESC: &str =
+    "Attach a session to an already-running browser over CDP (start Chrome with \
+     --remote-debugging-port). Opens a fresh tab the session owns, or adopts an existing user \
+     tab by URL substring and releases it untouched on stop. Reaches the real profile with its \
+     logins; disabled unless allow_attach is set in config.";
+pub const TABS_LIST_ID: &str = "browser::tabs::list";
+pub const TABS_LIST_DESC: &str =
+    "List the open tabs of a running browser reachable at a CDP endpoint (url, title, and \
+     whether a session already adopted each). Read-only; adopt one with \
+     browser::sessions::attach.";
 pub const NAVIGATE_ID: &str = "browser::navigate";
 pub const NAVIGATE_DESC: &str =
     "Navigate a session to a URL and wait for the page to load. Element refs from earlier \
@@ -72,6 +89,27 @@ pub const EVALUATE_ID: &str = "browser::evaluate";
 pub const EVALUATE_DESC: &str =
     "Evaluate a JavaScript expression in the page and return its completion value. Use for \
      reads the snapshot can't express; prefer browser::act for interactions.";
+pub const EXECUTE_ID: &str = "browser::execute";
+pub const EXECUTE_DESC: &str =
+    "Run a multi-step async JavaScript script in the page: top-level await and return work, \
+     with log(...), sleep(ms), waitFor(selector), and a state object that persists across \
+     execute calls for the session. One call replaces a chain of act/evaluate round-trips; \
+     returns { result, logs, state }.";
+pub const DOCTOR_ID: &str = "browser::doctor";
+pub const DOCTOR_DESC: &str =
+    "Read-only environment diagnostics: which Chromium the worker would launch, its version, \
+     session capacity, and any degraded capability with how to enable it. Never starts a \
+     browser.";
+pub const HANDOFF_ID: &str = "browser::handoff";
+pub const HANDOFF_DESC: &str =
+    "Pause a session for a step only a human can do (CAPTCHA, 2FA, payment): show an in-page \
+     continue banner and block until the human clicks it, a browser::handoff::confirm call \
+     resolves it, or the timeout elapses. Human acknowledgment is not proof — verify the \
+     expected page state after it returns.";
+pub const HANDOFF_CONFIRM_ID: &str = "browser::handoff::confirm";
+pub const HANDOFF_CONFIRM_DESC: &str =
+    "Resolve a paused browser::handoff by handoff_id, or the one pending handoff for a \
+     session_id. The console calls this when the human confirms outside the page.";
 pub const CONSOLE_READ_ID: &str = "browser::console::read";
 pub const CONSOLE_READ_DESC: &str =
     "Read the session's captured console: console.* calls, uncaught exceptions, and \
@@ -108,6 +146,15 @@ pub const FRAME_ID: &str = "browser::frame";
 pub const FRAME_DESC: &str =
     "Internal: newest screencast frame, or nothing when since_frame is still current. No \
      capture round-trip; poll fast. Not an agent function.";
+pub const RECORDING_START_ID: &str = "browser::recording::start";
+pub const RECORDING_START_DESC: &str =
+    "Record a session's live viewport to a video file (webm or mp4) by piping the screencast \
+     through ffmpeg. Turns screencast on if needed. Requires ffmpeg on PATH; browser::doctor \
+     reports whether it is available.";
+pub const RECORDING_STOP_ID: &str = "browser::recording::stop";
+pub const RECORDING_STOP_DESC: &str =
+    "Stop a session's recording, finalize the file, and return its path, duration, and frame \
+     count. Idempotent: stopping when nothing is recording returns ok=false.";
 pub const PICK_HINT_ID: &str = "browser::pick::hint";
 pub const PICK_HINT_DESC: &str =
     "Internal: element preview at a viewport point (tag, id, classes, bounds) so the console \
@@ -156,6 +203,9 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<sessions::StartInput, sessions::StartOutput>(SESSIONS_START_ID, SESSIONS_START_DESC),
         spec::<sessions::ListInput, sessions::ListOutput>(SESSIONS_LIST_ID, SESSIONS_LIST_DESC),
         spec::<sessions::StopInput, sessions::StopOutput>(SESSIONS_STOP_ID, SESSIONS_STOP_DESC),
+        spec::<attach::AttachInput, attach::AttachOutput>(SESSIONS_ATTACH_ID, SESSIONS_ATTACH_DESC),
+        spec::<attach::TabsListInput, attach::TabsListOutput>(TABS_LIST_ID, TABS_LIST_DESC),
+        spec::<doctor::DoctorInput, doctor::DoctorOutput>(DOCTOR_ID, DOCTOR_DESC),
         spec::<navigate::NavigateInput, navigate::NavigateOutput>(NAVIGATE_ID, NAVIGATE_DESC),
         spec::<snapshot::SnapshotInput, snapshot::SnapshotOutput>(SNAPSHOT_ID, SNAPSHOT_DESC),
         spec::<screenshot::ScreenshotInput, screenshot::ScreenshotOutput>(
@@ -164,6 +214,12 @@ pub fn catalog() -> Vec<FunctionSpec> {
         ),
         spec::<act::ActInput, act::ActOutput>(ACT_ID, ACT_DESC),
         spec::<evaluate::EvaluateInput, evaluate::EvaluateOutput>(EVALUATE_ID, EVALUATE_DESC),
+        spec::<execute::ExecuteInput, execute::ExecuteOutput>(EXECUTE_ID, EXECUTE_DESC),
+        spec::<handoff::HandoffInput, handoff::HandoffOutput>(HANDOFF_ID, HANDOFF_DESC),
+        spec::<handoff::HandoffConfirmInput, handoff::HandoffConfirmOutput>(
+            HANDOFF_CONFIRM_ID,
+            HANDOFF_CONFIRM_DESC,
+        ),
         spec::<console::ConsoleReadInput, console::ConsoleReadOutput>(
             CONSOLE_READ_ID,
             CONSOLE_READ_DESC,
@@ -188,6 +244,14 @@ pub fn catalog() -> Vec<FunctionSpec> {
             SCREENCAST_STOP_DESC,
         ),
         spec::<frame::FrameInput, frame::FrameOutput>(FRAME_ID, FRAME_DESC),
+        spec::<recording::RecordingStartInput, recording::RecordingStartOutput>(
+            RECORDING_START_ID,
+            RECORDING_START_DESC,
+        ),
+        spec::<recording::RecordingStopInput, recording::RecordingStopOutput>(
+            RECORDING_STOP_ID,
+            RECORDING_STOP_DESC,
+        ),
         spec::<hint::PickHintInput, hint::PickHintOutput>(PICK_HINT_ID, PICK_HINT_DESC),
         spec::<pick::PickStartInput, pick::AckOutput>(PICK_START_ID, PICK_START_DESC),
         spec::<pick::PickResolveInput, pick::AckOutput>(PICK_RESOLVE_ID, PICK_RESOLVE_DESC),
@@ -199,11 +263,17 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_sessions_start(iii, sessions);
     register_sessions_list(iii, sessions);
     register_sessions_stop(iii, sessions);
+    register_sessions_attach(iii, sessions);
+    register_tabs_list(iii, sessions);
+    register_doctor(iii, sessions);
     register_navigate(iii, sessions);
     register_snapshot(iii, sessions);
     register_screenshot(iii, sessions);
     register_act(iii, sessions);
     register_evaluate(iii, sessions);
+    register_execute(iii, sessions);
+    register_handoff(iii, sessions);
+    register_handoff_confirm(iii, sessions);
     register_console_read(iii, sessions);
     register_network_read(iii, sessions);
     register_history(iii, sessions);
@@ -213,6 +283,8 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_screencast_start(iii, sessions);
     register_screencast_stop(iii, sessions);
     register_frame(iii, sessions);
+    register_recording_start(iii, sessions);
+    register_recording_stop(iii, sessions);
     register_pick_hint(iii, sessions);
     register_pick_start(iii, sessions);
     register_pick_resolve(iii, sessions);
@@ -232,6 +304,21 @@ fn get_session(sessions: &Sessions, id: &str) -> Result<Arc<Session>, Error> {
     })
 }
 
+/// Read-only guard shared by every interaction function. Inspection and
+/// navigation stay available on a read-only session; anything that dispatches
+/// input or runs script is rejected here.
+fn ensure_writable(session: &Session, what: &str) -> Result<(), Error> {
+    if session.read_only {
+        return Err(handler_err(format!(
+            "session '{}' is read-only: {what} is rejected. Navigation, snapshot, dom/styles \
+             reads, console/network reads, and screenshots still work; start a writable session \
+             with browser::sessions::start.",
+            session.id
+        )));
+    }
+    Ok(())
+}
+
 fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     let sx = sessions.clone();
     iii.register_function(
@@ -242,7 +329,10 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 if let Some(url) = &req.url {
                     sessions::check_scheme(&sx.config.load(), url).map_err(handler_err)?;
                 }
-                let session = sx.start(req.url, req.headful).await.map_err(handler_err)?;
+                let session = sx
+                    .start(req.url, req.headful, req.read_only.unwrap_or(false))
+                    .await
+                    .map_err(handler_err)?;
                 let url = session
                     .page
                     .url()
@@ -266,6 +356,7 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     session_id: session.id.clone(),
                     url,
                     headless: session.headless,
+                    read_only: session.read_only,
                 })
             }
         })
@@ -298,6 +389,7 @@ fn register_sessions_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             url: url.ok().flatten().unwrap_or_default(),
                             title: title.ok().flatten(),
                             headless: session.headless,
+                            read_only: session.read_only,
                             created_ms: session.created_ms,
                             last_used_ms: session.last_used_ms(),
                             console_entries,
@@ -326,6 +418,89 @@ fn register_sessions_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(SESSIONS_STOP_DESC),
+    );
+}
+
+fn register_sessions_attach(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        SESSIONS_ATTACH_ID,
+        RegisterFunction::new_async(move |req: attach::AttachInput| {
+            let sx = sx.clone();
+            async move {
+                let cfg = sx.config.load_full();
+                if !cfg.allow_attach {
+                    return Err(handler_err(
+                        "attach mode is disabled; set `allow_attach: true` in the browser worker \
+                         config to connect to a running browser. It reaches the real profile with \
+                         its logins, so it is opt-in.",
+                    ));
+                }
+                if let Some(url) = &req.url {
+                    sessions::check_scheme(&cfg, url).map_err(handler_err)?;
+                }
+                let session = sx
+                    .attach(
+                        req.cdp_url,
+                        req.url,
+                        req.adopt_url_substring,
+                        req.read_only.unwrap_or(false),
+                    )
+                    .await
+                    .map_err(handler_err)?;
+                let adopted = matches!(
+                    session.kind,
+                    crate::session::SessionKind::Attached { owns_page: false }
+                );
+                let url = session
+                    .page
+                    .url()
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "about:blank".to_string());
+                sx.emitter
+                    .emit(
+                        EventKind::SessionStarted,
+                        &session.id,
+                        &SessionStartedEvent {
+                            session_id: session.id.clone(),
+                            url: url.clone(),
+                            headless: session.headless,
+                            timestamp: now_ms(),
+                        },
+                    )
+                    .await;
+                Ok::<_, Error>(attach::AttachOutput {
+                    session_id: session.id.clone(),
+                    url,
+                    read_only: session.read_only,
+                    adopted,
+                })
+            }
+        })
+        .description(SESSIONS_ATTACH_DESC),
+    );
+}
+
+fn register_tabs_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        TABS_LIST_ID,
+        RegisterFunction::new_async(move |req: attach::TabsListInput| {
+            let sx = sx.clone();
+            async move {
+                if !sx.config.load().allow_attach {
+                    return Err(handler_err(
+                        "attach mode is disabled; set `allow_attach: true` in the browser worker \
+                         config to inspect a running browser's tabs.",
+                    ));
+                }
+                let tabs = sx.list_tabs(&req.cdp_url).await.map_err(handler_err)?;
+                Ok::<_, Error>(attach::TabsListOutput { tabs })
+            }
+        })
+        .description(TABS_LIST_DESC),
     );
 }
 
@@ -384,17 +559,52 @@ fn register_snapshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .await
                     .map_err(|e| handler_err(format!("accessibility tree failed: {e}")))?;
 
-                let result =
-                    crate::snapshot::serialize(&tree.nodes, cfg.max_snapshot_nodes as usize);
-                session.store_refs(result.refs);
+                let result = crate::snapshot::serialize(
+                    &tree.nodes,
+                    cfg.max_snapshot_nodes as usize,
+                    &session.ref_counter,
+                );
+                session.append_refs(result.refs);
+
+                // Swap in this snapshot's keys as the next diff baseline,
+                // taking the previous baseline out in the same lock.
+                let previous_keys = {
+                    let mut baseline = session
+                        .snapshot_keys
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    baseline.replace(result.keys.clone())
+                };
+
+                let diff = match (req.diff.unwrap_or(false), previous_keys) {
+                    (true, Some(previous)) => {
+                        let d = crate::snapshot::diff_keys(&previous, &result.keys);
+                        Some(snapshot::SnapshotDiff {
+                            added: d
+                                .added
+                                .iter()
+                                .filter_map(|&i| result.lines.get(i).cloned())
+                                .collect(),
+                            removed: d.removed,
+                            unchanged: d.unchanged,
+                        })
+                    }
+                    _ => None,
+                };
 
                 let url = session.page.url().await.ok().flatten().unwrap_or_default();
                 let title = session.page.get_title().await.ok().flatten();
                 Ok::<_, Error>(snapshot::SnapshotOutput {
                     url,
                     title,
-                    tree: result.tree,
+                    tree: if diff.is_some() {
+                        String::new()
+                    } else {
+                        result.tree
+                    },
                     truncated: result.truncated,
+                    generation: session.generation(),
+                    diff,
                 })
             }
         })
@@ -452,6 +662,18 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         })
         .description(SCREENSHOT_DESC),
     );
+}
+
+/// Best-effort: draw the ghost cursor at the acted point so a human watching
+/// the streamed viewport sees where the agent acted. Only injected while
+/// screencast is active (someone is watching); a failed injection is ignored.
+async fn move_ghost_cursor(session: &Session, x: f64, y: f64, click: bool) {
+    if session.screencast_on() {
+        let _ = session
+            .page
+            .evaluate(overlays::ghost_cursor_script(x, y, click))
+            .await;
+    }
 }
 
 /// Resolve the target point for a ref- or coordinate-addressed action.
@@ -558,6 +780,7 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::act")?;
                 session.touch();
 
                 let detail = match req.action.as_str() {
@@ -566,11 +789,13 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                         let button = req.button.as_deref().unwrap_or("left");
                         let clicks = i64::from(req.click_count.unwrap_or(1));
                         dispatch_click(&session, x, y, button, clicks).await?;
+                        move_ghost_cursor(&session, x, y, true).await;
                         format!("clicked {button} x{clicks} at ({x:.0}, {y:.0})")
                     }
                     "hover" => {
                         let (x, y) = action_point(&session, &req).await?;
                         dispatch_hover(&session, x, y).await?;
+                        move_ghost_cursor(&session, x, y, false).await;
                         format!("hovering at ({x:.0}, {y:.0})")
                     }
                     "type" => {
@@ -688,6 +913,7 @@ fn register_evaluate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::evaluate")?;
                 session.touch();
                 let cfg = sx.config.load();
                 let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
@@ -714,6 +940,293 @@ fn register_evaluate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(EVALUATE_DESC),
+    );
+}
+
+fn register_execute(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        EXECUTE_ID,
+        RegisterFunction::new_async(move |req: execute::ExecuteInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::execute")?;
+                session.touch();
+                let cfg = sx.config.load();
+                let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
+
+                let state_json = {
+                    let state = session.exec_state.lock().unwrap_or_else(|p| p.into_inner());
+                    serde_json::to_string(&*state).unwrap_or_else(|_| "{}".to_string())
+                };
+                let wrapped = execute::wrap_code(&req.code, &state_json);
+
+                let params = cdp_rt::EvaluateParams::builder()
+                    .expression(wrapped)
+                    .await_promise(true)
+                    .return_by_value(true)
+                    .build()
+                    .map_err(handler_err)?;
+                let evaluated = timeout(wait, session.page.execute(params)).await;
+                session.touch();
+
+                let current_state = || {
+                    session
+                        .exec_state
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone()
+                };
+                let response = match evaluated {
+                    Err(_) => {
+                        return Ok::<_, Error>(execute::ExecuteOutput {
+                            ok: false,
+                            result: None,
+                            error: Some(format!(
+                                "script timed out after {}ms; state was not updated",
+                                wait.as_millis()
+                            )),
+                            logs: Vec::new(),
+                            state: current_state(),
+                        })
+                    }
+                    Ok(Err(e)) => {
+                        let text = e.to_string();
+                        let hint = if text.contains("context") {
+                            "; the execution context was destroyed, which usually means the \
+                             script navigated — split the script at the navigation boundary"
+                        } else {
+                            ""
+                        };
+                        return Ok(execute::ExecuteOutput {
+                            ok: false,
+                            result: None,
+                            error: Some(format!("script failed: {text}{hint}")),
+                            logs: Vec::new(),
+                            state: current_state(),
+                        });
+                    }
+                    Ok(Ok(r)) => r,
+                };
+
+                if let Some(details) = &response.exception_details {
+                    return Ok(execute::ExecuteOutput {
+                        ok: false,
+                        result: None,
+                        error: Some(format!("script threw: {}", details.text)),
+                        logs: Vec::new(),
+                        state: current_state(),
+                    });
+                }
+                let raw = response
+                    .result
+                    .result
+                    .value
+                    .as_ref()
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| handler_err("script returned no envelope"))?;
+                if raw.len() > execute::MAX_ENVELOPE_BYTES {
+                    return Ok(execute::ExecuteOutput {
+                        ok: false,
+                        result: None,
+                        error: Some(format!(
+                            "script result is {} bytes (cap {}); return a summary, not a dump",
+                            raw.len(),
+                            execute::MAX_ENVELOPE_BYTES
+                        )),
+                        logs: Vec::new(),
+                        state: current_state(),
+                    });
+                }
+                let envelope: execute::Envelope = serde_json::from_str(raw)
+                    .map_err(|e| handler_err(format!("script envelope did not parse: {e}")))?;
+
+                if envelope.state.is_object() {
+                    *session.exec_state.lock().unwrap_or_else(|p| p.into_inner()) =
+                        envelope.state.clone();
+                }
+                Ok(execute::ExecuteOutput {
+                    ok: envelope.ok,
+                    result: envelope.result,
+                    error: envelope.error,
+                    logs: envelope.logs,
+                    state: envelope.state,
+                })
+            }
+        })
+        .description(EXECUTE_DESC),
+    );
+}
+
+fn register_handoff(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        HANDOFF_ID,
+        RegisterFunction::new_async(move |req: handoff::HandoffInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+                let cfg = sx.config.load_full();
+                let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
+
+                let (handoff_id, mut confirm_rx) = sx.register_handoff(&req.session_id);
+                // Mount the in-page continue banner carrying the poll flag.
+                // Best-effort: on a page that rejects injection the
+                // confirm-call path still resolves the same handoff.
+                let _ = session
+                    .page
+                    .evaluate(handoff::banner_script(&handoff_id, &req.instructions))
+                    .await;
+
+                sx.emitter
+                    .emit(
+                        EventKind::HandoffRequested,
+                        &req.session_id,
+                        &HandoffRequestedEvent {
+                            session_id: req.session_id.clone(),
+                            handoff_id: handoff_id.clone(),
+                            instructions: req.instructions.clone(),
+                            timestamp: now_ms(),
+                        },
+                    )
+                    .await;
+
+                // Park until: a confirm call fires the oneshot, the human
+                // clicks the in-page control (polled), or the timeout fires.
+                let poll = handoff::poll_script(&handoff_id);
+                let deadline = tokio::time::Instant::now() + wait;
+                let via = loop {
+                    let tick = tokio::time::sleep(Duration::from_millis(handoff::POLL_INTERVAL_MS));
+                    tokio::select! {
+                        // Ok = a confirm call fired the sender; Err = the
+                        // sender was dropped (session stopped mid-handoff).
+                        res = &mut confirm_rx => break if res.is_ok() { "confirm_call" } else { "cancelled" },
+                        _ = tokio::time::sleep_until(deadline) => break "timeout",
+                        _ = tick => {
+                            if let Ok(v) = session.page.evaluate(poll.clone()).await {
+                                if v.value().and_then(|x| x.as_bool()).unwrap_or(false) {
+                                    break "in_page";
+                                }
+                            }
+                        }
+                    }
+                };
+
+                sx.drop_handoff(&handoff_id);
+                let _ = session
+                    .page
+                    .evaluate(handoff::remove_script(&handoff_id))
+                    .await;
+                session.touch();
+                let url = session.page.url().await.ok().flatten().unwrap_or_default();
+                Ok::<_, Error>(handoff::HandoffOutput {
+                    confirmed: via == "confirm_call" || via == "in_page",
+                    handoff_id,
+                    via: via.to_string(),
+                    url,
+                })
+            }
+        })
+        .description(HANDOFF_DESC),
+    );
+}
+
+fn register_handoff_confirm(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        HANDOFF_CONFIRM_ID,
+        RegisterFunction::new_async(move |req: handoff::HandoffConfirmInput| {
+            let sx = sx.clone();
+            async move {
+                if req.handoff_id.is_none() && req.session_id.is_none() {
+                    return Err(handler_err("pass handoff_id or session_id"));
+                }
+                let resolved =
+                    sx.confirm_handoff(req.handoff_id.as_deref(), req.session_id.as_deref());
+                Ok::<_, Error>(handoff::HandoffConfirmOutput {
+                    ok: resolved.is_some(),
+                    handoff_id: resolved,
+                })
+            }
+        })
+        .description(HANDOFF_CONFIRM_DESC),
+    );
+}
+
+fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        DOCTOR_ID,
+        RegisterFunction::new_async(move |_req: doctor::DoctorInput| {
+            let sx = sx.clone();
+            async move {
+                let cfg = sx.config.load_full();
+                let mut issues = Vec::new();
+
+                let chromium_path = doctor::detect_chromium(&cfg);
+                let chromium_version = match &chromium_path {
+                    Some(path) => {
+                        let path = path.clone();
+                        tokio::task::spawn_blocking(move || doctor::chromium_version(&path))
+                            .await
+                            .ok()
+                            .flatten()
+                    }
+                    None => None,
+                };
+                if chromium_path.is_none() {
+                    issues.push(doctor::DoctorIssue {
+                        what: if cfg.executable.is_empty() {
+                            "no Chromium/Chrome install found".to_string()
+                        } else {
+                            format!("configured executable '{}' does not exist", cfg.executable)
+                        },
+                        enable_how: "install Google Chrome or Chromium, or point the worker \
+                                     config `executable` at a browser binary"
+                            .to_string(),
+                    });
+                }
+
+                let active_sessions = sx.count() as u64;
+                if active_sessions >= cfg.max_sessions {
+                    issues.push(doctor::DoctorIssue {
+                        what: format!(
+                            "session capacity reached ({active_sessions}/{})",
+                            cfg.max_sessions
+                        ),
+                        enable_how: "stop a session with browser::sessions::stop, or raise \
+                                     `max_sessions` in the worker config"
+                            .to_string(),
+                    });
+                }
+
+                let recording_available = tokio::task::spawn_blocking(doctor::ffmpeg_available)
+                    .await
+                    .unwrap_or(false);
+                if !recording_available {
+                    issues.push(doctor::DoctorIssue {
+                        what: "ffmpeg not found; browser::recording is unavailable".to_string(),
+                        enable_how: "install ffmpeg and put it on PATH".to_string(),
+                    });
+                }
+
+                Ok::<_, Error>(doctor::DoctorOutput {
+                    ok: chromium_path.is_some() && active_sessions < cfg.max_sessions,
+                    chromium_path: chromium_path.map(|p| p.display().to_string()),
+                    chromium_version,
+                    headless_default: cfg.headless,
+                    max_sessions: cfg.max_sessions,
+                    active_sessions,
+                    allowed_schemes: cfg.allowed_schemes.clone(),
+                    attach_enabled: cfg.allow_attach,
+                    recording_available,
+                    issues,
+                })
+            }
+        })
+        .description(DOCTOR_DESC),
     );
 }
 
@@ -1133,6 +1646,7 @@ fn register_styles_write(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::styles::write")?;
                 session.touch();
                 let backend_id = session.resolve_ref_or_err(&req.r#ref)?;
 
@@ -1284,25 +1798,21 @@ fn register_screencast_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             async move {
                 let session = get_session(&sx, &req.session_id)?;
                 session.touch();
-                let cfg = sx.config.load();
-                // every_nth_frame counts COMPOSITOR frames, not wall-clock, so
-                // a value > 1 starves a static page (which may never produce
-                // that many repaints and would then emit no frame at all). Take
-                // every frame and cap the push rate by time in the pump
-                // instead (see FRAME_MIN_INTERVAL_MS).
-                let params = cdp_page::StartScreencastParams::builder()
-                    .format(cdp_page::StartScreencastFormat::Jpeg)
-                    .quality(cfg.screenshot_quality as i64)
-                    .every_nth_frame(1)
-                    .build();
-                session
+                // Register a console viewer as a screencast consumer; the CDP
+                // screencast starts on the first consumer (see
+                // Sessions::acquire_screencast, which uses every_nth_frame(1)
+                // and caps the push rate by time in the pump).
+                sx.acquire_screencast(&session).await.map_err(handler_err)?;
+                // A human is now watching: show the session-status badge.
+                let mode = if session.read_only {
+                    "read-only"
+                } else {
+                    "active"
+                };
+                let _ = session
                     .page
-                    .execute(params)
-                    .await
-                    .map_err(|e| handler_err(format!("screencast start failed: {e}")))?;
-                session
-                    .screencast_active
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                    .evaluate(overlays::badge_script(&session.id, mode))
+                    .await;
                 Ok::<_, Error>(pick::AckOutput { ok: true })
             }
         })
@@ -1319,13 +1829,16 @@ fn register_screencast_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 if let Some(session) = sx.get(&req.session_id) {
+                    // Release this console viewer; the CDP screencast stops
+                    // only if no other consumer (e.g. a recording) remains.
+                    sx.release_screencast(&session).await;
+                    // The viewer's overlays go regardless; they belong to the
+                    // watching human, not to a recording consumer.
+                    let _ = session.page.evaluate(overlays::remove_badge_script()).await;
                     let _ = session
                         .page
-                        .execute(cdp_page::StopScreencastParams::default())
+                        .evaluate(overlays::remove_ghost_cursor_script())
                         .await;
-                    session
-                        .screencast_active
-                        .store(false, std::sync::atomic::Ordering::Relaxed);
                     // Drop the last frame from the stream so a later
                     // subscriber does not see a stale image.
                     let _ = sx
@@ -1349,6 +1862,58 @@ fn register_screencast_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     );
 }
 
+fn register_recording_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        RECORDING_START_ID,
+        RegisterFunction::new_async(move |req: recording::RecordingStartInput| {
+            let sx = sx.clone();
+            async move {
+                get_session(&sx, &req.session_id)?;
+                let (format, codec) =
+                    recording::resolve_format(req.format.as_deref()).map_err(handler_err)?;
+                sx.start_recording(&req.session_id, &req.path, codec)
+                    .await
+                    .map_err(handler_err)?;
+                Ok::<_, Error>(recording::RecordingStartOutput {
+                    ok: true,
+                    path: req.path,
+                    format: format.to_string(),
+                })
+            }
+        })
+        .description(RECORDING_START_DESC),
+    );
+}
+
+fn register_recording_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        RECORDING_STOP_ID,
+        RegisterFunction::new_async(move |req: recording::RecordingStopInput| {
+            let sx = sx.clone();
+            async move {
+                let output = match sx.stop_recording(&req.session_id).await {
+                    Some((path, duration_ms, frames)) => recording::RecordingStopOutput {
+                        ok: true,
+                        path: Some(path),
+                        duration_ms,
+                        frames,
+                    },
+                    None => recording::RecordingStopOutput {
+                        ok: false,
+                        path: None,
+                        duration_ms: 0,
+                        frames: 0,
+                    },
+                };
+                Ok::<_, Error>(output)
+            }
+        })
+        .description(RECORDING_STOP_DESC),
+    );
+}
+
 fn register_frame(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     let sx = sessions.clone();
     iii.register_function(
@@ -1357,9 +1922,7 @@ fn register_frame(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 let session = get_session(&sx, &req.session_id)?;
-                let active = session
-                    .screencast_active
-                    .load(std::sync::atomic::Ordering::Relaxed);
+                let active = session.screencast_on();
                 // Clone the Arc under the lock and release it before copying
                 // the base64 payload, so the push-rate pump never waits
                 // behind this poll-rate copy.

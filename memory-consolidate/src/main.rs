@@ -29,7 +29,7 @@ use memory_consolidate::{config, configuration, manifest};
 )]
 struct Cli {
     /// Engine WebSocket URL.
-    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
 
     /// Optional YAML seed config (only seeds the FIRST configuration

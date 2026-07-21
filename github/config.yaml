@@ -1,0 +1,22 @@
+# Seed installed as `initial_value` with the configuration worker on first
+# registration; the live value is authoritative thereafter. The engine URL is
+# bootstrap and lives on the --url flag, not here.
+
+# Path to the GitHub CLI binary. Empty = the `gh` binary on PATH.
+gh_executable: ""
+
+# GitHub token injected as GH_TOKEN into every child gh process. Referenced as
+# ${GH_TOKEN} so the configuration worker env-expands it; empty falls back to
+# the worker's inherited environment (ambient `gh auth login` state or an
+# already-exported GH_TOKEN).
+token: "${GH_TOKEN}"
+
+# Timeout for a gh invocation when the caller omits timeout_ms, in ms.
+default_timeout_ms: 30000
+
+# Upper clamp for any per-call timeout_ms, in ms.
+max_timeout_ms: 120000
+
+# Per-stream capture cap (stdout and stderr each), in bytes. Output beyond it
+# is dropped and flagged stdout_truncated / stderr_truncated.
+max_output_bytes: 1048576

@@ -182,19 +182,62 @@ fully unjailed, regardless of `fs.allow_unjailed`.
 Roots come from `fs.host_roots` (with the cwd+`/tmp` fallback noted above);
 protection globs come from `code.non_accessible_globs` in the shipped
 `config.yaml`'s `code:` block — the **same** list `shell::fs::*` enforces.
-`coder::*` returns its own `C2xx` codes, distinct from `shell::*`'s `S2xx`:
+`coder::*` returns its own `C2xx` codes. Since 0.10.0 the NUMBERS mean the
+same thing on both surfaces — `C2xx` and `S2xx` with equal digits are the
+same failure class, so a caller can learn the taxonomy once:
 
-| Code | Meaning |
-|---|---|
-| `C210` | Malformed input: bad payload, illegal line numbers, overlapping ops. |
-| `C211` | Path not found, or matched `non_accessible_globs` — deliberately the same code for both, so a caller can't probe for a denied file's existence by toggling the glob. |
-| `C213` | File exceeds `max_read_bytes`/`max_write_bytes`. |
-| `C215` | Path escapes every allowed root, lexically or through a symlink. |
-| `C216` | Underlying I/O error. |
-| `C217` | `create-file` saw an existing file and `overwrite=false`. |
-| `C218` | Path resolves inside a configured root but outside the per-call `scope_root` the session is scoped to. |
+| Code | Meaning | fs twin |
+|---|---|---|
+| `C210` | Malformed input: bad payload, illegal line numbers, overlapping ops. | `S210` |
+| `C211` | Path not found, permission denied, matched `non_accessible_globs`, or under `fs.denylist_paths` — deliberately ONE code and wording for all four, so a caller can't probe for a denied path's existence. | `S211` |
+| `C213` | `create-file`/`move` saw an existing target and `overwrite=false`. | `S213` |
+| `C215` | Path escapes every allowed root, lexically or through a symlink (jailed mode only). | `S215` |
+| `C216` | Underlying I/O error. | `S216` |
+| `C218` | File exceeds `max_read_bytes`/`max_write_bytes`. | `S218` |
+| `C220` | Path resolves inside a configured root but outside the per-call `scope_root` the session is scoped to. | `S220` |
 
 No separate install: `iii worker add shell` brings the whole surface.
+
+## Two surfaces, one contract
+
+`shell::fs::*` and `coder::*` are two views of the same filesystem, served by
+this one worker under ONE policy: the same jail (`fs.host_roots`), the same
+unjailed opt-in (`fs.allow_unjailed`), the same protected globs
+(`code.non_accessible_globs`), the same operator denylist
+(`fs.denylist_paths`), and — since 0.10.0 — the same error-code semantics
+(equal digits, equal meaning) and the same existence redaction (a denied path
+reads exactly like a missing one on both surfaces).
+
+They differ in ergonomics, and each operation has a twin:
+
+| Task | `coder::*` (agent-ergonomic) | `shell::fs::*` (byte-level) |
+|---|---|---|
+| read | `coder::read-file` — inline text, windowed, batched | `shell::fs::read` — streams bytes via channel |
+| create | `coder::create-file` — batched inline text | `shell::fs::write` — inline or streamed, modes |
+| edit | `coder::update-file` — line ops + regex, post-apply echoes | `shell::fs::sed` — regex replace across files |
+| delete | `coder::delete-file` — batched, per-entry errors | `shell::fs::rm` — single path |
+| list | `coder::list-folder` / `coder::tree` — paginated, noise-filtered | `shell::fs::ls` — single directory |
+| move | `coder::move` — batched, cross-root copy+delete | `shell::fs::mv` — single path |
+| search | `coder::search` — budgeted, context lines | `shell::fs::grep` — raw matches |
+| introspect | `coder::info` — mode, roots, caps, globs | `shell::fs::stat` — one path's metadata |
+
+Conventions (hold these when adding functions to either surface):
+
+- **Batching**: `coder::*` operations are batched with per-entry error
+  isolation. `shell::fs::*` point operations are single-path (`write` and
+  `sed` are the historical exceptions).
+- **Naming**: `coder::*` uses verb-noun kebab (`read-file`); `shell::fs::*`
+  uses the unix tool name (`read`, `ls`, `mv`). Follow the surface you are
+  extending.
+- **Errors**: one `{ code, message }` envelope; C/S codes with equal digits
+  mean the same failure class (see [Errors](#errors)). Redaction: never let
+  a denied path read differently from a missing one.
+- **Discovery**: `coder::info` is the agent-facing contract report.
+  `shell::config-status` (reload health) and `shell::workspace::*` (console
+  working-directory picker) are operator/console control plane, not agent
+  tools.
+- **Sandbox**: `shell::fs::*`/`shell::exec` accept `target: sandbox`;
+  `coder::*` is host-only.
 
 ## Hot-reload
 
@@ -214,17 +257,40 @@ Returned error bodies carry a stable `code` field. Denylist rejections come back
 |---|---|
 | `S200` | In-VM execution failure on a sandbox target. |
 | `S210` | Invalid request: non-absolute path, empty command or pattern, bad octal mode, malformed payload, `sandbox.enabled: false` on a sandbox-targeted call, a `cwd` that is not a directory, an `env` key in the dangerous-key denylist, `cwd`/`env`/`stdin` supplied on a sandbox target (host-only), an inline string `content` on a sandbox-targeted `shell::fs::write`, or both single `path`/`content` and `files` on `shell::fs::write`. |
-| `S211` | Path not found (including a `cwd` that does not exist). |
+| `S211` | Path not found, permission denied, matched the protected globs, or under `fs.denylist_paths` — ONE code and wording for all four (redaction: a denied path reads exactly like a missing one). Includes a `cwd` that does not exist. |
 | `S212` | Wrong file type for the operation (for example, a file where a directory was expected). |
 | `S213` | Path already exists. |
 | `S214` | Directory not empty (non-recursive `rm`). |
-| `S215` | Path (or a per-call `cwd`) escapes the `fs.host_roots` jail, hits `fs.denylist_paths`, or permission denied. |
+| `S215` | Path (or a per-call `cwd`) escapes the `fs.host_roots` jail — exclusively a confinement escape; denylist and permission-denied fold into `S211`. |
 | `S216` | Generic shell-internal failure: host spawn error, channel error, or a bad engine response. |
 | `S217` | Invalid regex passed to `grep`/`sed`. |
 | `S218` | `fs.max_read_bytes` / `fs.max_write_bytes` cap exceeded. |
 | `S300` | Sandbox VM boot failed (needs a virtualization host: Apple Silicon or `/dev/kvm`). |
 
 Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim instead of collapsing to `S216`: `S001`–`S004` (sandbox lifecycle), `S100`–`S102` (image/VM/resource), `S300`, and `S400`. Branch on the specific code where relevant; only an unrecognized engine code falls back to `S216`.
+
+## Upgrading to 0.10.0
+
+- **BREAKING: three `coder::*` error codes renumbered** to align with the
+  `S2xx` scheme (equal digits now mean the same failure class on both
+  surfaces): already-exists `C217` → `C213`; too-large `C213` → `C218`;
+  outside-session `C218` → `C220`. Consumers branching on the old numbers
+  must update; the approval-gate's jail-scope allowlist ships the matching
+  change in the same release wave.
+- **BREAKING: `shell::fs::*` existence redaction.** Permission-denied,
+  protected-glob (`code.non_accessible_globs`), and `fs.denylist_paths`
+  rejections now return `S211` with the same "not found or not accessible"
+  wording as a missing path, instead of `S215`. `S215` is now exclusively a
+  jail-confinement escape. Callers must not distinguish "missing" from
+  "denied" — that distinction was an existence-probing side channel.
+- **`coder::*` is permissive when unjailed.** With the explicit opt-in
+  (`fs.allow_unjailed: true`, empty `fs.host_roots`) the coder surface now
+  follows the same deny-only policy as `shell::fs::*`: absolute paths
+  anywhere on the host, the cwd + `/tmp` fallback roots demoted to
+  relative-path anchors, and the harness-selected working directory trusted
+  as the anchor. `fs.denylist_paths` now applies to `coder::*` in every
+  mode. Jailed deployments (explicit `fs.host_roots`) are unchanged.
+  `coder::info` reports the effective `mode`.
 
 ## Upgrading to 0.8.0
 

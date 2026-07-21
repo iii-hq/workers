@@ -4,8 +4,9 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: provider-openai-codex
+tags: [llm, openai, codex, chatgpt, subscription, provider]
 description: OpenAI Codex (ChatGPT subscription) provider; implements provider::openai-codex::stream and provider::openai-codex::refresh_models behind llm-router, sourcing credentials from the auth-credentials vault.
 
 dependencies:
-  iii-state: "^0.21.6"
+  state: "^0.21.2"
   llm-router: "^1.0.0"

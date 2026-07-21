@@ -16,6 +16,10 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
+      "called": {
+        "description": "Whether a function was dispatched this call (call mode).",
+        "type": "boolean"
+      },
       "child_session_id": {
         "description": "The spawned sub-agent's child session id, when spawn returned one.",
         "type": [
@@ -24,14 +28,14 @@
         ]
       },
       "note": {
-        "description": "Why nothing spawned (missing spec, join not yet complete, already fired, error). Present iff `!spawned`.",
+        "description": "Why nothing spawned/called (missing spec, join not yet complete, already fired, error). Present iff `!spawned && !called`.",
         "type": [
           "string",
           "null"
         ]
       },
       "spawned": {
-        "description": "Whether a `harness::spawn` was dispatched this call.",
+        "description": "Whether a `harness::spawn` was dispatched this call (task mode).",
         "type": "boolean"
       }
     },

@@ -38,7 +38,11 @@ export type TurnSourceEvent =
 
 /** True once this event ends the turn (the generator should stop after it). */
 export function isTerminalSource(event: TurnSourceEvent): boolean {
-  return event.kind === 'turn-completed'
+  // A non-terminal completion (`terminal: false`) is a wiring turn of a
+  // one-way run: the session still owns an armed wake and a later turn in the
+  // same session carries the real outcome — keep streaming until it lands.
+  // Legacy events without the flag are terminal.
+  return event.kind === 'turn-completed' && event.event.terminal !== false
 }
 
 export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {

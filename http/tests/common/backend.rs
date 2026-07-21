@@ -2,7 +2,7 @@
 //! Test backend: an echo function bound to an `http` trigger.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
@@ -45,6 +45,54 @@ pub async fn register_echo_backend(iii: &Arc<IIIClient>, api_path: &str, http_me
         metadata: None,
     })
     .expect("register http trigger");
+}
+
+/// Register `test.trace` bound to an `http` trigger; on every invocation the
+/// function records the W3C trace id it runs under — i.e. the trace context the
+/// http worker propagated onto the outbound trigger — into the returned slot.
+///
+/// The captured value is 32 lowercase hex chars; an all-zero id
+/// (`00000000000000000000000000000000`) means the function ran under no/invalid
+/// trace context. An outbound trace-propagation test compares this against the
+/// worker's HTTP span trace id to prove `request -> worker -> function` is one
+/// unified trace.
+pub async fn register_trace_capturing_backend(
+    iii: &Arc<IIIClient>,
+    api_path: &str,
+    http_method: &str,
+) -> Arc<Mutex<Option<String>>> {
+    let function_id = format!("test.trace {http_method} {api_path}");
+    let slot = Arc::new(Mutex::new(None));
+    let sink = slot.clone();
+
+    iii.register_function(
+        function_id.clone(),
+        RegisterFunction::new_async(move |req: HttpRequest| {
+            let sink = sink.clone();
+            async move {
+                use opentelemetry::trace::TraceContextExt;
+                let trace_id = opentelemetry::Context::current()
+                    .span()
+                    .span_context()
+                    .trace_id();
+                *sink.lock().unwrap() = Some(format!("{trace_id}"));
+                Ok::<Value, Error>(json!({
+                    "status_code": 200,
+                    "body": { "method": req.method },
+                }))
+            }
+        }),
+    );
+
+    iii.register_trigger(RegisterTriggerInput {
+        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+        function_id,
+        config: json!({ "api_path": api_path, "http_method": http_method }),
+        metadata: None,
+    })
+    .expect("register http trigger");
+
+    slot
 }
 
 /// Like [`register_echo_backend`], but returns the trigger handle so a test can

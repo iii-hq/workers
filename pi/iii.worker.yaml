@@ -3,6 +3,7 @@ name: pi
 language: javascript
 deploy: bundle
 manifest: package.json
+tags: [coding-agent, pi, cli, headless, agent]
 description: Pi coding agent as an iii worker — pi::* functions run headless Pi turns, mirror raw events onto pi::events, and stream AgentEvent frames onto agent::events.
 
 runtime:
@@ -12,5 +13,5 @@ scripts:
   start: node ./index.mjs
 
 dependencies:
-  iii-state: "^0.21.6"
+  state: "^0.21.2"
   iii-stream: "^0.21.6"

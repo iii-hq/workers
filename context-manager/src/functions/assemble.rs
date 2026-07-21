@@ -356,6 +356,17 @@ async fn try_compact(
     let outcome = async {
         let budget = preserve_recent_budget(usable_budget, None);
         let selection = select(working, sizes, budget, tail_turns);
+        // Never compact the ENTIRE working set during assembly: an empty
+        // verbatim tail assembles into an empty messages array, which
+        // providers hard-reject ("messages: at least one message is
+        // required") and the harness turns into a terminal context_overflow.
+        // select() legally returns a whole-head selection for tail_turns == 0
+        // or a view with no user turn (e.g. a harness candidate window opened
+        // at a prior compaction's assistant-boundary tail_start); skip
+        // compaction and let emergency reduction do the shrinking.
+        if selection.head_len >= working.len() {
+            return None;
+        }
         let head = &working[..selection.head_len];
         if head.is_empty() {
             return None;

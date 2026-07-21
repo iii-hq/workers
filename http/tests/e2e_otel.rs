@@ -66,6 +66,13 @@ fn install_capture() {
             .with_simple_exporter(exported_spans().clone())
             .build();
         let tracer = opentelemetry::trace::TracerProvider::tracer(&provider, "e2e-otel-test");
+        // Install the same provider as the process-wide OTel tracer, so the
+        // receiving SDK's `global::tracer("iii-rust-sdk")` (which builds the
+        // `execute <fn>` span for each invocation) produces real, trace-id-
+        // bearing spans. Without this the global tracer is a no-op and a
+        // backend function's `Context::current()` trace id would be all-zero,
+        // making the outbound-propagation assertion meaningless.
+        opentelemetry::global::set_tracer_provider(provider.clone());
         // Keep the provider alive for the whole test binary; dropping it would
         // shut down the exporter.
         Box::leak(Box::new(provider));
@@ -325,6 +332,57 @@ async fn otel_span_propagates_inbound_traceparent() {
         .map(|kv| kv.value.as_str().to_string())
         .expect("event should carry parent.trace_id");
     assert_eq!(parent_trace_id, KNOWN_TRACE_ID);
+
+    boot.shutdown().await;
+}
+
+/// Phase 3 (outbound): the worker must propagate its HTTP span's trace context
+/// onto the trigger it fires at the matched function, so `HTTP GET -> worker ->
+/// function` is ONE trace rather than two disjoint ones. We register a backend
+/// that records the trace id it runs under, drive a request with NO inbound
+/// `traceparent` (so the worker's HTTP span is the trace root), and assert the
+/// function ran under the SAME trace id as the worker's exported HTTP span.
+///
+/// Buggy behaviour (no context attached to the outbound trigger): the worker
+/// injects no `traceparent`, the receiving SDK starts a fresh root trace, and
+/// the function's trace id differs from the HTTP span's -> assertion fails.
+#[tokio::test]
+#[serial]
+async fn otel_span_propagates_outbound_traceparent_to_function() {
+    install_capture();
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
+    let boot = worker::start_http_worker(iii.clone()).await;
+    let captured_trace_id =
+        backend::register_trace_capturing_backend(&iii, "/otel/outbound/:id", "GET").await;
+    common::wait_for_route(&boot.routes, "GET", "/otel/outbound/:id").await;
+
+    let url = format!("http://{}/otel/outbound/9", boot.local_addr);
+    let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let _ = resp.bytes().await.unwrap();
+
+    let span = wait_for_exported_span("/otel/outbound/9").await;
+    let http_trace_id = format!("{}", span.span_context.trace_id());
+
+    // The function may record its trace id slightly after the response returns.
+    let mut function_trace_id = None;
+    for _ in 0..40 {
+        if let Some(id) = captured_trace_id.lock().unwrap().clone() {
+            function_trace_id = Some(id);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let function_trace_id =
+        function_trace_id.expect("backend function should have recorded a trace id");
+
+    assert_eq!(
+        function_trace_id, http_trace_id,
+        "the invoked function must run under the worker's HTTP-span trace \
+         (one unified trace), not a disconnected trace"
+    );
 
     boot.shutdown().await;
 }

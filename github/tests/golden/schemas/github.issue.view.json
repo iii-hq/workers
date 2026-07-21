@@ -1,0 +1,39 @@
+{
+  "description": "View one issue with body and comments: { repo: \"owner/name\", number } -> { value }.",
+  "function_id": "github::issue::view",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "number": {
+        "description": "Issue number.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "repo": {
+        "description": "Target repository, \"owner/name\".",
+        "type": "string"
+      }
+    },
+    "required": [
+      "number",
+      "repo"
+    ],
+    "title": "ViewRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Parsed `--json` output of a gh command.",
+    "properties": {
+      "value": {
+        "description": "The JSON gh printed for the requested `--json` fields."
+      }
+    },
+    "required": [
+      "value"
+    ],
+    "title": "ValueResponse",
+    "type": "object"
+  }
+}

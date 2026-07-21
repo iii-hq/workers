@@ -16,7 +16,7 @@ struct Cli {
     /// authoritative source and `--config` is ignored for the stored value.
     #[arg(long)]
     config: Option<String>,
-    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
     #[arg(long)]
     manifest: bool,

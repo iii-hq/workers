@@ -46,6 +46,26 @@ Pick a scaffold by `deploy` + `language`:
 `iii.worker.yaml` must declare valid `deploy` (`binary` | `image` | `bundle`)
 and `language` (`rust` | `javascript` | `node` | `python`).
 
+### Discovery tags (required)
+
+Every **publishable** worker must set a non-empty `tags:` list in
+`iii.worker.yaml`. Tags are how the registry indexes a worker for search and
+collections, so a worker without them is effectively undiscoverable.
+
+```yaml
+# iii.worker.yaml
+tags:
+  - sql
+  - database
+  - storage
+```
+
+Keep tags lowercase and specific to what the worker does. `pr-checks` enforces
+this (`.github/scripts/validate_worker.py`): a publishable worker with a missing
+or empty `tags:` list is a hard error. Workers that opt out of publishing with
+`interface_smoke: false` (e.g. `acp`, `iii-lsp`) are exempt — tags stay optional
+for them.
+
 ## 3. Repo registration
 
 Add a row to the **Modules** table in [`README.md`](../../README.md). Every
@@ -58,7 +78,7 @@ runs:
 
 | Job | What it enforces |
 |---|---|
-| `pr-checks` | `README.md` present; `iii.worker.yaml` valid; manifest version ≥ base; `tests/` non-empty |
+| `pr-checks` | `README.md` present; `iii.worker.yaml` valid; non-empty `tags:` on publishable workers (see [Discovery tags](#discovery-tags-required)); manifest version ≥ base; `tests/` non-empty |
 | Language job | Rust: `fmt`, `clippy -D warnings`, `test`; Node: `biome ci`, `npm test`; Python: `ruff`, `pytest` |
 | `interface-smoke` | Rust only: build from source, boot engine + worker, collect non-empty interface |
 

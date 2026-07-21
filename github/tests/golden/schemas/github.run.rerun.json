@@ -1,0 +1,47 @@
+{
+  "description": "Rerun a workflow run: { repo, run_id, failed? } -> { output }. failed reruns only the failed jobs.",
+  "function_id": "github::run::rerun",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "failed": {
+        "description": "Rerun only the failed jobs.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "repo": {
+        "description": "Target repository, \"owner/name\".",
+        "type": "string"
+      },
+      "run_id": {
+        "description": "Workflow run id.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "repo",
+      "run_id"
+    ],
+    "title": "RunRerunRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Trimmed stdout of a mutating gh command (gh prints the created/updated URL or a confirmation line; some commands print nothing).",
+    "properties": {
+      "output": {
+        "description": "gh's stdout, trimmed.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "output"
+    ],
+    "title": "TextResponse",
+    "type": "object"
+  }
+}

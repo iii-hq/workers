@@ -198,9 +198,16 @@ fn confine_scope_root(
         .map_err(|e| ExecError::new("S210", format!("{scope_root}: {e}")))?;
     for deny in denylist_canon {
         if canon.starts_with(deny) {
+            // REDACTION INVARIANT: a denylisted scope_root is reported with
+            // the same S211 wording as a missing one (see
+            // `fs::error::S211_REDACTED_SUFFIX`) so callers cannot probe
+            // for the existence of operator-denied directories.
             return Err(ExecError::new(
-                "S215",
-                format!("scope_root is denylisted: {scope_root}"),
+                "S211",
+                format!(
+                    "scope_root {scope_root}: {}",
+                    crate::fs::error::S211_REDACTED_SUFFIX
+                ),
             ));
         }
     }

@@ -27,6 +27,9 @@
             "format": "int64",
             "type": "integer"
           },
+          "read_only": {
+            "type": "boolean"
+          },
           "session_id": {
             "type": "string"
           },
@@ -45,6 +48,7 @@
           "created_ms",
           "headless",
           "last_used_ms",
+          "read_only",
           "session_id",
           "url"
         ],

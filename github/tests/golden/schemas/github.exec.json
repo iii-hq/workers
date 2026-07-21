@@ -1,0 +1,87 @@
+{
+  "description": "Run any gh command: { args: [\"pr\", \"list\", \"-R\", \"owner/name\"], stdin?, timeout_ms? } -> { stdout, stderr, exit_code, duration_ms, timed_out, stdout_truncated, stderr_truncated }. A non-zero exit or a timeout is DATA here, not an error. The escape hatch for everything without a typed github::* function.",
+  "function_id": "github::exec",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "args": {
+        "description": "gh argv, without the leading `gh` (e.g. [\"pr\", \"status\", \"-R\", \"o/r\"]).",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "stdin": {
+        "description": "Bytes piped to gh's stdin (for flags like `--body-file -`).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "timeout_ms": {
+        "description": "Per-call timeout in ms, clamped to the configured max_timeout_ms.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "args"
+    ],
+    "title": "ExecRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "A completed `gh` invocation. This is also the `github::exec` response: a non-zero exit or a timeout is DATA here — only failure to run the process at all is a `GhError`.",
+    "properties": {
+      "duration_ms": {
+        "description": "Wall-clock duration of the invocation, in ms.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "exit_code": {
+        "description": "Process exit code; null when the process was killed (timeout).",
+        "format": "int32",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "stderr": {
+        "description": "Captured stderr (UTF-8 lossy), capped at `max_output_bytes`.",
+        "type": "string"
+      },
+      "stderr_truncated": {
+        "description": "True when stderr exceeded `max_output_bytes` and was truncated.",
+        "type": "boolean"
+      },
+      "stdout": {
+        "description": "Captured stdout (UTF-8 lossy), capped at `max_output_bytes`.",
+        "type": "string"
+      },
+      "stdout_truncated": {
+        "description": "True when stdout exceeded `max_output_bytes` and was truncated.",
+        "type": "boolean"
+      },
+      "timed_out": {
+        "description": "True when the timeout expired and the process group was killed.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "duration_ms",
+      "stderr",
+      "stderr_truncated",
+      "stdout",
+      "stdout_truncated",
+      "timed_out"
+    ],
+    "title": "GhOutcome",
+    "type": "object"
+  }
+}

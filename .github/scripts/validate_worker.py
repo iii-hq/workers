@@ -118,6 +118,23 @@ def main(argv: list[str] | None = None) -> int:
             hard(
                 f"{worker}/iii.worker.yaml language must be 'rust' | 'node' | 'python' | 'javascript'"
             )
+        # Registry discovery/collections index workers by their `tags:` list, so
+        # a publishable worker must ship a non-empty one. A worker opts out of
+        # publishing with `interface_smoke: false` (mirror the publish gate in
+        # .github/workflows/release.yml: publish runs when interface_smoke is not
+        # False); those keep tags optional. Shape (list of strings) is enforced
+        # for every worker regardless.
+        publishable = m.raw.get("interface_smoke") is not False
+        tags = m.raw.get("tags")
+        if tags is not None and not isinstance(tags, list):
+            hard(f"{worker}/iii.worker.yaml tags must be a list")
+        elif isinstance(tags, list) and any(not isinstance(tag, str) for tag in tags):
+            hard(f"{worker}/iii.worker.yaml tags entries must be strings")
+        elif publishable and not tags:
+            hard(
+                f"{worker}/iii.worker.yaml must set a non-empty tags: list for "
+                f"registry discovery (see docs/sops/new-worker.md)"
+            )
         # The release archive's binary is named after `bin` (defaulting to the
         # worker name); the resolver looks it up by worker name. They must match
         # or `iii worker add {worker}` fails with "Binary not found in archive".

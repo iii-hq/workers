@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { parseEmbeddedJson, resultEnvelope } from './FunctionCallCard'
+import {
+  isDeniedOutput,
+  parseEmbeddedJson,
+  resultEnvelope,
+} from './FunctionCallCard'
 
 describe('parseEmbeddedJson', () => {
   it('parses double-encoded objects and arrays', () => {
@@ -14,6 +18,49 @@ describe('parseEmbeddedJson', () => {
     expect(parseEmbeddedJson('true')).toBeUndefined()
     expect(parseEmbeddedJson('plain text')).toBeUndefined()
     expect(parseEmbeddedJson('{broken')).toBeUndefined()
+  })
+})
+
+describe('isDeniedOutput', () => {
+  it('recognizes the approval gate’s denial envelope in the error details', () => {
+    // Shape per approval-gate denial.rs → entry-mapper functionResultOutput:
+    // the envelope rides in the paired result's `details`.
+    expect(
+      isDeniedOutput({
+        error: {
+          kind: 'function_error',
+          message: 'Rejected by operator.',
+          details: {
+            schema_version: 1,
+            status: 'denied',
+            denied_by: 'user',
+            function_id: 'shell::run',
+            reason: 'Rejected by operator.',
+          },
+        },
+      }),
+    ).toBe(true)
+  })
+
+  it('leaves genuine run errors and non-errors alone', () => {
+    // A run error without the envelope: the call executed and failed.
+    expect(
+      isDeniedOutput({
+        error: { kind: 'function_error', message: 'boom', details: {} },
+      }),
+    ).toBe(false)
+    expect(
+      isDeniedOutput({ error: { kind: 'function_error', message: 'boom' } }),
+    ).toBe(false)
+    // `status: denied` alone (no denied_by) is not the gate's envelope.
+    expect(
+      isDeniedOutput({
+        error: { kind: 'function_error', details: { status: 'denied' } },
+      }),
+    ).toBe(false)
+    expect(isDeniedOutput({ content: [], details: {} })).toBe(false)
+    expect(isDeniedOutput(undefined)).toBe(false)
+    expect(isDeniedOutput(null)).toBe(false)
   })
 })
 
