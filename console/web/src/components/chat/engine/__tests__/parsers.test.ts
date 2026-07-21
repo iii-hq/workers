@@ -602,8 +602,13 @@ describe('describeCron', () => {
     expect(describeCron('* * * * * *')).toBe('every second')
     expect(describeCron('0 15 * * * *')).toBe('at :15 every hour')
     expect(describeCron('0 0 */6 * * *')).toBe('every 6h at :00')
-    expect(describeCron('0 0 9 * * 1')).toBe('every Mon at 09:00')
-    expect(describeCron('0 0 9 * * 1,5')).toBe('every Mon, Fri at 09:00')
+    // seconds-first form = Rust cron crate dialect: weekdays 1=Sun..7=Sat
+    expect(describeCron('0 0 9 * * 1')).toBe('every Sun at 09:00')
+    expect(describeCron('0 0 9 * * 2,6')).toBe('every Mon, Fri at 09:00')
+    // classic five-field cron: weekdays 0=Sun..6=Sat, 7 also Sunday
+    expect(describeCron('0 9 * * 1')).toBe('every Mon at 09:00')
+    expect(describeCron('0 9 * * 0')).toBe('every Sun at 09:00')
+    expect(describeCron('0 9 * * 7')).toBe('every Sun at 09:00')
     expect(describeCron('0 0 0 1 * *')).toBe('at 00:00 on day 1 of every month')
     expect(describeCron('0 0 12 * 7 *')).toBe('at 12:00 in Jul')
   })
@@ -614,6 +619,10 @@ describe('describeCron', () => {
     expect(describeCron('0 0 9 L * *')).toBeNull() // L extension
     expect(describeCron('0 0 25 * * *')).toBeNull() // hour out of range
     expect(describeCron('0 0 17 21 7 * 2027')).toBeNull() // pinned year
+    // wild seconds fire 60×/min — "at 17:00" would hide that
+    expect(describeCron('* 0 17 * * *')).toBeNull()
+    expect(describeCron('30 0 17 * * *')).toBeNull() // nonzero seconds pin
+    expect(describeCron('0 0 9 * * 0')).toBeNull() // 0 invalid in Rust dialect
     expect(describeCron('nonsense')).toBeNull()
     expect(describeCron('')).toBeNull()
   })

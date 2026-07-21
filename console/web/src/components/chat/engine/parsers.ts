@@ -431,10 +431,12 @@ export function describeCron(expression: string): string | null {
   const sec = withSeconds ? f[0] : '0'
   const year = f.length === 7 ? f[6] : '*'
   if (year !== '*') return null
-  if (sec !== '*' && !/^\d+$/.test(sec)) return null
 
   const num = (s: string, max: number): number | null =>
     /^\d+$/.test(s) && Number(s) <= max ? Number(s) : null
+  const secondsWild = sec === '*'
+  const secNum = num(sec, 59)
+  if (!secondsWild && secNum == null) return null
   const step = (s: string): number | null => {
     const m = /^\*\/(\d+)$/.exec(s)
     return m ? Number(m[1]) : null
@@ -459,6 +461,11 @@ export function describeCron(expression: string): string | null {
     if (hourStep != null && m != null) time = `every ${hourStep}h at :${pad(m)}`
     else return null
   }
+  // Every description except "every second" speaks at minute granularity, so
+  // it is only honest when the schedule fires once per matching minute
+  // (seconds pinned to 0). `* 0 17 * * *` fires every second DURING 17:00 —
+  // saying "at 17:00" would hide sixty firings; a nonzero pin drops detail.
+  if (time !== 'every second' && (secondsWild || secNum !== 0)) return null
 
   const dn = num(dom, 31)
   const mn = num(mon, 12)
@@ -473,7 +480,12 @@ export function describeCron(expression: string): string | null {
   if (dow !== '*' && dow !== '?') {
     const names = dow.split(',').map((d) => {
       const n = num(d, 7)
-      return n != null ? WEEKDAYS[n % 7] : null
+      if (n == null) return null
+      // Numeric weekday numbering differs by dialect: the seconds-first form
+      // is the Rust `cron` crate's (Quartz-style, 1=Sun..7=Sat); classic
+      // five-field cron is 0=Sun..6=Sat with 7 also Sunday.
+      if (withSeconds) return n >= 1 ? WEEKDAYS[n - 1] : null
+      return WEEKDAYS[n % 7]
     })
     if (names.some((n) => n == null)) return null
     week = `every ${names.join(', ')}`

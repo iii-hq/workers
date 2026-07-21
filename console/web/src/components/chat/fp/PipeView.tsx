@@ -118,6 +118,20 @@ export function PipeView({ input, output, running }: PipeViewProps) {
             value={`${threaded.toLocaleString()} chars`}
           />
         ) : null}
+        {/* The harness-stamped scope shell/coder steps run under — an
+            approver must see where relative paths anchor, since this view
+            replaces the raw request pane. */}
+        {req.fs_scope?.root ? (
+          <>
+            <FilterChip label="scope" value={req.fs_scope.root} />
+            {req.fs_scope.grants?.length ? (
+              <FilterChip
+                label="grants"
+                value={String(req.fs_scope.grants.length)}
+              />
+            ) : null}
+          </>
+        ) : null}
       </MetaRow>
       <PipeStepList through={req.through} receipts={receipts} />
       {running ? (
