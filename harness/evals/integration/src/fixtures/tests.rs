@@ -251,6 +251,7 @@ fn registered_text_scenario(slug: &str, id: &str) -> crate::scenarios::Registere
             "A fixture selection test.",
             crate::expand::ScenarioTemplateKind::Text,
         ),
+        driver: crate::scenarios::ScenarioDriver::Direct,
     }
 }
 
@@ -265,8 +266,8 @@ fn prompt_root() -> tempfile::TempDir {
 fn all_selector_with_no_runnable_scenario_is_an_error() {
     let root = prompt_root();
 
-    let empty_error = super::discovery::select_fixtures(Vec::new(), root.path(), "all", true)
-        .unwrap_err();
+    let empty_error =
+        super::discovery::select_fixtures(Vec::new(), root.path(), "all", true).unwrap_err();
     assert!(format!("{empty_error:#}").contains("matched no registered scenario"));
 
     let mut quarantined = registered_text_scenario("only-quarantined", "C-E2E-Q");
@@ -327,8 +328,8 @@ fn duplicate_identities_are_rejected_for_every_selector() {
         registered_text_scenario("twice", "C-E2E-FIRST"),
         registered_text_scenario("twice", "C-E2E-SECOND"),
     ];
-    let error = super::discovery::select_fixtures(duplicate_slug, root.path(), "all", true)
-        .unwrap_err();
+    let error =
+        super::discovery::select_fixtures(duplicate_slug, root.path(), "all", true).unwrap_err();
     assert!(format!("{error:#}").contains("duplicate scenario slug"));
 }
 

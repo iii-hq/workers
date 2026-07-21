@@ -497,3 +497,10 @@ pub fn regex(pattern: &str) -> JsonMatcherV1 {
 pub fn present() -> JsonMatcherV1 {
     JsonMatcherV1::Present
 }
+
+pub fn subset(expected: Value) -> JsonMatcherV1 {
+    JsonMatcherV1::Subset {
+        expected,
+        normalize: None,
+    }
+}

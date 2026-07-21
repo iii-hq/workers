@@ -9,6 +9,7 @@
 
 pub mod builder;
 
+mod console_streamed_text;
 mod crash_recovery_507;
 mod exactly_once_function;
 mod hold_mutation_505;
@@ -17,18 +18,27 @@ mod streamed_text;
 
 use crate::types::scenario::AuthoredScenarioV1;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScenarioDriver {
+    Direct,
+    Console,
+}
+
 /// One authored scenario plus the stable slug used by `--scenario` selection
 /// and the compiled-snapshot filename.
 #[derive(Debug, Clone)]
 pub struct RegisteredScenario {
     pub slug: String,
     pub authored: AuthoredScenarioV1,
+    pub driver: ScenarioDriver,
 }
 
 /// Every authored scenario, in stable slug order.
 pub fn all() -> Vec<RegisteredScenario> {
     vec![
         register("crash-recovery-507", crash_recovery_507::scenario()),
+        register_console("console-streamed-text", console_streamed_text::scenario()),
         register("exactly-once-function", exactly_once_function::scenario()),
         register("hold-mutation-505", hold_mutation_505::scenario()),
         register("hook-held-release-506", hook_held_release_506::scenario()),
@@ -40,6 +50,15 @@ fn register(slug: &str, authored: AuthoredScenarioV1) -> RegisteredScenario {
     RegisteredScenario {
         slug: slug.to_string(),
         authored,
+        driver: ScenarioDriver::Direct,
+    }
+}
+
+fn register_console(slug: &str, authored: AuthoredScenarioV1) -> RegisteredScenario {
+    RegisteredScenario {
+        slug: slug.to_string(),
+        authored,
+        driver: ScenarioDriver::Console,
     }
 }
 

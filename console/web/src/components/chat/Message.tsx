@@ -266,7 +266,7 @@ function SpawnTaskMessage({ message }: { message: UserMessageType }) {
 
 function UserMessage({ message }: { message: UserMessageType }) {
   return (
-    <article className="flex flex-col items-end gap-2">
+    <article className="flex flex-col items-end gap-2" data-message-role="user">
       <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
         <Prompt symbol="$">you</Prompt>
       </header>
@@ -292,7 +292,7 @@ function UserMessage({ message }: { message: UserMessageType }) {
 function AssistantMessage({ message }: { message: AssistantMessageType }) {
   const showCaret = !!message.streaming
   return (
-    <article className="flex flex-col gap-2">
+    <article className="flex flex-col gap-2" data-message-role="assistant">
       <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2 flex-wrap">
         <Prompt symbol=">">assistant</Prompt>
         {message.model ? (

@@ -4,12 +4,14 @@ use anyhow::Context;
 
 use super::script_validation::validate_script;
 use crate::expand::{compile_scenario, CompiledFixtureV1};
-use crate::scenarios::RegisteredScenario;
+use crate::scenarios::{RegisteredScenario, ScenarioDriver};
 use crate::types::scenario::CompiledScenarioV1;
 use crate::types::script::RouterScriptV1;
 
 #[derive(Debug, Clone)]
 pub struct ScenarioFixture {
+    pub slug: String,
+    pub driver: ScenarioDriver,
     pub scenario: CompiledScenarioV1,
     pub script: RouterScriptV1,
     /// Compiled shared golden plus inferred session/policy aid.
@@ -34,6 +36,8 @@ impl ScenarioFixture {
             .with_context(|| format!("compiling scenario {}", entry.slug))?;
 
         let fixture = ScenarioFixture {
+            slug: entry.slug.clone(),
+            driver: entry.driver,
             scenario: compiled,
             script,
             system_prompt_template,

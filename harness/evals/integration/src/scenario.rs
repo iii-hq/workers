@@ -8,9 +8,11 @@
 mod phases;
 mod report;
 mod runner;
+mod serve;
 mod state;
 
 pub use runner::{run_scenario, RunOutcome};
+pub use serve::{serve_scenario, ServeOutcome, ServeReadyV1, ServeResultV1};
 
 #[cfg(test)]
 mod tests;

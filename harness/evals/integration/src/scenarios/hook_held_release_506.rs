@@ -44,25 +44,21 @@ pub(super) fn scenario() -> AuthoredScenario {
         Expect::new()
             .calls_closed()
             .call(TargetCall::counted("record", 1).payload(json!({ "value": "expected+scope" })))
-            .call(
-                TargetCall::counted("hook-mutate", 1).payload_subset(json!({
-                    "point": "pre_trigger",
-                    "call": {
-                        "id": "call-1",
-                        "function_id": "{{run_id}}::record",
-                        "arguments": { "value": "expected" }
-                    }
-                })),
-            )
-            .call(
-                TargetCall::counted("hook-hold", 1).payload_subset(json!({
-                    "point": "pre_trigger",
-                    "call": {
-                        "id": "call-1",
-                        "function_id": "{{run_id}}::record",
-                        "arguments": { "value": "expected+scope" }
-                    }
-                })),
-            ),
+            .call(TargetCall::counted("hook-mutate", 1).payload_subset(json!({
+                "point": "pre_trigger",
+                "call": {
+                    "id": "call-1",
+                    "function_id": "{{run_id}}::record",
+                    "arguments": { "value": "expected" }
+                }
+            })))
+            .call(TargetCall::counted("hook-hold", 1).payload_subset(json!({
+                "point": "pre_trigger",
+                "call": {
+                    "id": "call-1",
+                    "function_id": "{{run_id}}::record",
+                    "arguments": { "value": "expected+scope" }
+                }
+            }))),
     )
 }

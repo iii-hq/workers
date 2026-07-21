@@ -120,6 +120,21 @@ impl Stack {
         self.spawn_worker("harness", &bins.harness)
     }
 
+    pub fn spawn_console(&mut self, bins: &StackBins, http_port: u16) -> anyhow::Result<()> {
+        let bin = bins
+            .console
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("stack has no console binary"))?;
+        let args = vec![
+            "--url".to_string(),
+            self.ws_url.clone(),
+            "--http-port".to_string(),
+            http_port.to_string(),
+        ];
+        let root = self.paths.root.clone();
+        self.spawn_child("console", bin, &args, &root)
+    }
+
     pub async fn kill_engine(&mut self) -> anyhow::Result<()> {
         let mut engine = self
             .processes

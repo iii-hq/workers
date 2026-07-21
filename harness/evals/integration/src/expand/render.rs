@@ -23,4 +23,3 @@ pub fn render_compiled(fixture: &CompiledFixtureV1) -> anyhow::Result<String> {
         "system_prompt": expanded.system_prompt
     })))
 }
-

@@ -42,14 +42,20 @@ pub(crate) fn stack_info(bins: &StackBins, layout: &RunLayout, port: u16) -> any
     };
     record("engine", &bins.engine)?;
     record("harness", &bins.harness)?;
+    if let Some(console) = &bins.console {
+        record("console", console)?;
+    }
     for (name, path) in &bins.workers {
         record(name, path)?;
     }
-    let external_workers = WORKER_START_ORDER
+    let mut external_workers = WORKER_START_ORDER
         .iter()
         .copied()
         .chain(std::iter::once("harness"))
         .collect::<Vec<_>>();
+    if bins.console.is_some() {
+        external_workers.push("console");
+    }
     Ok(json!({
         "profile": STACK_PROFILE,
         "components": {

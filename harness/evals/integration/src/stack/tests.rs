@@ -51,6 +51,7 @@ fn manifest_is_canonical_and_uses_layout_paths() {
     let bins = StackBins {
         engine: binary.clone(),
         harness: binary.clone(),
+        console: None,
         workers: BTreeMap::from([("queue".to_string(), PathBuf::from(&binary))]),
     };
 
@@ -75,6 +76,7 @@ fn manifest_fails_when_a_binary_cannot_be_identified() {
     let bins = StackBins {
         engine: missing.clone(),
         harness: missing.clone(),
+        console: None,
         workers: BTreeMap::new(),
     };
     let error = manifest::stack_info(&bins, &layout, 3210).unwrap_err();
@@ -88,6 +90,7 @@ async fn boot_failure_carries_a_complete_typed_teardown() {
     let bins = StackBins {
         engine: PathBuf::from("/bin/true"),
         harness: PathBuf::from("/bin/true"),
+        console: None,
         workers: BTreeMap::new(),
     };
 

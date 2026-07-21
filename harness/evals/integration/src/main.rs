@@ -5,7 +5,8 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use harness_integration::expand::render_compiled;
 use harness_integration::fixtures::{scenario_fixtures, ScenarioFixture};
-use harness_integration::scenario::run_scenario;
+use harness_integration::scenario::{run_scenario, serve_scenario};
+use harness_integration::scenarios::ScenarioDriver;
 use harness_integration::stack::StackBins;
 use harness_integration::types::scenario::Classification;
 
@@ -30,6 +31,8 @@ enum Command {
     Validate(SelectionArgs),
     /// Print one deterministic, fully expanded compiled scenario.
     Render(RenderArgs),
+    /// Boot one armed stack and the production Console for a browser test.
+    Serve(ServeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -61,6 +64,36 @@ struct RunArgs {
     /// stable result from each repetition.
     #[arg(long, default_value_t = 1, value_parser = parse_repeat)]
     repeat: u16,
+}
+
+#[derive(Debug, Args)]
+struct ServeArgs {
+    #[command(flatten)]
+    selection: SelectionArgs,
+
+    /// Path to the pinned iii engine binary. Falls back to $III_BIN.
+    #[arg(long, env = "III_BIN")]
+    engine_bin: Option<PathBuf>,
+
+    /// Path to the harness binary under test.
+    #[arg(long)]
+    harness_bin: Option<PathBuf>,
+
+    /// Path to the production Console binary under test.
+    #[arg(long)]
+    console_bin: Option<PathBuf>,
+
+    /// Real worker binaries as name=path.
+    #[arg(long = "worker-bin", value_parser = parse_worker_bin)]
+    worker_bins: Vec<(String, PathBuf)>,
+
+    /// File atomically published after the stack and Console are ready.
+    #[arg(long)]
+    ready_file: PathBuf,
+
+    /// Root directory for run artifacts.
+    #[arg(long, default_value = "target/console-e2e")]
+    artifacts_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -120,6 +153,7 @@ async fn dispatch(cli: Cli) -> i32 {
         Command::Run(args) => return run(args).await,
         Command::Validate(args) => validate(args),
         Command::Render(args) => render(args),
+        Command::Serve(args) => return serve(args).await,
     };
     match result {
         Ok(message) => {
@@ -136,13 +170,25 @@ async fn dispatch(cli: Cli) -> i32 {
 }
 
 async fn run(args: RunArgs) -> i32 {
-    let fixtures = match load_fixtures(&args.selection, false) {
+    let mut fixtures = match load_fixtures(&args.selection, false) {
         Ok(fixtures) => fixtures,
         Err(error) => {
             eprintln!("runner_error: {error:#}");
             return 3;
         }
     };
+    if args.selection.scenario == "all" {
+        fixtures.retain(|fixture| fixture.driver == ScenarioDriver::Direct);
+    } else if fixtures
+        .iter()
+        .any(|fixture| fixture.driver != ScenarioDriver::Direct)
+    {
+        eprintln!(
+            "runner_error: scenario {:?} is driven by the Console; use `serve`",
+            args.selection.scenario
+        );
+        return 3;
+    }
     let bins = match resolve_bins(&args) {
         Ok(bins) => bins,
         Err(error) => {
@@ -222,6 +268,69 @@ async fn run(args: RunArgs) -> i32 {
     exit_code
 }
 
+async fn serve(args: ServeArgs) -> i32 {
+    if args.selection.scenario == "all" {
+        eprintln!("runner_error: serve requires one scenario id or slug");
+        return 3;
+    }
+    let fixture = match load_fixtures(&args.selection, true).and_then(|fixtures| {
+        fixtures
+            .into_iter()
+            .next()
+            .context("serve selector returned no scenario")
+    }) {
+        Ok(fixture) => fixture,
+        Err(error) => {
+            eprintln!("runner_error: {error:#}");
+            return 3;
+        }
+    };
+    let Some(console_bin) = args.console_bin.as_deref() else {
+        eprintln!("runner_error: --console-bin is required");
+        return 3;
+    };
+    let bins = match resolve_stack_bins(
+        args.engine_bin.as_deref(),
+        args.harness_bin.as_deref(),
+        Some(console_bin),
+        &args.worker_bins,
+    ) {
+        Ok(bins) => bins,
+        Err(error) => {
+            eprintln!("runner_error: {error:#}");
+            return 3;
+        }
+    };
+    if let Err(error) = std::fs::create_dir_all(&args.artifacts_dir) {
+        eprintln!(
+            "runner_error: creating {}: {error}",
+            args.artifacts_dir.display()
+        );
+        return 3;
+    }
+    let artifacts_dir = match args.artifacts_dir.canonicalize() {
+        Ok(dir) => dir,
+        Err(error) => {
+            eprintln!(
+                "runner_error: resolving {}: {error}",
+                args.artifacts_dir.display()
+            );
+            return 3;
+        }
+    };
+
+    let outcome = serve_scenario(&bins, &fixture, &artifacts_dir, &args.ready_file).await;
+    println!(
+        "{}: {} — run {} ({} ms), artifacts: {}",
+        fixture.scenario.id,
+        classification_str(outcome.result.classification),
+        outcome.run_id,
+        outcome.duration_ms,
+        outcome.run_root.display(),
+    );
+    outcome.result.classification.exit_code()
+}
+
 fn validate(args: SelectionArgs) -> anyhow::Result<String> {
     let fixtures = load_fixtures(&args, true)?;
     Ok(format!("{} scenario fixture(s) valid", fixtures.len()))
@@ -267,29 +376,32 @@ fn classification_str(classification: Classification) -> &'static str {
 }
 
 fn resolve_bins(args: &RunArgs) -> anyhow::Result<StackBins> {
-    fn absolute(name: &str, path: &Path) -> anyhow::Result<PathBuf> {
-        if !path.is_file() {
-            anyhow::bail!("{name} binary not found at {}", path.display());
-        }
-        path.canonicalize()
-            .with_context(|| format!("resolving {name} binary {}", path.display()))
-    }
+    resolve_stack_bins(
+        args.engine_bin.as_deref(),
+        args.harness_bin.as_deref(),
+        None,
+        &args.worker_bins,
+    )
+}
 
-    let engine = args
-        .engine_bin
-        .as_deref()
+fn resolve_stack_bins(
+    engine: Option<&Path>,
+    harness: Option<&Path>,
+    console: Option<&Path>,
+    worker_bins: &[(String, PathBuf)],
+) -> anyhow::Result<StackBins> {
+    let engine = engine
         .ok_or_else(|| anyhow::anyhow!("--engine-bin (or III_BIN) is required; see engine.lock"))?;
-    let harness = args
-        .harness_bin
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("--harness-bin is required"))?;
+    let harness = harness.ok_or_else(|| anyhow::anyhow!("--harness-bin is required"))?;
     let bins = StackBins {
-        engine: absolute("engine", engine)?,
-        harness: absolute("harness", harness)?,
-        workers: args
-            .worker_bins
+        engine: absolute_binary("engine", engine)?,
+        harness: absolute_binary("harness", harness)?,
+        console: console
+            .map(|path| absolute_binary("console", path))
+            .transpose()?,
+        workers: worker_bins
             .iter()
-            .map(|(name, path)| Ok((name.clone(), absolute(name, path)?)))
+            .map(|(name, path)| Ok((name.clone(), absolute_binary(name, path)?)))
             .collect::<anyhow::Result<BTreeMap<String, PathBuf>>>()?,
     };
     let missing = bins.missing_workers();
@@ -297,6 +409,14 @@ fn resolve_bins(args: &RunArgs) -> anyhow::Result<StackBins> {
         anyhow::bail!("missing --worker-bin for: {}", missing.join(", "));
     }
     Ok(bins)
+}
+
+fn absolute_binary(name: &str, path: &Path) -> anyhow::Result<PathBuf> {
+    if !path.is_file() {
+        anyhow::bail!("{name} binary not found at {}", path.display());
+    }
+    path.canonicalize()
+        .with_context(|| format!("resolving {name} binary {}", path.display()))
 }
 
 #[cfg(test)]

@@ -22,6 +22,7 @@ const LIFECYCLE_FUNCTION_ID: &str = "integration-recorder::lifecycle";
 pub struct Recorder {
     client: Client,
     store: Arc<EventStore>,
+    event_notify: Arc<tokio::sync::Notify>,
     response_gates: Arc<Mutex<BTreeMap<String, Arc<ResponseGate>>>>,
 }
 
@@ -69,6 +70,7 @@ impl Recorder {
         let recorder = Recorder {
             client,
             store,
+            event_notify: Arc::new(tokio::sync::Notify::new()),
             response_gates: Arc::new(Mutex::new(BTreeMap::new())),
         };
         recorder.register_lifecycle();
@@ -77,10 +79,12 @@ impl Recorder {
 
     fn register_lifecycle(&self) {
         let store = self.store.clone();
+        let event_notify = Arc::clone(&self.event_notify);
         self.client.inner().register_function(
             LIFECYCLE_FUNCTION_ID,
             RegisterFunction::new_async(move |payload: Value| {
                 let store = store.clone();
+                let event_notify = Arc::clone(&event_notify);
                 async move {
                     let payload = parse_lifecycle_payload(payload).map_err(Error::Handler)?;
                     append_handler_event(
@@ -90,6 +94,7 @@ impl Recorder {
                         payload,
                         "integration/lifecycle",
                     )?;
+                    event_notify.notify_waiters();
                     serde_json::to_value(LifecycleAcceptedV1 { accepted: true }).map_err(|error| {
                         Error::Handler(format!("integration/lifecycle_response_serialize: {error}"))
                     })
@@ -131,7 +136,13 @@ impl Recorder {
             if let Some(gate) = &gate {
                 gates.insert(declared.function_id.clone(), Arc::clone(gate));
             }
-            register_controlled_function(self.client.inner(), &self.store, declared, gate);
+            register_controlled_function(
+                self.client.inner(),
+                &self.store,
+                declared,
+                gate,
+                Arc::clone(&self.event_notify),
+            );
         }
         Ok(())
     }
@@ -157,6 +168,29 @@ impl Recorder {
     /// Return an ordered in-process snapshot after the optional sequence.
     pub fn snapshot(&self, after_sequence: Option<u64>) -> anyhow::Result<Vec<RecorderEventV1>> {
         self.store.snapshot(after_sequence)
+    }
+
+    /// Wait for the lifecycle trigger delivery without repeatedly calling a
+    /// harness status function. The notification is armed before inspecting
+    /// the store, so an event arriving between those operations cannot be
+    /// missed.
+    pub async fn wait_for_lifecycle(
+        &self,
+        deadline: crate::deadline::Deadline,
+    ) -> anyhow::Result<RecorderEventV1> {
+        loop {
+            let notified = self.event_notify.notified();
+            if let Some(event) = self
+                .snapshot(None)?
+                .into_iter()
+                .find(|event| event.kind == RecorderEventKind::Lifecycle)
+            {
+                return Ok(event);
+            }
+            deadline
+                .timeout("lifecycle trigger delivery", notified)
+                .await?;
+        }
     }
 
     /// Create the lifecycle trigger binding (runner's Arm step). The binding
@@ -218,6 +252,7 @@ fn register_controlled_function(
     store: &Arc<EventStore>,
     declared: &RecorderTargetV1,
     response_gate: Option<Arc<ResponseGate>>,
+    event_notify: Arc<tokio::sync::Notify>,
 ) {
     let response = declared.response.clone();
     let store = store.clone();
@@ -227,6 +262,7 @@ fn register_controlled_function(
         &function_id,
         RegisterFunction::new_async(move |payload: Value| {
             let store = store.clone();
+            let event_notify = Arc::clone(&event_notify);
             let response = response.clone();
             let function_id = handler_function_id.clone();
             let response_gate = response_gate.clone();
@@ -238,6 +274,7 @@ fn register_controlled_function(
                     payload,
                     "integration/target_append",
                 )?;
+                event_notify.notify_waiters();
                 if let Some(gate) = response_gate {
                     gate.wait_if_selected().await;
                 }
