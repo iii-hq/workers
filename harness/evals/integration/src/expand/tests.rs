@@ -3,8 +3,7 @@ use std::collections::BTreeMap;
 use serde_json::json;
 
 use crate::types::scenario::{
-    AuthoredScenarioV1, ExpectationsV1, RouterReplyV1, ScenarioGenerationV1, ScenarioRouterV1,
-    ScenarioSendV1,
+    AuthoredScenarioV1, RouterReplyV1, ScenarioGenerationV1, ScenarioRouterV1, ScenarioSendV1,
 };
 use crate::types::script::JsonMatcherV1;
 
@@ -32,11 +31,6 @@ fn minimal(reply: RouterReplyV1) -> AuthoredScenarioV1 {
         release: None,
         fault: None,
         timeouts: Default::default(),
-        expect: ExpectationsV1 {
-            turn_completes: true,
-            script_fully_consumed: true,
-            ..Default::default()
-        },
     }
 }
 
@@ -51,11 +45,6 @@ fn text_reply_compiles_stream_and_common_defaults() {
     assert_eq!(compiled.script.generations[0].frames.len(), 7);
     assert!(compiled.scenario.send.options.functions.allow.is_empty());
     assert_eq!(compiled.scenario.deadlines.teardown_ms, 15_000);
-    assert!(compiled
-        .scenario
-        .invariants
-        .iter()
-        .any(|invariant| invariant.id == "target.calls" && invariant.parameters["count"] == 0));
     assert!(compiled
         .system_prompt_template
         .ends_with("Function dispatch is entirely disabled this turn — do not call any function."));
@@ -293,18 +282,6 @@ fn templates_compile_and_render_deterministically() {
             render_compiled(&fixture).unwrap(),
             render_compiled(&fixture).unwrap()
         );
-        assert!(fixture
-            .scenario
-            .invariants
-            .iter()
-            .any(|invariant| invariant.id == "transcript.message_counts"));
-        if kind != ScenarioTemplateKind::Text {
-            assert!(fixture
-                .scenario
-                .invariants
-                .iter()
-                .any(|invariant| invariant.id == "target.calls"));
-        }
         if matches!(
             kind,
             ScenarioTemplateKind::Hook | ScenarioTemplateKind::Crash

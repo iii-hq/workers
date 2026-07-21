@@ -2,10 +2,7 @@ use std::collections::BTreeMap;
 
 use serde_json::json;
 
-use crate::types::scenario::{
-    AuthoredScenarioV1, ExpectationsV1, FunctionResultExpectationV1, MessageCountsExpectationV1,
-    RouterReplyV1, ScenarioFunctionV1, TargetCallsExpectationV1,
-};
+use crate::types::scenario::{AuthoredScenarioV1, RouterReplyV1, ScenarioFunctionV1};
 use crate::types::script::JsonMatcherV1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,58 +123,6 @@ pub fn scenario_template(
         });
     }
 
-    let expect = if kind == ScenarioTemplateKind::Text {
-        ExpectationsV1 {
-            message_counts: Some(MessageCountsExpectationV1 {
-                user: 1,
-                assistant: 1,
-                function_result: 0,
-            }),
-            assistant_text: Some("fixture complete".to_string()),
-            turn_completes: true,
-            script_fully_consumed: true,
-            no_duplicates: true,
-            ..Default::default()
-        }
-    } else {
-        let function_result = FunctionResultExpectationV1 {
-            function_call_id: "call-1".to_string(),
-            function: (kind != ScenarioTemplateKind::Crash).then(|| "record".to_string()),
-            content: (kind != ScenarioTemplateKind::Crash)
-                .then(|| vec![json!({ "type": "text", "text": "recorded" })]),
-            is_error: (kind != ScenarioTemplateKind::Crash).then_some(false),
-        };
-        let mut calls = vec![TargetCallsExpectationV1 {
-            function: "record".to_string(),
-            count: 1,
-            payload: Some(json!({ "value": "expected" })),
-            payload_subset: None,
-        }];
-        if kind == ScenarioTemplateKind::Hook {
-            calls.push(TargetCallsExpectationV1 {
-                function: "hook".to_string(),
-                count: 1,
-                payload: None,
-                payload_subset: None,
-            });
-        }
-        ExpectationsV1 {
-            message_counts: Some(MessageCountsExpectationV1 {
-                user: 1,
-                assistant: 2,
-                function_result: 1,
-            }),
-            assistant_text: Some("recorded once".to_string()),
-            function_results: vec![function_result],
-            calls_closed: true,
-            calls,
-            turn_completes: true,
-            script_fully_consumed: true,
-            no_duplicates: true,
-            ..Default::default()
-        }
-    };
-
     AuthoredScenarioV1 {
         id: id.to_string(),
         description: description.to_string(),
@@ -198,6 +143,5 @@ pub fn scenario_template(
         release,
         fault,
         timeouts,
-        expect,
     }
 }

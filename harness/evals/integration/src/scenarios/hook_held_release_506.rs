@@ -2,11 +2,14 @@
 //!
 //! Reproduction of <https://github.com/iii-hq/workers/issues/506>.
 
+use anyhow::ensure;
 use serde_json::json;
+
+use crate::evidence_data::json_contains;
 
 use super::builder::*;
 
-pub(super) fn scenario() -> AuthoredScenario {
+pub(super) fn scenario() -> Scenario {
     AuthoredScenario::new(
         "E2E-506",
         "A held call released for execution must run with the arguments produced by earlier hooks.",
@@ -44,35 +47,55 @@ pub(super) fn scenario() -> AuthoredScenario {
             .usage(20, 3)
             .recovery_boundary(),
     ))
-    .expect([
-        turn_completes(),
-        script_fully_consumed(),
-        no_duplicate_messages(),
-        all_calls_closed(),
-        function_called_once("record", json!({ "value": "expected+scope" })),
-        function_called_matching(
-            "hook-mutate",
-            1,
+    .verify(|run| {
+        ensure!(
+            !run.has_duplicate_messages(),
+            "transcript contains duplicate entry ids"
+        );
+        ensure!(
+            run.all_calls_closed(),
+            "a dispatched function call has no durable result"
+        );
+
+        let record = run.calls("record");
+        ensure!(
+            record.len() == 1,
+            "record ran {} times, not exactly once",
+            record.len()
+        );
+        let payload = &record[0].payload;
+        ensure!(
+            payload == &json!({ "value": "expected+scope" }),
+            "record payload {payload} lost the hook mutation"
+        );
+
+        // Hook payloads carry engine-populated fields beyond these subsets:
+        // hook-mutate is consulted with the original arguments, hook-hold with
+        // the arguments hook-mutate produced.
+        let hook_subset = |arguments: &str| {
             json!({
                 "point": "pre_trigger",
                 "call": {
                     "id": "call-1",
-                    "function_id": "{{run_id}}::record",
-                    "arguments": { "value": "expected" }
+                    "function_id": format!("{}::record", run.run_id),
+                    "arguments": { "value": arguments }
                 }
-            }),
-        ),
-        function_called_matching(
-            "hook-hold",
-            1,
-            json!({
-                "point": "pre_trigger",
-                "call": {
-                    "id": "call-1",
-                    "function_id": "{{run_id}}::record",
-                    "arguments": { "value": "expected+scope" }
-                }
-            }),
-        ),
-    ])
+            })
+        };
+        for (alias, arguments) in [("hook-mutate", "expected"), ("hook-hold", "expected+scope")] {
+            let calls = run.calls(alias);
+            ensure!(
+                calls.len() == 1,
+                "{alias} ran {} times, not exactly once",
+                calls.len()
+            );
+            let consulted = hook_subset(arguments);
+            ensure!(
+                json_contains(&calls[0].payload, &consulted),
+                "{alias} payload {} does not contain {consulted}",
+                calls[0].payload
+            );
+        }
+        Ok(())
+    })
 }

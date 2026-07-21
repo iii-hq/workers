@@ -11,9 +11,7 @@ use crate::process::TeardownReport;
 use crate::runtime::{RunError, RunPhase};
 use crate::services::RunServices;
 use crate::stack::{EarlyExit, RunPaths, Stack, StackBins};
-use crate::types::scenario::{
-    Classification, ExecutionReportV1, IntegrationResultV1, InvariantResultV1,
-};
+use crate::types::scenario::{Classification, ExecutionReportV1, IntegrationResultV1};
 use crate::types::script::SchemaVersion1;
 
 use super::report::{classify, now_rfc3339, ProcessState};
@@ -80,7 +78,8 @@ pub async fn run_scenario(
         run_id: run_id.clone(),
         session_id,
         sink: None,
-        invariants: Vec::new(),
+        failure: None,
+        evidence: serde_json::Value::Null,
     };
 
     let mut classification = runner.execute(artifacts_dir).await;
@@ -138,7 +137,11 @@ pub(super) struct ScenarioRunner<'a> {
     pub(super) run_id: String,
     pub(super) session_id: String,
     pub(super) sink: Option<ArtifactSink>,
-    pub(super) invariants: Vec<InvariantResultV1>,
+    /// First floor or verify failure, scrubbed of run-scoped ids.
+    pub(super) failure: Option<String>,
+    /// Raw serialized [`crate::evidence_data::RunEvidence`], published in
+    /// serve results for Playwright; JSON null until collected.
+    pub(super) evidence: serde_json::Value,
 }
 
 impl ScenarioRunner<'_> {
@@ -220,7 +223,8 @@ impl ScenarioRunner<'_> {
         self.release(services, prepared, &active).await?;
         self.r#await(services, &mut active).await?;
         self.collect(services, prepared, &mut active).await?;
-        self.grade(services, prepared, &active)
+        let evidence = self.build_evidence(services, &active, Some(active.send_response.clone()));
+        self.verify_evidence(services, &evidence, active.timed_out)
     }
 
     fn finish_without_stack(&mut self, error: RunError) -> Classification {

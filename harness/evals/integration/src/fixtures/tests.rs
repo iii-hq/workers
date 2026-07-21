@@ -251,6 +251,7 @@ fn registered_text_scenario(slug: &str, id: &str) -> crate::scenarios::Registere
             crate::expand::ScenarioTemplateKind::Text,
         ),
         driver: crate::scenarios::ScenarioDriver::Direct,
+        verify: |_| Ok(()),
     }
 }
 

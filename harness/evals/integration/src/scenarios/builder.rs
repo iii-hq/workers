@@ -14,15 +14,22 @@ use serde_json::{json, Value};
 
 use crate::types::frames::Usage;
 use crate::types::scenario::{
-    AuthoredScenarioV1, FaultKind, FaultV1, FunctionResultExpectationV1,
-    GenerationMatchOverridesV1, ReleaseActionV1, ReleaseV1, RouterReplyV1, ScenarioFunctionV1,
-    ScenarioGenerationV1, ScenarioRouterV1, ScenarioSendV1, TargetCallsExpectationV1,
+    AuthoredScenarioV1, FaultKind, FaultV1, GenerationMatchOverridesV1, ReleaseActionV1, ReleaseV1,
+    RouterReplyV1, ScenarioFunctionV1, ScenarioGenerationV1, ScenarioRouterV1, ScenarioSendV1,
     TriggerBindingSpecV1, TriggerKindV1,
 };
 use crate::types::script::JsonMatcherV1;
 
-/// Authoring name for the scenario root. Scenario modules return this type.
+/// Authoring name for the scenario root; [`Self::verify`] closes the chain.
 pub type AuthoredScenario = AuthoredScenarioV1;
+
+/// A registration-ready scenario: the authored stimulus paired with its
+/// checks. Produced by [`AuthoredScenarioV1::verify`], always the last
+/// authoring step — a scenario without checks does not typecheck.
+pub struct Scenario {
+    pub authored: AuthoredScenarioV1,
+    pub verify: super::VerifyFn,
+}
 
 impl AuthoredScenarioV1 {
     /// A new scenario with an empty send. Chain [`Self::trigger`] before
@@ -42,7 +49,6 @@ impl AuthoredScenarioV1 {
             release: None,
             fault: None,
             timeouts: Default::default(),
-            expect: Default::default(),
         }
     }
 
@@ -96,6 +102,17 @@ impl AuthoredScenarioV1 {
         self
     }
 
+    /// The scenario's checks over the returned
+    /// [`crate::evidence_data::RunEvidence`] dataset; the runner enforces the
+    /// floor (turn completed, script fully consumed, clean send) before this
+    /// runs. Always the last builder step.
+    pub fn verify(self, verify: super::VerifyFn) -> Scenario {
+        Scenario {
+            authored: self,
+            verify,
+        }
+    }
+
     pub fn readiness_timeout_ms(mut self, readiness_ms: u64) -> Self {
         self.timeouts.readiness_ms = readiness_ms;
         self
@@ -108,57 +125,6 @@ impl AuthoredScenarioV1 {
 
     pub fn teardown_timeout_ms(mut self, teardown_ms: u64) -> Self {
         self.timeouts.teardown_ms = teardown_ms;
-        self
-    }
-
-    /// The complete list of graded assertions. Nothing is graded unless it
-    /// appears here; the compiler rejects scenarios missing the floor
-    /// (`turn_completes()` and `script_fully_consumed()`).
-    pub fn expect<const N: usize>(mut self, assertions: [Assertion; N]) -> Self {
-        for assertion in assertions {
-            match assertion {
-                Assertion::TurnCompletes => self.expect.turn_completes = true,
-                Assertion::ScriptFullyConsumed => self.expect.script_fully_consumed = true,
-                Assertion::NoDuplicateMessages => self.expect.no_duplicates = true,
-                Assertion::AssistantSaid(text) => self.expect.assistant_text = Some(text),
-                Assertion::MessageCounts {
-                    user,
-                    assistant,
-                    function_result,
-                } => {
-                    self.expect.message_counts =
-                        Some(crate::types::scenario::MessageCountsExpectationV1 {
-                            user,
-                            assistant,
-                            function_result,
-                        });
-                }
-                Assertion::AllCallsClosed => self.expect.calls_closed = true,
-                Assertion::FunctionResultCloses(function_call_id) => {
-                    self.expect
-                        .function_results
-                        .push(FunctionResultExpectationV1 {
-                            function_call_id,
-                            function: None,
-                            content: None,
-                            is_error: None,
-                        });
-                }
-                Assertion::FunctionCalled {
-                    function,
-                    count,
-                    payload,
-                    payload_subset,
-                } => {
-                    self.expect.calls.push(TargetCallsExpectationV1 {
-                        function,
-                        count,
-                        payload,
-                        payload_subset,
-                    });
-                }
-            }
-        }
         self
     }
 }
@@ -266,7 +232,7 @@ impl TextReply {
         with_overrides(self.into(), overrides)
     }
 
-    /// Grade this reply against the durable outcome only, at a recovery
+    /// Match this reply against the durable outcome only, at a recovery
     /// boundary (fault restart or hook release) where the engine may rebuild
     /// the request differently. Shorthand for [`Self::match_overrides`] with
     /// the recovery policy.
@@ -301,7 +267,7 @@ impl FunctionCallReply {
         with_overrides(self.into(), overrides)
     }
 
-    /// Grade this reply against the durable outcome only, at a recovery
+    /// Match this reply against the durable outcome only, at a recovery
     /// boundary (fault restart or hook release) where the engine may rebuild
     /// the request differently. Shorthand for [`Self::match_overrides`] with
     /// the recovery policy.
@@ -338,7 +304,7 @@ fn with_overrides(
 
 /// The loose match a recovery-boundary reply needs. After a fault restart or a
 /// hook release the engine may legitimately reconstruct the request
-/// differently, so grade the durable shape and leave the reconstructed request
+/// differently, so match the durable shape and leave the reconstructed request
 /// id and body free.
 fn recovery_overrides() -> GenerationMatchOverridesV1 {
     GenerationMatchOverridesV1 {
@@ -399,88 +365,6 @@ impl Release {
     /// Release the held call for execution against its target function.
     pub fn execute() -> ReleaseActionV1 {
         ReleaseActionV1::Execute
-    }
-}
-
-/// One explicit assertion in a scenario's `.expect([...])` list. Every
-/// invariant graded for a scenario appears literally in that list; there
-/// are no implicit defaults.
-pub enum Assertion {
-    TurnCompletes,
-    ScriptFullyConsumed,
-    NoDuplicateMessages,
-    AssistantSaid(String),
-    MessageCounts {
-        user: u64,
-        assistant: u64,
-        function_result: u64,
-    },
-    AllCallsClosed,
-    FunctionResultCloses(String),
-    FunctionCalled {
-        function: String,
-        count: u64,
-        payload: Option<Value>,
-        payload_subset: Option<Value>,
-    },
-}
-
-/// Terminal status `completed`, lifecycle delivered exactly once, and the
-/// send accepted with clean flags. Mandatory in every scenario.
-pub fn turn_completes() -> Assertion {
-    Assertion::TurnCompletes
-}
-
-/// Every scripted generation consumed, none extra. Mandatory in every
-/// scenario: it is what proves the conversation ran as scripted.
-pub fn script_fully_consumed() -> Assertion {
-    Assertion::ScriptFullyConsumed
-}
-
-pub fn no_duplicate_messages() -> Assertion {
-    Assertion::NoDuplicateMessages
-}
-
-/// The durable transcript contains exactly this assistant text.
-pub fn assistant_said(text: &str) -> Assertion {
-    Assertion::AssistantSaid(text.to_string())
-}
-
-pub fn message_counts(user: u64, assistant: u64, function_result: u64) -> Assertion {
-    Assertion::MessageCounts {
-        user,
-        assistant,
-        function_result,
-    }
-}
-
-pub fn all_calls_closed() -> Assertion {
-    Assertion::AllCallsClosed
-}
-
-/// A durable function result closes the given call id.
-pub fn function_result_closes(function_call_id: &str) -> Assertion {
-    Assertion::FunctionResultCloses(function_call_id.to_string())
-}
-
-/// The controlled function ran exactly once, with exactly this payload.
-pub fn function_called_once(function: &str, payload: Value) -> Assertion {
-    Assertion::FunctionCalled {
-        function: function.to_string(),
-        count: 1,
-        payload: Some(payload),
-        payload_subset: None,
-    }
-}
-
-/// The controlled function ran `count` times with payloads containing this
-/// subset (hook payloads carry engine-populated fields beyond it).
-pub fn function_called_matching(function: &str, count: u64, payload_subset: Value) -> Assertion {
-    Assertion::FunctionCalled {
-        function: function.to_string(),
-        count,
-        payload: None,
-        payload_subset: Some(payload_subset),
     }
 }
 

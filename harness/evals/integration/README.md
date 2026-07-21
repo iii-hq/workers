@@ -43,20 +43,21 @@ byte-stable result contract to be identical. A mismatch is a runner error.
 
 ## Create a scenario
 
-Each scenario is one Rust builder module: `src/scenarios/<slug>.rs`, a
-function that builds the authored data through the typed builders in
-`src/scenarios/builder.rs` and registers it in `src/scenarios/mod.rs`. There
-is no YAML layer — the authored shape is enforced by the type system at
-`cargo build` and is never serialized. Model/provider, session id,
-idempotency key, native function policy, run-scoped function ids, request
-matchers, response frames, common completion checks, and system prompt hash
-are inferred by the compiler.
+Each scenario is one Rust module: `src/scenarios/<slug>.rs`, one `scenario()`
+function that builds the authored stimulus through the typed builders in
+`src/scenarios/builder.rs` and closes the chain with `.verify(|run| ...)`,
+registered in `src/scenarios/mod.rs`. A scenario without checks does not
+typecheck. There is no YAML layer — the authored
+shape is enforced by the type system at `cargo build` and is never
+serialized. Model/provider, session id, idempotency key, native function
+policy, run-scoped function ids, request matchers, response frames, and
+system prompt hash are inferred by the compiler.
 
 A typical authored function scenario is:
 
 ```rust
 // src/scenarios/my_function_case.rs
-pub(super) fn scenario() -> AuthoredScenario {
+pub(super) fn scenario() -> Scenario {
     AuthoredScenario::new("E2E-010", "The allowed function runs once.")
         .trigger(Harness::send("Call the recorder once."))
         .function(
@@ -79,20 +80,27 @@ pub(super) fn scenario() -> AuthoredScenario {
             Reply::function_call("record", json!({ "value": "expected" })),
             Reply::text("recorded once"),
         ))
-        .expect([
-            turn_completes(),
-            script_fully_consumed(),
-            function_called_once("record", json!({ "value": "expected" })),
-            no_duplicate_messages(),
-        ])
+        .verify(|run| {
+            let calls = run.calls("record");
+            anyhow::ensure!(calls.len() == 1, "record ran {} times", calls.len());
+            anyhow::ensure!(calls[0].payload == json!({ "value": "expected" }));
+            anyhow::ensure!(!run.has_duplicate_messages());
+            Ok(())
+        })
 }
 ```
 
-Every graded invariant appears literally in the `.expect([...])` list —
-nothing is asserted by default. Two assertions are the mandatory floor and
-the compiler rejects scenarios without them: `turn_completes()` (terminal
-status, lifecycle exactly-once, send accepted) and `script_fully_consumed()`
-(every scripted generation consumed, none extra).
+The scenario returns a dataset; the author writes the checks in plain Rust.
+The floor is enforced by the runner before `verify` is called — turn
+completed (terminal status, lifecycle delivered exactly once), script fully
+consumed (every scripted generation used, none extra), and a clean send —
+and any violation is a `contract_failure` with a `floor: ` message.
+`verify(run)` then receives the full `RunEvidence` dataset (send response,
+final status, transcript, recorder events, router consumption) for
+scenario-specific checks; accessors such as `assistant_texts()`,
+`message_counts()`, `calls(alias)`, and `all_calls_closed()` cover the
+recurring reads. The runner catches panics, so `assert!`/`assert_eq!` are
+allowed; prefer `anyhow::ensure!` where a message helps.
 
 Add the module and its slug to the list in `src/scenarios/mod.rs`, then:
 
@@ -106,15 +114,14 @@ Builders produce data only — a builder that derives scenario content from
 control flow is rejected in review. New scenarios are runnable by
 default; chain `.quarantine()` only for a known reproduction that should be
 excluded from `run --scenario all`. `render` prints deterministic canonical
-JSON with the complete compiled request, router script, expectations, and
-system prompt.
+JSON with the complete compiled request, router script, and system prompt.
 
 `Function::recorder()` is the canonical string-in/`recorded`-out fixture;
 `Function::new(...)` builds any other controlled function and `.hidden()`
 marks a hook-only one. Function aliases become `<run_id>::<alias>`; every
 exposed function is dispatchable. `Release::execute()` releases a held call
 for execution. Typed text and function-call replies cover normal cases;
-`.recovery_boundary()` grades a reply against the durable outcome only,
+`.recovery_boundary()` matches a reply against the durable outcome only,
 where a fault restart or hook release may rebuild the request, and
 `.match_overrides(...)` is the remaining escape hatch for intentionally
 different wire shapes (the Console's agent-trigger policy).
@@ -154,15 +161,19 @@ release → await → collect → grade → teardown → report.
 - Child processes run in dedicated process groups and teardown signals the
   complete group and direct child with SIGTERM followed by SIGKILL, within
   one hard cleanup budget.
-- Router and grader comparisons use explicit JSON array policies.
+- Router and evidence comparisons use explicit JSON array policies.
 
 Each run writes `result.json`, `execution.json`, `teardown.json`, and
 `stack.json` below `target/integration/<run-id>/`; scenario evidence lives
-under `scenarios/<scenario-id>/`. `result.json` contains the stable
-byte-comparable verdict. `execution.json` contains the run id, timing,
-scenario id, and SHA-256 of the exact `result.json` bytes. Passing runs retain
-the compact reports and remove heavyweight stack state unless
-`--retain-success` is supplied.
+under `scenarios/<scenario-id>/` (transcript, status, router calls, target
+calls, lifecycle events). `result.json` contains the stable byte-comparable
+verdict: the classification plus the first floor or verify failure message,
+with run/session/turn ids scrubbed to placeholders. `execution.json` contains
+the run id, timing, scenario id, and SHA-256 of the exact `result.json`
+bytes. In serve mode, `serve-result.json` additionally carries the raw
+serialized `RunEvidence` (real ids) so Playwright can check it against the
+ready manifest. Passing runs retain the compact reports and remove
+heavyweight stack state unless `--retain-success` is supplied.
 
 The compiler uses the Harness's embedded `prompts/default.txt` directly,
 appends the inferred session and function policy, then hashes the result for

@@ -5,11 +5,12 @@ use serde_json::{json, Value};
 
 use crate::client::{Client, DEFAULT_CALL_TIMEOUT_MS};
 use crate::deadline::Deadline;
-use crate::grader::{self, Evidence};
+use crate::evidence_data::RunEvidence;
 use crate::runtime::{RunError, RunErrorKind, RunPhase};
 use crate::services::RunServices;
 use crate::types::recorder::RecorderEventKind;
 
+use super::super::floor;
 use super::super::runner::ScenarioRunner;
 use super::super::state::{ActiveTurn, PreparedRun};
 
@@ -71,45 +72,59 @@ impl ScenarioRunner<'_> {
         Ok(())
     }
 
-    pub(in crate::scenario) fn grade(
-        &mut self,
+    /// Assemble the returned dataset from everything Collect persisted.
+    /// `send_response` is `Some` only in Rpc mode, where the runner itself
+    /// submitted `harness::send`.
+    pub(in crate::scenario) fn build_evidence(
+        &self,
         services: &RunServices,
-        prepared: &PreparedRun,
         active: &ActiveTurn,
-    ) -> Result<(), RunError> {
-        let phase = RunPhase::Grade;
-        let evidence = Evidence {
+        send_response: Option<Value>,
+    ) -> RunEvidence {
+        RunEvidence {
             run_id: self.run_id.clone(),
             session_id: self.session_id.clone(),
             turn_id: active.turn_id.clone(),
-            send_response: Some(active.send_response.clone()),
+            send_response,
             status: active.final_status.clone(),
             transcript: active.transcript.clone(),
             generations_consumed: services.router().generations_consumed(),
             generations_total: services.router().total_generations(),
             recorder_events: active.recorder_events.clone(),
-        };
-        self.invariants = grader::grade(&prepared.scenario.invariants, &evidence);
-        let invariants = self.invariants.clone();
-        self.write_artifact(&prepared.scenario.id, "invariants.json", &invariants, phase)?;
+        }
+    }
 
-        if active.timed_out {
+    /// Enforce the runner-owned floor, then run the scenario's `verify`
+    /// function. The first failure is recorded with run-scoped ids scrubbed
+    /// so repeated runs stay byte-stable.
+    pub(in crate::scenario) fn verify_evidence(
+        &mut self,
+        services: &RunServices,
+        evidence: &RunEvidence,
+        timed_out: bool,
+    ) -> Result<(), RunError> {
+        let failure = floor::floor_failure(evidence)
+            .or_else(|| floor::verify_failure(self.fixture.verify, evidence));
+        self.failure = failure.map(|message| evidence.scrub(&message));
+
+        if timed_out {
             return Err(RunError::new(
                 RunPhase::Await,
                 RunErrorKind::Timeout,
                 "terminal status did not arrive before the scenario deadline",
             ));
         }
-        if self.invariants.iter().any(|invariant| !invariant.passed)
-            || services.router().contract_failed()
-        {
-            return Err(RunError::new(
-                phase,
-                RunErrorKind::Contract,
-                "one or more scenario contracts failed",
-            ));
+        if self.failure.is_none() && services.router().contract_failed() {
+            self.failure = Some("scripted router reported a contract failure".to_string());
         }
-        Ok(())
+        match &self.failure {
+            Some(message) => Err(RunError::new(
+                RunPhase::Grade,
+                RunErrorKind::Contract,
+                message.clone(),
+            )),
+            None => Ok(()),
+        }
     }
 
     async fn collect_transcript(

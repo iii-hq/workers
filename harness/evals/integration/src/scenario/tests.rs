@@ -42,8 +42,8 @@ fn result_digest_matches_the_exact_persisted_bytes() {
         schema_version: SchemaVersion1::V1,
         scenario_id: "E2E-DIGEST".into(),
         classification: Classification::Pass,
-        invariants: Vec::new(),
-        artifacts: vec!["scenarios/E2E-DIGEST/invariants.json".into()],
+        failure: None,
+        artifacts: vec!["scenarios/E2E-DIGEST/transcript.json".into()],
     };
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("result.json");

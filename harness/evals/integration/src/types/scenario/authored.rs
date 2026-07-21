@@ -6,8 +6,6 @@ use serde::{Deserialize, Serialize};
 use crate::types::frames::Usage;
 use crate::types::script::{JsonMatcherV1, ModelFixtureV1};
 
-use super::ExpectationsV1;
-
 /// The authored scenario data built by the `src/scenarios` builder modules.
 ///
 /// This layer is code, never serialized: there is no schema pair to keep
@@ -28,7 +26,6 @@ pub struct AuthoredScenarioV1 {
     pub release: Option<ReleaseV1>,
     pub fault: Option<FaultV1>,
     pub timeouts: DeadlinesV1,
-    pub expect: ExpectationsV1,
 }
 
 /// Scenario ids are also artifact directory names, so keep them to one safe,

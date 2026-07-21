@@ -62,7 +62,14 @@ fn evidence_and_report_contracts_round_trip() {
         schema_version: SchemaVersion1::V1,
         scenario_id: "E2E-ROUND-TRIP".into(),
         classification: Classification::Pass,
-        invariants: Vec::new(),
+        failure: None,
+        artifacts: vec!["teardown.json".into()],
+    });
+    round_trip(IntegrationResultV1 {
+        schema_version: SchemaVersion1::V1,
+        scenario_id: "E2E-ROUND-TRIP".into(),
+        classification: Classification::ContractFailure,
+        failure: Some("verify: {{run_id}}::record ran 0 times".into()),
         artifacts: vec!["teardown.json".into()],
     });
     round_trip(ExecutionReportV1 {

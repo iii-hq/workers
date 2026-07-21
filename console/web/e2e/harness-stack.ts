@@ -23,12 +23,27 @@ interface ReadyManifest {
   send?: Record<string, unknown>
 }
 
-interface InvariantResult {
-  id: string
-  passed: boolean
-  expected: unknown
-  actual: unknown
-  evidence_refs: string[]
+export interface RecorderEvent {
+  schema_version: '1'
+  run_id: string
+  sequence: number
+  kind: 'target_call' | 'lifecycle'
+  function_id: string
+  payload: unknown
+  received_at: string
+}
+
+/** Raw serialized RunEvidence: real ids, checkable against ReadyManifest. */
+export interface RunEvidence {
+  run_id: string
+  session_id: string
+  turn_id: string | null
+  send_response: unknown
+  status: unknown
+  transcript: unknown[]
+  generations_consumed: number
+  generations_total: number
+  recorder_events: RecorderEvent[]
 }
 
 export interface ServeResult {
@@ -41,8 +56,8 @@ export interface ServeResult {
     | 'timeout'
     | 'process_crash'
     | 'runner_error'
-  invariants: InvariantResult[]
-  skipped_invariants: string[]
+  failure: string | null
+  evidence: RunEvidence | null
   artifacts: string[]
 }
 
@@ -309,6 +324,4 @@ export async function openSession(
 
 export function expectPassingResult(result: ServeResult): void {
   expect(result.classification).toBe('pass')
-  expect(result.skipped_invariants).toEqual(['send.flags'])
-  expect(result.invariants.every((invariant) => invariant.passed)).toBe(true)
 }

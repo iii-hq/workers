@@ -2,7 +2,7 @@ use anyhow::Context;
 
 use super::script_validation::validate_script;
 use crate::expand::{compile_scenario, CompiledFixtureV1};
-use crate::scenarios::{RegisteredScenario, ScenarioDriver};
+use crate::scenarios::{RegisteredScenario, ScenarioDriver, VerifyFn};
 use crate::types::scenario::CompiledScenarioV1;
 use crate::types::script::RouterScriptV1;
 
@@ -17,6 +17,8 @@ pub struct ScenarioFixture {
     pub script: RouterScriptV1,
     /// Compiled Harness default plus inferred session/policy aid.
     pub system_prompt_template: String,
+    /// Scenario-specific checks over the collected run evidence.
+    pub verify: VerifyFn,
 }
 
 impl ScenarioFixture {
@@ -36,6 +38,7 @@ impl ScenarioFixture {
             scenario: compiled,
             script,
             system_prompt_template,
+            verify: entry.verify,
         };
         fixture.validate()?;
         Ok(fixture)

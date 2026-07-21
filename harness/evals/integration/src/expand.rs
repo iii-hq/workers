@@ -3,7 +3,6 @@
 //! Authors work with aliases and typed replies. Compilation produces the
 //! exact, strict runtime structures before any process is started.
 
-mod expectations;
 mod functions;
 mod render;
 mod router;
@@ -116,12 +115,6 @@ pub fn compile_scenario(
 
     let send = functions::compile_send(authored, &model, &allowed_ids)?;
     let script = router::compile_router(authored, &model, &tools, &function_ids, &calls)?;
-    let invariants = expectations::compile_expectations(
-        authored,
-        &function_ids,
-        &calls,
-        script.generations.len(),
-    )?;
     let system_prompt_template = compile_system_prompt(system_prompt_base, &allowed_ids);
 
     let fixture = CompiledFixtureV1 {
@@ -132,7 +125,6 @@ pub fn compile_scenario(
             send,
             recorder,
             deadlines: authored.timeouts,
-            invariants,
             fault,
             bindings,
             release: authored.release.clone(),

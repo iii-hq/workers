@@ -1,11 +1,12 @@
 //! Authored scenario modules and their registry.
 //!
-//! One Rust builder module per scenario: each `src/scenarios/<slug>.rs`
-//! builds the authored scenario data through the typed builders in
-//! [`builder`] and registers it in [`all`]. There is no YAML layer — the
-//! authored shape is the runner's own data model, enforced at `cargo build`,
-//! and it is never serialized. Compilation and serde round trips are enforced
-//! by tests without checking in a second copy of each scenario.
+//! One Rust module per scenario: each `src/scenarios/<slug>.rs` builds the
+//! authored scenario data through the typed builders in [`builder`], defines
+//! a `verify` function over the returned [`RunEvidence`] dataset, and
+//! registers both in [`all`]. There is no YAML layer — the authored shape is
+//! the runner's own data model, enforced at `cargo build`, and it is never
+//! serialized. Compilation and serde round trips are enforced by tests
+//! without checking in a second copy of each scenario.
 
 pub mod builder;
 
@@ -16,7 +17,15 @@ mod hold_mutation_505;
 mod hook_held_release_506;
 mod streamed_text;
 
+use crate::evidence_data::RunEvidence;
 use crate::types::scenario::AuthoredScenarioV1;
+
+/// Scenario-specific checks written in plain Rust over the collected run
+/// dataset. The runner enforces the floor (completed turn, script fully
+/// consumed, clean send) before calling this, and catches panics, so
+/// `assert!`/`assert_eq!` are allowed; prefer `anyhow::ensure!` where a
+/// message helps.
+pub type VerifyFn = fn(&RunEvidence) -> anyhow::Result<()>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -25,12 +34,14 @@ pub enum ScenarioDriver {
     Console,
 }
 
-/// One authored scenario plus the stable slug used by `--scenario` selection.
+/// One authored scenario, its verify function, and the stable slug used by
+/// `--scenario` selection.
 #[derive(Debug, Clone)]
 pub struct RegisteredScenario {
     pub slug: String,
     pub authored: AuthoredScenarioV1,
     pub driver: ScenarioDriver,
+    pub verify: VerifyFn,
 }
 
 /// Every authored scenario, in stable slug order.
@@ -45,19 +56,21 @@ pub fn all() -> Vec<RegisteredScenario> {
     ]
 }
 
-fn register(slug: &str, authored: AuthoredScenarioV1) -> RegisteredScenario {
+fn register(slug: &str, scenario: builder::Scenario) -> RegisteredScenario {
     RegisteredScenario {
         slug: slug.to_string(),
-        authored,
+        authored: scenario.authored,
         driver: ScenarioDriver::Direct,
+        verify: scenario.verify,
     }
 }
 
-fn register_console(slug: &str, authored: AuthoredScenarioV1) -> RegisteredScenario {
+fn register_console(slug: &str, scenario: builder::Scenario) -> RegisteredScenario {
     RegisteredScenario {
         slug: slug.to_string(),
-        authored,
+        authored: scenario.authored,
         driver: ScenarioDriver::Console,
+        verify: scenario.verify,
     }
 }
 

@@ -1,12 +1,13 @@
 //! UI-001 — the production Console sends through its agent-trigger policy.
 
+use anyhow::ensure;
 use serde_json::json;
 
 use crate::types::scenario::GenerationMatchOverridesV1;
 
 use super::builder::*;
 
-pub(super) fn scenario() -> AuthoredScenario {
+pub(super) fn scenario() -> Scenario {
     AuthoredScenario::new(
         "UI-001",
         "A message sent from the Console streams to durable completion.",
@@ -23,12 +24,15 @@ pub(super) fn scenario() -> AuthoredScenario {
             tools: Some(subset(json!([{ "name": "agent_trigger" }]))),
             ..Default::default()
         }),))
-    // Content assertions for UI scenarios live in Playwright (`ui-send`
-    // checks the rendered text and both message counts in the DOM); the
-    // runner asserts only what the DOM cannot show.
-    .expect([
-        turn_completes(),
-        script_fully_consumed(),
-        no_duplicate_messages(),
-    ])
+    // Content assertions for UI scenarios live in Playwright (`ui-send` checks
+    // the rendered text and both message counts in the DOM); the floor (turn
+    // completion, script consumption) is runner-owned, so this only checks what
+    // the DOM cannot show.
+    .verify(|run| {
+        ensure!(
+            !run.has_duplicate_messages(),
+            "transcript contains duplicate entry ids"
+        );
+        Ok(())
+    })
 }

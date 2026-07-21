@@ -2,11 +2,14 @@
 //!
 //! Reproduction of <https://github.com/iii-hq/workers/issues/505>.
 
+use anyhow::ensure;
 use serde_json::json;
+
+use crate::evidence_data::json_contains;
 
 use super::builder::*;
 
-pub(super) fn scenario() -> AuthoredScenario {
+pub(super) fn scenario() -> Scenario {
     AuthoredScenario::new(
         "E2E-505",
         "A pre-trigger hook that holds and mutates must apply its mutation to the released call.",
@@ -34,23 +37,48 @@ pub(super) fn scenario() -> AuthoredScenario {
             .usage(20, 3)
             .recovery_boundary(),
     ))
-    .expect([
-        turn_completes(),
-        script_fully_consumed(),
-        no_duplicate_messages(),
-        all_calls_closed(),
-        function_called_once("record", json!({ "value": "expected+approved" })),
-        function_called_matching(
-            "hook-gate",
-            1,
-            json!({
-                "point": "pre_trigger",
-                "call": {
-                    "id": "call-1",
-                    "function_id": "{{run_id}}::record",
-                    "arguments": { "value": "expected" }
-                }
-            }),
-        ),
-    ])
+    .verify(|run| {
+        ensure!(
+            !run.has_duplicate_messages(),
+            "transcript contains duplicate entry ids"
+        );
+        ensure!(
+            run.all_calls_closed(),
+            "a dispatched function call has no durable result"
+        );
+
+        let record = run.calls("record");
+        ensure!(
+            record.len() == 1,
+            "record ran {} times, not exactly once",
+            record.len()
+        );
+        let payload = &record[0].payload;
+        ensure!(
+            payload == &json!({ "value": "expected+approved" }),
+            "record payload {payload} lost the hook mutation"
+        );
+
+        let gate = run.calls("hook-gate");
+        ensure!(
+            gate.len() == 1,
+            "hook-gate ran {} times, not exactly once",
+            gate.len()
+        );
+        // Hook payloads carry engine-populated fields beyond this subset.
+        let consulted = json!({
+            "point": "pre_trigger",
+            "call": {
+                "id": "call-1",
+                "function_id": format!("{}::record", run.run_id),
+                "arguments": { "value": "expected" }
+            }
+        });
+        ensure!(
+            json_contains(&gate[0].payload, &consulted),
+            "hook-gate payload {} does not contain {consulted}",
+            gate[0].payload
+        );
+        Ok(())
+    })
 }

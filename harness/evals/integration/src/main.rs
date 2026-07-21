@@ -213,13 +213,6 @@ async fn run(args: RunArgs) -> i32 {
             );
             let outcome = run_scenario(&bins, fixture, &artifacts_dir, args.retain_success).await;
             let classification = outcome.result.classification;
-            let failed: Vec<&str> = outcome
-                .result
-                .invariants
-                .iter()
-                .filter(|invariant| !invariant.passed)
-                .map(|invariant| invariant.id.as_str())
-                .collect();
             let repetition_label = if args.repeat > 1 {
                 format!(" [{repetition}/{}]", args.repeat)
             } else {
@@ -228,10 +221,9 @@ async fn run(args: RunArgs) -> i32 {
             println!(
                 "{scenario_id}{repetition_label}: {}{} — run {} ({} ms), artifacts: {}",
                 classification_str(classification),
-                if failed.is_empty() {
-                    String::new()
-                } else {
-                    format!(" — failed invariants: {}", failed.join(", "))
+                match &outcome.result.failure {
+                    Some(failure) => format!(" — {failure}"),
+                    None => String::new(),
                 },
                 outcome.run_id,
                 outcome.duration_ms,

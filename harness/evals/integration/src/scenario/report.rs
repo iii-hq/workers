@@ -126,7 +126,7 @@ impl ScenarioRunner<'_> {
             schema_version: SchemaVersion1::V1,
             scenario_id: self.fixture.scenario.id.clone(),
             classification,
-            invariants: self.invariants.clone(),
+            failure: self.failure.clone(),
             artifacts: self
                 .sink
                 .as_ref()

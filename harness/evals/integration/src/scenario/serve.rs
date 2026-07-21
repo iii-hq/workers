@@ -11,12 +11,11 @@ use crate::client::DEFAULT_CALL_TIMEOUT_MS;
 use crate::deadline::Deadline;
 use crate::expand::{expand_compiled_fixture, ExpandedFixtureV1};
 use crate::fixtures::ScenarioFixture;
-use crate::grader::{self, Evidence};
 use crate::runtime::{RunError, RunErrorKind, RunPhase};
 use crate::scenarios::ScenarioDriver;
 use crate::services::RunServices;
 use crate::stack::{free_loopback_port, RunPaths, Stack, StackBins};
-use crate::types::scenario::{Classification, CompiledSendV1, InvariantResultV1};
+use crate::types::scenario::{Classification, CompiledSendV1};
 use crate::types::script::SchemaVersion1;
 
 use super::runner::ScenarioRunner;
@@ -66,8 +65,12 @@ pub struct ServeResultV1 {
     pub schema_version: SchemaVersion1,
     pub scenario_id: String,
     pub classification: Classification,
-    pub invariants: Vec<InvariantResultV1>,
-    pub skipped_invariants: Vec<String>,
+    /// First floor or verify failure, scrubbed of run-scoped ids.
+    pub failure: Option<String>,
+    /// Raw serialized [`crate::evidence_data::RunEvidence`] (JSON null when
+    /// the run failed before collection). Ids are real, so Playwright can
+    /// check evidence against the ready manifest.
+    pub evidence: serde_json::Value,
     pub artifacts: Vec<String>,
 }
 
@@ -95,7 +98,8 @@ pub async fn serve_scenario(
         run_id: run_id.clone(),
         session_id,
         sink: None,
-        invariants: Vec::new(),
+        failure: None,
+        evidence: Value::Null,
     };
 
     // The serve consumer contract is serve-ready.json -> serve-result.json;
@@ -107,8 +111,8 @@ pub async fn serve_scenario(
         schema_version: SchemaVersion1::V1,
         scenario_id: fixture.scenario.id.clone(),
         classification,
-        invariants: runner.invariants.clone(),
-        skipped_invariants: vec!["send.flags".to_string()],
+        failure: runner.failure.clone(),
+        evidence: runner.evidence.clone(),
         artifacts: runner
             .sink
             .as_ref()
@@ -285,7 +289,7 @@ async fn run_serve_phases(
 
     // Completion is event-driven: Arm bound harness::turn-completed to the
     // recorder. Once it arrives, make one status call as the durable-state
-    // confirmation used by the existing grader.
+    // confirmation checked by the floor.
     let lifecycle = services
         .recorder()
         .wait_for_lifecycle(scenario_deadline)
@@ -329,51 +333,15 @@ async fn run_serve_phases(
     let mut active = ActiveTurn::new(evidence_deadline, turn_id, Value::Null);
     active.final_status = final_status;
     runner.collect(services, prepared, &mut active).await?;
-    grade_without_direct_send(runner, services, prepared, &active)
-}
 
-fn grade_without_direct_send(
-    runner: &mut ScenarioRunner<'_>,
-    services: &RunServices,
-    prepared: &PreparedRun,
-    active: &ActiveTurn,
-) -> Result<(), RunError> {
-    let specs: Vec<_> = prepared
-        .scenario
-        .invariants
-        .iter()
-        .filter(|spec| spec.id != "send.flags")
-        .cloned()
-        .collect();
-    let evidence = Evidence {
-        run_id: runner.run_id.clone(),
-        session_id: runner.session_id.clone(),
-        turn_id: active.turn_id.clone(),
-        send_response: None,
-        status: active.final_status.clone(),
-        transcript: active.transcript.clone(),
-        generations_consumed: services.router().generations_consumed(),
-        generations_total: services.router().total_generations(),
-        recorder_events: active.recorder_events.clone(),
-    };
-    runner.invariants = grader::grade(&specs, &evidence);
-    let invariants = runner.invariants.clone();
-    runner.write_artifact(
-        &prepared.scenario.id,
-        "invariants.json",
-        &invariants,
-        RunPhase::Grade,
-    )?;
-    if runner.invariants.iter().any(|invariant| !invariant.passed)
-        || services.router().contract_failed()
-    {
-        return Err(RunError::new(
-            RunPhase::Grade,
-            RunErrorKind::Contract,
-            "one or more console scenario contracts failed",
-        ));
-    }
-    Ok(())
+    // Shared floor + verify path with Rpc mode. The Console (not the runner)
+    // submitted the send, so there is no send response and the send-flags
+    // floor check is skipped.
+    let evidence = runner.build_evidence(services, &active, None);
+    runner.evidence = serde_json::to_value(&evidence).map_err(|error| {
+        RunError::runner(RunPhase::Grade, "serialize console run evidence", error)
+    })?;
+    runner.verify_evidence(services, &evidence, false)
 }
 
 fn build_ready_manifest(

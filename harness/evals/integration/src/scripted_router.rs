@@ -5,8 +5,8 @@
 //!
 //! `router::chat` consumes generations in ordinal order. An unexpected call
 //! or matcher failure records `contract_failure` evidence, streams nothing,
-//! and returns a bus error; an unused expectation is detected by the grader
-//! via `generations_consumed`.
+//! and returns a bus error; an unused generation is detected by the runner
+//! floor via `generations_consumed`.
 //!
 //! Deviation from the spec text (folded into the spec amendment): absent or
 //! empty `provider` on `models::get` resolves by id alone — that is
