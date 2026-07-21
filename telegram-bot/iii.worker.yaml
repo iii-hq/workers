@@ -8,7 +8,7 @@ tags: [telegram, bot, messaging, chat, webhook]
 description: Telegram bridge to the harness stack — polling or webhook ingress, live message edits, approvals, and configurable verbosity.
 
 dependencies:
-  state: "^0.21.0"
+  state: "^0.21.2"
   queue: "^0.2.0"
   configuration: "^0.21.6"
   session-manager: "^1.0.0"
