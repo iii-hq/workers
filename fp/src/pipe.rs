@@ -141,6 +141,16 @@ fn is_scoped_step(function_id: &str) -> bool {
 /// exposes fp::pipe while denying shell::* could launder a scope through a
 /// non-harness call; shell-side caller verification is tracked follow-up.
 fn forbidden_step(function_id: &str) -> Option<&'static str> {
+    // Shell control-plane ids sit inside the scoped shell::* prefix but are
+    // NOT session tools: config-status is agent-policy hard-denied (it can
+    // surface operator paths) and workspace::* is console picker plumbing —
+    // both ignore fs_scope, so the stamp gate below would admit them.
+    if function_id == "shell::config-status" || function_id.starts_with("shell::workspace::") {
+        return Some(
+            "shell control-plane functions are not supported in a pipe — steps run with \
+             worker authority, which would bypass the agent-level deny on them",
+        );
+    }
     if function_id == PIPE_ID {
         return Some(
             "pipes do not nest — to start from a literal value, seed the FIRST transform \
@@ -304,7 +314,11 @@ fn inject(payload: Value, pointer: &str, value: Value) -> Result<Value, String> 
 /// on a scoped step (full key replace: subkeys can't survive either).
 /// Non-scoped steps pass through untouched — the scope must not leak to
 /// arbitrary workers.
-fn bus_step_args(function_id: &str, args: Value, fs_scope: Option<&Value>) -> Result<Value, String> {
+fn bus_step_args(
+    function_id: &str,
+    args: Value,
+    fs_scope: Option<&Value>,
+) -> Result<Value, String> {
     if !is_scoped_step(function_id) {
         return Ok(args);
     }
@@ -560,6 +574,8 @@ mod tests {
         // reason — mirroring every agent-policy hard-denied class
         // (iii-permissions.yaml), state::* excepted on purpose
         for (function, needle) in [
+            ("shell::config-status", "control-plane"),
+            ("shell::workspace::roots", "control-plane"),
             ("fp::pipe", "nest"),
             ("engine::register_trigger", "trigger control"),
             ("session::append", "worker"),
@@ -688,7 +704,10 @@ mod tests {
             bus_step_args("state::set", args.clone(), Some(&trusted)).unwrap(),
             args
         );
-        assert_eq!(bus_step_args("state::set", args.clone(), None).unwrap(), args);
+        assert_eq!(
+            bus_step_args("state::set", args.clone(), None).unwrap(),
+            args
+        );
 
         // predicate mirror spot-checks (harness is_scoped_function parity)
         assert!(is_scoped_step("shell::exec"));

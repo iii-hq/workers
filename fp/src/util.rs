@@ -808,7 +808,10 @@ mod tests {
         // fp::get's miss message is the model for this.
         let search_shape = json!({ "content_matches": [], "path_matches": [], "truncated": false });
         let err = map(search_shape.clone(), "/path").unwrap_err();
-        assert!(err.contains("content_matches") && err.contains("fp::get"), "{err}");
+        assert!(
+            err.contains("content_matches") && err.contains("fp::get"),
+            "{err}"
+        );
         let err = take(json!({ "matches": [], "truncated": false }), 500).unwrap_err();
         assert!(err.contains("matches") && err.contains("fp::get"), "{err}");
         // non-objects keep the plain kind message
