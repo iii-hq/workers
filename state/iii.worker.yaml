@@ -10,7 +10,6 @@ config:
   adapter:
     name: kv
     config:
-      store_method: file_based
-      file_path: ./data/state_store.db
+      store_method: in_memory
 dependencies:
   configuration: "^0.21.6"
