@@ -14,7 +14,7 @@ struct Args {
     #[arg(
         long,
         short = 'e',
-        env = "IIIACP_ENGINE_URL",
+        env = "III_URL",
         default_value = "ws://localhost:49134"
     )]
     engine_url: String,
