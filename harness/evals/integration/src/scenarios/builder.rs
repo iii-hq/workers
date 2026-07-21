@@ -113,18 +113,8 @@ impl AuthoredScenarioV1 {
         }
     }
 
-    pub fn readiness_timeout_ms(mut self, readiness_ms: u64) -> Self {
-        self.timeouts.readiness_ms = readiness_ms;
-        self
-    }
-
     pub fn scenario_timeout_ms(mut self, scenario_ms: u64) -> Self {
         self.timeouts.scenario_ms = scenario_ms;
-        self
-    }
-
-    pub fn teardown_timeout_ms(mut self, teardown_ms: u64) -> Self {
-        self.timeouts.teardown_ms = teardown_ms;
         self
     }
 }

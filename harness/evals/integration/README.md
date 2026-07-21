@@ -127,9 +127,9 @@ where a fault restart or hook release may rebuild the request, and
 different wire shapes (the Console's agent-trigger policy).
 
 Timeout defaults are 60 seconds for readiness, 60 seconds for the scenario,
-and 15 seconds for teardown. Positive values can be overridden with the
-`*_timeout_ms` builders; one readiness budget is shared by the full probe/arm
-sequence.
+and 15 seconds for teardown. The scenario budget can be raised with
+`.scenario_timeout_ms(...)` (crash-recovery does); one readiness budget is
+shared by the full probe/arm sequence.
 
 ## Checked-in scenarios
 
