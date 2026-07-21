@@ -40,12 +40,7 @@ impl ScenarioRunner<'_> {
             .call_with_deadline(
                 "harness::send",
                 serde_json::to_value(&prepared.scenario.send).map_err(|error| {
-                    RunError::with_source(
-                        phase,
-                        RunErrorKind::Runner,
-                        "serialize compiled harness::send request",
-                        error,
-                    )
+                    RunError::runner(phase, "serialize compiled harness::send request", error)
                 })?,
                 deadline,
                 SEND_TIMEOUT_MS,
@@ -105,9 +100,8 @@ impl ScenarioRunner<'_> {
                 .recorder()
                 .release_response(&fault.function_id)
                 .map_err(|release_error| {
-                    RunError::with_source(
+                    RunError::runner(
                         phase,
-                        RunErrorKind::Runner,
                         "release controlled response gate after fault trigger failure",
                         release_error,
                     )
@@ -133,21 +127,10 @@ impl ScenarioRunner<'_> {
             .recorder()
             .release_response(&fault.function_id)
             .map_err(|error| {
-                RunError::with_source(
-                    phase,
-                    RunErrorKind::Runner,
-                    "release controlled response gate after fault",
-                    error,
-                )
+                RunError::runner(phase, "release controlled response gate after fault", error)
             })?;
-        kill_result.map_err(|error| {
-            RunError::with_source(
-                phase,
-                RunErrorKind::Runner,
-                "kill engine for fault injection",
-                error,
-            )
-        })?;
+        kill_result
+            .map_err(|error| RunError::runner(phase, "kill engine for fault injection", error))?;
         deadline
             .timeout(
                 "fault restart delay",
@@ -155,20 +138,14 @@ impl ScenarioRunner<'_> {
             )
             .await
             .map_err(|error| {
-                RunError::with_source(
+                RunError::runner(
                     phase,
-                    RunErrorKind::Runner,
                     "fault restart delay exceeded scenario deadline",
                     error,
                 )
             })?;
         stack.respawn_engine().map_err(|error| {
-            RunError::with_source(
-                phase,
-                RunErrorKind::Runner,
-                "respawn engine after fault injection",
-                error,
-            )
+            RunError::runner(phase, "respawn engine after fault injection", error)
         })?;
         self.restore_after_engine_restart(stack, services, prepared, deadline)
             .await?;
@@ -187,16 +164,13 @@ impl ScenarioRunner<'_> {
 
         let pre_harness = ReadinessSpec::pre_harness(expected_config_entries(&stack.paths));
         if let Err(report) = readiness::probe(services.client(), &pre_harness, deadline).await {
-            self.write_artifact(
+            return Err(self.readiness_failed(
                 &scenario.id,
-                "readiness-failure.json",
-                &json!({ "phase": "post_restart_pre_harness", "missing": report.missing }),
-                phase,
-            )?;
-            return Err(RunError::new(
                 phase,
                 RunErrorKind::Runner,
+                "post_restart_pre_harness",
                 "base contracts did not recover after engine restart",
+                &report.missing,
             ));
         }
 
@@ -204,31 +178,25 @@ impl ScenarioRunner<'_> {
         if let Err(report) =
             readiness::wait_for_contracts(services.client(), &controlled, deadline).await
         {
-            self.write_artifact(
+            return Err(self.readiness_failed(
                 &scenario.id,
-                "readiness-failure.json",
-                &json!({ "phase": "post_restart_controlled", "missing": report.missing }),
-                phase,
-            )?;
-            return Err(RunError::new(
                 phase,
                 RunErrorKind::Runner,
+                "post_restart_controlled",
                 "controlled contracts did not recover after engine restart",
+                &report.missing,
             ));
         }
 
         let harness = ReadinessSpec::harness_surface(expected_harness_config_entry(&stack.paths));
         if let Err(report) = readiness::probe(services.client(), &harness, deadline).await {
-            self.write_artifact(
+            return Err(self.readiness_failed(
                 &scenario.id,
-                "readiness-failure.json",
-                &json!({ "phase": "post_restart_harness", "missing": report.missing }),
-                phase,
-            )?;
-            return Err(RunError::new(
                 phase,
                 RunErrorKind::Runner,
+                "post_restart_harness",
                 "harness contracts did not recover after engine restart",
+                &report.missing,
             ));
         }
 
@@ -236,9 +204,8 @@ impl ScenarioRunner<'_> {
         let registered = readiness::registered_trigger_snapshot(services.client(), deadline)
             .await
             .map_err(|error| {
-                RunError::with_source(
+                RunError::runner(
                     phase,
-                    RunErrorKind::Runner,
                     "inspect trigger bindings after engine restart",
                     error,
                 )
@@ -255,9 +222,8 @@ impl ScenarioRunner<'_> {
                     )
                     .await
                     .map_err(|error| {
-                        RunError::with_source(
+                        RunError::runner(
                             phase,
-                            RunErrorKind::Runner,
                             "restore lifecycle binding after engine restart",
                             error,
                         )
@@ -273,9 +239,8 @@ impl ScenarioRunner<'_> {
                         )
                         .await
                         .map_err(|error| {
-                            RunError::with_source(
+                            RunError::runner(
                                 phase,
-                                RunErrorKind::Runner,
                                 format!(
                                     "restore trigger {} -> {} after engine restart",
                                     binding.trigger_type, binding.function_id
@@ -301,16 +266,13 @@ impl ScenarioRunner<'_> {
             readiness::wait_for_registered_triggers(services.client(), &expected_bindings, deadline)
                 .await
         {
-            self.write_artifact(
+            return Err(self.readiness_failed(
                 &scenario.id,
-                "readiness-failure.json",
-                &json!({ "phase": "post_restart_bindings", "missing": report.missing }),
-                phase,
-            )?;
-            return Err(RunError::new(
                 phase,
                 RunErrorKind::Runner,
+                "post_restart_bindings",
                 "trigger bindings did not recover after engine restart",
+                &report.missing,
             ));
         }
         Ok(())

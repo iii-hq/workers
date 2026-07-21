@@ -3,7 +3,10 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::readiness::ExpectedTriggerBinding;
+use crate::runtime::{RunError, RunErrorKind, RunPhase};
 use crate::types::scenario::CompiledScenarioV1;
+
+use super::runner::ScenarioRunner;
 
 mod completion;
 mod evidence;
@@ -12,6 +15,30 @@ mod readiness;
 
 const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const TARGET_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+impl ScenarioRunner<'_> {
+    /// Persist the readiness gap as `readiness-failure.json` and produce the
+    /// phase error, preferring the artifact-write failure when both fail.
+    fn readiness_failed<T: serde::Serialize>(
+        &mut self,
+        scenario_id: &str,
+        phase: RunPhase,
+        kind: RunErrorKind,
+        stage: &str,
+        message: &str,
+        missing: &T,
+    ) -> RunError {
+        match self.write_artifact(
+            scenario_id,
+            "readiness-failure.json",
+            &json!({ "phase": stage, "missing": missing }),
+            phase,
+        ) {
+            Err(artifact_error) => artifact_error,
+            Ok(()) => RunError::new(phase, kind, message),
+        }
+    }
+}
 
 fn expected_trigger_bindings(
     scenario: &CompiledScenarioV1,

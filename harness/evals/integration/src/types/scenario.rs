@@ -44,31 +44,26 @@ mod tests {
             payload_subset: None,
         });
         assert_eq!(spec.id, InvariantKind::TargetCalls.as_str());
-        let Ok(DecodedInvariantV1::TargetCalls(parameters)) = spec.decode() else {
-            panic!("target.calls must dispatch through its typed invariant kind");
-        };
-        assert_eq!(parameters["count"], 1);
-        assert_eq!(parameters["function_id"], "run::record");
+        assert_eq!(
+            InvariantKind::from_id(&spec.id),
+            Some(InvariantKind::TargetCalls)
+        );
+        assert_eq!(spec.parameters["count"], 1);
+        assert_eq!(spec.parameters["function_id"], "run::record");
     }
 
     #[test]
     fn invariant_registry_rejects_unknown_ids_but_preserves_parameters() {
-        let unknown = InvariantSpecV1 {
-            id: "nonsense.id".into(),
-            parameters: serde_json::Map::new(),
-        };
-        assert!(matches!(
-            unknown.decode(),
-            Err(InvariantDecodeError::UnknownId(_))
-        ));
+        assert_eq!(InvariantKind::from_id("nonsense.id"), None);
 
         let malformed = InvariantSpecV1 {
             id: InvariantKind::TargetCalls.as_str().into(),
             parameters: serde_json::Map::new(),
         };
-        let Ok(DecodedInvariantV1::TargetCalls(parameters)) = malformed.decode() else {
-            panic!("known ids must decode without constraining their parameter map");
-        };
-        assert!(parameters.is_empty());
+        assert_eq!(
+            InvariantKind::from_id(&malformed.id),
+            Some(InvariantKind::TargetCalls)
+        );
+        assert!(malformed.parameters.is_empty());
     }
 }

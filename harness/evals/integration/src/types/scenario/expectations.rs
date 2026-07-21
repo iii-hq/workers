@@ -39,12 +39,6 @@ impl Default for ExpectationsV1 {
     }
 }
 
-impl ExpectationsV1 {
-    pub fn is_default(&self) -> bool {
-        *self == Self::default()
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MessageCountsExpectationV1 {
@@ -82,12 +76,6 @@ pub struct SendFlagsExpectationV1 {
     pub deduplicated: bool,
 }
 
-impl SendFlagsExpectationV1 {
-    pub fn is_default(&self) -> bool {
-        *self == Self::default()
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TerminalExpectationV1 {
@@ -103,12 +91,6 @@ impl Default for TerminalExpectationV1 {
             pending_calls: 0,
             queued_messages: 0,
         }
-    }
-}
-
-impl TerminalExpectationV1 {
-    pub fn is_default(&self) -> bool {
-        *self == Self::default()
     }
 }
 
@@ -132,12 +114,6 @@ impl Default for LifecycleExpectationV1 {
         Self {
             allow_identical_duplicates: true,
         }
-    }
-}
-
-impl LifecycleExpectationV1 {
-    pub fn is_default(&self) -> bool {
-        *self == Self::default()
     }
 }
 

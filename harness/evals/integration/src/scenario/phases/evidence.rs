@@ -48,14 +48,10 @@ impl ScenarioRunner<'_> {
             phase,
         )?;
 
-        active.recorder_events = services.recorder().snapshot(None).map_err(|error| {
-            RunError::with_source(
-                phase,
-                RunErrorKind::Runner,
-                "snapshot recorder evidence",
-                error,
-            )
-        })?;
+        active.recorder_events = services
+            .recorder()
+            .snapshot(None)
+            .map_err(|error| RunError::runner(phase, "snapshot recorder evidence", error))?;
         let (target_calls, lifecycle_events): (Vec<_>, Vec<_>) = active
             .recorder_events
             .iter()
@@ -144,12 +140,7 @@ impl ScenarioRunner<'_> {
                 )
                 .await
                 .map_err(|error| {
-                    RunError::with_source(
-                        phase,
-                        RunErrorKind::Runner,
-                        "collect session transcript",
-                        anyhow::anyhow!(error),
-                    )
+                    RunError::runner(phase, "collect session transcript", anyhow::anyhow!(error))
                 })?;
             if let Some(items) = page.get("messages").and_then(Value::as_array) {
                 messages.extend(items.iter().cloned());

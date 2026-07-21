@@ -189,27 +189,22 @@ async fn run(args: RunArgs) -> i32 {
         );
         return 3;
     }
-    let bins = match resolve_bins(&args) {
+    let bins = match resolve_stack_bins(
+        args.engine_bin.as_deref(),
+        args.harness_bin.as_deref(),
+        None,
+        &args.worker_bins,
+    ) {
         Ok(bins) => bins,
         Err(error) => {
             eprintln!("runner_error: {error:#}");
             return 3;
         }
     };
-    if let Err(error) = std::fs::create_dir_all(&args.artifacts_dir) {
-        eprintln!(
-            "runner_error: creating {}: {error}",
-            args.artifacts_dir.display()
-        );
-        return 3;
-    }
-    let artifacts_dir = match args.artifacts_dir.canonicalize() {
+    let artifacts_dir = match prepare_artifacts_dir(&args.artifacts_dir) {
         Ok(dir) => dir,
         Err(error) => {
-            eprintln!(
-                "runner_error: resolving {}: {error}",
-                args.artifacts_dir.display()
-            );
+            eprintln!("runner_error: {error:#}");
             return 3;
         }
     };
@@ -301,20 +296,10 @@ async fn serve(args: ServeArgs) -> i32 {
             return 3;
         }
     };
-    if let Err(error) = std::fs::create_dir_all(&args.artifacts_dir) {
-        eprintln!(
-            "runner_error: creating {}: {error}",
-            args.artifacts_dir.display()
-        );
-        return 3;
-    }
-    let artifacts_dir = match args.artifacts_dir.canonicalize() {
+    let artifacts_dir = match prepare_artifacts_dir(&args.artifacts_dir) {
         Ok(dir) => dir,
         Err(error) => {
-            eprintln!(
-                "runner_error: resolving {}: {error}",
-                args.artifacts_dir.display()
-            );
+            eprintln!("runner_error: {error:#}");
             return 3;
         }
     };
@@ -375,13 +360,10 @@ fn classification_str(classification: Classification) -> &'static str {
     }
 }
 
-fn resolve_bins(args: &RunArgs) -> anyhow::Result<StackBins> {
-    resolve_stack_bins(
-        args.engine_bin.as_deref(),
-        args.harness_bin.as_deref(),
-        None,
-        &args.worker_bins,
-    )
+fn prepare_artifacts_dir(dir: &Path) -> anyhow::Result<PathBuf> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    dir.canonicalize()
+        .with_context(|| format!("resolving {}", dir.display()))
 }
 
 fn resolve_stack_bins(

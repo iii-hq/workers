@@ -8,9 +8,9 @@ use crate::deadline::Deadline;
 use crate::expand::{expand_compiled_fixture, ExpandedFixtureV1};
 use crate::fixtures::ScenarioFixture;
 use crate::process::TeardownReport;
-use crate::runtime::{RunError, RunErrorKind, RunPhase};
+use crate::runtime::{RunError, RunPhase};
 use crate::services::RunServices;
-use crate::stack::{RunPaths, Stack, StackBins};
+use crate::stack::{EarlyExit, RunPaths, Stack, StackBins};
 use crate::types::scenario::{
     Classification, ExecutionReportV1, IntegrationResultV1, InvariantResultV1,
 };
@@ -32,13 +32,29 @@ struct SupportServicesTeardown {
     error: Option<String>,
 }
 
+impl SupportServicesTeardown {
+    fn clean() -> Self {
+        Self {
+            deadline_exceeded: false,
+            error: None,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
-struct RunTeardownReport {
+struct StackTeardownReport {
     support_services: SupportServicesTeardown,
     processes: TeardownReport,
 }
 
-impl RunTeardownReport {
+impl StackTeardownReport {
+    fn processes_only(processes: TeardownReport) -> Self {
+        Self {
+            support_services: SupportServicesTeardown::clean(),
+            processes,
+        }
+    }
+
     fn complete(&self) -> bool {
         !self.support_services.deadline_exceeded
             && self.support_services.error.is_none()
@@ -130,12 +146,7 @@ impl ScenarioRunner<'_> {
         let paths = match RunPaths::allocate(artifacts_dir, &self.run_id) {
             Ok(paths) => paths,
             Err(error) => {
-                let error = RunError::with_source(
-                    RunPhase::Allocate,
-                    RunErrorKind::Runner,
-                    "allocate run paths",
-                    error,
-                );
+                let error = RunError::runner(RunPhase::Allocate, "allocate run paths", error);
                 return self.finish(Err(error), None);
             }
         };
@@ -149,12 +160,7 @@ impl ScenarioRunner<'_> {
         {
             Ok(expanded) => expanded,
             Err(error) => {
-                let error = RunError::with_source(
-                    RunPhase::Allocate,
-                    RunErrorKind::Runner,
-                    "expand compiled fixture",
-                    error,
-                );
+                let error = RunError::runner(RunPhase::Allocate, "expand compiled fixture", error);
                 return self.finish_without_stack(error);
             }
         };
@@ -162,9 +168,8 @@ impl ScenarioRunner<'_> {
         let prepared = PreparedRun::new(scenario, expected_prompt);
 
         if let Err(error) = paths.scenario_dir(&prepared.scenario.id) {
-            let error = RunError::with_source(
+            let error = RunError::runner(
                 RunPhase::Allocate,
-                RunErrorKind::Runner,
                 "allocate scenario artifact directory",
                 error,
             );
@@ -174,29 +179,13 @@ impl ScenarioRunner<'_> {
         let mut stack = match Stack::boot(self.bins, paths).await {
             Ok(stack) => stack,
             Err(failure) => {
-                let error = RunError::with_source(
-                    RunPhase::Boot,
-                    RunErrorKind::Setup,
-                    "boot isolated stack",
-                    failure.error,
-                );
-                let teardown = RunTeardownReport {
-                    support_services: SupportServicesTeardown {
-                        deadline_exceeded: false,
-                        error: None,
-                    },
-                    processes: failure.teardown,
-                };
-                let teardown_complete = teardown.complete();
-                let artifact =
-                    self.write_run_artifact("teardown.json", &teardown, RunPhase::Teardown);
-                let classification = self.finish(Err(error), None);
-                return combine_teardown(classification, teardown_complete, artifact);
+                let error = RunError::setup(RunPhase::Boot, "boot isolated stack", failure.error);
+                return self.fail_before_services(error, failure.teardown, None);
             }
         };
         stack.set_teardown_budget(teardown_budget);
 
-        let mut services = match RunServices::start(
+        let services = match RunServices::start(
             &stack.ws_url,
             script,
             stack.paths.root.join("recorder.log.jsonl"),
@@ -205,68 +194,17 @@ impl ScenarioRunner<'_> {
         {
             Ok(services) => services,
             Err(error) => {
-                let error = RunError::with_source(
-                    RunPhase::Boot,
-                    RunErrorKind::Setup,
-                    "start run-scoped support services",
-                    error,
-                );
+                let error =
+                    RunError::setup(RunPhase::Boot, "start run-scoped support services", error);
                 let early_exit = stack.early_exit();
-                let teardown = RunTeardownReport {
-                    support_services: SupportServicesTeardown {
-                        deadline_exceeded: false,
-                        error: None,
-                    },
-                    processes: stack.teardown().await,
-                };
-                let teardown_complete = teardown.complete();
-                let artifact =
-                    self.write_run_artifact("teardown.json", &teardown, RunPhase::Teardown);
-                let classification = self.finish(Err(error), early_exit);
-                return combine_teardown(classification, teardown_complete, artifact);
+                let processes = stack.teardown().await;
+                return self.fail_before_services(error, processes, early_exit);
             }
         };
 
         let outcome = self.run_phases(&mut stack, &services, &prepared).await;
-
-        // Inspect process state while the subject is still running. Service
-        // shutdown is intentionally before process teardown, and a second
-        // inspection catches a child that exits during that boundary.
-        let mut early_exit = stack.early_exit();
-        let teardown_deadline = Deadline::after(teardown_budget);
-        let support_services = if let Err(error) = teardown_deadline
-            .timeout("support service shutdown", services.shutdown())
+        self.finalize(stack, services, teardown_budget, outcome)
             .await
-        {
-            tracing::warn!(
-                target: "harness_integration::scenario",
-                "support service shutdown exceeded teardown budget: {error}"
-            );
-            SupportServicesTeardown {
-                deadline_exceeded: true,
-                error: Some(error.to_string()),
-            }
-        } else {
-            SupportServicesTeardown {
-                deadline_exceeded: false,
-                error: None,
-            }
-        };
-        if early_exit.is_none() {
-            early_exit = stack.early_exit();
-        }
-        stack.set_teardown_budget(teardown_deadline.remaining());
-        let processes = stack.teardown().await;
-        let teardown = RunTeardownReport {
-            support_services,
-            processes,
-        };
-        let teardown_complete = teardown.complete();
-        let teardown_artifact =
-            self.write_run_artifact("teardown.json", &teardown, RunPhase::Teardown);
-
-        let classification = self.finish(outcome, early_exit);
-        combine_teardown(classification, teardown_complete, teardown_artifact)
     }
 
     async fn run_phases(
@@ -286,16 +224,66 @@ impl ScenarioRunner<'_> {
     }
 
     fn finish_without_stack(&mut self, error: RunError) -> Classification {
-        let teardown = RunTeardownReport {
-            support_services: SupportServicesTeardown {
-                deadline_exceeded: false,
-                error: None,
-            },
-            processes: TeardownReport::default(),
-        };
+        self.fail_before_services(error, TeardownReport::default(), None)
+    }
+
+    /// Write `teardown.json` and fold the failure into a classification for
+    /// a run that ended before support services started.
+    pub(super) fn fail_before_services(
+        &mut self,
+        error: RunError,
+        processes: TeardownReport,
+        early_exit: Option<EarlyExit>,
+    ) -> Classification {
+        let teardown = StackTeardownReport::processes_only(processes);
+        let teardown_complete = teardown.complete();
         let artifact = self.write_run_artifact("teardown.json", &teardown, RunPhase::Teardown);
-        let classification = self.finish(Err(error), None);
-        combine_teardown(classification, true, artifact)
+        let classification = self.finish(Err(error), early_exit);
+        combine_teardown(classification, teardown_complete, artifact)
+    }
+
+    /// Shared teardown tail for run and serve. Inspects process state while
+    /// the subject is still running; service shutdown is intentionally
+    /// before process teardown, and a second inspection catches a child
+    /// that exits during that boundary.
+    pub(super) async fn finalize(
+        &mut self,
+        mut stack: Stack,
+        mut services: RunServices,
+        teardown_budget: Duration,
+        outcome: Result<(), RunError>,
+    ) -> Classification {
+        let mut early_exit = stack.early_exit();
+        let teardown_deadline = Deadline::after(teardown_budget);
+        let support_services = match teardown_deadline
+            .timeout("support service shutdown", services.shutdown())
+            .await
+        {
+            Ok(()) => SupportServicesTeardown::clean(),
+            Err(error) => {
+                tracing::warn!(
+                    target: "harness_integration::scenario",
+                    "support service shutdown exceeded teardown budget: {error}"
+                );
+                SupportServicesTeardown {
+                    deadline_exceeded: true,
+                    error: Some(error.to_string()),
+                }
+            }
+        };
+        if early_exit.is_none() {
+            early_exit = stack.early_exit();
+        }
+        stack.set_teardown_budget(teardown_deadline.remaining());
+        let processes = stack.teardown().await;
+        let teardown = StackTeardownReport {
+            support_services,
+            processes,
+        };
+        let teardown_complete = teardown.complete();
+        let artifact = self.write_run_artifact("teardown.json", &teardown, RunPhase::Teardown);
+        let classification = self.finish(outcome, early_exit);
+        combine_teardown(classification, teardown_complete, artifact)
     }
 }
 

@@ -1,5 +1,3 @@
-use serde_json::json;
-
 use crate::readiness::{self, ReadinessSpec};
 use crate::runtime::{RunError, RunErrorKind, RunPhase};
 use crate::services::RunServices;
@@ -19,16 +17,13 @@ impl ScenarioRunner<'_> {
         if let Err(report) =
             readiness::probe(services.client(), &spec, prepared.readiness_deadline).await
         {
-            self.write_artifact(
+            return Err(self.readiness_failed(
                 &prepared.scenario.id,
-                "readiness-failure.json",
-                &json!({ "phase": "pre_harness", "missing": report.missing }),
-                RunPhase::Probe,
-            )?;
-            return Err(RunError::new(
                 RunPhase::Probe,
                 RunErrorKind::Setup,
+                "pre_harness",
                 "pre-harness readiness failed",
+                &report.missing,
             ));
         }
         Ok(())
@@ -46,32 +41,15 @@ impl ScenarioRunner<'_> {
 
         recorder
             .configure(&self.run_id, &scenario.recorder)
-            .map_err(|error| {
-                RunError::with_source(
-                    phase,
-                    RunErrorKind::Setup,
-                    "configure controlled recorder",
-                    error,
-                )
-            })?;
+            .map_err(|error| RunError::setup(phase, "configure controlled recorder", error))?;
 
-        recorder.reset(&self.run_id).map_err(|error| {
-            RunError::with_source(
-                phase,
-                RunErrorKind::Setup,
-                "reset controlled recorder",
-                error,
-            )
-        })?;
+        recorder
+            .reset(&self.run_id)
+            .map_err(|error| RunError::setup(phase, "reset controlled recorder", error))?;
         if !recorder
             .snapshot(None)
             .map_err(|error| {
-                RunError::with_source(
-                    phase,
-                    RunErrorKind::Setup,
-                    "snapshot controlled recorder after reset",
-                    error,
-                )
+                RunError::setup(phase, "snapshot controlled recorder after reset", error)
             })?
             .is_empty()
         {
@@ -91,41 +69,30 @@ impl ScenarioRunner<'_> {
         )
         .await
         {
-            self.write_artifact(
+            return Err(self.readiness_failed(
                 &scenario.id,
-                "readiness-failure.json",
-                &json!({ "phase": "controlled_functions", "missing": report.missing }),
-                phase,
-            )?;
-            return Err(RunError::new(
                 phase,
                 RunErrorKind::Setup,
+                "controlled_functions",
                 "controlled function contracts did not match live discovery",
+                &report.missing,
             ));
         }
 
-        stack.spawn_harness(self.bins).map_err(|error| {
-            RunError::with_source(
-                phase,
-                RunErrorKind::Setup,
-                "spawn harness under test",
-                error,
-            )
-        })?;
+        stack
+            .spawn_harness(self.bins)
+            .map_err(|error| RunError::setup(phase, "spawn harness under test", error))?;
 
         let harness_deadline = prepared.readiness_deadline;
         let spec = ReadinessSpec::harness_surface(expected_harness_config_entry(&stack.paths));
         if let Err(report) = readiness::probe(services.client(), &spec, harness_deadline).await {
-            self.write_artifact(
+            return Err(self.readiness_failed(
                 &scenario.id,
-                "readiness-failure.json",
-                &json!({ "phase": "harness", "missing": report.missing }),
-                phase,
-            )?;
-            return Err(RunError::new(
                 phase,
                 RunErrorKind::Setup,
+                "harness",
                 "harness readiness failed",
+                &report.missing,
             ));
         }
 
@@ -135,9 +102,7 @@ impl ScenarioRunner<'_> {
                 &self.session_id,
             )
             .await
-            .map_err(|error| {
-                RunError::with_source(phase, RunErrorKind::Setup, "bind lifecycle recorder", error)
-            })?;
+            .map_err(|error| RunError::setup(phase, "bind lifecycle recorder", error))?;
         for binding in &scenario.bindings {
             recorder
                 .bind(
@@ -147,9 +112,8 @@ impl ScenarioRunner<'_> {
                 )
                 .await
                 .map_err(|error| {
-                    RunError::with_source(
+                    RunError::setup(
                         phase,
-                        RunErrorKind::Setup,
                         format!(
                             "bind trigger {} to {}",
                             binding.trigger_type, binding.function_id
@@ -168,35 +132,23 @@ impl ScenarioRunner<'_> {
         )
         .await
         {
-            self.write_artifact(
+            return Err(self.readiness_failed(
                 &scenario.id,
-                "readiness-failure.json",
-                &json!({ "phase": "trigger_bindings", "missing": report.missing }),
-                phase,
-            )?;
-            return Err(RunError::new(
                 phase,
                 RunErrorKind::Setup,
+                "trigger_bindings",
                 "trigger bindings did not match live discovery",
+                &report.missing,
             ));
         }
 
-        self.sink
-            .as_mut()
-            .expect("artifact sink initialized after allocation")
+        self.sink_mut(phase)?
             .write_scenario_text(
                 &scenario.id,
                 "expected-system-prompt.txt",
                 &prepared.expected_prompt,
             )
-            .map_err(|error| {
-                RunError::with_source(
-                    phase,
-                    RunErrorKind::Runner,
-                    "write expected system prompt",
-                    error,
-                )
-            })?;
+            .map_err(|error| RunError::runner(phase, "write expected system prompt", error))?;
 
         Ok(())
     }

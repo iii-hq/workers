@@ -12,7 +12,6 @@ use crate::deadline::Deadline;
 use crate::expand::{expand_compiled_fixture, ExpandedFixtureV1};
 use crate::fixtures::ScenarioFixture;
 use crate::grader::{self, Evidence};
-use crate::process::TeardownReport;
 use crate::runtime::{RunError, RunErrorKind, RunPhase};
 use crate::scenarios::ScenarioDriver;
 use crate::services::RunServices;
@@ -23,7 +22,7 @@ use crate::types::scenario::{
 use crate::types::script::SchemaVersion1;
 
 use super::report::now_rfc3339;
-use super::runner::{combine_teardown, result_digest, ScenarioRunner};
+use super::runner::{result_digest, ScenarioRunner};
 use super::state::{ActiveTurn, PreparedRun};
 
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -80,26 +79,6 @@ pub struct ServeOutcome {
     pub run_id: String,
     pub run_root: PathBuf,
     pub duration_ms: u64,
-}
-
-#[derive(Debug, Serialize)]
-struct SupportServicesTeardown {
-    deadline_exceeded: bool,
-    error: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct ServeTeardownReport {
-    support_services: SupportServicesTeardown,
-    processes: TeardownReport,
-}
-
-impl ServeTeardownReport {
-    fn complete(&self) -> bool {
-        !self.support_services.deadline_exceeded
-            && self.support_services.error.is_none()
-            && self.processes.complete()
-    }
 }
 
 pub async fn serve_scenario(
@@ -188,13 +167,8 @@ async fn execute_serve(
     let paths = match RunPaths::allocate(artifacts_dir, &runner.run_id) {
         Ok(paths) => paths,
         Err(error) => {
-            return RunError::with_source(
-                RunPhase::Allocate,
-                RunErrorKind::Runner,
-                "allocate console run paths",
-                error,
-            )
-            .classification();
+            return RunError::runner(RunPhase::Allocate, "allocate console run paths", error)
+                .classification();
         }
     };
     runner.sink = Some(ArtifactSink::new(paths.root.clone()));
@@ -210,12 +184,7 @@ async fn execute_serve(
     ) {
         Ok(expanded) => expanded,
         Err(error) => {
-            let error = RunError::with_source(
-                RunPhase::Allocate,
-                RunErrorKind::Runner,
-                "expand console fixture",
-                error,
-            );
+            let error = RunError::runner(RunPhase::Allocate, "expand console fixture", error);
             return runner.finish(Err(error), None);
         }
     };
@@ -231,9 +200,8 @@ async fn execute_serve(
     let teardown_budget = Duration::from_millis(scenario.deadlines.teardown_ms);
     let prepared = PreparedRun::new(scenario, expected_prompt);
     if let Err(error) = paths.scenario_dir(&prepared.scenario.id) {
-        let error = RunError::with_source(
+        let error = RunError::runner(
             RunPhase::Allocate,
-            RunErrorKind::Runner,
             "allocate console scenario artifact directory",
             error,
         );
@@ -243,28 +211,14 @@ async fn execute_serve(
     let mut stack = match Stack::boot(runner.bins, paths).await {
         Ok(stack) => stack,
         Err(failure) => {
-            let error = RunError::with_source(
-                RunPhase::Boot,
-                RunErrorKind::Setup,
-                "boot isolated console stack",
-                failure.error,
-            );
-            let complete = failure.teardown.complete();
-            let teardown = ServeTeardownReport {
-                support_services: SupportServicesTeardown {
-                    deadline_exceeded: false,
-                    error: None,
-                },
-                processes: failure.teardown,
-            };
-            let artifact =
-                runner.write_run_artifact("teardown.json", &teardown, RunPhase::Teardown);
-            return combine_teardown(runner.finish(Err(error), None), complete, artifact);
+            let error =
+                RunError::setup(RunPhase::Boot, "boot isolated console stack", failure.error);
+            return runner.fail_before_services(error, failure.teardown, None);
         }
     };
     stack.set_teardown_budget(teardown_budget);
 
-    let mut services = match RunServices::start(
+    let services = match RunServices::start(
         &stack.ws_url,
         script,
         stack.paths.root.join("recorder.log.jsonl"),
@@ -273,57 +227,17 @@ async fn execute_serve(
     {
         Ok(services) => services,
         Err(error) => {
-            let error = RunError::with_source(
-                RunPhase::Boot,
-                RunErrorKind::Setup,
-                "start console support services",
-                error,
-            );
+            let error = RunError::setup(RunPhase::Boot, "start console support services", error);
             let early_exit = stack.early_exit();
             let processes = stack.teardown().await;
-            let complete = processes.complete();
-            let teardown = ServeTeardownReport {
-                support_services: SupportServicesTeardown {
-                    deadline_exceeded: false,
-                    error: None,
-                },
-                processes,
-            };
-            let artifact =
-                runner.write_run_artifact("teardown.json", &teardown, RunPhase::Teardown);
-            return combine_teardown(runner.finish(Err(error), early_exit), complete, artifact);
+            return runner.fail_before_services(error, processes, early_exit);
         }
     };
 
     let outcome = run_serve_phases(runner, &mut stack, &services, &prepared, ready_file).await;
-    let mut early_exit = stack.early_exit();
-    let teardown_deadline = Deadline::after(teardown_budget);
-    let support_services = match teardown_deadline
-        .timeout("console support service shutdown", services.shutdown())
+    runner
+        .finalize(stack, services, teardown_budget, outcome)
         .await
-    {
-        Ok(()) => SupportServicesTeardown {
-            deadline_exceeded: false,
-            error: None,
-        },
-        Err(error) => SupportServicesTeardown {
-            deadline_exceeded: true,
-            error: Some(error.to_string()),
-        },
-    };
-    if early_exit.is_none() {
-        early_exit = stack.early_exit();
-    }
-    stack.set_teardown_budget(teardown_deadline.remaining());
-    let processes = stack.teardown().await;
-    let teardown = ServeTeardownReport {
-        support_services,
-        processes,
-    };
-    let complete = teardown.complete();
-    let artifact = runner.write_run_artifact("teardown.json", &teardown, RunPhase::Teardown);
-    let classification = runner.finish(outcome, early_exit);
-    combine_teardown(classification, complete, artifact)
 }
 
 async fn run_serve_phases(
@@ -361,32 +275,18 @@ async fn run_serve_phases(
         )
         .await
         .map_err(|error| {
-            RunError::with_source(
+            RunError::setup(
                 RunPhase::Arm,
-                RunErrorKind::Setup,
                 "ensure console test session",
                 anyhow::anyhow!(error),
             )
         })?;
 
-    let http_port = free_loopback_port().map_err(|error| {
-        RunError::with_source(
-            RunPhase::Arm,
-            RunErrorKind::Setup,
-            "allocate console HTTP port",
-            error,
-        )
-    })?;
+    let http_port = free_loopback_port()
+        .map_err(|error| RunError::setup(RunPhase::Arm, "allocate console HTTP port", error))?;
     stack
         .spawn_console(runner.bins, http_port)
-        .map_err(|error| {
-            RunError::with_source(
-                RunPhase::Arm,
-                RunErrorKind::Setup,
-                "spawn production console",
-                error,
-            )
-        })?;
+        .map_err(|error| RunError::setup(RunPhase::Arm, "spawn production console", error))?;
     wait_for_console(
         services,
         &stack.ws_url,
@@ -398,12 +298,7 @@ async fn run_serve_phases(
     let ready = build_ready_manifest(runner, prepared, stack, http_port, &session_title);
     runner.write_run_artifact("serve-ready.json", &ready, RunPhase::Report)?;
     write_atomic_json(ready_file, &ready).map_err(|error| {
-        RunError::with_source(
-            RunPhase::Report,
-            RunErrorKind::Runner,
-            "publish console ready manifest",
-            error,
-        )
+        RunError::runner(RunPhase::Report, "publish console ready manifest", error)
     })?;
 
     let scenario_deadline = Deadline::after(Duration::from_millis(
@@ -447,9 +342,8 @@ async fn run_serve_phases(
         )
         .await
         .map_err(|error| {
-            RunError::with_source(
+            RunError::runner(
                 RunPhase::Collect,
-                RunErrorKind::Runner,
                 "confirm terminal harness status",
                 anyhow::anyhow!(error),
             )
@@ -576,9 +470,8 @@ async fn wait_for_console(
         })
         .await
         .map_err(|error| {
-            RunError::with_source(
+            RunError::setup(
                 RunPhase::Probe,
-                RunErrorKind::Setup,
                 "production console did not become ready",
                 error,
             )
@@ -612,12 +505,7 @@ async fn wait_for_shutdown(stack: &mut Stack, deadline: Deadline) -> Result<(), 
     loop {
         tokio::select! {
             result = &mut shutdown => {
-                result.map_err(|error| RunError::with_source(
-                    RunPhase::Await,
-                    RunErrorKind::Runner,
-                    "wait for console test shutdown",
-                    error,
-                ))?;
+                result.map_err(|error| RunError::runner(RunPhase::Await, "wait for console test shutdown", error))?;
                 return Ok(());
             }
             _ = tokio::time::sleep_until(deadline.expires_at()) => {

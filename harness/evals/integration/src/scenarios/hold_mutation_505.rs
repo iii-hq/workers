@@ -29,7 +29,11 @@ pub(super) fn scenario() -> AuthoredScenario {
     .binding(Binding::hook_pre_trigger("hook-gate", ["record"], 10))
     .release(Release::execute())
     .generation(Reply::function_call("record", json!({ "value": "expected" })).usage(8, 4))
-    .generation(Reply::text("approved and recorded").usage(20, 3).recovery_boundary())
+    .generation(
+        Reply::text("approved and recorded")
+            .usage(20, 3)
+            .recovery_boundary(),
+    )
     .expect(
         Expect::new()
             .calls_closed()

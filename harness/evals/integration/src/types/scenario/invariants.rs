@@ -97,26 +97,6 @@ pub struct TargetCallsInvariantV1 {
 #[serde(deny_unknown_fields)]
 struct EmptyInvariantParameters {}
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DecodedInvariantV1<'a> {
-    SendFlags(&'a Map<String, Value>),
-    TranscriptMessageCounts(&'a Map<String, Value>),
-    TranscriptAssistantText(&'a Map<String, Value>),
-    TranscriptFunctionResult(&'a Map<String, Value>),
-    TranscriptCallsClosed(&'a Map<String, Value>),
-    TranscriptNoDuplicates(&'a Map<String, Value>),
-    StatusTerminal(&'a Map<String, Value>),
-    LifecycleCompletedOnce(&'a Map<String, Value>),
-    RouterGenerationsConsumed(&'a Map<String, Value>),
-    TargetCalls(&'a Map<String, Value>),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum InvariantDecodeError {
-    #[error("unknown invariant id {0:?}")]
-    UnknownId(String),
-}
-
 /// Stable wire form persisted in compiled scenarios.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -186,38 +166,6 @@ impl InvariantSpecV1 {
 
     pub fn target_calls(parameters: TargetCallsInvariantV1) -> Self {
         Self::typed(InvariantKind::TargetCalls, parameters)
-    }
-
-    pub fn decode(&self) -> Result<DecodedInvariantV1<'_>, InvariantDecodeError> {
-        let kind = InvariantKind::from_id(&self.id)
-            .ok_or_else(|| InvariantDecodeError::UnknownId(self.id.clone()))?;
-        let decoded = match kind {
-            InvariantKind::SendFlags => DecodedInvariantV1::SendFlags(&self.parameters),
-            InvariantKind::TranscriptMessageCounts => {
-                DecodedInvariantV1::TranscriptMessageCounts(&self.parameters)
-            }
-            InvariantKind::TranscriptAssistantText => {
-                DecodedInvariantV1::TranscriptAssistantText(&self.parameters)
-            }
-            InvariantKind::TranscriptFunctionResult => {
-                DecodedInvariantV1::TranscriptFunctionResult(&self.parameters)
-            }
-            InvariantKind::TranscriptCallsClosed => {
-                DecodedInvariantV1::TranscriptCallsClosed(&self.parameters)
-            }
-            InvariantKind::TranscriptNoDuplicates => {
-                DecodedInvariantV1::TranscriptNoDuplicates(&self.parameters)
-            }
-            InvariantKind::StatusTerminal => DecodedInvariantV1::StatusTerminal(&self.parameters),
-            InvariantKind::LifecycleCompletedOnce => {
-                DecodedInvariantV1::LifecycleCompletedOnce(&self.parameters)
-            }
-            InvariantKind::RouterGenerationsConsumed => {
-                DecodedInvariantV1::RouterGenerationsConsumed(&self.parameters)
-            }
-            InvariantKind::TargetCalls => DecodedInvariantV1::TargetCalls(&self.parameters),
-        };
-        Ok(decoded)
     }
 
     fn typed(kind: InvariantKind, parameters: impl Serialize) -> Self {

@@ -123,23 +123,6 @@ pub struct GenerationMatchOverridesV1 {
     pub metadata: Option<JsonMatcherV1>,
 }
 
-impl GenerationMatchOverridesV1 {
-    pub fn is_empty(&self) -> bool {
-        self.writer_ref.is_none()
-            && self.request_id.is_none()
-            && self.model.is_none()
-            && self.provider.is_none()
-            && self.system_prompt.is_none()
-            && self.messages.is_none()
-            && self.tools.is_none()
-            && self.response_format.is_none()
-            && self.thinking_level.is_none()
-            && self.max_output_tokens.is_none()
-            && self.provider_options.is_none()
-            && self.metadata.is_none()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct TriggerBindingSpecV1 {
     pub trigger: TriggerKindV1,
@@ -218,12 +201,6 @@ impl Default for DeadlinesV1 {
             scenario_ms: 60_000,
             teardown_ms: 15_000,
         }
-    }
-}
-
-impl DeadlinesV1 {
-    pub fn is_default(&self) -> bool {
-        *self == Self::default()
     }
 }
 
