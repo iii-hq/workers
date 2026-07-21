@@ -49,11 +49,6 @@ pub fn validate_scenario_id(id: &str) -> anyhow::Result<()> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScenarioSendV1 {
     pub message: String,
-    /// Allowed function aliases. Omitted means every function whose
-    /// `expose` flag is true; an empty list disables function dispatch.
-    pub allow: Option<Vec<String>>,
-    /// Omitted values are derived deterministically from the scenario id.
-    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -103,18 +98,10 @@ pub enum RouterReplyV1 {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GenerationMatchOverridesV1 {
-    pub writer_ref: Option<JsonMatcherV1>,
     pub request_id: Option<JsonMatcherV1>,
-    pub model: Option<JsonMatcherV1>,
-    pub provider: Option<JsonMatcherV1>,
     pub system_prompt: Option<JsonMatcherV1>,
     pub messages: Option<JsonMatcherV1>,
     pub tools: Option<JsonMatcherV1>,
-    pub response_format: Option<JsonMatcherV1>,
-    pub thinking_level: Option<JsonMatcherV1>,
-    pub max_output_tokens: Option<JsonMatcherV1>,
-    pub provider_options: Option<JsonMatcherV1>,
-    pub metadata: Option<JsonMatcherV1>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -143,9 +130,6 @@ impl TriggerKindV1 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FaultV1 {
     pub kind: FaultKind,
-    /// Controlled function alias to interrupt. Omitted means the first
-    /// authored function call.
-    pub function: Option<String>,
     pub after_target_calls: u64,
     pub restart_delay_ms: u64,
 }
@@ -171,7 +155,6 @@ pub struct ReleaseV1 {
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseActionV1 {
     Execute,
-    Deliver,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

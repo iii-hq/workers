@@ -2,41 +2,31 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Typed oracle vocabulary. Common send/completion/lifecycle/router checks
-/// have defaults, leaving each authored scenario to state only
-/// scenario-specific facts.
+/// Typed oracle vocabulary. Every graded invariant is stated explicitly in
+/// the scenario's `.expect([...])` list; nothing is asserted by default. The
+/// compiler enforces the floor: `turn_completes()` and
+/// `script_fully_consumed()` are mandatory in every scenario.
 ///
 /// The expectation root is authored-only and never serialized. The leaf
 /// structs that parameterize compiled invariants
 /// ([`MessageCountsExpectationV1`], [`SendFlagsExpectationV1`],
 /// [`TerminalExpectationV1`], [`LifecycleExpectationV1`]) keep wire derives.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExpectationsV1 {
+    /// Terminal status completed, lifecycle delivered exactly once, and the
+    /// send accepted with clean flags.
+    pub turn_completes: bool,
+    /// Every scripted generation consumed, none extra.
+    pub script_fully_consumed: bool,
+    pub no_duplicates: bool,
     pub message_counts: Option<MessageCountsExpectationV1>,
     pub assistant_text: Option<String>,
     pub function_results: Vec<FunctionResultExpectationV1>,
     pub calls_closed: bool,
     pub calls: Vec<TargetCallsExpectationV1>,
     pub send_flags: SendFlagsExpectationV1,
-    pub no_duplicates: bool,
     pub terminal: TerminalExpectationV1,
     pub lifecycle: LifecycleExpectationV1,
-}
-
-impl Default for ExpectationsV1 {
-    fn default() -> Self {
-        Self {
-            message_counts: None,
-            assistant_text: None,
-            function_results: Vec::new(),
-            calls_closed: false,
-            calls: Vec::new(),
-            send_flags: SendFlagsExpectationV1::default(),
-            no_duplicates: true,
-            terminal: TerminalExpectationV1::default(),
-            lifecycle: LifecycleExpectationV1::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

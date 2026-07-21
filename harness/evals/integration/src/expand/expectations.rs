@@ -15,6 +15,12 @@ pub(super) fn compile_expectations(
     generation_count: usize,
 ) -> anyhow::Result<Vec<InvariantSpecV1>> {
     let expect = &authored.expect;
+    if !expect.turn_completes || !expect.script_fully_consumed {
+        anyhow::bail!(
+            "every scenario must assert turn_completes() and script_fully_consumed(); \
+             without them a run can pass while nothing happened"
+        );
+    }
     let mut invariants = vec![InvariantSpecV1::send_flags(expect.send_flags)];
 
     if let Some(counts) = expect.message_counts {

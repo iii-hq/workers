@@ -14,18 +14,23 @@ pub(super) fn scenario() -> AuthoredScenario {
     .quarantine()
     .trigger(Harness::send("Call the recorder once."))
     .function("record", Function::recorder())
-    .generation(Reply::function_call("record", json!({ "value": "expected" })).usage(8, 4))
-    // Recovery can legitimately reconstruct the second request differently;
-    // this reproduction grades the durable outcome instead.
-    .generation(Reply::text("recovered").usage(20, 2).recovery_boundary())
+    .model((
+        Reply::function_call("record", json!({ "value": "expected" })).usage(8, 4),
+        // Recovery can legitimately reconstruct the second request
+        // differently; this reproduction grades the durable outcome instead.
+        Reply::text("recovered").usage(20, 2).recovery_boundary(),
+    ))
     .fault(Fault::engine_sigkill())
     .scenario_timeout_ms(120_000)
-    .expect(
-        Expect::new()
-            .message_counts(1, 2, 1)
-            .assistant_text("recovered")
-            .calls_closed()
-            .function_result(FunctionResult::closing("call-1"))
-            .call(TargetCall::counted("record", 1).payload(json!({ "value": "expected" }))),
-    )
+    // Recovery is proven by the closed call, the message shape, and both
+    // generations being consumed; text durability is `streamed-text`'s pin.
+    .expect([
+        turn_completes(),
+        script_fully_consumed(),
+        no_duplicate_messages(),
+        message_counts(1, 2, 1),
+        all_calls_closed(),
+        function_result_closes("call-1"),
+        function_called_once("record", json!({ "value": "expected" })),
+    ])
 }

@@ -143,18 +143,10 @@ fn apply_match_overrides(
             }
         };
     }
-    replace!(writer_ref);
     replace!(request_id);
-    replace!(model);
-    replace!(provider);
     replace!(system_prompt);
     replace!(messages);
     replace!(tools);
-    replace!(response_format);
-    replace!(thinking_level);
-    replace!(max_output_tokens);
-    replace!(provider_options);
-    replace!(metadata);
 }
 
 fn compile_reply(

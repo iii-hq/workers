@@ -75,15 +75,24 @@ pub(super) fn scenario() -> AuthoredScenario {
                 }),
             ),
         )
-        .generation(Reply::function_call("record", json!({ "value": "expected" })))
-        .generation(Reply::text("recorded once"))
-        .expect(
-            Expect::new()
-                .assistant_text("recorded once")
-                .call(TargetCall::counted("record", 1).payload(json!({ "value": "expected" }))),
-        )
+        .model((
+            Reply::function_call("record", json!({ "value": "expected" })),
+            Reply::text("recorded once"),
+        ))
+        .expect([
+            turn_completes(),
+            script_fully_consumed(),
+            function_called_once("record", json!({ "value": "expected" })),
+            no_duplicate_messages(),
+        ])
 }
 ```
+
+Every graded invariant appears literally in the `.expect([...])` list —
+nothing is asserted by default. Two assertions are the mandatory floor and
+the compiler rejects scenarios without them: `turn_completes()` (terminal
+status, lifecycle exactly-once, send accepted) and `script_fully_consumed()`
+(every scripted generation consumed, none extra).
 
 Add the module and its slug to the list in `src/scenarios/mod.rs`, then:
 
@@ -102,14 +111,13 @@ system prompt.
 
 `Function::recorder()` is the canonical string-in/`recorded`-out fixture;
 `Function::new(...)` builds any other controlled function and `.hidden()`
-marks a hook-only one. Function aliases become `<run_id>::<alias>`.
-`Harness::send(...).allow([...])` can narrow the exposed aliases or be an
-empty list to disable dispatch. `Release::execute()` and `Release::deliver()`
-name the held-call action. Typed text and function-call replies cover normal
-cases; `.recovery_boundary()` grades a reply against the durable outcome only,
-where a fault restart or hook release may rebuild the request. `.match_overrides(...)`
-and `RouterReplyV1::Raw` remain the deeper escape hatches for unusual wire
-contracts.
+marks a hook-only one. Function aliases become `<run_id>::<alias>`; every
+exposed function is dispatchable. `Release::execute()` releases a held call
+for execution. Typed text and function-call replies cover normal cases;
+`.recovery_boundary()` grades a reply against the durable outcome only,
+where a fault restart or hook release may rebuild the request, and
+`.match_overrides(...)` is the remaining escape hatch for intentionally
+different wire shapes (the Console's agent-trigger policy).
 
 Timeout defaults are 60 seconds for readiness, 60 seconds for the scenario,
 and 15 seconds for teardown. Positive values can be overridden with the

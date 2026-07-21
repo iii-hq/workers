@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use serde_json::json;
 
 use crate::types::scenario::{
-    AuthoredScenarioV1, RouterReplyV1, ScenarioGenerationV1, ScenarioRouterV1, ScenarioSendV1,
+    AuthoredScenarioV1, ExpectationsV1, RouterReplyV1, ScenarioGenerationV1, ScenarioRouterV1,
+    ScenarioSendV1,
 };
 use crate::types::script::JsonMatcherV1;
 
@@ -18,8 +19,6 @@ fn minimal(reply: RouterReplyV1) -> AuthoredScenarioV1 {
         quarantine: false,
         send: ScenarioSendV1 {
             message: "hello".to_string(),
-            allow: None,
-            idempotency_key: None,
         },
         functions: BTreeMap::new(),
         router: ScenarioRouterV1 {
@@ -33,7 +32,11 @@ fn minimal(reply: RouterReplyV1) -> AuthoredScenarioV1 {
         release: None,
         fault: None,
         timeouts: Default::default(),
-        expect: Default::default(),
+        expect: ExpectationsV1 {
+            turn_completes: true,
+            script_fully_consumed: true,
+            ..Default::default()
+        },
     }
 }
 
@@ -70,13 +73,12 @@ fn mismatched_chunks_and_unknown_aliases_fail_before_runtime() {
             .contains("chunks concatenate")
     );
 
-    let mut authored = minimal(RouterReplyV1::FunctionCall {
+    let authored = minimal(RouterReplyV1::FunctionCall {
         id: None,
         function: "missing".to_string(),
         arguments: json!({}),
         usage: None,
     });
-    authored.send.allow = Some(vec![]);
     assert!(
         format!("{:#}", compile_scenario(&authored, "base").unwrap_err()).contains("unknown alias")
     );
@@ -150,11 +152,6 @@ fn tools_are_canonicalized_and_function_contracts_validate() {
         .functions
         .insert("zeta".to_string(), record.clone());
     authored.functions.insert("alpha".to_string(), record);
-    authored.send.allow = Some(vec![
-        "zeta".to_string(),
-        "record".to_string(),
-        "alpha".to_string(),
-    ]);
     let compiled = compile_scenario(&authored, "base").unwrap();
     let allowed = &compiled.scenario.send.options.functions.allow;
     assert_eq!(

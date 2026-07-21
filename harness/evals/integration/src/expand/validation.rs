@@ -150,12 +150,7 @@ pub(super) fn validate_reply(
                     "generation {ordinal}: function call references unknown alias {function:?}"
                 );
             }
-            let allowed = authored
-                .send
-                .allow
-                .as_ref()
-                .map(|aliases| aliases.contains(function))
-                .unwrap_or(authored.functions[function].expose);
+            let allowed = authored.functions[function].expose;
             if !allowed {
                 anyhow::bail!(
                     "generation {ordinal}: function call alias {function:?} is not exposed by send"

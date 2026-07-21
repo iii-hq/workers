@@ -12,22 +12,23 @@ pub(super) fn scenario() -> AuthoredScenario {
         "A message sent from the Console streams to durable completion.",
     )
     .trigger(Harness::send("Return the console fixture phrase."))
-    .generation(
-        Reply::text("console fixture complete")
-            .chunks(["console fixture ", "complete"])
-            .usage(9, 3)
-            .match_overrides(GenerationMatchOverridesV1 {
-                // The Console supplies agent mode and its production function
-                // policy, so its composed prompt intentionally differs from
-                // the direct integration request's native-policy golden.
-                system_prompt: Some(regex("agent_trigger")),
-                tools: Some(subset(json!([{ "name": "agent_trigger" }]))),
-                ..Default::default()
-            }),
-    )
-    .expect(
-        Expect::new()
-            .message_counts(1, 1, 0)
-            .assistant_text("console fixture complete"),
-    )
+    .model((Reply::text("console fixture complete")
+        .chunks(["console fixture ", "complete"])
+        .usage(9, 3)
+        .match_overrides(GenerationMatchOverridesV1 {
+            // The Console supplies agent mode and its production function
+            // policy, so its composed prompt intentionally differs from
+            // the direct integration request's native-policy golden.
+            system_prompt: Some(regex("agent_trigger")),
+            tools: Some(subset(json!([{ "name": "agent_trigger" }]))),
+            ..Default::default()
+        }),))
+    // Content assertions for UI scenarios live in Playwright (`ui-send`
+    // checks the rendered text and both message counts in the DOM); the
+    // runner asserts only what the DOM cannot show.
+    .expect([
+        turn_completes(),
+        script_fully_consumed(),
+        no_duplicate_messages(),
+    ])
 }

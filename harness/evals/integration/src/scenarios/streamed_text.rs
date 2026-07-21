@@ -8,14 +8,15 @@ pub(super) fn scenario() -> AuthoredScenario {
         "Streamed text reaches durable completion through the real queue and turn loop.",
     )
     .trigger(Harness::send("Return the fixture phrase."))
-    .generation(
-        Reply::text("fixture complete")
-            .chunks(["fixture ", "complete"])
-            .usage(8, 2),
-    )
-    .expect(
-        Expect::new()
-            .message_counts(1, 1, 0)
-            .assistant_text("fixture complete"),
-    )
+    .model((Reply::text("fixture complete")
+        .chunks(["fixture ", "complete"])
+        .usage(8, 2),))
+    // The one direct pin for assistant-text durability and transcript shape.
+    .expect([
+        turn_completes(),
+        script_fully_consumed(),
+        no_duplicate_messages(),
+        message_counts(1, 1, 0),
+        assistant_said("fixture complete"),
+    ])
 }

@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 use crate::types::frames::Usage;
 use crate::types::scenario::{
-    AuthoredScenarioV1, ExpectationsV1, FaultKind, FaultV1, FunctionResultExpectationV1,
+    AuthoredScenarioV1, FaultKind, FaultV1, FunctionResultExpectationV1,
     GenerationMatchOverridesV1, ReleaseActionV1, ReleaseV1, RouterReplyV1, ScenarioFunctionV1,
     ScenarioGenerationV1, ScenarioRouterV1, ScenarioSendV1, TargetCallsExpectationV1,
     TriggerBindingSpecV1, TriggerKindV1,
@@ -69,8 +69,11 @@ impl AuthoredScenarioV1 {
         self
     }
 
-    pub fn generation(mut self, generation: impl Into<ScenarioGenerationV1>) -> Self {
-        self.router.generations.push(generation.into());
+    /// The scripted model conversation, one reply per generation. Accepts a
+    /// tuple so text and function-call replies can mix while keeping their
+    /// per-kind builders.
+    pub fn model(mut self, generations: impl IntoGenerations) -> Self {
+        self.router.generations = generations.into_generations();
         self
     }
 
@@ -108,8 +111,54 @@ impl AuthoredScenarioV1 {
         self
     }
 
-    pub fn expect(mut self, expect: ExpectationsV1) -> Self {
-        self.expect = expect;
+    /// The complete list of graded assertions. Nothing is graded unless it
+    /// appears here; the compiler rejects scenarios missing the floor
+    /// (`turn_completes()` and `script_fully_consumed()`).
+    pub fn expect<const N: usize>(mut self, assertions: [Assertion; N]) -> Self {
+        for assertion in assertions {
+            match assertion {
+                Assertion::TurnCompletes => self.expect.turn_completes = true,
+                Assertion::ScriptFullyConsumed => self.expect.script_fully_consumed = true,
+                Assertion::NoDuplicateMessages => self.expect.no_duplicates = true,
+                Assertion::AssistantSaid(text) => self.expect.assistant_text = Some(text),
+                Assertion::MessageCounts {
+                    user,
+                    assistant,
+                    function_result,
+                } => {
+                    self.expect.message_counts =
+                        Some(crate::types::scenario::MessageCountsExpectationV1 {
+                            user,
+                            assistant,
+                            function_result,
+                        });
+                }
+                Assertion::AllCallsClosed => self.expect.calls_closed = true,
+                Assertion::FunctionResultCloses(function_call_id) => {
+                    self.expect
+                        .function_results
+                        .push(FunctionResultExpectationV1 {
+                            function_call_id,
+                            function: None,
+                            content: None,
+                            is_error: None,
+                        });
+                }
+                Assertion::FunctionCalled {
+                    function,
+                    count,
+                    payload,
+                    payload_subset,
+                } => {
+                    self.expect.calls.push(TargetCallsExpectationV1 {
+                        function,
+                        count,
+                        payload,
+                        payload_subset,
+                    });
+                }
+            }
+        }
         self
     }
 }
@@ -123,23 +172,7 @@ impl Harness {
     pub fn send(message: &str) -> ScenarioSendV1 {
         ScenarioSendV1 {
             message: message.to_string(),
-            allow: None,
-            idempotency_key: None,
         }
-    }
-}
-
-impl ScenarioSendV1 {
-    /// Allowed function aliases. Omitting the call keeps every exposed
-    /// function; `allow([])` disables function dispatch.
-    pub fn allow<const N: usize>(mut self, aliases: [&str; N]) -> Self {
-        self.allow = Some(aliases.iter().map(|alias| alias.to_string()).collect());
-        self
-    }
-
-    pub fn idempotency_key(mut self, key: &str) -> Self {
-        self.idempotency_key = Some(key.to_string());
-        self
     }
 }
 
@@ -313,7 +346,6 @@ fn recovery_overrides() -> GenerationMatchOverridesV1 {
         system_prompt: Some(present()),
         messages: Some(present()),
         tools: Some(present()),
-        ..Default::default()
     }
 }
 
@@ -353,27 +385,9 @@ impl Fault {
     pub fn engine_sigkill() -> FaultV1 {
         FaultV1 {
             kind: FaultKind::EngineSigkill,
-            function: None,
             after_target_calls: 1,
             restart_delay_ms: 1_500,
         }
-    }
-}
-
-impl FaultV1 {
-    pub fn function(mut self, alias: &str) -> Self {
-        self.function = Some(alias.to_string());
-        self
-    }
-
-    pub fn after_target_calls(mut self, calls: u64) -> Self {
-        self.after_target_calls = calls;
-        self
-    }
-
-    pub fn restart_delay_ms(mut self, delay_ms: u64) -> Self {
-        self.restart_delay_ms = delay_ms;
-        self
     }
 }
 
@@ -386,109 +400,113 @@ impl Release {
     pub fn execute() -> ReleaseActionV1 {
         ReleaseActionV1::Execute
     }
+}
 
-    /// Release the held call by delivering its recorded result without
-    /// re-execution.
-    pub fn deliver() -> ReleaseActionV1 {
-        ReleaseActionV1::Deliver
+/// One explicit assertion in a scenario's `.expect([...])` list. Every
+/// invariant graded for a scenario appears literally in that list; there
+/// are no implicit defaults.
+pub enum Assertion {
+    TurnCompletes,
+    ScriptFullyConsumed,
+    NoDuplicateMessages,
+    AssistantSaid(String),
+    MessageCounts {
+        user: u64,
+        assistant: u64,
+        function_result: u64,
+    },
+    AllCallsClosed,
+    FunctionResultCloses(String),
+    FunctionCalled {
+        function: String,
+        count: u64,
+        payload: Option<Value>,
+        payload_subset: Option<Value>,
+    },
+}
+
+/// Terminal status `completed`, lifecycle delivered exactly once, and the
+/// send accepted with clean flags. Mandatory in every scenario.
+pub fn turn_completes() -> Assertion {
+    Assertion::TurnCompletes
+}
+
+/// Every scripted generation consumed, none extra. Mandatory in every
+/// scenario: it is what proves the conversation ran as scripted.
+pub fn script_fully_consumed() -> Assertion {
+    Assertion::ScriptFullyConsumed
+}
+
+pub fn no_duplicate_messages() -> Assertion {
+    Assertion::NoDuplicateMessages
+}
+
+/// The durable transcript contains exactly this assistant text.
+pub fn assistant_said(text: &str) -> Assertion {
+    Assertion::AssistantSaid(text.to_string())
+}
+
+pub fn message_counts(user: u64, assistant: u64, function_result: u64) -> Assertion {
+    Assertion::MessageCounts {
+        user,
+        assistant,
+        function_result,
     }
 }
 
-/// Authoring name for [`ExpectationsV1`].
-pub type Expect = ExpectationsV1;
+pub fn all_calls_closed() -> Assertion {
+    Assertion::AllCallsClosed
+}
 
-impl ExpectationsV1 {
-    pub fn new() -> Self {
-        Self::default()
-    }
+/// A durable function result closes the given call id.
+pub fn function_result_closes(function_call_id: &str) -> Assertion {
+    Assertion::FunctionResultCloses(function_call_id.to_string())
+}
 
-    pub fn message_counts(mut self, user: u64, assistant: u64, function_result: u64) -> Self {
-        self.message_counts = Some(crate::types::scenario::MessageCountsExpectationV1 {
-            user,
-            assistant,
-            function_result,
-        });
-        self
-    }
-
-    pub fn assistant_text(mut self, text: &str) -> Self {
-        self.assistant_text = Some(text.to_string());
-        self
-    }
-
-    pub fn function_result(mut self, result: FunctionResultExpectationV1) -> Self {
-        self.function_results.push(result);
-        self
-    }
-
-    pub fn calls_closed(mut self) -> Self {
-        self.calls_closed = true;
-        self
-    }
-
-    pub fn call(mut self, call: TargetCallsExpectationV1) -> Self {
-        self.calls.push(call);
-        self
+/// The controlled function ran exactly once, with exactly this payload.
+pub fn function_called_once(function: &str, payload: Value) -> Assertion {
+    Assertion::FunctionCalled {
+        function: function.to_string(),
+        count: 1,
+        payload: Some(payload),
+        payload_subset: None,
     }
 }
 
-/// Entry point for [`FunctionResultExpectationV1`].
-pub struct FunctionResult;
+/// The controlled function ran `count` times with payloads containing this
+/// subset (hook payloads carry engine-populated fields beyond it).
+pub fn function_called_matching(function: &str, count: u64, payload_subset: Value) -> Assertion {
+    Assertion::FunctionCalled {
+        function: function.to_string(),
+        count,
+        payload: None,
+        payload_subset: Some(payload_subset),
+    }
+}
 
-impl FunctionResult {
-    /// A durable function result closing the given call id, with no further
-    /// constraints until chained.
-    pub fn closing(function_call_id: &str) -> FunctionResultExpectationV1 {
-        FunctionResultExpectationV1 {
-            function_call_id: function_call_id.to_string(),
-            function: None,
-            content: None,
-            is_error: None,
+/// Tuple-to-generations conversion for [`AuthoredScenarioV1::model`], so a
+/// scripted conversation can mix reply kinds without erasing their types.
+pub trait IntoGenerations {
+    fn into_generations(self) -> Vec<ScenarioGenerationV1>;
+}
+
+macro_rules! impl_into_generations {
+    ($(($($name:ident),+);)+) => {$(
+        #[allow(non_snake_case)]
+        impl<$($name: Into<ScenarioGenerationV1>),+> IntoGenerations for ($($name,)+) {
+            fn into_generations(self) -> Vec<ScenarioGenerationV1> {
+                let ($($name,)+) = self;
+                vec![$($name.into()),+]
+            }
         }
-    }
+    )+};
 }
 
-impl FunctionResultExpectationV1 {
-    pub fn function(mut self, alias: &str) -> Self {
-        self.function = Some(alias.to_string());
-        self
-    }
-
-    pub fn content(mut self, content: Vec<Value>) -> Self {
-        self.content = Some(content);
-        self
-    }
-
-    pub fn is_error(mut self, is_error: bool) -> Self {
-        self.is_error = Some(is_error);
-        self
-    }
-}
-
-/// Entry point for [`TargetCallsExpectationV1`].
-pub struct TargetCall;
-
-impl TargetCall {
-    pub fn counted(function: &str, count: u64) -> TargetCallsExpectationV1 {
-        TargetCallsExpectationV1 {
-            function: function.to_string(),
-            count,
-            payload: None,
-            payload_subset: None,
-        }
-    }
-}
-
-impl TargetCallsExpectationV1 {
-    pub fn payload(mut self, payload: Value) -> Self {
-        self.payload = Some(payload);
-        self
-    }
-
-    pub fn payload_subset(mut self, payload_subset: Value) -> Self {
-        self.payload_subset = Some(payload_subset);
-        self
-    }
+impl_into_generations! {
+    (G1);
+    (G1, G2);
+    (G1, G2, G3);
+    (G1, G2, G3, G4);
 }
 
 pub fn regex(pattern: &str) -> JsonMatcherV1 {

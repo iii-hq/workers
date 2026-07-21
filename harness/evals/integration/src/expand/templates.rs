@@ -77,7 +77,6 @@ pub fn scenario_template(
     if kind == ScenarioTemplateKind::Crash {
         fault = Some(crate::types::scenario::FaultV1 {
             kind: crate::types::scenario::FaultKind::EngineSigkill,
-            function: Some("record".to_string()),
             after_target_calls: 1,
             restart_delay_ms: 1_500,
         });
@@ -113,7 +112,6 @@ pub fn scenario_template(
                 system_prompt: Some(JsonMatcherV1::Present),
                 messages: Some(JsonMatcherV1::Present),
                 tools: Some(JsonMatcherV1::Present),
-                ..Default::default()
             }
         } else {
             Default::default()
@@ -136,6 +134,9 @@ pub fn scenario_template(
                 function_result: 0,
             }),
             assistant_text: Some("fixture complete".to_string()),
+            turn_completes: true,
+            script_fully_consumed: true,
+            no_duplicates: true,
             ..Default::default()
         }
     } else {
@@ -170,6 +171,9 @@ pub fn scenario_template(
             function_results: vec![function_result],
             calls_closed: true,
             calls,
+            turn_completes: true,
+            script_fully_consumed: true,
+            no_duplicates: true,
             ..Default::default()
         }
     };
@@ -184,8 +188,6 @@ pub fn scenario_template(
             } else {
                 "Call the recorder once.".to_string()
             },
-            allow: None,
-            idempotency_key: None,
         },
         functions,
         router: crate::types::scenario::ScenarioRouterV1 {

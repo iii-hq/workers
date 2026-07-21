@@ -38,31 +38,41 @@ pub(super) fn scenario() -> AuthoredScenario {
     .binding(Binding::hook_pre_trigger("hook-mutate", ["record"], 10))
     .binding(Binding::hook_pre_trigger("hook-hold", ["record"], 20))
     .release(Release::execute())
-    .generation(Reply::function_call("record", json!({ "value": "expected" })).usage(8, 4))
-    .generation(
+    .model((
+        Reply::function_call("record", json!({ "value": "expected" })).usage(8, 4),
         Reply::text("released and recorded")
             .usage(20, 3)
             .recovery_boundary(),
-    )
-    .expect(
-        Expect::new()
-            .calls_closed()
-            .call(TargetCall::counted("record", 1).payload(json!({ "value": "expected+scope" })))
-            .call(TargetCall::counted("hook-mutate", 1).payload_subset(json!({
+    ))
+    .expect([
+        turn_completes(),
+        script_fully_consumed(),
+        no_duplicate_messages(),
+        all_calls_closed(),
+        function_called_once("record", json!({ "value": "expected+scope" })),
+        function_called_matching(
+            "hook-mutate",
+            1,
+            json!({
                 "point": "pre_trigger",
                 "call": {
                     "id": "call-1",
                     "function_id": "{{run_id}}::record",
                     "arguments": { "value": "expected" }
                 }
-            })))
-            .call(TargetCall::counted("hook-hold", 1).payload_subset(json!({
+            }),
+        ),
+        function_called_matching(
+            "hook-hold",
+            1,
+            json!({
                 "point": "pre_trigger",
                 "call": {
                     "id": "call-1",
                     "function_id": "{{run_id}}::record",
                     "arguments": { "value": "expected+scope" }
                 }
-            }))),
-    )
+            }),
+        ),
+    ])
 }

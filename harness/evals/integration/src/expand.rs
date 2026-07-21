@@ -98,7 +98,7 @@ pub fn compile_scenario(
         anyhow::bail!("router has no generations");
     }
 
-    let allowed_aliases = functions::allowed_aliases(authored)?;
+    let allowed_aliases = functions::allowed_aliases(authored);
     let function_ids = functions::function_ids(authored);
     let allowed_ids: Vec<String> = allowed_aliases
         .iter()

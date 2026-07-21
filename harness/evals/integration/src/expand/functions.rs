@@ -25,27 +25,14 @@ pub(super) fn function_ids(authored: &AuthoredScenarioV1) -> BTreeMap<String, St
         .collect()
 }
 
-pub(super) fn allowed_aliases(authored: &AuthoredScenarioV1) -> anyhow::Result<Vec<String>> {
-    let mut aliases = match &authored.send.allow {
-        Some(aliases) => aliases.clone(),
-        None => authored
-            .functions
-            .iter()
-            .filter(|(_, function)| function.expose)
-            .map(|(alias, _)| alias.clone())
-            .collect(),
-    };
-    let mut seen = BTreeSet::new();
-    for alias in &aliases {
-        if !authored.functions.contains_key(alias) {
-            anyhow::bail!("send.allow references unknown function alias {alias:?}");
-        }
-        if !seen.insert(alias) {
-            anyhow::bail!("send.allow contains duplicate function alias {alias:?}");
-        }
-    }
-    aliases.sort();
-    Ok(aliases)
+/// Every exposed function alias, in stable (BTreeMap) order.
+pub(super) fn allowed_aliases(authored: &AuthoredScenarioV1) -> Vec<String> {
+    authored
+        .functions
+        .iter()
+        .filter(|(_, function)| function.expose)
+        .map(|(alias, _)| alias.clone())
+        .collect()
 }
 
 pub(super) fn compile_tools(
@@ -183,7 +170,7 @@ pub(super) fn compile_bindings(
                 }
                 if !allowed_aliases.contains(alias) {
                     anyhow::bail!(
-                        "binding callback {:?} selects function {alias:?} outside send.allow",
+                        "binding callback {:?} selects function {alias:?} that send does not expose",
                         binding.function
                     );
                 }
@@ -264,10 +251,9 @@ pub(super) fn compile_fault(
     if fault.after_target_calls == 0 {
         anyhow::bail!("fault.after_target_calls must be greater than zero");
     }
-    let function = fault
-        .function
-        .as_deref()
-        .or_else(|| calls.first().map(|call| call.function.as_str()))
+    let function = calls
+        .first()
+        .map(|call| call.function.as_str())
         .context("fault injection requires an authored function call")?;
     let function_id = function_ids
         .get(function)
@@ -317,11 +303,7 @@ pub(super) fn compile_send(
         message: authored.send.message.clone(),
         model: model.id.clone(),
         provider: model.provider.clone(),
-        idempotency_key: authored
-            .send
-            .idempotency_key
-            .clone()
-            .unwrap_or_else(|| format!("{{{{run_id}}}}:{}", authored.id.to_ascii_lowercase())),
+        idempotency_key: format!("{{{{run_id}}}}:{}", authored.id.to_ascii_lowercase()),
         options: CompiledSendOptionsV1 {
             functions: CompiledFunctionPolicyV1 {
                 allow: allowed_ids.to_vec(),

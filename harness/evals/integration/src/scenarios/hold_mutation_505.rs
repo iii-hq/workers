@@ -28,23 +28,29 @@ pub(super) fn scenario() -> AuthoredScenario {
     )
     .binding(Binding::hook_pre_trigger("hook-gate", ["record"], 10))
     .release(Release::execute())
-    .generation(Reply::function_call("record", json!({ "value": "expected" })).usage(8, 4))
-    .generation(
+    .model((
+        Reply::function_call("record", json!({ "value": "expected" })).usage(8, 4),
         Reply::text("approved and recorded")
             .usage(20, 3)
             .recovery_boundary(),
-    )
-    .expect(
-        Expect::new()
-            .calls_closed()
-            .call(TargetCall::counted("record", 1).payload(json!({ "value": "expected+approved" })))
-            .call(TargetCall::counted("hook-gate", 1).payload_subset(json!({
+    ))
+    .expect([
+        turn_completes(),
+        script_fully_consumed(),
+        no_duplicate_messages(),
+        all_calls_closed(),
+        function_called_once("record", json!({ "value": "expected+approved" })),
+        function_called_matching(
+            "hook-gate",
+            1,
+            json!({
                 "point": "pre_trigger",
                 "call": {
                     "id": "call-1",
                     "function_id": "{{run_id}}::record",
                     "arguments": { "value": "expected" }
                 }
-            }))),
-    )
+            }),
+        ),
+    ])
 }

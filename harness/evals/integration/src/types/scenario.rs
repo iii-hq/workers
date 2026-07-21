@@ -29,8 +29,12 @@ mod tests {
         assert_eq!(timeouts.scenario_ms, 60_000);
         assert_eq!(timeouts.teardown_ms, 15_000);
 
+        // Assertions are explicit: an empty expectation set grades nothing,
+        // and the compiler rejects it for missing the mandatory floor.
         let expectations = ExpectationsV1::default();
-        assert!(expectations.no_duplicates);
+        assert!(!expectations.turn_completes);
+        assert!(!expectations.script_fully_consumed);
+        assert!(!expectations.no_duplicates);
         assert_eq!(expectations.terminal.status, TerminalStatusV1::Completed);
         assert!(expectations.lifecycle.allow_identical_duplicates);
     }
