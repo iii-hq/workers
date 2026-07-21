@@ -9,6 +9,6 @@ description: Slack as an iii worker — exposes the Slack Web API as slack::* fu
 
 dependencies:
   configuration: "^0.21.6"
-  iii-state: "^0.21.6"
+  state: "^0.21.0"
   harness: "^1.0.0"
   session-manager: "^1.0.0"
