@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-pubsub"
-version = "0.21.0"
+version = "0.21.1"
 edition = "2021"
 description = "Pub/sub worker for iii — topic-based publish/subscribe messaging (subscribe trigger type, publish function)"
 license = "Apache-2.0"
