@@ -92,10 +92,10 @@ fn stable_grades_ignore_execution_ids_and_timestamps() {
 
     let result = |invariants| IntegrationResultV1 {
         schema_version: SchemaVersion1::V1,
-        scenario_id: "C-E2E-DET".into(),
+        scenario_id: "E2E-DET".into(),
         classification: Classification::Pass,
         invariants,
-        artifacts: vec!["scenarios/C-E2E-DET/invariants.json".into()],
+        artifacts: vec!["scenarios/E2E-DET/invariants.json".into()],
     };
 
     let first = canonical_json_pretty(&serde_json::to_value(result(first_invariants)).unwrap());

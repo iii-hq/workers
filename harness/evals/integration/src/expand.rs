@@ -18,11 +18,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::types::scenario::{AuthoredScenarioV1, CompiledScenarioV1};
-use crate::types::script::{ModelFixtureV1, RouterScriptV1};
+use crate::types::script::{ModelFixtureV1, RouterScriptV1, SchemaVersion1};
 
 pub use render::render_compiled;
 pub use templates::{scenario_template, ScenarioTemplateKind};
-pub use tokens::Placeholders;
+pub(crate) use tokens::Placeholders;
 
 const DEFAULT_MODEL: &str = "fixture-model";
 const DEFAULT_PROVIDER: &str = "scripted";
@@ -77,7 +77,6 @@ struct CompiledFunctionCall {
     id: String,
     function: String,
     generation_index: usize,
-    typed: bool,
 }
 
 /// Compile the concise authored contract to the strict structures consumed by
@@ -108,7 +107,7 @@ pub fn compile_scenario(
     let tools = functions::compile_tools(authored, &allowed_aliases, &function_ids);
     let mut recorder = functions::compile_recorder(authored, &allowed_aliases, &function_ids);
     let bindings = functions::compile_bindings(authored, &allowed_aliases, &function_ids)?;
-    let calls = functions::function_call_ids(authored, &function_ids, &allowed_aliases)?;
+    let calls = functions::function_call_ids(authored)?;
     validation::validate_release(authored, &calls)?;
     let fault = functions::compile_fault(authored, &function_ids, &calls)?;
     if let Some(fault) = &fault {
@@ -127,7 +126,7 @@ pub fn compile_scenario(
 
     let fixture = CompiledFixtureV1 {
         scenario: CompiledScenarioV1 {
-            schema_version: authored.schema_version,
+            schema_version: SchemaVersion1::V1,
             id: authored.id.clone(),
             description: authored.description.clone(),
             send,
@@ -137,7 +136,6 @@ pub fn compile_scenario(
             fault,
             bindings,
             release: authored.release.clone(),
-            quarantine: authored.quarantine,
         },
         script,
         system_prompt_template,

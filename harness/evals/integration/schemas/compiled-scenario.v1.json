@@ -111,24 +111,26 @@
       "additionalProperties": false,
       "properties": {
         "readiness_ms": {
-          "default": 60000,
           "format": "uint64",
           "minimum": 1.0,
           "type": "integer"
         },
         "scenario_ms": {
-          "default": 60000,
           "format": "uint64",
           "minimum": 1.0,
           "type": "integer"
         },
         "teardown_ms": {
-          "default": 15000,
           "format": "uint64",
           "minimum": 1.0,
           "type": "integer"
         }
       },
+      "required": [
+        "readiness_ms",
+        "scenario_ms",
+        "teardown_ms"
+      ],
       "type": "object"
     },
     "FaultKind": {
@@ -325,9 +327,6 @@
         "$ref": "#/definitions/InvariantSpecV1"
       },
       "type": "array"
-    },
-    "quarantine": {
-      "type": "boolean"
     },
     "recorder": {
       "$ref": "#/definitions/RecorderConfigV1"

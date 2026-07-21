@@ -1,4 +1,4 @@
-//! C-E2E-002 — an allow-listed function executes exactly once.
+//! E2E-002 — an allow-listed function executes exactly once.
 
 use serde_json::json;
 
@@ -6,7 +6,7 @@ use super::builder::*;
 
 pub(super) fn scenario() -> AuthoredScenario {
     AuthoredScenario::new(
-        "C-E2E-002",
+        "E2E-002",
         "An allow-listed native function executes exactly once with a durable result.",
     )
     .send(Send::message("Call the recorder once."))

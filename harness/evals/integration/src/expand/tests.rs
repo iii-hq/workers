@@ -5,7 +5,7 @@ use serde_json::json;
 use crate::types::scenario::{
     AuthoredScenarioV1, RouterReplyV1, ScenarioGenerationV1, ScenarioRouterV1, ScenarioSendV1,
 };
-use crate::types::script::{JsonMatcherV1, SchemaVersion1};
+use crate::types::script::JsonMatcherV1;
 
 use super::{
     compile_scenario, render_compiled, scenario_template, Placeholders, ScenarioTemplateKind,
@@ -13,8 +13,7 @@ use super::{
 
 fn minimal(reply: RouterReplyV1) -> AuthoredScenarioV1 {
     AuthoredScenarioV1 {
-        schema_version: SchemaVersion1::V1,
-        id: "C-E2E-T".to_string(),
+        id: "E2E-T".to_string(),
         description: "A focused compiler fixture.".to_string(),
         quarantine: false,
         send: ScenarioSendV1 {
@@ -106,7 +105,7 @@ fn compile_rejects_unknown_placeholders_and_unsafe_ids() {
 #[test]
 fn function_call_defaults_are_ordered_by_call_and_validated() {
     let mut authored = scenario_template(
-        "C-E2E-CALLS",
+        "E2E-CALLS",
         "Validate generated function call ids.",
         ScenarioTemplateKind::Function,
     );
@@ -142,7 +141,7 @@ fn function_call_defaults_are_ordered_by_call_and_validated() {
 #[test]
 fn tools_are_canonicalized_and_function_contracts_validate() {
     let mut authored = scenario_template(
-        "C-E2E-TOOLS",
+        "E2E-TOOLS",
         "Validate tool ordering and arguments.",
         ScenarioTemplateKind::Function,
     );
@@ -207,7 +206,7 @@ fn tools_are_canonicalized_and_function_contracts_validate() {
 #[test]
 fn function_response_history_matches_harness_normalization() {
     let mut authored = scenario_template(
-        "C-E2E-RESPONSE",
+        "E2E-RESPONSE",
         "Validate normalized function results.",
         ScenarioTemplateKind::Function,
     );
@@ -237,7 +236,7 @@ fn function_response_history_matches_harness_normalization() {
 #[test]
 fn bindings_release_and_fault_fail_fast_when_incoherent() {
     let mut hook = scenario_template(
-        "C-E2E-HOOK",
+        "E2E-HOOK",
         "Validate hook relationships.",
         ScenarioTemplateKind::Hook,
     );
@@ -255,7 +254,7 @@ fn bindings_release_and_fault_fail_fast_when_incoherent() {
     );
 
     let mut crash = scenario_template(
-        "C-E2E-CRASH",
+        "E2E-CRASH",
         "Validate fault relationships.",
         ScenarioTemplateKind::Crash,
     );
@@ -291,7 +290,7 @@ fn templates_compile_and_render_deterministically() {
         ScenarioTemplateKind::Hook,
         ScenarioTemplateKind::Crash,
     ] {
-        let authored = scenario_template("C-E2E-NEW", "A generated scenario.", kind);
+        let authored = scenario_template("E2E-NEW", "A generated scenario.", kind);
         let fixture = compile_scenario(&authored, "base\n").unwrap();
         assert_eq!(
             render_compiled(&fixture).unwrap(),

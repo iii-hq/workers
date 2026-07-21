@@ -97,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn exit_codes_match_spec_table() {
+    fn exit_codes_match_the_documented_contract() {
         use Classification::*;
         assert_eq!(Pass.exit_code(), 0);
         assert_eq!(ContractFailure.exit_code(), 2);

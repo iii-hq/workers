@@ -259,7 +259,7 @@ fn all_selector_with_no_runnable_scenario_is_an_error() {
     let empty_error = super::discovery::select_fixtures(Vec::new(), "all", true).unwrap_err();
     assert!(format!("{empty_error:#}").contains("matched no registered scenario"));
 
-    let mut quarantined = registered_text_scenario("only-quarantined", "C-E2E-Q");
+    let mut quarantined = registered_text_scenario("only-quarantined", "E2E-Q");
     quarantined.authored.quarantine = true;
     let error = super::discovery::select_fixtures(vec![quarantined], "all", false).unwrap_err();
     assert!(format!("{error:#}").contains("no non-quarantined registered scenario"));
@@ -269,7 +269,7 @@ fn all_selector_with_no_runnable_scenario_is_an_error() {
 fn explicit_selection_isolated_from_unrelated_invalid_fixtures() {
     // Well-typed but semantically broken: the function call resolves no
     // registered alias, so only compilation can reject it.
-    let mut invalid = registered_text_scenario("a-invalid", "C-E2E-INVALID");
+    let mut invalid = registered_text_scenario("a-invalid", "E2E-INVALID");
     invalid.authored.router.generations[0].reply =
         crate::types::scenario::RouterReplyV1::FunctionCall {
             id: None,
@@ -279,26 +279,26 @@ fn explicit_selection_isolated_from_unrelated_invalid_fixtures() {
         };
     let registered = vec![
         invalid,
-        registered_text_scenario("z-selected", "C-E2E-SELECTED"),
+        registered_text_scenario("z-selected", "E2E-SELECTED"),
     ];
 
     let by_slug =
         super::discovery::select_fixtures(registered.clone(), "z-selected", false).unwrap();
-    assert_eq!(by_slug[0].scenario.id, "C-E2E-SELECTED");
+    assert_eq!(by_slug[0].scenario.id, "E2E-SELECTED");
     let by_id =
-        super::discovery::select_fixtures(registered.clone(), "C-E2E-SELECTED", false).unwrap();
-    assert_eq!(by_id[0].scenario.id, "C-E2E-SELECTED");
+        super::discovery::select_fixtures(registered.clone(), "E2E-SELECTED", false).unwrap();
+    assert_eq!(by_id[0].scenario.id, "E2E-SELECTED");
     assert!(super::discovery::select_fixtures(registered, "all", true).is_err());
 }
 
 #[test]
 fn duplicate_identities_are_rejected_for_every_selector() {
     let registered = vec![
-        registered_text_scenario("first", "C-E2E-DUPLICATE"),
-        registered_text_scenario("second", "C-E2E-DUPLICATE"),
+        registered_text_scenario("first", "E2E-DUPLICATE"),
+        registered_text_scenario("second", "E2E-DUPLICATE"),
     ];
 
-    for selector in ["all", "C-E2E-DUPLICATE", "first"] {
+    for selector in ["all", "E2E-DUPLICATE", "first"] {
         let error =
             super::discovery::select_fixtures(registered.clone(), selector, true).unwrap_err();
         assert!(
@@ -308,8 +308,8 @@ fn duplicate_identities_are_rejected_for_every_selector() {
     }
 
     let duplicate_slug = vec![
-        registered_text_scenario("twice", "C-E2E-FIRST"),
-        registered_text_scenario("twice", "C-E2E-SECOND"),
+        registered_text_scenario("twice", "E2E-FIRST"),
+        registered_text_scenario("twice", "E2E-SECOND"),
     ];
     let error = super::discovery::select_fixtures(duplicate_slug, "all", true).unwrap_err();
     assert!(format!("{error:#}").contains("duplicate scenario slug"));
@@ -329,7 +329,7 @@ fn all_selection_can_include_quarantines_for_validation() {
         .collect::<BTreeSet<_>>();
     let quarantined_ids = all
         .iter()
-        .filter(|fixture| fixture.scenario.quarantine)
+        .filter(|fixture| fixture.quarantine)
         .map(|fixture| fixture.scenario.id.as_str())
         .collect::<BTreeSet<_>>();
     let partition = runnable_ids
@@ -343,9 +343,5 @@ fn all_selection_can_include_quarantines_for_validation() {
     );
     assert!(runnable_ids.is_disjoint(&quarantined_ids));
     assert_eq!(partition, all_ids);
-    assert!(
-        scenario_fixtures("crash-recovery-507", false).unwrap()[0]
-            .scenario
-            .quarantine
-    );
+    assert!(scenario_fixtures("crash-recovery-507", false).unwrap()[0].quarantine);
 }

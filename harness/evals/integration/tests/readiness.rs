@@ -1,6 +1,5 @@
-//! Readiness failure vectors (spec § Verification: hidden internal
-//! functions, missing context manager, wrong queue topic, schema/seed
-//! mismatch) exercised over fake catalogs — the pure checks are the same
+//! Readiness failure vectors (hidden internal functions, missing context
+//! manager, wrong queue topic, schema/seed mismatch) exercised over fake catalogs — the pure checks are the same
 //! code the live probe runs.
 
 use harness_integration::readiness::{

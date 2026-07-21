@@ -1,4 +1,4 @@
-//! C-E2E-506 — released held calls retain hook-mutated arguments.
+//! E2E-506 — released held calls retain hook-mutated arguments.
 //!
 //! Reproduction of <https://github.com/iii-hq/workers/issues/506>.
 
@@ -8,7 +8,7 @@ use super::builder::*;
 
 pub(super) fn scenario() -> AuthoredScenario {
     AuthoredScenario::new(
-        "C-E2E-506",
+        "E2E-506",
         "A held call released for execution must run with the arguments produced by earlier hooks.",
     )
     .quarantine()

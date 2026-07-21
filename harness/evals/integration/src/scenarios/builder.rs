@@ -19,7 +19,7 @@ use crate::types::scenario::{
     ScenarioGenerationV1, ScenarioRouterV1, ScenarioSendV1, TargetCallsExpectationV1,
     TriggerBindingSpecV1, TriggerKindV1,
 };
-use crate::types::script::{JsonMatcherV1, SchemaVersion1};
+use crate::types::script::JsonMatcherV1;
 
 /// Authoring name for the scenario root. Scenario modules return this type.
 pub type AuthoredScenario = AuthoredScenarioV1;
@@ -29,7 +29,6 @@ impl AuthoredScenarioV1 {
     /// registering; the registry tests reject an empty message.
     pub fn new(id: &str, description: &str) -> Self {
         Self {
-            schema_version: SchemaVersion1::V1,
             id: id.to_string(),
             description: description.to_string(),
             quarantine: false,
@@ -342,8 +341,7 @@ impl Binding {
     }
 }
 
-/// Entry point for [`FaultV1`], mirroring the deterministic defaults the
-/// YAML layer used to apply.
+/// Entry point for [`FaultV1`] with deterministic defaults.
 pub struct Fault;
 
 impl Fault {

@@ -6,7 +6,7 @@ use crate::types::scenario::{
     AuthoredScenarioV1, ExpectationsV1, FunctionResultExpectationV1, MessageCountsExpectationV1,
     RouterReplyV1, ScenarioFunctionV1, TargetCallsExpectationV1,
 };
-use crate::types::script::{JsonMatcherV1, SchemaVersion1};
+use crate::types::script::JsonMatcherV1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScenarioTemplateKind {
@@ -175,7 +175,6 @@ pub fn scenario_template(
     };
 
     AuthoredScenarioV1 {
-        schema_version: SchemaVersion1::V1,
         id: id.to_string(),
         description: description.to_string(),
         quarantine: false,

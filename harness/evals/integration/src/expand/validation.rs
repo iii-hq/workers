@@ -162,7 +162,6 @@ pub(super) fn validate_reply(
                 );
             }
         }
-        RouterReplyV1::Raw { .. } => {}
     }
     Ok(())
 }

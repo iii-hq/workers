@@ -1,4 +1,4 @@
-//! C-UI-001 — the production Console sends through its agent-trigger policy.
+//! UI-001 — the production Console sends through its agent-trigger policy.
 
 use serde_json::json;
 
@@ -8,7 +8,7 @@ use super::builder::*;
 
 pub(super) fn scenario() -> AuthoredScenario {
     AuthoredScenario::new(
-        "C-UI-001",
+        "UI-001",
         "A message sent from the Console streams to durable completion.",
     )
     .send(Send::message("Return the console fixture phrase."))

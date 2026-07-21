@@ -16,13 +16,10 @@ use crate::runtime::{RunError, RunErrorKind, RunPhase};
 use crate::scenarios::ScenarioDriver;
 use crate::services::RunServices;
 use crate::stack::{free_loopback_port, RunPaths, Stack, StackBins};
-use crate::types::scenario::{
-    Classification, CompiledSendV1, ExecutionReportV1, InvariantResultV1,
-};
+use crate::types::scenario::{Classification, CompiledSendV1, InvariantResultV1};
 use crate::types::script::SchemaVersion1;
 
-use super::report::now_rfc3339;
-use super::runner::{result_digest, ScenarioRunner};
+use super::runner::ScenarioRunner;
 use super::state::{ActiveTurn, PreparedRun};
 
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -63,7 +60,7 @@ pub struct ServeModelV1 {
     pub provider: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServeResultV1 {
     pub schema_version: SchemaVersion1,
@@ -87,9 +84,8 @@ pub async fn serve_scenario(
     artifacts_dir: &Path,
     ready_file: &Path,
 ) -> ServeOutcome {
-    let started_at = now_rfc3339();
     let started = std::time::Instant::now();
-    let run_id = format!("cu{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+    let run_id = format!("iu{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
     let run_root = artifacts_dir.join(&run_id);
     let session_id = format!("s_{}", uuid::Uuid::new_v4().simple());
 
@@ -102,29 +98,10 @@ pub async fn serve_scenario(
         invariants: Vec::new(),
     };
 
+    // The serve consumer contract is serve-ready.json -> serve-result.json;
+    // the direct-run result.json/execution.json pair is not written here.
     let mut classification = execute_serve(&mut runner, artifacts_dir, ready_file).await;
-    let stable = runner.result(classification);
     let duration_ms = started.elapsed().as_millis() as u64;
-    let mut execution = ExecutionReportV1 {
-        schema_version: SchemaVersion1::V1,
-        run_id: run_id.clone(),
-        scenario_id: stable.scenario_id.clone(),
-        started_at,
-        duration_ms,
-        result_path: "result.json".to_string(),
-        result_sha256: result_digest(&stable),
-    };
-
-    if let Err(error) = runner.write_reports(&stable, &execution, artifacts_dir) {
-        tracing::error!(target: "harness_integration::scenario", "serve reporting failed: {error:#}");
-        classification = classification.combine(Classification::RunnerError);
-        let mut retry = runner.result(classification);
-        execution.result_sha256 = result_digest(&retry);
-        if let Err(retry_error) = runner.write_reports(&retry, &execution, artifacts_dir) {
-            tracing::error!(target: "harness_integration::scenario", "serve report retry failed: {retry_error:#}");
-        }
-        retry.classification = classification;
-    }
 
     let mut result = ServeResultV1 {
         schema_version: SchemaVersion1::V1,

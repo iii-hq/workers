@@ -70,7 +70,7 @@ pub async fn run_scenario(
 ) -> RunOutcome {
     let started_at = now_rfc3339();
     let started = std::time::Instant::now();
-    let run_id = format!("cr{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+    let run_id = format!("ir{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
     let run_root = artifacts_dir.join(&run_id);
     let session_id = format!("s_{}", uuid::Uuid::new_v4().simple());
 

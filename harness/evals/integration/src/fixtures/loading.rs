@@ -12,6 +12,7 @@ const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../../../prompts/default.tx
 pub struct ScenarioFixture {
     pub slug: String,
     pub driver: ScenarioDriver,
+    pub quarantine: bool,
     pub scenario: CompiledScenarioV1,
     pub script: RouterScriptV1,
     /// Compiled Harness default plus inferred session/policy aid.
@@ -31,6 +32,7 @@ impl ScenarioFixture {
         let fixture = ScenarioFixture {
             slug: entry.slug.clone(),
             driver: entry.driver,
+            quarantine: entry.authored.quarantine,
             scenario: compiled,
             script,
             system_prompt_template,

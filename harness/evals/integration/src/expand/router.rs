@@ -42,8 +42,8 @@ pub(super) fn compile_router(
         ) {
             let id = calls
                 .iter()
-                .find(|call| call.generation_index == index && call.typed)
-                .context("compiler lost a typed function-call id")?;
+                .find(|call| call.generation_index == index)
+                .context("compiler lost a function-call id")?;
             Some(id.id.as_str())
         } else {
             None
@@ -308,19 +308,6 @@ fn compile_reply(
                         "is_error": is_error
                     }),
                 ],
-            })
-        }
-        RouterReplyV1::Raw { frames, response } => {
-            let history = match frames.last() {
-                Some(AssistantMessageEvent::Done { message }) => {
-                    vec![serde_json::to_value(message)?]
-                }
-                _ => Vec::new(),
-            };
-            Ok(CompiledReply {
-                frames: frames.clone(),
-                response: response.clone(),
-                history,
             })
         }
     }

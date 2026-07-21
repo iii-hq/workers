@@ -1,4 +1,4 @@
-//! C-E2E-507 — crash recovery closes the interrupted function call.
+//! E2E-507 — crash recovery closes the interrupted function call.
 //!
 //! Reproduction of <https://github.com/iii-hq/workers/issues/507>.
 
@@ -8,7 +8,7 @@ use super::builder::*;
 
 pub(super) fn scenario() -> AuthoredScenario {
     AuthoredScenario::new(
-        "C-E2E-507",
+        "E2E-507",
         "An engine crash during a dispatched function call must not leave the call dangling or the session unusable.",
     )
     .quarantine()

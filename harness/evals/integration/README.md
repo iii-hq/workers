@@ -13,7 +13,7 @@ No provider key or network access is required.
 # Build the stack and run every non-quarantined scenario.
 make -C harness integration-e2e III_BIN=<path-to-iii>
 
-# Validate all five fixtures, including quarantined reproductions.
+# Validate every fixture, including quarantined reproductions.
 make -C harness integration-validate
 
 # Run one scenario directly.
@@ -24,7 +24,7 @@ harness-integration run \
   --worker-bin session-manager=<session-manager> \
   --worker-bin context-manager=<context-manager> \
   --worker-bin iii-directory=<iii-directory> \
-  --scenario C-E2E-001 \
+  --scenario E2E-001 \
   --repeat 2
 ```
 
@@ -57,7 +57,7 @@ A typical authored function scenario is:
 ```rust
 // src/scenarios/my_function_case.rs
 pub(super) fn scenario() -> AuthoredScenario {
-    AuthoredScenario::new("C-E2E-010", "The allowed function runs once.")
+    AuthoredScenario::new("E2E-010", "The allowed function runs once.")
         .send(Send::message("Call the recorder once."))
         .function(
             "record",
@@ -90,7 +90,7 @@ Add the module and its slug to the list in `src/scenarios/mod.rs`, then:
 ```bash
 cargo test                                     # builder and contract tests
 harness-integration validate --scenario all
-harness-integration render C-E2E-010
+harness-integration render E2E-010
 ```
 
 Builders produce data only — a builder that derives scenario content from
@@ -120,12 +120,12 @@ sequence.
 
 | id | slug | status |
 |---|---|---|
-| C-E2E-001 | `streamed-text` | streamed text reaches durable completion |
-| C-E2E-002 | `exactly-once-function` | a native function executes exactly once |
-| C-UI-001 | `console-streamed-text` | the production Console sends and renders streamed text |
-| C-E2E-505 | `hold-mutation-505` | quarantined reproduction for issue #505 |
-| C-E2E-506 | `hook-held-release-506` | quarantined reproduction for issue #506 |
-| C-E2E-507 | `crash-recovery-507` | quarantined reproduction for issue #507 |
+| E2E-001 | `streamed-text` | streamed text reaches durable completion |
+| E2E-002 | `exactly-once-function` | a native function executes exactly once |
+| UI-001 | `console-streamed-text` | the production Console sends and renders streamed text |
+| E2E-505 | `hold-mutation-505` | quarantined reproduction for issue #505 |
+| E2E-506 | `hook-held-release-506` | quarantined reproduction for issue #506 |
+| E2E-507 | `crash-recovery-507` | quarantined reproduction for issue #507 |
 
 `run --scenario all` includes non-quarantined direct scenarios. Console-driven
 scenarios run through `serve --scenario <id-or-slug>` and Playwright. An

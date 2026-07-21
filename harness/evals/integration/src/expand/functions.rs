@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::Context;
 use serde_json::{json, Value};
 
-use crate::types::frames::{AssistantMessageEvent, ContentBlock};
 use crate::types::recorder::{
     LifecycleFunctionId, LifecycleTriggerType, RecorderConfigV1, RecorderLifecycleV1,
     RecorderTargetV1,
@@ -204,8 +203,6 @@ pub(super) fn compile_bindings(
 
 pub(super) fn function_call_ids(
     authored: &AuthoredScenarioV1,
-    function_ids: &BTreeMap<String, String>,
-    allowed_aliases: &[String],
 ) -> anyhow::Result<Vec<CompiledFunctionCall>> {
     let mut calls = Vec::new();
     let mut seen = BTreeSet::new();
@@ -232,59 +229,8 @@ pub(super) fn function_call_ids(
                         id,
                         function: function.clone(),
                         generation_index,
-                        typed: true,
                     },
                 )?;
-            }
-            RouterReplyV1::Raw { frames, .. } => {
-                for message in frames.iter().filter_map(|frame| match frame {
-                    AssistantMessageEvent::Done { message } => Some(message),
-                    _ => None,
-                }) {
-                    for block in &message.content {
-                        let ContentBlock::FunctionCall {
-                            id,
-                            function_id,
-                            arguments,
-                        } = block
-                        else {
-                            continue;
-                        };
-                        let function = function_ids
-                            .iter()
-                            .find_map(|(alias, resolved)| {
-                                (resolved == function_id).then_some(alias)
-                            })
-                            .with_context(|| {
-                                format!(
-                                    "generation {} raw function call references unknown function id {function_id:?}",
-                                    generation_index + 1
-                                )
-                            })?;
-                        if !allowed_aliases.contains(function) {
-                            anyhow::bail!(
-                                "generation {} raw function call alias {function:?} is outside send.allow",
-                                generation_index + 1
-                            );
-                        }
-                        validate_function_arguments(
-                            authored,
-                            function,
-                            arguments,
-                            &format!("generation {} raw reply", generation_index + 1),
-                        )?;
-                        register_call(
-                            &mut calls,
-                            &mut seen,
-                            CompiledFunctionCall {
-                                id: id.clone(),
-                                function: function.clone(),
-                                generation_index,
-                                typed: false,
-                            },
-                        )?;
-                    }
-                }
             }
             RouterReplyV1::Text { .. } => {}
         }
@@ -322,7 +268,7 @@ pub(super) fn compile_fault(
         .function
         .as_deref()
         .or_else(|| calls.first().map(|call| call.function.as_str()))
-        .context("fault injection requires a typed or raw function call")?;
+        .context("fault injection requires an authored function call")?;
     let function_id = function_ids
         .get(function)
         .with_context(|| format!("fault references unknown function alias {function:?}"))?;

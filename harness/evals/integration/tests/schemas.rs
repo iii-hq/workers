@@ -1,7 +1,6 @@
-//! Golden JSON Schemas for every V1 contract type, checked in under
-//! `schemas/` (spec § Verification and acceptance: JSON Schema and serde
-//! round-trip tests for executed scenario, router, recorder-event, and result
-//! contracts).
+//! Golden JSON Schemas for every serialized V1 contract type, checked in
+//! under `schemas/`, plus serde round-trip tests for the scenario, router,
+//! recorder-event, and result contracts.
 //!
 //! Regenerate after an intentional type change with:
 //! `REGEN_SCHEMAS=1 cargo test --test schemas`
@@ -111,7 +110,7 @@ fn evidence_and_report_contracts_round_trip() {
     });
     round_trip(IntegrationResultV1 {
         schema_version: SchemaVersion1::V1,
-        scenario_id: "C-E2E-ROUND-TRIP".into(),
+        scenario_id: "E2E-ROUND-TRIP".into(),
         classification: Classification::Pass,
         invariants: Vec::new(),
         artifacts: vec!["teardown.json".into()],
@@ -119,7 +118,7 @@ fn evidence_and_report_contracts_round_trip() {
     round_trip(ExecutionReportV1 {
         schema_version: SchemaVersion1::V1,
         run_id: "run-1".into(),
-        scenario_id: "C-E2E-ROUND-TRIP".into(),
+        scenario_id: "E2E-ROUND-TRIP".into(),
         started_at: "2026-07-19T00:00:00Z".into(),
         duration_ms: 1,
         result_path: "result.json".into(),
@@ -160,7 +159,7 @@ fn compiled_schema_matches_runtime_safety_constraints() {
     let schema = serde_json::to_value(schemars::schema_for!(CompiledScenarioV1)).unwrap();
     let validator = jsonschema::JSONSchema::compile(&schema).unwrap();
     let authored = scenario_template(
-        "C-E2E-COMPILED-SCHEMA",
+        "E2E-COMPILED-SCHEMA",
         "Validate compiled schema constraints.",
         ScenarioTemplateKind::Crash,
     );

@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::types::frames::{AssistantMessageEvent, RouterChatResponse, Usage};
-use crate::types::script::{JsonMatcherV1, ModelFixtureV1, SchemaVersion1};
+use crate::types::frames::Usage;
+use crate::types::script::{JsonMatcherV1, ModelFixtureV1};
 
 use super::ExpectationsV1;
 
@@ -16,7 +16,6 @@ use super::ExpectationsV1;
 /// derives.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthoredScenarioV1 {
-    pub schema_version: SchemaVersion1,
     pub id: String,
     pub description: String,
     pub quarantine: bool,
@@ -100,11 +99,6 @@ pub enum RouterReplyV1 {
         arguments: serde_json::Value,
         usage: Option<Usage>,
     },
-    /// Full strict wire contract for cases the typed replies cannot express.
-    Raw {
-        frames: Vec<AssistantMessageEvent>,
-        response: RouterChatResponse,
-    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -183,13 +177,10 @@ pub enum ReleaseActionV1 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeadlinesV1 {
-    #[serde(default = "default_readiness_ms")]
     #[schemars(range(min = 1))]
     pub readiness_ms: u64,
-    #[serde(default = "default_scenario_ms")]
     #[schemars(range(min = 1))]
     pub scenario_ms: u64,
-    #[serde(default = "default_teardown_ms")]
     #[schemars(range(min = 1))]
     pub teardown_ms: u64,
 }
@@ -202,18 +193,6 @@ impl Default for DeadlinesV1 {
             teardown_ms: 15_000,
         }
     }
-}
-
-fn default_readiness_ms() -> u64 {
-    60_000
-}
-
-fn default_scenario_ms() -> u64 {
-    60_000
-}
-
-fn default_teardown_ms() -> u64 {
-    15_000
 }
 
 pub(super) fn default_call_id() -> String {

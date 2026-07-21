@@ -24,8 +24,6 @@ pub struct CompiledScenarioV1 {
     pub bindings: Vec<TriggerBindingV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release: Option<ReleaseV1>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub quarantine: bool,
 }
 
 /// The deliberately narrow `harness::send` request emitted by the scenario

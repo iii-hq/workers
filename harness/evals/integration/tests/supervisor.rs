@@ -1,5 +1,4 @@
-//! Supervisor behavior over stub child processes (spec § Verification:
-//! early exit, timeout precedence via early-exit detection, signal
+//! Supervisor behavior over stub child processes (early exit, timeout precedence via early-exit detection, signal
 //! escalation, complete teardown, environment isolation).
 
 use std::path::PathBuf;

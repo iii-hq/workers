@@ -21,8 +21,8 @@ fn layout_allocates_the_stable_run_tree() {
     assert!(layout.seeds_dir.is_dir());
     assert!(layout.logs_dir.is_dir());
 
-    let scenario = layout.scenario_dir("C-E2E-001").unwrap();
-    assert_eq!(scenario, layout.root.join("scenarios/C-E2E-001"));
+    let scenario = layout.scenario_dir("E2E-001").unwrap();
+    assert_eq!(scenario, layout.root.join("scenarios/E2E-001"));
     assert!(scenario.is_dir());
 }
 

@@ -1,4 +1,4 @@
-//! C-E2E-505 — a holding hook's mutation reaches the released call.
+//! E2E-505 — a holding hook's mutation reaches the released call.
 //!
 //! Reproduction of <https://github.com/iii-hq/workers/issues/505>.
 
@@ -8,7 +8,7 @@ use super::builder::*;
 
 pub(super) fn scenario() -> AuthoredScenario {
     AuthoredScenario::new(
-        "C-E2E-505",
+        "E2E-505",
         "A pre-trigger hook that holds and mutates must apply its mutation to the released call.",
     )
     .quarantine()
