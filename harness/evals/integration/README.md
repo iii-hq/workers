@@ -125,12 +125,15 @@ sequence.
 |---|---|---|
 | C-E2E-001 | `streamed-text` | streamed text reaches durable completion |
 | C-E2E-002 | `exactly-once-function` | a native function executes exactly once |
+| C-UI-001 | `console-streamed-text` | the production Console sends and renders streamed text |
 | C-E2E-505 | `hold-mutation-505` | quarantined reproduction for issue #505 |
 | C-E2E-506 | `hook-held-release-506` | quarantined reproduction for issue #506 |
 | C-E2E-507 | `crash-recovery-507` | quarantined reproduction for issue #507 |
 
-`run --scenario all` excludes quarantined scenarios. An explicit id or slug
-runs it; `validate --scenario all` always includes it.
+`run --scenario all` includes non-quarantined direct scenarios. Console-driven
+scenarios run through `serve --scenario <id-or-slug>` and Playwright. An
+explicit quarantined direct scenario still runs; `validate --scenario all`
+always includes every driver and quarantine state.
 
 ## Runtime and evidence
 
