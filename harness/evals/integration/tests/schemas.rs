@@ -69,11 +69,10 @@ fn committed_schemas_match_the_types() {
 fn registered_scenarios_compile_and_round_trip() {
     use harness_integration::fixtures::ScenarioFixture;
 
-    let scenarios = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios");
     let registered = harness_integration::scenarios::all();
     assert!(!registered.is_empty(), "expected at least one scenario");
     for entry in &registered {
-        let fixture = ScenarioFixture::from_registered(entry, &scenarios).unwrap();
+        let fixture = ScenarioFixture::from_registered(entry).unwrap();
 
         let compiled_value = serde_json::to_value(&fixture.scenario).unwrap();
         let compiled_again: CompiledScenarioV1 = serde_json::from_value(compiled_value).unwrap();
@@ -138,9 +137,8 @@ fn compiled_send_is_accepted_by_the_authoritative_harness_contract() {
     )))
     .unwrap();
     let validator = jsonschema::JSONSchema::compile(&golden["request_schema"]).unwrap();
-    let scenarios = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios");
     for entry in &harness_integration::scenarios::all() {
-        let fixture = ScenarioFixture::from_registered(entry, &scenarios).unwrap();
+        let fixture = ScenarioFixture::from_registered(entry).unwrap();
         let send = serde_json::to_value(&fixture.scenario.send).unwrap();
         let errors = validator
             .validate(&send)

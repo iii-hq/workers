@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::path::Path;
 
 use serde_json::json;
 
@@ -255,31 +254,19 @@ fn registered_text_scenario(slug: &str, id: &str) -> crate::scenarios::Registere
     }
 }
 
-/// Selection needs only the shared system prompt on disk.
-fn prompt_root() -> tempfile::TempDir {
-    let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("system-prompt.txt"), "base").unwrap();
-    root
-}
-
 #[test]
 fn all_selector_with_no_runnable_scenario_is_an_error() {
-    let root = prompt_root();
-
-    let empty_error =
-        super::discovery::select_fixtures(Vec::new(), root.path(), "all", true).unwrap_err();
+    let empty_error = super::discovery::select_fixtures(Vec::new(), "all", true).unwrap_err();
     assert!(format!("{empty_error:#}").contains("matched no registered scenario"));
 
     let mut quarantined = registered_text_scenario("only-quarantined", "C-E2E-Q");
     quarantined.authored.quarantine = true;
-    let error = super::discovery::select_fixtures(vec![quarantined], root.path(), "all", false)
-        .unwrap_err();
+    let error = super::discovery::select_fixtures(vec![quarantined], "all", false).unwrap_err();
     assert!(format!("{error:#}").contains("no non-quarantined registered scenario"));
 }
 
 #[test]
 fn explicit_selection_isolated_from_unrelated_invalid_fixtures() {
-    let root = prompt_root();
     // Well-typed but semantically broken: the function call resolves no
     // registered alias, so only compilation can reject it.
     let mut invalid = registered_text_scenario("a-invalid", "C-E2E-INVALID");
@@ -296,19 +283,16 @@ fn explicit_selection_isolated_from_unrelated_invalid_fixtures() {
     ];
 
     let by_slug =
-        super::discovery::select_fixtures(registered.clone(), root.path(), "z-selected", false)
-            .unwrap();
+        super::discovery::select_fixtures(registered.clone(), "z-selected", false).unwrap();
     assert_eq!(by_slug[0].scenario.id, "C-E2E-SELECTED");
     let by_id =
-        super::discovery::select_fixtures(registered.clone(), root.path(), "C-E2E-SELECTED", false)
-            .unwrap();
+        super::discovery::select_fixtures(registered.clone(), "C-E2E-SELECTED", false).unwrap();
     assert_eq!(by_id[0].scenario.id, "C-E2E-SELECTED");
-    assert!(super::discovery::select_fixtures(registered, root.path(), "all", true).is_err());
+    assert!(super::discovery::select_fixtures(registered, "all", true).is_err());
 }
 
 #[test]
 fn duplicate_identities_are_rejected_for_every_selector() {
-    let root = prompt_root();
     let registered = vec![
         registered_text_scenario("first", "C-E2E-DUPLICATE"),
         registered_text_scenario("second", "C-E2E-DUPLICATE"),
@@ -316,8 +300,7 @@ fn duplicate_identities_are_rejected_for_every_selector() {
 
     for selector in ["all", "C-E2E-DUPLICATE", "first"] {
         let error =
-            super::discovery::select_fixtures(registered.clone(), root.path(), selector, true)
-                .unwrap_err();
+            super::discovery::select_fixtures(registered.clone(), selector, true).unwrap_err();
         assert!(
             format!("{error:#}").contains("duplicate scenario id"),
             "{selector}: {error:#}"
@@ -328,16 +311,14 @@ fn duplicate_identities_are_rejected_for_every_selector() {
         registered_text_scenario("twice", "C-E2E-FIRST"),
         registered_text_scenario("twice", "C-E2E-SECOND"),
     ];
-    let error =
-        super::discovery::select_fixtures(duplicate_slug, root.path(), "all", true).unwrap_err();
+    let error = super::discovery::select_fixtures(duplicate_slug, "all", true).unwrap_err();
     assert!(format!("{error:#}").contains("duplicate scenario slug"));
 }
 
 #[test]
 fn all_selection_can_include_quarantines_for_validation() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios");
-    let all = scenario_fixtures(&root, "all", true).unwrap();
-    let runnable = scenario_fixtures(&root, "all", false).unwrap();
+    let all = scenario_fixtures("all", true).unwrap();
+    let runnable = scenario_fixtures("all", false).unwrap();
     let all_ids = all
         .iter()
         .map(|fixture| fixture.scenario.id.as_str())
@@ -363,7 +344,7 @@ fn all_selection_can_include_quarantines_for_validation() {
     assert!(runnable_ids.is_disjoint(&quarantined_ids));
     assert_eq!(partition, all_ids);
     assert!(
-        scenario_fixtures(&root, "crash-recovery-507", false).unwrap()[0]
+        scenario_fixtures("crash-recovery-507", false).unwrap()[0]
             .scenario
             .quarantine
     );

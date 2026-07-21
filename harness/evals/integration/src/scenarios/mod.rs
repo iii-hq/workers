@@ -4,8 +4,8 @@
 //! builds the authored scenario data through the typed builders in
 //! [`builder`] and registers it in [`all`]. There is no YAML layer — the
 //! authored shape is the runner's own data model, enforced at `cargo build`,
-//! and it is never serialized. Compiled snapshots under `tests/snapshots/`
-//! remain the review artifact.
+//! and it is never serialized. Compilation and serde round trips are enforced
+//! by tests without checking in a second copy of each scenario.
 
 pub mod builder;
 
@@ -25,8 +25,7 @@ pub enum ScenarioDriver {
     Console,
 }
 
-/// One authored scenario plus the stable slug used by `--scenario` selection
-/// and the compiled-snapshot filename.
+/// One authored scenario plus the stable slug used by `--scenario` selection.
 #[derive(Debug, Clone)]
 pub struct RegisteredScenario {
     pub slug: String,
@@ -68,7 +67,7 @@ mod tests {
     use crate::expand::compile_scenario;
     use crate::types::scenario::validate_scenario_id;
 
-    /// Slugs double as snapshot filenames and `--scenario` selectors.
+    /// Slugs are stable `--scenario` selectors and filesystem-safe labels.
     fn validate_slug(slug: &str) {
         assert!(
             !slug.is_empty()

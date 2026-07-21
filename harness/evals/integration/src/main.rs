@@ -10,8 +10,6 @@ use harness_integration::scenarios::ScenarioDriver;
 use harness_integration::stack::StackBins;
 use harness_integration::types::scenario::Classification;
 
-const DEFAULT_SCENARIOS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/scenarios");
-
 #[derive(Debug, Parser)]
 #[command(
     name = "harness-integration",
@@ -101,19 +99,12 @@ struct SelectionArgs {
     /// Scenario id, scenario slug, or `all`.
     #[arg(long, default_value = "all")]
     scenario: String,
-
-    /// Directory containing the shared system prompt template.
-    #[arg(long, default_value = DEFAULT_SCENARIOS_DIR)]
-    scenarios_dir: PathBuf,
 }
 
 #[derive(Debug, Args)]
 struct RenderArgs {
     /// Scenario id or slug.
     scenario: String,
-
-    #[arg(long, default_value = DEFAULT_SCENARIOS_DIR)]
-    scenarios_dir: PathBuf,
 }
 
 fn parse_worker_bin(raw: &str) -> Result<(String, PathBuf), String> {
@@ -328,7 +319,6 @@ fn render(args: RenderArgs) -> anyhow::Result<String> {
     );
     let selection = SelectionArgs {
         scenario: args.scenario,
-        scenarios_dir: args.scenarios_dir,
     };
     let fixtures = load_fixtures(&selection, true)?;
     let fixture = fixtures
@@ -342,11 +332,7 @@ fn load_fixtures(
     selection: &SelectionArgs,
     include_quarantined: bool,
 ) -> anyhow::Result<Vec<ScenarioFixture>> {
-    scenario_fixtures(
-        &selection.scenarios_dir,
-        &selection.scenario,
-        include_quarantined,
-    )
+    scenario_fixtures(&selection.scenario, include_quarantined)
 }
 
 fn classification_str(classification: Classification) -> &'static str {

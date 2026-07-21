@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use super::loading::ScenarioFixture;
 use crate::scenarios::RegisteredScenario;
 
@@ -10,23 +8,16 @@ use crate::scenarios::RegisteredScenario;
 /// selection always includes the requested fixture; for `all`, normal runs
 /// exclude quarantines while validation includes them.
 pub fn scenario_fixtures(
-    scenarios_root: &Path,
     selector: &str,
     include_quarantined: bool,
 ) -> anyhow::Result<Vec<ScenarioFixture>> {
-    select_fixtures(
-        crate::scenarios::all(),
-        scenarios_root,
-        selector,
-        include_quarantined,
-    )
+    select_fixtures(crate::scenarios::all(), selector, include_quarantined)
 }
 
 /// Registry-parameterized core so selection semantics stay testable without
 /// the checked-in scenario set.
 pub(crate) fn select_fixtures(
     registered: Vec<RegisteredScenario>,
-    scenarios_root: &Path,
     selector: &str,
     include_quarantined: bool,
 ) -> anyhow::Result<Vec<ScenarioFixture>> {
@@ -36,7 +27,7 @@ pub(crate) fn select_fixtures(
         let mut selected = Vec::new();
         for entry in &registered {
             if include_quarantined || !entry.authored.quarantine {
-                selected.push(ScenarioFixture::from_registered(entry, scenarios_root)?);
+                selected.push(ScenarioFixture::from_registered(entry)?);
             }
         }
         if selected.is_empty() {
@@ -55,19 +46,13 @@ pub(crate) fn select_fixtures(
     // unrelated fixtures remain the responsibility of `validate --scenario
     // all`.
     if let Some(entry) = registered.iter().find(|entry| entry.slug == selector) {
-        return Ok(vec![ScenarioFixture::from_registered(
-            entry,
-            scenarios_root,
-        )?]);
+        return Ok(vec![ScenarioFixture::from_registered(entry)?]);
     }
     if let Some(entry) = registered
         .iter()
         .find(|entry| entry.authored.id == selector)
     {
-        return Ok(vec![ScenarioFixture::from_registered(
-            entry,
-            scenarios_root,
-        )?]);
+        return Ok(vec![ScenarioFixture::from_registered(entry)?]);
     }
     anyhow::bail!("no scenario matches selector {selector:?}")
 }

@@ -88,16 +88,13 @@ pub(super) fn scenario() -> AuthoredScenario {
 Add the module and its slug to the list in `src/scenarios/mod.rs`, then:
 
 ```bash
-cargo test                                     # builder, snapshot, and contract tests
-REGEN_SCENARIO_SNAPSHOTS=1 cargo test --test scenario_compilation
+cargo test                                     # builder and contract tests
 harness-integration validate --scenario all
 harness-integration render C-E2E-010
 ```
 
 Builders produce data only — a builder that derives scenario content from
-control flow is rejected in review. The compiled snapshot under
-`tests/snapshots/<slug>.compiled.json` is the review artifact; commit the
-regenerated snapshot with the new module. New scenarios are runnable by
+control flow is rejected in review. New scenarios are runnable by
 default; chain `.quarantine()` only for a known reproduction that should be
 excluded from `run --scenario all`. `render` prints deterministic canonical
 JSON with the complete compiled request, router script, expectations, and
@@ -159,6 +156,7 @@ scenario id, and SHA-256 of the exact `result.json` bytes. Passing runs retain
 the compact reports and remove heavyweight stack state unless
 `--retain-success` is supplied.
 
-The shared `scenarios/system-prompt.txt` is the single prompt golden. The
-compiler appends the inferred session and function policy, then hashes the
-result for strict router matching.
+The compiler uses the Harness's embedded `prompts/default.txt` directly,
+appends the inferred session and function policy, then hashes the result for
+strict router matching. A scenario may explicitly override the router's prompt
+matcher in its builder without replacing the shared prompt source.
