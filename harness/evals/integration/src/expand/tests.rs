@@ -3,25 +3,21 @@ use std::collections::BTreeMap;
 use serde_json::json;
 
 use crate::types::scenario::{
-    IntegrationScenarioV1, RouterReplyV1, ScenarioGenerationV1, ScenarioRouterV1, ScenarioSendV1,
+    AuthoredScenarioV1, RouterReplyV1, ScenarioGenerationV1, ScenarioRouterV1, ScenarioSendV1,
 };
-use crate::types::script::{JsonMatcherV1, SchemaVersion1};
+use crate::types::script::JsonMatcherV1;
 
 use super::{
-    compile_scenario, render_authored_yaml, render_compiled, scenario_template, Placeholders,
-    ScenarioTemplateKind,
+    compile_scenario, render_compiled, scenario_template, Placeholders, ScenarioTemplateKind,
 };
 
-fn minimal(reply: RouterReplyV1) -> IntegrationScenarioV1 {
-    IntegrationScenarioV1 {
-        schema_version: SchemaVersion1::V1,
-        id: "C-E2E-T".to_string(),
+fn minimal(reply: RouterReplyV1) -> AuthoredScenarioV1 {
+    AuthoredScenarioV1 {
+        id: "E2E-T".to_string(),
         description: "A focused compiler fixture.".to_string(),
         quarantine: false,
         send: ScenarioSendV1 {
             message: "hello".to_string(),
-            allow: None,
-            idempotency_key: None,
         },
         functions: BTreeMap::new(),
         router: ScenarioRouterV1 {
@@ -35,7 +31,6 @@ fn minimal(reply: RouterReplyV1) -> IntegrationScenarioV1 {
         release: None,
         fault: None,
         timeouts: Default::default(),
-        expect: Default::default(),
     }
 }
 
@@ -48,16 +43,8 @@ fn text_reply_compiles_stream_and_common_defaults() {
     });
     let compiled = compile_scenario(&authored, "base\n").unwrap();
     assert_eq!(compiled.script.generations[0].frames.len(), 7);
-    assert_eq!(
-        compiled.scenario.send["options"]["functions"]["allow"],
-        json!([])
-    );
+    assert!(compiled.scenario.send.options.functions.allow.is_empty());
     assert_eq!(compiled.scenario.deadlines.teardown_ms, 15_000);
-    assert!(compiled
-        .scenario
-        .invariants
-        .iter()
-        .any(|invariant| invariant.id == "target.calls" && invariant.parameters["count"] == 0));
     assert!(compiled
         .system_prompt_template
         .ends_with("Function dispatch is entirely disabled this turn — do not call any function."));
@@ -75,13 +62,12 @@ fn mismatched_chunks_and_unknown_aliases_fail_before_runtime() {
             .contains("chunks concatenate")
     );
 
-    let mut authored = minimal(RouterReplyV1::FunctionCall {
+    let authored = minimal(RouterReplyV1::FunctionCall {
         id: None,
         function: "missing".to_string(),
         arguments: json!({}),
         usage: None,
     });
-    authored.send.allow = Some(vec![]);
     assert!(
         format!("{:#}", compile_scenario(&authored, "base").unwrap_err()).contains("unknown alias")
     );
@@ -110,7 +96,7 @@ fn compile_rejects_unknown_placeholders_and_unsafe_ids() {
 #[test]
 fn function_call_defaults_are_ordered_by_call_and_validated() {
     let mut authored = scenario_template(
-        "C-E2E-CALLS",
+        "E2E-CALLS",
         "Validate generated function call ids.",
         ScenarioTemplateKind::Function,
     );
@@ -146,7 +132,7 @@ fn function_call_defaults_are_ordered_by_call_and_validated() {
 #[test]
 fn tools_are_canonicalized_and_function_contracts_validate() {
     let mut authored = scenario_template(
-        "C-E2E-TOOLS",
+        "E2E-TOOLS",
         "Validate tool ordering and arguments.",
         ScenarioTemplateKind::Function,
     );
@@ -155,21 +141,14 @@ fn tools_are_canonicalized_and_function_contracts_validate() {
         .functions
         .insert("zeta".to_string(), record.clone());
     authored.functions.insert("alpha".to_string(), record);
-    authored.send.allow = Some(vec![
-        "zeta".to_string(),
-        "record".to_string(),
-        "alpha".to_string(),
-    ]);
     let compiled = compile_scenario(&authored, "base").unwrap();
-    let allowed = compiled.scenario.send["options"]["functions"]["allow"]
-        .as_array()
-        .unwrap();
+    let allowed = &compiled.scenario.send.options.functions.allow;
     assert_eq!(
         allowed,
         &[
-            json!("{{run_id}}::alpha"),
-            json!("{{run_id}}::record"),
-            json!("{{run_id}}::zeta")
+            "{{run_id}}::alpha".to_string(),
+            "{{run_id}}::record".to_string(),
+            "{{run_id}}::zeta".to_string()
         ]
     );
     let JsonMatcherV1::Exact { expected, .. } = &compiled.script.generations[0].match_.tools else {
@@ -213,7 +192,7 @@ fn tools_are_canonicalized_and_function_contracts_validate() {
 #[test]
 fn function_response_history_matches_harness_normalization() {
     let mut authored = scenario_template(
-        "C-E2E-RESPONSE",
+        "E2E-RESPONSE",
         "Validate normalized function results.",
         ScenarioTemplateKind::Function,
     );
@@ -243,7 +222,7 @@ fn function_response_history_matches_harness_normalization() {
 #[test]
 fn bindings_release_and_fault_fail_fast_when_incoherent() {
     let mut hook = scenario_template(
-        "C-E2E-HOOK",
+        "E2E-HOOK",
         "Validate hook relationships.",
         ScenarioTemplateKind::Hook,
     );
@@ -261,17 +240,27 @@ fn bindings_release_and_fault_fail_fast_when_incoherent() {
     );
 
     let mut crash = scenario_template(
-        "C-E2E-CRASH",
+        "E2E-CRASH",
         "Validate fault relationships.",
         ScenarioTemplateKind::Crash,
     );
-    crash.functions.get_mut("record").unwrap().response_delay_ms = None;
-    assert!(
-        format!("{:#}", compile_scenario(&crash, "base").unwrap_err())
-            .contains("response_delay_ms > 0")
+    let compiled = compile_scenario(&crash, "base").unwrap();
+    assert_eq!(
+        compiled.scenario.recorder.target.hold_response_at,
+        Some(1),
+        "fault targets receive the compiler-owned response-gate ordinal"
     );
 
-    crash.functions.get_mut("record").unwrap().response_delay_ms = Some(1);
+    let second_call = crash.router.generations[0].clone();
+    crash.router.generations.insert(1, second_call);
+    crash.fault.as_mut().unwrap().after_target_calls = 2;
+    let compiled = compile_scenario(&crash, "base").unwrap();
+    assert_eq!(
+        compiled.scenario.recorder.target.hold_response_at,
+        Some(2),
+        "earlier calls must return before the selected fault ordinal is held"
+    );
+
     crash.fault.as_mut().unwrap().after_target_calls = 0;
     assert!(
         format!("{:#}", compile_scenario(&crash, "base").unwrap_err())
@@ -287,26 +276,12 @@ fn templates_compile_and_render_deterministically() {
         ScenarioTemplateKind::Hook,
         ScenarioTemplateKind::Crash,
     ] {
-        let authored = scenario_template("C-E2E-NEW", "A generated scenario.", kind);
-        let yaml = render_authored_yaml(&authored).unwrap();
-        let reparsed: IntegrationScenarioV1 = serde_yaml::from_str(&yaml).unwrap();
-        let fixture = compile_scenario(&reparsed, "base\n").unwrap();
+        let authored = scenario_template("E2E-NEW", "A generated scenario.", kind);
+        let fixture = compile_scenario(&authored, "base\n").unwrap();
         assert_eq!(
             render_compiled(&fixture).unwrap(),
             render_compiled(&fixture).unwrap()
         );
-        assert!(fixture
-            .scenario
-            .invariants
-            .iter()
-            .any(|invariant| invariant.id == "transcript.message_counts"));
-        if kind != ScenarioTemplateKind::Text {
-            assert!(fixture
-                .scenario
-                .invariants
-                .iter()
-                .any(|invariant| invariant.id == "target.calls"));
-        }
         if matches!(
             kind,
             ScenarioTemplateKind::Hook | ScenarioTemplateKind::Crash

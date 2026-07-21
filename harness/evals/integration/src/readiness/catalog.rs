@@ -2,15 +2,15 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 
-use super::ReadinessSpec;
+use super::{ExpectedTriggerBinding, ReadinessSpec};
 
 /// Pure check: required function ids against a discovery listing.
 pub fn missing_functions(spec: &ReadinessSpec, listed: &Value) -> Vec<String> {
     let ids = collect_ids(listed, &["function_id", "id"]);
     spec.functions
         .iter()
-        .filter(|required| !ids.contains(*required))
-        .map(|required| format!("function {required}"))
+        .filter(|required| !ids.contains(&required.function_id))
+        .map(|required| format!("function {}", required.function_id))
         .collect()
 }
 
@@ -24,8 +24,71 @@ pub fn has_registered_trigger(listed: &Value, function_id: &str) -> bool {
     collect_ids(listed, &["function_id", "id"]).contains(function_id)
 }
 
-pub(super) fn has_all_discovery_ids(listed: &Value, function_ids: &[String]) -> bool {
-    contains_all_ids(listed, function_ids, &["function_id", "id"])
+pub fn registered_trigger_failures(
+    expected: &[ExpectedTriggerBinding],
+    listed: &Value,
+) -> Vec<String> {
+    let rows = listed
+        .get("registered_triggers")
+        .and_then(Value::as_array)
+        .or_else(|| listed.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut failures = Vec::new();
+
+    for binding in expected {
+        let for_function = rows
+            .iter()
+            .filter(|row| {
+                row.get("function_id").and_then(Value::as_str) == Some(binding.function_id.as_str())
+            })
+            .collect::<Vec<_>>();
+        let exact = for_function
+            .iter()
+            .filter(|row| {
+                row.get("trigger_type").and_then(Value::as_str)
+                    == Some(binding.trigger_type.as_str())
+                    && row.get("config") == Some(&binding.config)
+            })
+            .count();
+        if exact != 1 {
+            failures.push(format!(
+                "trigger binding {} -> {} with config {}: expected exactly one, got {exact}",
+                binding.trigger_type, binding.function_id, binding.config
+            ));
+        }
+
+        let expected_for_function = expected
+            .iter()
+            .filter(|candidate| candidate.function_id == binding.function_id)
+            .count();
+        if for_function.len() != expected_for_function {
+            failures.push(format!(
+                "trigger binding target {}: expected {expected_for_function} total registration(s), got {}",
+                binding.function_id,
+                for_function.len()
+            ));
+        }
+    }
+    failures.sort();
+    failures.dedup();
+    failures
+}
+
+pub fn registered_trigger_count(listed: &Value, expected: &ExpectedTriggerBinding) -> usize {
+    listed
+        .get("registered_triggers")
+        .and_then(Value::as_array)
+        .or_else(|| listed.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|row| {
+            row.get("function_id").and_then(Value::as_str) == Some(expected.function_id.as_str())
+                && row.get("trigger_type").and_then(Value::as_str)
+                    == Some(expected.trigger_type.as_str())
+                && row.get("config") == Some(&expected.config)
+        })
+        .count()
 }
 
 /// Pure check: required trigger types against a trigger-type listing.
@@ -82,11 +145,6 @@ pub fn config_failure(id: &str, expected: &Value, resp: &Value) -> Option<String
     }
 }
 
-fn contains_all_ids(listed: &Value, required: &[String], keys: &[&str]) -> bool {
-    let ids = collect_ids(listed, keys);
-    required.iter().all(|id| ids.contains(id))
-}
-
 /// Collect id strings from a list response of unknown exact shape: an array
 /// of descriptors (or `{functions: [...]}`/`{items: [...]}`), each carrying
 /// the id under one of `keys`.
@@ -111,4 +169,8 @@ fn collect_ids(listed: &Value, keys: &[&str]) -> BTreeSet<String> {
                 .map(String::from)
         })
         .collect()
+}
+
+pub(super) fn listed_ids(listed: &Value) -> BTreeSet<String> {
+    collect_ids(listed, &["function_id", "id"])
 }

@@ -8,6 +8,7 @@ import {
   markBackgroundedStale,
   mergeConversationMeta,
   mergeHydratedTranscript,
+  mergeSessionListSnapshot,
 } from './use-conversations'
 
 function conversation(overrides: Partial<Conversation>): Conversation {
@@ -154,6 +155,25 @@ describe('mergeConversationMeta', () => {
     // Unknown/absent values (pre-stamp sessions) stay undefined.
     expect(spawned('something-else')).toBeUndefined()
     expect(spawned(undefined)).toBeUndefined()
+  })
+})
+
+describe('mergeSessionListSnapshot', () => {
+  it('preserves a session created while the initial list request was in flight', () => {
+    const draft = conversation({ id: 'draft', draft: true })
+    const concurrent = conversation({
+      id: 'created-live',
+      title: 'created live',
+    })
+    const listed = sessionMeta({ session_id: 'listed' })
+
+    const next = mergeSessionListSnapshot([draft, concurrent], [listed])
+
+    expect(next.map((item) => item.id)).toEqual([
+      'draft',
+      'created-live',
+      'listed',
+    ])
   })
 })
 

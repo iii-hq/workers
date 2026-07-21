@@ -1,17 +1,20 @@
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
 use crate::client::{Client, DEFAULT_CALL_TIMEOUT_MS};
 use crate::deadline::Deadline;
-use crate::grader::{self, Evidence};
+use crate::evidence_data::RunEvidence;
 use crate::runtime::{RunError, RunErrorKind, RunPhase};
 use crate::services::RunServices;
 use crate::types::recorder::RecorderEventKind;
 
-use super::super::report::rpc_failure;
+use super::super::floor;
 use super::super::runner::ScenarioRunner;
 use super::super::state::{ActiveTurn, PreparedRun};
+
+const COLLECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl ScenarioRunner<'_> {
     pub(in crate::scenario) async fn collect(
@@ -21,14 +24,12 @@ impl ScenarioRunner<'_> {
         active: &mut ActiveTurn,
     ) -> Result<(), RunError> {
         let phase = RunPhase::Collect;
-        let deadline = active.deadline;
-
-        if deadline.is_expired() {
-            active.timed_out = true;
-            active.transcript = Vec::new();
-        } else {
-            active.transcript = self.collect_transcript(services.client(), deadline).await?;
-        }
+        // Evidence transport is runner infrastructure, not subject
+        // completion. Give it an independent bounded deadline so an RPC
+        // failure here is runner_error even when the subject deadline has
+        // already elapsed in Await.
+        let deadline = Deadline::after(COLLECTION_TIMEOUT);
+        active.transcript = self.collect_transcript(services.client(), deadline).await?;
         self.write_artifact(
             &prepared.scenario.id,
             "transcript.json",
@@ -48,14 +49,10 @@ impl ScenarioRunner<'_> {
             phase,
         )?;
 
-        active.recorder_events = services.recorder().snapshot(None).map_err(|error| {
-            RunError::with_source(
-                phase,
-                RunErrorKind::Runner,
-                "snapshot recorder evidence",
-                error,
-            )
-        })?;
+        active.recorder_events = services
+            .recorder()
+            .snapshot(None)
+            .map_err(|error| RunError::runner(phase, "snapshot recorder evidence", error))?;
         let (target_calls, lifecycle_events): (Vec<_>, Vec<_>) = active
             .recorder_events
             .iter()
@@ -72,51 +69,62 @@ impl ScenarioRunner<'_> {
             &lifecycle_events,
             phase,
         )?;
-        if deadline.is_expired() {
-            active.timed_out = true;
-        }
         Ok(())
     }
 
-    pub(in crate::scenario) fn grade(
-        &mut self,
+    /// Assemble the returned dataset from everything Collect persisted.
+    /// `send_response` is `Some` only in Rpc mode, where the runner itself
+    /// submitted `harness::send`.
+    pub(in crate::scenario) fn build_evidence(
+        &self,
         services: &RunServices,
-        prepared: &PreparedRun,
         active: &ActiveTurn,
-    ) -> Result<(), RunError> {
-        let phase = RunPhase::Grade;
-        let evidence = Evidence {
+        send_response: Option<Value>,
+    ) -> RunEvidence {
+        RunEvidence {
             run_id: self.run_id.clone(),
             session_id: self.session_id.clone(),
             turn_id: active.turn_id.clone(),
-            send_response: Some(active.send_response.clone()),
+            send_response,
             status: active.final_status.clone(),
             transcript: active.transcript.clone(),
             generations_consumed: services.router().generations_consumed(),
             generations_total: services.router().total_generations(),
             recorder_events: active.recorder_events.clone(),
-        };
-        self.invariants = grader::grade(&prepared.scenario.invariants, &evidence);
-        let invariants = self.invariants.clone();
-        self.write_artifact(&prepared.scenario.id, "invariants.json", &invariants, phase)?;
+        }
+    }
 
-        if active.timed_out {
+    /// Enforce the runner-owned floor, then run the scenario's `verify`
+    /// function. The first failure is recorded with run-scoped ids scrubbed
+    /// so repeated runs stay byte-stable.
+    pub(in crate::scenario) fn verify_evidence(
+        &mut self,
+        services: &RunServices,
+        evidence: &RunEvidence,
+        timed_out: bool,
+    ) -> Result<(), RunError> {
+        let failure = floor::floor_failure(evidence)
+            .or_else(|| floor::verify_failure(self.fixture.verify, evidence));
+        self.failure = failure.map(|message| evidence.scrub(&message));
+
+        if timed_out {
             return Err(RunError::new(
-                phase,
+                RunPhase::Await,
                 RunErrorKind::Timeout,
-                "scenario deadline elapsed before evidence collection completed",
+                "terminal status did not arrive before the scenario deadline",
             ));
         }
-        if self.invariants.iter().any(|invariant| !invariant.passed)
-            || services.router().contract_failed()
-        {
-            return Err(RunError::new(
-                phase,
+        if self.failure.is_none() && services.router().contract_failed() {
+            self.failure = Some("scripted router reported a contract failure".to_string());
+        }
+        match &self.failure {
+            Some(message) => Err(RunError::new(
+                RunPhase::Grade,
                 RunErrorKind::Contract,
-                "one or more scenario contracts failed",
-            ));
+                message.clone(),
+            )),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     async fn collect_transcript(
@@ -147,13 +155,7 @@ impl ScenarioRunner<'_> {
                 )
                 .await
                 .map_err(|error| {
-                    rpc_failure(
-                        phase,
-                        RunErrorKind::Runner,
-                        deadline,
-                        "collect session transcript",
-                        error,
-                    )
+                    RunError::runner(phase, "collect session transcript", anyhow::anyhow!(error))
                 })?;
             if let Some(items) = page.get("messages").and_then(Value::as_array) {
                 messages.extend(items.iter().cloned());

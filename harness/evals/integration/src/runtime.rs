@@ -106,6 +106,25 @@ impl RunError {
         }
     }
 
+    /// Setup-classified failure wrapping a source error, the dominant
+    /// `map_err` shape in phase code.
+    pub fn setup(
+        phase: RunPhase,
+        message: impl Into<String>,
+        source: impl Into<anyhow::Error>,
+    ) -> Self {
+        Self::with_source(phase, RunErrorKind::Setup, message, source)
+    }
+
+    /// Runner-classified failure wrapping a source error.
+    pub fn runner(
+        phase: RunPhase,
+        message: impl Into<String>,
+        source: impl Into<anyhow::Error>,
+    ) -> Self {
+        Self::with_source(phase, RunErrorKind::Runner, message, source)
+    }
+
     pub fn classification(&self) -> Classification {
         self.kind.classification()
     }

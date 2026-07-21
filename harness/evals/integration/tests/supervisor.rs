@@ -1,5 +1,4 @@
-//! Supervisor behavior over stub child processes (spec § Verification:
-//! early exit, timeout precedence via early-exit detection, signal
+//! Supervisor behavior over stub child processes (early exit, timeout precedence via early-exit detection, signal
 //! escalation, complete teardown, environment isolation).
 
 use std::path::PathBuf;
@@ -143,13 +142,11 @@ async fn children_see_only_the_environment_allowlist() {
 async fn wait_for_pid(path: &std::path::Path) -> u32 {
     for _ in 0..50 {
         if let Ok(raw) = std::fs::read_to_string(path) {
-            if let Ok(pid) = raw.trim().parse() {
-                return pid;
-            }
+            return raw.trim().parse().expect("numeric descendant pid");
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    panic!("numeric descendant pid was not written");
+    panic!("descendant pid was not written");
 }
 
 async fn wait_until_not_running(pid: u32) -> bool {

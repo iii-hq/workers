@@ -7,6 +7,8 @@ use super::WORKER_START_ORDER;
 pub struct StackBins {
     pub engine: PathBuf,
     pub harness: PathBuf,
+    /// Present only for `serve`, which boots the production Console binary.
+    pub console: Option<PathBuf>,
     /// queue, iii-directory, session-manager, context-manager.
     pub workers: BTreeMap<String, PathBuf>,
 }
@@ -17,6 +19,7 @@ impl StackBins {
         match name {
             "engine" => Some(&self.engine),
             "harness" => Some(&self.harness),
+            "console" => self.console.as_deref(),
             other => self.workers.get(other).map(PathBuf::as_path),
         }
     }

@@ -1,11 +1,10 @@
-//! Readiness failure vectors (spec § Verification: hidden internal
-//! functions, missing context manager, wrong queue topic, schema/seed
-//! mismatch) exercised over fake catalogs — the pure checks are the same
+//! Readiness failure vectors (hidden internal functions, missing context
+//! manager, wrong queue topic, schema/seed mismatch) exercised over fake catalogs — the pure checks are the same
 //! code the live probe runs.
 
 use harness_integration::readiness::{
     config_failure, has_function, has_registered_trigger, missing_functions, missing_trigger_types,
-    topic_failures, ReadinessSpec,
+    registered_trigger_failures, topic_failures, ExpectedTriggerBinding, ReadinessSpec,
 };
 use serde_json::json;
 
@@ -60,6 +59,47 @@ fn registered_trigger_catalog_requires_every_bound_function_id() {
     assert!(!required
         .iter()
         .all(|id| has_registered_trigger(&incomplete, id)));
+}
+
+#[test]
+fn registered_trigger_contract_requires_exact_type_config_and_cardinality() {
+    let expected = vec![ExpectedTriggerBinding {
+        trigger_type: "harness::turn-completed".into(),
+        function_id: "integration-recorder::lifecycle".into(),
+        config: json!({ "session_id": "s_1" }),
+    }];
+    let exact = json!({ "registered_triggers": [{
+        "id": "trigger-1",
+        "trigger_type": "harness::turn-completed",
+        "function_id": "integration-recorder::lifecycle",
+        "worker_name": "integration-recorder",
+        "config": { "session_id": "s_1" },
+        "config_summary": "{}"
+    }]});
+    assert!(registered_trigger_failures(&expected, &exact).is_empty());
+
+    let wrong_session = json!({ "registered_triggers": [{
+        "id": "trigger-1",
+        "trigger_type": "harness::turn-completed",
+        "function_id": "integration-recorder::lifecycle",
+        "worker_name": "integration-recorder",
+        "config": { "session_id": "s_other" },
+        "config_summary": "{}"
+    }]});
+    assert!(!registered_trigger_failures(&expected, &wrong_session).is_empty());
+
+    let duplicate = json!({ "registered_triggers": [
+        exact["registered_triggers"][0].clone(),
+        {
+            "id": "trigger-2",
+            "trigger_type": "harness::turn-completed",
+            "function_id": "integration-recorder::lifecycle",
+            "worker_name": "integration-recorder",
+            "config": { "session_id": "s_1" },
+            "config_summary": "{}"
+        }
+    ]});
+    assert!(!registered_trigger_failures(&expected, &duplicate).is_empty());
 }
 
 #[test]

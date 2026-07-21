@@ -1,5 +1,4 @@
-//! `RouterScriptV1` — the strict scripted-router fixture (spec § Proposed
-//! scripted-router contract). Loaded, expanded, and validated before the
+//! `RouterScriptV1` — the strict scripted-router fixture. Loaded, expanded, and validated before the
 //! stack boots; any defect here is a `runner_error`, never a subject failure.
 
 use schemars::JsonSchema;

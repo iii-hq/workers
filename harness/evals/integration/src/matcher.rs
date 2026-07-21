@@ -1,4 +1,4 @@
-//! `JsonMatcherV1` evaluation (spec § Script schema).
+//! `JsonMatcherV1` evaluation.
 //!
 //! Matchers see copies: normalizers mutate the copies of both actual and
 //! expected before comparison and never the stored evidence. `subset`
@@ -135,7 +135,7 @@ fn normalized_pair(
 /// Apply one normalizer to one document. A pointer whose path does not exist
 /// is a no-op: deleting a `timestamp` that a side already lacks must not fail
 /// the comparison.
-pub fn apply_normalizer(doc: &mut Value, normalizer: &JsonNormalizerV1) -> anyhow::Result<()> {
+fn apply_normalizer(doc: &mut Value, normalizer: &JsonNormalizerV1) -> anyhow::Result<()> {
     validate_pointer(&normalizer.pointer)?;
     match normalizer.operation {
         NormalizerOperation::Replace => {

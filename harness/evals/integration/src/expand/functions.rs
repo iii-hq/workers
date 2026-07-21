@@ -3,13 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::Context;
 use serde_json::{json, Value};
 
-use crate::types::frames::{AssistantMessageEvent, ContentBlock};
 use crate::types::recorder::{
     LifecycleFunctionId, LifecycleTriggerType, RecorderConfigV1, RecorderLifecycleV1,
     RecorderTargetV1,
 };
 use crate::types::scenario::{
-    CompiledFaultV1, IntegrationScenarioV1, RouterReplyV1, ScenarioFunctionV1, TriggerBindingV1,
+    AuthoredScenarioV1, CompiledFaultV1, RouterReplyV1, ScenarioFunctionV1, TriggerBindingV1,
 };
 use crate::types::script::ModelFixtureV1;
 
@@ -18,7 +17,7 @@ use super::{
     CompiledFunctionCall, SYNTHETIC_FUNCTION_ALIAS,
 };
 
-pub(super) fn function_ids(authored: &IntegrationScenarioV1) -> BTreeMap<String, String> {
+pub(super) fn function_ids(authored: &AuthoredScenarioV1) -> BTreeMap<String, String> {
     authored
         .functions
         .keys()
@@ -26,31 +25,18 @@ pub(super) fn function_ids(authored: &IntegrationScenarioV1) -> BTreeMap<String,
         .collect()
 }
 
-pub(super) fn allowed_aliases(authored: &IntegrationScenarioV1) -> anyhow::Result<Vec<String>> {
-    let mut aliases = match &authored.send.allow {
-        Some(aliases) => aliases.clone(),
-        None => authored
-            .functions
-            .iter()
-            .filter(|(_, function)| function.expose)
-            .map(|(alias, _)| alias.clone())
-            .collect(),
-    };
-    let mut seen = BTreeSet::new();
-    for alias in &aliases {
-        if !authored.functions.contains_key(alias) {
-            anyhow::bail!("send.allow references unknown function alias {alias:?}");
-        }
-        if !seen.insert(alias) {
-            anyhow::bail!("send.allow contains duplicate function alias {alias:?}");
-        }
-    }
-    aliases.sort();
-    Ok(aliases)
+/// Every exposed function alias, in stable (BTreeMap) order.
+pub(super) fn allowed_aliases(authored: &AuthoredScenarioV1) -> Vec<String> {
+    authored
+        .functions
+        .iter()
+        .filter(|(_, function)| function.expose)
+        .map(|(alias, _)| alias.clone())
+        .collect()
 }
 
 pub(super) fn compile_tools(
-    authored: &IntegrationScenarioV1,
+    authored: &AuthoredScenarioV1,
     allowed_aliases: &[String],
     function_ids: &BTreeMap<String, String>,
 ) -> Value {
@@ -71,7 +57,7 @@ pub(super) fn compile_tools(
 }
 
 pub(super) fn compile_recorder(
-    authored: &IntegrationScenarioV1,
+    authored: &AuthoredScenarioV1,
     allowed_aliases: &[String],
     function_ids: &BTreeMap<String, String>,
 ) -> RecorderConfigV1 {
@@ -111,7 +97,7 @@ fn compile_function(function_id: &str, function: &ScenarioFunctionV1) -> Recorde
         description: function.description.clone(),
         request_schema: function.request_schema.clone(),
         response: function.response.clone(),
-        response_delay_ms: function.response_delay_ms,
+        hold_response_at: None,
     }
 }
 
@@ -130,7 +116,7 @@ fn synthetic_target() -> RecorderTargetV1 {
             "content": [{ "type": "text", "text": "unused" }],
             "is_error": false
         }),
-        response_delay_ms: None,
+        hold_response_at: None,
     }
 }
 
@@ -142,7 +128,7 @@ fn compiled_lifecycle() -> RecorderLifecycleV1 {
 }
 
 pub(super) fn compile_bindings(
-    authored: &IntegrationScenarioV1,
+    authored: &AuthoredScenarioV1,
     allowed_aliases: &[String],
     function_ids: &BTreeMap<String, String>,
 ) -> anyhow::Result<Vec<TriggerBindingV1>> {
@@ -184,7 +170,7 @@ pub(super) fn compile_bindings(
                 }
                 if !allowed_aliases.contains(alias) {
                     anyhow::bail!(
-                        "binding callback {:?} selects function {alias:?} outside send.allow",
+                        "binding callback {:?} selects function {alias:?} that send does not expose",
                         binding.function
                     );
                 }
@@ -203,9 +189,7 @@ pub(super) fn compile_bindings(
 }
 
 pub(super) fn function_call_ids(
-    authored: &IntegrationScenarioV1,
-    function_ids: &BTreeMap<String, String>,
-    allowed_aliases: &[String],
+    authored: &AuthoredScenarioV1,
 ) -> anyhow::Result<Vec<CompiledFunctionCall>> {
     let mut calls = Vec::new();
     let mut seen = BTreeSet::new();
@@ -232,59 +216,8 @@ pub(super) fn function_call_ids(
                         id,
                         function: function.clone(),
                         generation_index,
-                        typed: true,
                     },
                 )?;
-            }
-            RouterReplyV1::Raw { frames, .. } => {
-                for message in frames.iter().filter_map(|frame| match frame {
-                    AssistantMessageEvent::Done { message } => Some(message),
-                    _ => None,
-                }) {
-                    for block in &message.content {
-                        let ContentBlock::FunctionCall {
-                            id,
-                            function_id,
-                            arguments,
-                        } = block
-                        else {
-                            continue;
-                        };
-                        let function = function_ids
-                            .iter()
-                            .find_map(|(alias, resolved)| {
-                                (resolved == function_id).then_some(alias)
-                            })
-                            .with_context(|| {
-                                format!(
-                                    "generation {} raw function call references unknown function id {function_id:?}",
-                                    generation_index + 1
-                                )
-                            })?;
-                        if !allowed_aliases.contains(function) {
-                            anyhow::bail!(
-                                "generation {} raw function call alias {function:?} is outside send.allow",
-                                generation_index + 1
-                            );
-                        }
-                        validate_function_arguments(
-                            authored,
-                            function,
-                            arguments,
-                            &format!("generation {} raw reply", generation_index + 1),
-                        )?;
-                        register_call(
-                            &mut calls,
-                            &mut seen,
-                            CompiledFunctionCall {
-                                id: id.clone(),
-                                function: function.clone(),
-                                generation_index,
-                                typed: false,
-                            },
-                        )?;
-                    }
-                }
             }
             RouterReplyV1::Text { .. } => {}
         }
@@ -308,7 +241,7 @@ fn register_call(
 }
 
 pub(super) fn compile_fault(
-    authored: &IntegrationScenarioV1,
+    authored: &AuthoredScenarioV1,
     function_ids: &BTreeMap<String, String>,
     calls: &[CompiledFunctionCall],
 ) -> anyhow::Result<Option<CompiledFaultV1>> {
@@ -318,11 +251,10 @@ pub(super) fn compile_fault(
     if fault.after_target_calls == 0 {
         anyhow::bail!("fault.after_target_calls must be greater than zero");
     }
-    let function = fault
-        .function
-        .as_deref()
-        .or_else(|| calls.first().map(|call| call.function.as_str()))
-        .context("fault injection requires a typed or raw function call")?;
+    let function = calls
+        .first()
+        .map(|call| call.function.as_str())
+        .context("fault injection requires an authored function call")?;
     let function_id = function_ids
         .get(function)
         .with_context(|| format!("fault references unknown function alias {function:?}"))?;
@@ -336,12 +268,6 @@ pub(super) fn compile_fault(
             fault.after_target_calls
         );
     }
-    let delay = authored.functions[function].response_delay_ms.unwrap_or(0);
-    if delay == 0 {
-        anyhow::bail!(
-            "fault target {function:?} requires response_delay_ms > 0 for a deterministic interruption window"
-        );
-    }
     Ok(Some(CompiledFaultV1 {
         kind: fault.kind,
         function_id: function_id.clone(),
@@ -350,24 +276,40 @@ pub(super) fn compile_fault(
     }))
 }
 
+pub(super) fn hold_fault_target(
+    recorder: &mut RecorderConfigV1,
+    function_id: &str,
+    call_ordinal: u64,
+) -> anyhow::Result<()> {
+    let target = std::iter::once(&mut recorder.target)
+        .chain(recorder.extra_functions.iter_mut())
+        .find(|target| target.function_id == function_id)
+        .with_context(|| format!("fault target {function_id:?} is not a controlled function"))?;
+    target.hold_response_at = Some(call_ordinal);
+    Ok(())
+}
+
 pub(super) fn compile_send(
-    authored: &IntegrationScenarioV1,
+    authored: &AuthoredScenarioV1,
     model: &ModelFixtureV1,
     allowed_ids: &[String],
-) -> anyhow::Result<Value> {
-    Ok(json!({
-        "session_id": "{{session_id}}",
-        "message": authored.send.message,
-        "model": model.id,
-        "provider": model.provider,
-        "idempotency_key": authored.send.idempotency_key.clone()
-            .unwrap_or_else(|| format!("{{{{run_id}}}}:{}", authored.id.to_ascii_lowercase())),
-        "options": {
-            "functions": {
-            "allow": allowed_ids,
-            "deny": [],
-            "expose": "native"
-            }
-        }
-    }))
+) -> anyhow::Result<crate::types::scenario::CompiledSendV1> {
+    use crate::types::scenario::{
+        CompiledFunctionExposureV1, CompiledFunctionPolicyV1, CompiledSendOptionsV1, CompiledSendV1,
+    };
+
+    Ok(CompiledSendV1 {
+        session_id: "{{session_id}}".to_string(),
+        message: authored.send.message.clone(),
+        model: model.id.clone(),
+        provider: model.provider.clone(),
+        idempotency_key: format!("{{{{run_id}}}}:{}", authored.id.to_ascii_lowercase()),
+        options: CompiledSendOptionsV1 {
+            functions: CompiledFunctionPolicyV1 {
+                allow: allowed_ids.to_vec(),
+                deny: Vec::new(),
+                expose: CompiledFunctionExposureV1::Native,
+            },
+        },
+    })
 }

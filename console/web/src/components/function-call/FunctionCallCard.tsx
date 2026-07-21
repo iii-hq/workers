@@ -10,11 +10,11 @@ import {
   DirectoryToolView,
 } from '@/components/chat/directory'
 import { EngineFunctionIdLabel, EngineToolView } from '@/components/chat/engine'
+import { FpFunctionIdLabel, FpToolView } from '@/components/chat/fp'
 import {
   HarnessFunctionIdLabel,
   HarnessToolView,
 } from '@/components/chat/harness'
-import { FpFunctionIdLabel, FpToolView } from '@/components/chat/fp'
 import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
 import {
   SandboxFunctionIdLabel,
@@ -379,6 +379,11 @@ export function FunctionCallCard({
         !embedded && 'border border-rule bg-bg',
       )}
       data-message-id={message.id}
+      data-message-role="function-call"
+      data-function-id={message.functionId}
+      data-function-status={
+        pending ? 'pending' : running ? 'running' : errored ? 'error' : 'done'
+      }
     >
       <button
         type="button"

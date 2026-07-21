@@ -7,7 +7,7 @@ use crate::types::frames::{
     AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, RouterChatResponse,
     StopReason,
 };
-use crate::types::scenario::{IntegrationScenarioV1, RouterReplyV1};
+use crate::types::scenario::{AuthoredScenarioV1, RouterReplyV1};
 use crate::types::script::{
     GenerationMatchV1, JsonMatcherV1, JsonNormalizerV1, ModelFixtureV1, NormalizerOperation,
     RouterScriptV1, SchemaVersion1, ScriptedGenerationV1,
@@ -22,7 +22,7 @@ struct CompiledReply {
 }
 
 pub(super) fn compile_router(
-    authored: &IntegrationScenarioV1,
+    authored: &AuthoredScenarioV1,
     model: &ModelFixtureV1,
     tools: &Value,
     function_ids: &BTreeMap<String, String>,
@@ -42,8 +42,8 @@ pub(super) fn compile_router(
         ) {
             let id = calls
                 .iter()
-                .find(|call| call.generation_index == index && call.typed)
-                .context("compiler lost a typed function-call id")?;
+                .find(|call| call.generation_index == index)
+                .context("compiler lost a function-call id")?;
             Some(id.id.as_str())
         } else {
             None
@@ -143,25 +143,17 @@ fn apply_match_overrides(
             }
         };
     }
-    replace!(writer_ref);
     replace!(request_id);
-    replace!(model);
-    replace!(provider);
     replace!(system_prompt);
     replace!(messages);
     replace!(tools);
-    replace!(response_format);
-    replace!(thinking_level);
-    replace!(max_output_tokens);
-    replace!(provider_options);
-    replace!(metadata);
 }
 
 fn compile_reply(
     reply: &RouterReplyV1,
     ordinal: u64,
     model: &ModelFixtureV1,
-    authored: &IntegrationScenarioV1,
+    authored: &AuthoredScenarioV1,
     function_ids: &BTreeMap<String, String>,
     call_id: Option<&str>,
 ) -> anyhow::Result<CompiledReply> {
@@ -308,19 +300,6 @@ fn compile_reply(
                         "is_error": is_error
                     }),
                 ],
-            })
-        }
-        RouterReplyV1::Raw { frames, response } => {
-            let history = match frames.last() {
-                Some(AssistantMessageEvent::Done { message }) => {
-                    vec![serde_json::to_value(message)?]
-                }
-                _ => Vec::new(),
-            };
-            Ok(CompiledReply {
-                frames: frames.clone(),
-                response: response.clone(),
-                history,
             })
         }
     }

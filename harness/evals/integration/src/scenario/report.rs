@@ -3,8 +3,7 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::json;
 
-use crate::artifacts::write_json;
-use crate::deadline::Deadline;
+use crate::artifacts::{write_json, ArtifactSink};
 use crate::runtime::{RunError, RunErrorKind, RunPhase};
 use crate::stack::EarlyExit;
 use crate::types::scenario::{Classification, ExecutionReportV1, IntegrationResultV1};
@@ -13,6 +12,34 @@ use crate::types::script::SchemaVersion1;
 use super::runner::ScenarioRunner;
 
 impl ScenarioRunner<'_> {
+    pub(in crate::scenario) fn sink_mut(
+        &mut self,
+        phase: RunPhase,
+    ) -> Result<&mut ArtifactSink, RunError> {
+        self.sink.as_mut().ok_or_else(|| {
+            RunError::new(
+                phase,
+                RunErrorKind::Runner,
+                "artifact sink is not initialized",
+            )
+        })
+    }
+
+    pub(super) fn write_run_artifact<T>(
+        &mut self,
+        name: &str,
+        value: &T,
+        phase: RunPhase,
+    ) -> Result<(), RunError>
+    where
+        T: Serialize + ?Sized,
+    {
+        self.sink_mut(phase)?
+            .write_json(name, value)
+            .map(|_| ())
+            .map_err(|error| RunError::runner(phase, format!("write run artifact {name}"), error))
+    }
+
     pub(super) fn write_artifact<T>(
         &mut self,
         scenario_id: &str,
@@ -23,24 +50,11 @@ impl ScenarioRunner<'_> {
     where
         T: Serialize + ?Sized,
     {
-        self.sink
-            .as_mut()
-            .ok_or_else(|| {
-                RunError::new(
-                    phase,
-                    RunErrorKind::Runner,
-                    "artifact sink is not initialized",
-                )
-            })?
+        self.sink_mut(phase)?
             .write_scenario_json(scenario_id, name, value)
             .map(|_| ())
             .map_err(|error| {
-                RunError::with_source(
-                    phase,
-                    RunErrorKind::Runner,
-                    format!("write scenario artifact {name}"),
-                    error,
-                )
+                RunError::runner(phase, format!("write scenario artifact {name}"), error)
             })
     }
 
@@ -76,6 +90,15 @@ impl ScenarioRunner<'_> {
                     stderr = %exit.stderr_log.display(),
                     "subject process exited before teardown"
                 );
+                if let Err(artifact_error) =
+                    self.write_run_artifact("process-exit.json", &exit, RunPhase::Teardown)
+                {
+                    tracing::error!(
+                        target: "harness_integration::scenario",
+                        "process-exit artifact could not be written: {artifact_error:#}"
+                    );
+                    error = Some(artifact_error);
+                }
                 ProcessState::Crashed
             }
             None => ProcessState::Running,
@@ -103,7 +126,7 @@ impl ScenarioRunner<'_> {
             schema_version: SchemaVersion1::V1,
             scenario_id: self.fixture.scenario.id.clone(),
             classification,
-            invariants: self.invariants.clone(),
+            failure: self.failure.clone(),
             artifacts: self
                 .sink
                 .as_ref()
@@ -124,20 +147,10 @@ impl ScenarioRunner<'_> {
             .map(|sink| sink.run_root().to_path_buf())
             .unwrap_or_else(|| artifacts_dir.join(&self.run_id));
         write_json(&run_root, &run_root.join("result.json"), result).map_err(|error| {
-            RunError::with_source(
-                RunPhase::Report,
-                RunErrorKind::Runner,
-                "write stable result.json",
-                error,
-            )
+            RunError::runner(RunPhase::Report, "write stable result.json", error)
         })?;
         write_json(&run_root, &run_root.join("execution.json"), execution).map_err(|error| {
-            RunError::with_source(
-                RunPhase::Report,
-                RunErrorKind::Runner,
-                "write volatile execution.json",
-                error,
-            )
+            RunError::runner(RunPhase::Report, "write volatile execution.json", error)
         })?;
         Ok(())
     }
@@ -170,16 +183,10 @@ pub(super) fn classify(error: Option<&RunError>, process_state: ProcessState) ->
 
 pub(super) fn rpc_failure(
     phase: RunPhase,
-    default_kind: RunErrorKind,
-    deadline: Deadline,
+    kind: RunErrorKind,
     message: impl Into<String>,
     error: String,
 ) -> RunError {
-    let kind = if deadline.is_expired() {
-        RunErrorKind::Timeout
-    } else {
-        default_kind
-    };
     RunError::with_source(phase, kind, message, anyhow::anyhow!(error))
 }
 

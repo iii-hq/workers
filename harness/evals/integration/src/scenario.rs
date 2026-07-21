@@ -5,12 +5,16 @@
 //! Every phase returns [`crate::runtime::RunError`]. Classification is derived
 //! once after process state has been inspected.
 
+pub mod floor;
+
 mod phases;
 mod report;
 mod runner;
+mod serve;
 mod state;
 
 pub use runner::{run_scenario, RunOutcome};
+pub use serve::{serve_scenario, ServeOutcome, ServeReadyV1, ServeResultV1};
 
 #[cfg(test)]
 mod tests;

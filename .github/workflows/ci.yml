@@ -493,14 +493,38 @@ jobs:
         run: make -C harness integration-validate
 
       - name: Run integration scenarios
-        run: make -C harness integration-e2e III_BIN="${{ steps.engine.outputs.bin }}"
+        run: make -C harness integration-e2e III_BIN="${{ steps.engine.outputs.bin }}" INTEGRATION_REPEAT=2
+
+      - name: Verify integration report links
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          reports=(target/integration/*/execution.json)
+          ((${#reports[@]} > 0)) || { echo "no execution reports found"; exit 3; }
+          for execution in "${reports[@]}"; do
+            run_dir=$(dirname "$execution")
+            result_path=$(jq -er '.result_path' "$execution")
+            [[ "$result_path" == "result.json" ]] || {
+              echo "$execution: unexpected result_path $result_path"
+              exit 3
+            }
+            expected=$(jq -er '.result_sha256' "$execution")
+            actual=$(sha256sum "$run_dir/$result_path" | cut -d' ' -f1)
+            [[ "$actual" == "$expected" ]] || {
+              echo "$execution: result digest mismatch"
+              exit 3
+            }
+          done
 
       - name: Upload compact results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: integration-results
-          path: target/integration/*/result.json
+          path: |
+            target/integration/*/result.json
+            target/integration/*/execution.json
+            target/integration/*/teardown.json
           if-no-files-found: ignore
 
       - name: Upload full non-pass artifacts
