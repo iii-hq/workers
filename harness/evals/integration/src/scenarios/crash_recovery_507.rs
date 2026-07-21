@@ -12,7 +12,7 @@ pub(super) fn scenario() -> AuthoredScenario {
         "An engine crash during a dispatched function call must not leave the call dangling or the session unusable.",
     )
     .quarantine()
-    .send(Send::message("Call the recorder once."))
+    .trigger(Harness::send("Call the recorder once."))
     .function("record", Function::recorder())
     .generation(Reply::function_call("record", json!({ "value": "expected" })).usage(8, 4))
     // Recovery can legitimately reconstruct the second request differently;

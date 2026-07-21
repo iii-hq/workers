@@ -1,65 +1,15 @@
-//! Golden JSON Schemas for every serialized V1 contract type, checked in
-//! under `schemas/`, plus serde round-trip tests for the scenario, router,
-//! recorder-event, and result contracts.
-//!
-//! Regenerate after an intentional type change with:
-//! `REGEN_SCHEMAS=1 cargo test --test schemas`
+//! Serde round-trip tests for the serialized V1 contract types (scenario,
+//! router, recorder-event, and result), plus validation of compiled payloads
+//! against the producer-owned contracts. There are no generated goldens:
+//! wire shape is pinned by the round trips, and silent compiler weakening is
+//! caught by the property tests in `scenario_compilation.rs`.
 
-use harness_integration::canonical::canonical_json_pretty;
 use harness_integration::expand::CompiledFixtureV1;
 use harness_integration::types::recorder::{RecorderEventKind, RecorderEventV1};
 use harness_integration::types::scenario::{
     Classification, CompiledScenarioV1, ExecutionReportV1, IntegrationResultV1,
 };
 use harness_integration::types::script::{RouterScriptV1, SchemaVersion1};
-
-fn goldens() -> Vec<(&'static str, serde_json::Value)> {
-    fn schema<T: schemars::JsonSchema>() -> serde_json::Value {
-        serde_json::to_value(schemars::schema_for!(T)).expect("schema serializes")
-    }
-    // The authored layer is code and never serialized, so it has no golden.
-    vec![
-        ("router-script.v1", schema::<RouterScriptV1>()),
-        ("compiled-scenario.v1", schema::<CompiledScenarioV1>()),
-        ("compiled-fixture.v1", schema::<CompiledFixtureV1>()),
-        ("integration-result.v1", schema::<IntegrationResultV1>()),
-        ("execution-report.v1", schema::<ExecutionReportV1>()),
-        ("recorder-event.v1", schema::<RecorderEventV1>()),
-    ]
-}
-
-#[test]
-fn committed_schemas_match_the_types() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("schemas");
-    let regen = std::env::var_os("REGEN_SCHEMAS").is_some();
-    let mut expected_files = std::collections::BTreeSet::new();
-    for (name, schema) in goldens() {
-        let path = dir.join(format!("{name}.json"));
-        expected_files.insert(path.clone());
-        let rendered = canonical_json_pretty(&schema);
-        if regen {
-            std::fs::write(&path, &rendered).unwrap();
-            continue;
-        }
-        let committed = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("missing golden {}: {e}", path.display()));
-        assert_eq!(
-            committed, rendered,
-            "{name}.json is stale; regenerate with REGEN_SCHEMAS=1 cargo test --test schemas"
-        );
-    }
-    // No orphaned goldens: every committed schema corresponds to a type.
-    for entry in std::fs::read_dir(&dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) == Some("json") {
-            assert!(
-                expected_files.contains(&path),
-                "orphaned golden schema {}",
-                path.display()
-            );
-        }
-    }
-}
 
 /// Every registered scenario compiles and its strict runtime representation
 /// round-trips through its typed mirror. The authored layer is code and has

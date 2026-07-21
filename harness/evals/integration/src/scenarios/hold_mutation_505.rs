@@ -12,7 +12,7 @@ pub(super) fn scenario() -> AuthoredScenario {
         "A pre-trigger hook that holds and mutates must apply its mutation to the released call.",
     )
     .quarantine()
-    .send(Send::message("Call the recorder once."))
+    .trigger(Harness::send("Call the recorder once."))
     .function("record", Function::recorder())
     .function(
         "hook-gate",

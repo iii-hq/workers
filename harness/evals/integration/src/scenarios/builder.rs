@@ -25,14 +25,14 @@ use crate::types::script::JsonMatcherV1;
 pub type AuthoredScenario = AuthoredScenarioV1;
 
 impl AuthoredScenarioV1 {
-    /// A new scenario with an empty send. Chain [`Self::send`] before
+    /// A new scenario with an empty send. Chain [`Self::trigger`] before
     /// registering; the registry tests reject an empty message.
     pub fn new(id: &str, description: &str) -> Self {
         Self {
             id: id.to_string(),
             description: description.to_string(),
             quarantine: false,
-            send: Send::message(""),
+            send: Harness::send(""),
             functions: Default::default(),
             router: ScenarioRouterV1 {
                 model: None,
@@ -53,7 +53,11 @@ impl AuthoredScenarioV1 {
         self
     }
 
-    pub fn send(mut self, send: ScenarioSendV1) -> Self {
+    /// The turn-initiating invocation, mirroring the platform verb: the
+    /// compiled payload is what `iii.trigger("harness::send", …)` submits —
+    /// directly by the runner in Rpc mode, via the ready manifest by
+    /// Playwright in Serve mode.
+    pub fn trigger(mut self, send: ScenarioSendV1) -> Self {
         self.send = send;
         self
     }
@@ -110,12 +114,13 @@ impl AuthoredScenarioV1 {
     }
 }
 
-/// Entry point for [`ScenarioSendV1`]. Shadows the marker trait name inside
-/// scenario modules on purpose; those modules contain data only.
-pub struct Send;
+/// Entry point for [`ScenarioSendV1`]. `Harness::send(…)` spells the wire
+/// function id `harness::send`, so `.trigger(Harness::send(…))` reads like
+/// the platform call `iii.trigger("harness::send", …)`.
+pub struct Harness;
 
-impl Send {
-    pub fn message(message: &str) -> ScenarioSendV1 {
+impl Harness {
+    pub fn send(message: &str) -> ScenarioSendV1 {
         ScenarioSendV1 {
             message: message.to_string(),
             allow: None,

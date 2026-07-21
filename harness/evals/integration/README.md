@@ -58,7 +58,7 @@ A typical authored function scenario is:
 // src/scenarios/my_function_case.rs
 pub(super) fn scenario() -> AuthoredScenario {
     AuthoredScenario::new("E2E-010", "The allowed function runs once.")
-        .send(Send::message("Call the recorder once."))
+        .trigger(Harness::send("Call the recorder once."))
         .function(
             "record",
             Function::new(
@@ -103,7 +103,7 @@ system prompt.
 `Function::recorder()` is the canonical string-in/`recorded`-out fixture;
 `Function::new(...)` builds any other controlled function and `.hidden()`
 marks a hook-only one. Function aliases become `<run_id>::<alias>`.
-`Send::message(...).allow([...])` can narrow the exposed aliases or be an
+`Harness::send(...).allow([...])` can narrow the exposed aliases or be an
 empty list to disable dispatch. `Release::execute()` and `Release::deliver()`
 name the held-call action. Typed text and function-call replies cover normal
 cases; `.recovery_boundary()` grades a reply against the durable outcome only,

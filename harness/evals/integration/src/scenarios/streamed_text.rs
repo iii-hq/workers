@@ -7,7 +7,7 @@ pub(super) fn scenario() -> AuthoredScenario {
         "E2E-001",
         "Streamed text reaches durable completion through the real queue and turn loop.",
     )
-    .send(Send::message("Return the fixture phrase."))
+    .trigger(Harness::send("Return the fixture phrase."))
     .generation(
         Reply::text("fixture complete")
             .chunks(["fixture ", "complete"])

@@ -12,7 +12,7 @@ pub(super) fn scenario() -> AuthoredScenario {
         "A held call released for execution must run with the arguments produced by earlier hooks.",
     )
     .quarantine()
-    .send(Send::message("Call the recorder once."))
+    .trigger(Harness::send("Call the recorder once."))
     .function("record", Function::recorder())
     .function(
         "hook-mutate",

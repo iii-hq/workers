@@ -11,7 +11,7 @@ pub(super) fn scenario() -> AuthoredScenario {
         "UI-001",
         "A message sent from the Console streams to durable completion.",
     )
-    .send(Send::message("Return the console fixture phrase."))
+    .trigger(Harness::send("Return the console fixture phrase."))
     .generation(
         Reply::text("console fixture complete")
             .chunks(["console fixture ", "complete"])

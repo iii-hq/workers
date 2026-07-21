@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tech Spec"
+  short_description: "Research-grounded technical specification design"
+  default_prompt: "Use $tech-spec to design a rigorous, implementable technical specification grounded in the existing system."
