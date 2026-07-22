@@ -1,5 +1,6 @@
 //! `database::transaction` — atomic sequence of statements.
 
+use super::tx_sql_guard::is_transaction_control_sql;
 use super::AppState;
 use crate::driver::{self, Isolation, TxStatement};
 use crate::handlers::query::err_to_str;
@@ -25,13 +26,13 @@ pub struct TxStmtReq {
     pub params: Vec<Value>,
 }
 
-#[derive(Serialize, JsonSchema)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct TxStepResp {
     pub affected_rows: u64,
     pub rows: Vec<Vec<Value>>,
 }
 
-#[derive(Serialize, JsonSchema)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct TxResp {
     pub committed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -71,7 +72,28 @@ pub async fn handle(state: &AppState, req: TxReq) -> Result<TxResp, String> {
     };
 
     let mut stmts: Vec<TxStatement> = Vec::with_capacity(req.statements.len());
-    for s in req.statements {
+    for (i, s) in req.statements.into_iter().enumerate() {
+        // Same handler-boundary guards as the interactive surface
+        // (transaction_execute.rs): drivers diverge on empty SQL (postgres
+        // no-ops, sqlite/mysql error), and embedded transaction-control SQL
+        // would finalize the worker-managed transaction mid-batch, silently
+        // breaking the atomicity contract while reporting committed:false.
+        if s.sql.trim().is_empty() {
+            return Err(err_to_str(crate::error::DbError::InvalidParam {
+                index: i,
+                reason: "empty SQL statement".into(),
+            }));
+        }
+        if is_transaction_control_sql(&s.sql) {
+            return Err(err_to_str(crate::error::DbError::InvalidParam {
+                index: i,
+                reason: "transaction-control SQL (BEGIN/START TRANSACTION/COMMIT/ROLLBACK/\
+                        SAVEPOINT/RELEASE/END/SET TRANSACTION, including comment-prefixed \
+                        forms) is not allowed inside an atomic batch; the worker issues \
+                        BEGIN/COMMIT/ROLLBACK itself"
+                    .into(),
+            }));
+        }
         let params = JsonParam::from_json_slice(&s.params).map_err(err_to_str)?;
         stmts.push(TxStatement { sql: s.sql, params });
     }
@@ -297,5 +319,41 @@ mod tests {
         assert!(v.get("results").is_none());
         assert!(v.get("failed_index").is_some());
         assert!(v.get("error").is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tx_rejects_transaction_control_sql_with_statement_index() {
+        let st = state();
+        let err = handle(
+            &st,
+            tx_req(json!({
+                "db": "primary",
+                "statements": [
+                    {"sql": "INSERT INTO t VALUES (1)"},
+                    {"sql": "COMMIT"},
+                ]
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("INVALID_PARAM"), "got: {err}");
+        assert!(err.contains("transaction-control"), "got: {err}");
+        assert!(err.contains("\"index\":1"), "got: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tx_rejects_empty_statement() {
+        let st = state();
+        let err = handle(
+            &st,
+            tx_req(json!({
+                "db": "primary",
+                "statements": [{"sql": "   "}]
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("INVALID_PARAM"), "got: {err}");
+        assert!(err.contains("empty SQL"), "got: {err}");
     }
 }

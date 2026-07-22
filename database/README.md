@@ -182,9 +182,10 @@ const { rows } = await iii.trigger({
 |---|---|
 | `database::query` | Read SQL. Returns `{ rows, row_count, columns }`. |
 | `database::execute` | Write SQL. Returns `{ affected_rows, last_insert_id, returned_rows }`.<br>**`last_insert_id` semantics:** SQLite/MySQL surface the engine's `last_insert_rowid()` / `LAST_INSERT_ID()` (only populated for INSERT). Postgres has no equivalent — `last_insert_id` is set from the **first column of the first RETURNING row**, so put your PK first: `RETURNING id, name`, not `RETURNING name, id`. |
+| `database::execute_batch` | Convenience form of `transaction`: statements may be bare SQL strings or `{ sql, params }` objects (use `params` for dynamic values instead of inlining them). Same envelope and semantics as `transaction` — atomic, rolls back on first failure, reports `failed_index`, supports `isolation`. Also registered as `database::executeBatch`. |
 | `database::prepareStatement` | Pin a connection and return `{ handle: { id, expires_at } }`. |
 | `database::runStatement` | Run a previously-prepared handle. (No `timeout_ms` — uses the pinned connection's session lifetime; configure via `ttl_seconds` on `prepareStatement`.) |
-| `database::transaction` | Atomic batch sequence; rolls back on first failure. One-shot — pass all statements together. |
+| `database::transaction` | Atomic batch sequence; rolls back on first failure. One-shot — pass all statements together. Rejects bare transaction-control SQL (`BEGIN`/`COMMIT`/`ROLLBACK`/…) and empty statements with `INVALID_PARAM`. |
 | `database::beginTransaction` | Open an interactive transaction. Returns `{ transaction: { id, expires_at } }`. Configurable `timeout_ms` (default 30 000, max 300 000) auto-rolls back if the deadline elapses. |
 | `database::transactionQuery` | Read SQL inside an interactive transaction. Same envelope as `query`. |
 | `database::transactionExecute` | Write SQL inside an interactive transaction. Same envelope as `execute`. Rejects bare `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT`/`SET TRANSACTION` with `INVALID_PARAM` — finalize via the dedicated handlers below. |
@@ -221,7 +222,7 @@ Returned `IIIError::Handler` bodies carry a stable `code` field:
 | `STATEMENT_NOT_FOUND` | Handle expired or unknown — re-prepare. |
 | `TRANSACTION_NOT_FOUND` | Transaction id unknown, already committed/rolled back, or timed out (auto-rolled-back by the watcher). |
 | `UNKNOWN_DB` | `db` parameter doesn't match any configured database. |
-| `INVALID_PARAM` | JSON value couldn't be coerced for the target driver, or transaction-control SQL was sent to `transactionExecute` (use `commitTransaction` / `rollbackTransaction`). |
+| `INVALID_PARAM` | JSON value couldn't be coerced for the target driver, transaction-control SQL was sent to `transactionExecute` (use `commitTransaction` / `rollbackTransaction`), or a `transaction`/`execute_batch` batch contained transaction-control SQL or an empty statement. |
 | `DRIVER_ERROR` | Wraps underlying driver error with `driver` and `inner_code` (nullable). `inner_code` format is per-driver: Postgres = SQLSTATE 5-char string (e.g. `42P01`), MySQL = server error number as string, SQLite = `rusqlite::ErrorCode` debug name. Pool-acquire failures use the message form `pool connection failed (<class>)` where `<class>` is one of `tls`, `auth`, `network`, `server-policy`, or `unknown` — a redacted hint so untrusted callers can self-triage without seeing host/userinfo/db fragments. The full driver error is in the worker's stderr via `tracing::warn!`. |
 | `REPLICATION_SLOT_EXISTS` | Startup-only: another instance owns the slot. |
 | `UNSUPPORTED` | Operation not supported on the chosen driver. |

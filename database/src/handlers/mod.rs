@@ -32,6 +32,7 @@ where
 pub mod begin_transaction;
 pub mod commit_transaction;
 pub mod execute;
+pub mod execute_batch;
 pub mod list_databases;
 pub mod prepare;
 pub mod query;
