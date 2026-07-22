@@ -21,7 +21,8 @@ test('shows two traces and exposes function arguments in trace events', async ({
 
   const composer = page.getByLabel('message composer')
   const secondCompleted = stack.waitForTurnCompleted()
-  await composer.fill(SECOND_MESSAGE)
+  await composer.pressSequentially(SECOND_MESSAGE)
+  await expect(composer).toHaveText(SECOND_MESSAGE)
   await page.getByRole('button', { name: 'send message' }).click()
   expect(await secondCompleted).toMatchObject({ status: 'completed' })
   await expect(

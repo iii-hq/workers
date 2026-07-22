@@ -20,7 +20,7 @@ test('renders one completed function call and its durable result', async ({
   await expect(card).toHaveAttribute('data-function-id', functionId)
   await expect(card).toHaveAttribute('data-function-status', 'done')
 
-  const cardHeader = card.locator(':scope > button')
+  const cardHeader = card.getByRole('button', { name: functionId })
   await expect(cardHeader).toHaveAttribute('aria-expanded', 'false')
   await cardHeader.click()
   await expect(cardHeader).toHaveAttribute('aria-expanded', 'true')
