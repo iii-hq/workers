@@ -4,10 +4,10 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use harness_integration::stack::{RunPaths, Stack};
+use harness_integration::stack::{RunLayout, Stack};
 
-fn stub_stack(dir: &tempfile::TempDir) -> (Stack, RunPaths) {
-    let paths = RunPaths::allocate(dir.path(), "test-run").expect("allocate");
+fn stub_stack(dir: &tempfile::TempDir) -> (Stack, RunLayout) {
+    let paths = RunLayout::allocate(dir.path(), "test-run").expect("allocate");
     (
         Stack::for_tests_with_teardown_budget(paths.clone(), Duration::from_millis(400)),
         paths,

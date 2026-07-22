@@ -31,7 +31,7 @@ pub type VerifyFn = fn(&RunEvidence) -> anyhow::Result<()>;
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioDriver {
     Direct,
-    Console,
+    Observe,
 }
 
 /// One authored scenario, its verify function, and the stable slug used by
@@ -48,7 +48,7 @@ pub struct RegisteredScenario {
 pub fn all() -> Vec<RegisteredScenario> {
     vec![
         register("crash-recovery-507", crash_recovery_507::scenario()),
-        register_console("console-streamed-text", console_streamed_text::scenario()),
+        register_observe("console-streamed-text", console_streamed_text::scenario()),
         register("exactly-once-function", exactly_once_function::scenario()),
         register("hold-mutation-505", hold_mutation_505::scenario()),
         register("hook-held-release-506", hook_held_release_506::scenario()),
@@ -65,11 +65,11 @@ fn register(slug: &str, scenario: builder::Scenario) -> RegisteredScenario {
     }
 }
 
-fn register_console(slug: &str, scenario: builder::Scenario) -> RegisteredScenario {
+fn register_observe(slug: &str, scenario: builder::Scenario) -> RegisteredScenario {
     RegisteredScenario {
         slug: slug.to_string(),
         authored: scenario.authored,
-        driver: ScenarioDriver::Console,
+        driver: ScenarioDriver::Observe,
         verify: scenario.verify,
     }
 }

@@ -252,18 +252,6 @@ impl FunctionCallReply {
         self.usage = Some(input_output_usage(input, output));
         self
     }
-
-    pub fn match_overrides(self, overrides: GenerationMatchOverridesV1) -> ScenarioGenerationV1 {
-        with_overrides(self.into(), overrides)
-    }
-
-    /// Match this reply against the durable outcome only, at a recovery
-    /// boundary (fault restart or hook release) where the engine may rebuild
-    /// the request differently. Shorthand for [`Self::match_overrides`] with
-    /// the recovery policy.
-    pub fn recovery_boundary(self) -> ScenarioGenerationV1 {
-        with_overrides(self.into(), recovery_overrides())
-    }
 }
 
 impl From<FunctionCallReply> for ScenarioGenerationV1 {
@@ -379,8 +367,6 @@ macro_rules! impl_into_generations {
 impl_into_generations! {
     (G1);
     (G1, G2);
-    (G1, G2, G3);
-    (G1, G2, G3, G4);
 }
 
 pub fn regex(pattern: &str) -> JsonMatcherV1 {

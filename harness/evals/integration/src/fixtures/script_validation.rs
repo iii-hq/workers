@@ -66,22 +66,10 @@ fn validate_matcher(matcher: &JsonMatcherV1) -> anyhow::Result<()> {
 fn validate_normalizer(normalizer: &JsonNormalizerV1) -> anyhow::Result<()> {
     crate::matcher::validate_pointer(&normalizer.pointer)?;
     match normalizer.operation {
-        NormalizerOperation::Replace if normalizer.replacement.is_none() => {
-            anyhow::bail!(
-                "replace normalizer at {:?} requires `replacement`",
-                normalizer.pointer
-            )
-        }
-        NormalizerOperation::Delete if normalizer.replacement.is_some() => {
-            anyhow::bail!(
-                "delete normalizer at {:?} forbids `replacement`",
-                normalizer.pointer
-            )
-        }
         NormalizerOperation::Delete if normalizer.pointer.is_empty() => {
             anyhow::bail!("delete normalizer cannot target the document root")
         }
-        _ => Ok(()),
+        NormalizerOperation::Delete => Ok(()),
     }
 }
 

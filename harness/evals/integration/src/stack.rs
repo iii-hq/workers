@@ -16,12 +16,5 @@ mod tests;
 
 pub use crate::process::EarlyExit;
 pub use bins::StackBins;
-pub use config::{
-    expected_config_entries, expected_harness_config_entry, render_engine_yaml, render_seed,
-    WORKER_START_ORDER,
-};
 pub use layout::RunLayout;
 pub use supervisor::{free_loopback_port, Stack, StackBootFailure};
-
-/// Compatibility name retained for callers of the original stack API.
-pub type RunPaths = RunLayout;

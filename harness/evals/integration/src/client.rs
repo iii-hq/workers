@@ -44,12 +44,7 @@ impl Client {
         &self.iii
     }
 
-    pub async fn call(&self, function_id: &str, payload: Value) -> Result<Value, String> {
-        self.call_with_timeout(function_id, payload, DEFAULT_CALL_TIMEOUT_MS)
-            .await
-    }
-
-    pub async fn call_with_timeout(
+    async fn call_with_timeout(
         &self,
         function_id: &str,
         payload: Value,

@@ -2,21 +2,22 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::client::DEFAULT_CALL_TIMEOUT_MS;
+use crate::client::{Client, DEFAULT_CALL_TIMEOUT_MS};
 use crate::deadline::Deadline;
-use crate::readiness::{self, ReadinessSpec};
+use crate::discovery;
 use crate::runtime::{RunError, RunErrorKind, RunPhase};
 use crate::services::RunServices;
-use crate::stack::{expected_config_entries, expected_harness_config_entry, Stack};
+use crate::stack::Stack;
 use crate::types::recorder::RecorderEventKind;
-use crate::types::scenario::FaultKind;
+use crate::types::scenario::{CompiledScenarioV1, FaultKind};
 
 use super::super::report::rpc_failure;
 use super::super::runner::ScenarioRunner;
 use super::super::state::{ActiveTurn, PreparedRun};
-use super::{STATUS_POLL_INTERVAL, TARGET_POLL_INTERVAL};
 
 const SEND_TIMEOUT_MS: u64 = 30_000;
+const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const TARGET_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 impl ScenarioRunner<'_> {
     pub(in crate::scenario) async fn send(
@@ -84,7 +85,7 @@ impl ScenarioRunner<'_> {
         let FaultKind::EngineSigkill = fault.kind;
         let observed = deadline
             .poll_until("fault trigger", TARGET_POLL_INTERVAL, || async {
-                let events = services.recorder().snapshot(None)?;
+                let events = services.recorder().snapshot()?;
                 let count = events
                     .iter()
                     .filter(|event| {
@@ -147,14 +148,13 @@ impl ScenarioRunner<'_> {
         stack.respawn_engine().map_err(|error| {
             RunError::runner(phase, "respawn engine after fault injection", error)
         })?;
-        self.restore_after_engine_restart(stack, services, prepared, deadline)
+        self.restore_after_engine_restart(services, prepared, deadline)
             .await?;
         Ok(())
     }
 
     async fn restore_after_engine_restart(
         &mut self,
-        stack: &Stack,
         services: &RunServices,
         prepared: &PreparedRun,
         deadline: Deadline,
@@ -162,46 +162,31 @@ impl ScenarioRunner<'_> {
         let phase = RunPhase::Fault;
         let scenario = &prepared.scenario;
 
-        let pre_harness = ReadinessSpec::pre_harness(expected_config_entries(&stack.paths));
-        if let Err(report) = readiness::probe(services.client(), &pre_harness, deadline).await {
-            return Err(self.readiness_failed(
-                &scenario.id,
+        discovery::wait_for_functions(services.client(), discovery::TURN_SURFACE, deadline)
+            .await
+            .map_err(|error| {
+                RunError::runner(
+                    phase,
+                    "wait for turn function surface after engine restart",
+                    error,
+                )
+            })?;
+        discovery::wait_for_trigger_types(
+            services.client(),
+            &["harness::turn-started", "harness::turn-completed"],
+            deadline,
+        )
+        .await
+        .map_err(|error| {
+            RunError::runner(
                 phase,
-                RunErrorKind::Runner,
-                "post_restart_pre_harness",
-                "base contracts did not recover after engine restart",
-                &report.missing,
-            ));
-        }
+                "wait for harness trigger types after engine restart",
+                error,
+            )
+        })?;
 
-        let controlled = readiness::controlled_contracts(&scenario.recorder);
-        if let Err(report) =
-            readiness::wait_for_contracts(services.client(), &controlled, deadline).await
-        {
-            return Err(self.readiness_failed(
-                &scenario.id,
-                phase,
-                RunErrorKind::Runner,
-                "post_restart_controlled",
-                "controlled contracts did not recover after engine restart",
-                &report.missing,
-            ));
-        }
-
-        let harness = ReadinessSpec::harness_surface(expected_harness_config_entry(&stack.paths));
-        if let Err(report) = readiness::probe(services.client(), &harness, deadline).await {
-            return Err(self.readiness_failed(
-                &scenario.id,
-                phase,
-                RunErrorKind::Runner,
-                "post_restart_harness",
-                "harness contracts did not recover after engine restart",
-                &report.missing,
-            ));
-        }
-
-        let expected_bindings = super::expected_trigger_bindings(scenario, &self.session_id);
-        let registered = readiness::registered_trigger_snapshot(services.client(), deadline)
+        let expected_bindings = expected_trigger_bindings(scenario, &self.session_id);
+        let registered = registered_trigger_snapshot(services.client(), deadline)
             .await
             .map_err(|error| {
                 RunError::runner(
@@ -212,7 +197,7 @@ impl ScenarioRunner<'_> {
             })?;
 
         for (index, expected) in expected_bindings.iter().enumerate() {
-            match readiness::registered_trigger_count(&registered, expected) {
+            match registered_trigger_count(&registered, expected) {
                 1 => {}
                 0 if index == 0 => services
                     .recorder()
@@ -260,20 +245,6 @@ impl ScenarioRunner<'_> {
                     ));
                 }
             }
-        }
-
-        if let Err(report) =
-            readiness::wait_for_registered_triggers(services.client(), &expected_bindings, deadline)
-                .await
-        {
-            return Err(self.readiness_failed(
-                &scenario.id,
-                phase,
-                RunErrorKind::Runner,
-                "post_restart_bindings",
-                "trigger bindings did not recover after engine restart",
-                &report.missing,
-            ));
         }
         Ok(())
     }
@@ -371,4 +342,66 @@ impl ScenarioRunner<'_> {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ExpectedTriggerBinding {
+    trigger_type: String,
+    function_id: String,
+    config: Value,
+}
+
+fn expected_trigger_bindings(
+    scenario: &CompiledScenarioV1,
+    session_id: &str,
+) -> Vec<ExpectedTriggerBinding> {
+    std::iter::once(ExpectedTriggerBinding {
+        trigger_type: scenario
+            .recorder
+            .lifecycle
+            .trigger_type
+            .as_str()
+            .to_string(),
+        function_id: "integration-recorder::lifecycle".to_string(),
+        config: json!({ "session_id": session_id }),
+    })
+    .chain(
+        scenario
+            .bindings
+            .iter()
+            .map(|binding| ExpectedTriggerBinding {
+                trigger_type: binding.trigger_type.clone(),
+                function_id: binding.function_id.clone(),
+                config: binding.config.clone(),
+            }),
+    )
+    .collect()
+}
+
+async fn registered_trigger_snapshot(client: &Client, deadline: Deadline) -> anyhow::Result<Value> {
+    client
+        .call_with_deadline(
+            "engine::registered-triggers::list",
+            json!({ "include_internal": true }),
+            deadline,
+            DEFAULT_CALL_TIMEOUT_MS,
+        )
+        .await
+        .map_err(anyhow::Error::msg)
+}
+
+fn registered_trigger_count(listed: &Value, expected: &ExpectedTriggerBinding) -> usize {
+    listed
+        .get("registered_triggers")
+        .and_then(Value::as_array)
+        .or_else(|| listed.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|row| {
+            row.get("function_id").and_then(Value::as_str) == Some(expected.function_id.as_str())
+                && row.get("trigger_type").and_then(Value::as_str)
+                    == Some(expected.trigger_type.as_str())
+                && row.get("config") == Some(&expected.config)
+        })
+        .count()
 }

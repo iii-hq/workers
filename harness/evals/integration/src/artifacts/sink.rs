@@ -124,7 +124,7 @@ where
 
 /// On a passing run without `--retain-success`, drop heavyweight stack state
 /// but keep the compact reports and collected evidence.
-pub fn trim_passing_run(run_root: &Path) {
+pub(crate) fn trim_passing_run(run_root: &Path) {
     for dir in [
         "engine",
         "logs",

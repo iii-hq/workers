@@ -1,5 +1,6 @@
-import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, watch } from 'node:fs/promises'
+import { type ChildProcess, spawn } from 'node:child_process'
+import { createServer } from 'node:net'
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile, watch } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { Page } from '@playwright/test'
@@ -11,16 +12,15 @@ interface ReadyManifest {
   run_id: string
   scenario_id: string
   scenario_slug: string
-  driver: 'direct' | 'console'
+  driver: 'direct' | 'observe'
   run_root: string
   result_path: string
-  console_url: string
   engine_url: string
   session: { id: string; title: string }
   model: { id: string; provider: string }
   message: string
   functions: Record<string, string>
-  send?: Record<string, unknown>
+  send: Record<string, unknown>
 }
 
 export interface RecorderEvent {
@@ -46,7 +46,7 @@ export interface RunEvidence {
   recorder_events: RecorderEvent[]
 }
 
-export interface ServeResult {
+export interface ObserveResult {
   schema_version: '1'
   scenario_id: string
   classification:
@@ -70,9 +70,10 @@ interface TurnCompletedEvent {
 
 export interface HarnessStack {
   ready: ReadyManifest
-  trigger<T>(functionId: string, payload: unknown): Promise<T>
+  consoleUrl: string
+  start(): Promise<void>
   waitForTurnCompleted(): Promise<TurnCompletedEvent>
-  finish(): Promise<ServeResult>
+  finish(): Promise<ObserveResult>
 }
 
 interface FixtureOptions {
@@ -96,6 +97,36 @@ function workerArgs(): string[] {
     ['session-manager', 'SESSION_MANAGER_BIN'],
     ['context-manager', 'CONTEXT_MANAGER_BIN'],
   ].flatMap(([name, env]) => ['--worker-bin', `${name}=${required(env)}`])
+}
+
+async function freeLoopbackPort(): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    const server = createServer()
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      if (!address || typeof address === 'string') {
+        server.close()
+        reject(new Error('failed to allocate loopback port'))
+        return
+      }
+      const { port } = address
+      server.close((error) => {
+        if (error) reject(error)
+        else resolve(port)
+      })
+    })
+    server.on('error', reject)
+  })
+}
+
+async function writeAtomicJson(filePath: string, value: unknown): Promise<void> {
+  const parent = path.dirname(filePath)
+  const temporary = path.join(
+    parent,
+    `.${path.basename(filePath)}.${process.pid}.tmp`,
+  )
+  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  await rename(temporary, filePath)
 }
 
 async function waitForReady(
@@ -140,8 +171,26 @@ async function waitForReady(
   }
 }
 
+async function waitForConsoleHttp(port: number): Promise<void> {
+  const deadline = Date.now() + 60_000
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/`, {
+        redirect: 'manual',
+      })
+      if (response.ok || (response.status >= 300 && response.status < 400)) {
+        return
+      }
+    } catch {
+      // Console still booting.
+    }
+    await delay(100)
+  }
+  throw new Error(`console HTTP did not become ready on port ${port}`)
+}
+
 function childExit(
-  child: ChildProcessWithoutNullStreams,
+  child: ChildProcess,
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   return new Promise((resolve) => {
     child.once('exit', (code, signal) => resolve({ code, signal }))
@@ -194,6 +243,12 @@ function armCompletion(
   return completed
 }
 
+function stopChild(child: ChildProcess | undefined): void {
+  if (!child) return
+  if (child.exitCode !== null || child.signalCode !== null) return
+  child.kill('SIGTERM')
+}
+
 export const test = base.extend<FixtureValues, FixtureOptions>({
   scenario: ['', { scope: 'worker', option: true }],
   stack: async ({ scenario }, use, testInfo) => {
@@ -205,16 +260,15 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
     await mkdir(artifactsRoot, { recursive: true })
     const controlDir = await mkdtemp(path.join(artifactsRoot, 'runner-'))
     const readyFile = path.join(controlDir, 'ready.json')
+    const startFile = path.join(controlDir, 'start.json')
     const args = [
-      'serve',
+      'observe',
       '--scenario',
       scenario,
       '--engine-bin',
       required('III_BIN'),
       '--harness-bin',
       required('HARNESS_BIN'),
-      '--console-bin',
-      required('CONSOLE_BIN'),
       '--artifacts-dir',
       artifactsRoot,
       '--ready-file',
@@ -231,11 +285,30 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
     child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
 
     let sdk: ISdk | undefined
-    let finalized: Promise<ServeResult> | undefined
-    const finish = (): Promise<ServeResult> => {
+    let consoleChild: ChildProcess | undefined
+    let consoleExit: Promise<{
+      code: number | null
+      signal: NodeJS.Signals | null
+    }> | undefined
+    const consoleStdout: Buffer[] = []
+    const consoleStderr: Buffer[] = []
+    let finalized: Promise<ObserveResult> | undefined
+
+    const finish = (): Promise<ObserveResult> => {
       if (finalized) return finalized
       finalized = (async () => {
         if (sdk) await sdk.shutdown().catch(() => undefined)
+        stopChild(consoleChild)
+        if (consoleExit) {
+          let consoleExited = await Promise.race([
+            consoleExit,
+            delay(10_000).then(() => null),
+          ])
+          if (!consoleExited && consoleChild) {
+            consoleChild.kill('SIGKILL')
+            consoleExited = await consoleExit
+          }
+        }
         if (child.exitCode === null && child.signalCode === null) {
           child.kill('SIGTERM')
         }
@@ -252,10 +325,20 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
           body: Buffer.concat(stderr),
           contentType: 'text/plain',
         })
+        if (consoleStdout.length > 0 || consoleStderr.length > 0) {
+          await testInfo.attach('console.stdout', {
+            body: Buffer.concat(consoleStdout),
+            contentType: 'text/plain',
+          })
+          await testInfo.attach('console.stderr', {
+            body: Buffer.concat(consoleStderr),
+            contentType: 'text/plain',
+          })
+        }
         const result = JSON.parse(
           await readFile(ready.result_path, 'utf8'),
-        ) as ServeResult
-        await testInfo.attach('serve-result', {
+        ) as ObserveResult
+        await testInfo.attach('observe-result', {
           body: JSON.stringify(result, null, 2),
           contentType: 'application/json',
         })
@@ -265,13 +348,39 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
     }
 
     let ready!: ReadyManifest
+    let consoleUrl!: string
     try {
       ready = await waitForReady(readyFile, exit)
+      const httpPort = await freeLoopbackPort()
+      consoleUrl = `http://127.0.0.1:${httpPort}`
+      const spawnedConsole = spawn(
+        required('CONSOLE_BIN'),
+        ['--url', ready.engine_url, '--http-port', String(httpPort)],
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      )
+      consoleChild = spawnedConsole
+      consoleExit = childExit(spawnedConsole)
+      spawnedConsole.stdout.on('data', (chunk: Buffer) =>
+        consoleStdout.push(chunk),
+      )
+      spawnedConsole.stderr.on('data', (chunk: Buffer) =>
+        consoleStderr.push(chunk),
+      )
+      await Promise.race([
+        waitForConsoleHttp(httpPort),
+        consoleExit.then(({ code, signal }) => {
+          throw new Error(
+            `console exited before ready (code=${String(code)}, signal=${String(signal)})`,
+          )
+        }),
+      ])
     } catch (error) {
+      stopChild(consoleChild)
       if (child.exitCode === null && child.signalCode === null) {
         child.kill('SIGTERM')
       }
       await exit.catch(() => undefined)
+      await consoleExit?.catch(() => undefined)
       await testInfo.attach('harness-integration.stdout', {
         body: Buffer.concat(stdout),
         contentType: 'text/plain',
@@ -280,18 +389,30 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
         body: Buffer.concat(stderr),
         contentType: 'text/plain',
       })
+      if (consoleStdout.length > 0 || consoleStderr.length > 0) {
+        await testInfo.attach('console.stdout', {
+          body: Buffer.concat(consoleStdout),
+          contentType: 'text/plain',
+        })
+        await testInfo.attach('console.stderr', {
+          body: Buffer.concat(consoleStderr),
+          contentType: 'text/plain',
+        })
+      }
       throw error
     }
+
     const connectedSdk = registerWorker(ready.engine_url)
     sdk = connectedSdk
+    let started = false
     const stack: HarnessStack = {
       ready,
-      trigger: <T>(functionId: string, payload: unknown) =>
-        connectedSdk.trigger<unknown, T>({
-          function_id: functionId,
-          payload,
-          timeoutMs: 30_000,
-        }),
+      consoleUrl,
+      start: async () => {
+        if (started) return
+        started = true
+        await writeAtomicJson(startFile, { schema_version: '1' })
+      },
       waitForTurnCompleted: () => armCompletion(connectedSdk, ready),
       finish,
     }
@@ -311,17 +432,17 @@ export { expect }
 
 export async function openSession(
   page: Page,
-  ready: ReadyManifest,
+  stack: HarnessStack,
 ): Promise<void> {
-  await page.goto(ready.console_url)
+  await page.goto(stack.consoleUrl)
   const session = page.getByRole('button', {
-    name: `open ${ready.session.title}`,
+    name: `open ${stack.ready.session.title}`,
     exact: true,
   })
   await session.click()
   await expect(session).toHaveAttribute('aria-current', 'page')
 }
 
-export function expectPassingResult(result: ServeResult): void {
+export function expectPassingResult(result: ObserveResult): void {
   expect(result.classification).toBe('pass')
 }

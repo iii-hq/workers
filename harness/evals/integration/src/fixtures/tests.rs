@@ -109,13 +109,15 @@ fn invalid_matchers_and_normalizers_are_rejected() {
     });
     assert!(validate(script).is_err());
 
+    // `replace` left the wire contract with its last emitter; the schema now
+    // rejects it as an unknown operation.
     let script = minimal_script(|script| {
         script["generations"][0]["match"]["messages"] = json!({
             "mode": "exact", "expected": [],
             "normalize": [{ "pointer": "/0/x", "operation": "replace" }]
         });
     });
-    assert!(error_chain(script).contains("replacement"));
+    assert!(error_chain(script).contains("replace"));
 
     let script = minimal_script(|script| {
         script["generations"][0]["match"]["messages"] = json!({

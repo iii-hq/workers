@@ -24,8 +24,7 @@ harness-integration run \
   --worker-bin session-manager=<session-manager> \
   --worker-bin context-manager=<context-manager> \
   --worker-bin iii-directory=<iii-directory> \
-  --scenario E2E-001 \
-  --repeat 2
+  --scenario E2E-001
 ```
 
 The engine is never downloaded by the runner. CI builds the source revision
@@ -37,9 +36,6 @@ Exit codes are:
 - `0`: every selected scenario passed;
 - `2`: contract failure or scenario timeout;
 - `3`: setup, process, or runner error.
-
-`--repeat N` boots a fresh stack for every repetition and requires the
-byte-stable result contract to be identical. A mismatch is a runner error.
 
 ## Create a scenario
 
@@ -124,12 +120,11 @@ for execution. Typed text and function-call replies cover normal cases;
 `.recovery_boundary()` matches a reply against the durable outcome only,
 where a fault restart or hook release may rebuild the request, and
 `.match_overrides(...)` is the remaining escape hatch for intentionally
-different wire shapes (the Console's agent-trigger policy).
+different wire shapes.
 
-Timeout defaults are 60 seconds for readiness, 60 seconds for the scenario,
-and 15 seconds for teardown. The scenario budget can be raised with
-`.scenario_timeout_ms(...)` (crash-recovery does); one readiness budget is
-shared by the full probe/arm sequence.
+Timeout defaults are 60 seconds for setup waits (e.g. observer start), 60
+seconds for the scenario, and 15 seconds for teardown. The scenario budget
+can be raised with `.scenario_timeout_ms(...)` (crash-recovery does).
 
 ## Checked-in scenarios
 
@@ -137,23 +132,26 @@ shared by the full probe/arm sequence.
 |---|---|---|
 | E2E-001 | `streamed-text` | streamed text reaches durable completion |
 | E2E-002 | `exactly-once-function` | a native function executes exactly once |
-| UI-001 | `console-streamed-text` | the production Console sends and renders streamed text |
+| UI-001 | `console-streamed-text` | integration starts a streamed turn; Playwright validates Console UI |
 | E2E-505 | `hold-mutation-505` | quarantined reproduction for issue #505 |
 | E2E-506 | `hook-held-release-506` | quarantined reproduction for issue #506 |
 | E2E-507 | `crash-recovery-507` | quarantined reproduction for issue #507 |
 
-`run --scenario all` includes non-quarantined direct scenarios. Console-driven
-scenarios run through `serve --scenario <id-or-slug>` and Playwright. An
-explicit quarantined direct scenario still runs; `validate --scenario all`
+`run --scenario all` includes non-quarantined direct scenarios. Observe-driven
+UI scenarios (and Direct scenarios used from Playwright) run through
+`observe --scenario <id-or-slug>`: the integration publishes `ready.json`,
+waits for Playwright's `start.json`, then runs `harness::send` and grades
+backend evidence while Playwright owns the Console process and DOM asserts.
+An explicit quarantined direct scenario still runs; `validate --scenario all`
 always includes every driver and quarantine state.
 
 ## Runtime and evidence
 
-The lifecycle is allocate → boot → probe → arm → send → optional fault or
-release → await → collect → grade → teardown → report.
+The lifecycle is allocate → boot → arm → send → optional fault or release →
+await → collect → grade → teardown → report. Observe inserts Probe (wait for
+`start.json`) between Arm and Send, then waits for observer shutdown after
+Await before Collect.
 
-- Readiness inspects structured function, trigger, queue, and configuration
-  surfaces.
 - All RPCs and polling share monotonic phase deadlines.
 - The recorder keeps configuration and snapshots in process; only controlled
   target functions and the lifecycle sink are registered with the engine.
@@ -170,7 +168,7 @@ calls, lifecycle events). `result.json` contains the stable byte-comparable
 verdict: the classification plus the first floor or verify failure message,
 with run/session/turn ids scrubbed to placeholders. `execution.json` contains
 the run id, timing, scenario id, and SHA-256 of the exact `result.json`
-bytes. In serve mode, `serve-result.json` additionally carries the raw
+bytes. In observe mode, `observe-result.json` additionally carries the raw
 serialized `RunEvidence` (real ids) so Playwright can check it against the
 ready manifest. Passing runs retain the compact reports and remove
 heavyweight stack state unless `--retain-success` is supplied.

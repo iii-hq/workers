@@ -5,21 +5,22 @@
 //! stack, replaces only the `router::*` boundary with a strict scripted
 //! worker, and verifies structured public evidence.
 
-pub mod artifacts;
 pub mod canonical;
-pub mod client;
-pub mod deadline;
 pub mod evidence_data;
 pub mod expand;
 pub mod fixtures;
-pub mod matcher;
-pub mod process;
-pub mod readiness;
-pub mod recorder;
-pub mod runtime;
 pub mod scenario;
 pub mod scenarios;
-pub mod scripted_router;
-pub mod services;
 pub mod stack;
 pub mod types;
+
+pub(crate) mod artifacts;
+pub(crate) mod client;
+pub(crate) mod deadline;
+pub(crate) mod discovery;
+pub(crate) mod matcher;
+pub(crate) mod process;
+pub(crate) mod recorder;
+pub(crate) mod runtime;
+pub(crate) mod scripted_router;
+pub(crate) mod services;

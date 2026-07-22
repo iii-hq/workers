@@ -159,8 +159,8 @@ fn generations_failure(run: &RunEvidence) -> Option<String> {
     })
 }
 
-/// Send accepted with clean flags. Skipped in serve mode, where the Console
-/// (not the runner) submits the send and there is no response to inspect.
+/// Send accepted with clean flags. Skipped only when `send_response` is
+/// absent (should not happen for Direct or Observe after a successful Send).
 fn send_flags_failure(run: &RunEvidence) -> Option<String> {
     let response = run.send_response.as_ref()?;
     // Absent optional flags normalize to false.
@@ -243,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn send_flags_normalize_absent_to_false_and_serve_skips_them() {
+    fn send_flags_normalize_absent_to_false_and_skip_without_response() {
         let mut evidence = clean_evidence();
         evidence.send_response = Some(json!({ "accepted": true }));
         assert_eq!(floor_failure(&evidence), None);
@@ -251,7 +251,7 @@ mod tests {
         evidence.send_response = Some(json!({ "accepted": true, "queued": true }));
         assert!(floor_failure(&evidence).unwrap().contains("queued: true"));
 
-        // Serve mode has no direct send response; the flags check is skipped.
+        // No send response yet (or collect failed early); the flags check is skipped.
         evidence.send_response = None;
         assert_eq!(floor_failure(&evidence), None);
     }

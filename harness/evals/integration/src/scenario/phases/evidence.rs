@@ -51,7 +51,7 @@ impl ScenarioRunner<'_> {
 
         active.recorder_events = services
             .recorder()
-            .snapshot(None)
+            .snapshot()
             .map_err(|error| RunError::runner(phase, "snapshot recorder evidence", error))?;
         let (target_calls, lifecycle_events): (Vec<_>, Vec<_>) = active
             .recorder_events
@@ -96,7 +96,7 @@ impl ScenarioRunner<'_> {
 
     /// Enforce the runner-owned floor, then run the scenario's `verify`
     /// function. The first failure is recorded with run-scoped ids scrubbed
-    /// so repeated runs stay byte-stable.
+    /// so persisted results stay byte-stable.
     pub(in crate::scenario) fn verify_evidence(
         &mut self,
         services: &RunServices,

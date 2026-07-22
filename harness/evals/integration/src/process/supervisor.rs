@@ -51,10 +51,6 @@ impl ProcessSupervisor {
         }
     }
 
-    pub fn teardown_budget(&self) -> Duration {
-        self.teardown_budget
-    }
-
     pub fn set_teardown_budget(&mut self, teardown_budget: Duration) {
         self.teardown_budget = teardown_budget;
     }

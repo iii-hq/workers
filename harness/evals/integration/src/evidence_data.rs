@@ -16,8 +16,7 @@ pub struct RunEvidence {
     pub run_id: String,
     pub session_id: String,
     pub turn_id: Option<String>,
-    /// `harness::send` response — `None` in serve mode, where the Console
-    /// (not the runner) submits the send.
+    /// `harness::send` response — present after Direct/Observe Send succeeds.
     pub send_response: Option<Value>,
     /// Final `harness::status` report (JSON null when the session is unknown).
     pub status: Value,
@@ -134,7 +133,7 @@ impl RunEvidence {
 
     /// Replace this run's concrete ids with `{{run_id}}` / `{{session_id}}` /
     /// `{{turn_id}}` placeholders so persisted failure text stays
-    /// byte-comparable across repetitions.
+    /// byte-comparable across runs.
     pub fn scrub(&self, text: &str) -> String {
         let mut text = text.to_string();
         replace_identity(&mut text, &self.run_id, "{{run_id}}");

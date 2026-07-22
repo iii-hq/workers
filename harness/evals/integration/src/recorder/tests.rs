@@ -34,14 +34,10 @@ fn event_store_persists_ordered_events_and_resets_durably() {
         2
     );
 
-    let snapshot = store.snapshot(None).expect("snapshot");
+    let snapshot = store.snapshot().expect("snapshot");
     assert_eq!(snapshot.len(), 2);
     assert_eq!(snapshot[0].sequence, 1);
     assert_eq!(snapshot[1].sequence, 2);
-    assert_eq!(
-        store.snapshot(Some(1)).expect("filtered snapshot"),
-        vec![snapshot[1].clone()]
-    );
 
     let persisted: Vec<serde_json::Value> = std::fs::read_to_string(&log_path)
         .expect("read log")
@@ -57,7 +53,7 @@ fn event_store_persists_ordered_events_and_resets_durably() {
     );
 
     assert_eq!(store.reset("run-2").expect("second reset"), 1);
-    assert!(store.snapshot(None).expect("empty snapshot").is_empty());
+    assert!(store.snapshot().expect("empty snapshot").is_empty());
     assert_eq!(std::fs::read(&log_path).expect("read reset log"), b"");
     assert_eq!(
         store
@@ -81,7 +77,7 @@ fn failed_open_is_returned_without_acknowledging_the_event() {
         format!("{error:#}").contains("open recorder log for append"),
         "{error:#}"
     );
-    assert!(store.snapshot(None).expect("snapshot").is_empty());
+    assert!(store.snapshot().expect("snapshot").is_empty());
 
     std::fs::create_dir(&parent).expect("create log parent");
     assert_eq!(
@@ -105,7 +101,7 @@ fn events_are_rejected_until_the_store_is_configured() {
         format!("{error:#}").contains("event store is not configured"),
         "{error:#}"
     );
-    assert!(store.snapshot(None).expect("snapshot").is_empty());
+    assert!(store.snapshot().expect("snapshot").is_empty());
 }
 
 #[test]
@@ -189,7 +185,7 @@ fn write_errors_are_returned_without_acknowledging_the_event() {
         format!("{error:#}").contains("write recorder log"),
         "{error:#}"
     );
-    assert!(store.snapshot(None).expect("snapshot").is_empty());
+    assert!(store.snapshot().expect("snapshot").is_empty());
 }
 
 #[cfg(target_os = "linux")]
@@ -205,5 +201,5 @@ fn fsync_errors_are_returned_without_acknowledging_the_event() {
         format!("{error:#}").contains("fsync recorder log"),
         "{error:#}"
     );
-    assert!(store.snapshot(None).expect("snapshot").is_empty());
+    assert!(store.snapshot().expect("snapshot").is_empty());
 }

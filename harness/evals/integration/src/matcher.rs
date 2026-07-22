@@ -138,24 +138,7 @@ fn normalized_pair(
 fn apply_normalizer(doc: &mut Value, normalizer: &JsonNormalizerV1) -> anyhow::Result<()> {
     validate_pointer(&normalizer.pointer)?;
     match normalizer.operation {
-        NormalizerOperation::Replace => {
-            let replacement = normalizer
-                .replacement
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("replace normalizer requires `replacement`"))?;
-            if normalizer.pointer.is_empty() {
-                *doc = replacement;
-                return Ok(());
-            }
-            if let Some(target) = doc.pointer_mut(&normalizer.pointer) {
-                *target = replacement;
-            }
-            Ok(())
-        }
         NormalizerOperation::Delete => {
-            if normalizer.replacement.is_some() {
-                anyhow::bail!("delete normalizer forbids `replacement`");
-            }
             if normalizer.pointer.is_empty() {
                 anyhow::bail!("delete normalizer cannot target the document root");
             }
@@ -205,12 +188,6 @@ fn split_pointer(pointer: &str) -> (&str, String) {
     let idx = pointer.rfind('/').expect("validated non-empty pointer");
     let token = pointer[idx + 1..].replace("~1", "/").replace("~0", "~");
     (&pointer[..idx], token)
-}
-
-/// Public subset check for non-matcher consumers (readiness compares each
-/// seeded configuration key against the worker's stored resolved config).
-pub fn subset_of(expected: &Value, actual: &Value) -> Option<String> {
-    subset_with_array_policy(expected, actual, ArrayPolicy::Prefix)
 }
 
 /// Array semantics for structural subset comparisons. Objects are always
@@ -361,7 +338,6 @@ mod tests {
         let normalize = vec![JsonNormalizerV1 {
             pointer: "/0/timestamp".into(),
             operation: NormalizerOperation::Delete,
-            replacement: None,
         }];
         let m = exact(
             json!([{ "role": "user", "content": [{ "type": "text", "text": "hi" }] }]),
@@ -411,7 +387,6 @@ mod tests {
             &JsonNormalizerV1 {
                 pointer: "/missing/deep".into(),
                 operation: NormalizerOperation::Delete,
-                replacement: None,
             },
         )
         .unwrap();
@@ -421,7 +396,6 @@ mod tests {
             &JsonNormalizerV1 {
                 pointer: String::new(),
                 operation: NormalizerOperation::Delete,
-                replacement: None,
             },
         )
         .is_err());

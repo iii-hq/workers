@@ -55,8 +55,8 @@ pub struct IntegrationResultV1 {
     pub scenario_id: String,
     pub classification: Classification,
     /// First floor or verify failure, with run/session/turn ids scrubbed to
-    /// `{{run_id}}`/`{{session_id}}`/`{{turn_id}}` placeholders so `--repeat`
-    /// stays byte-stable.
+    /// `{{run_id}}`/`{{session_id}}`/`{{turn_id}}` placeholders so the
+    /// persisted result stays comparable across runs.
     pub failure: Option<String>,
     pub artifacts: Vec<String>,
 }

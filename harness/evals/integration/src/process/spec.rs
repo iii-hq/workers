@@ -53,20 +53,6 @@ impl ProcessSpec {
         self
     }
 
-    pub fn envs<I, K, V>(mut self, values: I) -> Self
-    where
-        I: IntoIterator<Item = (K, V)>,
-        K: Into<OsString>,
-        V: Into<OsString>,
-    {
-        self.env.extend(
-            values
-                .into_iter()
-                .map(|(key, value)| (key.into(), value.into())),
-        );
-        self
-    }
-
     pub(super) fn spawn(self) -> anyhow::Result<SupervisedChild> {
         create_parent(&self.stdout_log)?;
         create_parent(&self.stderr_log)?;

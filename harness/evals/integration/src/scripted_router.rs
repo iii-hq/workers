@@ -261,23 +261,82 @@ impl ScriptedRouter {
 }
 
 fn with_router_contract(registration: RegisterFunction, function_id: &str) -> RegisterFunction {
-    let contract = crate::readiness::router_contract(function_id);
+    let surface = router_surface(function_id);
     registration
-        .description(
-            contract
-                .description
-                .expect("router golden must declare a description"),
-        )
-        .request_format(
-            contract
-                .request_schema
-                .expect("router golden must declare a request schema"),
-        )
-        .response_format(
-            contract
-                .response_schema
-                .expect("router golden must declare a response schema"),
-        )
+        .description(surface.description)
+        .request_format(surface.request_schema)
+        .response_format(surface.response_schema)
+}
+
+struct RouterFunctionSurface {
+    description: String,
+    request_schema: Value,
+    response_schema: Value,
+}
+
+fn router_surface(function_id: &str) -> RouterFunctionSurface {
+    router_surfaces()
+        .into_iter()
+        .find(|(id, _)| id == function_id)
+        .map(|(_, surface)| surface)
+        .unwrap_or_else(|| panic!("no scripted-router golden for {function_id}"))
+}
+
+fn router_surfaces() -> Vec<(String, RouterFunctionSurface)> {
+    [
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../llm-router/tests/golden/schemas/router.chat.json"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../llm-router/tests/golden/schemas/router.abort.json"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../llm-router/tests/golden/schemas/router.models.list.json"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../llm-router/tests/golden/schemas/router.models.get.json"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../llm-router/tests/golden/schemas/router.models.supports.json"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../llm-router/tests/golden/schemas/router.system_prompt.get.json"
+        )),
+    ]
+    .into_iter()
+    .map(router_surface_from_golden)
+    .collect()
+}
+
+fn router_surface_from_golden(raw: &str) -> (String, RouterFunctionSurface) {
+    let value: Value = serde_json::from_str(raw).expect("checked-in function golden is JSON");
+    let function_id = value
+        .get("function_id")
+        .and_then(Value::as_str)
+        .expect("router golden must declare function_id")
+        .to_string();
+    let surface = RouterFunctionSurface {
+        description: value
+            .get("description")
+            .and_then(Value::as_str)
+            .expect("router golden must declare a description")
+            .to_string(),
+        request_schema: value
+            .get("request_schema")
+            .cloned()
+            .expect("router golden must declare a request schema"),
+        response_schema: value
+            .get("response_schema")
+            .cloned()
+            .expect("router golden must declare a response schema"),
+    };
+    (function_id, surface)
 }
 
 fn fixture_model(state: &Arc<Mutex<State>>) -> ModelFixtureV1 {

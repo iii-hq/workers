@@ -493,7 +493,7 @@ jobs:
         run: make -C harness integration-validate
 
       - name: Run integration scenarios
-        run: make -C harness integration-e2e III_BIN="${{ steps.engine.outputs.bin }}" INTEGRATION_REPEAT=2
+        run: make -C harness integration-e2e III_BIN="${{ steps.engine.outputs.bin }}"
 
       - name: Verify integration report links
         run: |

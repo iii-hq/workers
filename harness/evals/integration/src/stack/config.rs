@@ -71,19 +71,6 @@ pub fn render_seed(worker: &str, layout: &RunLayout) -> Option<Value> {
     }
 }
 
-pub fn expected_config_entries(layout: &RunLayout) -> Vec<(String, Value)> {
-    WORKER_START_ORDER
-        .iter()
-        .filter_map(|worker| render_seed(worker, layout).map(|seed| (worker.to_string(), seed)))
-        .collect()
-}
-
-pub fn expected_harness_config_entry(layout: &RunLayout) -> Vec<(String, Value)> {
-    render_seed("harness", layout)
-        .map(|seed| vec![("harness".to_string(), seed)])
-        .unwrap_or_default()
-}
-
 pub(crate) fn write_engine_config(layout: &RunLayout, port: u16) -> anyhow::Result<PathBuf> {
     let path = layout.engine_config_path();
     std::fs::write(&path, render_engine_yaml(layout, port))?;

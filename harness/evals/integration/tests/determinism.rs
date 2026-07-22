@@ -1,6 +1,6 @@
-//! `--repeat` requires byte-identical stable results. Failure text is the
-//! only run-dependent part of `result.json`, so the scrub must replace every
-//! run-scoped id with its placeholder before the result is persisted.
+//! Failure text is the only run-dependent part of `result.json`, so the scrub
+//! must replace every run-scoped id with its placeholder before the result is
+//! persisted.
 
 use harness_integration::canonical::canonical_json_pretty;
 use harness_integration::evidence_data::RunEvidence;

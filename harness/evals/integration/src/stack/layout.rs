@@ -3,9 +3,6 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 
 /// All filesystem locations owned by one isolated integration run.
-///
-/// Keep the four public fields stable: [`super::RunPaths`] is a compatibility
-/// alias for this type.
 #[derive(Debug, Clone)]
 pub struct RunLayout {
     pub root: PathBuf,

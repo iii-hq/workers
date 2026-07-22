@@ -23,7 +23,7 @@ impl Deadline {
     }
 
     /// Use an existing Tokio instant as the deadline.
-    pub const fn at(expires_at: Instant) -> Self {
+    const fn at(expires_at: Instant) -> Self {
         Self { expires_at }
     }
 
@@ -42,7 +42,7 @@ impl Deadline {
     }
 
     /// Cap an operation-specific timeout by the global deadline.
-    pub fn cap(
+    fn cap(
         self,
         maximum: Duration,
         operation: impl Into<String>,
@@ -128,6 +128,7 @@ impl DeadlineExceeded {
         }
     }
 
+    #[cfg(test)]
     pub fn operation(&self) -> &str {
         &self.operation
     }

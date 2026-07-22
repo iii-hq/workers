@@ -5,7 +5,7 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use harness_integration::expand::render_compiled;
 use harness_integration::fixtures::{scenario_fixtures, ScenarioFixture};
-use harness_integration::scenario::{run_scenario, serve_scenario};
+use harness_integration::scenario::{observe_scenario, run_scenario};
 use harness_integration::scenarios::ScenarioDriver;
 use harness_integration::stack::StackBins;
 use harness_integration::types::scenario::Classification;
@@ -29,15 +29,12 @@ enum Command {
     Validate(SelectionArgs),
     /// Print one deterministic, fully expanded compiled scenario.
     Render(RenderArgs),
-    /// Boot one armed stack and the production Console for a browser test.
-    Serve(ServeArgs),
+    /// Boot one armed stack for a Playwright UI observe test.
+    Observe(ObserveArgs),
 }
 
 #[derive(Debug, Args)]
-struct RunArgs {
-    #[command(flatten)]
-    selection: SelectionArgs,
-
+struct StackBinArgs {
     /// Path to the pinned iii engine binary. Falls back to $III_BIN.
     #[arg(long, env = "III_BIN")]
     engine_bin: Option<PathBuf>,
@@ -49,6 +46,15 @@ struct RunArgs {
     /// Real worker binaries as name=path.
     #[arg(long = "worker-bin", value_parser = parse_worker_bin)]
     worker_bins: Vec<(String, PathBuf)>,
+}
+
+#[derive(Debug, Args)]
+struct RunArgs {
+    #[command(flatten)]
+    selection: SelectionArgs,
+
+    #[command(flatten)]
+    bins: StackBinArgs,
 
     /// Root directory for run artifacts.
     #[arg(long, default_value = "target/integration")]
@@ -57,35 +63,17 @@ struct RunArgs {
     /// Keep heavyweight artifacts for passing scenarios.
     #[arg(long)]
     retain_success: bool,
-
-    /// Run every selected scenario this many times and require an identical
-    /// stable result from each repetition.
-    #[arg(long, default_value_t = 1, value_parser = parse_repeat)]
-    repeat: u16,
 }
 
 #[derive(Debug, Args)]
-struct ServeArgs {
+struct ObserveArgs {
     #[command(flatten)]
     selection: SelectionArgs,
 
-    /// Path to the pinned iii engine binary. Falls back to $III_BIN.
-    #[arg(long, env = "III_BIN")]
-    engine_bin: Option<PathBuf>,
+    #[command(flatten)]
+    bins: StackBinArgs,
 
-    /// Path to the harness binary under test.
-    #[arg(long)]
-    harness_bin: Option<PathBuf>,
-
-    /// Path to the production Console binary under test.
-    #[arg(long)]
-    console_bin: Option<PathBuf>,
-
-    /// Real worker binaries as name=path.
-    #[arg(long = "worker-bin", value_parser = parse_worker_bin)]
-    worker_bins: Vec<(String, PathBuf)>,
-
-    /// File atomically published after the stack and Console are ready.
+    /// File atomically published after the stack is armed and ready.
     #[arg(long)]
     ready_file: PathBuf,
 
@@ -117,16 +105,6 @@ fn parse_worker_bin(raw: &str) -> Result<(String, PathBuf), String> {
     Ok((name.to_string(), PathBuf::from(path)))
 }
 
-fn parse_repeat(raw: &str) -> Result<u16, String> {
-    let repeat = raw
-        .parse::<u16>()
-        .map_err(|error| format!("invalid repeat count {raw:?}: {error}"))?;
-    if repeat == 0 {
-        return Err("repeat count must be at least 1".to_string());
-    }
-    Ok(repeat)
-}
-
 fn main() {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -144,7 +122,7 @@ async fn dispatch(cli: Cli) -> i32 {
         Command::Run(args) => return run(args).await,
         Command::Validate(args) => validate(args),
         Command::Render(args) => render(args),
-        Command::Serve(args) => return serve(args).await,
+        Command::Observe(args) => return observe(args).await,
     };
     match result {
         Ok(message) => {
@@ -175,17 +153,12 @@ async fn run(args: RunArgs) -> i32 {
         .any(|fixture| fixture.driver != ScenarioDriver::Direct)
     {
         eprintln!(
-            "runner_error: scenario {:?} is driven by the Console; use `serve`",
+            "runner_error: scenario {:?} is driven by Observe; use `observe`",
             args.selection.scenario
         );
         return 3;
     }
-    let bins = match resolve_stack_bins(
-        args.engine_bin.as_deref(),
-        args.harness_bin.as_deref(),
-        None,
-        &args.worker_bins,
-    ) {
+    let bins = match resolve_stack_bins(&args.bins) {
         Ok(bins) => bins,
         Err(error) => {
             eprintln!("runner_error: {error:#}");
@@ -203,59 +176,35 @@ async fn run(args: RunArgs) -> i32 {
     let mut exit_code = 0;
     for fixture in &fixtures {
         let scenario_id = fixture.scenario.id.clone();
-        let mut stable_result = None;
-        for repetition in 1..=args.repeat {
-            tracing::info!(
-                scenario = %scenario_id,
-                repetition,
-                repeat = args.repeat,
-                "running"
-            );
-            let outcome = run_scenario(&bins, fixture, &artifacts_dir, args.retain_success).await;
-            let classification = outcome.result.classification;
-            let repetition_label = if args.repeat > 1 {
-                format!(" [{repetition}/{}]", args.repeat)
-            } else {
-                String::new()
-            };
-            println!(
-                "{scenario_id}{repetition_label}: {}{} — run {} ({} ms), artifacts: {}",
-                classification_str(classification),
-                match &outcome.result.failure {
-                    Some(failure) => format!(" — {failure}"),
-                    None => String::new(),
-                },
-                outcome.run_id,
-                outcome.duration_ms,
-                outcome.run_root.display(),
-            );
-            exit_code = exit_code.max(classification.exit_code());
-
-            match &stable_result {
-                None => stable_result = Some(outcome.result),
-                Some(expected) if expected == &outcome.result => {}
-                Some(_) => {
-                    eprintln!(
-                        "runner_error: {scenario_id} produced a different stable result on repetition {repetition}"
-                    );
-                    exit_code = exit_code.max(3);
-                }
-            }
-        }
+        tracing::info!(scenario = %scenario_id, "running");
+        let outcome = run_scenario(&bins, fixture, &artifacts_dir, args.retain_success).await;
+        let classification = outcome.result.classification;
+        println!(
+            "{scenario_id}: {}{} — run {} ({} ms), artifacts: {}",
+            classification_str(classification),
+            match &outcome.result.failure {
+                Some(failure) => format!(" — {failure}"),
+                None => String::new(),
+            },
+            outcome.run_id,
+            outcome.duration_ms,
+            outcome.run_root.display(),
+        );
+        exit_code = exit_code.max(classification.exit_code());
     }
     exit_code
 }
 
-async fn serve(args: ServeArgs) -> i32 {
+async fn observe(args: ObserveArgs) -> i32 {
     if args.selection.scenario == "all" {
-        eprintln!("runner_error: serve requires one scenario id or slug");
+        eprintln!("runner_error: observe requires one scenario id or slug");
         return 3;
     }
     let fixture = match load_fixtures(&args.selection, true).and_then(|fixtures| {
         fixtures
             .into_iter()
             .next()
-            .context("serve selector returned no scenario")
+            .context("observe selector returned no scenario")
     }) {
         Ok(fixture) => fixture,
         Err(error) => {
@@ -263,16 +212,7 @@ async fn serve(args: ServeArgs) -> i32 {
             return 3;
         }
     };
-    let Some(console_bin) = args.console_bin.as_deref() else {
-        eprintln!("runner_error: --console-bin is required");
-        return 3;
-    };
-    let bins = match resolve_stack_bins(
-        args.engine_bin.as_deref(),
-        args.harness_bin.as_deref(),
-        Some(console_bin),
-        &args.worker_bins,
-    ) {
+    let bins = match resolve_stack_bins(&args.bins) {
         Ok(bins) => bins,
         Err(error) => {
             eprintln!("runner_error: {error:#}");
@@ -287,7 +227,7 @@ async fn serve(args: ServeArgs) -> i32 {
         }
     };
 
-    let outcome = serve_scenario(&bins, &fixture, &artifacts_dir, &args.ready_file).await;
+    let outcome = observe_scenario(&bins, &fixture, &artifacts_dir, &args.ready_file).await;
     println!(
         "{}: {} — run {} ({} ms), artifacts: {}",
         fixture.scenario.id,
@@ -344,22 +284,20 @@ fn prepare_artifacts_dir(dir: &Path) -> anyhow::Result<PathBuf> {
         .with_context(|| format!("resolving {}", dir.display()))
 }
 
-fn resolve_stack_bins(
-    engine: Option<&Path>,
-    harness: Option<&Path>,
-    console: Option<&Path>,
-    worker_bins: &[(String, PathBuf)],
-) -> anyhow::Result<StackBins> {
-    let engine = engine
+fn resolve_stack_bins(args: &StackBinArgs) -> anyhow::Result<StackBins> {
+    let engine = args
+        .engine_bin
+        .as_deref()
         .ok_or_else(|| anyhow::anyhow!("--engine-bin (or III_BIN) is required; see engine.lock"))?;
-    let harness = harness.ok_or_else(|| anyhow::anyhow!("--harness-bin is required"))?;
+    let harness = args
+        .harness_bin
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("--harness-bin is required"))?;
     let bins = StackBins {
         engine: absolute_binary("engine", engine)?,
         harness: absolute_binary("harness", harness)?,
-        console: console
-            .map(|path| absolute_binary("console", path))
-            .transpose()?,
-        workers: worker_bins
+        workers: args
+            .worker_bins
             .iter()
             .map(|(name, path)| Ok((name.clone(), absolute_binary(name, path)?)))
             .collect::<anyhow::Result<BTreeMap<String, PathBuf>>>()?,
@@ -377,17 +315,4 @@ fn absolute_binary(name: &str, path: &Path) -> anyhow::Result<PathBuf> {
     }
     path.canonicalize()
         .with_context(|| format!("resolving {name} binary {}", path.display()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn repeat_count_must_be_positive() {
-        assert_eq!(parse_repeat("1").unwrap(), 1);
-        assert_eq!(parse_repeat("2").unwrap(), 2);
-        assert!(parse_repeat("0").is_err());
-        assert!(parse_repeat("many").is_err());
-    }
 }

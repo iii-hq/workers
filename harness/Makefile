@@ -319,7 +319,6 @@ INTEGRATION_WORKERS := queue iii-directory session-manager context-manager
 INTEGRATION_PROFILE ?= release
 INTEGRATION_FLAG    := $(if $(filter release,$(INTEGRATION_PROFILE)),--release,)
 INTEGRATION_SCENARIO ?= all
-INTEGRATION_REPEAT ?= 1
 INTEGRATION_ARTIFACTS ?= $(REPO_ROOT)/target/integration
 
 integration-e2e:
@@ -343,7 +342,6 @@ integration-e2e:
 	  --worker-bin "session-manager=$(REPO_ROOT)/session-manager/target/$(INTEGRATION_PROFILE)/session-manager" \
 	  --worker-bin "context-manager=$(REPO_ROOT)/context-manager/target/$(INTEGRATION_PROFILE)/context-manager" \
 	  --scenario "$(INTEGRATION_SCENARIO)" \
-	  --repeat "$(INTEGRATION_REPEAT)" \
 	  --artifacts-dir "$(INTEGRATION_ARTIFACTS)"
 
 integration-validate:

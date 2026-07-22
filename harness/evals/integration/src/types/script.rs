@@ -28,18 +28,12 @@ pub enum SchemaVersion1 {
 pub struct ModelFixtureV1 {
     pub id: String,
     pub provider: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
     pub context_window: u64,
     pub max_output_tokens: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_limit: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_thinking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_xhigh: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_efforts: Option<Vec<ReasoningEffortV1>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_tools: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -48,31 +42,6 @@ pub struct ModelFixtureV1 {
     pub supports_cache: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_structured_output: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking_budgets: Option<std::collections::BTreeMap<String, u64>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pricing: Option<PricingV1>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ReasoningEffortV1 {
-    pub effort: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PricingV1 {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_read: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_write: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -104,16 +73,12 @@ pub struct JsonNormalizerV1 {
     /// RFC 6901 JSON Pointer.
     pub pointer: String,
     pub operation: NormalizerOperation,
-    /// Required for `replace`; forbidden for `delete`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub replacement: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NormalizerOperation {
     Delete,
-    Replace,
 }
 
 /// The 12 router-request fields; compiled scenarios always make every

@@ -165,9 +165,9 @@ impl Recorder {
         self.store.reset(run_id)
     }
 
-    /// Return an ordered in-process snapshot after the optional sequence.
-    pub fn snapshot(&self, after_sequence: Option<u64>) -> anyhow::Result<Vec<RecorderEventV1>> {
-        self.store.snapshot(after_sequence)
+    /// Return the ordered in-process snapshot.
+    pub fn snapshot(&self) -> anyhow::Result<Vec<RecorderEventV1>> {
+        self.store.snapshot()
     }
 
     /// Wait for the lifecycle trigger delivery without repeatedly calling a
@@ -181,7 +181,7 @@ impl Recorder {
         loop {
             let notified = self.event_notify.notified();
             if let Some(event) = self
-                .snapshot(None)?
+                .snapshot()?
                 .into_iter()
                 .find(|event| event.kind == RecorderEventKind::Lifecycle)
             {
@@ -287,7 +287,7 @@ fn register_controlled_function(
     );
 }
 
-pub(crate) fn const_response_schema(response: &Value) -> Value {
+fn const_response_schema(response: &Value) -> Value {
     json!({
         "$schema": "http://json-schema.org/draft-07/schema#",
         "const": response

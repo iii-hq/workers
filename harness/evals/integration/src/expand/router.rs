@@ -90,7 +90,6 @@ fn default_match(
         .map(|index| JsonNormalizerV1 {
             pointer: format!("/{index}/timestamp"),
             operation: NormalizerOperation::Delete,
-            replacement: None,
         })
         .collect();
     GenerationMatchV1 {

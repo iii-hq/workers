@@ -8,18 +8,18 @@ use crate::types::scenario::CompiledScenarioV1;
 pub(super) struct PreparedRun {
     pub(super) scenario: CompiledScenarioV1,
     pub(super) expected_prompt: String,
-    pub(super) readiness_deadline: Deadline,
+    pub(super) setup_deadline: Deadline,
 }
 
 impl PreparedRun {
     pub(super) fn new(scenario: CompiledScenarioV1, expected_prompt: String) -> Self {
-        let readiness_deadline = Deadline::after(std::time::Duration::from_millis(
+        let setup_deadline = Deadline::after(std::time::Duration::from_millis(
             scenario.deadlines.readiness_ms,
         ));
         Self {
             scenario,
             expected_prompt,
-            readiness_deadline,
+            setup_deadline,
         }
     }
 }

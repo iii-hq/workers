@@ -161,18 +161,13 @@ fn default_model_fixture() -> ModelFixtureV1 {
     ModelFixtureV1 {
         id: DEFAULT_MODEL.to_string(),
         provider: DEFAULT_PROVIDER.to_string(),
-        display_name: None,
         context_window: 32_768,
         max_output_tokens: 4_096,
-        input_limit: None,
         supports_thinking: Some(false),
         supports_xhigh: None,
-        reasoning_efforts: None,
         supports_tools: Some(true),
         supports_vision: Some(false),
         supports_cache: Some(false),
         supports_structured_output: Some(true),
-        thinking_budgets: None,
-        pricing: None,
     }
 }

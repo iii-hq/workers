@@ -7,7 +7,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 /// A copy of `value` with all object keys sorted recursively.
-pub fn sort_keys(value: &Value) -> Value {
+fn sort_keys(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
             let mut sorted: Vec<(&String, &Value)> = map.iter().collect();
@@ -37,11 +37,6 @@ pub fn canonical_json_pretty(value: &Value) -> String {
     text
 }
 
-/// Lowercase-hex SHA-256 of the canonical JSON of `value`.
-pub fn sha256_of_canonical(value: &Value) -> String {
-    hex(&Sha256::digest(canonical_json(value).as_bytes()))
-}
-
 /// Lowercase-hex SHA-256 of raw bytes (e.g. the UTF-8 of a matched string).
 pub fn sha256_of_bytes(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
@@ -61,7 +56,6 @@ mod tests {
         let a: Value = serde_json::from_str(r#"{"b":1,"a":{"d":2,"c":[{"y":1,"x":2}]}}"#).unwrap();
         let b: Value = serde_json::from_str(r#"{"a":{"c":[{"x":2,"y":1}],"d":2},"b":1}"#).unwrap();
         assert_eq!(canonical_json(&a), canonical_json(&b));
-        assert_eq!(sha256_of_canonical(&a), sha256_of_canonical(&b));
     }
 
     #[test]

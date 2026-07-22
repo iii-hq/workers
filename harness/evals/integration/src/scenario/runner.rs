@@ -10,7 +10,7 @@ use crate::fixtures::ScenarioFixture;
 use crate::process::TeardownReport;
 use crate::runtime::{RunError, RunPhase};
 use crate::services::RunServices;
-use crate::stack::{EarlyExit, RunPaths, Stack, StackBins};
+use crate::stack::{EarlyExit, RunLayout, Stack, StackBins};
 use crate::types::scenario::{Classification, ExecutionReportV1, IntegrationResultV1};
 use crate::types::script::SchemaVersion1;
 
@@ -72,15 +72,7 @@ pub async fn run_scenario(
     let run_root = artifacts_dir.join(&run_id);
     let session_id = format!("s_{}", uuid::Uuid::new_v4().simple());
 
-    let mut runner = ScenarioRunner {
-        bins,
-        fixture,
-        run_id: run_id.clone(),
-        session_id,
-        sink: None,
-        failure: None,
-        evidence: serde_json::Value::Null,
-    };
+    let mut runner = ScenarioRunner::new(bins, fixture, run_id.clone(), session_id);
 
     let mut classification = runner.execute(artifacts_dir).await;
     let mut result = runner.result(classification);
@@ -140,33 +132,80 @@ pub(super) struct ScenarioRunner<'a> {
     /// First floor or verify failure, scrubbed of run-scoped ids.
     pub(super) failure: Option<String>,
     /// Raw serialized [`crate::evidence_data::RunEvidence`], published in
-    /// serve results for Playwright; JSON null until collected.
+    /// observe results for Playwright; JSON null until collected.
     pub(super) evidence: serde_json::Value,
 }
 
-impl ScenarioRunner<'_> {
-    async fn execute(&mut self, artifacts_dir: &Path) -> Classification {
-        let paths = match RunPaths::allocate(artifacts_dir, &self.run_id) {
+/// Allocate + expand result shared by Direct and Observe drivers.
+pub(super) struct ExpandedRun {
+    pub paths: RunLayout,
+    pub expanded: ExpandedFixtureV1,
+}
+
+/// Booted stack + services ready for scenario phases.
+pub(super) struct BootedRun {
+    pub stack: Stack,
+    pub services: RunServices,
+    pub prepared: PreparedRun,
+    pub teardown_budget: Duration,
+}
+
+impl<'a> ScenarioRunner<'a> {
+    pub(super) fn new(
+        bins: &'a StackBins,
+        fixture: &'a ScenarioFixture,
+        run_id: String,
+        session_id: String,
+    ) -> Self {
+        Self {
+            bins,
+            fixture,
+            run_id,
+            session_id,
+            sink: None,
+            failure: None,
+            evidence: serde_json::Value::Null,
+        }
+    }
+
+    /// Allocate run layout, open the artifact sink, and expand the fixture.
+    pub(super) fn expand_for_run(
+        &mut self,
+        artifacts_dir: &Path,
+    ) -> Result<ExpandedRun, Classification> {
+        let paths = match RunLayout::allocate(artifacts_dir, &self.run_id) {
             Ok(paths) => paths,
             Err(error) => {
                 let error = RunError::runner(RunPhase::Allocate, "allocate run paths", error);
-                return self.finish(Err(error), None);
+                return Err(self.finish(Err(error), None));
             }
         };
         self.sink = Some(ArtifactSink::new(paths.root.clone()));
 
+        let expanded =
+            match expand_compiled_fixture(&self.fixture.compiled(), &self.run_id, &self.session_id)
+            {
+                Ok(expanded) => expanded,
+                Err(error) => {
+                    let error =
+                        RunError::runner(RunPhase::Allocate, "expand compiled fixture", error);
+                    return Err(self.finish_without_stack(error));
+                }
+            };
+        Ok(ExpandedRun { paths, expanded })
+    }
+
+    /// Create scenario dirs, boot the stack, and start support services.
+    pub(super) async fn boot_prepared(
+        &mut self,
+        paths: RunLayout,
+        expanded: ExpandedFixtureV1,
+    ) -> Result<BootedRun, Classification> {
         let ExpandedFixtureV1 {
             scenario,
             script,
             system_prompt: expected_prompt,
-        } = match expand_compiled_fixture(&self.fixture.compiled(), &self.run_id, &self.session_id)
-        {
-            Ok(expanded) => expanded,
-            Err(error) => {
-                let error = RunError::runner(RunPhase::Allocate, "expand compiled fixture", error);
-                return self.finish_without_stack(error);
-            }
-        };
+        } = expanded;
         let teardown_budget = Duration::from_millis(scenario.deadlines.teardown_ms);
         let prepared = PreparedRun::new(scenario, expected_prompt);
 
@@ -176,14 +215,14 @@ impl ScenarioRunner<'_> {
                 "allocate scenario artifact directory",
                 error,
             );
-            return self.finish_without_stack(error);
+            return Err(self.finish_without_stack(error));
         }
 
         let mut stack = match Stack::boot(self.bins, paths).await {
             Ok(stack) => stack,
             Err(failure) => {
                 let error = RunError::setup(RunPhase::Boot, "boot isolated stack", failure.error);
-                return self.fail_before_services(error, failure.teardown, None);
+                return Err(self.fail_before_services(error, failure.teardown, None));
             }
         };
         stack.set_teardown_budget(teardown_budget);
@@ -201,23 +240,55 @@ impl ScenarioRunner<'_> {
                     RunError::setup(RunPhase::Boot, "start run-scoped support services", error);
                 let early_exit = stack.early_exit();
                 let processes = stack.teardown().await;
-                return self.fail_before_services(error, processes, early_exit);
+                return Err(self.fail_before_services(error, processes, early_exit));
             }
         };
 
-        let outcome = self.run_phases(&mut stack, &services, &prepared).await;
-        self.finalize(stack, services, teardown_budget, outcome)
+        Ok(BootedRun {
+            stack,
+            services,
+            prepared,
+            teardown_budget,
+        })
+    }
+
+    /// Arm a booted stack (shared by Direct and Observe drivers).
+    pub(super) async fn arm_booted(&mut self, booted: &mut BootedRun) -> Result<(), RunError> {
+        self.arm(&mut booted.stack, &booted.services, &booted.prepared)
             .await
     }
 
-    async fn run_phases(
+    async fn execute(&mut self, artifacts_dir: &Path) -> Classification {
+        let ExpandedRun { paths, expanded } = match self.expand_for_run(artifacts_dir) {
+            Ok(expanded) => expanded,
+            Err(classification) => return classification,
+        };
+        let mut booted = match self.boot_prepared(paths, expanded).await {
+            Ok(booted) => booted,
+            Err(classification) => return classification,
+        };
+
+        let outcome = async {
+            self.arm_booted(&mut booted).await?;
+            self.run_phases_after_arm(&mut booted.stack, &booted.services, &booted.prepared)
+                .await
+        }
+        .await;
+        self.finalize(
+            booted.stack,
+            booted.services,
+            booted.teardown_budget,
+            outcome,
+        )
+        .await
+    }
+
+    async fn run_phases_after_arm(
         &mut self,
         stack: &mut Stack,
         services: &RunServices,
         prepared: &PreparedRun,
     ) -> Result<(), RunError> {
-        self.probe(stack, services, prepared).await?;
-        self.arm(stack, services, prepared).await?;
         let mut active = self.send(services, prepared).await?;
         self.fault(stack, services, prepared, &active).await?;
         self.release(services, prepared, &active).await?;
@@ -246,7 +317,7 @@ impl ScenarioRunner<'_> {
         combine_teardown(classification, teardown_complete, artifact)
     }
 
-    /// Shared teardown tail for run and serve. Inspects process state while
+    /// Shared teardown tail for run and observe. Inspects process state while
     /// the subject is still running; service shutdown is intentionally
     /// before process teardown, and a second inspection catches a child
     /// that exits during that boundary.

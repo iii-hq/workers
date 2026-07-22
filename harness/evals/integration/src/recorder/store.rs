@@ -110,18 +110,9 @@ impl EventStore {
         Ok(sequence)
     }
 
-    pub(super) fn snapshot(
-        &self,
-        after_sequence: Option<u64>,
-    ) -> anyhow::Result<Vec<RecorderEventV1>> {
-        let after_sequence = after_sequence.unwrap_or(0);
+    pub(super) fn snapshot(&self) -> anyhow::Result<Vec<RecorderEventV1>> {
         let state = self.lock()?;
-        Ok(state
-            .events
-            .iter()
-            .filter(|event| event.sequence > after_sequence)
-            .cloned()
-            .collect())
+        Ok(state.events.clone())
     }
 
     fn lock(&self) -> anyhow::Result<std::sync::MutexGuard<'_, EventStoreState>> {

@@ -8,11 +8,9 @@ mod child;
 mod spec;
 mod supervisor;
 
-pub use child::SupervisedChild;
-pub use spec::ProcessSpec;
-pub use supervisor::{
-    EarlyExit, ProcessSupervisor, TeardownIssue, TeardownReport, DEFAULT_TEARDOWN_BUDGET,
-};
+pub(crate) use spec::ProcessSpec;
+pub use supervisor::EarlyExit;
+pub(crate) use supervisor::{ProcessSupervisor, TeardownReport, DEFAULT_TEARDOWN_BUDGET};
 
 #[cfg(test)]
 mod tests;

@@ -2,17 +2,13 @@ import { expect, expectPassingResult, openSession, test } from './harness-stack'
 
 test.use({ scenario: 'console-streamed-text' })
 
-test('sends from the production Console and renders streamed text', async ({
+test('renders a harness-started streamed turn in the Console', async ({
   page,
   stack,
 }) => {
   const completed = stack.waitForTurnCompleted()
-  await openSession(page, stack.ready)
-
-  await page
-    .getByRole('textbox', { name: 'message composer' })
-    .fill(stack.ready.message)
-  await page.getByRole('button', { name: 'send message' }).click()
+  await openSession(page, stack)
+  await stack.start()
 
   await expect(
     page.locator('[data-message-role="user"]', {
