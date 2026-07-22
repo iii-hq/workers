@@ -89,6 +89,67 @@ impl RunEvidence {
             .any(|entry_id| !seen.insert(entry_id))
     }
 
+    pub fn expect_assistant_texts(
+        &self,
+        expected: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> anyhow::Result<()> {
+        let expected: Vec<String> = expected
+            .into_iter()
+            .map(|text| text.as_ref().to_string())
+            .collect();
+        let actual = self.assistant_texts();
+        anyhow::ensure!(
+            actual == expected,
+            "assistant texts {actual:?} != {expected:?}"
+        );
+        Ok(())
+    }
+
+    pub fn expect_message_counts(
+        &self,
+        user: u64,
+        assistant: u64,
+        function_result: u64,
+    ) -> anyhow::Result<()> {
+        let actual = self.message_counts();
+        let expected = (user, assistant, function_result);
+        anyhow::ensure!(
+            actual == expected,
+            "message counts (user, assistant, function_result) {actual:?} != {expected:?}"
+        );
+        Ok(())
+    }
+
+    pub fn expect_function_calls(&self, alias: &str, count: usize) -> anyhow::Result<()> {
+        let actual = self.calls(alias).len();
+        anyhow::ensure!(
+            actual == count,
+            "{alias} ran {actual} times, expected {count}"
+        );
+        Ok(())
+    }
+
+    pub fn expect_call_payload(&self, alias: &str, expected: Value) -> anyhow::Result<()> {
+        let calls = self.calls(alias);
+        let call = calls
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("{alias} did not run"))?;
+        anyhow::ensure!(
+            call.payload == expected,
+            "{alias} payload {} != {expected}",
+            call.payload
+        );
+        Ok(())
+    }
+
+    pub fn expect_no_duplicate_messages(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.has_duplicate_messages(),
+            "transcript contains duplicate entry ids"
+        );
+        Ok(())
+    }
+
     /// Replace this run's concrete ids with `{{run_id}}` / `{{session_id}}` /
     /// `{{turn_id}}` placeholders so persisted failure text stays
     /// byte-comparable across runs.
@@ -237,5 +298,27 @@ mod tests {
 
         evidence.turn_id = None;
         assert_eq!(evidence.scrub("turn t_1"), "turn t_1");
+    }
+
+    #[test]
+    fn expectation_helpers_report_the_observed_values() {
+        let mut evidence = base_evidence();
+        evidence.transcript = vec![
+            json!({ "message": { "role": "user", "content": [] } }),
+            json!({
+                "message": {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "complete" }]
+                }
+            }),
+        ];
+        evidence.expect_assistant_texts(["complete"]).unwrap();
+        evidence.expect_message_counts(1, 1, 0).unwrap();
+        evidence.expect_no_duplicate_messages().unwrap();
+        assert!(evidence
+            .expect_assistant_texts(["different"])
+            .unwrap_err()
+            .to_string()
+            .contains("complete"));
     }
 }

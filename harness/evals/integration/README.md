@@ -15,11 +15,12 @@ No provider key or network access is required.
 | E2E-002 | `exactly-once-function` | direct | a native function executes exactly once |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 
-Each fixture is defined end to end in its own `src/scenarios/*.rs` file: the
-exact `harness::send` payload, router request matchers, response frames,
-recorder configuration, and scenario-specific verification function. Shared
-code is limited to wire-format constructors. There is no YAML or generic
-authored-scenario compiler.
+Each fixture is defined end to end in its own `src/scenarios/*.rs` file with a
+small typed DSL. The scenario keeps its send policy, router request matchers,
+response behavior, recorder configuration, function history, and verification
+visible at the call site. Builders compile directly to the runtime types; there
+is no YAML, macro layer, inferred history, or generic authored-scenario
+compiler.
 
 ## Run the direct scenarios
 

@@ -1,74 +1,55 @@
 //! E2E-001 — streamed text reaches durable completion.
 
-use anyhow::ensure;
-use serde_json::json;
-
-use super::support::{
-    model, request_match, response, send, streamed_text_frames, synthetic_recorder, system_prompt,
-    usage, user_message, RequestProfile,
-};
+use super::dsl::{Generation, Message, Model, Recorder, Request, Response, Scenario, Send};
 use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
-use crate::types::frames::StopReason;
-use crate::types::scenario::{CompiledScenarioV1, DeadlinesV1};
-use crate::types::script::{RouterScriptV1, SchemaVersion1, ScriptedGenerationV1};
 
 pub(super) fn scenario() -> ScenarioFixture {
     const ID: &str = "E2E-001";
     const MESSAGE: &str = "Return the fixture phrase.";
     const TEXT: &str = "fixture complete";
 
-    let model = model();
-    let usage = usage(8, 2);
-    let allowed_functions = Vec::new();
-    let messages = vec![user_message(MESSAGE)];
-    let generation = ScriptedGenerationV1 {
-        ordinal: 1,
-        match_: request_match(1, &model, &messages, &json!([]), RequestProfile::Direct),
-        frames: streamed_text_frames(TEXT, &["fixture ", "complete"], &usage, &model),
-        response: response(StopReason::End, usage, &model),
-    };
-
-    ScenarioFixture {
-        slug: "streamed-text".to_string(),
-        driver: ScenarioDriver::Direct,
-        scenario: CompiledScenarioV1 {
-            schema_version: SchemaVersion1::V1,
-            id: ID.to_string(),
-            description:
-                "Streamed text reaches durable completion through the real queue and turn loop."
-                    .to_string(),
-            send: send(ID, MESSAGE, &model, &allowed_functions),
-            recorder: synthetic_recorder(),
-            deadlines: DeadlinesV1::default(),
-        },
-        script: RouterScriptV1 {
-            schema_version: SchemaVersion1::V1,
-            scenario_id: ID.to_string(),
-            model,
-            generations: vec![generation],
-        },
-        system_prompt_template: system_prompt(&allowed_functions),
-        verify: |run| {
-            let texts = run.assistant_texts();
-            ensure!(texts == [TEXT], "assistant texts {texts:?} != [\"{TEXT}\"]");
-            let counts = run.message_counts();
-            ensure!(
-                counts == (1, 1, 0),
-                "message counts (user, assistant, function_result) {counts:?} != (1, 1, 0)"
-            );
-            ensure!(
-                !run.has_duplicate_messages(),
-                "transcript contains duplicate entry ids"
-            );
-            Ok(())
-        },
-    }
+    Scenario::new(
+        ID,
+        "streamed-text",
+        "Streamed text reaches durable completion through the real queue and turn loop.",
+        ScenarioDriver::Direct,
+        Model::scripted("fixture-model"),
+    )
+    .send(
+        Send::message(MESSAGE)
+            .idempotency_key("{{run_id}}:e2e-001")
+            .without_functions(),
+    )
+    .recorder(Recorder::lifecycle_only())
+    .generation(
+        Generation::new(1)
+            .expect(
+                Request::new()
+                    .turn_request()
+                    .system_prompt_sha256("{{system_prompt_sha256}}")
+                    .messages_exact([Message::user(MESSAGE)])
+                    .without_tools(),
+            )
+            .respond(Response::streamed_text(
+                TEXT,
+                ["fixture ", "complete"],
+                8,
+                2,
+            )),
+    )
+    .verify(|run| {
+        run.expect_assistant_texts([TEXT])?;
+        run.expect_message_counts(1, 1, 0)?;
+        run.expect_no_duplicate_messages()
+    })
+    .build()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::frames::StopReason;
 
     #[test]
     fn stream_has_one_terminal_frame_and_matching_response() {

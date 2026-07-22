@@ -1,9 +1,9 @@
 //! The three checked-in integration fixtures.
 
 mod console_streamed_text;
+mod dsl;
 mod exactly_once_function;
 mod streamed_text;
-mod support;
 
 use crate::evidence_data::RunEvidence;
 use crate::fixtures::ScenarioFixture;

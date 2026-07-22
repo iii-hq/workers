@@ -1,141 +1,84 @@
 //! E2E-002 — the recorder runs exactly once and its result closes the turn.
 
-use anyhow::ensure;
 use serde_json::json;
 
-use super::support::{
-    assistant_message, model, recorder, recorder_target, request_match, response, send,
-    system_prompt, usage, user_message, RequestProfile, MODEL_ID, PROVIDER_ID,
+use super::dsl::{
+    Generation, Message, Model, Recorder, RecorderFunction, Request, Response, Scenario, Send,
 };
 use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
-use crate::types::frames::{AssistantMessageEvent, ContentBlock, StopReason};
-use crate::types::scenario::{CompiledScenarioV1, DeadlinesV1};
-use crate::types::script::{RouterScriptV1, SchemaVersion1, ScriptedGenerationV1};
 
 pub(super) fn scenario() -> ScenarioFixture {
     const ID: &str = "E2E-002";
     const MESSAGE: &str = "Call the recorder once.";
-    const FUNCTION_ID: &str = "{{run_id}}::record";
+    const CALL_ID: &str = "call-1";
 
-    let model = model();
-    let target = recorder_target(FUNCTION_ID);
-    let allowed_functions = vec![FUNCTION_ID.to_string()];
-    let tools = json!([{
-        "name": FUNCTION_ID,
-        "description": target.description,
-        "parameters": target.request_schema,
-        "execution_mode": "sequential"
-    }]);
+    let model = Model::scripted("fixture-model");
+    let record = RecorderFunction::new(
+        "{{run_id}}::record",
+        "Record one integration fixture value.",
+    )
+    .request_schema(json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": { "value": { "type": "string" } },
+        "required": ["value"]
+    }))
+    .returns_text("recorded");
     let arguments = json!({ "value": "expected" });
-    let call_usage = usage(8, 4);
-    let final_usage = usage(18, 2);
 
-    let first_messages = vec![user_message(MESSAGE)];
-    let function_call = assistant_message(
-        vec![ContentBlock::FunctionCall {
-            id: "call-1".to_string(),
-            function_id: FUNCTION_ID.to_string(),
-            arguments: arguments.clone(),
-        }],
-        StopReason::FunctionCall,
-        Some(call_usage.clone()),
-        &model,
-        1,
-    );
-    let mut second_messages = first_messages.clone();
-    second_messages.extend([
-        json!({
-            "role": "assistant",
-            "content": [{
-                "type": "function_call",
-                "id": "call-1",
-                "function_id": FUNCTION_ID,
-                "arguments": arguments
-            }],
-            "stop_reason": "end",
-            "model": MODEL_ID,
-            "provider": PROVIDER_ID
-        }),
-        json!({
-            "role": "function_result",
-            "function_call_id": "call-1",
-            "function_id": FUNCTION_ID,
-            "content": [{ "type": "text", "text": "recorded" }],
-            "details": target.response,
-            "is_error": false
-        }),
-    ]);
-    let final_message = assistant_message(
-        vec![ContentBlock::Text {
-            text: "recorded once".to_string(),
-        }],
-        StopReason::End,
-        Some(final_usage.clone()),
-        &model,
-        2,
-    );
-    let generations = vec![
-        ScriptedGenerationV1 {
-            ordinal: 1,
-            match_: request_match(1, &model, &first_messages, &tools, RequestProfile::Direct),
-            frames: vec![AssistantMessageEvent::Done {
-                message: function_call,
-            }],
-            response: response(StopReason::FunctionCall, call_usage, &model),
-        },
-        ScriptedGenerationV1 {
-            ordinal: 2,
-            match_: request_match(2, &model, &second_messages, &tools, RequestProfile::Direct),
-            frames: vec![AssistantMessageEvent::Done {
-                message: final_message,
-            }],
-            response: response(StopReason::End, final_usage, &model),
-        },
-    ];
-
-    ScenarioFixture {
-        slug: "exactly-once-function".to_string(),
-        driver: ScenarioDriver::Direct,
-        scenario: CompiledScenarioV1 {
-            schema_version: SchemaVersion1::V1,
-            id: ID.to_string(),
-            description: "The recorder runs exactly once.".to_string(),
-            send: send(ID, MESSAGE, &model, &allowed_functions),
-            recorder: recorder(target),
-            deadlines: DeadlinesV1::default(),
-        },
-        script: RouterScriptV1 {
-            schema_version: SchemaVersion1::V1,
-            scenario_id: ID.to_string(),
-            model,
-            generations,
-        },
-        system_prompt_template: system_prompt(&allowed_functions),
-        verify: |run| {
-            let texts = run.assistant_texts();
-            ensure!(
-                texts == ["recorded once"],
-                "assistant texts {texts:?} != [\"recorded once\"]"
-            );
-            let calls = run.calls("record");
-            ensure!(
-                calls.len() == 1,
-                "record ran {} times, not exactly once",
-                calls.len()
-            );
-            let payload = &calls[0].payload;
-            ensure!(
-                payload == &json!({ "value": "expected" }),
-                "record payload {payload} != {{\"value\":\"expected\"}}"
-            );
-            ensure!(
-                !run.has_duplicate_messages(),
-                "transcript contains duplicate entry ids"
-            );
-            Ok(())
-        },
-    }
+    Scenario::new(
+        ID,
+        "exactly-once-function",
+        "The recorder runs exactly once.",
+        ScenarioDriver::Direct,
+        model.clone(),
+    )
+    .send(
+        Send::message(MESSAGE)
+            .idempotency_key("{{run_id}}:e2e-002")
+            .allow_function(&record),
+    )
+    .recorder(Recorder::function(record.clone()))
+    .generation(
+        Generation::new(1)
+            .expect(
+                Request::new()
+                    .turn_request()
+                    .system_prompt_sha256("{{system_prompt_sha256}}")
+                    .messages_exact([Message::user(MESSAGE)])
+                    .tools_exact([record.tool()]),
+            )
+            .respond(Response::function_call(
+                CALL_ID,
+                &record,
+                arguments.clone(),
+                8,
+                4,
+            )),
+    )
+    .generation(
+        Generation::new(2)
+            .expect(
+                Request::new()
+                    .turn_request()
+                    .system_prompt_sha256("{{system_prompt_sha256}}")
+                    .messages_exact([
+                        Message::user(MESSAGE),
+                        Message::function_call(CALL_ID, &record, arguments.clone(), &model),
+                        Message::function_result(CALL_ID, &record, "recorded"),
+                    ])
+                    .tools_exact([record.tool()]),
+            )
+            .respond(Response::text("recorded once", 18, 2)),
+    )
+    .verify(|run| {
+        run.expect_assistant_texts(["recorded once"])?;
+        run.expect_function_calls("record", 1)?;
+        run.expect_call_payload("record", json!({ "value": "expected" }))?;
+        run.expect_no_duplicate_messages()
+    })
+    .build()
 }
 
 #[cfg(test)]
