@@ -15,7 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::ConsoleConfig;
-use crate::ui_assets::{ManifestAsset, UiRegistry};
+use crate::ui_assets::{ManifestAsset, ManifestWorker, UiRegistry};
 use status::{StatusInput, StatusOutput};
 
 /// Register every `console::*` function. Called once from `main` after
@@ -41,7 +41,12 @@ pub struct UiManifestOutput {
     /// `true` when the `injectable_ui` kill switch is off — the trigger
     /// types are unregistered and `/ui` + `/vendor` are not served.
     pub disabled: bool,
+    /// The loadable set: assets of per-worker-disabled workers are held but
+    /// excluded here (and from tab syncs) until re-enabled.
     pub assets: Vec<ManifestAsset>,
+    /// Per-worker summary — includes disabled workers (their toggle state
+    /// lives in the console configuration's `injectableUi.disabledWorkers`).
+    pub workers: Vec<ManifestWorker>,
 }
 
 /// `console::ui-manifest` — the authoritative *loadable* asset set (only
@@ -57,10 +62,12 @@ fn register_ui_manifest(iii: &Arc<IIIClient>, ui: Option<Arc<UiRegistry>>) {
                     Some(registry) => UiManifestOutput {
                         disabled: false,
                         assets: registry.manifest(),
+                        workers: registry.workers(),
                     },
                     None => UiManifestOutput {
                         disabled: true,
                         assets: Vec::new(),
+                        workers: Vec::new(),
                     },
                 })
             }

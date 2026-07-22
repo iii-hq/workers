@@ -40,10 +40,9 @@ pub async fn vendor_handler(Path(path): Path<String>) -> Response {
     let key = format!("vendor/{path}");
     let mut response = serve_embedded(&key, false);
     if response.status() == StatusCode::OK {
-        response.headers_mut().insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("no-cache"),
-        );
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     }
     response
 }

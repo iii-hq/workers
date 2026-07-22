@@ -8,6 +8,7 @@
 packages:
   - packages/*
   - console/web
+  - console/ui
   - state/ui
 
 # pnpm ≥11 blocks dependency postinstall scripts by default; esbuild's

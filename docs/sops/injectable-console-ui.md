@@ -15,6 +15,7 @@ implementation. The `state` worker is the living reference — copy it.
 | Slot registries (pages, renderers, forms) | `workers/console/web/src/lib/ui-slots.ts` |
 | The `@iii-dev/console-ui` runtime surface | `workers/console/web/src/lib/console-api.ts` |
 | The `@iii-dev/console-ui` package (types + component manifest) | `workers/packages/console-ui/` |
+| The `iii-console-ui` crate (Rust worker-side registration) | `workers/crates/console-ui/` |
 | Worker reference implementation | `workers/state/src/ui.rs` + `workers/state/ui/` |
 
 ## How it works (one paragraph)
@@ -143,26 +144,45 @@ self-contained binary.
 
 ### 4. Registration (the worker side)
 
-One content function serves all of the worker's assets (dispatch on `path`);
-one trigger per asset. Rust (`workers/state/src/ui.rs`):
+The wire contract is: one content function serving all of the worker's
+assets (dispatch on `path`), one trigger per asset. Rust workers don't
+hand-roll it — the shared **`iii-console-ui`** crate
+(`workers/crates/console-ui`) is the whole worker side, linked directly by
+path (never published; it versions with the console worker in this repo):
 
-```rust
-iii.register_function(
-    "state::ui-content",
-    RegisterFunction::new_async(move |input: UiContentInput| { /* path → content */ })
-        .description("…")
-        .metadata(serde_json::json!({ "internal": true })),  // console plumbing, not discoverable API
-);
-
-iii.register_trigger(RegisterTriggerInput {
-    trigger_type: "console:script".to_string(),   // "console:style" for the sheet
-    function_id: "state::ui-content".to_string(),
-    config: serde_json::json!({ "path": "state/page.js" }),
-    metadata: None,
-})?;
+```toml
+# <worker>/Cargo.toml
+[dependencies]
+iii-console-ui = { path = "../crates/console-ui" }
 ```
 
-Node:
+```rust
+use iii_console_ui::ConsoleUi;
+
+ConsoleUi::new("state")
+    .script(
+        "state/page.js",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist/page.js")),
+    )
+    .style(
+        "state/styles.css",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist/styles.css")),
+    )
+    .register(&iii);
+```
+
+One call registers everything: the content function (`<worker>::ui-content`,
+flagged `internal: true` so it stays console plumbing rather than
+discoverable API), one Message-path trigger per asset (MIME type derived
+from the asset kind), and the `III_<WORKER>_UI_WATCH` dev watcher. Each
+default derives from the worker name and has a builder override
+(`.content_function_id(…)`, `.watch_env(…)`, `.watch_default_dir(…)`). The
+builder panics on paths the console would reject (wrong extension,
+uppercase, `..` segments, duplicates) — an authoring mistake fails your
+first unit test instead of warn-logging against a running engine; trigger
+registration failures at runtime stay warn-logged, not fatal.
+
+Node workers write the two pieces directly (there is no Node helper yet):
 
 ```ts
 iii.registerFunction('mywork::ui-content', async ({ path }) => {
@@ -177,8 +197,8 @@ const trigger = iii.registerTrigger({
 })
 ```
 
-**Always use the SDK Message path, never `engine::register_trigger`.**
-Function-path triggers are durable: they outlive your worker (a page pointing
+**Always use the SDK Message path, never `engine::register_trigger`** (the
+crate does). Function-path triggers are durable: they outlive your worker (a page pointing
 at a dead content function) and silently vanish on engine restart with no
 replayer. Message-path triggers are GC'd on disconnect and replayed by the
 SDK on reconnect — injected UI dies and revives with its worker, which is the
@@ -200,6 +220,7 @@ replay every live binding; engine restarts are absorbed by SDK re-registration.
 | Fetch budget | 2 attempts × 3 s at live registration (a failed fetch **rejects the registration**; the error reaches your SDK's registration result); 3 × 5 s on console-restart replay (failure drops the asset with a `warn!` until you re-register) |
 | Override | same path re-registered ⇒ last writer wins, console-wide (even across workers — a `warn!` names both trigger ids); the superseded engine row is pruned |
 | Identity/versioning | content hash (first 16 hex of sha256) — unchanged content re-registered is a no-op |
+| Per-worker toggle | a worker listed in the console configuration's `injectableUi.disabledWorkers` has its registrations **accepted but held**: no serve, no manifest row, no tab pushes. Toggling back on pushes everything held to every open tab — no worker restart. The `console` worker itself cannot be disabled. |
 
 ## What `setup(host)` can register
 
@@ -298,8 +319,10 @@ superseded rows from the *engine*, but your SDK's local replay map only
 shrinks via `unregister()` — skip it and every reconnect replays your entire
 rebuild history (harmless but churny).
 
-The `state` worker implements this as a 1 s mtime/content poller
-(`spawn_watcher`, `workers/state/src/ui.rs`):
+For Rust workers the `iii-console-ui` crate implements exactly this as a
+1 s content poller (`spawn_watcher`, `workers/crates/console-ui/src/lib.rs`),
+armed by the watch env var — `III_<WORKER>_UI_WATCH`, set to `1` for
+`ui/dist` or to an explicit build-output directory:
 
 ```bash
 cd workers/state/ui && pnpm watch          # esbuild --watch → dist/
@@ -327,7 +350,7 @@ Tricks:
 
 | Surface | What you get |
 |---|---|
-| `console::ui-manifest` (function) or `GET :3113/ui` | `{ disabled, assets: [{ path, kind, hash, worker, warnings }] }` — the authoritative loadable set. `disabled: true` means the kill switch is on. `worker` is currently always `null`; the path prefix is the attribution. |
+| `console::ui-manifest` (function) or `GET :3113/ui` | `{ disabled, assets: [{ path, kind, hash, worker, warnings }], workers: [{ worker, enabled, assets }] }` — `assets` is the authoritative loadable set (held assets of toggled-off workers are excluded); `workers` summarizes every worker with registered assets, including disabled ones. `disabled: true` means the kill switch is on. `worker` on an asset is currently always `null`; the path prefix is the attribution. |
 | `GET :3113/ui/<path>` | the served bytes (`Cache-Control: no-cache`, `ETag: "<hash>"`) |
 | `engine::registered-triggers::list { trigger_type: "console:script" }` | engine's view: trigger ids, config, `worker_name` joined from the content function |
 | Browser console | `[iii-ui] …` loader logs: import failures, cleanup throws, stylesheet load failures |
@@ -343,16 +366,33 @@ Common failures:
 | Styles apply on your page but not in a portal you created yourself | DOM you portal to `document.body` must carry `data-iii-ui="<worker>"` on its root |
 | Whole console restyled | your sheet has unscoped rules — check `warnings` in the manifest |
 | Asset gone after console restart | replay fetch failed (worker down at replay) — re-register, or just restart the worker |
+| Registered without errors but never loads | the worker is toggled off — check `workers[].enabled` in the manifest / `injectableUi.disabledWorkers` in the `console` configuration entry |
 
 Kill switch: `injectable_ui: false` in the console worker's `config.yaml`
 disables the trigger types, the `/ui` + `/vendor` routes, and the SPA loader
 (manifest answers `disabled: true`).
 
+Per-worker toggle: the Workers tab's **Console** entry renders a toggle
+board — one bordered card per UI-shipping worker (title, description, and a
+switch; active cards carry the accent border, disabled ones dim) — editing
+`injectableUi.disabledWorkers` in the `console` configuration entry. Saving
+applies live: the console worker subscribes to `configuration:updated` for
+its own entry and pushes `delete`/`set` to every tab. The board is itself
+injected UI (a `configForms` override shipped by the console worker —
+`workers/console/ui/` + `workers/console/src/ui.rs`, registered through the
+`iii-console-ui` crate), which is why the `console` worker is absent from
+its own board: the registry refuses to disable it.
+
 ## Testing
 
-- **Unit-test the content function** like any function: path dispatch,
-  unknown-path error (`workers/state/src/ui.rs` tests; golden schema tests
-  apply — the content function is public wire surface).
+- **The registration machinery is tested once, in the crate**
+  (`workers/crates/console-ui/src/lib.rs` tests: path dispatch, unknown-path
+  errors, content types, watch-env parsing, path validation). The content
+  function's wire shape (`UiContentInput`/`UiContentResult`) lives there
+  too. In your worker, assert what only it knows: the embedded build
+  outputs (`workers/state/src/ui.rs` tests — nonempty ESM, scoped CSS) and
+  that the builder accepts your asset list (constructing it runs the path
+  validation).
 - **Assert the built CSS is scoped** (the state worker's
   `embedded_styles_are_scoped` test; note esbuild prints the selector
   unquoted: `[data-iii-ui=state]`).
@@ -378,6 +418,7 @@ slot kinds. Not shipped yet (don't design against them):
 | Composer slot (`host.composer`) | not implemented — pages, function-trigger renderers, and config forms are the three v1 slots |
 | `@iii-dev/console-build` CLI + Tailwind preset | not implemented — hand-write scoped CSS (as `state` does) or scope your own Tailwind output; there is no automatic scoping pass to save you |
 | Types package | shipped as the **workspace-linked** `@iii-dev/console-ui` (`packages/console-ui`) — not published to npm; the runtime module specifier was renamed from the spec's `@iii/console` |
+| Rust worker-side registration | shipped **beyond spec** as the path-linked `iii-console-ui` crate (`crates/console-ui`) — the spec's authoring doc had each worker hand-roll the content function, triggers, and watcher |
 | Named typed component exports on the runtime module | shipped (beyond spec: the spec only had the `components` record) |
 | Manifest `worker` attribution | always `null` |
 | Per-script `Dialog` re-export with scope-stamped portals | not implemented — stamp `data-iii-ui` yourself on DOM you portal outside the wrapper |

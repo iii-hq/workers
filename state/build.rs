@@ -37,7 +37,10 @@ fn main() {
         ui_dir.join("dist").join("styles.css"),
     ];
 
-    if dist_assets.iter().all(|a| a.exists() && dist_is_fresh(a, &ui_dir)) {
+    if dist_assets
+        .iter()
+        .all(|a| a.exists() && dist_is_fresh(a, &ui_dir))
+    {
         return;
     }
 
@@ -60,7 +63,12 @@ fn main() {
         .args(["install"])
         .current_dir(&ui_dir)
         .status()
-        .unwrap_or_else(|e| panic!("failed to spawn `pnpm install` in {}: {e}", ui_dir.display()));
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to spawn `pnpm install` in {}: {e}",
+                ui_dir.display()
+            )
+        });
     if !status.success() {
         panic!("`pnpm install` exited with {status} — see logs above");
     }

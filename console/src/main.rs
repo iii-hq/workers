@@ -17,7 +17,7 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::oneshot;
 
-use console::{config, configuration, functions, manifest, server, ui_assets};
+use console::{config, configuration, functions, manifest, server, ui, ui_assets};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -105,21 +105,33 @@ async fn main() -> Result<()> {
 
     // Trigger types register before functions (approval-gate/memory
     // ordering convention). `None` = injectable UI disabled via config.
-    let ui = if cfg.injectable_ui {
-        Some(ui_assets::start(&iii))
+    let (ui, ui_control) = if cfg.injectable_ui {
+        let (registry, control) = ui_assets::start(&iii);
+        (Some(registry), Some(control))
     } else {
         tracing::info!("injectable_ui disabled — skipping console:* trigger types and /ui routes");
-        None
+        (None, None)
     };
 
     functions::register_all(&iii, &cfg, &engine_url, ui.clone());
 
+    // The console's own injected UI — the injectable-UI toggle form for the
+    // `console` configuration entry. Same mechanism as any worker's.
+    if cfg.injectable_ui {
+        ui::register(&iii);
+    }
+
     // Best-effort: guarantee the `console` configuration entry exists for the
-    // UI's saved preferences, without delaying HTTP serve.
+    // UI's saved preferences, without delaying HTTP serve. With injectable UI
+    // on, also apply the persisted per-worker toggles and subscribe to
+    // configuration changes so toggles apply live.
     {
         let iii = iii.clone();
         tokio::spawn(async move {
             configuration::register_console_config(&iii).await;
+            if let Some(control) = ui_control {
+                configuration::start_injectable_ui_sync(&iii, control).await;
+            }
         });
     }
 

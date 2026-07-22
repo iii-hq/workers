@@ -21,7 +21,7 @@
 //! from WS-arrival order across the SDK's per-message tasks; the window is
 //! sub-millisecond and the hash dedupe + unknown-id no-ops absorb it.)
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -125,6 +125,32 @@ pub struct ManifestAsset {
     pub warnings: Vec<String>,
 }
 
+/// Per-worker summary in the manifest: every worker with at least one
+/// *registered* asset — including workers currently toggled off, whose
+/// assets are held but not served/announced.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ManifestWorker {
+    /// Worker name — the first segment of its asset paths.
+    pub worker: String,
+    /// `false` while the worker is in the console configuration's
+    /// `injectableUi.disabledWorkers` list.
+    pub enabled: bool,
+    /// Number of registered assets (served only while enabled).
+    pub assets: usize,
+}
+
+/// The scope a path belongs to — its first segment, by the authoring
+/// convention the registering worker's name.
+fn worker_of(path: &str) -> &str {
+    path.split('/').next().unwrap_or(path)
+}
+
+/// The console's own injected UI ships the form that flips these toggles —
+/// letting it disable itself would lock the operator out of the UI that
+/// re-enables workers. Guarded here (the enforcement point), not just in
+/// the form.
+const UNDISABLEABLE_WORKER: &str = "console";
+
 #[derive(Default)]
 struct RegistryInner {
     /// path → asset (content pinned to the advertised hash).
@@ -134,6 +160,17 @@ struct RegistryInner {
     by_id: HashMap<String, String>,
     /// `console:assets` subscription id → per-tab handler function id.
     subscribers: HashMap<String, String>,
+    /// Workers whose assets are held but not served, announced, or listed
+    /// (the per-worker injectable-UI toggle, from the console configuration
+    /// entry). Registrations are still accepted while disabled so a toggle
+    /// back on restores the UI without worker restarts.
+    disabled_workers: HashSet<String>,
+}
+
+impl RegistryInner {
+    fn is_enabled(&self, path: &str) -> bool {
+        !self.disabled_workers.contains(worker_of(path))
+    }
 }
 
 /// In-memory asset registry + subscriber set. Rebuilt from engine replay on
@@ -144,9 +181,13 @@ pub struct UiRegistry {
 }
 
 impl UiRegistry {
-    /// Bytes + headers for `GET /ui/<path>`.
+    /// Bytes + headers for `GET /ui/<path>`. Disabled workers' assets are
+    /// held but not served.
     pub fn serve(&self, path: &str) -> Option<(String, String, String)> {
         let inner = self.lock();
+        if !inner.is_enabled(path) {
+            return None;
+        }
         let asset = inner.by_path.get(path)?;
         Some((
             asset.content.clone(),
@@ -155,11 +196,14 @@ impl UiRegistry {
         ))
     }
 
+    /// The loadable set — disabled workers' assets are excluded, exactly
+    /// like the `sync` pushed to subscribing tabs.
     pub fn manifest(&self) -> Vec<ManifestAsset> {
         let inner = self.lock();
         let mut assets: Vec<ManifestAsset> = inner
             .by_path
             .iter()
+            .filter(|(path, _)| inner.is_enabled(path))
             .map(|(path, a)| ManifestAsset {
                 path: path.clone(),
                 kind: a.kind,
@@ -170,6 +214,37 @@ impl UiRegistry {
             .collect();
         assets.sort_by(|a, b| a.path.cmp(&b.path));
         assets
+    }
+
+    /// Per-worker view for the manifest and the injectable-UI toggle form:
+    /// every worker with a registered asset (enabled or not), plus disabled
+    /// workers with nothing registered right now (their toggle must stay
+    /// visible so they can be re-enabled).
+    pub fn workers(&self) -> Vec<ManifestWorker> {
+        let inner = self.lock();
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for path in inner.by_path.keys() {
+            *counts.entry(worker_of(path)).or_default() += 1;
+        }
+        let mut workers: Vec<ManifestWorker> = counts
+            .iter()
+            .map(|(worker, count)| ManifestWorker {
+                worker: (*worker).to_string(),
+                enabled: !inner.disabled_workers.contains(*worker),
+                assets: *count,
+            })
+            .collect();
+        for disabled in &inner.disabled_workers {
+            if !counts.contains_key(disabled.as_str()) {
+                workers.push(ManifestWorker {
+                    worker: disabled.clone(),
+                    enabled: false,
+                    assets: 0,
+                });
+            }
+        }
+        workers.sort_by(|a, b| a.worker.cmp(&b.worker));
+        workers
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, RegistryInner> {
@@ -299,6 +374,41 @@ enum QueueEvent {
         config: TriggerConfig,
         ack: oneshot::Sender<()>,
     },
+    /// Replace the per-worker disable set (from the console configuration
+    /// entry). Queued so the resulting delete/set pushes are mutually
+    /// ordered with asset commits and subscription syncs.
+    SetDisabledWorkers {
+        workers: HashSet<String>,
+        ack: oneshot::Sender<()>,
+    },
+}
+
+/// Runtime control over the registry, safe to hold outside the queue —
+/// currently just the per-worker injectable-UI toggle.
+#[derive(Clone)]
+pub struct UiControl {
+    tx: mpsc::UnboundedSender<QueueEvent>,
+}
+
+impl UiControl {
+    /// Replace the disabled-worker set. Resolves after the change and its
+    /// catch-up pushes (deletes for newly disabled workers' assets, sets
+    /// for newly enabled ones) are applied.
+    pub async fn set_disabled_workers(&self, workers: HashSet<String>) {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(QueueEvent::SetDisabledWorkers {
+                workers,
+                ack: ack_tx,
+            })
+            .is_err()
+        {
+            tracing::warn!("ui asset queue is gone; disabled-workers change dropped");
+            return;
+        }
+        let _ = ack_rx.await;
+    }
 }
 
 /// One handler instance per trigger type; all three feed the same queue so
@@ -322,7 +432,9 @@ impl TriggerHandler for QueueingTriggerHandler {
         match ack_rx.await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(msg)) => Err(Error::Handler(msg)),
-            Err(_) => Err(Error::Handler("ui asset queue dropped the event".to_string())),
+            Err(_) => Err(Error::Handler(
+                "ui asset queue dropped the event".to_string(),
+            )),
         }
     }
 
@@ -364,6 +476,61 @@ impl Processor {
                     self.unregister(config).await;
                     let _ = ack.send(());
                 }
+                QueueEvent::SetDisabledWorkers { workers, ack } => {
+                    self.apply_disabled_workers(workers).await;
+                    let _ = ack.send(());
+                }
+            }
+        }
+    }
+
+    /// Apply the per-worker toggle set: newly disabled workers' assets get
+    /// `delete` pushed to every tab (they vanish live), newly enabled ones
+    /// get `set` (tabs load them without a worker restart). Serving and the
+    /// manifest follow the same set via [`RegistryInner::is_enabled`].
+    async fn apply_disabled_workers(&self, mut next: HashSet<String>) {
+        if next.remove(UNDISABLEABLE_WORKER) {
+            tracing::warn!(
+                "'{UNDISABLEABLE_WORKER}' cannot have its injected UI disabled \
+                 (it ships the toggle form) — ignoring that entry"
+            );
+        }
+        let mut deletes: Vec<(String, AssetKind, String)> = Vec::new();
+        let mut sets: Vec<(String, AssetKind, String)> = Vec::new();
+        let subscribers: Vec<String>;
+        {
+            let mut inner = self.registry.lock();
+            let prev = std::mem::replace(&mut inner.disabled_workers, next);
+            for (path, asset) in &inner.by_path {
+                let worker = worker_of(path);
+                let was_disabled = prev.contains(worker);
+                let is_disabled = inner.disabled_workers.contains(worker);
+                if is_disabled && !was_disabled {
+                    deletes.push((path.clone(), asset.kind, asset.hash.clone()));
+                } else if was_disabled && !is_disabled {
+                    sets.push((path.clone(), asset.kind, asset.hash.clone()));
+                }
+            }
+            subscribers = inner.subscribers.values().cloned().collect();
+            tracing::info!(
+                disabled = ?inner.disabled_workers,
+                "injectable-ui per-worker toggles applied"
+            );
+        }
+        deletes.sort_by(|a, b| a.0.cmp(&b.0));
+        sets.sort_by(|a, b| a.0.cmp(&b.0));
+        for (path, kind, hash) in deletes {
+            let payload =
+                json!({ "event": "delete", "path": path, "kind": kind.as_str(), "hash": hash });
+            for sub in &subscribers {
+                self.bus.push(sub, payload.clone()).await;
+            }
+        }
+        for (path, kind, hash) in sets {
+            let payload =
+                json!({ "event": "set", "path": path, "kind": kind.as_str(), "hash": hash });
+            for sub in &subscribers {
+                self.bus.push(sub, payload.clone()).await;
             }
         }
     }
@@ -392,9 +559,8 @@ impl Processor {
             inner
                 .by_path
                 .iter()
-                .map(|(path, a)| {
-                    json!({ "path": path, "kind": a.kind.as_str(), "hash": a.hash })
-                })
+                .filter(|(path, _)| inner.is_enabled(path))
+                .map(|(path, a)| json!({ "path": path, "kind": a.kind.as_str(), "hash": a.hash }))
                 .collect()
         };
         tracing::info!(
@@ -432,10 +598,7 @@ impl Processor {
         // this path from that id — refetch, and if the hash is unchanged,
         // publish nothing. (The fetch is unavoidable: the hash lives in the
         // content.)
-        let fetched = self
-            .bus
-            .fetch_content(&config.function_id, &path)
-            .await?;
+        let fetched = self.bus.fetch_content(&config.function_id, &path).await?;
         if fetched.content.len() > MAX_ASSET_BYTES {
             return Err(format!(
                 "asset '{path}' is {} bytes — over the {MAX_ASSET_BYTES}-byte cap; \
@@ -467,8 +630,10 @@ impl Processor {
         let mut superseded_id: Option<String> = None;
         let mut moved_from_path: Option<String> = None;
         let subscribers: Vec<String>;
+        let enabled: bool;
         {
             let mut inner = self.registry.lock();
+            enabled = inner.is_enabled(&path);
 
             if let Some(existing) = inner.by_path.get(&path) {
                 if existing.trigger_id == config.id && existing.hash == hash {
@@ -508,11 +673,26 @@ impl Processor {
             self.bus.unregister_engine_trigger(&old_id).await;
         }
         if let Some(old_path) = moved_from_path {
-            let payload =
-                json!({ "event": "delete", "path": old_path, "kind": kind.as_str(), "hash": "" });
-            for sub in &subscribers {
-                self.bus.push(sub, payload.clone()).await;
+            // A move within one worker shares the new path's enabled-ness;
+            // a cross-worker move is not a thing (one content function, one
+            // path prefix). Suppress the delete alongside the set.
+            if enabled {
+                let payload = json!({
+                    "event": "delete", "path": old_path, "kind": kind.as_str(), "hash": ""
+                });
+                for sub in &subscribers {
+                    self.bus.push(sub, payload.clone()).await;
+                }
             }
+        }
+        if !enabled {
+            // Held, not published: no push, no serve, no manifest row —
+            // toggling the worker back on pushes `set` for everything held.
+            tracing::info!(
+                path = %path, hash = %hash, kind = kind.as_str(),
+                "ui asset stored (worker's injectable ui is disabled)"
+            );
+            return Ok(());
         }
         tracing::info!(path = %path, hash = %hash, kind = kind.as_str(), "ui asset published");
         let payload = json!({ "event": "set", "path": path, "kind": kind.as_str(), "hash": hash });
@@ -538,10 +718,15 @@ impl Processor {
                     .by_path
                     .get(&path)
                     .is_some_and(|a| a.trigger_id == config.id);
-                if matches {
+                if matches && inner.is_enabled(&path) {
                     if let Some(asset) = inner.by_path.remove(&path) {
                         removed = Some((path, asset.kind, asset.hash));
                     }
+                } else if matches {
+                    // Disabled worker: tabs never saw the asset, so no
+                    // delete push — just drop the held bytes.
+                    inner.by_path.remove(&path);
+                    tracing::info!(path = %path, "held ui asset removed (worker disabled)");
                 }
             }
             subscribers = inner.subscribers.values().cloned().collect();
@@ -569,11 +754,13 @@ fn SCRIPT_OR_STYLE(kind: AssetKind) -> &'static str {
 /// Register the three `console:*` trigger types and spawn the queue
 /// consumer. Must run **before** `functions::register_all` (the
 /// approval-gate/memory ordering convention). Returns the registry the
-/// HTTP routes and `console::ui-manifest` read from.
-pub fn start(iii: &Arc<IIIClient>) -> Arc<UiRegistry> {
+/// HTTP routes and `console::ui-manifest` read from, plus the control
+/// handle the configuration module feeds the per-worker toggles through.
+pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
     let registry = Arc::new(UiRegistry::default());
     let bus = Arc::new(SdkBus { iii: iii.clone() });
     let (tx, rx) = mpsc::unbounded_channel();
+    let control = UiControl { tx: tx.clone() };
     let processor = Processor::new(registry.clone(), bus);
     tokio::spawn(processor.run(rx));
 
@@ -618,7 +805,7 @@ pub fn start(iii: &Arc<IIIClient>) -> Arc<UiRegistry> {
         trigger_types = ?[SCRIPT_TYPE, STYLE_TYPE, ASSETS_TYPE],
         "registered injectable-ui trigger types"
     );
-    registry
+    (registry, control)
 }
 
 pub fn content_hash(content: &str) -> String {
@@ -724,12 +911,18 @@ fn lint_selector(sel: &str) -> Option<String> {
         || sel.starts_with(":root")
         || starts_with_element(sel, "html")
         || starts_with_element(sel, "body");
-    let bare_element = sel
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_lowercase())
+    let bare_element = sel.chars().next().is_some_and(|c| c.is_ascii_lowercase())
         && sel
-            .split(|c: char| c == ' ' || c == '>' || c == '+' || c == '~' || c == ':' || c == '.' || c == '[' || c == '#')
+            .split(|c: char| {
+                c == ' '
+                    || c == '>'
+                    || c == '+'
+                    || c == '~'
+                    || c == ':'
+                    || c == '.'
+                    || c == '['
+                    || c == '#'
+            })
             .next()
             .is_some_and(|head| {
                 !head.is_empty()
@@ -789,9 +982,7 @@ pub(crate) mod test_support {
         trigger_id: &str,
     ) {
         let mut inner = registry.lock();
-        inner
-            .by_id
-            .insert(trigger_id.to_string(), path.to_string());
+        inner.by_id.insert(trigger_id.to_string(), path.to_string());
         inner.by_path.insert(
             path.to_string(),
             Asset {
@@ -925,9 +1116,12 @@ mod tests {
         bus.set_content("state/page.js", "export default () => {}");
         let (p, registry) = processor(bus.clone());
 
-        p.register_asset(AssetKind::Script, trigger("t1", "state::ui-content", "state/page.js"))
-            .await
-            .unwrap();
+        p.register_asset(
+            AssetKind::Script,
+            trigger("t1", "state::ui-content", "state/page.js"),
+        )
+        .await
+        .unwrap();
 
         let (content, ctype, hash) = registry.serve("state/page.js").unwrap();
         assert_eq!(content, "export default () => {}");
@@ -1117,5 +1311,140 @@ mod tests {
         assert_eq!(h.len(), 16);
         assert_eq!(h, content_hash("hello"));
         assert_ne!(h, content_hash("hello2"));
+    }
+
+    fn disabled(workers: &[&str]) -> HashSet<String> {
+        workers.iter().map(|w| w.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn disabling_a_worker_hides_and_deletes_its_assets() {
+        let bus = MockBus::new();
+        bus.set_content("state/page.js", "v1");
+        bus.set_content("other/page.js", "v1");
+        let (p, registry) = processor(bus.clone());
+        p.register_subscription(subscription("sub1", "tab1")).await;
+        p.register_asset(AssetKind::Script, trigger("t1", "f", "state/page.js"))
+            .await
+            .unwrap();
+        p.register_asset(AssetKind::Script, trigger("t2", "f", "other/page.js"))
+            .await
+            .unwrap();
+
+        p.apply_disabled_workers(disabled(&["state"])).await;
+
+        // Held, not served or listed; the other worker is untouched.
+        assert!(registry.serve("state/page.js").is_none());
+        assert!(registry.serve("other/page.js").is_some());
+        assert_eq!(registry.manifest().len(), 1);
+        let workers = registry.workers();
+        assert_eq!(workers.len(), 2);
+        let state = workers.iter().find(|w| w.worker == "state").unwrap();
+        assert!(!state.enabled);
+        assert_eq!(state.assets, 1);
+
+        // Tabs got a delete for exactly the disabled worker's asset.
+        let last = bus.pushes().pop().unwrap();
+        assert_eq!(last.1["event"], "delete");
+        assert_eq!(last.1["path"], "state/page.js");
+    }
+
+    #[tokio::test]
+    async fn reenabling_pushes_set_and_serves_again() {
+        let bus = MockBus::new();
+        bus.set_content("state/page.js", "v1");
+        let (p, registry) = processor(bus.clone());
+        p.register_subscription(subscription("sub1", "tab1")).await;
+        p.register_asset(AssetKind::Script, trigger("t1", "f", "state/page.js"))
+            .await
+            .unwrap();
+        p.apply_disabled_workers(disabled(&["state"])).await;
+        p.apply_disabled_workers(disabled(&[])).await;
+
+        assert!(registry.serve("state/page.js").is_some());
+        let last = bus.pushes().pop().unwrap();
+        assert_eq!(last.1["event"], "set");
+        assert_eq!(last.1["path"], "state/page.js");
+        assert_eq!(last.1["hash"], json!(content_hash("v1")));
+    }
+
+    #[tokio::test]
+    async fn registration_while_disabled_is_held_then_published_on_enable() {
+        let bus = MockBus::new();
+        bus.set_content("state/page.js", "v1");
+        let (p, registry) = processor(bus.clone());
+        p.apply_disabled_workers(disabled(&["state"])).await;
+        p.register_subscription(subscription("sub1", "tab1")).await;
+
+        // Accepted (the worker's registration must not error) but invisible.
+        p.register_asset(AssetKind::Script, trigger("t1", "f", "state/page.js"))
+            .await
+            .unwrap();
+        assert!(registry.serve("state/page.js").is_none());
+        assert!(registry.manifest().is_empty());
+        // Only the (empty) subscription sync was pushed.
+        assert_eq!(bus.pushes().len(), 1);
+        assert_eq!(bus.pushes()[0].1["assets"].as_array().unwrap().len(), 0);
+
+        p.apply_disabled_workers(disabled(&[])).await;
+        assert!(registry.serve("state/page.js").is_some());
+        let last = bus.pushes().pop().unwrap();
+        assert_eq!(last.1["event"], "set");
+        assert_eq!(last.1["path"], "state/page.js");
+    }
+
+    #[tokio::test]
+    async fn unregister_while_disabled_drops_silently() {
+        let bus = MockBus::new();
+        bus.set_content("state/page.js", "v1");
+        let (p, registry) = processor(bus.clone());
+        p.register_subscription(subscription("sub1", "tab1")).await;
+        p.register_asset(AssetKind::Script, trigger("t1", "f", "state/page.js"))
+            .await
+            .unwrap();
+        p.apply_disabled_workers(disabled(&["state"])).await;
+        let before = bus.pushes().len();
+
+        p.unregister(trigger("t1", "f", "state/page.js")).await;
+
+        // No delete push (tabs already dropped it at disable time), and
+        // nothing comes back on re-enable.
+        assert_eq!(bus.pushes().len(), before);
+        p.apply_disabled_workers(disabled(&[])).await;
+        assert!(registry.serve("state/page.js").is_none());
+        assert_eq!(bus.pushes().len(), before);
+    }
+
+    #[tokio::test]
+    async fn the_console_itself_cannot_be_disabled() {
+        let bus = MockBus::new();
+        bus.set_content("console/config-form.js", "v1");
+        let (p, registry) = processor(bus.clone());
+        p.register_asset(
+            AssetKind::Script,
+            trigger("t1", "f", "console/config-form.js"),
+        )
+        .await
+        .unwrap();
+
+        p.apply_disabled_workers(disabled(&["console", "state"]))
+            .await;
+
+        assert!(registry.serve("console/config-form.js").is_some());
+        let workers = registry.workers();
+        let console = workers.iter().find(|w| w.worker == "console").unwrap();
+        assert!(console.enabled);
+    }
+
+    #[tokio::test]
+    async fn disabled_worker_with_no_assets_stays_listed() {
+        let bus = MockBus::new();
+        let (p, registry) = processor(bus.clone());
+        p.apply_disabled_workers(disabled(&["ghost"])).await;
+        let workers = registry.workers();
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].worker, "ghost");
+        assert!(!workers[0].enabled);
+        assert_eq!(workers[0].assets, 0);
     }
 }

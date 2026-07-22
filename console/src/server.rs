@@ -74,7 +74,11 @@ async fn ui_manifest_handler(State(state): State<AppState>) -> Response {
     let Some(ui) = &state.ui else {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
-    let body = serde_json::json!({ "disabled": false, "assets": ui.manifest() });
+    let body = serde_json::json!({
+        "disabled": false,
+        "assets": ui.manifest(),
+        "workers": ui.workers(),
+    });
     let mut response = Json(body).into_response();
     response
         .headers_mut()

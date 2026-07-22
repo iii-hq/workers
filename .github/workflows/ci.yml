@@ -34,6 +34,7 @@ jobs:
       rust: ${{ steps.bucket.outputs.rust }}
       node: ${{ steps.bucket.outputs.node }}
       python: ${{ steps.bucket.outputs.python }}
+      crates: ${{ steps.bucket.outputs.crates }}
       all: ${{ steps.bucket.outputs.all }}
       source_changed: ${{ steps.bucket.outputs.source_changed }}
       integration_changed: ${{ steps.bucket.outputs.integration_changed }}
@@ -158,6 +159,47 @@ jobs:
               (cd "$d" && pnpm install --frozen-lockfile && pnpm build)
             fi
           done
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-features
+
+  # ──────────────────────────────────────────────────────────────
+  # Shared Rust crates (crates/*): lint + test. Workers link these by
+  # path; discover also fans a changed crate's dependents into the rust
+  # matrix above, so dependents rebuild against the change while this
+  # job runs the crate's own suite.
+  # ──────────────────────────────────────────────────────────────
+  crates:
+    name: "crates/${{ matrix.crate }}: rust lint + test"
+    needs: discover
+    if: needs.discover.outputs.crates != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: ${{ fromJSON(needs.discover.outputs.crates) }}
+    defaults:
+      run:
+        working-directory: crates/${{ matrix.crate }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/${{ matrix.crate }} -> target
 
       - name: Check formatting
         run: cargo fmt --all -- --check
