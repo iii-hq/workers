@@ -4,6 +4,7 @@ use serde_json::json;
 
 use crate::client::DEFAULT_CALL_TIMEOUT_MS;
 use crate::deadline::Deadline;
+use crate::probe::latest_terminal_observation;
 use crate::runtime::{RunError, RunPhase};
 use crate::services::RunServices;
 
@@ -28,7 +29,6 @@ impl ScenarioRunner<'_> {
                 if active.turn_id.is_none() {
                     active.turn_id = Some(observation.event.turn_id);
                 }
-                active.trace_generation = observation.trace_generation;
             }
             Err(error) if deadline.is_expired() => {
                 active.timed_out = true;
@@ -70,13 +70,8 @@ impl ScenarioRunner<'_> {
                     error,
                 )
             })?;
-        if let Some(observation) = events
-            .iter()
-            .rev()
-            .find(|observation| observation.event.terminal)
-        {
+        if let Some(observation) = latest_terminal_observation(&events) {
             active.turn_id = Some(observation.event.turn_id.clone());
-            active.trace_generation = observation.trace_generation;
         }
         self.confirm_terminal_status(services, active).await
     }

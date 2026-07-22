@@ -22,6 +22,7 @@ impl ScenarioRunner<'_> {
         let deadline = Deadline::after(Duration::from_millis(
             prepared.scenario.deadlines.scenario_ms,
         ));
+        let trace_generation = services.probe().current_trace_generation();
 
         self.write_artifact(
             &prepared.scenario.id,
@@ -47,7 +48,7 @@ impl ScenarioRunner<'_> {
                     .get("turn_id")
                     .and_then(Value::as_str)
                     .map(String::from);
-                Ok(ActiveTurn::new(deadline, turn_id, value))
+                Ok(ActiveTurn::new(deadline, turn_id, value, trace_generation))
             }
             Err(error) => {
                 self.write_artifact(

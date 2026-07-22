@@ -203,6 +203,13 @@ async fn run_playground_phases(
         .map_err(|error| RunError::setup(RunPhase::Arm, "spawn production Console", error))?;
     wait_for_console(stack, &console_url, prepared.setup_deadline).await?;
 
+    // Capture the trace baseline before publishing readiness: once the ready
+    // file exists, Playwright may immediately submit the first turn.
+    let deadline = Deadline::after(Duration::from_millis(
+        prepared.scenario.deadlines.scenario_ms,
+    ));
+    let mut active = ActiveTurn::external(deadline, services.probe().current_trace_generation());
+
     let ready = build_ready_manifest(runner, prepared, stack, &session_title, &console_url);
     runner.write_run_artifact("playground-ready.json", &ready, RunPhase::Report)?;
     if let Some(path) = ready_file {
@@ -215,10 +222,6 @@ async fn run_playground_phases(
         .flush()
         .map_err(|error| RunError::runner(RunPhase::Report, "flush Console URL", error))?;
 
-    let deadline = Deadline::after(Duration::from_millis(
-        prepared.scenario.deadlines.scenario_ms,
-    ));
-    let mut active = ActiveTurn::external(deadline);
     let shutdown_consumed = wait_for_external_turn(runner, stack, services, &mut active).await?;
     if !shutdown_consumed {
         wait_for_shutdown(stack, deadline).await?;

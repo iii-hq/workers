@@ -1,11 +1,10 @@
+use crate::discovery;
 use crate::runtime::{RunError, RunPhase};
 use crate::services::RunServices;
 use crate::stack::Stack;
 
 use super::super::runner::ScenarioRunner;
 use super::super::state::PreparedRun;
-
-const TURN_SURFACE: &[&str] = &["harness::send", "session::messages", "context::assemble"];
 
 impl ScenarioRunner<'_> {
     pub(in crate::scenario) async fn arm(
@@ -36,9 +35,12 @@ impl ScenarioRunner<'_> {
             .map_err(|error| RunError::setup(phase, "spawn harness under test", error))?;
 
         probe
-            .wait_until_ready(TURN_SURFACE, deadline)
+            .wait_until_ready(deadline)
             .await
             .map_err(|error| RunError::setup(phase, "wait for harness readiness", error))?;
+        discovery::wait_for_functions(services.client(), discovery::TURN_SURFACE, deadline)
+            .await
+            .map_err(|error| RunError::setup(phase, "wait for turn function surface", error))?;
         probe
             .confirm_completion_binding(&self.session_id, deadline)
             .await

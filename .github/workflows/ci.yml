@@ -457,6 +457,16 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: console/web/pnpm-lock.yaml
+
       - name: Cache engine build
         uses: actions/cache@v4
         with:
@@ -484,6 +494,7 @@ jobs:
             session-manager -> target
             context-manager -> target
             iii-directory -> target
+            console -> target
 
       - name: Integration crate unit tests
         run: cargo test --manifest-path harness/Cargo.toml -p harness-integration
@@ -493,6 +504,39 @@ jobs:
 
       - name: Run integration scenarios
         run: make -C harness integration-e2e III_BIN="${{ steps.engine.outputs.bin }}"
+
+      - name: Install Console web dependencies
+        working-directory: console/web
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Console web app
+        working-directory: console/web
+        run: pnpm build
+
+      - name: Build Console worker
+        run: cargo build --release --manifest-path console/Cargo.toml
+
+      - name: Install Playwright Chromium
+        working-directory: console/web
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Typecheck Console E2E tests
+        working-directory: console/web
+        run: pnpm typecheck:e2e
+
+      - name: Run Console Playwright scenarios
+        working-directory: console/web
+        env:
+          III_BIN: ${{ steps.engine.outputs.bin }}
+          HARNESS_INTEGRATION_BIN: ${{ github.workspace }}/harness/target/release/harness-integration
+          HARNESS_BIN: ${{ github.workspace }}/harness/target/release/harness
+          CONSOLE_BIN: ${{ github.workspace }}/console/target/release/console
+          QUEUE_BIN: ${{ github.workspace }}/queue/target/release/queue
+          III_DIRECTORY_BIN: ${{ github.workspace }}/iii-directory/target/release/iii-directory
+          SESSION_MANAGER_BIN: ${{ github.workspace }}/session-manager/target/release/session-manager
+          CONTEXT_MANAGER_BIN: ${{ github.workspace }}/context-manager/target/release/context-manager
+          CONSOLE_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/console-e2e
+        run: pnpm test:e2e
 
       - name: Verify integration report links
         run: |
@@ -532,6 +576,15 @@ jobs:
         with:
           name: integration-artifacts
           path: target/integration/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload Console E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-e2e-artifacts
+          path: target/console-e2e/
           retention-days: 14
           if-no-files-found: ignore
 

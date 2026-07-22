@@ -17,19 +17,16 @@ use crate::types::trace::strip_engine_fields;
 
 pub(crate) const LIFECYCLE_FUNCTION_ID: &str = "integration-probe::turn-completed";
 const READY_FUNCTION_ID: &str = "integration-probe::harness-ready";
-const FUNCTIONS_FUNCTION_ID: &str = "integration-probe::functions-changed";
 const TRACES_FUNCTION_ID: &str = "integration-probe::traces-changed";
 
 const LIFECYCLE_TRIGGER_TYPE: &str = "harness::turn-completed";
 const READY_TRIGGER_TYPE: &str = "harness::ready";
-const FUNCTIONS_TRIGGER_TYPE: &str = "engine::functions-available";
 const TRACE_TRIGGER_TYPE: &str = "trace";
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct CompletionObservation {
     pub event: LifecycleEventV1,
-    pub trace_generation: u64,
 }
 
 #[derive(Clone)]
@@ -43,25 +40,12 @@ struct RegisterTriggerResponse {
     id: String,
 }
 
-#[derive(Deserialize)]
-struct FunctionsChangedPayload {
-    event: String,
-    functions: Vec<FunctionSummary>,
-}
-
-#[derive(Deserialize)]
-struct FunctionSummary {
-    function_id: String,
-}
-
 pub struct ScenarioProbe {
     client: Client,
     completions: Arc<Mutex<Vec<CompletionObservation>>>,
     completion_notify: Arc<tokio::sync::Notify>,
     ready: Arc<AtomicBool>,
     ready_notify: Arc<tokio::sync::Notify>,
-    functions: Arc<Mutex<BTreeSet<String>>>,
-    functions_notify: Arc<tokio::sync::Notify>,
     trace_generation: Arc<AtomicU64>,
     trace_notify: Arc<tokio::sync::Notify>,
     bindings: Mutex<Vec<BoundTrigger>>,
@@ -75,8 +59,6 @@ impl ScenarioProbe {
             completion_notify: Arc::new(tokio::sync::Notify::new()),
             ready: Arc::new(AtomicBool::new(false)),
             ready_notify: Arc::new(tokio::sync::Notify::new()),
-            functions: Arc::new(Mutex::new(BTreeSet::new())),
-            functions_notify: Arc::new(tokio::sync::Notify::new()),
             trace_generation: Arc::new(AtomicU64::new(0)),
             trace_notify: Arc::new(tokio::sync::Notify::new()),
             bindings: Mutex::new(Vec::new()),
@@ -88,26 +70,20 @@ impl ScenarioProbe {
     fn register_sinks(&self) {
         self.register_completion_sink();
         self.register_ready_sink();
-        self.register_functions_sink();
         self.register_trace_sink();
     }
 
     fn register_completion_sink(&self) {
         let completions = Arc::clone(&self.completions);
         let completion_notify = Arc::clone(&self.completion_notify);
-        let trace_generation = Arc::clone(&self.trace_generation);
         self.client.inner().register_function(
             LIFECYCLE_FUNCTION_ID,
             RegisterFunction::new_async(move |payload: Value| {
                 let completions = Arc::clone(&completions);
                 let completion_notify = Arc::clone(&completion_notify);
-                let trace_generation = Arc::clone(&trace_generation);
                 async move {
                     let event = parse_lifecycle_payload(payload).map_err(Error::Handler)?;
-                    let observation = CompletionObservation {
-                        event,
-                        trace_generation: trace_generation.load(Ordering::Acquire),
-                    };
+                    let observation = CompletionObservation { event };
                     completions
                         .lock()
                         .map_err(|_| Error::Handler("integration/completion_lock_poisoned".into()))?
@@ -142,27 +118,6 @@ impl ScenarioProbe {
                 }
             })
             .description("Readiness signal for harness integration scenarios."),
-        );
-    }
-
-    fn register_functions_sink(&self) {
-        let functions = Arc::clone(&self.functions);
-        let functions_notify = Arc::clone(&self.functions_notify);
-        self.client.inner().register_function(
-            FUNCTIONS_FUNCTION_ID,
-            RegisterFunction::new_async(move |payload: Value| {
-                let functions = Arc::clone(&functions);
-                let functions_notify = Arc::clone(&functions_notify);
-                async move {
-                    let ids = parse_function_ids(payload).map_err(Error::Handler)?;
-                    *functions.lock().map_err(|_| {
-                        Error::Handler("integration/functions_lock_poisoned".into())
-                    })? = ids;
-                    functions_notify.notify_waiters();
-                    Ok::<Value, Error>(json!({ "accepted": true }))
-                }
-            })
-            .description("Function-registry signal for harness integration scenarios."),
         );
     }
 
@@ -207,13 +162,6 @@ impl ScenarioProbe {
     /// calls use the probe connection, each response is also a barrier for the
     /// function registrations queued before it.
     pub async fn bind_observers(&self, session_id: &str, deadline: Deadline) -> anyhow::Result<()> {
-        self.bind_engine_trigger(
-            FUNCTIONS_TRIGGER_TYPE,
-            FUNCTIONS_FUNCTION_ID,
-            json!({}),
-            deadline,
-        )
-        .await?;
         self.bind_engine_trigger(TRACE_TRIGGER_TYPE, TRACES_FUNCTION_ID, json!({}), deadline)
             .await?;
         self.bind_engine_trigger(
@@ -324,51 +272,15 @@ impl ScenarioProbe {
         Ok(())
     }
 
-    pub async fn wait_until_ready(
-        &self,
-        required_functions: &[&str],
-        deadline: Deadline,
-    ) -> anyhow::Result<()> {
+    pub async fn wait_until_ready(&self, deadline: Deadline) -> anyhow::Result<()> {
         loop {
             let ready_notified = self.ready_notify.notified();
-            let functions_notified = self.functions_notify.notified();
-            let ready = self.ready.load(Ordering::Acquire);
-            let functions_ready = {
-                let functions = self
-                    .functions
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("integration/functions_lock_poisoned"))?;
-                required_functions
-                    .iter()
-                    .all(|function_id| functions.contains(*function_id))
-            };
-            if ready && functions_ready {
+            if self.ready.load(Ordering::Acquire) {
                 return Ok(());
             }
-
-            if let Err(error) = deadline
-                .timeout("harness readiness signals", async {
-                    tokio::select! {
-                        _ = ready_notified => {}
-                        _ = functions_notified => {}
-                    }
-                })
-                .await
-            {
-                let ready = self.ready.load(Ordering::Acquire);
-                let missing_functions = {
-                    let functions = self
-                        .functions
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("integration/functions_lock_poisoned"))?;
-                    required_functions
-                        .iter()
-                        .filter(|function_id| !functions.contains(**function_id))
-                        .copied()
-                        .collect::<Vec<_>>()
-                };
-                anyhow::bail!("{error}; ready={ready}; missing_functions={missing_functions:?}");
-            }
+            deadline
+                .timeout("harness readiness signal", ready_notified)
+                .await?;
         }
     }
 
@@ -376,11 +288,9 @@ impl ScenarioProbe {
         &self,
         deadline: Deadline,
     ) -> anyhow::Result<CompletionObservation> {
-        self.wait_for_completion_turns(1, deadline)
-            .await?
-            .into_iter()
-            .rev()
-            .find(|observation| observation.event.terminal)
+        let observations = self.wait_for_completion_turns(1, deadline).await?;
+        latest_terminal_observation(&observations)
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("completion wait returned no events"))
     }
 
@@ -416,14 +326,20 @@ impl ScenarioProbe {
         after_generation: u64,
         deadline: Deadline,
     ) -> anyhow::Result<u64> {
-        loop {
-            let notified = self.trace_notify.notified();
-            let generation = self.trace_generation.load(Ordering::Acquire);
-            if generation > after_generation {
-                return Ok(generation);
-            }
-            deadline.timeout("trace-store change", notified).await?;
-        }
+        wait_for_trace_generation(
+            &self.trace_generation,
+            &self.trace_notify,
+            after_generation,
+            deadline,
+        )
+        .await
+    }
+
+    /// Snapshot the trace notification counter before a scenario can emit any
+    /// subject traces. Collection later waits for a generation newer than this
+    /// baseline, independent of lifecycle callback ordering.
+    pub fn current_trace_generation(&self) -> u64 {
+        self.trace_generation.load(Ordering::Acquire)
     }
 
     pub async fn shutdown(&self) {
@@ -458,6 +374,36 @@ impl ScenarioProbe {
     }
 }
 
+async fn wait_for_trace_generation(
+    trace_generation: &AtomicU64,
+    trace_notify: &tokio::sync::Notify,
+    after_generation: u64,
+    deadline: Deadline,
+) -> anyhow::Result<u64> {
+    loop {
+        let notified = trace_notify.notified();
+        let generation = trace_generation.load(Ordering::Acquire);
+        if generation > after_generation {
+            return Ok(generation);
+        }
+        deadline.timeout("trace-store change", notified).await?;
+    }
+}
+
+pub(crate) fn latest_terminal_observation(
+    observations: &[CompletionObservation],
+) -> Option<&CompletionObservation> {
+    observations
+        .iter()
+        .filter(|observation| observation.event.terminal)
+        .max_by(|left, right| {
+            left.event
+                .timestamp
+                .cmp(&right.event.timestamp)
+                .then_with(|| left.event.turn_id.cmp(&right.event.turn_id))
+        })
+}
+
 fn parse_lifecycle_payload(mut payload: Value) -> Result<LifecycleEventV1, String> {
     strip_engine_fields(&mut payload);
     serde_json::from_value(payload)
@@ -470,22 +416,6 @@ fn parse_ready_payload(payload: &Value) -> Result<(), String> {
     } else {
         Err("integration/ready_contract: expected status=ready".to_string())
     }
-}
-
-fn parse_function_ids(payload: Value) -> Result<BTreeSet<String>, String> {
-    let payload: FunctionsChangedPayload = serde_json::from_value(payload)
-        .map_err(|error| format!("integration/functions_contract: {error}"))?;
-    if payload.event != "functions_changed" {
-        return Err(format!(
-            "integration/functions_contract: unexpected event {}",
-            payload.event
-        ));
-    }
-    Ok(payload
-        .functions
-        .into_iter()
-        .map(|function| function.function_id)
-        .collect())
 }
 
 fn parse_trace_payload(payload: &Value) -> Result<(), String> {
@@ -527,7 +457,7 @@ fn schema_for<T: schemars::JsonSchema>() -> Value {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::probe::LifecycleStatusV1;
+    use crate::types::probe::{LifecycleEventV1, LifecycleStatusV1};
 
     use super::*;
 
@@ -562,19 +492,55 @@ mod tests {
         assert!(parse_ready_payload(&json!({ "status": "ready" })).is_ok());
         assert!(parse_ready_payload(&json!({ "status": "booting" })).is_err());
 
-        let functions = parse_function_ids(json!({
-            "event": "functions_changed",
-            "generation": 7,
-            "functions": [
-                { "function_id": "harness::send", "worker_name": "harness" },
-                { "function_id": "session::messages", "worker_name": "session" }
-            ]
-        }))
-        .unwrap();
-        assert!(functions.contains("harness::send"));
-        assert!(functions.contains("session::messages"));
-
         assert!(parse_trace_payload(&json!({ "trace_ids": ["abc"] })).is_ok());
         assert!(parse_trace_payload(&json!({ "trace_ids": [1] })).is_err());
+    }
+
+    #[test]
+    fn latest_terminal_completion_uses_event_time_not_delivery_order() {
+        let observation = |turn_id: &str, timestamp: i64, terminal: bool| CompletionObservation {
+            event: LifecycleEventV1 {
+                session_id: "session-1".into(),
+                turn_id: turn_id.into(),
+                status: LifecycleStatusV1::Completed,
+                terminal,
+                timestamp,
+                result: None,
+                result_error: None,
+                reason: None,
+                parent: None,
+                parent_session_id: None,
+                reactive_depth: None,
+            },
+        };
+        let observations = vec![
+            observation("turn-new", 20, true),
+            observation("turn-old", 10, true),
+            observation("turn-progress", 30, false),
+        ];
+
+        let latest = latest_terminal_observation(&observations).unwrap();
+        assert_eq!(latest.event.turn_id, "turn-new");
+    }
+
+    #[tokio::test]
+    async fn trace_received_before_completion_is_visible_from_the_pre_stimulus_baseline() {
+        let generation = AtomicU64::new(0);
+        let notify = tokio::sync::Notify::new();
+        let pre_stimulus_baseline = generation.load(Ordering::Acquire);
+
+        // The trace callback wins the race and runs before lifecycle delivery.
+        generation.fetch_add(1, Ordering::AcqRel);
+        notify.notify_waiters();
+
+        let observed = wait_for_trace_generation(
+            &generation,
+            &notify,
+            pre_stimulus_baseline,
+            Deadline::after(Duration::from_millis(20)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(observed, 1);
     }
 }
