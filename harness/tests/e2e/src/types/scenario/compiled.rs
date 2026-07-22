@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::types::recorder::RecorderConfigV1;
+use crate::types::probe::ControlledTargetV1;
 use crate::types::script::SchemaVersion1;
 
 pub fn validate_scenario_id(id: &str) -> anyhow::Result<()> {
@@ -26,7 +26,8 @@ pub struct CompiledScenarioV1 {
     pub id: String,
     pub description: String,
     pub send: CompiledSendV1,
-    pub recorder: RecorderConfigV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<ControlledTargetV1>,
     pub deadlines: DeadlinesV1,
 }
 

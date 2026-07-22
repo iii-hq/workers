@@ -33,6 +33,14 @@ workers:
   - name: iii-state
   - name: iii-stream
   - name: iii-cron
+  - name: iii-observability
+    config:
+      enabled: true
+      service_name: iii
+      exporter: memory
+      memory_max_spans: 10000
+      sampling_ratio: 1.0
+      live_spans: true
 "#,
         config_dir = layout.configuration_dir().display(),
     )

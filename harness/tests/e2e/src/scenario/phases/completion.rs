@@ -21,17 +21,12 @@ impl ScenarioRunner<'_> {
         let phase = RunPhase::Await;
         let deadline = active.deadline;
 
-        // Completion is event-driven: Arm bound harness::turn-completed to the
-        // recorder. Once it arrives, make one status call as the durable-state
-        // confirmation checked by the floor.
-        match services.recorder().wait_for_lifecycle(deadline).await {
+        // The event only wakes collection; trace evidence verifies the
+        // lifecycle delivery itself. Status remains the durable-state check.
+        match services.probe().wait_for_completion(deadline).await {
             Ok(event) => {
                 if active.turn_id.is_none() {
-                    active.turn_id = event
-                        .payload
-                        .get("turn_id")
-                        .and_then(serde_json::Value::as_str)
-                        .map(String::from);
+                    active.turn_id = Some(event.turn_id);
                 }
             }
             Err(error) if deadline.is_expired() => {
@@ -45,7 +40,7 @@ impl ScenarioRunner<'_> {
             Err(error) => {
                 return Err(RunError::runner(
                     phase,
-                    "wait for harness::turn-completed delivery",
+                    "wait for harness::turn-completed signal",
                     error,
                 ));
             }
@@ -64,23 +59,17 @@ impl ScenarioRunner<'_> {
     ) -> Result<(), RunError> {
         let deadline = Deadline::after(FINAL_STATUS_TIMEOUT);
         let events = services
-            .recorder()
-            .wait_for_lifecycle_turns(self.fixture.expected_terminal_turns, deadline)
+            .probe()
+            .wait_for_completion_turns(self.fixture.expected_terminal_turns, deadline)
             .await
             .map_err(|error| {
                 RunError::runner(
                     RunPhase::Await,
-                    "wait for every playground terminal turn",
+                    "wait for every playground completion signal",
                     error,
                 )
             })?;
-        active.turn_id = events.last().and_then(|event| {
-            event
-                .payload
-                .get("turn_id")
-                .and_then(serde_json::Value::as_str)
-                .map(String::from)
-        });
+        active.turn_id = events.last().map(|event| event.turn_id.clone());
         self.confirm_terminal_status(services, active).await
     }
 

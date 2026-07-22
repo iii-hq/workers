@@ -58,16 +58,11 @@ impl ScenarioFixture {
                 self.scenario.id
             );
         }
-        if !self
-            .scenario
-            .recorder
-            .target
-            .function_id
-            .starts_with("{{run_id}}::")
-        {
-            anyhow::bail!(
-                "recorder function {:?} must be run-scoped",
-                self.scenario.recorder.target.function_id
+        if let Some(target) = &self.scenario.target {
+            anyhow::ensure!(
+                target.function_id.starts_with("{{run_id}}::"),
+                "controlled function {:?} must be run-scoped",
+                target.function_id
             );
         }
         anyhow::ensure!(

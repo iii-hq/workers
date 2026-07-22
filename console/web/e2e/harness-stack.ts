@@ -23,16 +23,6 @@ interface ReadyManifest {
   send: Record<string, unknown>
 }
 
-export interface RecorderEvent {
-  schema_version: '1'
-  run_id: string
-  sequence: number
-  kind: 'target_call' | 'lifecycle'
-  function_id: string
-  payload: unknown
-  received_at: string
-}
-
 export interface RunEvidence {
   run_id: string
   session_id: string
@@ -42,7 +32,13 @@ export interface RunEvidence {
   transcript: unknown[]
   generations_consumed: number
   generations_total: number
-  recorder_events: RecorderEvent[]
+  trace_summary: {
+    trace_count: number
+    span_count: number
+    error_count: number
+    pending_span_count: number
+    turn_ids: string[]
+  }
 }
 
 export interface PlaygroundResult {

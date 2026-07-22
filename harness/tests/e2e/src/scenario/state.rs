@@ -1,8 +1,8 @@
 use serde_json::Value;
 
 use crate::deadline::Deadline;
-use crate::types::recorder::RecorderEventV1;
 use crate::types::scenario::CompiledScenarioV1;
+use crate::types::trace::TraceEvidenceV1;
 
 /// Fixture data expanded for one run before the stack starts.
 pub(super) struct PreparedRun {
@@ -34,7 +34,7 @@ pub(super) struct ActiveTurn {
     pub(super) send_response: Value,
     pub(super) final_status: Value,
     pub(super) transcript: Vec<Value>,
-    pub(super) recorder_events: Vec<RecorderEventV1>,
+    pub(super) traces: TraceEvidenceV1,
     pub(super) timed_out: bool,
 }
 
@@ -46,7 +46,7 @@ impl ActiveTurn {
             send_response,
             final_status: Value::Null,
             transcript: Vec::new(),
-            recorder_events: Vec::new(),
+            traces: TraceEvidenceV1::new(Vec::new()),
             timed_out: false,
         }
     }

@@ -4,27 +4,21 @@
 //! order, rolls back any earlier connections when a later start fails, and
 //! shuts down each connection at most once.
 
-use std::path::PathBuf;
-
 use anyhow::Context;
 
 use crate::client::Client;
-use crate::recorder::Recorder;
+use crate::probe::ScenarioProbe;
 use crate::scripted_router::ScriptedRouter;
 use crate::types::script::RouterScriptV1;
 
 pub struct RunServices {
     router: Option<ScriptedRouter>,
-    recorder: Option<Recorder>,
+    probe: Option<ScenarioProbe>,
     client: Option<Client>,
 }
 
 impl RunServices {
-    pub async fn start(
-        ws_url: &str,
-        script: RouterScriptV1,
-        recorder_log: PathBuf,
-    ) -> anyhow::Result<Self> {
+    pub async fn start(ws_url: &str, script: RouterScriptV1) -> anyhow::Result<Self> {
         let mut services = Self::empty();
 
         services.router = Some(
@@ -33,11 +27,11 @@ impl RunServices {
                 .context("start integration scripted router")?,
         );
 
-        match Recorder::start(ws_url, recorder_log).await {
-            Ok(recorder) => services.recorder = Some(recorder),
+        match ScenarioProbe::start(ws_url).await {
+            Ok(probe) => services.probe = Some(probe),
             Err(error) => {
                 services.shutdown().await;
-                return Err(error).context("start integration recorder");
+                return Err(error).context("start integration probe");
             }
         }
 
@@ -51,8 +45,8 @@ impl RunServices {
             .expect("run services accessed after shutdown")
     }
 
-    pub fn recorder(&self) -> &Recorder {
-        self.recorder
+    pub fn probe(&self) -> &ScenarioProbe {
+        self.probe
             .as_ref()
             .expect("run services accessed after shutdown")
     }
@@ -70,8 +64,8 @@ impl RunServices {
         if let Some(client) = self.client.take() {
             client.shutdown().await;
         }
-        if let Some(recorder) = self.recorder.take() {
-            recorder.shutdown().await;
+        if let Some(probe) = self.probe.take() {
+            probe.shutdown().await;
         }
         if let Some(router) = self.router.take() {
             router.shutdown().await;
@@ -81,7 +75,7 @@ impl RunServices {
     fn empty() -> Self {
         Self {
             router: None,
-            recorder: None,
+            probe: None,
             client: None,
         }
     }

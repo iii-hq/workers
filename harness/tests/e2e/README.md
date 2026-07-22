@@ -18,7 +18,7 @@ No provider key or network access is required.
 
 Each fixture is defined end to end in its own `src/scenarios/*.rs` file with a
 small typed DSL. The scenario keeps its send policy, router request matchers,
-response behavior, recorder configuration, function history, and verification
+response behavior, controlled function, function history, and verification
 visible at the call site. Builders compile directly to the runtime types; there
 is no YAML, macro layer, inferred history, or generic authored-scenario
 compiler.
@@ -110,20 +110,22 @@ The direct lifecycle is allocate → boot → arm → send → await → collect
 grade → teardown → report. Playground replaces send with an externally
 initiated Console or SDK turn and waits for shutdown after completion.
 
-- Completion is driven by the `harness::turn-completed` lifecycle event.
+- Completion is awakened by `harness::turn-completed` and verified from traces.
 - All RPCs and polling use bounded monotonic deadlines.
-- Recorder acknowledgements happen only after append and `fsync`.
+- The observability worker captures every session trace with 100% sampling.
 - Child processes run in dedicated process groups and teardown uses SIGTERM
   followed by SIGKILL within one hard cleanup budget.
 - Router matching is explicit for all request fields.
 
 Direct runs write `result.json`, `execution.json`, `teardown.json`, and
 `stack.json` below `target/integration/<run-id>/`. Scenario evidence includes
-the transcript, status, router calls, controlled target calls, and lifecycle
-events. `result.json` is stable across runs because concrete run, session, and
-turn ids are scrubbed from failure text; `execution.json` records the SHA-256
-of those exact result bytes.
+the transcript, status, router calls, and complete session trace trees.
+`traces.json` is the execution oracle for controlled functions and lifecycle
+delivery. `result.json` is stable across runs because concrete run, session,
+and turn ids are scrubbed from failure text; `execution.json` records the
+SHA-256 of those exact result bytes.
 
 Playground runs use `target/console-e2e/<run-id>/` and additionally write
-`playground-ready.json` and `playground-result.json`. Passing runs keep compact
-reports and remove heavyweight stack state.
+`playground-ready.json` and `playground-result.json`. The result contains only
+a compact trace summary; full spans remain in the scenario artifact. Passing
+runs keep compact reports and remove heavyweight stack state.

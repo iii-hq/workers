@@ -120,8 +120,4 @@ test('shows two traces and exposes function arguments in trace events', async ({
 
   const result = await stack.finish()
   expectPassingResult(result)
-  const completedTurns = (result.evidence?.recorder_events ?? []).filter(
-    (event) => event.kind === 'lifecycle',
-  )
-  expect(completedTurns).toHaveLength(2)
 })

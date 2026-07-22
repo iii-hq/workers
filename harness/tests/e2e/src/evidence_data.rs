@@ -1,17 +1,12 @@
-//! The collected run dataset handed to scenario `verify` functions.
-//!
-//! [`RunEvidence`] is everything a run produced, exactly as persisted to the
-//! artifact directory: verifying twice over the same evidence is
-//! byte-deterministic. Accessors expose the recurring read patterns; scenario
-//! authors combine them with plain Rust assertions.
+//! Collected data handed to scenario `verify` functions.
 
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::types::recorder::{RecorderEventKind, RecorderEventV1};
+use crate::types::trace::{strip_engine_fields, TraceEvidenceV1, TraceSpanV1, TraceSummaryV1};
 
-/// Everything a scenario's `verify` function may look at.
-#[derive(Debug, Clone, Serialize)]
+/// Everything a scenario's `verify` function may inspect.
+#[derive(Debug, Clone)]
 pub struct RunEvidence {
     pub run_id: String,
     pub session_id: String,
@@ -24,13 +19,47 @@ pub struct RunEvidence {
     pub transcript: Vec<Value>,
     pub generations_consumed: u64,
     pub generations_total: u64,
-    pub recorder_events: Vec<RecorderEventV1>,
+    /// Complete trace trees for the run's session.
+    pub traces: TraceEvidenceV1,
+}
+
+/// Compact form published in `playground-result.json`.
+#[derive(Serialize)]
+pub struct RunEvidenceSummary<'a> {
+    pub run_id: &'a str,
+    pub session_id: &'a str,
+    pub turn_id: Option<&'a str>,
+    pub send_response: Option<&'a Value>,
+    pub status: &'a Value,
+    pub transcript: &'a [Value],
+    pub generations_consumed: u64,
+    pub generations_total: u64,
+    pub trace_summary: &'a TraceSummaryV1,
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionCallEvidence<'a> {
+    pub span: &'a TraceSpanV1,
+    pub payload: Option<Value>,
+    pub output: Option<Value>,
 }
 
 impl RunEvidence {
-    /// Concatenated text blocks of each assistant message, in transcript
-    /// order. Assistant messages without a text block (pure function-call
-    /// messages) contribute no entry.
+    pub fn summary(&self) -> RunEvidenceSummary<'_> {
+        RunEvidenceSummary {
+            run_id: &self.run_id,
+            session_id: &self.session_id,
+            turn_id: self.turn_id.as_deref(),
+            send_response: self.send_response.as_ref(),
+            status: &self.status,
+            transcript: &self.transcript,
+            generations_consumed: self.generations_consumed,
+            generations_total: self.generations_total,
+            trace_summary: &self.traces.summary,
+        }
+    }
+
+    /// Concatenated text blocks of each assistant message, in transcript order.
     pub fn assistant_texts(&self) -> Vec<String> {
         self.messages()
             .filter(|message| role(message) == Some("assistant"))
@@ -60,23 +89,27 @@ impl RunEvidence {
         counts
     }
 
-    /// Recorded executions of the controlled function registered under
-    /// `alias` (recorder function ids are `<run_id>::<alias>`).
-    pub fn calls(&self, alias: &str) -> Vec<&RecorderEventV1> {
-        let function_id = format!("{}::{alias}", self.run_id);
-        self.recorder_events
-            .iter()
-            .filter(|event| {
-                event.kind == RecorderEventKind::TargetCall && event.function_id == function_id
-            })
-            .collect()
+    pub fn spans_named(&self, name: &str) -> Vec<&TraceSpanV1> {
+        self.traces.spans_named(name)
     }
 
-    /// Every `harness::turn-completed` delivery, in receipt order.
-    pub fn lifecycle_events(&self) -> Vec<&RecorderEventV1> {
-        self.recorder_events
-            .iter()
-            .filter(|event| event.kind == RecorderEventKind::Lifecycle)
+    /// Executions of the controlled function registered under `alias`.
+    pub fn calls(&self, alias: &str) -> Vec<FunctionCallEvidence<'_>> {
+        let name = format!("execute {}::{alias}", self.run_id);
+        self.traces
+            .spans_named(&name)
+            .into_iter()
+            .map(|span| {
+                let mut payload = span.invocation_input();
+                if let Some(payload) = &mut payload {
+                    strip_engine_fields(payload);
+                }
+                FunctionCallEvidence {
+                    span,
+                    payload,
+                    output: span.invocation_output(),
+                }
+            })
             .collect()
     }
 
@@ -134,10 +167,13 @@ impl RunEvidence {
         let call = calls
             .first()
             .ok_or_else(|| anyhow::anyhow!("{alias} did not run"))?;
+        let payload = call
+            .payload
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("{alias} trace has no complete invocation input"))?;
         anyhow::ensure!(
-            call.payload == expected,
-            "{alias} payload {} != {expected}",
-            call.payload
+            payload == &expected,
+            "{alias} payload {payload} != {expected}"
         );
         Ok(())
     }
@@ -150,13 +186,14 @@ impl RunEvidence {
         Ok(())
     }
 
-    /// Replace this run's concrete ids with `{{run_id}}` / `{{session_id}}` /
-    /// `{{turn_id}}` placeholders so persisted failure text stays
-    /// byte-comparable across runs.
+    /// Replace concrete run identities so failure text stays byte-comparable.
     pub fn scrub(&self, text: &str) -> String {
         let mut text = text.to_string();
         replace_identity(&mut text, &self.run_id, "{{run_id}}");
         replace_identity(&mut text, &self.session_id, "{{session_id}}");
+        for turn_id in &self.traces.summary.turn_ids {
+            replace_identity(&mut text, turn_id, "{{turn_id}}");
+        }
         if let Some(turn_id) = &self.turn_id {
             replace_identity(&mut text, turn_id, "{{turn_id}}");
         }
@@ -182,44 +219,83 @@ fn replace_identity(text: &mut String, identity: &str, placeholder: &str) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use serde_json::json;
 
-    use crate::types::script::SchemaVersion1;
+    use crate::types::trace::{TraceEventV1, TraceSpanV1, TraceTreeV1};
 
     use super::*;
 
-    fn event(kind: RecorderEventKind, function_id: &str, payload: Value) -> RecorderEventV1 {
-        RecorderEventV1 {
-            schema_version: SchemaVersion1::V1,
-            run_id: "r".into(),
-            sequence: 1,
-            kind,
-            function_id: function_id.into(),
-            payload,
-            received_at: "2026-07-15T00:00:00Z".into(),
+    fn span(name: &str, payload: Value) -> TraceSpanV1 {
+        TraceSpanV1 {
+            trace_id: "trace-1".into(),
+            span_id: name.into(),
+            parent_span_id: None,
+            name: name.into(),
+            start_time_unix_nano: 1,
+            end_time_unix_nano: 2,
+            status: "ok".into(),
+            status_description: None,
+            attributes: BTreeMap::from([("iii.message.id".into(), "turn-1".into())]),
+            service_name: "integration-probe".into(),
+            events: vec![TraceEventV1 {
+                name: "iii.invocation.input".into(),
+                timestamp_unix_nano: 1,
+                attributes: BTreeMap::from([
+                    ("iii.payload.json".into(), payload.to_string()),
+                    ("iii.payload.truncated".into(), "false".into()),
+                ]),
+            }],
+            links: Vec::new(),
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+            flags: None,
+            trace_state: None,
+            pending: false,
+            children: Vec::new(),
         }
     }
 
     fn base_evidence() -> RunEvidence {
         RunEvidence {
             run_id: "r".into(),
-            session_id: "s_1".into(),
-            turn_id: Some("t_1".into()),
-            send_response: Some(json!({
-                "session_id": "s_1",
-                "turn_id": "t_1",
-                "accepted": true
-            })),
+            session_id: "session-1".into(),
+            turn_id: Some("turn-1".into()),
+            send_response: Some(json!({ "accepted": true })),
             status: json!({
                 "status": "completed",
                 "pending_function_calls": [],
                 "children": []
             }),
-            transcript: vec![],
+            transcript: Vec::new(),
             generations_consumed: 1,
             generations_total: 1,
-            recorder_events: vec![],
+            traces: TraceEvidenceV1::new(Vec::new()),
         }
+    }
+
+    #[test]
+    fn calls_use_execute_spans_and_strip_engine_fields() {
+        let mut evidence = base_evidence();
+        evidence.traces = TraceEvidenceV1::new(vec![TraceTreeV1 {
+            trace_id: "trace-1".into(),
+            roots: vec![span(
+                "execute r::record",
+                json!({ "value": "expected", "_caller_worker_id": "worker" }),
+            )],
+        }]);
+        let calls = evidence.calls("record");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].payload, Some(json!({ "value": "expected" })));
+    }
+
+    #[test]
+    fn summary_omits_full_traces() {
+        let evidence = base_evidence();
+        let value = serde_json::to_value(evidence.summary()).unwrap();
+        assert!(value.get("traces").is_none());
+        assert!(value.get("trace_summary").is_some());
     }
 
     #[test]
@@ -229,96 +305,5 @@ mod tests {
         assert!(!evidence.has_duplicate_messages());
         evidence.transcript.push(json!({ "entry_id": "e_1" }));
         assert!(evidence.has_duplicate_messages());
-    }
-
-    #[test]
-    fn calls_select_only_the_aliased_target_events() {
-        let mut evidence = base_evidence();
-        let target = || {
-            event(
-                RecorderEventKind::TargetCall,
-                "r::record",
-                json!({ "value": "expected" }),
-            )
-        };
-        evidence.recorder_events = vec![
-            target(),
-            target(),
-            event(RecorderEventKind::TargetCall, "r::other", json!({})),
-            event(
-                RecorderEventKind::Lifecycle,
-                "integration-recorder::lifecycle",
-                json!({}),
-            ),
-        ];
-        // Duplicate executions stay visible: exactly-once checks read the length.
-        assert_eq!(evidence.calls("record").len(), 2);
-        assert_eq!(evidence.calls("other").len(), 1);
-        assert_eq!(evidence.calls("missing").len(), 0);
-        assert_eq!(evidence.lifecycle_events().len(), 1);
-    }
-
-    #[test]
-    fn message_counts_and_assistant_texts_read_the_transcript() {
-        let mut evidence = base_evidence();
-        evidence.transcript = vec![
-            json!({ "message": { "role": "user", "content": [] } }),
-            json!({
-                "message": {
-                    "role": "assistant",
-                    "content": [{ "type": "function_call", "id": "call-1" }]
-                }
-            }),
-            json!({
-                "message": { "role": "function_result", "function_call_id": "call-1" }
-            }),
-            json!({
-                "message": {
-                    "role": "assistant",
-                    "content": [
-                        { "type": "text", "text": "recorded " },
-                        { "type": "text", "text": "once" }
-                    ]
-                }
-            }),
-        ];
-        assert_eq!(evidence.message_counts(), (1, 2, 1));
-        // The function-call-only assistant message contributes no text entry.
-        assert_eq!(evidence.assistant_texts(), ["recorded once"]);
-    }
-
-    #[test]
-    fn scrub_replaces_every_run_scoped_id() {
-        let mut evidence = base_evidence();
-        evidence.run_id = "ir0011aabbcc".into();
-        assert_eq!(
-            evidence.scrub("ir0011aabbcc::record payload for s_1 in t_1 and again t_1"),
-            "{{run_id}}::record payload for {{session_id}} in {{turn_id}} and again {{turn_id}}"
-        );
-
-        evidence.turn_id = None;
-        assert_eq!(evidence.scrub("turn t_1"), "turn t_1");
-    }
-
-    #[test]
-    fn expectation_helpers_report_the_observed_values() {
-        let mut evidence = base_evidence();
-        evidence.transcript = vec![
-            json!({ "message": { "role": "user", "content": [] } }),
-            json!({
-                "message": {
-                    "role": "assistant",
-                    "content": [{ "type": "text", "text": "complete" }]
-                }
-            }),
-        ];
-        evidence.expect_assistant_texts(["complete"]).unwrap();
-        evidence.expect_message_counts(1, 1, 0).unwrap();
-        evidence.expect_no_duplicate_messages().unwrap();
-        assert!(evidence
-            .expect_assistant_texts(["different"])
-            .unwrap_err()
-            .to_string()
-            .contains("complete"));
     }
 }

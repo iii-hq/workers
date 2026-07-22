@@ -62,7 +62,7 @@ fn manifest_is_canonical_and_uses_layout_paths() {
     assert_eq!(value["profile"], "harness-core-v1");
     assert_eq!(
         value["components"]["controlled_services"],
-        serde_json::json!(["scripted-router", "integration-recorder"])
+        serde_json::json!(["scripted-router", "integration-probe"])
     );
     assert_eq!(value["run_root"], layout.root.to_string_lossy().as_ref());
     assert_eq!(value["port"], 3210);

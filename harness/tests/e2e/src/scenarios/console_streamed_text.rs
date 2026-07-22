@@ -1,6 +1,6 @@
 //! UI-001 — Playwright sends a Console turn and validates the rendered result.
 
-use super::dsl::{Generation, Message, Model, Recorder, Request, Response, Scenario, Send, Tool};
+use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send, Tool};
 use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
@@ -21,7 +21,6 @@ pub(super) fn scenario() -> ScenarioFixture {
             .idempotency_key("{{run_id}}:ui-001")
             .without_functions(),
     )
-    .recorder(Recorder::lifecycle_only())
     .generation(
         Generation::new(1)
             .expect(

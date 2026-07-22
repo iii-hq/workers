@@ -1,5 +1,5 @@
 use crate::discovery;
-use crate::runtime::{RunError, RunErrorKind, RunPhase};
+use crate::runtime::{RunError, RunPhase};
 use crate::services::RunServices;
 use crate::stack::Stack;
 
@@ -14,30 +14,13 @@ impl ScenarioRunner<'_> {
         prepared: &PreparedRun,
     ) -> Result<(), RunError> {
         let phase = RunPhase::Arm;
-        let recorder = services.recorder();
+        let probe = services.probe();
         let scenario = &prepared.scenario;
         let deadline = prepared.setup_deadline;
 
-        recorder
-            .configure(&self.run_id, &scenario.recorder)
-            .map_err(|error| RunError::setup(phase, "configure controlled recorder", error))?;
-
-        recorder
-            .reset(&self.run_id)
-            .map_err(|error| RunError::setup(phase, "reset controlled recorder", error))?;
-        if !recorder
-            .snapshot()
-            .map_err(|error| {
-                RunError::setup(phase, "snapshot controlled recorder after reset", error)
-            })?
-            .is_empty()
-        {
-            return Err(RunError::new(
-                phase,
-                RunErrorKind::Setup,
-                "recorder snapshot is not empty after reset",
-            ));
-        }
+        probe
+            .register_target(&self.run_id, scenario.target.as_ref())
+            .map_err(|error| RunError::setup(phase, "register controlled function", error))?;
 
         stack
             .spawn_harness(self.bins)
@@ -55,13 +38,10 @@ impl ScenarioRunner<'_> {
         .await
         .map_err(|error| RunError::setup(phase, "wait for harness trigger types", error))?;
 
-        recorder
-            .bind_lifecycle(
-                scenario.recorder.lifecycle.trigger_type.as_str(),
-                &self.session_id,
-            )
+        probe
+            .bind_completion(&self.session_id)
             .await
-            .map_err(|error| RunError::setup(phase, "bind lifecycle recorder", error))?;
+            .map_err(|error| RunError::setup(phase, "bind completion observer", error))?;
         self.sink_mut(phase)?
             .write_scenario_text(
                 &scenario.id,

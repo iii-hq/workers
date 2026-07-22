@@ -8,7 +8,6 @@ use crate::deadline::Deadline;
 use crate::evidence_data::RunEvidence;
 use crate::runtime::{RunError, RunErrorKind, RunPhase};
 use crate::services::RunServices;
-use crate::types::recorder::RecorderEventKind;
 
 use super::super::floor;
 use super::super::runner::ScenarioRunner;
@@ -49,26 +48,20 @@ impl ScenarioRunner<'_> {
             phase,
         )?;
 
-        active.recorder_events = services
-            .recorder()
-            .snapshot()
-            .map_err(|error| RunError::runner(phase, "snapshot recorder evidence", error))?;
-        let (target_calls, lifecycle_events): (Vec<_>, Vec<_>) = active
-            .recorder_events
-            .iter()
-            .partition(|event| event.kind == RecorderEventKind::TargetCall);
-        self.write_artifact(
-            &prepared.scenario.id,
-            "target-calls.json",
-            &target_calls,
-            phase,
-        )?;
-        self.write_artifact(
-            &prepared.scenario.id,
-            "lifecycle-events.json",
-            &lifecycle_events,
-            phase,
-        )?;
+        active.traces = if active.timed_out {
+            crate::trace_evidence::collect_available(services.client(), &self.session_id, deadline)
+                .await
+        } else {
+            crate::trace_evidence::collect(
+                services.client(),
+                &self.session_id,
+                self.fixture.expected_terminal_turns,
+                deadline,
+            )
+            .await
+        }
+        .map_err(|error| RunError::runner(phase, "collect session traces", error))?;
+        self.write_artifact(&prepared.scenario.id, "traces.json", &active.traces, phase)?;
         Ok(())
     }
 
@@ -90,7 +83,7 @@ impl ScenarioRunner<'_> {
             transcript: active.transcript.clone(),
             generations_consumed: services.router().generations_consumed(),
             generations_total: services.router().total_generations(),
-            recorder_events: active.recorder_events.clone(),
+            traces: active.traces.clone(),
         }
     }
 

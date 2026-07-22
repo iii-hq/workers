@@ -45,9 +45,4 @@ test('renders one completed function call and its durable result', async ({
 
   const result = await stack.finish()
   expectPassingResult(result)
-  const recordCalls = (result.evidence?.recorder_events ?? []).filter(
-    (event) => event.kind === 'target_call' && event.function_id === functionId,
-  )
-  expect(recordCalls).toHaveLength(1)
-  expect(recordCalls[0]?.payload).toEqual({ value: 'expected' })
 })

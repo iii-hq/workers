@@ -227,13 +227,7 @@ impl<'a> ScenarioRunner<'a> {
         };
         stack.set_teardown_budget(teardown_budget);
 
-        let services = match RunServices::start(
-            &stack.ws_url,
-            script,
-            stack.paths.root.join("recorder.log.jsonl"),
-        )
-        .await
-        {
+        let services = match RunServices::start(&stack.ws_url, script).await {
             Ok(services) => services,
             Err(error) => {
                 let error =

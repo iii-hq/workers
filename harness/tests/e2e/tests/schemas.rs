@@ -1,15 +1,15 @@
 //! Serde round-trip tests for the serialized V1 contract types (scenario,
-//! router, recorder-event, and result), plus validation of compiled payloads
+//! router, trace-evidence, and result), plus validation of compiled payloads
 //! against the producer-owned contracts. There are no generated goldens:
 //! wire shape is pinned by the round trips, and silent compiler weakening is
 //! caught by focused fixture tests.
 
 use harness_integration::expand::CompiledFixtureV1;
-use harness_integration::types::recorder::{RecorderEventKind, RecorderEventV1};
 use harness_integration::types::scenario::{
     Classification, CompiledScenarioV1, ExecutionReportV1, IntegrationResultV1,
 };
 use harness_integration::types::script::{RouterScriptV1, SchemaVersion1};
+use harness_integration::types::trace::TraceEvidenceV1;
 
 /// Every strict checked-in fixture round-trips through its typed mirror.
 #[test]
@@ -45,15 +45,7 @@ fn evidence_and_report_contracts_round_trip() {
         assert_eq!(value, decoded);
     }
 
-    round_trip(RecorderEventV1 {
-        schema_version: SchemaVersion1::V1,
-        run_id: "run-1".into(),
-        sequence: 1,
-        kind: RecorderEventKind::TargetCall,
-        function_id: "run-1::target".into(),
-        payload: serde_json::json!({ "value": "expected" }),
-        received_at: "2026-07-19T00:00:00Z".into(),
-    });
+    round_trip(TraceEvidenceV1::new(Vec::new()));
     round_trip(IntegrationResultV1 {
         schema_version: SchemaVersion1::V1,
         scenario_id: "E2E-ROUND-TRIP".into(),

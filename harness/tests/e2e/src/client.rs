@@ -1,5 +1,5 @@
-//! Thin `iii-sdk` client wrapper. The runner, the scripted router, and the
-//! recorder each open their own connection so they appear to the engine as
+//! Thin `iii-sdk` client wrapper. The runner, scripted router, and scenario
+//! probe each open their own connection so they appear to the engine as
 //! distinct workers (prior art: `worktree/tests/integration.rs`).
 
 use std::sync::Arc;
@@ -19,8 +19,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connect with an explicit worker identity (`integration-runner`,
-    /// `integration-scripted-router`, `integration-recorder`).
+    /// Connect with an explicit worker identity.
     pub fn connect(ws_url: &str, name: &'static str) -> Self {
         let metadata = iii_sdk::iii::WorkerMetadata {
             name: name.to_string(),

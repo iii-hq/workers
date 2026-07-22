@@ -1,4 +1,5 @@
 pub mod frames;
-pub mod recorder;
+pub mod probe;
 pub mod scenario;
 pub mod script;
+pub mod trace;

@@ -1,25 +1,57 @@
-//! Failure text is the only run-dependent part of `result.json`, so the scrub
-//! must replace every run-scoped id with its placeholder before the result is
-//! persisted.
+//! Failure text is scrubbed before it enters stable result artifacts.
+
+use std::collections::BTreeMap;
 
 use harness_integration::canonical::canonical_json_pretty;
 use harness_integration::evidence_data::RunEvidence;
 use harness_integration::scenario::floor::{floor_failure, verify_failure};
-use harness_integration::types::recorder::{RecorderEventKind, RecorderEventV1};
 use harness_integration::types::scenario::{Classification, IntegrationResultV1};
 use harness_integration::types::script::SchemaVersion1;
-use serde_json::json;
+use harness_integration::types::trace::{TraceEventV1, TraceEvidenceV1, TraceSpanV1, TraceTreeV1};
+use serde_json::{json, Value};
+
+fn span(
+    trace_id: &str,
+    span_id: &str,
+    name: String,
+    session_id: &str,
+    turn_id: &str,
+    payload: Value,
+) -> TraceSpanV1 {
+    TraceSpanV1 {
+        trace_id: trace_id.into(),
+        span_id: span_id.into(),
+        parent_span_id: None,
+        name,
+        start_time_unix_nano: 1,
+        end_time_unix_nano: 2,
+        status: "ok".into(),
+        status_description: None,
+        attributes: BTreeMap::from([
+            ("iii.session.id".into(), session_id.into()),
+            ("iii.message.id".into(), turn_id.into()),
+        ]),
+        service_name: "integration-probe".into(),
+        events: vec![TraceEventV1 {
+            name: "iii.invocation.input".into(),
+            timestamp_unix_nano: 1,
+            attributes: BTreeMap::from([
+                ("iii.payload.json".into(), payload.to_string()),
+                ("iii.payload.truncated".into(), "false".into()),
+            ]),
+        }],
+        links: Vec::new(),
+        instrumentation_scope_name: None,
+        instrumentation_scope_version: None,
+        flags: None,
+        trace_state: None,
+        pending: false,
+        children: Vec::new(),
+    }
+}
 
 fn evidence(run_id: &str, session_id: &str, turn_id: &str) -> RunEvidence {
-    let event = |sequence, kind, function_id: &str, payload| RecorderEventV1 {
-        schema_version: SchemaVersion1::V1,
-        run_id: run_id.to_string(),
-        sequence,
-        kind,
-        function_id: function_id.to_string(),
-        payload,
-        received_at: "2026-07-18T00:00:00Z".to_string(),
-    };
+    let trace_id = format!("trace-{turn_id}");
     RunEvidence {
         run_id: run_id.into(),
         session_id: session_id.into(),
@@ -37,43 +69,46 @@ fn evidence(run_id: &str, session_id: &str, turn_id: &str) -> RunEvidence {
         transcript: vec![],
         generations_consumed: 1,
         generations_total: 1,
-        recorder_events: vec![
-            event(
-                1,
-                RecorderEventKind::TargetCall,
-                &format!("{run_id}::record"),
-                json!({
-                    "session_id": session_id,
-                    "turn_id": turn_id,
-                    "value": "expected"
-                }),
-            ),
-            event(
-                2,
-                RecorderEventKind::Lifecycle,
-                "integration-recorder::lifecycle",
-                json!({
-                    "session_id": session_id,
-                    "turn_id": turn_id,
-                    "status": "completed",
-                    "terminal": true,
-                    "timestamp": 1
-                }),
-            ),
-        ],
+        traces: TraceEvidenceV1::new(vec![TraceTreeV1 {
+            trace_id: trace_id.clone(),
+            roots: vec![
+                span(
+                    &trace_id,
+                    "target",
+                    format!("execute {run_id}::record"),
+                    session_id,
+                    turn_id,
+                    json!({ "value": "expected" }),
+                ),
+                span(
+                    &trace_id,
+                    "lifecycle",
+                    "execute integration-probe::turn-completed".into(),
+                    session_id,
+                    turn_id,
+                    json!({
+                        "session_id": session_id,
+                        "turn_id": turn_id,
+                        "status": "completed",
+                        "terminal": true,
+                        "timestamp": 1
+                    }),
+                ),
+            ],
+        }]),
     }
 }
 
-/// A scenario-style verify whose failure message embeds every run-scoped id
-/// the evidence exposes.
 fn expects_a_mutated_payload(run: &RunEvidence) -> anyhow::Result<()> {
     let calls = run.calls("record");
     anyhow::ensure!(calls.len() == 1, "record ran {} times", calls.len());
-    let payload = &calls[0].payload;
+    let payload = calls[0].payload.as_ref();
     anyhow::ensure!(
-        payload == &json!({ "value": "mutated" }),
-        "{}::record payload {payload} != {{\"value\":\"mutated\"}}",
-        run.run_id
+        payload == Some(&json!({ "value": "mutated" })),
+        "session {} turn {}: {}::record payload {payload:?} does not match expected",
+        run.session_id,
+        run.turn_id.as_deref().unwrap_or("missing"),
+        run.run_id,
     );
     Ok(())
 }

@@ -1,6 +1,6 @@
 //! E2E-001 — streamed text reaches durable completion.
 
-use super::dsl::{Generation, Message, Model, Recorder, Request, Response, Scenario, Send};
+use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
@@ -21,7 +21,6 @@ pub(super) fn scenario() -> ScenarioFixture {
             .idempotency_key("{{run_id}}:e2e-001")
             .without_functions(),
     )
-    .recorder(Recorder::lifecycle_only())
     .generation(
         Generation::new(1)
             .expect(

@@ -138,5 +138,4 @@ pub(crate) fn trim_passing_run(run_root: &Path) {
     let queue = run_root.join("queue");
     let _ = std::fs::remove_dir_all(&queue);
     let _ = std::fs::remove_file(queue);
-    let _ = std::fs::remove_file(run_root.join("recorder.log.jsonl"));
 }

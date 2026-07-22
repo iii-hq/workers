@@ -12,10 +12,7 @@ use crate::types::frames::{
     AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, RouterChatResponse,
     StopReason, Usage,
 };
-use crate::types::recorder::{
-    LifecycleFunctionId, LifecycleTriggerType, RecorderConfigV1, RecorderLifecycleV1,
-    RecorderTargetV1,
-};
+use crate::types::probe::ControlledTargetV1;
 use crate::types::scenario::{
     CompiledFunctionExposureV1, CompiledFunctionPolicyV1, CompiledScenarioV1,
     CompiledSendOptionsV1, CompiledSendV1, DeadlinesV1,
@@ -54,7 +51,7 @@ pub(super) struct Scenario {
     driver: ScenarioDriver,
     model: ModelFixtureV1,
     send: Option<Send>,
-    recorder: Option<RecorderConfigV1>,
+    target: Option<ControlledTargetV1>,
     generations: Vec<Generation>,
     expected_terminal_turns: usize,
     verify: Option<VerifyFn>,
@@ -75,7 +72,7 @@ impl Scenario {
             driver,
             model,
             send: None,
-            recorder: None,
+            target: None,
             generations: Vec::new(),
             expected_terminal_turns: 1,
             verify: None,
@@ -87,8 +84,8 @@ impl Scenario {
         self
     }
 
-    pub(super) fn recorder(mut self, recorder: RecorderConfigV1) -> Self {
-        self.recorder = Some(recorder);
+    pub(super) fn function(mut self, function: ControlledFunction) -> Self {
+        self.target = Some(function.target);
         self
     }
 
@@ -112,7 +109,6 @@ impl Scenario {
         let send = self.send.expect("scenario send is required");
         let allowed_functions = send.allowed_functions.clone();
         let compiled_send = send.compile(&self.id, &self.model);
-        let recorder = self.recorder.expect("scenario recorder is required");
         let generations = self
             .generations
             .into_iter()
@@ -128,7 +124,7 @@ impl Scenario {
                 id: self.id.clone(),
                 description: self.description,
                 send: compiled_send,
-                recorder,
+                target: self.target,
                 deadlines: DeadlinesV1::default(),
             },
             script: RouterScriptV1 {
@@ -167,7 +163,7 @@ impl Send {
         self
     }
 
-    pub(super) fn allow_function(mut self, function: &RecorderFunction) -> Self {
+    pub(super) fn allow_function(mut self, function: &ControlledFunction) -> Self {
         if !self
             .allowed_functions
             .contains(&function.target.function_id)
@@ -198,41 +194,15 @@ impl Send {
     }
 }
 
-pub(super) struct Recorder;
-
-impl Recorder {
-    pub(super) fn lifecycle_only() -> RecorderConfigV1 {
-        recorder_config(RecorderTargetV1 {
-            function_id: "{{run_id}}::unused".to_string(),
-            description: "Synthetic integration target; must never be called.".to_string(),
-            request_schema: json!({
-                "type": "object",
-                "additionalProperties": false
-            })
-            .as_object()
-            .expect("object")
-            .clone(),
-            response: json!({
-                "content": [{ "type": "text", "text": "unused" }],
-                "is_error": false
-            }),
-        })
-    }
-
-    pub(super) fn function(function: RecorderFunction) -> RecorderConfigV1 {
-        recorder_config(function.target)
-    }
-}
-
 #[derive(Clone)]
-pub(super) struct RecorderFunction {
-    target: RecorderTargetV1,
+pub(super) struct ControlledFunction {
+    target: ControlledTargetV1,
 }
 
-impl RecorderFunction {
+impl ControlledFunction {
     pub(super) fn new(function_id: &str, description: &str) -> Self {
         Self {
-            target: RecorderTargetV1 {
+            target: ControlledTargetV1 {
                 function_id: function_id.to_string(),
                 description: description.to_string(),
                 request_schema: serde_json::Map::new(),
@@ -244,7 +214,7 @@ impl RecorderFunction {
     pub(super) fn request_schema(mut self, schema: Value) -> Self {
         self.target.request_schema = schema
             .as_object()
-            .unwrap_or_else(|| panic!("recorder request schema must be an object: {schema}"))
+            .unwrap_or_else(|| panic!("controlled function schema must be an object: {schema}"))
             .clone();
         self
     }
@@ -472,7 +442,7 @@ impl Response {
 
     pub(super) fn function_call(
         call_id: &str,
-        function: &RecorderFunction,
+        function: &ControlledFunction,
         arguments: Value,
         input_tokens: u64,
         output_tokens: u64,
@@ -556,7 +526,7 @@ impl Message {
 
     pub(super) fn function_call(
         call_id: &str,
-        function: &RecorderFunction,
+        function: &ControlledFunction,
         arguments: Value,
         model: &ModelFixtureV1,
     ) -> Value {
@@ -584,7 +554,11 @@ impl Message {
         })
     }
 
-    pub(super) fn function_result(call_id: &str, function: &RecorderFunction, text: &str) -> Value {
+    pub(super) fn function_result(
+        call_id: &str,
+        function: &ControlledFunction,
+        text: &str,
+    ) -> Value {
         json!({
             "role": "function_result",
             "function_call_id": call_id,
@@ -601,16 +575,6 @@ pub(super) struct Tool;
 impl Tool {
     pub(super) fn named(name: &str) -> Value {
         json!({ "name": name })
-    }
-}
-
-fn recorder_config(target: RecorderTargetV1) -> RecorderConfigV1 {
-    RecorderConfigV1 {
-        target,
-        lifecycle: RecorderLifecycleV1 {
-            trigger_type: LifecycleTriggerType::TurnCompleted,
-            function_id: LifecycleFunctionId::Lifecycle,
-        },
     }
 }
 
@@ -759,17 +723,39 @@ mod tests {
     }
 
     #[test]
-    fn recorder_function_uses_one_contract_for_tool_and_target() {
-        let function = RecorderFunction::new("{{run_id}}::record", "Record value")
+    fn controlled_function_uses_one_contract_for_tool_and_target() {
+        let function = ControlledFunction::new("{{run_id}}::record", "Record value")
             .request_schema(json!({ "type": "object" }))
             .returns_text("recorded");
         let tool = function.tool();
-        let recorder = Recorder::function(function.clone());
-        assert_eq!(tool["name"], recorder.target.function_id);
+        let fixture = Scenario::new(
+            "E2E-DSL",
+            "dsl",
+            "DSL fixture",
+            ScenarioDriver::Direct,
+            Model::scripted("fixture-model"),
+        )
+        .send(Send::message("test").allow_function(&function))
+        .function(function.clone())
+        .generation(
+            Generation::new(1)
+                .expect(
+                    Request::new()
+                        .turn_request()
+                        .system_prompt_sha256("{{system_prompt_sha256}}")
+                        .messages_exact([Message::user("test")])
+                        .tools_exact([function.tool()]),
+                )
+                .respond(Response::text("done", 1, 1)),
+        )
+        .verify(|_| Ok(()))
+        .build();
+        let target = fixture.scenario.target.unwrap();
+        assert_eq!(tool["name"], target.function_id);
         assert_eq!(
             tool["parameters"],
-            Value::Object(recorder.target.request_schema.clone())
+            Value::Object(target.request_schema.clone())
         );
-        assert_eq!(function.target.response, recorder.target.response);
+        assert_eq!(function.target.response, target.response);
     }
 }

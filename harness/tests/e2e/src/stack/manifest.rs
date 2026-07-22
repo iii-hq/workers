@@ -58,7 +58,7 @@ pub(crate) fn stack_info(bins: &StackBins, layout: &RunLayout, port: u16) -> any
         "components": {
             "engine_builtins": ["configuration", "state", "stream", "cron"],
             "external_workers": external_workers,
-            "controlled_services": ["scripted-router", "integration-recorder"]
+            "controlled_services": ["scripted-router", "integration-probe"]
         },
         "port": port,
         "run_root": layout.root.to_string_lossy(),

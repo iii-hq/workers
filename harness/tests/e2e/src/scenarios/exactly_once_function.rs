@@ -1,9 +1,9 @@
-//! E2E-002 — the recorder runs exactly once and its result closes the turn.
+//! E2E-002 — a controlled function runs exactly once and closes the turn.
 
 use serde_json::json;
 
 use super::dsl::{
-    Generation, Message, Model, Recorder, RecorderFunction, Request, Response, Scenario, Send,
+    ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send,
 };
 use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
@@ -14,7 +14,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     const CALL_ID: &str = "call-1";
 
     let model = Model::scripted("fixture-model");
-    let record = RecorderFunction::new(
+    let record = ControlledFunction::new(
         "{{run_id}}::record",
         "Record one integration fixture value.",
     )
@@ -30,7 +30,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     Scenario::new(
         ID,
         "exactly-once-function",
-        "The recorder runs exactly once.",
+        "The controlled function runs exactly once.",
         ScenarioDriver::Direct,
         model.clone(),
     )
@@ -39,7 +39,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .idempotency_key("{{run_id}}:e2e-002")
             .allow_function(&record),
     )
-    .recorder(Recorder::function(record.clone()))
+    .function(record.clone())
     .generation(
         Generation::new(1)
             .expect(

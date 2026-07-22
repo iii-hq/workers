@@ -3,7 +3,7 @@
 use serde_json::json;
 
 use super::dsl::{
-    Generation, Message, Model, Recorder, RecorderFunction, Request, Response, Scenario, Send, Tool,
+    ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send, Tool,
 };
 use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
@@ -18,7 +18,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     const SECOND_TEXT: &str = "second trace complete";
 
     let model = Model::scripted("fixture-model");
-    let record = RecorderFunction::new(
+    let record = ControlledFunction::new(
         "{{run_id}}::record",
         "Record one integration fixture value.",
     )
@@ -43,7 +43,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .idempotency_key("{{run_id}}:ui-002")
             .allow_function(&record),
     )
-    .recorder(Recorder::function(record.clone()))
+    .function(record.clone())
     .terminal_turns(2)
     .generation(
         Generation::new(1)

@@ -229,7 +229,7 @@ async fn run_playground_phases(
 
     runner.collect(services, prepared, &mut active).await?;
     let evidence = runner.build_evidence(services, &active, None);
-    runner.evidence = serde_json::to_value(&evidence).map_err(|error| {
+    runner.evidence = serde_json::to_value(evidence.summary()).map_err(|error| {
         RunError::runner(RunPhase::Grade, "serialize playground run evidence", error)
     })?;
     runner.verify_evidence(services, &evidence, active.timed_out)
@@ -328,16 +328,13 @@ fn build_ready_manifest(
     let prefix = format!("{}::", runner.run_id);
     let functions = prepared
         .scenario
-        .recorder
         .target
-        .function_id
-        .strip_prefix(&prefix)
-        .filter(|alias| *alias != "unused")
-        .map(|alias| {
-            BTreeMap::from([(
-                alias.to_string(),
-                prepared.scenario.recorder.target.function_id.clone(),
-            )])
+        .as_ref()
+        .and_then(|target| {
+            target
+                .function_id
+                .strip_prefix(&prefix)
+                .map(|alias| BTreeMap::from([(alias.to_string(), target.function_id.clone())]))
         })
         .unwrap_or_default();
     let run_root = stack.paths.root.clone();

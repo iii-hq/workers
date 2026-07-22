@@ -171,16 +171,12 @@ mod tests {
 
     #[test]
     fn chain_string_keeps_nested_causes() {
-        let source = anyhow::anyhow!("permission denied").context("opening recorder log");
-        let error = RunError::with_source(
-            RunPhase::Boot,
-            RunErrorKind::Setup,
-            "start recorder",
-            source,
-        );
+        let source = anyhow::anyhow!("permission denied").context("opening probe connection");
+        let error =
+            RunError::with_source(RunPhase::Boot, RunErrorKind::Setup, "start probe", source);
         assert_eq!(
             error.chain_string(),
-            "boot: setup error: start recorder: opening recorder log: permission denied"
+            "boot: setup error: start probe: opening probe connection: permission denied"
         );
     }
 }
