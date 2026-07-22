@@ -22,6 +22,7 @@ function meta(id: string, parent: string | null, createdAt = 0): SessionMeta {
     title: `title-${id}`,
     description: '',
     status: 'done',
+    message_count: 0,
     created_at: createdAt,
     updated_at: createdAt,
     metadata: parent ? { parent_session_id: parent } : {},
