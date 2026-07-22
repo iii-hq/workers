@@ -158,3 +158,17 @@ the harness acts on its return value (veto / hold / mutate) under a per-binding
 `functions` glob list to scope which calls they gate. These are for
 operator-trusted policy siblings (`approval-gate` binds `pre-trigger`); ordinary
 consumers do not bind hooks.
+
+### Agent playbooks (served to agents on demand)
+
+Three docs in this folder are written for the AGENT the harness runs, not for
+worker authors. The default identity prompt stays small and tells the agent to
+pull these through `directory::skills::get` before the first action of each
+kind:
+
+- `harness/orchestration` — spawn, react, joins, fan-out wiring, child
+  permissions.
+- `harness/finishing` — the `turn_complete` gate, validators, deadlines, waves,
+  the end-of-run checklist.
+- `harness/building` — registry installs, code editing via `coder::*`, SDK
+  references.
