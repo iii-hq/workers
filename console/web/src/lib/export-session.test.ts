@@ -196,6 +196,55 @@ describe('conversationToMarkdown', () => {
   })
 })
 
+describe('conversationToMarkdown — workers block', () => {
+  it('renders sorted name: version bullets after the message count', () => {
+    const out = conversationToMarkdown(baseConversation(), [
+      { name: 'llm-router', version: '1.3.3' },
+      { name: 'console', version: '1.7.2' },
+      { name: 'harness', version: '1.5.2' },
+    ])
+    const idx = out.indexOf('- Workers:')
+    expect(idx).toBeGreaterThan(out.indexOf('- Message count: 0'))
+    expect(out).toContain(
+      '- Workers:\n  - console: 1.7.2\n  - harness: 1.5.2\n  - llm-router: 1.3.3',
+    )
+  })
+
+  it('collapses exact name: version duplicates', () => {
+    const out = conversationToMarkdown(baseConversation(), [
+      { name: 'harness', version: '1.5.2' },
+      { name: 'harness', version: '1.5.2' },
+      { name: 'harness', version: '1.5.1' },
+    ])
+    expect(out).toContain(
+      '- Workers:\n  - harness: 1.5.1\n  - harness: 1.5.2',
+    )
+    expect(out.match(/ {2}- harness: 1\.5\.2/g)).toHaveLength(1)
+  })
+
+  it('renders (no version) when a worker has no version', () => {
+    const out = conversationToMarkdown(baseConversation(), [
+      { name: 'scrapling' },
+    ])
+    expect(out).toContain('- Workers:\n  - scrapling: (no version)')
+  })
+
+  it('renders _(unavailable)_ when workers is null', () => {
+    const out = conversationToMarkdown(baseConversation(), null)
+    expect(out).toContain('- Workers: _(unavailable)_')
+  })
+
+  it('renders _(none connected)_ when workers is an empty array', () => {
+    const out = conversationToMarkdown(baseConversation(), [])
+    expect(out).toContain('- Workers: _(none connected)_')
+  })
+
+  it('omits the Workers line entirely when workers is undefined', () => {
+    const out = conversationToMarkdown(baseConversation())
+    expect(out).not.toContain('- Workers')
+  })
+})
+
 describe('buildExportFilename', () => {
   it('uses the first 8 chars of the conversation id', () => {
     const filename = buildExportFilename(baseConversation())

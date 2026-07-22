@@ -95,7 +95,29 @@ function renderFunctionCall(message: FunctionCallMessage): string {
   return parts.join('\n')
 }
 
-export function conversationToMarkdown(conversation: Conversation): string {
+/** One connected worker as reported by `engine::workers::list`. */
+export interface WorkerVersion {
+  name: string
+  version?: string
+}
+
+/**
+ * `- Workers:` metadata bullet. `null` means the fetch failed (best-effort
+ * export still proceeds); `[]` means the engine answered with no workers.
+ */
+function renderWorkersBlock(workers: WorkerVersion[] | null): string[] {
+  if (workers === null) return ['- Workers: _(unavailable)_']
+  if (workers.length === 0) return ['- Workers: _(none connected)_']
+  const lines = workers.map(
+    (w) => `  - ${w.name}: ${w.version ?? '(no version)'}`,
+  )
+  return ['- Workers:', ...Array.from(new Set(lines)).sort()]
+}
+
+export function conversationToMarkdown(
+  conversation: Conversation,
+  workers?: WorkerVersion[] | null,
+): string {
   const header: string[] = [
     `# Session: ${conversation.title}`,
     '',
@@ -105,6 +127,7 @@ export function conversationToMarkdown(conversation: Conversation): string {
     `- Model: \`${conversation.model}\``,
     `- Mode: \`${conversation.mode}\``,
     `- Message count: ${conversation.messages.length}`,
+    ...(workers !== undefined ? renderWorkersBlock(workers) : []),
     '',
     '---',
     '',
