@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
+use crossterm::style::Print;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, SetTitle,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -23,9 +24,9 @@ use crate::logs;
 use crate::orchestrator::Orchestrator;
 use crate::status::WorkerView;
 use theme::{
-    confirm_prompt_style, engine_style, engine_url_style, footer_style, group_header_style,
-    header_accent_style, hint_style, log_title_style, muted_cell_style, non_spawnable_style,
-    overlay_bg_style, process_style, selection_row_style, status_style,
+    branch_style, confirm_prompt_style, engine_style, engine_url_style, footer_style,
+    group_header_style, header_accent_style, hint_style, log_title_style, muted_cell_style,
+    non_spawnable_style, overlay_bg_style, process_style, selection_row_style, status_style,
 };
 
 /// Spinner frames cycled through for workers in the compiling state.
@@ -53,6 +54,15 @@ const TABLE_WIDTH_MIN: u16 = 50;
 /// 1-col gutter keeps the two pane borders from fusing into a double seam.
 const PANE_GUTTER: u16 = 1;
 const TWO_COL_MIN_WIDTH: u16 = TABLE_PANE_WIDTH + PANE_GUTTER + MIN_LOG_PANE_WIDTH;
+/// Longest branch name shown in the header before truncation, so a
+/// pathological name can't push the health summary out of view.
+const BRANCH_MAX: usize = 40;
+/// How long the `e` (start engine) action waits for the engine to become
+/// reachable before reporting failure. The Busy overlay blocks all input
+/// while an action runs, so this is kept short: a dead `iii` is detected
+/// within a poll tick, a healthy engine binds within a couple of seconds,
+/// and a slow one keeps coming up in the background where the poller shows it.
+const ENGINE_START_WAIT_MS: u64 = 8_000;
 
 /// Footer help, by available width. The narrowest tier always keeps the two
 /// keys a lost user needs (help, quit).
@@ -67,6 +77,13 @@ enum UiMode {
     Filter,
     /// Full key reference overlay; any key returns to the dashboard.
     Help,
+    /// Dependency inspector for one worker; any key returns to the dashboard.
+    /// Statuses are looked up live at draw time, so the overlay stays current.
+    Deps {
+        name: String,
+        deps: Vec<String>,
+        dependents: Vec<String>,
+    },
     ConfirmRestart {
         name: String,
         dependents: Vec<String>,
@@ -78,6 +95,7 @@ enum ModeKind {
     Dashboard,
     Filter,
     Help,
+    Deps,
     Confirm,
     Busy,
 }
@@ -87,6 +105,7 @@ fn mode_kind(mode: &UiMode) -> ModeKind {
         UiMode::Dashboard => ModeKind::Dashboard,
         UiMode::Filter => ModeKind::Filter,
         UiMode::Help => ModeKind::Help,
+        UiMode::Deps { .. } => ModeKind::Deps,
         UiMode::ConfirmRestart { .. } => ModeKind::Confirm,
         UiMode::Busy(_) => ModeKind::Busy,
     }
@@ -108,6 +127,10 @@ struct Actions {
 struct DashboardState {
     views: Vec<WorkerView>,
     engine_error: Option<String>,
+    /// Current branch of the repo this instance orchestrates, so multiple
+    /// checkouts/worktrees are easy to tell apart. Re-read on the poll cadence
+    /// to track mid-session branch switches; None when repo isn't a checkout.
+    repo_branch: Option<String>,
 }
 
 enum DisplayRowKind {
@@ -122,6 +145,7 @@ struct DisplayRow {
 /// Everything `draw_ui` needs for one frame, bundled to keep the signature sane.
 struct UiCtx<'a> {
     engine_url: &'a str,
+    repo_branch: Option<&'a str>,
     views: &'a [WorkerView],
     engine_error: Option<&'a str>,
     display_rows: &'a [DisplayRow],
@@ -143,7 +167,9 @@ struct UiCtx<'a> {
 
 pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
     enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)?;
+    // Save the terminal's title (XTWINOPS push; ignored where unsupported)
+    // before set_terminal_title overwrites it, so quitting can restore it.
+    execute!(io::stdout(), EnterAlternateScreen, Print("\x1b[22;0t"))?;
 
     let result: Result<()> = async {
         let stdout = io::stdout();
@@ -153,9 +179,12 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
         // Poll the engine on a background task so a slow or unreachable engine
         // query can't freeze keyboard input.
         let (initial_views, initial_err) = orchestrator.dashboard_snapshot().await;
+        let initial_branch = crate::git::current_branch(&orchestrator.config.repo_root);
+        set_terminal_title(initial_branch.as_deref());
         let (state_tx, mut state_rx) = tokio::sync::watch::channel(DashboardState {
             views: initial_views,
             engine_error: initial_err,
+            repo_branch: initial_branch,
         });
         let poll_interval = Duration::from_millis(orchestrator.config.poll_interval_ms);
         let poller = {
@@ -168,6 +197,7 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                         .send(DashboardState {
                             views,
                             engine_error,
+                            repo_branch: crate::git::current_branch(&orchestrator.config.repo_root),
                         })
                         .is_err()
                     {
@@ -218,7 +248,7 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
             let compiling = state.views.iter().any(|v| v.display_status == "compiling");
 
             if needs_redraw {
-                if compiling {
+                if compiling || matches!(mode, UiMode::Busy(_)) {
                     spinner_frame = spinner_frame.wrapping_add(1);
                 }
                 let selected_name =
@@ -232,6 +262,7 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                 };
                 let ctx = UiCtx {
                     engine_url: &orchestrator.config.engine_url,
+                    repo_branch: state.repo_branch.as_deref(),
                     views: &state.views,
                     engine_error: state.engine_error.as_deref(),
                     display_rows: &display_rows,
@@ -262,9 +293,11 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                 }
             }
 
-            // Animate the spinner while compiling and refresh live logs while
-            // following; otherwise stay idle until something actually changes.
-            let spinner_due = compiling && last_redraw.elapsed() >= Duration::from_millis(120);
+            // Animate the spinner while compiling or an action runs (Busy
+            // dialog) and refresh live logs while following; otherwise stay
+            // idle until something actually changes.
+            let spinner_due = (compiling || matches!(mode, UiMode::Busy(_)))
+                && last_redraw.elapsed() >= Duration::from_millis(120);
             let live_logs_due = follow
                 && matches!(mode_kind(&mode), ModeKind::Dashboard | ModeKind::Filter)
                 && last_redraw.elapsed() >= Duration::from_millis(500);
@@ -287,7 +320,8 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                     &state.views,
                                 );
                             }
-                            ModeKind::Help => mode = UiMode::Dashboard, // any key closes help
+                            // Any key closes the help / dependency overlays.
+                            ModeKind::Help | ModeKind::Deps => mode = UiMode::Dashboard,
                             ModeKind::Confirm => handle_confirm_key(key, &mut mode, &actions),
                             ModeKind::Busy => {
                                 if key.code == KeyCode::Esc && in_flight.load(Ordering::SeqCst) == 0
@@ -334,7 +368,12 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
             }
 
             if state_rx.has_changed().unwrap_or(false) {
-                state = state_rx.borrow_and_update().clone();
+                let fresh = state_rx.borrow_and_update().clone();
+                // Keep the terminal/tmux pane title tracking the branch.
+                if fresh.repo_branch != state.repo_branch {
+                    set_terminal_title(fresh.repo_branch.as_deref());
+                }
+                state = fresh;
                 needs_redraw = true;
             }
         }
@@ -345,7 +384,15 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
     .await;
 
     let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    // Clear our title, then pop the saved one: terminals with a title stack
+    // restore the original; elsewhere the title at least stops claiming a
+    // workers-dev instance that no longer exists.
+    let _ = execute!(
+        io::stdout(),
+        LeaveAlternateScreen,
+        SetTitle(""),
+        Print("\x1b[23;0t")
+    );
     result
 }
 
@@ -385,8 +432,42 @@ fn handle_dashboard_key(
                 *log_scroll = 0;
             }
         }
+        // Jump to the first/last worker — the list runs to ~50 rows, and
+        // stepping there one `j` at a time is a chore.
+        KeyCode::Char('g') | KeyCode::Home | KeyCode::Char('G') | KeyCode::End => {
+            let target = if matches!(key.code, KeyCode::Char('g') | KeyCode::Home) {
+                first_worker_row(display_rows)
+            } else {
+                display_rows
+                    .iter()
+                    .rposition(|row| matches!(row.kind, DisplayRowKind::Worker(_)))
+            };
+            // Like Up/Down, only re-follow when the selection actually moves —
+            // `g` on the first row shouldn't yank a scrolled log pane back down.
+            if target.is_some() && target != selected {
+                table_state.select(target);
+                *follow = true;
+                *log_scroll = 0;
+            }
+        }
         KeyCode::Char('/') => *mode = UiMode::Filter,
         KeyCode::Char('?') => *mode = UiMode::Help,
+        KeyCode::Char('d') => {
+            if let Some(name) = worker_name {
+                let mut deps = actions.orchestrator.graph.dependencies(&name).to_vec();
+                deps.sort_unstable();
+                let dependents = actions
+                    .orchestrator
+                    .graph
+                    .reverse_dependents(&name)
+                    .unwrap_or_default();
+                *mode = UiMode::Deps {
+                    name,
+                    deps,
+                    dependents,
+                };
+            }
+        }
         KeyCode::Char('f') => {
             *follow = !*follow;
             if *follow {
@@ -458,13 +539,19 @@ fn handle_dashboard_key(
                 }
             }
         }
+        KeyCode::Char('e') => {
+            spawn_start_engine(actions);
+            *mode = UiMode::Busy("starting engine…".to_string());
+        }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             spawn_start_harness_stack(actions);
             *mode = UiMode::Busy("starting harness stack…".to_string());
         }
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            let names = actions.orchestrator.config.workers.clone();
-            spawn_start(actions, names);
+            // Via start_all_managed (like CLI `start --all`), which pre-filters
+            // to spawnable workers — naming the non-Rust ones directly would
+            // bail at the first one, stranding the rest unstarted.
+            spawn_start_all_managed(actions);
             *mode = UiMode::Busy("starting all managed workers…".to_string());
         }
         _ => {}
@@ -515,6 +602,17 @@ fn not_startable_msg() -> UiMode {
     UiMode::Busy("worker not startable from workers-dev (use iii worker add)".into())
 }
 
+/// Name the surrounding terminal window / tmux pane after this instance, so
+/// side-by-side instances are tellable apart from the window list without
+/// looking inside. Re-applied whenever the branch changes.
+fn set_terminal_title(branch: Option<&str>) {
+    let title = match branch {
+        Some(b) => format!("workers-dev ⎇ {b}"),
+        None => "workers-dev".to_string(),
+    };
+    let _ = execute!(io::stdout(), SetTitle(title));
+}
+
 /// Run a worker action on a detached task, counting it as in-flight for the
 /// whole duration so the UI keeps the Busy overlay up and refuses overlapping
 /// actions until it finishes. Failures are sent back to the UI (not printed,
@@ -545,6 +643,20 @@ fn spawn_start_harness_stack(actions: &Actions) {
     let orchestrator = actions.orchestrator.clone();
     spawn_action(actions, async move {
         orchestrator.start_harness_stack(false).await
+    });
+}
+
+fn spawn_start_all_managed(actions: &Actions) {
+    let orchestrator = actions.orchestrator.clone();
+    spawn_action(actions, async move {
+        orchestrator.start_all_managed(false).await
+    });
+}
+
+fn spawn_start_engine(actions: &Actions) {
+    let orchestrator = actions.orchestrator.clone();
+    spawn_action(actions, async move {
+        orchestrator.start_engine_quiet(ENGINE_START_WAIT_MS).await
     });
 }
 
@@ -648,10 +760,12 @@ fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) {
     let area = f.area();
     // Header and footer span full width; the body between them carries the
     // two panes.
+    // The header grows a line while the engine is down to carry the remedy.
+    let header_h = if ctx.engine_error.is_some() { 4 } else { 3 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(header_h),
             Constraint::Min(MIN_TABLE_HEIGHT),
             Constraint::Length(1),
         ])
@@ -701,23 +815,184 @@ fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) {
     // Modals center over the whole content area so they keep their width in
     // either layout.
     if let UiMode::ConfirmRestart { name, dependents } = ctx.mode {
-        draw_confirm_overlay(f, body, name, dependents, ctx.color_enabled);
+        draw_confirm_overlay(f, body, name, dependents, ctx);
+    }
+    if let UiMode::Busy(msg) = ctx.mode {
+        draw_busy_overlay(f, body, msg, ctx);
+    }
+    if let UiMode::Deps {
+        name,
+        deps,
+        dependents,
+    } = ctx.mode
+    {
+        draw_deps_overlay(f, body, name, deps, dependents, ctx);
     }
     if matches!(ctx.mode, UiMode::Help) {
         draw_help_overlay(f, area, ctx.color_enabled);
     }
 }
 
+/// "   ● name …… status" with the table's live glyph and color for `name`.
+/// Shared by the dependency and confirm-restart dialogs so every list of
+/// workers in a dialog reads exactly like the worker table.
+fn worker_status_line(ctx: &UiCtx, name: &str) -> Line<'static> {
+    let (icon, status) = ctx
+        .views
+        .iter()
+        .find(|v| v.name == name)
+        .map(|v| {
+            (
+                status_icon(&v.display_status, ctx.spinner_frame),
+                v.display_status.clone(),
+            )
+        })
+        .unwrap_or(("○", "unknown".to_string()));
+    let st = styled_if(ctx.color_enabled, status_style(&status));
+    Line::from(vec![
+        Span::styled(format!("   {icon} "), st),
+        Span::raw(format!("{name:<24}")),
+        Span::styled(status, st),
+    ])
+}
+
+/// A blank spacer line (no visible glyphs). Trailing ones don't count as
+/// content when measuring overflow, so a lone padding blank never triggers a
+/// spurious "N more".
+fn is_blank_line(line: &Line) -> bool {
+    line.spans.iter().all(|s| s.content.trim().is_empty())
+}
+
+/// Render a centered dialog `width` wide inside `area`, titled and bordered.
+/// `body` truncates when it doesn't fit — its tail is replaced by a single
+/// "   … N more (resize to see all)" marker so a clipped dialog never looks
+/// complete under an intact border. `pinned` lines (e.g. the y/n action row)
+/// always render at the bottom and are never dropped; the truncation happens
+/// only in the body above them.
+fn draw_dialog(
+    f: &mut Frame,
+    area: Rect,
+    title: String,
+    mut body: Vec<Line<'static>>,
+    pinned: Vec<Line<'static>>,
+    width: u16,
+    color: bool,
+) {
+    // Trailing blank spacers are padding, not content: trimming them keeps the
+    // overflow test and the hidden-count honest (a lone trailing blank must not
+    // push a dialog that otherwise fits into truncation).
+    while body.last().is_some_and(is_blank_line) {
+        body.pop();
+    }
+
+    let want_h = (body.len() + pinned.len()) as u16 + 2;
+    let h = want_h.min(area.height.max(3));
+    let inner = h.saturating_sub(2) as usize;
+    // Pinned lines are reserved first; the body gets whatever height remains.
+    let body_budget = inner.saturating_sub(pinned.len());
+
+    let mut lines: Vec<Line> = if body.len() > body_budget {
+        let keep = body_budget.saturating_sub(1);
+        let hidden = body.len() - keep;
+        let mut shown: Vec<Line> = body.into_iter().take(keep).collect();
+        shown.push(Line::from(Span::styled(
+            format!("   … {hidden} more (resize to see all)"),
+            styled_if(color, hint_style()),
+        )));
+        shown
+    } else {
+        body
+    };
+    lines.extend(pinned);
+
+    let popup = centered_rect_fixed(width, h, area);
+    f.render_widget(Clear, popup);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .style(styled_if(color, overlay_bg_style())),
+        ),
+        popup,
+    );
+}
+
+/// Dependency inspector: the selected worker's direct dependencies and
+/// transitive dependents (the `r` blast radius), each with its live status —
+/// so "can I start this?" and "what breaks if I bounce it?" are one keypress.
+fn draw_deps_overlay(
+    f: &mut Frame,
+    area: Rect,
+    name: &str,
+    deps: &[String],
+    dependents: &[String],
+    ctx: &UiCtx,
+) {
+    let color = ctx.color_enabled;
+    let section = |lines: &mut Vec<Line>, title: &str, workers: &[String]| {
+        lines.push(Line::from(Span::styled(
+            format!("   {title}"),
+            styled_if(color, Style::default().add_modifier(Modifier::BOLD)),
+        )));
+        if workers.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "   (none)",
+                styled_if(color, hint_style()),
+            )));
+        }
+        for w in workers {
+            lines.push(worker_status_line(ctx, w));
+        }
+    };
+
+    let mut lines = vec![Line::from("")];
+    section(&mut lines, "depends on (direct)", deps);
+    lines.push(Line::from(""));
+    section(&mut lines, "needed by (restart blast radius)", dependents);
+    lines.push(Line::from(""));
+
+    draw_dialog(
+        f,
+        area,
+        format!(" deps: {name} · any key to close "),
+        lines,
+        Vec::new(),
+        58,
+        color,
+    );
+}
+
 fn draw_header(f: &mut Frame, area: Rect, ctx: &UiCtx) {
     let color = ctx.color_enabled;
-    let mut spans = vec![
-        Span::styled(
-            "workers-dev",
-            styled_if(color, header_accent_style()).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(ctx.engine_url, styled_if(color, engine_url_style())),
-    ];
+    let mut spans = vec![Span::styled(
+        "workers-dev",
+        styled_if(color, header_accent_style()).add_modifier(Modifier::BOLD),
+    )];
+
+    // The branch sits right after the title — it's the one thing that tells
+    // two side-by-side instances (worktrees, checkouts) apart, so it must
+    // survive narrow terminals, which clip the header from the right.
+    if let Some(branch) = ctx.repo_branch {
+        let shown: String = if branch.chars().count() > BRANCH_MAX {
+            let mut s: String = branch.chars().take(BRANCH_MAX - 1).collect();
+            s.push('…');
+            s
+        } else {
+            branch.to_string()
+        };
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("⎇ {shown}"),
+            styled_if(color, branch_style()).add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+        ctx.engine_url,
+        styled_if(color, engine_url_style()),
+    ));
 
     if ctx.engine_error.is_some() {
         spans.push(Span::styled(
@@ -769,8 +1044,26 @@ fn draw_header(f: &mut Frame, area: Rect, ctx: &UiCtx) {
         ));
     }
 
+    let mut lines = vec![Line::from(spans)];
+    // Engine down: a bare "unreachable" is a dead end — say how to fix it.
+    // Remedy before error detail, so right-edge clipping on a narrow terminal
+    // eats the diagnostics rather than the fix.
+    if let Some(err) = ctx.engine_error {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(
+                    "press e to start the engine (iii -c {})",
+                    crate::orchestrator::ENGINE_CONFIG_REL
+                ),
+                styled_if(color, Style::default().fg(Color::Yellow)),
+            ),
+            Span::raw("  ·  "),
+            Span::styled(err.to_string(), styled_if(color, muted_cell_style())),
+        ]));
+    }
+
     // No box title: the accent "workers-dev" span already names the pane.
-    let header = Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL));
+    let header = Paragraph::new(lines).block(Block::default().borders(Borders::ALL));
     f.render_widget(header, area);
 }
 
@@ -834,6 +1127,25 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
         })
         .collect();
 
+    // Title carries selection position ("Workers 3/48") so a long list is
+    // navigable — you can tell where you are and how much is below the fold.
+    let worker_count = |rows: &[DisplayRow]| {
+        rows.iter()
+            .filter(|r| matches!(r.kind, DisplayRowKind::Worker(_)))
+            .count()
+    };
+    let total = worker_count(ctx.display_rows);
+    let title = match table_state.selected() {
+        Some(sel) if sel < ctx.display_rows.len() => {
+            format!(
+                " Workers {}/{} ",
+                worker_count(&ctx.display_rows[..=sel]),
+                total
+            )
+        }
+        _ => format!(" Workers ({total}) "),
+    };
+
     // Content-fit, left-packed widths: the worker name sits right next to its
     // status. Worker only has to fit a name now (label/exit moved to Process),
     // so it's tight; Uptime (Min) absorbs the right slack.
@@ -851,7 +1163,7 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
         Row::new(vec!["Worker", "Process", "Engine", "PID", "Uptime"])
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
-    .block(Block::default().borders(Borders::ALL).title(" Workers "))
+    .block(Block::default().borders(Borders::ALL).title(title))
     .row_highlight_style(styled_if(color, selection_row_style()));
     f.render_stateful_widget(table, area, table_state);
 }
@@ -972,8 +1284,9 @@ fn draw_footer(f: &mut Frame, area: Rect, ctx: &UiCtx) {
         f.render_widget(banner, area);
         return;
     }
+    // Busy messages render as a centered dialog now, so the footer keeps its
+    // help line in that mode.
     let (text, style) = match ctx.mode {
-        UiMode::Busy(msg) => (msg.clone(), styled_if(color, footer_style())),
         UiMode::Filter => (
             format!(" filter: {}_   (Enter apply · Esc clear) ", ctx.filter),
             styled_if(color, Style::default().fg(Color::Yellow)),
@@ -992,53 +1305,92 @@ fn draw_footer(f: &mut Frame, area: Rect, ctx: &UiCtx) {
     f.render_widget(Paragraph::new(text).style(style), area);
 }
 
-fn draw_confirm_overlay(
-    f: &mut Frame,
-    area: Rect,
-    name: &str,
-    dependents: &[String],
-    color_enabled: bool,
-) {
-    let mut lines = vec![Line::from(format!("Restart {name} and its dependents?"))];
+/// Dependents listed in the confirm dialog before it truncates; the deps
+/// overlay (`d`) always shows the full list.
+const CONFIRM_DEPENDENTS_SHOWN: usize = 8;
+
+/// Confirm-restart dialog: the blast radius as a status-annotated list (a
+/// comma-joined line clips for wide radii like llm-router's), so `y` is an
+/// informed choice — a stopped dependent will be *started* by the restart,
+/// and that's visible here instead of being a surprise.
+fn draw_confirm_overlay(f: &mut Frame, area: Rect, name: &str, dependents: &[String], ctx: &UiCtx) {
+    let color = ctx.color_enabled;
+    let mut lines = vec![Line::from("")];
     if dependents.is_empty() {
         lines.push(Line::from(Span::styled(
-            "no dependents — only this worker restarts",
-            styled_if(color_enabled, hint_style()),
+            format!("   Restart {name}?"),
+            styled_if(color, confirm_prompt_style()),
+        )));
+        lines.push(Line::from(Span::styled(
+            "   no dependents — only this worker restarts",
+            styled_if(color, hint_style()),
         )));
     } else {
+        let n = dependents.len();
+        let s = if n == 1 { "" } else { "s" };
         lines.push(Line::from(Span::styled(
-            format!("also restarts: {}", dependents.join(", ")),
-            styled_if(color_enabled, Style::default().fg(Color::Yellow)),
+            format!("   Restart {name} and {n} dependent{s}?"),
+            styled_if(color, confirm_prompt_style()),
         )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "   also restarts (stopped ones will start)",
+            styled_if(color, Style::default().add_modifier(Modifier::BOLD)),
+        )));
+        for w in dependents.iter().take(CONFIRM_DEPENDENTS_SHOWN) {
+            lines.push(worker_status_line(ctx, w));
+        }
+        if n > CONFIRM_DEPENDENTS_SHOWN {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "   … and {} more (d lists the full blast radius)",
+                    n - CONFIRM_DEPENDENTS_SHOWN
+                ),
+                styled_if(color, hint_style()),
+            )));
+        }
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from("y/Enter  yes        n/Esc  no"));
-
-    let popup = centered_rect(64, 40, area);
-    f.render_widget(Clear, popup);
-    f.render_widget(
-        Paragraph::new(lines)
-            .style(styled_if(color_enabled, confirm_prompt_style()))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" confirm restart ")
-                    .style(styled_if(color_enabled, overlay_bg_style())),
+    // The action row is pinned: it must survive even when the blast-radius
+    // list is truncated on a short terminal — dropping it would leave a
+    // blocking modal with no visible way to confirm or cancel.
+    let pinned = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "   y/Enter ",
+                styled_if(color, Style::default().fg(Color::Cyan)),
             ),
-        popup,
+            Span::raw("restart      "),
+            Span::styled("n/Esc ", styled_if(color, Style::default().fg(Color::Cyan))),
+            Span::raw("cancel"),
+        ]),
+        Line::from(""),
+    ];
+
+    draw_dialog(
+        f,
+        area,
+        " confirm restart ".to_string(),
+        lines,
+        pinned,
+        58,
+        color,
     );
 }
 
 fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
     let keys = [
         ("↑ ↓  k j", "select worker"),
+        ("g G", "jump to first / last worker"),
         ("s", "start selected worker"),
         ("x", "stop selected worker"),
         ("r", "restart selected + dependents"),
+        ("d", "show dependencies + dependents"),
         ("f", "toggle live log follow"),
         ("PgUp PgDn", "scroll logs"),
         ("+ -", "resize the log pane"),
         ("/", "filter workers by name"),
+        ("e", "start the iii engine"),
         ("Ctrl+u", "start the harness stack"),
         ("Ctrl+a", "start all managed workers"),
         ("?", "toggle this help"),
@@ -1079,36 +1431,48 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
         "   elsewhere = connected, started outside workers-dev",
         styled_if(color, hint_style()),
     )));
-    let popup = centered_rect(58, 75, area);
+    draw_dialog(
+        f,
+        area,
+        " keys · any key to close ".to_string(),
+        lines,
+        Vec::new(),
+        58,
+        color,
+    );
+}
+
+/// Center a fixed-size rect inside `r`, clamped to fit.
+fn centered_rect_fixed(width: u16, height: u16, r: Rect) -> Rect {
+    let w = width.min(r.width);
+    let h = height.min(r.height);
+    Rect::new(r.x + (r.width - w) / 2, r.y + (r.height - h) / 2, w, h)
+}
+
+/// Busy notice as a small centered dialog with an animated spinner. Input is
+/// blocked while an action runs; a dialog makes the cause obvious where a
+/// footer-only message was easy to miss.
+fn draw_busy_overlay(f: &mut Frame, area: Rect, msg: &str, ctx: &UiCtx) {
+    let color = ctx.color_enabled;
+    let spin = SPINNER[ctx.spinner_frame % SPINNER.len()];
+    let line = Line::from(vec![
+        Span::styled(
+            format!("  {spin} "),
+            styled_if(color, Style::default().fg(Color::Yellow)),
+        ),
+        Span::raw(format!("{msg}  ")),
+    ]);
+    let w = (msg.chars().count() as u16).saturating_add(8).max(24);
+    let popup = centered_rect_fixed(w, 3, area);
     f.render_widget(Clear, popup);
     f.render_widget(
-        Paragraph::new(lines).block(
+        Paragraph::new(vec![line]).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" keys · any key to close ")
                 .style(styled_if(color, overlay_bg_style())),
         ),
         popup,
     );
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
 }
 
 fn status_icon(status: &str, spinner_frame: usize) -> &'static str {

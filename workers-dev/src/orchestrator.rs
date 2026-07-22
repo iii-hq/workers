@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -14,6 +14,11 @@ use crate::graph::WorkerGraph;
 use crate::logs;
 use crate::runtime::{ProcState, SharedRuntimes, WorkerRuntime};
 use crate::status::{self, EngineWorker, WorkerView};
+
+/// Engine config path, relative to the repo root. `ensure_engine` launches
+/// `iii -c <this>`; the TUI's engine-down banner names it so the remedy shown
+/// matches what `e` actually runs.
+pub const ENGINE_CONFIG_REL: &str = "harness/engine.config.yaml";
 
 pub struct Orchestrator {
     pub config: Config,
@@ -106,13 +111,26 @@ impl Orchestrator {
     /// Ensure the engine is running, starting `iii -c harness/engine.config.yaml`
     /// if it isn't. The engine is detached (own process group, no kill-on-drop)
     /// so it outlives the dashboard, like the workers it hosts; then we wait for
-    /// it to accept connections.
+    /// it to accept connections. Streams progress to stderr — call only before
+    /// the TUI takes the screen.
     pub async fn ensure_engine(&self) -> Result<()> {
+        self.ensure_engine_inner(true, self.config.connect_timeout_ms)
+            .await
+    }
+
+    /// `ensure_engine` for the TUI's `e` key: silent (stderr would corrupt the
+    /// alt-screen) and with a short reachability wait — once the spawn worked,
+    /// the dashboard poller shows the engine coming up on its own.
+    pub async fn start_engine_quiet(&self, wait_ms: u64) -> Result<()> {
+        self.ensure_engine_inner(false, wait_ms).await
+    }
+
+    async fn ensure_engine_inner(&self, verbose: bool, wait_ms: u64) -> Result<()> {
         if self.engine_reachable().await {
             return Ok(());
         }
 
-        let config_rel = "harness/engine.config.yaml";
+        let config_rel = ENGINE_CONFIG_REL;
         let config_path = self.config.repo_root.join(config_rel);
         if !config_path.is_file() {
             bail!(
@@ -122,10 +140,12 @@ impl Orchestrator {
             );
         }
 
-        eprintln!(
-            "engine not reachable at {} — starting `iii -c {config_rel}`…",
-            self.config.engine_url
-        );
+        if verbose {
+            eprintln!(
+                "engine not reachable at {} — starting `iii -c {config_rel}`…",
+                self.config.engine_url
+            );
+        }
 
         let mut cmd = Command::new("iii");
         cmd.arg("-c").arg(config_rel);
@@ -138,30 +158,59 @@ impl Orchestrator {
         cmd.stderr(Stdio::null());
         #[cfg(unix)]
         cmd.process_group(0);
-        cmd.spawn().context("spawn iii engine")?;
+        let mut child = cmd.spawn().context("spawn iii engine")?;
 
-        let deadline = Instant::now() + Duration::from_millis(self.config.connect_timeout_ms);
+        let deadline = Instant::now() + Duration::from_millis(wait_ms);
         while Instant::now() < deadline {
             time::sleep(Duration::from_millis(200)).await;
+            // `iii` dying (e.g. a config error) with its stderr nulled would
+            // otherwise mean spinning out the whole wait to report a vague
+            // timeout — surface the exit immediately instead.
+            if let Ok(Some(status)) = child.try_wait() {
+                bail!(
+                    "iii exited immediately ({status}) — run `iii -c {config_rel}` manually to see its output"
+                );
+            }
             if self.engine_reachable().await {
-                eprintln!("engine is up at {}", self.config.engine_url);
+                if verbose {
+                    eprintln!("engine is up at {}", self.config.engine_url);
+                }
                 return Ok(());
             }
         }
-        bail!(
-            "started the engine but it did not become reachable within {}ms",
-            self.config.connect_timeout_ms
-        );
+        // Dropping `child` leaves the engine running (no kill-on-drop): it may
+        // still come up late; under the TUI the poller will show it if so.
+        let hint = if verbose {
+            ""
+        } else {
+            " (it keeps trying in the background — watch the header)"
+        };
+        bail!("started the engine but it was not reachable within {wait_ms}ms{hint}");
     }
 
-    pub async fn engine_preflight(&self) -> Result<()> {
-        self.engine_workers().await.with_context(|| {
+    /// Engine preflight that also returns which workers the engine currently
+    /// reports as connected, so start paths can leave healthy dependencies
+    /// alone. Errors carry the start-the-engine remedy.
+    async fn connected_worker_names(&self) -> Result<HashSet<String>> {
+        let workers = self.engine_workers().await.with_context(|| {
             format!(
-                "engine not reachable at {} (start with: iii -c harness/engine.config.yaml)",
+                "engine not reachable at {} (start with: iii -c {ENGINE_CONFIG_REL})",
                 self.config.engine_url
             )
         })?;
-        Ok(())
+        Ok(workers
+            .into_iter()
+            .filter(|w| w.status == "connected")
+            .filter_map(|w| w.name)
+            .collect())
+    }
+
+    /// True when `worker` is only in the start set as a pulled-in dependency
+    /// (not asked for by name) and the engine already has it connected.
+    /// Recompiling and restarting such a worker would only disrupt a healthy
+    /// process — or spawn a duplicate of one started outside workers-dev.
+    fn skip_connected_dep(names: &[String], worker: &str, connected: &HashSet<String>) -> bool {
+        !names.iter().any(|n| n == worker) && connected.contains(worker)
     }
 
     pub async fn start_harness_stack(&self, wait_connected: bool) -> Result<()> {
@@ -191,7 +240,8 @@ impl Orchestrator {
     }
 
     pub async fn start_workers(&self, names: &[String], wait_connected: bool) -> Result<()> {
-        self.engine_preflight().await?;
+        // Doubles as the engine preflight; bails with the remedy when down.
+        let connected = self.connected_worker_names().await?;
         let order = if names.is_empty() {
             self.graph.topo_start_order(self.graph.workers())?
         } else {
@@ -199,6 +249,15 @@ impl Orchestrator {
         };
 
         for worker in order {
+            // A dependency that's already connected to the engine is doing its
+            // job — don't recompile/restart it. Only workers asked for by name
+            // always (re)start.
+            if Self::skip_connected_dep(names, &worker, &connected) {
+                if self.progress {
+                    eprintln!("↷ {worker}: already connected to the engine, left running");
+                }
+                continue;
+            }
             // Non-spawnable workers pulled in as dependencies run externally
             // (`iii worker add`); skip them. Bail only when the user asked for
             // that worker by name.
@@ -717,6 +776,33 @@ mod tests {
             .closure_with_deps(&["harness".to_string()])
             .unwrap();
         assert!(order.contains(&"scrapling".to_string()));
+    }
+
+    /// Dependencies already connected to the engine are left alone; only
+    /// workers asked for by name always (re)start.
+    #[test]
+    fn skip_connected_dep_spares_healthy_deps_only() {
+        let names = vec!["harness".to_string()];
+        let connected: HashSet<String> = ["session-manager", "harness"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        // Pulled-in dep, already connected → skipped.
+        assert!(Orchestrator::skip_connected_dep(
+            &names,
+            "session-manager",
+            &connected
+        ));
+        // Asked for by name → restarted even though connected.
+        assert!(!Orchestrator::skip_connected_dep(
+            &names, "harness", &connected
+        ));
+        // Dep not connected → started.
+        assert!(!Orchestrator::skip_connected_dep(
+            &names,
+            "approval-gate",
+            &connected
+        ));
     }
 
     /// A worker started via `cargo run` forks the real worker binary as a
