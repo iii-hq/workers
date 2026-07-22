@@ -33,7 +33,6 @@ pub struct SessionSeed {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HarnessMode {
-    Plan,
     Ask,
     Agent,
 }

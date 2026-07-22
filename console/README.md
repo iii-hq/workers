@@ -32,7 +32,7 @@
 
 A purpose-built agentic chat UI on top of [Lexical](https://lexical.dev). Lives in [`web/src/components/chat/`](web/src/components/chat).
 
-- **Three modes** — `plan`, `ask`, and `agent` toggle right in the composer
+- **Two modes** — `ask` and `agent` toggle right in the composer
 - **Live model picker** — provider-grouped from `router::models::list`; static fallback (OpenAI, Anthropic, Google) when the catalog is unreachable
 - **`@`-mentions** — fuzzy-search every function registered against the engine
 - **`/compact` slash command** — summarises conversation history via the `context-manager` worker's `context::compact`, then persists a `compaction` custom session entry; the durable transcript is untouched — the marker renders from that entry and the summary anchors future turns

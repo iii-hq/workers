@@ -37,8 +37,10 @@ export type HarnessOutputContract =
   | { type: 'text' }
   | { type: 'json'; schema?: unknown }
 
-/** Operating mode — the harness prepends a short paragraph before the identity prompt. */
-export type HarnessSendMode = 'plan' | 'ask' | 'agent'
+/** Operating mode — the harness prepends a short paragraph before the
+ * identity prompt. In `ask` mode the harness also caps `functions` at its
+ * read-only baseline server-side, whatever policy we send. */
+export type HarnessSendMode = 'ask' | 'agent'
 
 /** Per-send options frozen onto the turn record. */
 export interface HarnessSendOptions {

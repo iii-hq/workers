@@ -20,7 +20,7 @@ fn resolve_non_empty_override_returns_verbatim() {
         resolve_system_prompt(
             Some("custom".into()),
             SystemPromptStrategy::Override,
-            Some(Mode::Plan),
+            Some(Mode::Ask),
             Some(IDENTITY)
         ),
         Some("custom".into())
@@ -239,16 +239,6 @@ fn prompt_injection_defense() {
 }
 
 #[test]
-fn mode_plan_prepends_before_identity() {
-    let out = build_system_prompt(SystemPromptOpts {
-        mode: Some(Mode::Plan),
-        identity: None,
-    });
-    assert!(out.contains("operating in plan mode"));
-    assert!(out.find("operating in plan mode") < out.find("You are an iii agent worker"));
-}
-
-#[test]
 fn mode_ask_prepends_before_identity() {
     let out = build_system_prompt(SystemPromptOpts {
         mode: Some(Mode::Ask),
@@ -271,10 +261,10 @@ fn mode_agent_prepends_before_identity() {
 #[test]
 fn mode_prepends_before_a_fetched_identity_too() {
     let out = build_system_prompt(SystemPromptOpts {
-        mode: Some(Mode::Plan),
+        mode: Some(Mode::Ask),
         identity: Some(IDENTITY),
     });
-    assert!(out.starts_with("You are operating in plan mode"));
+    assert!(out.starts_with("You are operating in ask mode"));
     assert!(out.ends_with(IDENTITY));
 }
 
@@ -282,9 +272,16 @@ fn mode_prepends_before_a_fetched_identity_too() {
 fn omitting_mode_starts_with_identity() {
     let out = default_prompt();
     assert!(out.starts_with("You are an iii agent worker"));
-    assert!(!out.contains("operating in plan mode"));
     assert!(!out.contains("operating in ask mode"));
     assert!(!out.contains("operating in agent mode"));
+}
+
+#[test]
+fn removed_plan_mode_is_rejected_not_silently_accepted() {
+    // Hard removal (intentional, no compat shim): `"plan"` is not a valid mode.
+    // Pinned so a future refactor doesn't silently make `Mode` lenient again —
+    // a stale client or pre-upgrade record carrying `"plan"` fails loudly.
+    assert!(serde_json::from_value::<Mode>(serde_json::json!("plan")).is_err());
 }
 
 #[test]
