@@ -191,14 +191,14 @@ export function MessageList({
           }
           const m = item.message
           // Assistant turns copy their prose plus the calls that follow them;
-          // the thunk defers building that string until the copy click.
+          // the thunk defers building that string until the copy click. Left
+          // undefined when the turn has nothing to copy (no prose, no calls)
+          // so the header shows no copy affordance.
+          const calls =
+            m.role === 'assistant' ? fcallsByAssistant.get(m.id) : undefined
           const copyText =
-            m.role === 'assistant'
-              ? () =>
-                  assistantCopyText(
-                    m.content,
-                    fcallsByAssistant.get(m.id) ?? [],
-                  )
+            m.role === 'assistant' && (m.content || calls?.length)
+              ? () => assistantCopyText(m.content, calls ?? [])
               : undefined
           return (
             <Message

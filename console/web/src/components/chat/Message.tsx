@@ -308,6 +308,10 @@ function AssistantMessage({
   copyText?: string | (() => string)
 }) {
   const showCaret = !!message.streaming
+  // A tool-only turn has no prose but still carries a copy payload (its
+  // function calls) via copyText; direct renders without a list-provided
+  // payload fall back to the prose gate.
+  const copySource = copyText ?? (message.content || undefined)
   return (
     <article className="group flex flex-col gap-2">
       <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2 flex-wrap">
@@ -319,9 +323,9 @@ function AssistantMessage({
           <span className="text-ink-ghost">· {message.mode}</span>
         ) : null}
         {message.memory ? <MemoryChip memory={message.memory} /> : null}
-        {message.content && !message.streaming ? (
+        {copySource !== undefined && !message.streaming ? (
           <CopyMessageButton
-            text={copyText ?? message.content}
+            text={copySource}
             className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
           />
         ) : null}
