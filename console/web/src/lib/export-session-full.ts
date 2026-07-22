@@ -6,9 +6,18 @@
  */
 
 import { getIiiClient } from '@/lib/iii-client'
+import { fetchTranscript } from '@/lib/sessions/api'
+import { transcriptToMessages } from '@/lib/sessions/entry-mapper'
 import type { SessionMeta } from '@/lib/sessions/types'
-import type { Message } from '@/types/chat'
-import { formatTimestamp, messagesToMarkdown } from './export-session'
+import type { Conversation, Message } from '@/types/chat'
+import {
+  buildExportFilename,
+  conversationToMarkdown,
+  fetchWorkerVersions,
+  formatTimestamp,
+  messagesToMarkdown,
+  triggerMarkdownDownload,
+} from './export-session'
 
 const SESSIONS_LIST_RPC = 'session::list'
 const SESSIONS_PAGE_LIMIT = 200
@@ -107,4 +116,50 @@ export function subagentSectionToMarkdown(
   const body =
     messages.length === 0 ? '_(no messages)_' : messagesToMarkdown(messages)
   return [...header, '', '---', '', body].join('\n')
+}
+
+/**
+ * Everything but the DOM: fetch versions + descendants, render one markdown
+ * document. Separated from the download trigger so tests can cover the
+ * assembly without a browser click.
+ */
+export async function assembleFullExport(
+  conversation: Conversation,
+): Promise<{ markdown: string; filename: string }> {
+  const workers = await fetchWorkerVersions()
+  const filename = buildExportFilename(conversation, 'full')
+  const sessions = await listAllSessions()
+  if (sessions === null) {
+    return {
+      markdown: conversationToMarkdown(conversation, workers, null),
+      filename,
+    }
+  }
+  const descendants = collectDescendants(sessions, conversation.id)
+  const sections: string[] = []
+  for (const sub of descendants) {
+    let messages: Message[] | null = null
+    try {
+      const items = await fetchTranscript(sub.meta.session_id)
+      messages = transcriptToMessages(items, sub.meta.session_id)
+    } catch {
+      messages = null
+    }
+    sections.push(subagentSectionToMarkdown(sub, messages))
+  }
+  const main = conversationToMarkdown(conversation, workers, descendants.length)
+  const markdown = `${[main.trimEnd(), ...sections.map((s) => s.trimEnd())].join('\n\n')}\n`
+  return { markdown, filename }
+}
+
+/**
+ * Dropdown's "with sub-agents" action. Returns the filename so callers can
+ * announce it, mirroring `downloadConversationAsMarkdown`.
+ */
+export async function downloadConversationWithSubagents(
+  conversation: Conversation,
+): Promise<string> {
+  const { markdown, filename } = await assembleFullExport(conversation)
+  triggerMarkdownDownload(markdown, filename)
+  return filename
 }

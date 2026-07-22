@@ -7,7 +7,10 @@ vi.mock('@/lib/iii-client', () => ({
   getIiiClient: () => Promise.resolve({ trigger: mockTrigger }),
 }))
 
+import type { Conversation } from '@/types/chat'
+
 import {
+  assembleFullExport,
   collectDescendants,
   listAllSessions,
   subagentSectionToMarkdown,
@@ -125,5 +128,98 @@ describe('subagentSectionToMarkdown', () => {
     const out = subagentSectionToMarkdown(sub, [])
     expect(out).toContain('- Message count: 0')
     expect(out).toContain('_(no messages)_')
+  })
+})
+
+function conv(id: string): Conversation {
+  return {
+    id,
+    title: 'Root session',
+    model: 'openai::gpt-5',
+    mode: 'agent',
+    messages: [{ id: 'u1', role: 'user', content: 'root msg', createdAt: 1 }],
+    createdAt: Date.UTC(2025, 0, 1),
+    updatedAt: Date.UTC(2025, 0, 1),
+  }
+}
+
+/** Route mockTrigger by function id; per-session transcripts by session_id. */
+function routeTriggers(opts: {
+  sessions?: unknown
+  transcripts?: Record<string, unknown>
+}) {
+  mockTrigger.mockImplementation(
+    (fnId: string, payload: Record<string, unknown> = {}) => {
+      if (fnId === 'engine::workers::list') {
+        return Promise.resolve({
+          workers: [{ id: 'w1', name: 'harness', version: '1.5.2' }],
+        })
+      }
+      if (fnId === 'session::list') {
+        if (opts.sessions instanceof Error) return Promise.reject(opts.sessions)
+        return Promise.resolve({ sessions: opts.sessions, next_cursor: null })
+      }
+      if (fnId === 'session::messages') {
+        const entry = opts.transcripts?.[payload.session_id as string]
+        if (entry instanceof Error) return Promise.reject(entry)
+        return Promise.resolve({ messages: entry ?? [], next_cursor: null })
+      }
+      return Promise.reject(new Error(`unrouted trigger ${fnId}`))
+    },
+  )
+}
+
+describe('assembleFullExport', () => {
+  beforeEach(() => {
+    mockTrigger.mockReset()
+  })
+
+  const childTranscript = [
+    {
+      entry_id: 'e1',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'child msg' }],
+        timestamp: 1,
+      },
+    },
+  ]
+
+  it('bundles descendants with a count bullet and -full filename', async () => {
+    routeTriggers({
+      sessions: [meta('root', null), meta('child', 'root', 10)],
+      transcripts: { child: childTranscript },
+    })
+    const { markdown, filename } = await assembleFullExport(conv('root'))
+    expect(filename).toMatch(/^iii-session-root-full-\d{8}-\d{4}\.md$/)
+    expect(markdown).toContain('- Sub-agents: 1')
+    expect(markdown).toContain('# Sub-agent: title-child')
+    expect(markdown).toContain('child msg')
+    expect(markdown).toContain('- Workers:')
+  })
+
+  it('degrades to _(unavailable)_ when session discovery fails', async () => {
+    routeTriggers({ sessions: new Error('offline') })
+    const { markdown } = await assembleFullExport(conv('root'))
+    expect(markdown).toContain('- Sub-agents: _(unavailable)_')
+    expect(markdown).not.toContain('# Sub-agent:')
+    expect(markdown).toContain('root msg')
+  })
+
+  it('keeps other sections when one transcript fails', async () => {
+    routeTriggers({
+      sessions: [
+        meta('root', null),
+        meta('bad', 'root', 10),
+        meta('good', 'root', 20),
+      ],
+      transcripts: { bad: new Error('boom'), good: childTranscript },
+    })
+    const { markdown } = await assembleFullExport(conv('root'))
+    expect(markdown).toContain('- Sub-agents: 2')
+    expect(markdown).toContain('# Sub-agent: title-bad')
+    expect(markdown).toContain('_(transcript unavailable)_')
+    expect(markdown).toContain('# Sub-agent: title-good')
+    expect(markdown).toContain('child msg')
   })
 })
