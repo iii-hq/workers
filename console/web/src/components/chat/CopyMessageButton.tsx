@@ -11,11 +11,14 @@ import { cn } from '@/lib/utils'
  */
 export function CopyMessageButton({
   text,
+  label = 'copy message',
   className,
 }: {
   /** A thunk defers building large payloads (e.g. serialized function calls)
       until the click, keeping streaming re-renders free. */
   text: string | (() => string)
+  /** Accessible name while idle (aria-label/title); flips to "copied". */
+  label?: string
   className?: string
 }) {
   const [copied, setCopied] = useState(false)
@@ -35,8 +38,8 @@ export function CopyMessageButton({
         'shrink-0 text-ink-ghost hover:text-ink transition-colors',
         className,
       )}
-      aria-label={copied ? 'copied' : 'copy message'}
-      title={copied ? 'copied' : 'copy message'}
+      aria-label={copied ? 'copied' : label}
+      title={copied ? 'copied' : label}
     >
       {copied ? (
         <Check size={12} aria-hidden />

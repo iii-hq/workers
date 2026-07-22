@@ -4,17 +4,18 @@ import {
   BrowserFunctionIdLabel,
   BrowserToolView,
 } from '@/components/chat/browser'
+import { CopyMessageButton } from '@/components/chat/CopyMessageButton'
 import { CoderFunctionIdLabel, CoderToolView } from '@/components/chat/coder'
 import {
   DirectoryFunctionIdLabel,
   DirectoryToolView,
 } from '@/components/chat/directory'
 import { EngineFunctionIdLabel, EngineToolView } from '@/components/chat/engine'
+import { FpFunctionIdLabel, FpToolView } from '@/components/chat/fp'
 import {
   HarnessFunctionIdLabel,
   HarnessToolView,
 } from '@/components/chat/harness'
-import { FpFunctionIdLabel, FpToolView } from '@/components/chat/fp'
 import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
 import {
   SandboxFunctionIdLabel,
@@ -381,74 +382,94 @@ export function FunctionCallCard({
       )}
       data-message-id={message.id}
     >
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className={cn(
-          'w-full flex items-center justify-between gap-3 px-3 py-2 cursor-pointer text-left',
-          'hover:bg-paper-2 transition-colors',
-        )}
-      >
-        <span className="flex items-center gap-2 min-w-0">
-          {pending || running ? (
-            <StatusDot
-              tone={pending ? 'warn' : 'accent'}
-              pulse={running}
-              className="shrink-0"
-            />
-          ) : errored ? (
-            <X
-              aria-hidden
-              strokeWidth={2.5}
-              className="size-3.5 shrink-0 text-alert"
-            />
-          ) : (
-            <Check
-              aria-hidden
-              strokeWidth={2.5}
-              className="size-3.5 shrink-0 text-ok"
-            />
-          )}
-          <span className="font-mono text-[13px] text-ink truncate">
-            {pending ? (
-              <>
-                <span>
-                  {filesystemAccess
-                    ? 'needs filesystem access to run'
-                    : 'waiting for your approval to run'}
-                </span>{' '}
-              </>
-            ) : message.identityInherited ? null : running ? (
-              <>triggering </>
-            ) : ran ? (
-              <>triggered </>
-            ) : null}
-            <span className="text-accent italic font-semibold">ƒ</span>{' '}
-            {running && message.unresolvedTarget ? (
-              <span className="text-ink-faint">…</span>
-            ) : (
-              <FunctionIdLabel functionId={message.functionId} />
-            )}
-            {!pending && !running && typeof message.durationMs === 'number' ? (
-              <span className="text-ink-faint">
-                {' '}
-                for <span className="tabular-nums">{message.durationMs}</span>
-                ms
-              </span>
-            ) : null}
-          </span>
-        </span>
-        <span
-          aria-hidden
-          className={cn(
-            'text-ink-ghost shrink-0 transition-transform duration-150 inline-block',
-            open && 'rotate-90',
-          )}
+      {/* The copy affordance must be a sibling of the collapse toggle
+          (nested buttons are invalid HTML): the labeled toggle carries the
+          title with the copy icon in flow right after it, and the caret
+          strip is a pointer-only duplicate target so clicking anywhere on
+          the row still collapses. */}
+      <div className="group/fchdr flex items-center gap-2 hover:bg-paper-2 transition-colors">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="min-w-0 flex items-center gap-2 pl-3 py-2 cursor-pointer text-left"
         >
-          ▸
-        </span>
-      </button>
+          <span className="flex items-center gap-2 min-w-0">
+            {pending || running ? (
+              <StatusDot
+                tone={pending ? 'warn' : 'accent'}
+                pulse={running}
+                className="shrink-0"
+              />
+            ) : errored ? (
+              <X
+                aria-hidden
+                strokeWidth={2.5}
+                className="size-3.5 shrink-0 text-alert"
+              />
+            ) : (
+              <Check
+                aria-hidden
+                strokeWidth={2.5}
+                className="size-3.5 shrink-0 text-ok"
+              />
+            )}
+            <span className="font-mono text-[13px] text-ink truncate">
+              {pending ? (
+                <>
+                  <span>
+                    {filesystemAccess
+                      ? 'needs filesystem access to run'
+                      : 'waiting for your approval to run'}
+                  </span>{' '}
+                </>
+              ) : message.identityInherited ? null : running ? (
+                <>triggering </>
+              ) : ran ? (
+                <>triggered </>
+              ) : null}
+              <span className="text-accent italic font-semibold">ƒ</span>{' '}
+              {running && message.unresolvedTarget ? (
+                <span className="text-ink-faint">…</span>
+              ) : (
+                <FunctionIdLabel functionId={message.functionId} />
+              )}
+              {!pending &&
+              !running &&
+              typeof message.durationMs === 'number' ? (
+                <span className="text-ink-faint">
+                  {' '}
+                  for <span className="tabular-nums">{message.durationMs}</span>
+                  ms
+                </span>
+              ) : null}
+            </span>
+          </span>
+        </button>
+        {!(running && message.unresolvedTarget) ? (
+          <CopyMessageButton
+            text={message.functionId}
+            label="copy function id"
+            className="opacity-0 group-hover/fchdr:opacity-100 group-focus-within/fchdr:opacity-100 transition-opacity"
+          />
+        ) : null}
+        <button
+          type="button"
+          aria-hidden="true"
+          tabIndex={-1}
+          onClick={() => setOpen((v) => !v)}
+          className="flex-1 self-stretch flex items-center justify-end pr-3 cursor-pointer"
+        >
+          <span
+            className={cn(
+              'text-ink-ghost shrink-0 transition-transform duration-150 inline-block',
+              open && 'rotate-90',
+            )}
+          >
+            ▸
+          </span>
+        </button>
+      </div>
 
       {open ? (
         <div className="border-t border-rule-2">
