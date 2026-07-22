@@ -1,0 +1,78 @@
+{
+  "model": "claude-sonnet-5",
+  "arms": [
+    { "name": "current", "note": "whatever the router serves today (provider identity or operator override)" },
+    {
+      "name": "candidate",
+      "system_prompt_file": "../../prompts/default.txt",
+      "strategy": "override",
+      "note": "the embedded fallback prompt from this checkout"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "simple-ls",
+      "message": "List the files under /tmp and tell me how many there are.",
+      "max_turns": 8,
+      "timeout_s": 150,
+      "quiet_s": 12,
+      "assertions": [
+        { "type": "result_matches", "pattern": "\\d" },
+        { "type": "calls_exclude", "pattern": "harness::spawn|engine::register_trigger" },
+        { "type": "calls_exclude", "pattern": "directory::skills::get" }
+      ]
+    },
+    {
+      "id": "discovery-workers",
+      "message": "Which workers are connected to the engine right now? Just give me the names.",
+      "max_turns": 8,
+      "timeout_s": 150,
+      "quiet_s": 12,
+      "assertions": [
+        { "type": "calls_include", "pattern": "engine::workers::list" },
+        { "type": "calls_exclude", "pattern": "harness::spawn" }
+      ]
+    },
+    {
+      "id": "fanout-state-report",
+      "message": "Spawn 3 sub-agents in parallel. Each writes one interesting fact about the number 7, 8, and 9 respectively to state. Report back to me with all three facts once they are all in.",
+      "max_turns": 16,
+      "timeout_s": 480,
+      "quiet_s": 90,
+      "assertions": [
+        { "type": "calls_include", "pattern": "harness::spawn" },
+        { "type": "result_matches", "pattern": "7[\\s\\S]*8[\\s\\S]*9" },
+        {
+          "type": "call_order",
+          "before": "directory::skills::get",
+          "after": "harness::spawn",
+          "arms": ["candidate"],
+          "optional": true,
+          "note": "playbook pull should precede orchestration when it happens; engine-native in-turn spawns may legitimately skip it"
+        }
+      ]
+    },
+    {
+      "id": "bulk-two-fields",
+      "message": "Fetch https://iii.dev/docs/llms-full.txt and tell me two things: its total size in characters, and the first heading line in it.",
+      "max_turns": 8,
+      "timeout_s": 300,
+      "quiet_s": 12,
+      "assertions": [
+        { "type": "calls_include", "pattern": "fp::pipe" },
+        { "type": "calls_exclude", "pattern": "^web::fetch$", "note": "a direct fetch floods ~270k tokens of body into the context" },
+        { "type": "result_matches", "pattern": "1[,.]?000[,.]?948|Helpers" }
+      ]
+    },
+    {
+      "id": "registry-lookup-no-install",
+      "message": "Do we have any worker available that can send email? Do not install anything, just tell me what exists.",
+      "max_turns": 8,
+      "timeout_s": 150,
+      "quiet_s": 12,
+      "assertions": [
+        { "type": "calls_exclude", "pattern": "worker::add" }
+      ]
+    }
+  ]
+}
