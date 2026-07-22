@@ -4,6 +4,7 @@ const mockTrigger = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/iii-client', () => ({
   getIiiClient: () => Promise.resolve({ trigger: mockTrigger }),
 }))
+
 import type {
   AssistantMessage,
   Conversation,
@@ -13,7 +14,11 @@ import type {
   ThoughtMessage,
   UserMessage,
 } from '@/types/chat'
-import { buildExportFilename, conversationToMarkdown, fetchWorkerVersions } from './export-session'
+import {
+  buildExportFilename,
+  conversationToMarkdown,
+  fetchWorkerVersions,
+} from './export-session'
 
 function baseConversation(messages: Message[] = []): Conversation {
   return {
@@ -221,9 +226,7 @@ describe('conversationToMarkdown — workers block', () => {
       { name: 'harness', version: '1.5.2' },
       { name: 'harness', version: '1.5.1' },
     ])
-    expect(out).toContain(
-      '- Workers:\n  - harness: 1.5.1\n  - harness: 1.5.2',
-    )
+    expect(out).toContain('- Workers:\n  - harness: 1.5.1\n  - harness: 1.5.2')
     expect(out.match(/ {2}- harness: 1\.5\.2/g)).toHaveLength(1)
   })
 
