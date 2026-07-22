@@ -91,7 +91,12 @@ export function SpanPanel({
   const tone = statusTone(span.status)
 
   return (
-    <div className="h-full bg-panel overflow-hidden flex flex-col">
+    <div
+      className="h-full bg-panel overflow-hidden flex flex-col"
+      data-span-panel
+      data-span-id={span.span_id}
+      data-span-name={span.name}
+    >
       {/* Header strip */}
       <div className="flex-shrink-0 bg-panel border-b border-rule">
         {/* Row 1: worker badge + span name + close */}

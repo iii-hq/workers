@@ -712,6 +712,7 @@ export function TraceTimeline({
                   const hovered = hover?.id === span.id
                   const top = rowTop(p.line)
                   const label = span.label ?? span.id
+                  const sourceName = detail.byId.get(span.id)?.name
                   const fitsInBar =
                     rect.width >=
                     label.length * LABEL_CHAR_PX + BAR_LABEL_OVERHEAD_PX
@@ -734,6 +735,8 @@ export function TraceTimeline({
                       <button
                         type="button"
                         aria-label={`${label} · ${formatDuration((span.endTime ?? total) - span.startTime)}`}
+                        data-trace-span-id={span.id}
+                        data-trace-span-name={sourceName}
                         onMouseEnter={trackHover(span.id)}
                         onMouseMove={trackHover(span.id)}
                         onMouseLeave={clearHover(span.id)}

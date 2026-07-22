@@ -65,6 +65,8 @@ export function TraceListRow({
   return (
     <button
       type="button"
+      data-trace-status={trace.status}
+      data-trace-function={trace.functionId}
       onClick={onSelect}
       onAnimationEnd={onAnimationEnd}
       aria-expanded={isSelected}

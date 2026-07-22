@@ -56,6 +56,7 @@ pub(super) struct Scenario {
     send: Option<Send>,
     recorder: Option<RecorderConfigV1>,
     generations: Vec<Generation>,
+    expected_terminal_turns: usize,
     verify: Option<VerifyFn>,
 }
 
@@ -76,6 +77,7 @@ impl Scenario {
             send: None,
             recorder: None,
             generations: Vec::new(),
+            expected_terminal_turns: 1,
             verify: None,
         }
     }
@@ -92,6 +94,12 @@ impl Scenario {
 
     pub(super) fn generation(mut self, generation: Generation) -> Self {
         self.generations.push(generation);
+        self
+    }
+
+    pub(super) fn terminal_turns(mut self, count: usize) -> Self {
+        assert!(count > 0, "scenario must expect at least one terminal turn");
+        self.expected_terminal_turns = count;
         self
     }
 
@@ -114,6 +122,7 @@ impl Scenario {
         ScenarioFixture {
             slug: self.slug,
             driver: self.driver,
+            expected_terminal_turns: self.expected_terminal_turns,
             scenario: CompiledScenarioV1 {
                 schema_version: SchemaVersion1::V1,
                 id: self.id.clone(),
@@ -264,6 +273,7 @@ impl RecorderFunction {
 
 pub(super) struct Request {
     turn_request: bool,
+    turn_step: Option<u64>,
     system_prompt: Option<JsonMatcherV1>,
     messages: Option<JsonMatcherV1>,
     tools: Option<JsonMatcherV1>,
@@ -273,6 +283,7 @@ impl Request {
     pub(super) fn new() -> Self {
         Self {
             turn_request: false,
+            turn_step: None,
             system_prompt: None,
             messages: None,
             tools: None,
@@ -281,6 +292,12 @@ impl Request {
 
     pub(super) fn turn_request(mut self) -> Self {
         self.turn_request = true;
+        self
+    }
+
+    pub(super) fn turn_request_step(mut self, step: u64) -> Self {
+        self.turn_request = true;
+        self.turn_step = Some(step);
         self
     }
 
@@ -339,11 +356,16 @@ impl Request {
                 normalize: None,
             },
             request_id: JsonMatcherV1::Regex {
-                pattern: if ordinal == 1 {
-                    "^t_[0-9a-f]{32}:[0-9]+$".to_string()
-                } else {
-                    format!("^t_[0-9a-f]{{32}}:{}$", ordinal - 1)
-                },
+                pattern: self.turn_step.map_or_else(
+                    || {
+                        if ordinal == 1 {
+                            "^t_[0-9a-f]{32}:[0-9]+$".to_string()
+                        } else {
+                            format!("^t_[0-9a-f]{{32}}:{}$", ordinal - 1)
+                        }
+                    },
+                    |step| format!("^t_[0-9a-f]{{32}}:{step}$"),
+                ),
             },
             model: exact(json!(model.id)),
             provider: exact(json!(model.provider)),
@@ -546,6 +568,16 @@ impl Message {
                 "function_id": function.id(),
                 "arguments": arguments
             }],
+            "stop_reason": "end",
+            "model": model.id,
+            "provider": model.provider
+        })
+    }
+
+    pub(super) fn assistant_text(text: &str, model: &ModelFixtureV1) -> Value {
+        json!({
+            "role": "assistant",
+            "content": [{ "type": "text", "text": text }],
             "stop_reason": "end",
             "model": model.id,
             "provider": model.provider

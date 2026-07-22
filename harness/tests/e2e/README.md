@@ -14,6 +14,7 @@ No provider key or network access is required.
 | E2E-001 | `streamed-text` | direct | streamed text reaches durable completion |
 | E2E-002 | `exactly-once-function` | direct | a native function executes exactly once |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
+| UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 
 Each fixture is defined end to end in its own `src/scenarios/*.rs` file with a
 small typed DSL. The scenario keeps its send policy, router request matchers,
@@ -92,8 +93,9 @@ cargo clippy --manifest-path harness/Cargo.toml \
   -p harness-integration --all-targets -- -D warnings
 ```
 
-`validate --scenario all` checks exactly the three fixtures. `run --scenario
-all` executes only E2E-001 and E2E-002; UI-001 must use `playground`.
+`validate --scenario all` checks exactly the four fixtures. `run --scenario
+all` executes only E2E-001 and E2E-002; UI-001 and UI-002 must use
+`playground`.
 
 The fixture tests pin:
 

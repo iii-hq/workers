@@ -103,8 +103,9 @@ impl ScenarioRunner<'_> {
         evidence: &RunEvidence,
         timed_out: bool,
     ) -> Result<(), RunError> {
-        let failure = floor::floor_failure(evidence)
-            .or_else(|| floor::verify_failure(self.fixture.verify, evidence));
+        let failure =
+            floor::floor_failure_for_turns(evidence, self.fixture.expected_terminal_turns)
+                .or_else(|| floor::verify_failure(self.fixture.verify, evidence));
         self.failure = failure.map(|message| evidence.scrub(&message));
 
         if timed_out {

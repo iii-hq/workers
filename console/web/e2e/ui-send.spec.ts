@@ -10,7 +10,7 @@ test('sends and renders a streamed turn through the Console', async ({
   await openSession(page, stack)
   const composer = page.getByLabel('message composer')
   await composer.fill(stack.ready.message)
-  await composer.press('Enter')
+  await page.getByRole('button', { name: 'send message' }).click()
 
   await expect(
     page.locator('[data-message-role="user"]', {

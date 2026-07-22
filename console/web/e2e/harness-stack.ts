@@ -313,6 +313,9 @@ export async function openSession(
   })
   await session.click()
   await expect(session).toHaveAttribute('aria-current', 'page')
+  await expect(
+    page.locator(`[data-chat-session-id="${stack.ready.session.id}"]`),
+  ).toHaveAttribute('data-chat-session-hydrated', 'true')
 }
 
 export function expectPassingResult(result: PlaygroundResult): void {

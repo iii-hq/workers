@@ -222,6 +222,9 @@ async fn run_playground_phases(
     let shutdown_consumed = wait_for_external_turn(runner, stack, services, &mut active).await?;
     if !shutdown_consumed {
         wait_for_shutdown(stack, deadline).await?;
+        runner
+            .refresh_external_completion(services, &mut active)
+            .await?;
     }
 
     runner.collect(services, prepared, &mut active).await?;

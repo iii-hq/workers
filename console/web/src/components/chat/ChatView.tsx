@@ -1572,7 +1572,11 @@ export function ChatView({
   )
 
   return (
-    <section className="flex-1 flex flex-col min-w-0 min-h-0">
+    <section
+      data-chat-session-id={conversation.id}
+      data-chat-session-hydrated={conversation.hydrated}
+      className="flex-1 flex flex-col min-w-0 min-h-0"
+    >
       <header
         className={cn(
           'flex items-center justify-between py-3 border-b border-rule gap-3 whitespace-nowrap',

@@ -7,6 +7,8 @@ use crate::types::script::RouterScriptV1;
 pub struct ScenarioFixture {
     pub slug: String,
     pub driver: ScenarioDriver,
+    /// Number of distinct terminal turns the playground must observe.
+    pub expected_terminal_turns: usize,
     pub scenario: CompiledScenarioV1,
     pub script: RouterScriptV1,
     /// Compiled Harness default plus inferred session/policy aid.
@@ -40,6 +42,14 @@ impl ScenarioFixture {
         anyhow::ensure!(
             !self.scenario.description.trim().is_empty(),
             "scenario description must not be empty"
+        );
+        anyhow::ensure!(
+            self.expected_terminal_turns > 0,
+            "scenario must expect at least one terminal turn"
+        );
+        anyhow::ensure!(
+            self.driver == ScenarioDriver::Playground || self.expected_terminal_turns == 1,
+            "direct scenarios must expect exactly one terminal turn"
         );
         if self.script.scenario_id != self.scenario.id {
             anyhow::bail!(

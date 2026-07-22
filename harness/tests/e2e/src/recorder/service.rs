@@ -102,17 +102,41 @@ impl Recorder {
         &self,
         deadline: crate::deadline::Deadline,
     ) -> anyhow::Result<RecorderEventV1> {
+        self.wait_for_lifecycle_turns(1, deadline)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("lifecycle wait returned no events"))
+    }
+
+    /// Wait until lifecycle evidence contains the requested number of
+    /// distinct terminal turns. Duplicate at-least-once deliveries do not
+    /// advance the count.
+    pub async fn wait_for_lifecycle_turns(
+        &self,
+        expected: usize,
+        deadline: crate::deadline::Deadline,
+    ) -> anyhow::Result<Vec<RecorderEventV1>> {
+        anyhow::ensure!(
+            expected > 0,
+            "expected lifecycle turn count must be positive"
+        );
         loop {
             let notified = self.event_notify.notified();
-            if let Some(event) = self
+            let events: Vec<_> = self
                 .snapshot()?
                 .into_iter()
-                .find(|event| event.kind == RecorderEventKind::Lifecycle)
-            {
-                return Ok(event);
+                .filter(|event| event.kind == RecorderEventKind::Lifecycle)
+                .collect();
+            let turns = events
+                .iter()
+                .filter_map(|event| event.payload.get("turn_id").and_then(Value::as_str))
+                .collect::<std::collections::BTreeSet<_>>();
+            if turns.len() >= expected {
+                return Ok(events);
             }
             deadline
-                .timeout("lifecycle trigger delivery", notified)
+                .timeout("lifecycle terminal turn deliveries", notified)
                 .await?;
         }
     }

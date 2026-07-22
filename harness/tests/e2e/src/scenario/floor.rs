@@ -5,7 +5,7 @@
 //! lifecycle delivered exactly once, a fully consumed script, and a clean
 //! send. Any violation is a contract failure with a `floor: ` message.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use serde_json::Value;
@@ -19,8 +19,15 @@ const LIFECYCLE_SINK: &str = "integration-recorder::lifecycle";
 /// First violated floor post-condition, if any. Messages are id-free and
 /// deterministic for identical evidence shapes.
 pub fn floor_failure(run: &RunEvidence) -> Option<String> {
+    floor_failure_for_turns(run, 1)
+}
+
+pub fn floor_failure_for_turns(
+    run: &RunEvidence,
+    expected_terminal_turns: usize,
+) -> Option<String> {
     terminal_failure(run)
-        .or_else(|| lifecycle_failure(run))
+        .or_else(|| lifecycle_failure(run, expected_terminal_turns))
         .or_else(|| generations_failure(run))
         .or_else(|| send_flags_failure(run))
 }
@@ -69,11 +76,11 @@ fn status_list_len(run: &RunEvidence, key: &str) -> usize {
         .unwrap_or(0)
 }
 
-/// Lifecycle delivered exactly once: at least one delivery, all deliveries
-/// identical after timestamp normalization, the private-sink contract shape,
-/// bound to this run's session/turn with status `completed`, and sequenced
-/// after every target call.
-fn lifecycle_failure(run: &RunEvidence) -> Option<String> {
+/// Lifecycle delivered for every expected terminal turn. At-least-once
+/// retries for the same turn are accepted when their normalized payloads are
+/// identical; distinct turns must remain ordered, completed, and bound to the
+/// run's session, with the last delivery matching `run.turn_id`.
+fn lifecycle_failure(run: &RunEvidence, expected_terminal_turns: usize) -> Option<String> {
     let lifecycle = run.lifecycle_events();
     let delivered = !lifecycle.is_empty();
 
@@ -87,21 +94,33 @@ fn lifecycle_failure(run: &RunEvidence) -> Option<String> {
             copy
         })
         .collect();
-    let identical = normalized.windows(2).all(|window| window[0] == window[1]);
+    let mut turns = BTreeMap::<String, Value>::new();
+    let mut consistent = true;
+    for payload in &normalized {
+        let Some(turn_id) = payload.get("turn_id").and_then(Value::as_str) else {
+            consistent = false;
+            continue;
+        };
+        match turns.get(turn_id) {
+            Some(previous) if previous != payload => consistent = false,
+            Some(_) => {}
+            None => {
+                turns.insert(turn_id.to_string(), payload.clone());
+            }
+        }
+    }
+    let turn_count = turns.len() == expected_terminal_turns;
+    let latest_bound = lifecycle.last().is_some_and(|event| {
+        event.payload.get("turn_id").and_then(Value::as_str) == run.turn_id.as_deref()
+    });
 
     let bound = lifecycle.iter().all(|event| {
         event.function_id == LIFECYCLE_SINK
             && event.payload.get("status").and_then(Value::as_str) == Some("completed")
-            // `terminal: false` is a non-final completion (armed wake); the
-            // scenarios here run single, final turns.
             && event.payload.get("terminal").and_then(Value::as_bool) == Some(true)
             && event.payload.get("session_id").and_then(Value::as_str)
                 == Some(run.session_id.as_str())
-            && match &run.turn_id {
-                Some(turn) => event.payload.get("turn_id").and_then(Value::as_str) == Some(turn),
-                None => false,
-            }
-    });
+    }) && latest_bound;
 
     let allowed_keys = BTreeSet::from([
         "session_id",
@@ -127,25 +146,24 @@ fn lifecycle_failure(run: &RunEvidence) -> Option<String> {
     let monotonic = lifecycle
         .windows(2)
         .all(|window| window[0].sequence < window[1].sequence);
-    let last_target_sequence = run
+    let follows_target_calls = run
         .recorder_events
         .iter()
         .filter(|event| event.kind == RecorderEventKind::TargetCall)
-        .map(|event| event.sequence)
-        .max()
-        .unwrap_or(0);
-    let follows_target_calls = lifecycle
-        .first()
-        .is_none_or(|event| event.sequence > last_target_sequence);
+        .all(|target| {
+            lifecycle
+                .iter()
+                .any(|terminal| terminal.sequence > target.sequence)
+        });
     let ordered = monotonic && follows_target_calls;
 
-    if delivered && identical && bound && shape && ordered {
+    if delivered && turn_count && consistent && bound && shape && ordered {
         return None;
     }
     Some(format!(
-        "floor: lifecycle must be delivered exactly once (delivered: {delivered}, identical \
-         deliveries: {identical}, contract shape: {shape}, session/turn/status bound: {bound}, \
-         sequence order: {ordered})"
+        "floor: lifecycle must cover {expected_terminal_turns} terminal turn(s) (delivered: \
+         {delivered}, expected turn count: {turn_count}, consistent retries: {consistent}, \
+         contract shape: {shape}, session/turn/status bound: {bound}, sequence order: {ordered})"
     ))
 }
 
@@ -276,6 +294,22 @@ mod tests {
         evidence.recorder_events.push(conflicting_event);
         let failure = floor_failure(&evidence).expect("conflicting terminals must fail");
         assert!(failure.starts_with("floor: lifecycle"), "{failure}");
+    }
+
+    #[test]
+    fn lifecycle_accepts_the_declared_number_of_distinct_turns() {
+        let mut evidence = clean_evidence();
+        evidence.turn_id = Some("t_2".into());
+        let mut second_payload = completed_lifecycle(2);
+        second_payload["turn_id"] = json!("t_2");
+        let mut second = event(RecorderEventKind::Lifecycle, LIFECYCLE_SINK, second_payload);
+        second.sequence = 2;
+        evidence.recorder_events.push(second);
+
+        assert_eq!(floor_failure_for_turns(&evidence, 2), None);
+        assert!(floor_failure(&evidence)
+            .unwrap()
+            .contains("expected turn count: false"));
     }
 
     #[test]

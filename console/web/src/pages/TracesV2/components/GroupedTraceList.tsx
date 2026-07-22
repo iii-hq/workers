@@ -156,7 +156,12 @@ export function GroupedTraceList({
       {groups.map((group) => {
         const isExpanded = expanded.has(group.value)
         return (
-          <div key={`${attribute}:${group.value}`}>
+          <div
+            key={`${attribute}:${group.value}`}
+            data-trace-group-value={group.value}
+            data-trace-group-count={group.trace_ids.length}
+            data-trace-group-errors={group.error_count}
+          >
             <GroupHeaderRow
               attribute={attribute}
               group={group}
