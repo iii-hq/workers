@@ -5,7 +5,7 @@ import { expect, expectEqual } from './cases.ts'
  * Transaction edge cases. The function suite covers commit + rollback at
  * failed_index=1; these target shapes the function suite leaves alone:
  * empty / single-statement / mixed-read-write / failure-at-index-0.
- * Also hosts the `database::execute_batch` surface cases — a thin wrapper
+ * Also hosts the `database::executeBatch` surface cases — a thin wrapper
  * over the same transaction machinery.
  *
  * Each test creates its own scratch table to stay independent of `t`.
@@ -132,14 +132,14 @@ export const TRANSACTION_EDGE_CASES: TestCase[] = [
     },
   },
   {
-    name: 'execute_batch bare-string statements commit atomically',
+    name: 'executeBatch bare-string statements commit atomically',
     async run({ driver, call }) {
       await call('database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS eb_plain' })
       await call('database::execute', {
         db: driver,
         sql: 'CREATE TABLE eb_plain (n INT NOT NULL)',
       })
-      const r = await call('database::execute_batch', {
+      const r = await call('database::executeBatch', {
         db: driver,
         statements: ['INSERT INTO eb_plain (n) VALUES (1)', 'INSERT INTO eb_plain (n) VALUES (2)'],
       })
@@ -154,14 +154,14 @@ export const TRANSACTION_EDGE_CASES: TestCase[] = [
     },
   },
   {
-    name: 'execute_batch rolls back on failure and reports failed_index',
+    name: 'executeBatch rolls back on failure and reports failed_index',
     async run({ driver, call }) {
       await call('database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS eb_rb' })
       await call('database::execute', {
         db: driver,
         sql: 'CREATE TABLE eb_rb (n INT NOT NULL)',
       })
-      const r = await call('database::execute_batch', {
+      const r = await call('database::executeBatch', {
         db: driver,
         statements: ['INSERT INTO eb_rb (n) VALUES (1)', 'INSERT INTO eb_rb (n) VALUES (NULL)'],
       })
@@ -176,7 +176,7 @@ export const TRANSACTION_EDGE_CASES: TestCase[] = [
     },
   },
   {
-    name: 'executeBatch alias accepts mixed string and {sql, params} forms',
+    name: 'executeBatch accepts mixed string and {sql, params} forms',
     async run({ driver, dialect, call }) {
       const ph1 = dialect.placeholder(1)
       await call('database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS eb_mixed' })
@@ -191,7 +191,7 @@ export const TRANSACTION_EDGE_CASES: TestCase[] = [
           "INSERT INTO eb_mixed (s) VALUES ('plain')",
         ],
       })
-      expectEqual(r.committed, true, 'committed=true via alias')
+      expectEqual(r.committed, true, 'committed=true')
       const verify = await call('database::query', {
         db: driver,
         sql: 'SELECT s FROM eb_mixed ORDER BY s',
@@ -202,11 +202,11 @@ export const TRANSACTION_EDGE_CASES: TestCase[] = [
     },
   },
   {
-    name: 'execute_batch rejects embedded transaction-control SQL',
+    name: 'executeBatch rejects embedded transaction-control SQL',
     async run({ driver, call }) {
       let rejected = false
       try {
-        await call('database::execute_batch', {
+        await call('database::executeBatch', {
           db: driver,
           statements: ['SELECT 1', 'COMMIT'],
         })
