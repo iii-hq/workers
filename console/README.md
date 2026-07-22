@@ -217,7 +217,7 @@ The SPA bundle is embedded into the binary at compile time via [`rust-embed`](ht
 | Data fetching | [TanStack Query 5](https://tanstack.com/query) |
 | Trace graphs | [`@xyflow/react` 12](https://reactflow.dev) + [dagre](https://github.com/dagrejs/dagre), [TanStack Virtual](https://tanstack.com/virtual) |
 | Markdown | [react-markdown](https://github.com/remarkjs/react-markdown) + [remark-gfm](https://github.com/remarkjs/remark-gfm), [prism-react-renderer](https://github.com/FormidableLabs/prism-react-renderer) |
-| Browser SDK | [`iii-browser-sdk` 0.12](https://www.npmjs.com/package/iii-browser-sdk) |
+| Browser SDK | [`iii-browser-sdk` 0.21.6](https://www.npmjs.com/package/iii-browser-sdk) |
 
 <details>
 <summary><strong>Build from source (contributors only)</strong></summary>
