@@ -12,6 +12,7 @@ import type {
   UserMessage as UserMessageType,
 } from '@/types/chat'
 import { AttachmentChip } from './AttachmentChip'
+import { CopyMessageButton } from './CopyMessageButton'
 import { MemoryChip } from './MemoryChip'
 import { ThoughtMessage } from './ThoughtMessage'
 
@@ -266,8 +267,14 @@ function SpawnTaskMessage({ message }: { message: UserMessageType }) {
 
 function UserMessage({ message }: { message: UserMessageType }) {
   return (
-    <article className="flex flex-col items-end gap-2">
-      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
+    <article className="group flex flex-col items-end gap-2">
+      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2">
+        {message.content ? (
+          <CopyMessageButton
+            text={message.content}
+            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+          />
+        ) : null}
         <Prompt symbol="$">you</Prompt>
       </header>
       <div
@@ -292,7 +299,7 @@ function UserMessage({ message }: { message: UserMessageType }) {
 function AssistantMessage({ message }: { message: AssistantMessageType }) {
   const showCaret = !!message.streaming
   return (
-    <article className="flex flex-col gap-2">
+    <article className="group flex flex-col gap-2">
       <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2 flex-wrap">
         <Prompt symbol=">">assistant</Prompt>
         {message.model ? (
@@ -302,6 +309,12 @@ function AssistantMessage({ message }: { message: AssistantMessageType }) {
           <span className="text-ink-ghost">· {message.mode}</span>
         ) : null}
         {message.memory ? <MemoryChip memory={message.memory} /> : null}
+        {message.content && !message.streaming ? (
+          <CopyMessageButton
+            text={message.content}
+            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+          />
+        ) : null}
       </header>
       <div className="pr-1">
         {message.content ? (
