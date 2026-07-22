@@ -7,6 +7,7 @@ use database::handlers::{
     begin_transaction::{self, BeginTxReq},
     commit_transaction::{self, CommitTxReq},
     execute::{self, ExecuteReq},
+    execute_batch::{self, ExecuteBatchReq},
     list_databases::{self, ListDatabasesReq},
     prepare::{self, PrepareReq},
     query::{self, QueryReq},
@@ -139,6 +140,40 @@ async fn main() -> Result<()> {
                 }
             })
             .description("Run a write statement (INSERT/UPDATE/DELETE/DDL)."),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::execute_batch",
+            RegisterFunction::new_async(move |req: ExecuteBatchReq| {
+                let st = st.clone();
+                async move {
+                    execute_batch::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            })
+            .description(
+                "Run an ordered batch of SQL statements atomically (bare strings or \
+                 {sql, params} objects); rolls back on first failure. Also registered \
+                 as database::executeBatch.",
+            ),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::executeBatch",
+            RegisterFunction::new_async(move |req: ExecuteBatchReq| {
+                let st = st.clone();
+                async move {
+                    execute_batch::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            })
+            .description("Alias of database::execute_batch."),
         );
     }
     {
@@ -297,7 +332,7 @@ async fn main() -> Result<()> {
         .context("registering configuration change trigger")?;
 
     tracing::info!(
-        "database worker registered 12 functions and 1 trigger type, waiting for invocations"
+        "database worker registered 14 functions and 1 trigger type, waiting for invocations"
     );
     wait_for_shutdown_signal().await?;
     tracing::info!("database worker shutting down");
