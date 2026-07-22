@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type {
   AssistantMessage,
   FunctionCallMessage,
+  ThoughtMessage,
   UserMessage,
 } from '@/types/chat'
 import {
@@ -37,6 +38,16 @@ function assistant(
 
 function user(overrides: Partial<UserMessage> = {}): UserMessage {
   return { id: 'u1', createdAt: 0, role: 'user', content: 'go', ...overrides }
+}
+
+function thought(): ThoughtMessage {
+  return {
+    id: 't1',
+    createdAt: 0,
+    role: 'thought',
+    content: 'scouting the workers tree',
+    durationMs: 180,
+  }
 }
 
 describe('functionCallToText', () => {
@@ -105,7 +116,47 @@ describe('functionCallsByAssistant', () => {
     expect(functionCallsByAssistant([a1, user(), c1]).has('a1')).toBe(false)
   })
 
-  it('ignores leading calls with no preceding assistant', () => {
-    expect(functionCallsByAssistant([fcall(), assistant()]).size).toBe(0)
+  it('attributes leading calls forward to the turn-closing assistant', () => {
+    // The canonical agent flow: thought → calls → summarizing prose.
+    const c1 = fcall({ id: 'c1' })
+    const a1 = assistant({ id: 'a1' })
+    const map = functionCallsByAssistant([user(), thought(), c1, a1])
+    expect(map.get('a1')).toEqual([c1])
+  })
+
+  it('treats thought messages as transparent within a trailing run', () => {
+    const a1 = assistant({ id: 'a1' })
+    const c1 = fcall({ id: 'c1' })
+    expect(functionCallsByAssistant([a1, thought(), c1]).get('a1')).toEqual([
+      c1,
+    ])
+  })
+
+  it('drops leading calls when the turn ends without an assistant', () => {
+    const map = functionCallsByAssistant([
+      fcall({ id: 'c1' }),
+      user(),
+      assistant({ id: 'a1' }),
+    ])
+    expect(map.size).toBe(0)
+  })
+
+  it('combines leading and trailing runs chronologically', () => {
+    const c1 = fcall({ id: 'c1' })
+    const a1 = assistant({ id: 'a1' })
+    const c2 = fcall({ id: 'c2' })
+    expect(functionCallsByAssistant([user(), c1, a1, c2]).get('a1')).toEqual([
+      c1,
+      c2,
+    ])
+  })
+
+  it('prefers trailing attribution between two assistants', () => {
+    const a1 = assistant({ id: 'a1' })
+    const c1 = fcall({ id: 'c1' })
+    const a2 = assistant({ id: 'a2' })
+    const map = functionCallsByAssistant([a1, c1, a2])
+    expect(map.get('a1')).toEqual([c1])
+    expect(map.has('a2')).toBe(false)
   })
 })

@@ -50,26 +50,38 @@ export function assistantCopyText(
 }
 
 /**
- * Map each assistant message id to the contiguous run of function-call
- * messages that immediately follows it — the calls belonging to that turn. A
- * message of any other role ends the run, matching the visual adjacency of an
- * assistant bubble and its call cards in the transcript.
+ * Map each assistant message id to the function calls of its turn. Trailing
+ * calls attach to the assistant message they follow; a run with no assistant
+ * before it attaches FORWARD to the turn's next assistant message — the
+ * canonical agent flow is thought → calls → summarizing prose, so the calls
+ * usually precede the message that talks about them. Thought messages are
+ * transparent; user/system messages are turn boundaries and reset both
+ * directions. Between two assistant messages, trailing attribution wins.
  */
 export function functionCallsByAssistant(
   messages: readonly Message[],
 ): Map<string, FunctionCallMessage[]> {
   const byAssistant = new Map<string, FunctionCallMessage[]>()
   let currentId: string | null = null
+  let leading: FunctionCallMessage[] = []
   for (const m of messages) {
     if (m.role === 'assistant') {
       currentId = m.id
+      if (leading.length > 0) {
+        byAssistant.set(m.id, leading)
+        leading = []
+      }
     } else if (m.role === 'function-call') {
-      if (currentId === null) continue
-      const run = byAssistant.get(currentId)
-      if (run) run.push(m)
-      else byAssistant.set(currentId, [m])
-    } else {
+      if (currentId !== null) {
+        const run = byAssistant.get(currentId)
+        if (run) run.push(m)
+        else byAssistant.set(currentId, [m])
+      } else {
+        leading.push(m)
+      }
+    } else if (m.role !== 'thought') {
       currentId = null
+      leading = []
     }
   }
   return byAssistant
