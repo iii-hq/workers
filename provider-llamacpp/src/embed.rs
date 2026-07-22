@@ -94,7 +94,12 @@ pub async fn handle(
     // stays the router's job.
     let token = cache.load_token(iii, state::STATE_SCOPE).await;
     let resolved = cache
-        .resolve(iii, crate::PROVIDER_ID, token.as_deref())
+        .resolve(
+            iii,
+            crate::PROVIDER_ID,
+            token.as_deref(),
+            Some(crate::register::CREDENTIAL_ENV_VAR),
+        )
         .await
         .inspect_err(|e| {
             if classify_bus_error(e) == ErrorKind::AuthExpired {

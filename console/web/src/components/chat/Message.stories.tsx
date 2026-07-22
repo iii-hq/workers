@@ -26,7 +26,7 @@ const assistantComplete: AssistantMessage = {
   id: 'a1',
   role: 'assistant',
   model: 'anthropic::claude-opus-4-7',
-  mode: 'plan',
+  mode: 'agent',
   content: `## the plan
 
 three small steps, each independently revertible:

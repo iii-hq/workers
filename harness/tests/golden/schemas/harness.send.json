@@ -385,9 +385,8 @@
         "description": "`message` is either a plain string (sugar for a user text message) or a full `AgentMessage`."
       },
       "Mode": {
-        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt.",
+        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt. `ask` is also structural: the turn's dispatch policy is capped at the operator's read-only baseline, never widened.",
         "enum": [
-          "plan",
           "ask",
           "agent"
         ],
@@ -439,7 +438,7 @@
                 "type": "null"
               }
             ],
-            "description": "The fail-closed dispatch policy. Omitted on a NEW session → deny every call; omitted when steering an EXISTING session → inherit the prior turn's policy (a nudge must not disarm a live run). Pass `{ allow: [] }` to strip explicitly."
+            "description": "The fail-closed dispatch policy. Omitted on a NEW session → deny every call; omitted when steering an EXISTING session → inherit the prior turn's policy (a nudge must not disarm a live run). Pass `{ allow: [] }` to strip explicitly. On a NEW `ask`-mode turn the effective policy is capped at the operator's read-only baseline; a steer folded into an already-running turn keeps that turn's frozen policy until it finalises."
           },
           "max_turns": {
             "format": "uint32",

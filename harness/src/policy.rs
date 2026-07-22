@@ -82,6 +82,43 @@ pub fn subset_policy(
     })
 }
 
+/// Cap a requested policy at the operator's read-only baseline (ask mode):
+/// the effective allow is the baseline kept only where the REQUEST covers it,
+/// denies are unioned, and the request's exposure choice is kept. Never
+/// widens — an absent or deny-all request stays deny-all, and an absent or
+/// hollow (empty-allow) baseline denies everything.
+///
+/// Coverage is [`glob_covered`] (exact id, `*`, or `<prefix>::*`), so the
+/// result is a conservative UNDER-approximation of a set intersection, not a
+/// true one: a glob baseline entry (e.g. `coder::*`) survives only when a
+/// request glob covers it, so a narrower exact request (`coder::read-file`)
+/// against that baseline yields deny-all. That fails closed, never open — the
+/// shipped baseline (`config::default_functions`) is all exact ids, where the
+/// distinction does not arise.
+pub fn clamp_policy(
+    baseline: Option<&FunctionPolicy>,
+    requested: Option<&FunctionPolicy>,
+) -> Option<FunctionPolicy> {
+    // LOAD-BEARING: reject a hollow baseline BEFORE `subset_policy`. With the
+    // roles flipped below, `subset_policy`'s empty-allow arm would fall back to
+    // `parent.allow.clone()` — i.e. the REQUEST's allow — which would widen ask
+    // mode to whatever it asked for. This guard is what keeps the flip safe;
+    // `ask_clamp_without_a_usable_baseline_denies_everything` pins it.
+    let baseline = baseline.filter(|b| !b.allow.is_empty())?;
+    let requested = requested?;
+    debug_assert!(
+        !baseline.allow.is_empty(),
+        "clamp baseline must be non-empty here or the flip widens"
+    );
+    // Subset with the roles flipped — keep the baseline's ids where the
+    // REQUEST covers them — so broad requests (`*`, `<prefix>::*`) intersect
+    // down to the baseline instead of collapsing to deny-all.
+    let mut clamped = subset_policy(Some(requested), Some(baseline))?;
+    // `subset_policy` picked the baseline's `expose`; restore the caller's.
+    clamped.expose = requested.expose;
+    Some(clamped)
+}
+
 /// Is a child allow glob covered by the parent's allow set? Conservative: an
 /// exact match, a parent `*`, or a parent `<prefix>::*` covering the child.
 fn glob_covered(child: &str, parent_globs: &[String]) -> bool {
@@ -302,6 +339,96 @@ mod tests {
         let p = CompiledPolicy::from(Some(&policy(&["*"], &["shell::*"])));
         assert!(p.allows("fs::read"));
         assert!(!p.allows("shell::run"));
+    }
+
+    #[test]
+    fn ask_clamp_caps_a_wildcard_request_at_the_baseline() {
+        let baseline = policy(&["state::get", "coder::read-file"], &[]);
+        let requested = policy(&["*"], &["coder::*"]);
+        let clamped = clamp_policy(Some(&baseline), Some(&requested)).unwrap();
+        let compiled = CompiledPolicy::from(Some(&clamped));
+        assert!(compiled.allows("state::get"));
+        // Outside the baseline, wildcard or not.
+        assert!(!compiled.allows("state::set"));
+        // The request's own denies still bite inside the baseline.
+        assert!(!compiled.allows("coder::read-file"));
+    }
+
+    #[test]
+    fn ask_clamp_intersects_prefix_requests_with_the_baseline() {
+        let baseline = policy(&["state::get", "state::list", "harness::status"], &[]);
+        let requested = policy(&["state::*"], &[]);
+        let clamped = clamp_policy(Some(&baseline), Some(&requested)).unwrap();
+        let compiled = CompiledPolicy::from(Some(&clamped));
+        assert!(compiled.allows("state::get"));
+        assert!(compiled.allows("state::list"));
+        // In the baseline but not requested — intersection, not union.
+        assert!(!compiled.allows("harness::status"));
+        // Requested but outside the baseline.
+        assert!(!compiled.allows("state::set"));
+    }
+
+    #[test]
+    fn ask_clamp_never_widens_a_deny_all_request() {
+        let baseline = policy(&["state::get"], &[]);
+        assert!(clamp_policy(Some(&baseline), None).is_none());
+        let empty = policy(&[], &[]);
+        let clamped = clamp_policy(Some(&baseline), Some(&empty));
+        assert!(!CompiledPolicy::from(clamped.as_ref()).allows("state::get"));
+    }
+
+    #[test]
+    fn ask_clamp_without_a_usable_baseline_denies_everything() {
+        let requested = policy(&["*"], &[]);
+        assert!(clamp_policy(None, Some(&requested)).is_none());
+        // A hollow baseline (empty allow) is deny-all, not a hole to widen through.
+        let hollow = policy(&[], &["x"]);
+        assert!(clamp_policy(Some(&hollow), Some(&requested)).is_none());
+    }
+
+    #[test]
+    fn ask_clamp_keeps_the_requested_exposure() {
+        let baseline = policy(&["state::get"], &[]);
+        let mut requested = policy(&["*"], &[]);
+        requested.expose = ExposeMode::Native;
+        let clamped = clamp_policy(Some(&baseline), Some(&requested)).unwrap();
+        assert_eq!(clamped.expose, ExposeMode::Native);
+    }
+
+    #[test]
+    fn ask_clamp_intersects_an_exact_id_request() {
+        // The exact-match arm of glob_covered, exercised directly on clamp.
+        let baseline = policy(&["state::get", "state::list"], &[]);
+        let requested = policy(&["state::get", "state::set"], &[]);
+        let compiled =
+            CompiledPolicy::from(clamp_policy(Some(&baseline), Some(&requested)).as_ref());
+        assert!(compiled.allows("state::get")); // in both
+        assert!(!compiled.allows("state::list")); // baseline only — intersection, not union
+        assert!(!compiled.allows("state::set")); // requested only — outside baseline
+    }
+
+    #[test]
+    fn ask_clamp_preserves_a_baseline_deny() {
+        // An operator-configured baseline deny must survive the clamp (the doc
+        // promises denies are unioned); every other clamp test uses deny: [].
+        let baseline = policy(&["state::get", "state::list"], &["state::list"]);
+        let requested = policy(&["*"], &[]);
+        let compiled =
+            CompiledPolicy::from(clamp_policy(Some(&baseline), Some(&requested)).as_ref());
+        assert!(compiled.allows("state::get"));
+        assert!(!compiled.allows("state::list")); // baseline deny bites through the clamp
+    }
+
+    #[test]
+    fn ask_clamp_under_approximates_a_glob_baseline_fail_closed() {
+        // Documented conservative behavior: a glob baseline entry survives only
+        // when a request glob COVERS it, so a narrower exact request against a
+        // glob baseline denies everything. Surprising but fail-closed, never open.
+        let baseline = policy(&["coder::*"], &[]);
+        let requested = policy(&["coder::read-file"], &[]);
+        let compiled =
+            CompiledPolicy::from(clamp_policy(Some(&baseline), Some(&requested)).as_ref());
+        assert!(!compiled.allows("coder::read-file"));
     }
 
     use crate::types::content::ContentBlock;

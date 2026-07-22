@@ -54,7 +54,7 @@ Then open the printed `Local:` URL (Vite picks the first free port from
   of scenarios (errors, aborts, multi-function runs, slow/fast streams, long
   markdown) that stress every corner of the streaming contract. Useful before
   swapping in a real backend.
-- **Model picker** and **mode picker** (`plan` / `ask` / `agent`) wired into
+- **Model picker** and **mode picker** (`ask` / `agent`) wired into
   the canned response so you can see the values flow through.
 - **File attachments** via a hidden file input. Previewable text/image
   files store a data URL; binaries store metadata only. Attachments are

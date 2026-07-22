@@ -106,6 +106,30 @@ describe('mergeConversationMeta', () => {
     ).toBe(undefined)
   })
 
+  it('degrades a removed/unknown persisted mode to the default', () => {
+    // Pre-upgrade sessions parked in the removed "plan" mode (and any garbage
+    // value) must fall back to DEFAULT_MODE, not crash or carry the dead value.
+    expect(
+      mergeConversationMeta(
+        undefined,
+        sessionMeta({ metadata: { mode: 'plan' } }),
+      ).mode,
+    ).toBe('agent')
+    expect(
+      mergeConversationMeta(
+        undefined,
+        sessionMeta({ metadata: { mode: 'xyz' } }),
+      ).mode,
+    ).toBe('agent')
+    // A still-valid mode is preserved.
+    expect(
+      mergeConversationMeta(
+        undefined,
+        sessionMeta({ metadata: { mode: 'ask' } }),
+      ).mode,
+    ).toBe('ask')
+  })
+
   it('repairs a stale idle row from authoritative session metadata', () => {
     const existing = conversation({
       status: 'idle',

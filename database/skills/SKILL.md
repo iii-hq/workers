@@ -22,7 +22,8 @@ point. Placeholder syntax: `?` for SQLite and MySQL, `$1`/`$2`/… for Postgres.
 - You need to insert, update, delete, or run DDL and read affected-row
   counts or autoincrement ids (`database::execute`).
 - Several statements must commit or roll back together as one unit
-  (`database::transaction` or the interactive transaction surface).
+  (`database::transaction`, `database::executeBatch`, or the interactive
+  transaction surface).
 - The same parameterized SQL will run many times and you want to skip
   per-call parse/plan cost (`database::prepareStatement` +
   `database::runStatement`).
@@ -39,8 +40,9 @@ point. Placeholder syntax: `?` for SQLite and MySQL, `$1`/`$2`/… for Postgres.
 - `database::query` is read-oriented; use `database::execute` for writes.
   Running a SELECT through `execute` discards rows.
 - Prepared handles pin a pool connection until TTL expiry — not transactions.
-  Batch `database::transaction` needs every statement up front; use the
-  interactive surface when code must branch between steps.
+  Batch `database::transaction` / `database::executeBatch` need every
+  statement up front; use the interactive surface when code must branch
+  between steps.
 - MySQL ignores the `returning` option on `execute` (warn-once). SQLite
   degrades `read_committed` / `repeatable_read` isolation to serializable.
 - For filesystem or shell operations, use the `shell` worker instead.
@@ -51,6 +53,10 @@ point. Placeholder syntax: `?` for SQLite and MySQL, `$1`/`$2`/… for Postgres.
   column metadata.
 - `database::execute` — run write SQL (INSERT/UPDATE/DELETE/DDL) and
   return affected rows, optional last insert id, and optional RETURNING rows.
+- `database::executeBatch` — convenience form of `transaction`: statements
+  may be bare SQL strings or `{sql, params}` objects (prefer `params` for
+  dynamic values). Same atomic semantics, envelope, and `failed_index`
+  reporting as `transaction`.
 - `database::prepareStatement` — parse and plan SQL once; return a handle
   that pins a pool connection until TTL expiry.
 - `database::runStatement` — re-execute a prepared handle with new bind

@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-http"
-version = "0.21.1"
+version = "0.21.2"
 edition = "2021"
 description = "HTTP server worker for iii — exposes functions as HTTP endpoints (http trigger type)"
 license = "Apache-2.0"

@@ -203,7 +203,9 @@ rules:
   # I/O, no authority). fp::pipe stays at the needs_approval default ON
   # PURPOSE: its steps run with the fp worker's authority, so the pipe
   # call itself is the surface an approver reviews (the worker statically
-  # refuses hard-denied classes as steps; see fp/src/pipe.rs).
+  # refuses hard-denied classes as steps; see fp/src/pipe.rs). Allowlisting
+  # fp::pipe would also grant un-approved shell::*/coder::* execution: scoped
+  # steps ride the harness-stamped filesystem scope on the pipe call.
   - fp::get
   - fp::pick
   - fp::omit

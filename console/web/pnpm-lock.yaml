@@ -54,8 +54,8 @@ importers:
         specifier: ^2.1.1
         version: 2.1.1
       iii-browser-sdk:
-        specifier: ^0.12.0
-        version: 0.12.0
+        specifier: ^0.21.6
+        version: 0.21.6
       lexical:
         specifier: ^0.44.0
         version: 0.44.0
@@ -2186,8 +2186,8 @@ packages:
   html-void-elements@3.0.0:
     resolution: {integrity: sha512-bEqo66MRXsUGxWHV5IP0PUiAWwoEjba4VCzg0LjFJBpchPaTfyfCKTG6bc5F8ucKec3q5y6qOdGyYTSBEvhCrg==}
 
-  iii-browser-sdk@0.12.0:
-    resolution: {integrity: sha512-Z8L/YEjBMtqBNKCxt12xn28K9BkWiKMXTJxF1N9tJ2+y7qDMMncDTyOfsymNfRO5usKmIXldhzbk3dicJ1tT2w==}
+  iii-browser-sdk@0.21.6:
+    resolution: {integrity: sha512-ZyVvWAG3ar6P6Xi+OTKpVwWeoFPjsCH3AtFfV7UCva/pMj7fo5u1DzxZ7Kz7Vc/g9KBCn9dy3KOo5fBpmirYDA==}
 
   indent-string@4.0.0:
     resolution: {integrity: sha512-EdDDZu4A2OyIK7Lr/2zG+w5jmbuk1DVBnEwREQvBzspBJkCEbRa8GxU1lghYcaGJCnRWibjDXlq779X1/y5xwg==}
@@ -4955,7 +4955,7 @@ snapshots:
 
   html-void-elements@3.0.0: {}
 
-  iii-browser-sdk@0.12.0: {}
+  iii-browser-sdk@0.21.6: {}
 
   indent-string@4.0.0: {}
 

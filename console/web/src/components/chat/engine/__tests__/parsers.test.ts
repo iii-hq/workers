@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   coerceJsonObject,
   configFilters,
+  describeCron,
   ENGINE_FUNCTION_IDS,
   functionDetailSchema,
   functionInfoRequestSchema,
@@ -478,6 +479,32 @@ describe('engine::register_trigger', () => {
     ).toBeNull()
   })
 
+  it('parses a call-mode react spec (no model/task, a call target)', () => {
+    // The exact live shape that fell through to a raw metadata dump: a
+    // turn-completed binding whose reaction is an fp::pipe dispatch.
+    const react = safeParseRequest(reactSpecSchema, {
+      call: {
+        function_id: 'fp::pipe',
+        payload: {
+          through: [
+            { function: 'database::query', payload: { db: 'sqlite_db' } },
+            { function: 'fp::get', payload: { path: '/rows/0/n' } },
+            { function: 'fp::when', payload: { op: '>=', to: 12 } },
+            { function: 'state::set', into: '/value/batches_done' },
+          ],
+        },
+      },
+    })
+    expect(react?.call?.function_id).toBe('fp::pipe')
+    expect(react?.model).toBeUndefined()
+    // event_into passthrough
+    expect(
+      safeParseRequest(reactSpecSchema, {
+        call: { function_id: 'state::set', event_into: '/value' },
+      })?.call?.event_into,
+    ).toBe('/value')
+  })
+
   it('parses the harness subscribe variant (no function_id, has label/once)', () => {
     const req = safeParseRequest(registerTriggerRequestSchema, {
       trigger_type: 'state',
@@ -561,5 +588,42 @@ describe('unwrapEnvelope re-export', () => {
   it('peels the harness envelope', () => {
     const inner = { functions: [] }
     expect(unwrapEnvelope(wrap(inner))).toEqual(inner)
+  })
+})
+
+describe('describeCron', () => {
+  it('humanizes the common shapes', () => {
+    // the live screenshot shape: seconds-first, one-shot date+time
+    expect(describeCron('0 0 17 21 7 *')).toBe('at 17:00 on Jul 21')
+    expect(describeCron('0 30 9 * * *')).toBe('every day at 09:30')
+    expect(describeCron('30 9 * * *')).toBe('every day at 09:30') // 5-field classic
+    expect(describeCron('0 */5 * * * *')).toBe('every 5 min')
+    expect(describeCron('0 * * * * *')).toBe('every minute')
+    expect(describeCron('* * * * * *')).toBe('every second')
+    expect(describeCron('0 15 * * * *')).toBe('at :15 every hour')
+    expect(describeCron('0 0 */6 * * *')).toBe('every 6h at :00')
+    // seconds-first form = Rust cron crate dialect: weekdays 1=Sun..7=Sat
+    expect(describeCron('0 0 9 * * 1')).toBe('every Sun at 09:00')
+    expect(describeCron('0 0 9 * * 2,6')).toBe('every Mon, Fri at 09:00')
+    // classic five-field cron: weekdays 0=Sun..6=Sat, 7 also Sunday
+    expect(describeCron('0 9 * * 1')).toBe('every Mon at 09:00')
+    expect(describeCron('0 9 * * 0')).toBe('every Sun at 09:00')
+    expect(describeCron('0 9 * * 7')).toBe('every Sun at 09:00')
+    expect(describeCron('0 0 0 1 * *')).toBe('at 00:00 on day 1 of every month')
+    expect(describeCron('0 0 12 * 7 *')).toBe('at 12:00 in Jul')
+  })
+
+  it('falls back to null on shapes a translation would get wrong', () => {
+    expect(describeCron('0 0 17 21 7 1')).toBeNull() // dom+dow = OR semantics
+    expect(describeCron('0 0-30 9 * * *')).toBeNull() // ranges
+    expect(describeCron('0 0 9 L * *')).toBeNull() // L extension
+    expect(describeCron('0 0 25 * * *')).toBeNull() // hour out of range
+    expect(describeCron('0 0 17 21 7 * 2027')).toBeNull() // pinned year
+    // wild seconds fire 60×/min — "at 17:00" would hide that
+    expect(describeCron('* 0 17 * * *')).toBeNull()
+    expect(describeCron('30 0 17 * * *')).toBeNull() // nonzero seconds pin
+    expect(describeCron('0 0 9 * * 0')).toBeNull() // 0 invalid in Rust dialect
+    expect(describeCron('nonsense')).toBeNull()
+    expect(describeCron('')).toBeNull()
   })
 })

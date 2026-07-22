@@ -81,7 +81,7 @@ async fn run_stream_call(
     // An auth-classified failure drops the cache so the next attempt
     // re-resolves fresh — retrying stays the router's job.
     let resolved = match cache
-        .resolve(iii, crate::PROVIDER_ID, token.as_deref())
+        .resolve(iii, crate::PROVIDER_ID, token.as_deref(), None)
         .await
     {
         Ok(r) => r,

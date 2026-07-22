@@ -84,7 +84,8 @@ pub struct WorkerConfig {
     /// parent policy, and explicit options always win. Defaults to a
     /// read-only baseline (discovery, reads, subscription management — no
     /// writes, no spend, no spawning); set to `null` explicitly to restore
-    /// deny-all.
+    /// deny-all. Doubles as the ceiling every ask-mode turn's policy is
+    /// clamped to — `null` makes ask mode a plain chat loop.
     #[serde(default = "default_functions")]
     pub default_functions: Option<FunctionPolicy>,
 
@@ -248,6 +249,13 @@ fn default_functions() -> Option<FunctionPolicy> {
     // registration; a caller grants anything more explicitly via options /
     // react metadata.options. (In-turn children instead inherit their parent's
     // full policy — see `subagent::seed_child`.)
+    //
+    // DOUBLES AS THE ASK-MODE CEILING: every ask-mode send / steer / child has
+    // its dispatch policy clamped to this list (see `functions::send::
+    // clamp_for_mode`). Editing the allow set below widens or narrows what
+    // EVERY ask-mode turn may call, not just parentless spawns — keep it to
+    // non-mutating ids. Prefer exact ids over globs here: `clamp_policy`
+    // under-approximates against glob baseline entries (see its doc).
     Some(FunctionPolicy {
         allow: [
             "engine::functions::list",

@@ -27,6 +27,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getIiiClient } from '@/lib/iii-client'
+import { newSessionId } from '@/lib/session-id'
 import {
   deleteSession,
   ensureSession as ensureSessionApi,
@@ -71,17 +72,6 @@ function uid(): string {
  *  only costs are the RPC and one JSONL append per flush). */
 const DRAFT_SAVE_DEBOUNCE_MS = 500
 
-/** Draft ids double as engine session ids — minted with the console prefix. */
-function newConversationId(): string {
-  if (
-    typeof crypto !== 'undefined' &&
-    typeof crypto.randomUUID === 'function'
-  ) {
-    return `console-${crypto.randomUUID()}`
-  }
-  return `console-${uid()}`
-}
-
 function deriveTitle(text: string): string {
   const clean = text.replace(/\s+/g, ' ').trim().toLowerCase()
   if (!clean) return 'new chat'
@@ -91,7 +81,7 @@ function deriveTitle(text: string): string {
 function emptyConversation(defaultModel: ModelId | null): Conversation {
   const now = Date.now()
   return {
-    id: newConversationId(),
+    id: newSessionId(),
     title: 'new chat',
     model: defaultModel,
     mode: DEFAULT_MODE,
@@ -111,7 +101,7 @@ function emptyConversation(defaultModel: ModelId | null): Conversation {
 }
 
 function isMode(v: unknown): v is Mode {
-  return v === 'plan' || v === 'ask' || v === 'agent'
+  return v === 'ask' || v === 'agent'
 }
 
 /** The console's session metadata convention (replaces wholesale on writes). */

@@ -358,10 +358,7 @@ pub fn pick(value: Value, paths: &[String]) -> Result<Value, String> {
                 .filter_map(|k| map.remove(k).map(|v| (k.clone(), v)))
                 .collect::<Map<String, Value>>(),
         )),
-        other => Err(format!(
-            "pick needs an object value (got {})",
-            kind_of(&other)
-        )),
+        other => Err(needs("pick", "an object value", &other)),
     }
 }
 
@@ -373,10 +370,7 @@ pub fn omit(value: Value, paths: &[String]) -> Result<Value, String> {
             }
             Ok(Value::Object(map))
         }
-        other => Err(format!(
-            "omit needs an object value (got {})",
-            kind_of(&other)
-        )),
+        other => Err(needs("omit", "an object value", &other)),
     }
 }
 
@@ -390,10 +384,7 @@ pub fn take(value: Value, n: usize) -> Result<Value, String> {
             items.truncate(n);
             Ok(Value::Array(items))
         }
-        other => Err(format!(
-            "take needs a string or array value (got {}); use fp::get to select one first",
-            kind_of(&other)
-        )),
+        other => Err(needs("take", "a string or array value", &other)),
     }
 }
 
@@ -404,10 +395,7 @@ pub fn drop(value: Value, n: usize) -> Result<Value, String> {
             None => String::new(),
         })),
         Value::Array(items) => Ok(Value::Array(items.into_iter().skip(n).collect())),
-        other => Err(format!(
-            "drop needs a string or array value (got {}); use fp::get to select one first",
-            kind_of(&other)
-        )),
+        other => Err(needs("drop", "a string or array value", &other)),
     }
 }
 
@@ -448,10 +436,7 @@ pub fn map(value: Value, path: &str) -> Result<Value, String> {
             }
             Ok(Value::Array(plucked))
         }
-        other => Err(format!(
-            "map needs an array value (got {})",
-            kind_of(&other)
-        )),
+        other => Err(needs("map", "an array value", &other)),
     }
 }
 
@@ -463,10 +448,7 @@ pub fn filter(value: Value, matches: &Map<String, Value>) -> Result<Value, Strin
                 .filter(|el| matches.iter().all(|(k, want)| el.get(k) == Some(want)))
                 .collect(),
         )),
-        other => Err(format!(
-            "filter needs an array value (got {})",
-            kind_of(&other)
-        )),
+        other => Err(needs("filter", "an array value", &other)),
     }
 }
 
@@ -480,10 +462,7 @@ pub fn split(value: Value, separator: &str) -> Result<Value, String> {
                 .map(|p| Value::String(p.to_string()))
                 .collect(),
         )),
-        other => Err(format!(
-            "split needs a string value (got {})",
-            kind_of(&other)
-        )),
+        other => Err(needs("split", "a string value", &other)),
     }
 }
 
@@ -499,10 +478,7 @@ pub fn join(value: Value, separator: &str) -> Result<Value, String> {
                 .collect::<Vec<_>>()
                 .join(separator),
         )),
-        other => Err(format!(
-            "join needs an array value (got {})",
-            kind_of(&other)
-        )),
+        other => Err(needs("join", "an array value", &other)),
     }
 }
 
@@ -518,10 +494,7 @@ pub fn uniq(value: Value) -> Result<Value, String> {
                     .collect(),
             ))
         }
-        other => Err(format!(
-            "uniq needs an array value (got {})",
-            kind_of(&other)
-        )),
+        other => Err(needs("uniq", "an array value", &other)),
     }
 }
 
@@ -532,10 +505,7 @@ pub fn size(value: &Value) -> Result<Value, String> {
         Value::Object(m) => Ok(json_len(m.len())),
         // Deviates from lodash (_.size(5) == 0): a 0 for a non-collection
         // would thread garbage into a take/drop downstream.
-        other => Err(format!(
-            "size needs an array, string, or object value (got {})",
-            kind_of(other)
-        )),
+        other => Err(needs("size", "an array, string, or object value", other)),
     }
 }
 
@@ -546,10 +516,7 @@ pub fn compact(value: Value) -> Result<Value, String> {
         Value::Array(items) => Ok(Value::Array(
             items.into_iter().filter(|el| !el.is_null()).collect(),
         )),
-        other => Err(format!(
-            "compact needs an array value (got {})",
-            kind_of(&other)
-        )),
+        other => Err(needs("compact", "an array value", &other)),
     }
 }
 
@@ -570,10 +537,7 @@ pub fn nth(value: Value, n: i64) -> Result<Value, String> {
                 .nth(idx as usize)
                 .expect("index bounds checked"))
         }
-        other => Err(format!(
-            "nth needs an array value (got {})",
-            kind_of(&other)
-        )),
+        other => Err(needs("nth", "an array value", &other)),
     }
 }
 
@@ -592,10 +556,7 @@ pub fn flatten(value: Value) -> Result<Value, String> {
                 })
                 .collect(),
         )),
-        other => Err(format!(
-            "flatten needs an array value (got {})",
-            kind_of(&other)
-        )),
+        other => Err(needs("flatten", "an array value", &other)),
     }
 }
 
@@ -604,10 +565,7 @@ pub fn flatten(value: Value) -> Result<Value, String> {
 // garbage, so it errors naming what it found.
 pub fn sort_by(value: Value, path: &str) -> Result<Value, String> {
     let Value::Array(items) = value else {
-        return Err(format!(
-            "sortBy needs an array value (got {})",
-            kind_of(&value)
-        ));
+        return Err(needs("sortBy", "an array value", &value));
     };
     let mut keyed: Vec<(Value, Value)> = Vec::with_capacity(items.len());
     for (i, el) in items.into_iter().enumerate() {
@@ -659,10 +617,7 @@ pub fn reverse(value: Value) -> Result<Value, String> {
             items.reverse();
             Ok(Value::Array(items))
         }
-        other => Err(format!(
-            "reverse needs an array value (got {})",
-            kind_of(&other)
-        )),
+        other => Err(needs("reverse", "an array value", &other)),
     }
 }
 
@@ -757,6 +712,22 @@ fn top_level_keys(v: &Value) -> String {
     }
 }
 
+/// Type-mismatch error for a transform. For an OBJECT input, name its keys
+/// and the fix — the live trap (hit twice in one session) is piping a
+/// producer's object response (search: {content_matches,…}, grep:
+/// {matches,…}) straight into an array/string transform without selecting
+/// the field first.
+fn needs(name: &str, what: &str, got: &Value) -> String {
+    match got {
+        Value::Object(m) if !m.is_empty() => format!(
+            "{name} needs {what} but got an object with keys: {} — insert a fp::get step \
+             before this one to select the field",
+            top_level_keys(got)
+        ),
+        other => format!("{name} needs {what} (got {})", kind_of(other)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -827,6 +798,28 @@ mod tests {
         // (the live session tried lodash's `/length` on strings)
         let err = map(json!(["apple", "banana"]), "/length").unwrap_err();
         assert!(err.contains("string") && err.contains("computed"));
+    }
+
+    #[test]
+    fn object_input_errors_name_the_keys_and_the_fix() {
+        // The live trap, hit twice in one session: a producer's OBJECT
+        // response (coder::search, shell::fs::grep) piped straight into an
+        // array transform. The error must name the keys and the fp::get fix —
+        // fp::get's miss message is the model for this.
+        let search_shape = json!({ "content_matches": [], "path_matches": [], "truncated": false });
+        let err = map(search_shape.clone(), "/path").unwrap_err();
+        assert!(
+            err.contains("content_matches") && err.contains("fp::get"),
+            "{err}"
+        );
+        let err = take(json!({ "matches": [], "truncated": false }), 500).unwrap_err();
+        assert!(err.contains("matches") && err.contains("fp::get"), "{err}");
+        // non-objects keep the plain kind message
+        let err = uniq(json!(5)).unwrap_err();
+        assert!(err.contains("number") && !err.contains("fp::get"), "{err}");
+        // an empty object names no keys — plain kind message, not "keys: "
+        let err = uniq(json!({})).unwrap_err();
+        assert!(err.contains("object") && !err.contains("keys"), "{err}");
     }
 
     #[test]

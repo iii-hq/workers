@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { OpEcho, UpdateOp } from '../parsers'
-import { contentLineCount, echoRows, groupEchoesByOp } from '../UpdateFileView'
+import {
+  contentLineCount,
+  echoRows,
+  firstEchoLine,
+  groupEchoesByOp,
+} from '../UpdateFileView'
 
 function lineEcho(overrides: Partial<OpEcho> = {}): OpEcho {
   return {
@@ -515,5 +520,31 @@ describe('echoRows — multi-op anchor reconstruction (post-apply coords)', () =
       .filter((r) => r.kind === 'line' && r.added)
       .map((r) => (r.kind === 'line' ? r.text : ''))
     expect(added).toEqual(['1']) // known off-by-shift; ideal would be ['TWO']
+  })
+})
+
+describe('firstEchoLine (open-in-editor anchor)', () => {
+  const base = {
+    path: '/w/a.ts',
+    success: true,
+    applied: 1,
+    new_line_count: 10,
+    echoes_truncated: false,
+  }
+
+  it('returns the first echo from_line (wire order, first op group)', () => {
+    expect(
+      firstEchoLine({
+        ...base,
+        echoes: [
+          lineEcho({ op_index: 0, from_line: 7 }),
+          lineEcho({ op_index: 1, from_line: 30 }),
+        ],
+      }),
+    ).toBe(7)
+  })
+
+  it('returns undefined when there are no echoes (failed or echo-less file)', () => {
+    expect(firstEchoLine({ ...base, echoes: [] })).toBeUndefined()
   })
 })
