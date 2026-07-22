@@ -105,9 +105,9 @@ pub fn apply_credential_env_fallback(
 
 #[cfg(test)]
 mod fallback_tests {
+    use super::with_api_key_fallback;
     use crate::types::credential::Credential;
     use crate::types::router::{CredentialSource, ProviderResolveResponse};
-    use super::with_api_key_fallback;
 
     fn none_resp() -> ProviderResolveResponse {
         ProviderResolveResponse {
@@ -122,18 +122,30 @@ mod fallback_tests {
     #[test]
     fn router_credential_wins_over_env() {
         let mut resp = none_resp();
-        resp.credential = Some(Credential::ApiKey { key: "from-router".into() });
+        resp.credential = Some(Credential::ApiKey {
+            key: "from-router".into(),
+        });
         resp.source = CredentialSource::Config;
         resp.configured = true;
         let out = with_api_key_fallback(resp, Some("from-env".into()));
-        assert_eq!(out.credential, Some(Credential::ApiKey { key: "from-router".into() }));
+        assert_eq!(
+            out.credential,
+            Some(Credential::ApiKey {
+                key: "from-router".into()
+            })
+        );
         assert_eq!(out.source, CredentialSource::Config);
     }
 
     #[test]
     fn injects_env_when_router_has_none() {
         let out = with_api_key_fallback(none_resp(), Some("sk-abc".into()));
-        assert_eq!(out.credential, Some(Credential::ApiKey { key: "sk-abc".into() }));
+        assert_eq!(
+            out.credential,
+            Some(Credential::ApiKey {
+                key: "sk-abc".into()
+            })
+        );
         assert_eq!(out.source, CredentialSource::Env);
         assert!(out.configured);
     }
@@ -147,13 +159,24 @@ mod fallback_tests {
 
     #[test]
     fn empty_and_whitespace_are_not_injected() {
-        assert_eq!(with_api_key_fallback(none_resp(), Some("".into())).credential, None);
-        assert_eq!(with_api_key_fallback(none_resp(), Some("  \n".into())).credential, None);
+        assert_eq!(
+            with_api_key_fallback(none_resp(), Some("".into())).credential,
+            None
+        );
+        assert_eq!(
+            with_api_key_fallback(none_resp(), Some("  \n".into())).credential,
+            None
+        );
     }
 
     #[test]
     fn injected_key_is_trimmed() {
         let out = with_api_key_fallback(none_resp(), Some(" sk-abc\n".into()));
-        assert_eq!(out.credential, Some(Credential::ApiKey { key: "sk-abc".into() }));
+        assert_eq!(
+            out.credential,
+            Some(Credential::ApiKey {
+                key: "sk-abc".into()
+            })
+        );
     }
 }
