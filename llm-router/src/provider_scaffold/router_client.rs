@@ -24,17 +24,19 @@ pub async fn resolve(
     iii: &IIIClient,
     provider_id: &str,
     token: Option<&str>,
+    credential_env_var: Option<&str>,
 ) -> Result<ProviderResolveResponse, Error> {
     let mut payload = json!({ "id": provider_id });
     if let Some(t) = token {
         payload["token"] = json!(t);
     }
     let raw = call(iii, "router::provider::resolve", payload).await?;
-    serde_json::from_value(raw).map_err(|e| Error::Remote {
+    let resp: ProviderResolveResponse = serde_json::from_value(raw).map_err(|e| Error::Remote {
         code: "provider/bad_resolve_response".into(),
         message: e.to_string(),
         stacktrace: None,
-    })
+    })?;
+    Ok(apply_credential_env_fallback(resp, credential_env_var))
 }
 
 /// `router::models::reconcile` — replace this provider's catalog slice.

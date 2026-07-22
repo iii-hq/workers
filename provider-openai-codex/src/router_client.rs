@@ -66,7 +66,7 @@ pub async fn resolve(
     iii: &IIIClient,
     token: Option<&str>,
 ) -> Result<ProviderResolveResponse, Error> {
-    scaffold::resolve(iii, PROVIDER_ID, token).await
+    scaffold::resolve(iii, PROVIDER_ID, token, None).await
 }
 
 /// `router::models::reconcile` — replace this provider's catalog slice.

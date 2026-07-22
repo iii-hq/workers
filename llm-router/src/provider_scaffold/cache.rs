@@ -68,13 +68,15 @@ impl ScaffoldCache {
         iii: &IIIClient,
         provider_id: &str,
         token: Option<&str>,
+        credential_env_var: Option<&str>,
     ) -> Result<ProviderResolveResponse, Error> {
         if let Some(resolved) = self.fresh_resolve() {
             return Ok(resolved);
         }
         // The lock is never held across the await; concurrent misses may
         // duplicate one resolve, which is harmless.
-        let resolved = super::router_client::resolve(iii, provider_id, token).await?;
+        let resolved =
+            super::router_client::resolve(iii, provider_id, token, credential_env_var).await?;
         *self.resolve.write().expect("resolve cache lock poisoned") =
             Some((resolved.clone(), Instant::now()));
         Ok(resolved)
