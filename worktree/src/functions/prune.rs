@@ -100,14 +100,10 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
                 });
                 continue;
             }
-            Lifecycle::LandBlocked => {
-                skipped.push(PruneSkip {
-                    id: record.worktree_id,
-                    reason: "land-blocked".into(),
-                });
-                continue;
-            }
-            Lifecycle::Active | Lifecycle::Orphaned => {}
+            // LandBlocked joins the expiry sweep: block() unlocks the worktree,
+            // and the clean/ahead checks below preserve any that still hold
+            // unlanded work — only clean, integrated, expired ones are reaped.
+            Lifecycle::Active | Lifecycle::Orphaned | Lifecycle::LandBlocked => {}
         }
 
         let repo = Path::new(&record.repo_path);

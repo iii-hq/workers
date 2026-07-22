@@ -153,6 +153,12 @@ async fn dirty_checked_out_primary_blocks_with_w413() {
         .unwrap();
     assert_eq!(record.lifecycle, Lifecycle::LandBlocked);
     assert!(s.wt_path.is_dir(), "worktree kept for another attempt");
+    // A blocked land releases the git lock; the worktree is no longer locked.
+    let porcelain = git(&s.repo, &["worktree", "list", "--porcelain"]);
+    assert!(
+        !porcelain.contains(&format!("locked iii:worktree {}", s.worktree_id)),
+        "blocked worktree must be unlocked, got:\n{porcelain}"
+    );
 }
 
 #[tokio::test]
