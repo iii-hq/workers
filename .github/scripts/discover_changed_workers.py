@@ -5,6 +5,7 @@ Outputs a JSON object to stdout AND (if $GITHUB_OUTPUT is set) writes keys:
     changed_workers (alias `all`) : all workers with any change
     source_changed                : workers whose change wasn't only metadata
     rust / node / python          : language buckets (subset of changed_workers)
+    integration_changed          : bool, did an integration-stack input change
     vscode_changed                : bool, did lsp-vscode/ change
     any                           : bool, any worker or vscode change
 """
@@ -44,9 +45,39 @@ VSCODE_DIR = "lsp-vscode"
 # downstream version bumps at tag time.
 FANOUT_PARENT = "harness"
 
+# The integration suite boots this stack directly. Changes to other harness
+# dependencies are covered by the ordinary worker fan-out, but do not need to
+# pay for the full live stack in a pull request.
+INTEGRATION_WORKERS = {
+    "harness",
+    "queue",
+    "session-manager",
+    "context-manager",
+    "iii-directory",
+    "console",
+}
+INTEGRATION_DOC_GLOBS = (
+    "README.md",
+    "**/README.md",
+    "AGENTS.md",
+    "AGENTS-*.md",
+    "**/AGENTS.md",
+    "**/AGENTS-*.md",
+)
+INTEGRATION_INFRA_PATHS = {
+    ".github/scripts/discover_changed_workers.py",
+    ".github/workflows/ci.yml",
+    ".github/workflows/_harness-integration.yml",
+    ".github/workflows/cache-warm.yml",
+}
+
 
 def is_metadata(rel: str) -> bool:
     return any(fnmatch.fnmatch(rel, g) for g in METADATA_GLOBS)
+
+
+def is_integration_doc(rel: str) -> bool:
+    return any(fnmatch.fnmatch(rel, g) for g in INTEGRATION_DOC_GLOBS)
 
 
 def list_worker_dirs(repo_root: pathlib.Path) -> set[str]:
@@ -111,6 +142,12 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--base", required=True, help="base git ref")
     p.add_argument("--head", default="HEAD", help="head git ref (default: HEAD)")
+    p.add_argument(
+        "--force-worker",
+        action="append",
+        default=[],
+        help="include a worker even when it did not change (repeatable)",
+    )
     args = p.parse_args(argv)
 
     repo_root = pathlib.Path(".").resolve()
@@ -130,15 +167,28 @@ def main(argv: list[str] | None = None) -> int:
         if top in workers:
             touched.setdefault(top, []).append(rel)
 
-    forced: set[str] = set()
+    unknown_forced = sorted(set(args.force_worker) - workers)
+    if unknown_forced:
+        p.error(f"unknown --force-worker: {', '.join(unknown_forced)}")
+
+    forced: set[str] = set(args.force_worker)
     parent_rels = touched.get(FANOUT_PARENT, [])
-    if any(not is_metadata(rel) for rel in parent_rels):
+    if FANOUT_PARENT in forced or any(not is_metadata(rel) for rel in parent_rels):
         forced.update(fanout_dependents(repo_root, workers))
 
     changed = sorted(set(touched.keys()) | forced)
     source_changed = sorted(
         w for w, rels in touched.items()
         if any(not is_metadata(rel) for rel in rels)
+    )
+    integration_changed = bool(forced & INTEGRATION_WORKERS) or any(
+        f in INTEGRATION_INFRA_PATHS
+        or (
+            f.split("/", 1)[0] in INTEGRATION_WORKERS
+            and len(f.split("/", 1)) == 2
+            and not is_integration_doc(f.split("/", 1)[1])
+        )
+        for f in files
     )
     by_language: dict[str, list[str]] = {"rust": [], "node": [], "python": []}
     for w in changed:
@@ -152,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         "changed_workers": changed,
         "source_changed": source_changed,
         "by_language": by_language,
+        "integration_changed": integration_changed,
         "vscode_changed": vscode_changed,
     }
     print(json.dumps(payload))
@@ -166,6 +217,9 @@ def main(argv: list[str] | None = None) -> int:
             f.write(f"source_changed={json.dumps(source_changed)}\n")
             for lang in ("rust", "node", "python"):
                 f.write(f"{lang}={json.dumps(by_language[lang])}\n")
+            f.write(
+                f"integration_changed={'true' if integration_changed else 'false'}\n"
+            )
             f.write(f"vscode_changed={'true' if vscode_changed else 'false'}\n")
             f.write(f"any={'true' if any_change else 'false'}\n")
 

@@ -51,9 +51,22 @@ def make_repo_with_workers(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def run_script(repo: Path, base: str, head: str = "HEAD") -> subprocess.CompletedProcess[str]:
+def run_script(
+    repo: Path,
+    base: str,
+    head: str = "HEAD",
+    *extra_args: str,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(SCRIPT), "--base", base, "--head", head],
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--base",
+            base,
+            "--head",
+            head,
+            *extra_args,
+        ],
         capture_output=True,
         text=True,
         cwd=repo,
@@ -107,10 +120,11 @@ class TestDiscoverChangedWorkers:
         assert r.returncode == 0
         data = json.loads(r.stdout)
         assert data["changed_workers"] == []
+        assert data["integration_changed"] is False
 
 
 def make_repo_with_harness(tmp_path: Path) -> Path:
-    """Tmp repo: harness + two in-repo deps + one external dep + one unrelated worker."""
+    """Tmp repo with harness, its deps, Console, and one unrelated worker."""
     def run(*args):
         return subprocess.run(args, cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
     run("git", "init", "-q", "-b", "main")
@@ -139,6 +153,17 @@ def make_repo_with_harness(tmp_path: Path) -> Path:
         'iii: v1\nname: dep-node\nlanguage: node\ndeploy: image\nmanifest: package.json\n'
     )
     (tmp_path / "dep-node" / "package.json").write_text('{"name":"dep-node","version":"0.1.0"}')
+    (tmp_path / "console").mkdir()
+    (tmp_path / "console" / "iii.worker.yaml").write_text(
+        'iii: v1\nname: console\nlanguage: node\ndeploy: image\nmanifest: package.json\n'
+    )
+    (tmp_path / "console" / "package.json").write_text(
+        '{"name":"console","version":"0.1.0"}'
+    )
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows" / "ci.yml").write_text(
+        "name: fixture-ci\n"
+    )
     (tmp_path / "unrelated").mkdir()
     (tmp_path / "unrelated" / "iii.worker.yaml").write_text(
         'iii: v1\nname: unrelated\nlanguage: python\ndeploy: image\nmanifest: pyproject.toml\n'
@@ -164,6 +189,7 @@ class TestHarnessFanOut:
         assert "unrelated" not in data["changed_workers"]
         # External dep listed in harness deps but absent from repo is skipped.
         assert "external-dep" not in data["changed_workers"]
+        assert data["integration_changed"] is True
 
     def test_fanned_out_deps_excluded_from_source_changed(self, tmp_path):
         """Fan-out enters deps into the matrix (so lint+test runs against the
@@ -191,6 +217,7 @@ class TestHarnessFanOut:
         data = json.loads(r.stdout)
         assert data["changed_workers"] == ["harness"]
         assert data["source_changed"] == []
+        assert data["integration_changed"] is False
 
     def test_fanned_out_deps_bucketed_by_language(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
@@ -203,3 +230,63 @@ class TestHarnessFanOut:
         assert sorted(data["by_language"]["rust"]) == ["dep-rust", "harness"]
         assert data["by_language"]["node"] == ["dep-node"]
         assert data["by_language"]["python"] == []
+
+    def test_harness_manifest_change_runs_integration_without_source_change(self, tmp_path):
+        repo = make_repo_with_harness(tmp_path)
+        manifest = repo / "harness" / "Cargo.toml"
+        manifest.write_text(manifest.read_text() + "\n[features]\ndefault = []\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "manifest"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["source_changed"] == []
+        assert data["integration_changed"] is True
+
+    def test_unrelated_worker_change_skips_integration(self, tmp_path):
+        repo = make_repo_with_harness(tmp_path)
+        (repo / "unrelated" / "worker.py").write_text("# change\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "unrelated"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["integration_changed"] is False
+
+    def test_force_harness_preserves_full_fanout_and_runs_integration(self, tmp_path):
+        repo = make_repo_with_harness(tmp_path)
+        r = run_script(repo, "HEAD", "HEAD", "--force-worker", "harness")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert sorted(data["changed_workers"]) == ["dep-node", "dep-rust", "harness"]
+        assert data["source_changed"] == []
+        assert data["integration_changed"] is True
+
+    def test_console_change_runs_integration_without_harness_fanout(self, tmp_path):
+        repo = make_repo_with_harness(tmp_path)
+        (repo / "console" / "ui.ts").write_text("// change\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "console"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["changed_workers"] == ["console"]
+        assert data["integration_changed"] is True
+
+    def test_integration_workflow_change_runs_integration(self, tmp_path):
+        repo = make_repo_with_harness(tmp_path)
+        workflow = repo / ".github" / "workflows" / "ci.yml"
+        workflow.write_text("name: changed-ci\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "ci"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["changed_workers"] == []
+        assert data["integration_changed"] is True
+
+    def test_unknown_forced_worker_is_rejected(self, tmp_path):
+        repo = make_repo_with_harness(tmp_path)
+        r = run_script(repo, "HEAD", "HEAD", "--force-worker", "missing")
+        assert r.returncode == 2
+        assert "unknown --force-worker: missing" in r.stderr
