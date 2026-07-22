@@ -283,14 +283,14 @@ function resolveWsUrl(): string {
 }
 
 function makeBrowserId(): string {
-  // crypto.randomUUID() is available in all evergreen browsers.
+  // crypto.randomUUID() only exists in secure contexts (https / localhost);
+  // http://<LAN-IP> origins have `crypto` without it, hence the guard.
   if (
     typeof crypto !== 'undefined' &&
     typeof crypto.randomUUID === 'function'
   ) {
     return `console-${crypto.randomUUID()}`
   }
-  // Fallback for environments without crypto.randomUUID (older WebViews).
   const rand = Math.random().toString(36).slice(2, 10)
   return `console-${Date.now().toString(36)}-${rand}`
 }

@@ -2,9 +2,17 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { TooltipProvider } from '@/components/ui/Tooltip'
+import { installRandomUUIDPolyfill } from '@/lib/crypto-polyfill'
 import { App } from './App'
 import faviconUrl from './icons/favicon.svg?url'
 import './index.css'
+
+// Back-fills crypto.randomUUID on insecure origins (http://<LAN-IP>) —
+// iii-browser-sdk ≤ 0.21.6 calls it bare on every invocation. The module
+// also self-installs on import (which biome sorts before './App', the
+// SDK-bearing graph); this explicit call is the tree-shake-proof anchor
+// (main.test.ts guards both).
+installRandomUUIDPolyfill()
 
 const favicon =
   document.querySelector<HTMLLinkElement>('link[rel="icon"]') ??

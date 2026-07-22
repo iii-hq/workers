@@ -14,7 +14,7 @@
 
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
 import { getIiiClient } from '@/lib/iii-client'
-import { newMessageId } from '@/lib/session-id'
+import { newMessageId, newSessionId } from '@/lib/session-id'
 import { appendCustomEntry, fetchTranscript } from '@/lib/sessions/api'
 import { COMPACTION_CUSTOM_TYPE } from '@/lib/sessions/entry-mapper'
 import type { AgentMessage } from '@/lib/sessions/types'
@@ -208,7 +208,7 @@ async function realQueueMessage(
   opts?: ChatStreamOptions,
 ): Promise<void> {
   const client = await getIiiClient()
-  const sessionId = opts?.sessionId ?? `console-${crypto.randomUUID()}`
+  const sessionId = opts?.sessionId ?? newSessionId()
   const messageId = opts?.messageId ?? newMessageId()
   const req = await buildSendRequest(
     prompt,
@@ -301,7 +301,7 @@ async function* realStream(
 ): AsyncGenerator<StreamEvent> {
   const signal = opts?.signal
   const client = await getIiiClient()
-  const sessionId = opts?.sessionId ?? `console-${crypto.randomUUID()}`
+  const sessionId = opts?.sessionId ?? newSessionId()
   const messageId = opts?.messageId ?? newMessageId()
   // The `approval::*` functions live on the optional standalone approval-gate
   // worker. When it's absent, skip every approval subscription / read so we
