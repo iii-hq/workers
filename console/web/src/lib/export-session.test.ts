@@ -18,6 +18,8 @@ import {
   buildExportFilename,
   conversationToMarkdown,
   fetchWorkerVersions,
+  messagesToMarkdown,
+  formatTimestamp,
 } from './export-session'
 
 function baseConversation(messages: Message[] = []): Conversation {
@@ -309,5 +311,53 @@ describe('fetchWorkerVersions', () => {
     await expect(fetchWorkerVersions()).resolves.toEqual([
       { name: 'ok', version: '1.0.0' },
     ])
+  })
+})
+
+
+describe('buildExportFilename with suffix', () => {
+  it('inserts the suffix between id and timestamp', () => {
+    const filename = buildExportFilename(baseConversation(), 'full')
+    expect(filename).toMatch(/^iii-session-conv-123-full-\d{8}-\d{4}\.md$/)
+  })
+})
+
+describe('conversationToMarkdown — sub-agents bullet', () => {
+  it('renders the count after the workers block', () => {
+    const out = conversationToMarkdown(baseConversation(), [], 3)
+    const workersIdx = out.indexOf('- Workers:')
+    const subIdx = out.indexOf('- Sub-agents: 3')
+    expect(workersIdx).toBeGreaterThan(-1)
+    expect(subIdx).toBeGreaterThan(workersIdx)
+  })
+
+  it('renders _(unavailable)_ when discovery failed (null)', () => {
+    const out = conversationToMarkdown(baseConversation(), [], null)
+    expect(out).toContain('- Sub-agents: _(unavailable)_')
+  })
+
+  it('omits the bullet entirely when undefined', () => {
+    const out = conversationToMarkdown(baseConversation(), [])
+    expect(out).not.toContain('- Sub-agents')
+  })
+})
+
+describe('messagesToMarkdown', () => {
+  it('renders messages identically to the conversation body', () => {
+    const user: UserMessage = {
+      id: 'u1',
+      role: 'user',
+      content: 'hello',
+      createdAt: 1,
+    }
+    expect(messagesToMarkdown([user])).toBe('## User\nhello')
+  })
+})
+
+describe('formatTimestamp', () => {
+  it('renders ISO timestamps', () => {
+    expect(formatTimestamp(Date.UTC(2025, 0, 1, 12, 0, 0))).toBe(
+      '2025-01-01T12:00:00.000Z',
+    )
   })
 })

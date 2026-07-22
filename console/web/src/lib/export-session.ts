@@ -20,7 +20,7 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function formatTimestamp(ms: number): string {
+export function formatTimestamp(ms: number): string {
   try {
     return new Date(ms).toISOString()
   } catch {
@@ -95,6 +95,11 @@ function renderFunctionCall(message: FunctionCallMessage): string {
   }
   return parts.join('\n')
 }
+/** Transcript body shared by the single-session and sub-agent exporters. */
+export function messagesToMarkdown(messages: Message[]): string {
+  return messages.map(renderMessage).join('\n\n')
+}
+
 
 /** One connected worker as reported by `engine::workers::list`. */
 export interface WorkerVersion {
@@ -163,6 +168,7 @@ function renderWorkersBlock(workers: WorkerVersion[] | null): string[] {
 export function conversationToMarkdown(
   conversation: Conversation,
   workers?: WorkerVersion[] | null,
+  subagentCount?: number | null,
 ): string {
   const header: string[] = [
     `# Session: ${conversation.title}`,
@@ -174,6 +180,13 @@ export function conversationToMarkdown(
     `- Mode: \`${conversation.mode}\``,
     `- Message count: ${conversation.messages.length}`,
     ...(workers !== undefined ? renderWorkersBlock(workers) : []),
+    ...(subagentCount !== undefined
+      ? [
+          subagentCount === null
+            ? '- Sub-agents: _(unavailable)_'
+            : `- Sub-agents: ${subagentCount}`,
+        ]
+      : []),
     '',
     '---',
     '',
@@ -183,7 +196,7 @@ export function conversationToMarkdown(
     return `${header.join('\n')}_(no messages)_\n`
   }
 
-  const body = conversation.messages.map(renderMessage).join('\n\n')
+  const body = messagesToMarkdown(conversation.messages)
   return `${header.join('\n')}${body}\n`
 }
 
@@ -200,9 +213,13 @@ function timestampSlug(now: Date = new Date()): string {
   return `${y}${m}${d}-${hh}${mm}`
 }
 
-export function buildExportFilename(conversation: Conversation): string {
+export function buildExportFilename(
+  conversation: Conversation,
+  suffix?: string,
+): string {
   const shortId = conversation.id.slice(0, 8) || 'session'
-  return `iii-session-${shortId}-${timestampSlug()}.md`
+  const tag = suffix ? `-${suffix}` : ''
+  return `iii-session-${shortId}${tag}-${timestampSlug()}.md`
 }
 
 /**
@@ -210,12 +227,12 @@ export function buildExportFilename(conversation: Conversation): string {
  * worker versions first (best-effort, ≤2 s) so the header records the stack.
  * Returns the filename so callers can announce it (e.g. via a live region).
  */
-export async function downloadConversationAsMarkdown(
-  conversation: Conversation,
-): Promise<string> {
-  const workers = await fetchWorkerVersions()
-  const markdown = conversationToMarkdown(conversation, workers)
-  const filename = buildExportFilename(conversation)
+
+/** Blob + anchor download shared by both export entry points. */
+export function triggerMarkdownDownload(
+  markdown: string,
+  filename: string,
+): void {
   const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -227,5 +244,14 @@ export async function downloadConversationAsMarkdown(
   document.body.removeChild(a)
   // Revoke on the next tick so Safari has time to honour the click.
   window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
+export async function downloadConversationAsMarkdown(
+  conversation: Conversation,
+): Promise<string> {
+  const workers = await fetchWorkerVersions()
+  const markdown = conversationToMarkdown(conversation, workers)
+  const filename = buildExportFilename(conversation)
+  triggerMarkdownDownload(markdown, filename)
   return filename
 }
