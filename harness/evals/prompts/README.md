@@ -7,10 +7,10 @@ skill, or injected guidance.
 
 ## What it is (and is not)
 
-- `harness/evals/integration` is the deterministic conformance suite: isolated
-  stack, scripted `router::*`, exact invariants, CI gate. A scripted router
-  cannot measure prompt-driven behavior, which is exactly what changes when a
-  prompt changes.
+- The deterministic conformance suite (in progress as `harness/evals/integration`)
+  boots an isolated stack with a scripted `router::*` and grades exact
+  invariants as a CI gate. A scripted router cannot measure prompt-driven
+  behavior, which is exactly what changes when a prompt changes.
 - This runner is the complement: live engine, live provider, live prompts. It
   answers "does the smaller prompt still produce correct conduct" with a task
   matrix instead of a diff review.

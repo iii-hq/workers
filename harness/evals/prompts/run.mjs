@@ -10,7 +10,7 @@
 //
 // Requires: a running engine + harness + a real provider, and the `iii`
 // CLI on PATH. This is deliberately NOT the deterministic conformance
-// suite (harness/evals/integration): scripted routers cannot measure
+// suite (in progress as harness/evals/integration): scripted routers cannot measure
 // prompt-driven behavior, so these scenarios run against live models and
 // grade conduct (what was called, in what order) rather than exact text.
 //
@@ -59,36 +59,35 @@ const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
 function countTokens(model, text) {
   const out = trig("context::count-tokens", { model: { id: model }, system_prompt: text, messages: [] });
-  return out.tokens ?? out.token_count ?? null;
+  return out.tokens ?? null;
 }
 
 async function waitSettled(sessionId, timeoutS, quietS) {
   const t0 = Date.now();
   let quiet = 0;
+  let st = {};
   while ((Date.now() - t0) / 1000 < timeoutS) {
     await sleep(6000);
-    const st = trig("harness::status", { session_id: sessionId });
+    st = trig("harness::status", { session_id: sessionId });
     const terminal = ["completed", "failed", "cancelled", undefined, null].includes(st.status);
     quiet = terminal ? quiet + 6 : 0;
     if (quiet >= quietS) break;
   }
-  return trig("harness::status", { session_id: sessionId });
+  return st;
 }
 
 function readTranscript(sessionId) {
+  // `calls` comes from the function_result rows alone: every executed call
+  // yields exactly one result, in execution order. (A call also appears as
+  // an assistant function_call block; counting both channels double-counts
+  // parallel pairs and inflates the grading.)
   const resp = trig("session::messages", { session_id: sessionId });
   const calls = [];
   let generations = 0;
   for (const m of resp.messages ?? []) {
     const msg = m.message ?? {};
-    if (msg.role === "assistant") {
-      generations++;
-      for (const b of msg.content ?? []) {
-        if (b.type === "function_call") calls.push(b.arguments?.function ?? b.function_id ?? "");
-      }
-    } else if (msg.role === "function_result") {
-      if (!calls.length || calls[calls.length - 1] !== msg.function_id) calls.push(msg.function_id);
-    }
+    if (msg.role === "assistant") generations++;
+    else if (msg.role === "function_result") calls.push(msg.function_id);
   }
   return { calls: calls.filter(Boolean), generations };
 }
@@ -110,8 +109,10 @@ function grade(assertions, armName, { calls, result }) {
         pass = !calls.some((c) => re.test(c));
         break;
       case "call_order": {
-        const before = calls.findIndex((c) => new RegExp(a.before).test(c));
-        const after = calls.findIndex((c) => new RegExp(a.after).test(c));
+        const beforeRe = new RegExp(a.before);
+        const afterRe = new RegExp(a.after);
+        const before = calls.findIndex((c) => beforeRe.test(c));
+        const after = calls.findIndex((c) => afterRe.test(c));
         pass = after === -1 || (before !== -1 && before < after);
         break;
       }
