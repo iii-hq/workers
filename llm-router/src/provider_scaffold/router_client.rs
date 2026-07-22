@@ -1,8 +1,9 @@
 //! Thin wrappers over the router's provider-protocol functions. All calls
 //! carry the registration token (identity binding, spec adaptation #1).
 //! `provider_id` is the caller's declared provider id (e.g. "anthropic").
+use crate::types::credential::Credential;
 use crate::types::model::Model;
-use crate::types::router::ProviderResolveResponse;
+use crate::types::router::{CredentialSource, ProviderResolveResponse};
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
@@ -69,4 +70,88 @@ pub async fn models_get(iii: &IIIClient, provider_id: &str, model_id: &str) -> O
 /// `router::provider::register` — returns the registration token to persist.
 pub async fn register(iii: &IIIClient, declaration: Value) -> Result<Value, Error> {
     call(iii, "router::provider::register", declaration).await
+}
+
+/// Inject an env-sourced ApiKey only when the router resolved nothing.
+/// Pure: takes the already-read value so tests never touch process env.
+fn with_api_key_fallback(
+    mut resp: ProviderResolveResponse,
+    key: Option<String>,
+) -> ProviderResolveResponse {
+    if resp.credential.is_some() {
+        return resp; // router / config credential always wins
+    }
+    if let Some(k) = key {
+        let k = k.trim();
+        if !k.is_empty() {
+            resp.credential = Some(Credential::ApiKey { key: k.to_string() });
+            resp.source = CredentialSource::Env;
+            resp.configured = true;
+        }
+    }
+    resp
+}
+
+/// Read the provider's declared env var and apply the fallback.
+pub fn apply_credential_env_fallback(
+    resp: ProviderResolveResponse,
+    credential_env_var: Option<&str>,
+) -> ProviderResolveResponse {
+    let key = credential_env_var.and_then(|name| std::env::var(name).ok());
+    with_api_key_fallback(resp, key)
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use crate::types::credential::Credential;
+    use crate::types::router::{CredentialSource, ProviderResolveResponse};
+    use super::with_api_key_fallback;
+
+    fn none_resp() -> ProviderResolveResponse {
+        ProviderResolveResponse {
+            configured: false,
+            source: CredentialSource::None,
+            credential: None,
+            api_url: None,
+            max_tokens: None,
+        }
+    }
+
+    #[test]
+    fn router_credential_wins_over_env() {
+        let mut resp = none_resp();
+        resp.credential = Some(Credential::ApiKey { key: "from-router".into() });
+        resp.source = CredentialSource::Config;
+        resp.configured = true;
+        let out = with_api_key_fallback(resp, Some("from-env".into()));
+        assert_eq!(out.credential, Some(Credential::ApiKey { key: "from-router".into() }));
+        assert_eq!(out.source, CredentialSource::Config);
+    }
+
+    #[test]
+    fn injects_env_when_router_has_none() {
+        let out = with_api_key_fallback(none_resp(), Some("sk-abc".into()));
+        assert_eq!(out.credential, Some(Credential::ApiKey { key: "sk-abc".into() }));
+        assert_eq!(out.source, CredentialSource::Env);
+        assert!(out.configured);
+    }
+
+    #[test]
+    fn no_key_leaves_none() {
+        let out = with_api_key_fallback(none_resp(), None);
+        assert_eq!(out.credential, None);
+        assert!(!out.configured);
+    }
+
+    #[test]
+    fn empty_and_whitespace_are_not_injected() {
+        assert_eq!(with_api_key_fallback(none_resp(), Some("".into())).credential, None);
+        assert_eq!(with_api_key_fallback(none_resp(), Some("  \n".into())).credential, None);
+    }
+
+    #[test]
+    fn injected_key_is_trimmed() {
+        let out = with_api_key_fallback(none_resp(), Some(" sk-abc\n".into()));
+        assert_eq!(out.credential, Some(Credential::ApiKey { key: "sk-abc".into() }));
+    }
 }
