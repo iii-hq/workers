@@ -18,8 +18,8 @@ import {
   buildExportFilename,
   conversationToMarkdown,
   fetchWorkerVersions,
-  messagesToMarkdown,
   formatTimestamp,
+  messagesToMarkdown,
 } from './export-session'
 
 function baseConversation(messages: Message[] = []): Conversation {
@@ -313,7 +313,6 @@ describe('fetchWorkerVersions', () => {
     ])
   })
 })
-
 
 describe('buildExportFilename with suffix', () => {
   it('inserts the suffix between id and timestamp', () => {

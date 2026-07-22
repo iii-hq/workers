@@ -100,7 +100,6 @@ export function messagesToMarkdown(messages: Message[]): string {
   return messages.map(renderMessage).join('\n\n')
 }
 
-
 /** One connected worker as reported by `engine::workers::list`. */
 export interface WorkerVersion {
   name: string
