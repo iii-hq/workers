@@ -46,7 +46,7 @@ export function OpenInEditorButton({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="inline-flex items-center shrink-0 text-ink-ghost hover:text-ink transition-colors"
+          className="inline-flex items-center shrink-0 cursor-pointer text-ink-ghost hover:text-ink transition-colors"
           aria-label="open in editor"
           title="open in editor"
         >

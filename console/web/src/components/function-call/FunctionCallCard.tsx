@@ -642,7 +642,7 @@ function PaneShell({
         <button
           type="button"
           onClick={copy}
-          className="shrink-0 text-ink-ghost hover:text-ink transition-colors"
+          className="shrink-0 cursor-pointer text-ink-ghost hover:text-ink transition-colors"
           aria-label={copied ? 'copied' : `copy ${label}`}
           title={copied ? 'copied' : 'copy'}
         >

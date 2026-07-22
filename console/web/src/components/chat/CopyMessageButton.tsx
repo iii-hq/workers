@@ -35,7 +35,7 @@ export function CopyMessageButton({
       type="button"
       onClick={copy}
       className={cn(
-        'shrink-0 text-ink-ghost hover:text-ink transition-colors',
+        'shrink-0 cursor-pointer text-ink-ghost hover:text-ink transition-colors',
         className,
       )}
       aria-label={copied ? 'copied' : label}
