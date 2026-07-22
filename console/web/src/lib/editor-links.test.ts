@@ -38,6 +38,15 @@ describe('buildUrl', () => {
       'zed://file/tmp/my%20file.txt:3',
     )
   })
+
+  it('percent-encodes URL delimiters (# and ?) in filenames', () => {
+    expect(editorById('cursor').buildUrl('/tmp/notes#1.md')).toBe(
+      'cursor://file/tmp/notes%231.md',
+    )
+    expect(editorById('vscode').buildUrl('/tmp/what?.ts', 7)).toBe(
+      'vscode://file/tmp/what%3F.ts:7',
+    )
+  })
 })
 
 it('EDITORS ids are unique and cover the EditorId union', () => {

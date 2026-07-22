@@ -21,7 +21,11 @@ function fileUrl(scheme: string, path: string, line?: number): string {
     typeof line === 'number' && Number.isInteger(line) && line > 0
       ? `:${line}`
       : ''
-  return `${scheme}://file${encodeURI(path)}${anchor}`
+  // encodeURI leaves URL delimiters (#, ?) raw — legal filename bytes that
+  // would truncate the path into a fragment/query — so encode per segment,
+  // keeping only the slashes literal.
+  const encoded = path.split('/').map(encodeURIComponent).join('/')
+  return `${scheme}://file${encoded}${anchor}`
 }
 
 export const EDITORS: readonly Editor[] = [
