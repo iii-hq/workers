@@ -1,36 +1,36 @@
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
 import {
-  FunctionCallCard,
+  FunctionTriggerCard,
   isErrorOutput,
-} from '@/components/function-call/FunctionCallCard'
+} from '@/components/function-trigger/FunctionTriggerCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
-import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/chat'
+import type { FunctionTriggerMessage as FunctionTriggerMessageType } from '@/types/chat'
 
-interface FunctionCallGroupProps {
-  messages: FunctionCallMessageType[]
+interface FunctionTriggerGroupProps {
+  messages: FunctionTriggerMessageType[]
   /** Force the group open. Used by the examples showcase. */
   defaultOpen?: boolean
   /**
    * Forwarded from `MessageList` so a pending approval landing on any
    * child call still wires through to `approval::resolve`. Each child's
-   * approve/deny is bound to that child's `sessionId` + `functionCallId`.
+   * approve/deny is bound to that child's `sessionId` + `functionTriggerId`.
    */
   onResolveApproval?: (
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     decision: 'allow' | 'deny',
   ) => Promise<void>
   onAlwaysAllow?: (
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     functionId: string,
   ) => Promise<void>
   onResolveFilesystemAccess?: (
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     action: FilesystemAccessAction,
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
@@ -48,10 +48,10 @@ interface GroupStatus {
 /**
  * Derive the single header line + dot tone that summarises the group.
  * Priority: pending approval > running > errored > done. Matches the
- * `FunctionCallMessage` dot conventions so the group reads as "one of
+ * `FunctionTriggerMessage` dot conventions so the group reads as "one of
  * these" rather than a new visual language.
  */
-function deriveStatus(messages: FunctionCallMessageType[]): GroupStatus {
+function deriveStatus(messages: FunctionTriggerMessageType[]): GroupStatus {
   const total = messages.length
 
   const pending = messages.find((m) => m.pendingApproval)
@@ -127,13 +127,13 @@ function deriveStatus(messages: FunctionCallMessageType[]): GroupStatus {
  * Open if anything in the group needs attention — that's the only state
  * where the user can't infer what's happening from the one-line header.
  */
-function hasConcerningChild(messages: FunctionCallMessageType[]): boolean {
+function hasConcerningChild(messages: FunctionTriggerMessageType[]): boolean {
   return messages.some(
     (m) => m.pendingApproval || m.running || isErrorOutput(m.output),
   )
 }
 
-export function FunctionCallGroup({
+export function FunctionTriggerGroup({
   messages,
   defaultOpen,
   onResolveApproval,
@@ -141,7 +141,7 @@ export function FunctionCallGroup({
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
   workingDir,
-}: FunctionCallGroupProps) {
+}: FunctionTriggerGroupProps) {
   const status = deriveStatus(messages)
   const concerning = hasConcerningChild(messages)
   const [open, setOpen] = useState(defaultOpen ?? concerning)
@@ -161,7 +161,7 @@ export function FunctionCallGroup({
      and code panes (`bg-bg`) sit one and two layers above, creating a clear
      depth hierarchy in both light and dark themes. */
   return (
-    <div className="function-call-surface border border-rule bg-panel">
+    <div className="function-trigger-surface border border-rule bg-panel">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -196,29 +196,29 @@ export function FunctionCallGroup({
         <div className="border-t border-rule-2 divide-y divide-rule-2">
           {messages.map((m) => {
             const sessionId = m.sessionId
-            const functionCallId = m.functionCallId
+            const functionTriggerId = m.functionTriggerId
             let onApprove: (() => Promise<void>) | undefined
             let onDeny: (() => Promise<void>) | undefined
             let onAlwaysAllowHandler: (() => Promise<void>) | undefined
             let onResolveFilesystemAccessHandler:
               | ((action: FilesystemAccessAction) => Promise<void>)
               | undefined
-            if (onResolveApproval && sessionId && functionCallId) {
+            if (onResolveApproval && sessionId && functionTriggerId) {
               onApprove = () =>
-                onResolveApproval(sessionId, functionCallId, 'allow')
+                onResolveApproval(sessionId, functionTriggerId, 'allow')
               onDeny = () =>
-                onResolveApproval(sessionId, functionCallId, 'deny')
+                onResolveApproval(sessionId, functionTriggerId, 'deny')
             }
-            if (onAlwaysAllow && sessionId && functionCallId) {
+            if (onAlwaysAllow && sessionId && functionTriggerId) {
               onAlwaysAllowHandler = () =>
-                onAlwaysAllow(sessionId, functionCallId, m.functionId)
+                onAlwaysAllow(sessionId, functionTriggerId, m.functionId)
             }
-            if (onResolveFilesystemAccess && sessionId && functionCallId) {
+            if (onResolveFilesystemAccess && sessionId && functionTriggerId) {
               onResolveFilesystemAccessHandler = (action) =>
-                onResolveFilesystemAccess(sessionId, functionCallId, action)
+                onResolveFilesystemAccess(sessionId, functionTriggerId, action)
             }
             return (
-              <FunctionCallCard
+              <FunctionTriggerCard
                 key={m.id}
                 message={m}
                 onApprove={onApprove}

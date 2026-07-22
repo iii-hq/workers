@@ -8,6 +8,7 @@ pub mod functions;
 pub mod manifest;
 pub mod proxy;
 pub mod server;
+pub mod ui_assets;
 
 pub fn worker_name() -> &'static str {
     "console"

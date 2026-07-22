@@ -3,15 +3,15 @@ import type { FilesystemAccessAction } from '@/components/permissions/Filesystem
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import {
   assistantCopyText,
-  functionCallsByAssistant,
-} from '@/lib/function-call-copy'
+  functionTriggersByAssistant,
+} from '@/lib/function-trigger-copy'
 import { cn } from '@/lib/utils'
 import type {
-  FunctionCallMessage as FunctionCallMessageType,
+  FunctionTriggerMessage as FunctionTriggerMessageType,
   Message as MessageType,
 } from '@/types/chat'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
-import { FunctionCallGroup } from './FunctionCallGroup'
+import { FunctionTriggerGroup } from './FunctionTriggerGroup'
 import { Message } from './Message'
 
 interface MessageListProps {
@@ -27,17 +27,17 @@ interface MessageListProps {
   density?: 'route' | 'dock'
   onResolveApproval?: (
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     decision: 'allow' | 'deny',
   ) => Promise<void>
   onAlwaysAllow?: (
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     functionId: string,
   ) => Promise<void>
   onResolveFilesystemAccess?: (
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     action: FilesystemAccessAction,
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
@@ -46,10 +46,10 @@ interface MessageListProps {
 
 type RenderItem =
   | { kind: 'message'; key: string; message: MessageType }
-  | { kind: 'fcall-group'; key: string; messages: FunctionCallMessageType[] }
+  | { kind: 'fcall-group'; key: string; messages: FunctionTriggerMessageType[] }
 
 /**
- * Collapse runs of consecutive `function-call` messages into a single
+ * Collapse runs of consecutive `function-trigger` messages into a single
  * `fcall-group` item. Single-call runs stay rendered as a standalone
  * `Message` so happy-agent, pending-approval, and error-on-fcall look
  * identical to today. Only runs of 2+ get the group accordion.
@@ -59,7 +59,7 @@ type RenderItem =
  */
 function groupConsecutiveFcalls(messages: MessageType[]): RenderItem[] {
   const out: RenderItem[] = []
-  let buffer: FunctionCallMessageType[] = []
+  let buffer: FunctionTriggerMessageType[] = []
 
   const flush = () => {
     if (buffer.length === 0) return
@@ -77,7 +77,7 @@ function groupConsecutiveFcalls(messages: MessageType[]): RenderItem[] {
   }
 
   for (const m of messages) {
-    if (m.role === 'function-call') {
+    if (m.role === 'function-trigger') {
       buffer.push(m)
     } else {
       flush()
@@ -106,7 +106,7 @@ export function MessageList({
 
   const items = useMemo(() => groupConsecutiveFcalls(messages), [messages])
   const fcallsByAssistant = useMemo(
-    () => functionCallsByAssistant(messages),
+    () => functionTriggersByAssistant(messages),
     [messages],
   )
 
@@ -139,7 +139,7 @@ export function MessageList({
     let newestPending: (typeof messages)[number] | null = null
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
-      if (m.role === 'function-call' && m.pendingApproval === true) {
+      if (m.role === 'function-trigger' && m.pendingApproval === true) {
         newestPending = m
         break
       }
@@ -178,7 +178,7 @@ export function MessageList({
         {items.map((item) => {
           if (item.kind === 'fcall-group') {
             return (
-              <FunctionCallGroup
+              <FunctionTriggerGroup
                 key={item.key}
                 messages={item.messages}
                 onResolveApproval={onResolveApproval}

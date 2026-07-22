@@ -1,0 +1,16 @@
+# The UI workspace: the console SPA, the shared @iii-dev/console-ui package,
+# and every worker's injected-UI project link against each other from here
+# (workspace:* protocol — no publishing, no copied types).
+#
+# Deliberately NOT a repo-wide workspace: Node bundle workers (harness/,
+# e2e/, …) keep their own self-contained projects and lockfiles; list a
+# directory here only when it participates in the shared console-UI surface.
+packages:
+  - packages/*
+  - console/web
+  - state/ui
+
+# pnpm ≥11 blocks dependency postinstall scripts by default; esbuild's
+# installs its platform binary.
+allowBuilds:
+  esbuild: true

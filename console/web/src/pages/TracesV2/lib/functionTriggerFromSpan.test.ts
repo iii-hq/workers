@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { functionCallFromSpan, spanFunctionId } from './functionCallFromSpan'
+import {
+  functionTriggerFromSpan,
+  spanFunctionId,
+} from './functionTriggerFromSpan'
 import type { VisualizationSpan } from './traceTransform'
 
 function vis(overrides: Partial<VisualizationSpan> = {}): VisualizationSpan {
@@ -123,7 +126,7 @@ describe('spanFunctionId', () => {
   })
 })
 
-describe('functionCallFromSpan', () => {
+describe('functionTriggerFromSpan', () => {
   it('marks a pending invocation span as running without a duration', () => {
     const live = vis({
       pending: true,
@@ -131,7 +134,7 @@ describe('functionCallFromSpan', () => {
       duration_ms: 1_500,
       attributes: { 'faas.invoked_name': 'slow_fn' },
     })
-    const call = functionCallFromSpan(live)
+    const call = functionTriggerFromSpan(live)
     expect(call?.functionId).toBe('slow_fn')
     expect(call?.running).toBe(true)
     expect(call?.durationMs).toBeUndefined()
@@ -139,7 +142,7 @@ describe('functionCallFromSpan', () => {
   })
 
   it('keeps duration and output for finished spans', () => {
-    const call = functionCallFromSpan(
+    const call = functionTriggerFromSpan(
       vis({ attributes: { function_id: 'chat.respond' } }),
     )
     expect(call?.functionId).toBe('chat.respond')
@@ -161,7 +164,7 @@ describe('functionCallFromSpan', () => {
       name: 'HTTP GET',
       attributes: { 'iii.function.id': 'worker::list' },
     })
-    expect(functionCallFromSpan(inner, byId(execute, inner))).toBeNull()
+    expect(functionTriggerFromSpan(inner, byId(execute, inner))).toBeNull()
   })
 
   it('keeps the card for an inherited-identity span that captured payload data, flagged as inherited', () => {
@@ -175,7 +178,7 @@ describe('functionCallFromSpan', () => {
       name: 'tool call',
       attributes: { 'tool.arguments': '{"query":"x"}' },
     })
-    const call = functionCallFromSpan(inner, byId(execute, inner))
+    const call = functionTriggerFromSpan(inner, byId(execute, inner))
     expect(call?.functionId).toBe('worker::list')
     expect(call?.input).toEqual({ query: 'x' })
     // The id names the enclosing invocation, not this sub-span — the card
@@ -201,7 +204,7 @@ describe('functionCallFromSpan', () => {
         },
       ],
     })
-    const call = functionCallFromSpan(inner, byId(execute, inner))
+    const call = functionTriggerFromSpan(inner, byId(execute, inner))
     expect(call?.output).toEqual({ error: 'boom' })
     expect(call?.identityInherited).toBe(true)
   })
@@ -218,7 +221,7 @@ describe('functionCallFromSpan', () => {
       pending: true,
       attributes: { 'tool.arguments': '{"query":"x"}' },
     })
-    const call = functionCallFromSpan(inner, byId(execute, inner))
+    const call = functionTriggerFromSpan(inner, byId(execute, inner))
     expect(call?.running).toBe(true)
     expect(call?.identityInherited).toBe(true)
   })
@@ -227,7 +230,7 @@ describe('functionCallFromSpan', () => {
     // The invocation span is the one place "empty" is honest — payload
     // capture may be disabled (III_DISABLE_TRACE_PAYLOADS) yet the call
     // itself is real and worth a card.
-    const call = functionCallFromSpan(
+    const call = functionTriggerFromSpan(
       vis({ name: 'execute worker::list', attributes: {} }),
     )
     expect(call?.functionId).toBe('worker::list')

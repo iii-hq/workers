@@ -1,6 +1,6 @@
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
-import type { FunctionCallMessage } from '@/types/chat'
+import type { FunctionTriggerMessage } from '@/types/chat'
 import { FunctionInfoView } from './FunctionInfoView'
 import { FunctionsListView } from './FunctionsListView'
 import {
@@ -35,7 +35,7 @@ export function EngineFunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-function tryRender(message: FunctionCallMessage): React.ReactNode | null {
+function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
   if (!isEngineListFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -113,7 +113,7 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
  * reaches the renderer.
  */
 function tryRenderPreview(
-  _message: FunctionCallMessage,
+  _message: FunctionTriggerMessage,
 ): React.ReactNode | null {
   return null
 }

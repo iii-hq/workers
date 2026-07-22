@@ -23,7 +23,7 @@ import type {
 } from '../components/timeline/layout'
 import type { TraceActivityMap } from '../hooks/useTraceActivity'
 import type { TraceListItem } from '../hooks/useTraceData'
-import { explicitFunctionId } from './functionCallFromSpan'
+import { explicitFunctionId } from './functionTriggerFromSpan'
 import {
   inheritedTags,
   internalFamilyOf,

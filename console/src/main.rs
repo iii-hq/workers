@@ -17,7 +17,7 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::oneshot;
 
-use console::{config, configuration, functions, manifest, server};
+use console::{config, configuration, functions, manifest, server, ui_assets};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -103,7 +103,16 @@ async fn main() -> Result<()> {
     );
     let iii = Arc::new(iii);
 
-    functions::register_all(&iii, &cfg, &engine_url);
+    // Trigger types register before functions (approval-gate/memory
+    // ordering convention). `None` = injectable UI disabled via config.
+    let ui = if cfg.injectable_ui {
+        Some(ui_assets::start(&iii))
+    } else {
+        tracing::info!("injectable_ui disabled — skipping console:* trigger types and /ui routes");
+        None
+    };
+
+    functions::register_all(&iii, &cfg, &engine_url, ui.clone());
 
     // Best-effort: guarantee the `console` configuration entry exists for the
     // UI's saved preferences, without delaying HTTP serve.
@@ -123,11 +132,10 @@ async fn main() -> Result<()> {
 
     let (http_shutdown_tx, http_shutdown_rx) = oneshot::channel::<()>();
     let engine_url_redacted = redact_url(&engine_url);
-    let engine_url_for_proxy = Arc::new(engine_url);
+    let state = server::AppState::new(Arc::new(engine_url), ui);
     let http_port = cfg.http_port;
     let server_handle = tokio::spawn(async move {
-        if let Err(e) = server::serve(http_port, engine_url_for_proxy, http_shutdown_rx, None).await
-        {
+        if let Err(e) = server::serve(http_port, state, http_shutdown_rx, None).await {
             tracing::error!(error = %e, "http server crashed");
         }
     });

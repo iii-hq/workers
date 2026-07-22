@@ -1,13 +1,13 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import type { FunctionCallMessage as FCallType } from '@/types/chat'
-import { FunctionCallGroup } from './FunctionCallGroup'
+import type { FunctionTriggerMessage as FTriggerType } from '@/types/chat'
+import { FunctionTriggerGroup } from './FunctionTriggerGroup'
 
 /* Mirrors the multi-function-agent scenario: three sequential engine calls
    so the story matches what a real fan-out turn produces. */
-const groupInFlight: FCallType[] = [
+const groupInFlight: FTriggerType[] = [
   {
     id: 'g1a',
-    role: 'function-call',
+    role: 'function-trigger',
     functionId: 'engine::list',
     input: {},
     output: { workers: ['worker-1', 'worker-3', 'worker-7'] },
@@ -16,7 +16,7 @@ const groupInFlight: FCallType[] = [
   },
   {
     id: 'g1b',
-    role: 'function-call',
+    role: 'function-trigger',
     functionId: 'engine::info',
     input: { id: 'worker-7' },
     running: true,
@@ -24,7 +24,7 @@ const groupInFlight: FCallType[] = [
   },
   {
     id: 'g1c',
-    role: 'function-call',
+    role: 'function-trigger',
     functionId: 'engine::echo',
     input: { workerId: 'worker-7', text: 'ping' },
     output: { text: 'ping' },
@@ -33,10 +33,10 @@ const groupInFlight: FCallType[] = [
   },
 ]
 
-const groupDone: FCallType[] = [
+const groupDone: FTriggerType[] = [
   {
     id: 'g2a',
-    role: 'function-call',
+    role: 'function-trigger',
     functionId: 'engine::list',
     input: {},
     output: { workers: ['worker-1', 'worker-3', 'worker-7'] },
@@ -45,7 +45,7 @@ const groupDone: FCallType[] = [
   },
   {
     id: 'g2b',
-    role: 'function-call',
+    role: 'function-trigger',
     functionId: 'engine::info',
     input: { id: 'worker-7' },
     output: {
@@ -59,7 +59,7 @@ const groupDone: FCallType[] = [
   },
   {
     id: 'g2c',
-    role: 'function-call',
+    role: 'function-trigger',
     functionId: 'engine::echo',
     input: { workerId: 'worker-7', text: 'ping' },
     output: { text: 'ping' },
@@ -69,10 +69,10 @@ const groupDone: FCallType[] = [
 ]
 
 const meta = {
-  title: 'Chat/FunctionCallGroup',
-  component: FunctionCallGroup,
+  title: 'Chat/FunctionTriggerGroup',
+  component: FunctionTriggerGroup,
   parameters: { layout: 'padded' },
-} satisfies Meta<typeof FunctionCallGroup>
+} satisfies Meta<typeof FunctionTriggerGroup>
 
 export default meta
 type Story = StoryObj<typeof meta>

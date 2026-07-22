@@ -3,7 +3,7 @@ import {
   isDeniedOutput,
   parseEmbeddedJson,
   resultEnvelope,
-} from './FunctionCallCard'
+} from './FunctionTriggerCard'
 
 describe('parseEmbeddedJson', () => {
   it('parses double-encoded objects and arrays', () => {

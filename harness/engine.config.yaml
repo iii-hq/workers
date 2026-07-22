@@ -5,6 +5,10 @@
 # enabled by default in the engine — the harness registers its `harness` entry
 # there at boot and hot-reloads on change.
 
-workers:
-  - name: iii-state
-    # 'iii-state': value now lives in the configuration worker at ./config/iii-state.yaml. Edit at runtime via 'iii config set iii-state' (or 'configuration::set'); this block is no longer read.
+# The built-in `iii-state` is intentionally NOT listed: the repo's standalone
+# `state` worker (workers/state — start it via workers-dev) owns the `state`
+# trigger type and the `state::*` functions now, and its boot guard refuses to
+# start while the builtin is active. If you need the builtin back, re-add
+# `- name: iii-state` and stop the standalone worker. (Its adapter value lives
+# in the configuration worker; edit via `configuration::set`.)
+workers: []

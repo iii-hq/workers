@@ -1,0 +1,23 @@
+{
+  "name": "@iii-dev/console-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Compile-time surface of the console's injectable-UI runtime module. Type-only by design: at runtime the console's import map serves the real module from the running SPA, so this package must stay `external` in every worker UI build — its js entry throws to make a forgotten external fail fast and loud.",
+  "type": "module",
+  "types": "./index.d.ts",
+  "main": "./index.js",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./component-names": {
+      "types": "./component-names.d.mts",
+      "default": "./component-names.mjs"
+    }
+  },
+  "files": ["index.d.ts", "index.js", "component-names.mjs", "component-names.d.mts"],
+  "devDependencies": {
+    "@types/react": "^19.2.14"
+  }
+}

@@ -177,12 +177,14 @@ flowchart LR
 ### `config.yaml`
 
 ```yaml
-http_port: 3113   # port the UI + /ws are served on (default: 3113)
+http_port: 3113       # port the UI + /ws are served on (default: 3113)
+injectable_ui: true   # kill switch for runtime-injected worker UI (default: true)
 ```
 
 | Key | Default | Description |
 |---|---|---|
 | `http_port` | `3113` | TCP port the worker binds for `/`, `/assets/*`, and `/ws` |
+| `injectable_ui` | `true` | When `false`, skips the `console:script` / `console:style` / `console:assets` trigger types, the `/ui` + `/vendor` routes, and the SPA loader (`console::ui-manifest` answers `disabled: true`) |
 
 ### CLI flags
 
@@ -199,10 +201,40 @@ http_port: 3113   # port the UI + /ws are served on (default: 3113)
 |---|---|
 | `GET /` | Embedded `index.html` (SPA shell, hash-routed client-side). `Cache-Control: no-cache, must-revalidate` |
 | `GET /assets/*` | Embedded JS / CSS, content-hashed filenames. `Cache-Control: public, max-age=31536000, immutable` |
-| `GET /ws` (Upgrade) | WebSocket upgrade; transparent proxy to `engine_url` |
+| `GET /ui` | Injected-asset manifest JSON (same shape as `console::ui-manifest`). `no-cache` |
+| `GET /ui/*` | Current bytes for a registered injected UI asset. `no-cache` + `ETag: "<hash>"` (304 on `If-None-Match`) |
+| `GET /vendor/*` | Shared-dep ESM shims for injected scripts (react, `@iii-dev/console-ui`), generated at web build time. `no-cache` |
+| `GET /ws` (Upgrade) | WebSocket upgrade; transparent proxy to `engine_url` (drops browser-originated `registertriggertype` frames; stamps `metadata.internal` on `registerfunction`) |
 | anything else | `404 Not Found` |
 
 The SPA bundle is embedded into the binary at compile time via [`rust-embed`](https://docs.rs/rust-embed) — the released `console` has no separate `dist/` directory, no side-car asset server, and no runtime filesystem dependency for the UI.
+
+## Injectable UI
+
+Workers extend the console at **runtime** — whole pages and function-trigger
+renderers as plain React components sharing the console's React instance
+(spec: `iii/tech-specs/2026-07-17-injectable-ui`). The console owns three
+trigger types:
+
+| Type id | Registered by | Carries |
+|---|---|---|
+| `console:script` | workers | an ESM script asset; `config.path` (e.g. `state/page.js`) is its identity — re-registering a path overrides it (hot reload) |
+| `console:style` | workers | a CSS asset, applied as a `<link>` swap |
+| `console:assets` | console tabs | the live-update subscription the console pushes `sync`/`set`/`delete` events to |
+
+The trigger's `function_id` is the worker's *content function*
+(`{path} → {content, content_type?}`); the console fetches over the bus,
+hashes, serves from `/ui/*`, and pushes invalidations so every open tab
+disposes the old module and re-imports the new one. Injected scripts default-
+export `setup(host)` and register through `host.pages` (whole pages at
+`#/ext/<id>`), `host.functionTriggers` (function-trigger message renderers —
+injected renderers dispatch before the built-in families, so matching a
+built-in id overrides it), and `host.configForms` (replace the workers-tab
+form region for one configuration id; dirty/save/reset stay host-owned).
+Renders are fenced by an ErrorBoundary and scoped under
+`data-iii-ui="<worker>"`. `console::ui-manifest` (internal) lists the
+loadable assets. The `state` worker's `ui/` directory is the working
+reference implementation of all three slot kinds.
 
 ## Tech stack
 

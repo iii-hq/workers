@@ -4,7 +4,7 @@
  * so the copy button on an assistant turn has to reach the call messages that
  * follow it — this module makes that association and serializes it.
  */
-import type { FunctionCallMessage, Message } from '@/types/chat'
+import type { FunctionTriggerMessage, Message } from '@/types/chat'
 
 /** The "no meaningful value" rule the function-call panes use for `· empty`. */
 function isEmptyInput(v: unknown): boolean {
@@ -30,7 +30,7 @@ function formatJson(v: unknown): string {
  * call is what the model emitted; the tool result (output) is copyable from
  * the call card itself and is deliberately left out of the message-level copy.
  */
-export function functionCallToText(m: FunctionCallMessage): string {
+export function functionTriggerToText(m: FunctionTriggerMessage): string {
   if (isEmptyInput(m.input)) return `ƒ ${m.functionId}`
   return `ƒ ${m.functionId}\n${formatJson(m.input)}`
 }
@@ -42,10 +42,10 @@ export function functionCallToText(m: FunctionCallMessage): string {
  */
 export function assistantCopyText(
   content: string,
-  calls: readonly FunctionCallMessage[],
+  calls: readonly FunctionTriggerMessage[],
 ): string {
   if (calls.length === 0) return content
-  const callText = calls.map(functionCallToText).join('\n\n')
+  const callText = calls.map(functionTriggerToText).join('\n\n')
   return content ? `${content}\n\n${callText}` : callText
 }
 
@@ -58,12 +58,12 @@ export function assistantCopyText(
  * transparent; user/system messages are turn boundaries and reset both
  * directions. Between two assistant messages, trailing attribution wins.
  */
-export function functionCallsByAssistant(
+export function functionTriggersByAssistant(
   messages: readonly Message[],
-): Map<string, FunctionCallMessage[]> {
-  const byAssistant = new Map<string, FunctionCallMessage[]>()
+): Map<string, FunctionTriggerMessage[]> {
+  const byAssistant = new Map<string, FunctionTriggerMessage[]>()
   let currentId: string | null = null
-  let leading: FunctionCallMessage[] = []
+  let leading: FunctionTriggerMessage[] = []
   for (const m of messages) {
     if (m.role === 'assistant') {
       currentId = m.id
@@ -71,7 +71,7 @@ export function functionCallsByAssistant(
         byAssistant.set(m.id, leading)
         leading = []
       }
-    } else if (m.role === 'function-call') {
+    } else if (m.role === 'function-trigger') {
       if (currentId !== null) {
         const run = byAssistant.get(currentId)
         if (run) run.push(m)

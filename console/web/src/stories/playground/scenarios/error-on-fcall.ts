@@ -19,7 +19,7 @@ retry once after a few seconds; if it persists, the upstream worker is
 saturated and the rate-limit policy needs a tuning pass.`
 
 /**
- * Function-call ends with an error payload (instead of a data payload).
+ * Function-trigger ends with an error payload (instead of a data payload).
  * Backends should never throw to signal semantic failures — they should
  * embed the error in the fcall-end output so the renderer can show it.
  */

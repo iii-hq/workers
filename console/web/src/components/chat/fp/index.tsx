@@ -1,14 +1,14 @@
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
-import type { FunctionCallMessage } from '@/types/chat'
+import type { FunctionTriggerMessage } from '@/types/chat'
+import { PipeView } from './PipeView'
 import {
-  isFpFunction,
-  isFpTransformFunction,
   FP_PIPE_ID,
   FP_PREFIX,
+  isFpFunction,
+  isFpTransformFunction,
   unwrapEnvelope,
 } from './parsers'
-import { PipeView } from './PipeView'
 import { UtilView } from './UtilView'
 
 /**
@@ -47,7 +47,7 @@ export function FpFunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-function tryRender(message: FunctionCallMessage): React.ReactNode | null {
+function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
   if (!isFpFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -81,7 +81,7 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
     authority), so the step list IS what an approver reviews — render it as
     the preview. */
 function tryRenderPreview(
-  message: FunctionCallMessage,
+  message: FunctionTriggerMessage,
 ): React.ReactNode | null {
   if (message.functionId !== FP_PIPE_ID) return null
   return <PipeView input={message.input} />

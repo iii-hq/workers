@@ -27,6 +27,7 @@ clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 async-trait = "0.1"
 url = "2"
+sha2 = "0.10"
 
 # HTTP + WS proxy
 axum = { version = "0.7", features = ["ws"] }

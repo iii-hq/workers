@@ -14,4 +14,5 @@ pub mod manifest;
 pub mod store;
 pub mod structs;
 pub mod trigger;
+pub mod ui;
 pub mod update_ops;

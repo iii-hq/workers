@@ -31,6 +31,23 @@ pub async fn asset_handler(Path(path): Path<String>) -> Response {
     serve_embedded(&key, true)
 }
 
+/// `/vendor/*` — the shared-dep shim modules for injected UI (static ESM
+/// files from `web/public/vendor/`, copied into `web/dist/vendor/` by the
+/// Vite build). Served `no-cache`: the shims are tiny and change with the
+/// console's React version, so they must never inherit the immutable
+/// header `/assets/*` uses.
+pub async fn vendor_handler(Path(path): Path<String>) -> Response {
+    let key = format!("vendor/{path}");
+    let mut response = serve_embedded(&key, false);
+    if response.status() == StatusCode::OK {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        );
+    }
+    response
+}
+
 fn serve_embedded(key: &str, immutable: bool) -> Response {
     let Some(file) = WebDist::get(key) else {
         return (StatusCode::NOT_FOUND, "not found").into_response();

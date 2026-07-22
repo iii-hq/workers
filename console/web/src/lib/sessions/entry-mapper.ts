@@ -11,10 +11,10 @@
  *   in place.
  * - An assistant entry splits per content block into segments with ids
  *   `<entry_id>:<block_index>` (thinking → thought, text → assistant,
- *   function_call → function-call row). Each `message-updated` snapshot
+ *   function_call → function-trigger row). Each `message-updated` snapshot
  *   re-derives the segment list wholesale and replaces the entry's range.
  * - `function_result` entries render no row of their own; they fill the
- *   `output` of the function-call row with the matching `functionCallId`.
+ *   `output` of the function-trigger row with the matching `functionTriggerId`.
  * - Lifecycle custom entries (`error`, `recovery`, `reaction`) render durable
  *   system notices so failure state survives refresh.
  * - `custom_type: "compaction"` custom entries render the compaction marker.
@@ -27,7 +27,7 @@
 import { parseAttachedFileHeader } from '@/lib/file-mentions'
 import type {
   Attachment,
-  FunctionCallMessage,
+  FunctionTriggerMessage,
   Message,
   SystemMessage,
   TriggerFiredData,
@@ -236,7 +236,7 @@ function lifecycleNotice(
 }
 
 /** The harness wraps every tool call in agent_trigger; unwrap for display. */
-function unwrapFunctionCall(
+function unwrapFunctionTrigger(
   block: Extract<ContentBlock, { type: 'function_call' }>,
 ): {
   functionId: string
@@ -375,7 +375,7 @@ function compactionMarker(
 
 /**
  * Derive the UI segments for one transcript item. `function_result` entries
- * return [] — they pair into an existing function-call row instead (see
+ * return [] — they pair into an existing function-trigger row instead (see
  * applyEntryUpsert).
  */
 export function entrySegments(
@@ -525,14 +525,14 @@ function assistantSegments(
         break
       case 'function_call': {
         const { functionId, input, unresolvedTarget } =
-          unwrapFunctionCall(block)
-        const msg: FunctionCallMessage = {
+          unwrapFunctionTrigger(block)
+        const msg: FunctionTriggerMessage = {
           id,
-          role: 'function-call',
+          role: 'function-trigger',
           functionId,
           input,
           unresolvedTarget,
-          functionCallId: block.id,
+          functionTriggerId: block.id,
           sessionId,
           createdAt: message.timestamp,
         }
@@ -570,32 +570,35 @@ function belongsToEntry(messageId: string, entryId: string): boolean {
   return messageId === entryId || messageId.startsWith(`${entryId}:`)
 }
 
-/** Patchable transient state for a function-call row. */
+/** Patchable transient state for a function-trigger row. */
 export type FcallPatch = Partial<
   Pick<
-    FunctionCallMessage,
+    FunctionTriggerMessage,
     | 'running'
     | 'pendingApproval'
     | 'output'
     | 'durationMs'
     | 'sessionId'
-    | 'functionCallId'
+    | 'functionTriggerId'
     | 'filesystemAccess'
   >
 >
 
 /**
- * Patch the function-call row matching `functionCallId`. Returns the same
+ * Patch the function-trigger row matching `functionTriggerId`. Returns the same
  * array when no row matched (caller may then append a fallback row).
  */
 export function applyFcallPatch(
   messages: Message[],
-  functionCallId: string,
+  functionTriggerId: string,
   patch: FcallPatch,
 ): { messages: Message[]; found: boolean } {
   let found = false
   const next = messages.map((m) => {
-    if (m.role !== 'function-call' || m.functionCallId !== functionCallId)
+    if (
+      m.role !== 'function-trigger' ||
+      m.functionTriggerId !== functionTriggerId
+    )
       return m
     found = true
     return { ...m, ...patch } as Message
@@ -608,9 +611,9 @@ export function applyFcallPatch(
  * - replaces the entry's existing segment range in place (or appends at the
  *   end — appends only ever happen at the active leaf);
  * - absorbs transient state (and locally-created duplicate rows) by
- *   `functionCallId`;
- * - pairs `function_result` entries into their function-call row;
- * - infers `running` for unpaired function calls while the session is
+ *   `functionTriggerId`;
+ * - pairs `function_result` entries into their function-trigger row;
+ * - infers `running` for unpaired function triggers while the session is
  *   `working` (the real backend emits no execution start/end events, so
  *   the transcript shape is the only in-flight signal).
  */
@@ -629,13 +632,13 @@ export function applyEntryUpsert(
     )
     if (found) return patched
     // Fallback (assistant snapshot lost): standalone row carrying the result.
-    const row: FunctionCallMessage = {
+    const row: FunctionTriggerMessage = {
       id: item.entry_id,
-      role: 'function-call',
+      role: 'function-trigger',
       functionId: item.message.function_id,
       input: undefined,
       output,
-      functionCallId: item.message.function_call_id,
+      functionTriggerId: item.message.function_call_id,
       sessionId: opts?.sessionId,
       createdAt: item.message.timestamp,
     }
@@ -644,17 +647,17 @@ export function applyEntryUpsert(
 
   let segments = entrySegments(item, opts?.sessionId)
 
-  // Carry over transient/local state for function-call segments and drop the
+  // Carry over transient/local state for function-trigger segments and drop the
   // locally-created rows they replace (pending-approval fallback rows, which
   // have non-entry ids).
   const absorbedLocalIds = new Set<string>()
   segments = segments.map((segment) => {
-    if (segment.role !== 'function-call' || !segment.functionCallId)
+    if (segment.role !== 'function-trigger' || !segment.functionTriggerId)
       return segment
     const existing = messages.find(
-      (m): m is FunctionCallMessage =>
-        m.role === 'function-call' &&
-        m.functionCallId === segment.functionCallId,
+      (m): m is FunctionTriggerMessage =>
+        m.role === 'function-trigger' &&
+        m.functionTriggerId === segment.functionTriggerId,
     )
     if (!existing) return segment
     if (!belongsToEntry(existing.id, item.entry_id))
@@ -677,7 +680,7 @@ export function applyEntryUpsert(
   if (opts?.working) {
     segments = segments.map((segment) => {
       if (
-        segment.role !== 'function-call' ||
+        segment.role !== 'function-trigger' ||
         segment.running ||
         segment.pendingApproval ||
         segment.output !== undefined
@@ -765,7 +768,7 @@ export function clearTransientFlags(messages: Message[]): Message[] {
       changed = true
       return { ...m, streaming: false }
     }
-    if (m.role === 'function-call' && m.running) {
+    if (m.role === 'function-trigger' && m.running) {
       changed = true
       return { ...m, running: false }
     }

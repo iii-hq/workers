@@ -1,6 +1,6 @@
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
-import type { FunctionCallMessage } from '@/types/chat'
+import type { FunctionTriggerMessage } from '@/types/chat'
 import { isHarnessFunction, unwrapEnvelope } from './parsers'
 import { SpawnPreview, SpawnView } from './SpawnView'
 import { SubmitResultView } from './SubmitResultView'
@@ -26,7 +26,7 @@ export function HarnessFunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-function tryRender(message: FunctionCallMessage): React.ReactNode | null {
+function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
   if (!isHarnessFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -62,7 +62,7 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
 
 /** `submit_result` is never gated on approval; spawn is. */
 function tryRenderPreview(
-  message: FunctionCallMessage,
+  message: FunctionTriggerMessage,
 ): React.ReactNode | null {
   if (message.functionId !== 'harness::spawn') return null
   return <SpawnPreview input={unwrapEnvelope(message.input)} />
