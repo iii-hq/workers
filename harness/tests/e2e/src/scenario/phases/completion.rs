@@ -24,10 +24,11 @@ impl ScenarioRunner<'_> {
         // The event only wakes collection; trace evidence verifies the
         // lifecycle delivery itself. Status remains the durable-state check.
         match services.probe().wait_for_completion(deadline).await {
-            Ok(event) => {
+            Ok(observation) => {
                 if active.turn_id.is_none() {
-                    active.turn_id = Some(event.turn_id);
+                    active.turn_id = Some(observation.event.turn_id);
                 }
+                active.trace_generation = observation.trace_generation;
             }
             Err(error) if deadline.is_expired() => {
                 active.timed_out = true;
@@ -69,7 +70,14 @@ impl ScenarioRunner<'_> {
                     error,
                 )
             })?;
-        active.turn_id = events.last().map(|event| event.turn_id.clone());
+        if let Some(observation) = events
+            .iter()
+            .rev()
+            .find(|observation| observation.event.terminal)
+        {
+            active.turn_id = Some(observation.event.turn_id.clone());
+            active.trace_generation = observation.trace_generation;
+        }
         self.confirm_terminal_status(services, active).await
     }
 

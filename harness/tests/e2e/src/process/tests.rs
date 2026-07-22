@@ -126,3 +126,28 @@ async fn teardown_reports_complete_cleanup() {
     assert!(report.complete(), "{report:?}");
     assert!(report.remaining_processes.is_empty());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn child_exit_is_observed_from_sigchld() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut supervisor = ProcessSupervisor::new(Duration::from_secs(1));
+    let exiting = ProcessSpec::new(
+        "exiting",
+        "/bin/sh",
+        dir.path(),
+        dir.path().join("exiting.out"),
+        dir.path().join("exiting.err"),
+    )
+    .args(["-c", "exit 7"]);
+    supervisor.spawn(exiting).unwrap();
+
+    let exit = tokio::time::timeout(Duration::from_secs(1), supervisor.wait_for_exit())
+        .await
+        .expect("SIGCHLD was not observed")
+        .unwrap();
+    assert_eq!(exit.name, "exiting");
+    assert!(exit.status.contains('7'), "{}", exit.status);
+
+    assert!(supervisor.teardown().await.complete());
+}

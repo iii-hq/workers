@@ -7,6 +7,9 @@ use super::config::{write_engine_config, write_seed, ENV_ALLOWLIST, WORKER_START
 use super::manifest::write_stack_manifest;
 use super::{EarlyExit, RunLayout, StackBins};
 
+const ENGINE_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+const ENGINE_CONNECT_INTERVAL: Duration = Duration::from_millis(25);
+
 pub struct Stack {
     pub ws_url: String,
     pub paths: RunLayout,
@@ -74,10 +77,29 @@ impl Stack {
             return Err(BootError::Other { error, teardown });
         }
 
-        // Retry only an explicit address-in-use failure. Other immediate
-        // exits are configuration/binary failures, not port collisions.
-        tokio::time::sleep(Duration::from_millis(600)).await;
-        if let Some(exit) = stack.early_exit() {
+        // Wait for the listener instead of guessing a fixed boot delay. Retry
+        // only an explicit address-in-use exit; other failures are surfaced.
+        let startup_deadline = tokio::time::Instant::now() + ENGINE_STARTUP_TIMEOUT;
+        let early_exit = loop {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                break None;
+            }
+            if let Some(exit) = stack.early_exit() {
+                break Some(exit);
+            }
+            if tokio::time::Instant::now() >= startup_deadline {
+                let teardown = stack.teardown().await;
+                return Err(BootError::Other {
+                    error: anyhow::anyhow!("engine listener did not become ready"),
+                    teardown,
+                });
+            }
+            tokio::time::sleep(ENGINE_CONNECT_INTERVAL).await;
+        };
+        if let Some(exit) = early_exit {
             let retryable_bind_race =
                 exit.name == "engine" && stderr_indicates_bind_race(&exit.stderr_log);
             let teardown = stack.teardown().await;
@@ -187,6 +209,10 @@ impl Stack {
 
     pub fn early_exit(&mut self) -> Option<EarlyExit> {
         self.processes.early_exit()
+    }
+
+    pub async fn wait_for_early_exit(&mut self) -> std::io::Result<EarlyExit> {
+        self.processes.wait_for_exit().await
     }
 
     pub async fn teardown(&mut self) -> TeardownReport {

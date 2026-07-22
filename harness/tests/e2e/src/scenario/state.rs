@@ -35,6 +35,7 @@ pub(super) struct ActiveTurn {
     pub(super) final_status: Value,
     pub(super) transcript: Vec<Value>,
     pub(super) traces: TraceEvidenceV1,
+    pub(super) trace_generation: u64,
     pub(super) timed_out: bool,
 }
 
@@ -47,6 +48,7 @@ impl ActiveTurn {
             final_status: Value::Null,
             transcript: Vec::new(),
             traces: TraceEvidenceV1::new(Vec::new()),
+            trace_generation: 0,
             timed_out: false,
         }
     }

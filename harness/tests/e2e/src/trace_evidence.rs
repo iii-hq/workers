@@ -1,16 +1,12 @@
-//! Collection and stabilization of all traces associated with one session.
-
-use std::time::Duration;
+//! Event-driven collection of all traces associated with one session.
 
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::client::{Client, DEFAULT_CALL_TIMEOUT_MS};
 use crate::deadline::Deadline;
-use crate::probe::LIFECYCLE_FUNCTION_ID;
+use crate::probe::{ScenarioProbe, LIFECYCLE_FUNCTION_ID};
 use crate::types::trace::{TraceEvidenceV1, TraceTreeV1};
-
-const TRACE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Deserialize)]
 struct GroupByResponse {
@@ -25,11 +21,15 @@ struct TraceGroup {
 
 pub(crate) async fn collect(
     client: &Client,
+    probe: &ScenarioProbe,
     session_id: &str,
     expected_terminal_turns: usize,
+    after_generation: u64,
     deadline: Deadline,
 ) -> anyhow::Result<TraceEvidenceV1> {
-    let mut previous = None;
+    let mut generation = probe
+        .wait_for_trace_change(after_generation, deadline)
+        .await?;
     let mut last_summary = None;
 
     loop {
@@ -44,21 +44,9 @@ pub(crate) async fn collect(
         let evidence = collect_once(client, session_id, deadline).await?;
         last_summary = Some(evidence.summary.clone());
         if evidence.is_stable_for(expected_terminal_turns, LIFECYCLE_FUNCTION_ID) {
-            let fingerprint = serde_json::to_vec(&evidence.traces)?;
-            if previous.as_ref() == Some(&fingerprint) {
-                return Ok(evidence);
-            }
-            previous = Some(fingerprint);
-        } else {
-            previous = None;
+            return Ok(evidence);
         }
-        deadline
-            .timeout(
-                "trace stabilization interval",
-                tokio::time::sleep(TRACE_POLL_INTERVAL),
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!(error))?;
+        generation = probe.wait_for_trace_change(generation, deadline).await?;
     }
 }
 

@@ -54,8 +54,10 @@ impl ScenarioRunner<'_> {
         } else {
             crate::trace_evidence::collect(
                 services.client(),
+                services.probe(),
                 &self.session_id,
                 self.fixture.expected_terminal_turns,
+                active.trace_generation,
                 deadline,
             )
             .await

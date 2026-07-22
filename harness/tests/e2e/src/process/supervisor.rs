@@ -96,6 +96,35 @@ impl ProcessSupervisor {
         None
     }
 
+    /// Wait for a direct child to exit without periodically probing every
+    /// process. Register the SIGCHLD listener before the initial status check
+    /// so an exit cannot be lost between observation and suspension.
+    #[cfg(unix)]
+    pub async fn wait_for_exit(&mut self) -> std::io::Result<EarlyExit> {
+        let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
+        loop {
+            if let Some(exit) = self.early_exit() {
+                return Ok(exit);
+            }
+            if signal.recv().await.is_none() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "SIGCHLD signal stream closed",
+                ));
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub async fn wait_for_exit(&mut self) -> std::io::Result<EarlyExit> {
+        loop {
+            if let Some(exit) = self.early_exit() {
+                return Ok(exit);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// SIGTERM all process groups in reverse start order, then SIGKILL any
     /// group that survives the grace period. The grace and final reap are
     /// both bounded by `teardown_budget`.

@@ -17,7 +17,6 @@ pub mod types;
 pub(crate) mod artifacts;
 pub(crate) mod client;
 pub(crate) mod deadline;
-pub(crate) mod discovery;
 pub(crate) mod matcher;
 pub(crate) mod probe;
 pub(crate) mod process;

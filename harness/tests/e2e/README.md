@@ -110,8 +110,9 @@ The direct lifecycle is allocate → boot → arm → send → await → collect
 grade → teardown → report. Playground replaces send with an externally
 initiated Console or SDK turn and waits for shutdown after completion.
 
-- Completion is awakened by `harness::turn-completed` and verified from traces.
-- All RPCs and polling use bounded monotonic deadlines.
+- Readiness and completion are awakened by iii triggers and verified from
+  authoritative function, status, and trace snapshots.
+- All RPCs and event waits use bounded monotonic deadlines.
 - The observability worker captures every session trace with 100% sampling.
 - Child processes run in dedicated process groups and teardown uses SIGTERM
   followed by SIGKILL within one hard cleanup budget.

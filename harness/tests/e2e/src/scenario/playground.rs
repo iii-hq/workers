@@ -22,7 +22,7 @@ use crate::types::script::SchemaVersion1;
 use super::runner::{BootedRun, ExpandedRun, ScenarioRunner};
 use super::state::{ActiveTurn, PreparedRun};
 
-const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const CONSOLE_CONNECT_INTERVAL: Duration = Duration::from_millis(100);
 const SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,37 +243,37 @@ async fn wait_for_external_turn(
 ) -> Result<bool, RunError> {
     let completion = runner.r#await(services, active);
     let shutdown = shutdown_signal();
-    tokio::pin!(completion, shutdown);
-    let mut health = tokio::time::interval(PROCESS_POLL_INTERVAL);
-    health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        tokio::select! {
-            result = &mut completion => return result.map(|()| false),
-            result = &mut shutdown => {
-                result.map_err(|error| RunError::runner(
+    let process_exit = stack.wait_for_early_exit();
+    tokio::pin!(completion, shutdown, process_exit);
+    tokio::select! {
+        result = &mut completion => result.map(|()| false),
+        result = &mut shutdown => {
+            result.map_err(|error| RunError::runner(
+                RunPhase::Await,
+                "wait for playground shutdown",
+                error,
+            ))?;
+            match tokio::time::timeout(
+                SHUTDOWN_COMPLETION_GRACE,
+                &mut completion,
+            )
+            .await
+            {
+                Ok(result) => result.map(|()| true),
+                Err(_) => Err(RunError::new(
                     RunPhase::Await,
-                    "wait for playground shutdown",
-                    error,
-                ))?;
-                return match tokio::time::timeout(
-                    SHUTDOWN_COMPLETION_GRACE,
-                    &mut completion,
-                )
-                .await
-                {
-                    Ok(result) => result.map(|()| true),
-                    Err(_) => Err(RunError::new(
-                        RunPhase::Await,
-                        RunErrorKind::Contract,
-                        "playground stopped before a turn completed",
-                    )),
-                };
+                    RunErrorKind::Contract,
+                    "playground stopped before a turn completed",
+                )),
             }
-            _ = health.tick() => {
-                if let Some(exit) = stack.early_exit() {
-                    return Err(process_exit_error(exit, "before a turn completed"));
-                }
-            }
+        }
+        result = &mut process_exit => {
+            let exit = result.map_err(|error| RunError::runner(
+                RunPhase::Await,
+                "observe playground process health",
+                error,
+            ))?;
+            Err(process_exit_error(exit, "before a turn completed"))
         }
     }
 }
@@ -314,7 +314,7 @@ async fn wait_for_console(
                 "Console HTTP port did not become ready",
             ));
         }
-        tokio::time::sleep(PROCESS_POLL_INTERVAL).await;
+        tokio::time::sleep(CONSOLE_CONNECT_INTERVAL).await;
     }
 }
 
@@ -364,29 +364,29 @@ fn build_ready_manifest(
 
 async fn wait_for_shutdown(stack: &mut Stack, deadline: Deadline) -> Result<(), RunError> {
     let shutdown = shutdown_signal();
-    tokio::pin!(shutdown);
-    let mut health = tokio::time::interval(PROCESS_POLL_INTERVAL);
-    health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        tokio::select! {
-            result = &mut shutdown => {
-                result.map_err(|error| {
-                    RunError::runner(RunPhase::Await, "wait for playground shutdown", error)
-                })?;
-                return Ok(());
-            }
-            _ = tokio::time::sleep_until(deadline.expires_at()) => {
-                return Err(RunError::new(
-                    RunPhase::Await,
-                    RunErrorKind::Timeout,
-                    "playground was not stopped before the scenario deadline",
-                ));
-            }
-            _ = health.tick() => {
-                if let Some(exit) = stack.early_exit() {
-                    return Err(process_exit_error(exit, "while the playground was running"));
-                }
-            }
+    let process_exit = stack.wait_for_early_exit();
+    tokio::pin!(shutdown, process_exit);
+    tokio::select! {
+        result = &mut shutdown => {
+            result.map_err(|error| {
+                RunError::runner(RunPhase::Await, "wait for playground shutdown", error)
+            })?;
+            Ok(())
+        }
+        _ = tokio::time::sleep_until(deadline.expires_at()) => {
+            Err(RunError::new(
+                RunPhase::Await,
+                RunErrorKind::Timeout,
+                "playground was not stopped before the scenario deadline",
+            ))
+        }
+        result = &mut process_exit => {
+            let exit = result.map_err(|error| RunError::runner(
+                RunPhase::Await,
+                "observe playground process health",
+                error,
+            ))?;
+            Err(process_exit_error(exit, "while the playground was running"))
         }
     }
 }

@@ -85,34 +85,6 @@ impl Deadline {
             .await
             .map_err(|_| DeadlineExceeded::new(operation))
     }
-
-    /// Poll until the probe returns a value or the deadline expires.
-    ///
-    /// A probe error is returned immediately. Both each probe invocation and
-    /// the sleeps between probes are bounded by this deadline.
-    pub async fn poll_until<T, F, Fut>(
-        self,
-        operation: impl Into<String>,
-        interval: Duration,
-        mut probe: F,
-    ) -> anyhow::Result<T>
-    where
-        F: FnMut() -> Fut,
-        Fut: Future<Output = anyhow::Result<Option<T>>>,
-    {
-        let operation = operation.into();
-        loop {
-            if let Some(value) = self.timeout(operation.clone(), probe()).await?? {
-                return Ok(value);
-            }
-
-            let wake_at = (Instant::now() + interval).min(self.expires_at);
-            tokio::time::sleep_until(wake_at).await;
-            if self.is_expired() {
-                return Err(DeadlineExceeded::new(operation).into());
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -147,28 +119,6 @@ mod tests {
             .expect_err("deadline should fire");
         assert_eq!(error.operation(), "hung rpc");
         assert!(deadline.is_expired());
-    }
-
-    #[tokio::test]
-    async fn poll_until_returns_the_first_ready_value() {
-        let deadline = Deadline::after(Duration::from_secs(1));
-        let mut attempts = 0;
-        let value = deadline
-            .poll_until("readiness", Duration::from_millis(1), || {
-                attempts += 1;
-                let current = attempts;
-                async move {
-                    if current == 3 {
-                        Ok(Some("ready"))
-                    } else {
-                        Ok(None)
-                    }
-                }
-            })
-            .await
-            .unwrap();
-        assert_eq!(value, "ready");
-        assert_eq!(attempts, 3);
     }
 
     #[test]

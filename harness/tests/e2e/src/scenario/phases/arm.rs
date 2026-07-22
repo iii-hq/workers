@@ -1,10 +1,11 @@
-use crate::discovery;
 use crate::runtime::{RunError, RunPhase};
 use crate::services::RunServices;
 use crate::stack::Stack;
 
 use super::super::runner::ScenarioRunner;
 use super::super::state::PreparedRun;
+
+const TURN_SURFACE: &[&str] = &["harness::send", "session::messages", "context::assemble"];
 
 impl ScenarioRunner<'_> {
     pub(in crate::scenario) async fn arm(
@@ -22,26 +23,28 @@ impl ScenarioRunner<'_> {
             .register_target(&self.run_id, scenario.target.as_ref())
             .map_err(|error| RunError::setup(phase, "register controlled function", error))?;
 
+        // Register observer bindings before the harness exists. Recoverable
+        // triggers park the harness-owned bindings until their types appear;
+        // the acknowledged RPCs also barrier the probe function registrations.
+        probe
+            .bind_observers(&self.session_id, deadline)
+            .await
+            .map_err(|error| RunError::setup(phase, "bind scenario observers", error))?;
+
         stack
             .spawn_harness(self.bins)
             .map_err(|error| RunError::setup(phase, "spawn harness under test", error))?;
 
-        // Harness and workers register asynchronously; wait before bind/send.
-        discovery::wait_for_functions(services.client(), discovery::TURN_SURFACE, deadline)
-            .await
-            .map_err(|error| RunError::setup(phase, "wait for turn function surface", error))?;
-        discovery::wait_for_trigger_types(
-            services.client(),
-            &["harness::turn-started", "harness::turn-completed"],
-            deadline,
-        )
-        .await
-        .map_err(|error| RunError::setup(phase, "wait for harness trigger types", error))?;
-
         probe
-            .bind_completion(&self.session_id)
+            .wait_until_ready(TURN_SURFACE, deadline)
             .await
-            .map_err(|error| RunError::setup(phase, "bind completion observer", error))?;
+            .map_err(|error| RunError::setup(phase, "wait for harness readiness", error))?;
+        probe
+            .confirm_completion_binding(&self.session_id, deadline)
+            .await
+            .map_err(|error| {
+                RunError::setup(phase, "confirm completion observer binding", error)
+            })?;
         self.sink_mut(phase)?
             .write_scenario_text(
                 &scenario.id,
