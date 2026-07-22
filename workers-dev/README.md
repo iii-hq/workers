@@ -30,8 +30,10 @@ Workers are **discovered automatically** from top-level `*/iii.worker.yaml` in t
 
 | Group | Workers | Started by |
 |-------|---------|------------|
-| **harness stack** | `session-manager`, `llm-router`, `context-manager`, `provider-anthropic`, `provider-openai`, `approval-gate`, `harness` | `workers-dev up`, `Ctrl+u` in TUI, `workers-dev start` |
-| **other** | All remaining repo workers (e.g. `telegram-bot`, `shell`, `console`, …) | `workers-dev start <name>`, `workers-dev start --all`, `Ctrl+a` in TUI |
+| **harness stack** | The stack roots (`session-manager`, `llm-router`, `context-manager`, `provider-anthropic`, `provider-openai`, `approval-gate`, `harness`) **plus everything they transitively depend on**, derived live from each worker's `iii.worker.yaml` dependencies | `workers-dev up`, `Ctrl+u` in TUI, `workers-dev start` (starts the roots; missing deps are pulled in, connected ones left alone) |
+| **other** | All remaining repo workers (e.g. `telegram-bot`, `console`, …) | `workers-dev start <name>`, `workers-dev start --all`, `Ctrl+a` in TUI |
+
+Press `d` on any worker in the TUI to see its direct dependencies and its transitive dependents (the `r` restart blast radius), each with live status.
 
 Only **Rust `deploy: binary`** workers can be started with `cargo run`. Non-Rust (Node/bundle) workers show **Process: external** — install them via the iii registry (`iii worker add`) instead.
 
@@ -44,11 +46,13 @@ workers-dev up                    # start harness stack + TUI
 workers-dev                       # TUI only
 workers-dev start                 # harness stack (CLI, waits for connect)
 workers-dev start --all           # every discovered Rust worker
-workers-dev start telegram-bot    # one worker (+ deps)
+workers-dev start telegram-bot    # one worker (+ missing deps)
 workers-dev restart llm-router    # rebuild + restart dependents
 workers-dev logs harness -f
 workers-dev status
 ```
+
+Starting a worker (CLI `start <name>` or `s` in the TUI) pulls in its dependencies, but a dependency **already connected to the engine is left running as-is** — no rebuild, no restart, no duplicate spawn. Explicitly requested workers always (re)start; use `restart` when a dependency itself needs a rebuild. The group commands count every member as explicitly requested: `up`, bare `start`, and `Ctrl+u` always restart the whole harness stack, `start --all` and `Ctrl+a` every managed Rust worker.
 
 Global flags: `--repo`, `--url`, `--port`, `--release`, `--config workers-dev.yaml`, `--stop-on-exit`, `--color auto|always|never`.
 
@@ -68,13 +72,16 @@ Use `--color never` or `NO_COLOR=1` to force plain output. Default `--color auto
 | Key | Action |
 |-----|--------|
 | `↑`/`↓` (or `k`/`j`) | Select worker (skips group headers) |
+| `g`/`G` (or `Home`/`End`) | Jump to the first / last worker |
 | `s` | Start selected worker |
 | `x` | Stop selected worker |
-| `r` | Restart selected worker + dependents (confirm shows the blast radius) |
+| `r` | Restart selected worker + dependents (confirm lists the blast radius with live status) |
+| `d` | Show selected worker's dependencies + dependents with live status |
 | `f` | Toggle live-follow of the selected worker's logs |
 | `PgUp`/`PgDn` | Scroll the log pane (pauses follow; resumes at the bottom) |
 | `+`/`-` | Resize the log pane (drags the divider in two columns, the height when stacked) |
 | `/` | Filter workers by name (Enter applies, Esc clears) |
+| `e` | Start the iii engine (`iii -c harness/engine.config.yaml`) |
 | `Ctrl+u` | Start harness stack |
 | `Ctrl+a` | Start all managed Rust workers |
 | `?` | Toggle the key-reference overlay |
@@ -82,7 +89,7 @@ Use `--color never` or `NO_COLOR=1` to force plain output. Default `--color auto
 
 On a wide terminal the dashboard is a two-column **master/detail** layout: the worker list on the left (sized to fit its columns), the selected worker's logs filling the rest on the right, with `+`/`-` dragging the divider between them. Below ~100 columns the two panes stack vertically instead, and `+`/`-` trade height.
 
-The header shows an at-a-glance health summary (`●` connected, `◐` compiling, `✗` crashed, `○` stopped) and flags the engine as `⚠ unreachable` when a status query fails. The log pane shows the **selected worker only**, scrollable through the full ring buffer, following the live tail by default. Crashed workers show their exit code inline. Lines are sanitized (no ANSI, no `\r` overwrite garbage).
+The header shows the repo's current git branch (`⎇ feat/my-branch`, refreshed live; detached HEAD shows as `@<short-hash>`) so side-by-side instances on different worktrees or checkouts are easy to tell apart — the terminal/tmux pane title is set to `workers-dev ⎇ <branch>` too — plus an at-a-glance health summary (`●` connected, `◐` compiling, `✗` crashed, `○` stopped). When an engine status query fails the header flags `⚠ unreachable` and gains a line with the remedy (`press e to start the engine`) and the underlying error. The worker list's title shows the selection position (`Workers 3/48`). The log pane shows the **selected worker only**, scrollable through the full ring buffer, following the live tail by default. Crashed workers show their exit code inline. Lines are sanitized (no ANSI, no `\r` overwrite garbage).
 
 ## Config (`workers-dev.yaml`)
 
@@ -92,10 +99,11 @@ engine_url: ws://127.0.0.1:49134
 release: false
 workers:          # optional override; default = all discovered
   - session-manager
-  - harness
-harness_stack:    # optional override; default = harness stack subset
-  - session-manager
   - llm-router
+  - harness
+harness_stack:    # optional roots override (must be a subset of `workers`);
+  - session-manager   # the dashboard's stack group is always these roots
+  - llm-router        # plus their transitive dependencies
   - harness
 color: auto   # auto | always | never (respects NO_COLOR)
 ```
@@ -108,7 +116,7 @@ Usually caused by cargo `\r` progress lines or ANSI color codes. Current version
 
 **Engine not reachable**
 
-Start the engine: `iii -c harness/engine.config.yaml`
+Press `e` in the TUI, or start the engine manually: `iii -c harness/engine.config.yaml`
 
 **Non-Rust worker won't start**
 

@@ -2,6 +2,7 @@ mod color;
 mod commands;
 mod config;
 mod discover;
+mod git;
 mod graph;
 mod logs;
 mod orchestrator;
