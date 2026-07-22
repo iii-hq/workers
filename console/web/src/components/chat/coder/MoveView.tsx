@@ -15,6 +15,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/Tooltip'
+import { OpenInEditorButton } from './OpenInEditorButton'
 import {
   moveFileRequestSchema,
   moveFileResponseSchema,
@@ -85,6 +86,9 @@ export function MoveView({ input, output, running, preview }: MoveViewProps) {
                     <span>{from}</span>
                     <span className="text-ink-ghost">→</span>
                     <span>{to}</span>
+                    {!pending && result?.success ? (
+                      <OpenInEditorButton path={result.to} />
+                    ) : null}
                     {spec.overwrite ? (
                       <Chip label="overwrite" className="border-warn text-warn">
                         true

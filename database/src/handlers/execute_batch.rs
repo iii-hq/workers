@@ -1,10 +1,9 @@
-//! `database::execute_batch` — atomic batch of statements.
+//! `database::executeBatch` — atomic batch of statements.
 //!
 //! Thin convenience form of `database::transaction`: each statement may be a
 //! bare SQL string or a full `{ sql, params }` object. Delegates to
 //! `transaction::handle`, so semantics (atomicity, isolation, guards,
-//! response envelope) are identical. Also registered under the camelCase
-//! alias `database::executeBatch`.
+//! response envelope) are identical.
 
 use super::AppState;
 use crate::handlers::transaction::{self, TxReq, TxResp, TxStmtReq};

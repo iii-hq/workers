@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
     {
         let st = state.clone();
         iii.register_function(
-            "database::execute_batch",
+            "database::executeBatch",
             RegisterFunction::new_async(move |req: ExecuteBatchReq| {
                 let st = st.clone();
                 async move {
@@ -156,24 +156,8 @@ async fn main() -> Result<()> {
             })
             .description(
                 "Run an ordered batch of SQL statements atomically (bare strings or \
-                 {sql, params} objects); rolls back on first failure. Also registered \
-                 as database::executeBatch.",
+                 {sql, params} objects); rolls back on first failure.",
             ),
-        );
-    }
-    {
-        let st = state.clone();
-        iii.register_function(
-            "database::executeBatch",
-            RegisterFunction::new_async(move |req: ExecuteBatchReq| {
-                let st = st.clone();
-                async move {
-                    execute_batch::handle(&st, req)
-                        .await
-                        .map_err(iii_sdk::errors::Error::from)
-                }
-            })
-            .description("Alias of database::execute_batch."),
         );
     }
     {
@@ -332,7 +316,7 @@ async fn main() -> Result<()> {
         .context("registering configuration change trigger")?;
 
     tracing::info!(
-        "database worker registered 14 functions and 1 trigger type, waiting for invocations"
+        "database worker registered 13 functions and 1 trigger type, waiting for invocations"
     );
     wait_for_shutdown_signal().await?;
     tracing::info!("database worker shutting down");
