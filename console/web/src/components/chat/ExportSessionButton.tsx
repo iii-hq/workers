@@ -28,7 +28,8 @@ interface ExportSessionButtonProps {
  * Visual style mirrors the existing session-id copy button in
  * `ChatView` (`ChatView.tsx:517-537`): font-mono, 11px, uppercase,
  * `text-ink-faint hover:text-ink`, with a 1200ms "exported" label flip
- * after a successful download.
+ * after a successful download. While the export is in flight the label
+ * shows "exporting…" and the trigger is disabled.
  */
 export function ExportSessionButton({
   conversation,
@@ -60,16 +61,18 @@ export function ExportSessionButton({
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild disabled={disabled}>
+      <DropdownMenuTrigger asChild disabled={disabled || busy}>
         <button
           type="button"
-          disabled={disabled}
+          disabled={disabled || busy}
           title={
             disabled
               ? 'no messages yet — nothing to export'
-              : exported
-                ? 'session downloaded'
-                : 'download session as markdown — paste into another AI for analysis'
+              : busy
+                ? 'exporting…'
+                : exported
+                  ? 'session downloaded'
+                  : 'download session as markdown — paste into another AI for analysis'
           }
           className={cn(
             'flex items-center gap-1 text-ink-faint hover:text-ink transition-colors group',
@@ -85,7 +88,7 @@ export function ExportSessionButton({
               exported && 'text-accent',
             )}
           >
-            {exported ? 'exported' : 'export'}
+            {busy ? 'exporting…' : exported ? 'exported' : 'export'}
           </span>
         </button>
       </DropdownMenuTrigger>

@@ -22,6 +22,10 @@ import {
 const SESSIONS_LIST_RPC = 'session::list'
 const SESSIONS_PAGE_LIMIT = 200
 const SESSIONS_MAX_PAGES = 10
+/** Bound on the `session::list` discovery call — sessions sidebar RPC. */
+const SESSIONS_LIST_TIMEOUT_MS = 10_000
+/** Bound on each per-sub-agent `fetchTranscript` call. */
+const TRANSCRIPT_TIMEOUT_MS = 30_000
 
 export interface DescendantSession {
   meta: SessionMeta
@@ -42,11 +46,15 @@ export async function listAllSessions(): Promise<SessionMeta[] | null> {
       const resp = await client.trigger<{
         sessions?: SessionMeta[]
         next_cursor?: string | null
-      }>(SESSIONS_LIST_RPC, {
-        limit: SESSIONS_PAGE_LIMIT,
-        order: 'updated_desc',
-        ...(cursor ? { cursor } : {}),
-      })
+      }>(
+        SESSIONS_LIST_RPC,
+        {
+          limit: SESSIONS_PAGE_LIMIT,
+          order: 'updated_desc',
+          ...(cursor ? { cursor } : {}),
+        },
+        { timeoutMs: SESSIONS_LIST_TIMEOUT_MS },
+      )
       const batch = resp?.sessions
       if (!Array.isArray(batch)) return null
       sessions.push(...batch)
@@ -140,7 +148,9 @@ export async function assembleFullExport(
   for (const sub of descendants) {
     let messages: Message[] | null = null
     try {
-      const items = await fetchTranscript(sub.meta.session_id)
+      const items = await fetchTranscript(sub.meta.session_id, {
+        timeoutMs: TRANSCRIPT_TIMEOUT_MS,
+      })
       messages = transcriptToMessages(items, sub.meta.session_id)
     } catch {
       messages = null

@@ -82,11 +82,15 @@ describe('listAllSessions', () => {
     const out = await listAllSessions()
     expect(out?.map((s) => s.session_id)).toEqual(['s1', 's2'])
     expect(mockTrigger).toHaveBeenCalledTimes(2)
-    expect(mockTrigger).toHaveBeenLastCalledWith('session::list', {
-      limit: 200,
-      order: 'updated_desc',
-      cursor: 'c1',
-    })
+    expect(mockTrigger).toHaveBeenLastCalledWith(
+      'session::list',
+      {
+        limit: 200,
+        order: 'updated_desc',
+        cursor: 'c1',
+      },
+      { timeoutMs: 10000 },
+    )
   })
 
   it('returns null when the trigger rejects', async () => {
@@ -150,7 +154,11 @@ function routeTriggers(opts: {
   transcripts?: Record<string, unknown>
 }) {
   mockTrigger.mockImplementation(
-    (fnId: string, payload: Record<string, unknown> = {}) => {
+    (
+      fnId: string,
+      payload: Record<string, unknown> = {},
+      _opts?: { timeoutMs?: number },
+    ) => {
       if (fnId === 'engine::workers::list') {
         return Promise.resolve({
           workers: [{ id: 'w1', name: 'harness', version: '1.5.2' }],
@@ -197,6 +205,11 @@ describe('assembleFullExport', () => {
     expect(markdown).toContain('# Sub-agent: title-child')
     expect(markdown).toContain('child msg')
     expect(markdown).toContain('- Workers:')
+    expect(mockTrigger).toHaveBeenCalledWith(
+      'session::messages',
+      expect.objectContaining({ session_id: 'child' }),
+      { timeoutMs: 30000 },
+    )
   })
 
   it('degrades to _(unavailable)_ when session discovery fails', async () => {
