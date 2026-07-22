@@ -450,7 +450,7 @@ export function FunctionCallCard({
           <CopyMessageButton
             text={message.functionId}
             label="copy function id"
-            className="opacity-0 group-hover/fchdr:opacity-100 group-focus-within/fchdr:opacity-100 transition-opacity"
+            className="opacity-0 group-hover/fchdr:opacity-100 group-focus-within/fchdr:opacity-100 transition-[opacity,color]"
           />
         ) : null}
         <button

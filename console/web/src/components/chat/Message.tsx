@@ -276,7 +276,7 @@ function UserMessage({ message }: { message: UserMessageType }) {
         {message.content ? (
           <CopyMessageButton
             text={message.content}
-            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-[opacity,color]"
           />
         ) : null}
         <Prompt symbol="$">you</Prompt>
@@ -326,7 +326,7 @@ function AssistantMessage({
         {copySource !== undefined && !message.streaming ? (
           <CopyMessageButton
             text={copySource}
-            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-[opacity,color]"
           />
         ) : null}
       </header>
