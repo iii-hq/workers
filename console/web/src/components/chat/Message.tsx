@@ -271,7 +271,10 @@ function SpawnTaskMessage({ message }: { message: UserMessageType }) {
 
 function UserMessage({ message }: { message: UserMessageType }) {
   return (
-    <article className="group flex flex-col items-end gap-2">
+    <article
+      className="group flex flex-col items-end gap-2"
+      data-message-role="user"
+    >
       <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2">
         {message.content ? (
           <CopyMessageButton
@@ -313,7 +316,10 @@ function AssistantMessage({
   // payload fall back to the prose gate.
   const copySource = copyText ?? (message.content || undefined)
   return (
-    <article className="group flex flex-col gap-2">
+    <article
+      className="group flex flex-col gap-2"
+      data-message-role="assistant"
+    >
       <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2 flex-wrap">
         <Prompt symbol=">">assistant</Prompt>
         {message.model ? (

@@ -1,7 +1,7 @@
 import { fileURLToPath, URL } from 'node:url'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
-import { defineConfig } from 'vite'
+import { configDefaults, defineConfig } from 'vitest/config'
 
 // Engine WebSocket URL, same knob as the console binary's `--url`
 // (DEFAULT_ENGINE_URL in src/config.rs).
@@ -16,6 +16,9 @@ export default defineConfig({
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
+  },
+  test: {
+    exclude: [...configDefaults.exclude, 'e2e/**'],
   },
   // Dev twin of the console worker's HTTP server (src/server.rs): the same
   // /ws proxy contract, bound on 0.0.0.0 like the binary so the dev server

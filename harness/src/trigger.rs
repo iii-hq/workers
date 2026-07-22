@@ -35,6 +35,9 @@ pub enum TriggerResult {
 pub struct PendingInfo {
     pub pending_timeout_ms: Option<u64>,
     pub held_by: Option<String>,
+    /// Hook holds only: the arguments as mutated by the chain up to the hold,
+    /// checkpointed so a release executes the mutated call (issue #506).
+    pub held_arguments: Option<Value>,
     pub child_session_id: Option<String>,
     pub child_turn_id: Option<String>,
 }

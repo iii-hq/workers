@@ -385,6 +385,210 @@ jobs:
           fi
 
   # ──────────────────────────────────────────────────────────────
+  # Harness integration E2E (non-required): deterministic public-path
+  # regression scenarios against the engine pinned in
+  # harness/tests/e2e/engine.lock (see that crate's README; the
+  # architecture spec lives in the iii repo). Runs on EVERY PR — the
+  # suite is the harness stack's public-contract gate, and engine/worker
+  # builds are cached. The engine is BUILT from the pinned source, never
+  # downloaded; a cache hit is still re-hashed before use. "Non-required"
+  # is enforced by branch protection, not continue-on-error.
+  # ──────────────────────────────────────────────────────────────
+  harness-integration:
+    name: harness integration e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read and validate engine.lock
+        id: lock
+        run: |
+          set -euo pipefail
+          lock=harness/tests/e2e/engine.lock
+          read_field() {
+            local field=$1 values
+            values=$(sed -n "s/^${field} = \"\\([^\"]*\\)\"$/\\1/p" "$lock")
+            [[ $(printf '%s\n' "$values" | sed '/^$/d' | wc -l) -eq 1 ]] || {
+              echo "engine.lock: $field must appear exactly once"
+              exit 3
+            }
+            printf '%s' "$values"
+          }
+          invalid=$(sed \
+            -e '/^[[:space:]]*$/d' \
+            -e '/^[[:space:]]*#/d' \
+            -e '/^\(repository\|revision\|package\|binary\) = "[^"]*"$/d' \
+            "$lock")
+          [[ -z "$invalid" ]] || {
+            echo "engine.lock: unsupported or malformed entry"
+            printf '%s\n' "$invalid"
+            exit 3
+          }
+          repository=$(read_field repository)
+          revision=$(read_field revision)
+          package=$(read_field package)
+          binary=$(read_field binary)
+          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+            echo "engine.lock: repository must be an owner/name slug"
+            exit 3
+          }
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "engine.lock: revision must be 40-hex"; exit 3; }
+          [[ "$package" =~ ^[A-Za-z0-9_-]+$ ]] || {
+            echo "engine.lock: package contains unsupported characters"
+            exit 3
+          }
+          [[ "$binary" =~ ^target/(debug|release)/[A-Za-z0-9_.-]+$ ]] || {
+            echo "engine.lock: binary must be a target profile path"
+            exit 3
+          }
+          {
+            echo "repository=$repository"
+            echo "revision=$revision"
+            echo "package=$package"
+            echo "binary=$binary"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout pinned engine source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.lock.outputs.repository }}
+          ref: ${{ steps.lock.outputs.revision }}
+          path: target/integration-engine-src
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: console/web/pnpm-lock.yaml
+
+      - name: Cache engine build
+        uses: actions/cache@v4
+        with:
+          path: target/integration-engine-src/target
+          key: integration-engine-${{ runner.os }}-${{ runner.arch }}-${{ steps.lock.outputs.revision }}-${{ hashFiles('target/integration-engine-src/Cargo.lock') }}
+
+      - name: Build pinned engine
+        working-directory: target/integration-engine-src
+        run: cargo build --locked --release -p ${{ steps.lock.outputs.package }}
+
+      - name: Record engine digest
+        id: engine
+        run: |
+          set -euo pipefail
+          bin="$GITHUB_WORKSPACE/target/integration-engine-src/${{ steps.lock.outputs.binary }}"
+          [[ -x "$bin" ]] || { echo "engine binary missing at $bin"; exit 3; }
+          sha256sum "$bin"
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            harness -> target
+            queue -> target
+            session-manager -> target
+            context-manager -> target
+            iii-directory -> target
+            console -> target
+
+      - name: Integration crate unit tests
+        run: cargo test --manifest-path harness/Cargo.toml -p harness-integration
+
+      - name: Validate integration scenarios
+        run: make -C harness integration-validate
+
+      - name: Run integration scenarios
+        run: make -C harness integration-e2e III_BIN="${{ steps.engine.outputs.bin }}"
+
+      - name: Install Console web dependencies
+        working-directory: console/web
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Console web app
+        working-directory: console/web
+        run: pnpm build
+
+      - name: Build Console worker
+        run: cargo build --release --manifest-path console/Cargo.toml
+
+      - name: Install Playwright Chromium
+        working-directory: console/web
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Typecheck Console E2E tests
+        working-directory: console/web
+        run: pnpm typecheck:e2e
+
+      - name: Run Console Playwright scenarios
+        working-directory: console/web
+        env:
+          III_BIN: ${{ steps.engine.outputs.bin }}
+          HARNESS_INTEGRATION_BIN: ${{ github.workspace }}/harness/target/release/harness-integration
+          HARNESS_BIN: ${{ github.workspace }}/harness/target/release/harness
+          CONSOLE_BIN: ${{ github.workspace }}/console/target/release/console
+          QUEUE_BIN: ${{ github.workspace }}/queue/target/release/queue
+          III_DIRECTORY_BIN: ${{ github.workspace }}/iii-directory/target/release/iii-directory
+          SESSION_MANAGER_BIN: ${{ github.workspace }}/session-manager/target/release/session-manager
+          CONTEXT_MANAGER_BIN: ${{ github.workspace }}/context-manager/target/release/context-manager
+          CONSOLE_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/console-e2e
+        run: pnpm test:e2e
+
+      - name: Verify integration report links
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          reports=(target/integration/*/execution.json)
+          ((${#reports[@]} > 0)) || { echo "no execution reports found"; exit 3; }
+          for execution in "${reports[@]}"; do
+            run_dir=$(dirname "$execution")
+            result_path=$(jq -er '.result_path' "$execution")
+            [[ "$result_path" == "result.json" ]] || {
+              echo "$execution: unexpected result_path $result_path"
+              exit 3
+            }
+            expected=$(jq -er '.result_sha256' "$execution")
+            actual=$(sha256sum "$run_dir/$result_path" | cut -d' ' -f1)
+            [[ "$actual" == "$expected" ]] || {
+              echo "$execution: result digest mismatch"
+              exit 3
+            }
+          done
+
+      - name: Upload compact results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-results
+          path: |
+            target/integration/*/result.json
+            target/integration/*/execution.json
+            target/integration/*/teardown.json
+          if-no-files-found: ignore
+
+      - name: Upload full non-pass artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-artifacts
+          path: target/integration/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload Console E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-e2e-artifacts
+          path: target/console-e2e/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ──────────────────────────────────────────────────────────────
   # Node per-worker lint (biome) + test
   # ──────────────────────────────────────────────────────────────
   node:

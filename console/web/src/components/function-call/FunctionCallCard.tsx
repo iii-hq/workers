@@ -381,6 +381,11 @@ export function FunctionCallCard({
         !embedded && 'border border-rule bg-bg',
       )}
       data-message-id={message.id}
+      data-message-role="function-call"
+      data-function-id={message.functionId}
+      data-function-status={
+        pending ? 'pending' : running ? 'running' : errored ? 'error' : 'done'
+      }
     >
       {/* The copy affordance must be a sibling of the collapse toggle
           (nested buttons are invalid HTML): the labeled toggle carries the
@@ -625,7 +630,10 @@ function PaneShell({
   }
 
   return (
-    <div className={cn(bordered && 'border-t border-rule-2')}>
+    <div
+      className={cn(bordered && 'border-t border-rule-2')}
+      data-function-pane={label}
+    >
       <div className="flex items-center gap-2 bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
         <span className="min-w-0 flex-1 truncate">
           {label}
@@ -681,7 +689,7 @@ function PaneShell({
  */
 function StreamingArgsPane({ text }: { text: string }) {
   return (
-    <div>
+    <div data-function-pane="request">
       <div className="bg-paper-2 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
         request
         <span className="text-ink-ghost normal-case tracking-normal">
@@ -715,7 +723,10 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
 
   if (empty) {
     return (
-      <div className={cn(bordered && 'border-t border-rule-2')}>
+      <div
+        className={cn(bordered && 'border-t border-rule-2')}
+        data-function-pane={label}
+      >
         <div className="bg-paper-2 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
           {label}
           <span className="text-ink-ghost normal-case tracking-normal">
