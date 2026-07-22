@@ -5,6 +5,7 @@
  * as fenced JSON, attachments listed by metadata only (no base64 payload).
  */
 
+import { getIiiClient } from '@/lib/iii-client'
 import type {
   Attachment,
   Conversation,
@@ -99,6 +100,51 @@ function renderFunctionCall(message: FunctionCallMessage): string {
 export interface WorkerVersion {
   name: string
   version?: string
+}
+
+const WORKERS_LIST_RPC = 'engine::workers::list'
+const WORKERS_LIST_TIMEOUT_MS = 2000
+
+/**
+ * Best-effort snapshot of connected workers for the export header.
+ * Lenient by design: `null` on any failure (offline engine, timeout,
+ * malformed payload) — the caller renders `_(unavailable)_` and the
+ * export proceeds. Deliberately does not reuse the zod schema in
+ * `components/chat/engine/parsers.ts` (lib must not import components).
+ */
+export async function fetchWorkerVersions(): Promise<WorkerVersion[] | null> {
+  try {
+    const client = await getIiiClient()
+    const res = await client.trigger<unknown>(
+      WORKERS_LIST_RPC,
+      {},
+      { timeoutMs: WORKERS_LIST_TIMEOUT_MS },
+    )
+    const workers = (res as { workers?: unknown } | null)?.workers
+    if (!Array.isArray(workers)) return null
+    const out: WorkerVersion[] = []
+    for (const entry of workers) {
+      if (typeof entry !== 'object' || entry === null) continue
+      const rec = entry as { id?: unknown; name?: unknown; version?: unknown }
+      const name =
+        typeof rec.name === 'string' && rec.name !== ''
+          ? rec.name
+          : typeof rec.id === 'string' && rec.id !== ''
+            ? rec.id
+            : null
+      if (name === null) continue
+      out.push({
+        name,
+        version:
+          typeof rec.version === 'string' && rec.version !== ''
+            ? rec.version
+            : undefined,
+      })
+    }
+    return out
+  } catch {
+    return null
+  }
 }
 
 /**

@@ -1,4 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const mockTrigger = vi.hoisted(() => vi.fn())
+vi.mock('@/lib/iii-client', () => ({
+  getIiiClient: () => Promise.resolve({ trigger: mockTrigger }),
+}))
 import type {
   AssistantMessage,
   Conversation,
@@ -8,7 +13,7 @@ import type {
   ThoughtMessage,
   UserMessage,
 } from '@/types/chat'
-import { buildExportFilename, conversationToMarkdown } from './export-session'
+import { buildExportFilename, conversationToMarkdown, fetchWorkerVersions } from './export-session'
 
 function baseConversation(messages: Message[] = []): Conversation {
   return {
@@ -255,5 +260,51 @@ describe('buildExportFilename', () => {
     const conv = { ...baseConversation(), id: '' }
     const filename = buildExportFilename(conv)
     expect(filename).toMatch(/^iii-session-session-\d{8}-\d{4}\.md$/)
+  })
+})
+
+describe('fetchWorkerVersions', () => {
+  beforeEach(() => {
+    mockTrigger.mockReset()
+  })
+
+  it('calls engine::workers::list with a 2s timeout and maps name/version', async () => {
+    mockTrigger.mockResolvedValue({
+      workers: [
+        { id: 'w1', name: 'harness', version: '1.5.2', status: 'connected' },
+        { id: 'w2', name: null, version: '0.2.4', status: 'connected' },
+        { id: 'w3', name: 'scrapling', version: null, status: 'connected' },
+      ],
+    })
+    const out = await fetchWorkerVersions()
+    expect(mockTrigger).toHaveBeenCalledWith(
+      'engine::workers::list',
+      {},
+      { timeoutMs: 2000 },
+    )
+    expect(out).toEqual([
+      { name: 'harness', version: '1.5.2' },
+      { name: 'w2', version: '0.2.4' },
+      { name: 'scrapling', version: undefined },
+    ])
+  })
+
+  it('returns null when the trigger rejects (timeout or error)', async () => {
+    mockTrigger.mockRejectedValue(new Error('timeout'))
+    await expect(fetchWorkerVersions()).resolves.toBeNull()
+  })
+
+  it('returns null when the response has no workers array', async () => {
+    mockTrigger.mockResolvedValue({ nope: true })
+    await expect(fetchWorkerVersions()).resolves.toBeNull()
+  })
+
+  it('skips malformed entries but keeps valid ones', async () => {
+    mockTrigger.mockResolvedValue({
+      workers: [null, 42, { version: '9.9.9' }, { id: 'ok', version: '1.0.0' }],
+    })
+    await expect(fetchWorkerVersions()).resolves.toEqual([
+      { name: 'ok', version: '1.0.0' },
+    ])
   })
 })
