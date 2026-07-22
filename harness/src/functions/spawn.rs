@@ -33,7 +33,8 @@ pub struct SpawnOptions {
     /// The child's deliverable: text / json / json+schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputContract>,
-    /// Intersected with the parent policy — narrow, never escalate.
+    /// Intersected with the parent policy — narrow, never escalate. An
+    /// `ask`-mode child is further capped at the read-only baseline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
     /// Fan-out guard for the child's own spawns.

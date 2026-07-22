@@ -385,9 +385,8 @@
         "description": "`message` is either a plain string (sugar for a user text message) or a full `AgentMessage`."
       },
       "Mode": {
-        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt.",
+        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt. `ask` is also structural: the turn's dispatch policy is capped at the operator's read-only baseline, never widened.",
         "enum": [
-          "plan",
           "ask",
           "agent"
         ],
@@ -445,7 +444,7 @@
                 "type": "null"
               }
             ],
-            "description": "Intersected with the parent policy — narrow, never escalate."
+            "description": "Intersected with the parent policy — narrow, never escalate. An `ask`-mode child is further capped at the read-only baseline."
           },
           "max_children": {
             "description": "Fan-out guard for the child's own spawns.",

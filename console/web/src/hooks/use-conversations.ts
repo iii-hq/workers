@@ -101,7 +101,7 @@ function emptyConversation(defaultModel: ModelId | null): Conversation {
 }
 
 function isMode(v: unknown): v is Mode {
-  return v === 'plan' || v === 'ask' || v === 'agent'
+  return v === 'ask' || v === 'agent'
 }
 
 /** The console's session metadata convention (replaces wholesale on writes). */
