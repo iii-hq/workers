@@ -27,20 +27,24 @@ export function ExportSessionButton({
   className,
 }: ExportSessionButtonProps) {
   const [exported, setExported] = useState(false)
+  const [busy, setBusy] = useState(false)
   const disabled = conversation.messages.length === 0
 
-  const handleClick = useCallback(() => {
-    if (disabled) return
+  const handleClick = useCallback(async () => {
+    if (disabled || busy) return
+    setBusy(true)
     try {
-      const filename = downloadConversationAsMarkdown(conversation)
+      const filename = await downloadConversationAsMarkdown(conversation)
       setExported(true)
       window.setTimeout(() => setExported(false), 1200)
       onExported?.(filename)
     } catch {
       // Browsers without Blob/URL support are far outside our target;
       // swallow rather than crash the header.
+    } finally {
+      setBusy(false)
     }
-  }, [conversation, disabled, onExported])
+  }, [conversation, disabled, busy, onExported])
 
   return (
     <button

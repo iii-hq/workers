@@ -206,13 +206,15 @@ export function buildExportFilename(conversation: Conversation): string {
 }
 
 /**
- * Triggers a browser download of the rendered markdown.
+ * Triggers a browser download of the rendered markdown. Fetches connected
+ * worker versions first (best-effort, ≤2 s) so the header records the stack.
  * Returns the filename so callers can announce it (e.g. via a live region).
  */
-export function downloadConversationAsMarkdown(
+export async function downloadConversationAsMarkdown(
   conversation: Conversation,
-): string {
-  const markdown = conversationToMarkdown(conversation)
+): Promise<string> {
+  const workers = await fetchWorkerVersions()
+  const markdown = conversationToMarkdown(conversation, workers)
   const filename = buildExportFilename(conversation)
   const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
   const url = URL.createObjectURL(blob)
