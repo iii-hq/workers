@@ -1,22 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  EDITORS,
-  editorById,
-  getPreferredEditor,
-  setPreferredEditor,
-} from './editor-links'
-
-afterEach(() => {
-  vi.unstubAllGlobals()
-})
-
-function fakeLocalStorage() {
-  const store = new Map<string, string>()
-  return {
-    getItem: (k: string) => store.get(k) ?? null,
-    setItem: (k: string, v: string) => void store.set(k, v),
-  }
-}
+import { describe, expect, it } from 'vitest'
+import { EDITORS, editorById } from './editor-links'
 
 describe('buildUrl', () => {
   it('builds the three schemes around the same file path', () => {
@@ -54,31 +37,6 @@ describe('buildUrl', () => {
     expect(editorById('zed').buildUrl('/tmp/my file.txt', 3)).toBe(
       'zed://file/tmp/my%20file.txt:3',
     )
-  })
-})
-
-describe('preference', () => {
-  it('defaults to cursor when nothing is stored', () => {
-    vi.stubGlobal('localStorage', fakeLocalStorage())
-    expect(getPreferredEditor()).toBe('cursor')
-  })
-
-  it('round-trips a stored choice', () => {
-    vi.stubGlobal('localStorage', fakeLocalStorage())
-    setPreferredEditor('zed')
-    expect(getPreferredEditor()).toBe('zed')
-  })
-
-  it('resolves unknown stored values to cursor', () => {
-    const ls = fakeLocalStorage()
-    ls.setItem('iii-preferred-editor', 'emacs')
-    vi.stubGlobal('localStorage', ls)
-    expect(getPreferredEditor()).toBe('cursor')
-  })
-
-  it('is best-effort when storage is unavailable (node env: no localStorage)', () => {
-    expect(getPreferredEditor()).toBe('cursor')
-    expect(() => setPreferredEditor('vscode')).not.toThrow()
   })
 })
 

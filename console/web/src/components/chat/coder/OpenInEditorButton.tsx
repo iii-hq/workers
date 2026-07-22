@@ -1,4 +1,4 @@
-import { ChevronDown, SquareArrowOutUpRight } from 'lucide-react'
+import { SquareArrowOutUpRight } from 'lucide-react'
 import { useState } from 'react'
 import {
   DropdownMenu,
@@ -8,19 +8,14 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/DropdownMenu'
 import { copyTextToClipboard } from '@/lib/clipboard'
-import {
-  EDITORS,
-  type EditorId,
-  editorById,
-  getPreferredEditor,
-  setPreferredEditor,
-} from '@/lib/editor-links'
+import { EDITORS, type EditorId, editorById } from '@/lib/editor-links'
 
 /**
- * Split "open in editor" affordance for coder file-change rows: the anchor
- * opens the preferred editor via its URL scheme (one click), the chevron
- * menu switches editors (persisting the choice) or copies the path — the
- * fallback when the browser isn't on the machine that has the files.
+ * "open in editor" affordance for coder file-change rows: one button that
+ * always opens a menu of editors (cursor / vs code / zed) — each entry
+ * launches that editor via its URL scheme — plus "copy path", the fallback
+ * when the browser isn't on the machine that has the files. No editor is
+ * privileged; the menu is shown every time so the choice stays explicit.
  * Renders nothing for non-absolute paths (result resolution failed —
  * `coder` results are jail-resolved absolute on success).
  */
@@ -31,15 +26,10 @@ export function OpenInEditorButton({
   path: string
   line?: number
 }) {
-  const [preferred, setPreferred] = useState<EditorId>(getPreferredEditor)
   const [copied, setCopied] = useState(false)
   if (!path.startsWith('/')) return null
 
-  const editor = editorById(preferred)
-
   const openWith = (id: EditorId) => {
-    setPreferred(id)
-    setPreferredEditor(id)
     window.location.href = editorById(id).buildUrl(path, line)
   }
 
@@ -52,48 +42,34 @@ export function OpenInEditorButton({
   }
 
   return (
-    <span className="inline-flex items-center gap-0.5 shrink-0">
-      <a
-        href={editor.buildUrl(path, line)}
-        draggable={false}
-        className="text-ink-ghost hover:text-ink transition-colors"
-        aria-label={`open in ${editor.label}`}
-        title={`open in ${editor.label}`}
-      >
-        <SquareArrowOutUpRight size={12} aria-hidden />
-      </a>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            className="text-ink-ghost hover:text-ink transition-colors"
-            aria-label="editor options"
-            title="editor options"
-          >
-            <ChevronDown size={10} aria-hidden />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start">
-          {EDITORS.map((e) => (
-            <DropdownMenuItem key={e.id} onSelect={() => openWith(e.id)}>
-              open in {e.label}
-              {e.id === preferred ? (
-                <span className="text-ink-ghost">· default</span>
-              ) : null}
-            </DropdownMenuItem>
-          ))}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            onSelect={(event) => {
-              // Keep the menu open so the "copied" flip is visible.
-              event.preventDefault()
-              copyPath()
-            }}
-          >
-            {copied ? 'copied' : 'copy path'}
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex items-center shrink-0 text-ink-ghost hover:text-ink transition-colors"
+          aria-label="open in editor"
+          title="open in editor"
+        >
+          <SquareArrowOutUpRight size={12} aria-hidden />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start">
+        {EDITORS.map((e) => (
+          <DropdownMenuItem key={e.id} onSelect={() => openWith(e.id)}>
+            open in {e.label}
           </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </span>
+        ))}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onSelect={(event) => {
+            // Keep the menu open so the "copied" flip is visible.
+            event.preventDefault()
+            copyPath()
+          }}
+        >
+          {copied ? 'copied' : 'copy path'}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
