@@ -77,25 +77,37 @@ pub struct PreGenerateMutations {
     pub system_prompt: Option<String>,
 }
 
-/// One index row: worker overview id and its teaser text.
+/// One index row: worker name and its teaser text.
 type Entry = (String, String);
 
-/// Scan the merged skill folders and keep one row per worker overview: a
-/// single-segment skill id whose file parses. Teaser precedence matches the
-/// list surface: frontmatter `description`, else empty.
+/// The scanner aliases `<worker>/SKILL.md` to the on-disk id `<worker>/index`
+/// (`rel_to_id`); that row is the worker's overview. Deeper docs carry more
+/// segments and are skipped here — the overview links them.
+fn overview_worker(id: &str) -> Option<&str> {
+    let mut parts = id.split('/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(worker), Some("index"), None) if !worker.is_empty() => Some(worker),
+        _ => None,
+    }
+}
+
+/// Scan the merged skill folders and keep one row per worker overview.
+/// Teaser precedence matches the list surface: frontmatter `description`,
+/// else empty.
 fn collect_entries(cfg: &crate::config::SkillsConfig) -> Vec<Entry> {
     let (skills, _skips) =
         fs_source::scan_skills_merged(&cfg.resolved_skills_folder(), &cfg.local_skills_folder());
     let mut entries: Vec<Entry> = skills
         .iter()
-        .filter(|s| !s.id.contains('/'))
         .filter_map(|s| {
+            let worker = overview_worker(&s.id)?;
             let (fm, _body) = fs_source::read_skill_with_frontmatter(&s.abs_path).ok()?;
             let teaser = fm.description.unwrap_or_default();
-            Some((s.id.clone(), teaser))
+            Some((worker.to_string(), teaser))
         })
         .collect();
     entries.sort();
+    entries.dedup_by(|a, b| a.0 == b.0);
     entries
 }
 
@@ -216,6 +228,15 @@ mod tests {
             .iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn overview_worker_matches_only_the_aliased_skill_md_row() {
+        assert_eq!(overview_worker("harness/index"), Some("harness"));
+        assert_eq!(overview_worker("harness/orchestration"), None);
+        assert_eq!(overview_worker("resend/emails/index"), None);
+        assert_eq!(overview_worker("harness"), None);
+        assert_eq!(overview_worker("/index"), None);
     }
 
     #[test]
