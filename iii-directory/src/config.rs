@@ -61,6 +61,10 @@ fn default_auto_download() -> bool {
     true
 }
 
+fn default_inject_index() -> bool {
+    false
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct SkillsConfig {
     /// Folder that backs every read (`directory::skills::list`,
@@ -113,6 +117,14 @@ pub struct SkillsConfig {
     /// folder.
     #[serde(default = "default_auto_download")]
     pub auto_download: bool,
+
+    /// When `true`, a `harness::hook::pre-generate` binding appends a compact
+    /// per-worker skills index to the agent system prompt on every
+    /// generation, so agents discover installed skill docs without a
+    /// discovery call. Off by default; toggling it takes effect without a
+    /// restart.
+    #[serde(default = "default_inject_index")]
+    pub inject_index: bool,
 }
 
 impl Default for SkillsConfig {
@@ -125,6 +137,7 @@ impl Default for SkillsConfig {
             registry_cache_ttl_ms: default_registry_cache_ttl_ms(),
             filter_unregistered: default_filter_unregistered(),
             auto_download: default_auto_download(),
+            inject_index: default_inject_index(),
         }
     }
 }
