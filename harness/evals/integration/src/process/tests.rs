@@ -43,26 +43,6 @@ fn drop_cleans_up_a_partially_started_supervisor() {
 }
 
 #[tokio::test]
-async fn kill_now_is_idempotent_after_a_synchronous_reap() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut supervisor = ProcessSupervisor::new(Duration::from_millis(100));
-    let running = ProcessSpec::new(
-        "running",
-        "/bin/sh",
-        dir.path(),
-        dir.path().join("running.out"),
-        dir.path().join("running.err"),
-    )
-    .args(["-c", "exec sleep 60"]);
-    let pid = supervisor.spawn(running).unwrap();
-    let mut child = supervisor.remove("running").unwrap();
-
-    child.kill_now().await.unwrap();
-    assert!(!process_is_running(pid));
-    child.kill_now().await.unwrap();
-}
-
-#[tokio::test]
 async fn observing_a_leader_exit_does_not_abandon_its_descendants() {
     let dir = tempfile::tempdir().unwrap();
     let descendant_pid = dir.path().join("descendant.pid");

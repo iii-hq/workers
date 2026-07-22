@@ -16,7 +16,7 @@ pub struct RunEvidence {
     pub run_id: String,
     pub session_id: String,
     pub turn_id: Option<String>,
-    /// `harness::send` response — present after Direct/Observe Send succeeds.
+    /// `harness::send` response — present when the direct runner owns Send.
     pub send_response: Option<Value>,
     /// Final `harness::status` report (JSON null when the session is unknown).
     pub status: Value,
@@ -89,48 +89,6 @@ impl RunEvidence {
             .any(|entry_id| !seen.insert(entry_id))
     }
 
-    /// Every dispatched function call is closed by a durable result.
-    pub fn all_calls_closed(&self) -> bool {
-        let mut call_ids = Vec::new();
-        let mut result_ids = std::collections::BTreeSet::new();
-        for message in self.messages() {
-            match role(message) {
-                Some("assistant") => {
-                    for block in message
-                        .get("content")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                    {
-                        if block.get("type").and_then(Value::as_str) == Some("function_call") {
-                            if let Some(id) = block.get("id").and_then(Value::as_str) {
-                                call_ids.push(id);
-                            }
-                        }
-                    }
-                }
-                Some("function_result") => {
-                    if let Some(id) = message.get("function_call_id").and_then(Value::as_str) {
-                        result_ids.insert(id);
-                    }
-                }
-                _ => {}
-            }
-        }
-        call_ids.iter().all(|id| result_ids.contains(id))
-    }
-
-    /// Exactly one durable function result closes the given call id.
-    pub fn function_result_closes(&self, call_id: &str) -> bool {
-        self.messages()
-            .filter(|message| role(message) == Some("function_result"))
-            .filter(|message| {
-                message.get("function_call_id").and_then(Value::as_str) == Some(call_id)
-            })
-            .count()
-            == 1
-    }
-
     /// Replace this run's concrete ids with `{{run_id}}` / `{{session_id}}` /
     /// `{{turn_id}}` placeholders so persisted failure text stays
     /// byte-comparable across runs.
@@ -159,14 +117,6 @@ fn replace_identity(text: &mut String, identity: &str, placeholder: &str) {
     if !identity.is_empty() && text.contains(identity) {
         *text = text.replace(identity, placeholder);
     }
-}
-
-/// Structural subset check for hook payloads: every `subset` object member
-/// must appear in `actual` (extra members allowed), arrays must match
-/// element-for-element.
-pub fn json_contains(actual: &Value, subset: &Value) -> bool {
-    crate::matcher::subset_with_array_policy(subset, actual, crate::matcher::ArrayPolicy::Exact)
-        .is_none()
 }
 
 #[cfg(test)]
@@ -248,52 +198,6 @@ mod tests {
     }
 
     #[test]
-    fn dangling_function_calls_fail_calls_closed() {
-        let mut evidence = base_evidence();
-        evidence.transcript = vec![json!({
-            "message": {
-                "role": "assistant",
-                "content": [{ "type": "function_call", "id": "call-1" }]
-            }
-        })];
-        assert!(!evidence.all_calls_closed());
-        evidence.transcript.push(json!({
-            "message": { "role": "function_result", "function_call_id": "call-1" }
-        }));
-        assert!(evidence.all_calls_closed());
-    }
-
-    #[test]
-    fn function_result_closes_selects_its_call_id() {
-        let mut evidence = base_evidence();
-        evidence.transcript = vec![
-            json!({
-                "message": {
-                    "role": "function_result",
-                    "function_call_id": "call-1",
-                    "content": []
-                }
-            }),
-            json!({
-                "message": {
-                    "role": "function_result",
-                    "function_call_id": "call-2",
-                    "content": []
-                }
-            }),
-        ];
-        assert!(evidence.function_result_closes("call-1"));
-        assert!(evidence.function_result_closes("call-2"));
-        assert!(!evidence.function_result_closes("call-3"));
-
-        // A second result for the same call is a defect, not a pass.
-        evidence.transcript.push(json!({
-            "message": { "role": "function_result", "function_call_id": "call-1" }
-        }));
-        assert!(!evidence.function_result_closes("call-1"));
-    }
-
-    #[test]
     fn message_counts_and_assistant_texts_read_the_transcript() {
         let mut evidence = base_evidence();
         evidence.transcript = vec![
@@ -320,26 +224,6 @@ mod tests {
         assert_eq!(evidence.message_counts(), (1, 2, 1));
         // The function-call-only assistant message contributes no text entry.
         assert_eq!(evidence.assistant_texts(), ["recorded once"]);
-    }
-
-    #[test]
-    fn json_contains_is_a_recursive_subset_with_exact_arrays() {
-        let actual = json!({
-            "point": "pre_trigger",
-            "call": { "id": "call-1", "arguments": { "value": "expected" } },
-            "extra": true
-        });
-        assert!(json_contains(
-            &actual,
-            &json!({ "call": { "arguments": { "value": "expected" } } })
-        ));
-        assert!(!json_contains(
-            &actual,
-            &json!({ "call": { "arguments": { "value": "other" } } })
-        ));
-        // Arrays are exact: a missing element cannot hide behind subset laxity.
-        assert!(!json_contains(&json!([1, 2, 3]), &json!([1, 2])));
-        assert!(json_contains(&json!([1, 2]), &json!([1, 2])));
     }
 
     #[test]

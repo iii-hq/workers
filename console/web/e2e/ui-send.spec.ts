@@ -2,13 +2,15 @@ import { expect, expectPassingResult, openSession, test } from './harness-stack'
 
 test.use({ scenario: 'console-streamed-text' })
 
-test('renders a harness-started streamed turn in the Console', async ({
+test('sends and renders a streamed turn through the Console', async ({
   page,
   stack,
 }) => {
   const completed = stack.waitForTurnCompleted()
   await openSession(page, stack)
-  await stack.start()
+  const composer = page.getByLabel('message composer')
+  await composer.fill(stack.ready.message)
+  await composer.press('Enter')
 
   await expect(
     page.locator('[data-message-role="user"]', {

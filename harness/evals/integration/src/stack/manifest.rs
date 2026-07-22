@@ -42,6 +42,9 @@ pub(crate) fn stack_info(bins: &StackBins, layout: &RunLayout, port: u16) -> any
     };
     record("engine", &bins.engine)?;
     record("harness", &bins.harness)?;
+    if let Some(console) = &bins.console {
+        record("console", console)?;
+    }
     for (name, path) in &bins.workers {
         record(name, path)?;
     }

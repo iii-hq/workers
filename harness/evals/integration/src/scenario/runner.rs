@@ -132,11 +132,11 @@ pub(super) struct ScenarioRunner<'a> {
     /// First floor or verify failure, scrubbed of run-scoped ids.
     pub(super) failure: Option<String>,
     /// Raw serialized [`crate::evidence_data::RunEvidence`], published in
-    /// observe results for Playwright; JSON null until collected.
+    /// playground results for Playwright; JSON null until collected.
     pub(super) evidence: serde_json::Value,
 }
 
-/// Allocate + expand result shared by Direct and Observe drivers.
+/// Allocate + expand result shared by Direct and Playground drivers.
 pub(super) struct ExpandedRun {
     pub paths: RunLayout,
     pub expanded: ExpandedFixtureV1,
@@ -252,7 +252,7 @@ impl<'a> ScenarioRunner<'a> {
         })
     }
 
-    /// Arm a booted stack (shared by Direct and Observe drivers).
+    /// Arm a booted stack (shared by Direct and Playground drivers).
     pub(super) async fn arm_booted(&mut self, booted: &mut BootedRun) -> Result<(), RunError> {
         self.arm(&mut booted.stack, &booted.services, &booted.prepared)
             .await
@@ -270,7 +270,7 @@ impl<'a> ScenarioRunner<'a> {
 
         let outcome = async {
             self.arm_booted(&mut booted).await?;
-            self.run_phases_after_arm(&mut booted.stack, &booted.services, &booted.prepared)
+            self.run_phases_after_arm(&booted.services, &booted.prepared)
                 .await
         }
         .await;
@@ -285,13 +285,10 @@ impl<'a> ScenarioRunner<'a> {
 
     async fn run_phases_after_arm(
         &mut self,
-        stack: &mut Stack,
         services: &RunServices,
         prepared: &PreparedRun,
     ) -> Result<(), RunError> {
         let mut active = self.send(services, prepared).await?;
-        self.fault(stack, services, prepared, &active).await?;
-        self.release(services, prepared, &active).await?;
         self.r#await(services, &mut active).await?;
         self.collect(services, prepared, &mut active).await?;
         let evidence = self.build_evidence(services, &active, Some(active.send_response.clone()));
@@ -317,7 +314,7 @@ impl<'a> ScenarioRunner<'a> {
         combine_teardown(classification, teardown_complete, artifact)
     }
 
-    /// Shared teardown tail for run and observe. Inspects process state while
+    /// Shared teardown tail for run and playground. Inspects process state while
     /// the subject is still running; service shutdown is intentionally
     /// before process teardown, and a second inspection catches a child
     /// that exits during that boundary.

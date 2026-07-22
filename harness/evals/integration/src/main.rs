@@ -3,9 +3,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
-use harness_integration::expand::render_compiled;
 use harness_integration::fixtures::{scenario_fixtures, ScenarioFixture};
-use harness_integration::scenario::{observe_scenario, run_scenario};
+use harness_integration::scenario::{playground_scenario, run_scenario};
 use harness_integration::scenarios::ScenarioDriver;
 use harness_integration::stack::StackBins;
 use harness_integration::types::scenario::Classification;
@@ -22,15 +21,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Run one scenario or every non-quarantined scenario.
+    /// Run one direct scenario or every direct scenario.
     Run(RunArgs),
-    /// Compile and validate every registered scenario without booting a
-    /// stack.
+    /// Validate registered fixtures without booting a stack.
     Validate(SelectionArgs),
-    /// Print one deterministic, fully expanded compiled scenario.
-    Render(RenderArgs),
-    /// Boot one armed stack for a Playwright UI observe test.
-    Observe(ObserveArgs),
+    /// Boot one stack and Console for manual or Playwright stimulus.
+    Playground(PlaygroundArgs),
 }
 
 #[derive(Debug, Args)]
@@ -66,16 +62,20 @@ struct RunArgs {
 }
 
 #[derive(Debug, Args)]
-struct ObserveArgs {
+struct PlaygroundArgs {
     #[command(flatten)]
     selection: SelectionArgs,
 
     #[command(flatten)]
     bins: StackBinArgs,
 
-    /// File atomically published after the stack is armed and ready.
+    /// Production Console binary to run against the isolated stack.
     #[arg(long)]
-    ready_file: PathBuf,
+    console_bin: PathBuf,
+
+    /// Optional file atomically published after the Console is ready.
+    #[arg(long)]
+    ready_file: Option<PathBuf>,
 
     /// Root directory for run artifacts.
     #[arg(long, default_value = "target/console-e2e")]
@@ -86,12 +86,6 @@ struct ObserveArgs {
 struct SelectionArgs {
     /// Scenario id, scenario slug, or `all`.
     #[arg(long, default_value = "all")]
-    scenario: String,
-}
-
-#[derive(Debug, Args)]
-struct RenderArgs {
-    /// Scenario id or slug.
     scenario: String,
 }
 
@@ -121,8 +115,7 @@ async fn dispatch(cli: Cli) -> i32 {
     let result = match cli.command {
         Command::Run(args) => return run(args).await,
         Command::Validate(args) => validate(args),
-        Command::Render(args) => render(args),
-        Command::Observe(args) => return observe(args).await,
+        Command::Playground(args) => return playground(args).await,
     };
     match result {
         Ok(message) => {
@@ -139,7 +132,7 @@ async fn dispatch(cli: Cli) -> i32 {
 }
 
 async fn run(args: RunArgs) -> i32 {
-    let mut fixtures = match load_fixtures(&args.selection, false) {
+    let mut fixtures = match load_fixtures(&args.selection) {
         Ok(fixtures) => fixtures,
         Err(error) => {
             eprintln!("runner_error: {error:#}");
@@ -153,7 +146,7 @@ async fn run(args: RunArgs) -> i32 {
         .any(|fixture| fixture.driver != ScenarioDriver::Direct)
     {
         eprintln!(
-            "runner_error: scenario {:?} is driven by Observe; use `observe`",
+            "runner_error: scenario {:?} is driven by Playground; use `playground`",
             args.selection.scenario
         );
         return 3;
@@ -195,16 +188,16 @@ async fn run(args: RunArgs) -> i32 {
     exit_code
 }
 
-async fn observe(args: ObserveArgs) -> i32 {
+async fn playground(args: PlaygroundArgs) -> i32 {
     if args.selection.scenario == "all" {
-        eprintln!("runner_error: observe requires one scenario id or slug");
+        eprintln!("runner_error: playground requires one scenario id or slug");
         return 3;
     }
-    let fixture = match load_fixtures(&args.selection, true).and_then(|fixtures| {
+    let fixture = match load_fixtures(&args.selection).and_then(|fixtures| {
         fixtures
             .into_iter()
             .next()
-            .context("observe selector returned no scenario")
+            .context("playground selector returned no scenario")
     }) {
         Ok(fixture) => fixture,
         Err(error) => {
@@ -212,13 +205,21 @@ async fn observe(args: ObserveArgs) -> i32 {
             return 3;
         }
     };
-    let bins = match resolve_stack_bins(&args.bins) {
+    let mut bins = match resolve_stack_bins(&args.bins) {
         Ok(bins) => bins,
         Err(error) => {
             eprintln!("runner_error: {error:#}");
             return 3;
         }
     };
+    let console_bin = match absolute_binary("console", &args.console_bin) {
+        Ok(bin) => bin,
+        Err(error) => {
+            eprintln!("runner_error: {error:#}");
+            return 3;
+        }
+    };
+    bins.console = Some(console_bin.clone());
     let artifacts_dir = match prepare_artifacts_dir(&args.artifacts_dir) {
         Ok(dir) => dir,
         Err(error) => {
@@ -227,7 +228,14 @@ async fn observe(args: ObserveArgs) -> i32 {
         }
     };
 
-    let outcome = observe_scenario(&bins, &fixture, &artifacts_dir, &args.ready_file).await;
+    let outcome = playground_scenario(
+        &bins,
+        &console_bin,
+        &fixture,
+        &artifacts_dir,
+        args.ready_file.as_deref(),
+    )
+    .await;
     println!(
         "{}: {} — run {} ({} ms), artifacts: {}",
         fixture.scenario.id,
@@ -240,31 +248,12 @@ async fn observe(args: ObserveArgs) -> i32 {
 }
 
 fn validate(args: SelectionArgs) -> anyhow::Result<String> {
-    let fixtures = load_fixtures(&args, true)?;
+    let fixtures = load_fixtures(&args)?;
     Ok(format!("{} scenario fixture(s) valid", fixtures.len()))
 }
 
-fn render(args: RenderArgs) -> anyhow::Result<String> {
-    anyhow::ensure!(
-        args.scenario != "all",
-        "render requires one scenario id or slug"
-    );
-    let selection = SelectionArgs {
-        scenario: args.scenario,
-    };
-    let fixtures = load_fixtures(&selection, true)?;
-    let fixture = fixtures
-        .into_iter()
-        .next()
-        .context("render selector returned no scenario")?;
-    render_compiled(&fixture.compiled())
-}
-
-fn load_fixtures(
-    selection: &SelectionArgs,
-    include_quarantined: bool,
-) -> anyhow::Result<Vec<ScenarioFixture>> {
-    scenario_fixtures(&selection.scenario, include_quarantined)
+fn load_fixtures(selection: &SelectionArgs) -> anyhow::Result<Vec<ScenarioFixture>> {
+    scenario_fixtures(&selection.scenario)
 }
 
 fn classification_str(classification: Classification) -> &'static str {
@@ -296,6 +285,7 @@ fn resolve_stack_bins(args: &StackBinArgs) -> anyhow::Result<StackBins> {
     let bins = StackBins {
         engine: absolute_binary("engine", engine)?,
         harness: absolute_binary("harness", harness)?,
+        console: None,
         workers: args
             .worker_bins
             .iter()

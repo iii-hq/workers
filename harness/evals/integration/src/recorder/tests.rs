@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde_json::json;
 
-use super::service::{parse_lifecycle_payload, strip_engine_fields, ResponseGate};
+use super::service::{parse_lifecycle_payload, strip_engine_fields};
 use super::store::EventStore;
 use crate::types::recorder::RecorderEventKind;
 
@@ -149,27 +149,6 @@ fn lifecycle_contract_strips_only_engine_fields_and_rejects_unknown_shape() {
     let mut unknown_nested = parsed;
     unknown_nested["parent"]["surprise"] = json!(true);
     assert!(parse_lifecycle_payload(unknown_nested).is_err());
-}
-
-#[tokio::test]
-async fn response_gate_holds_only_the_selected_call_ordinal() {
-    let gate = std::sync::Arc::new(ResponseGate::new(2));
-    gate.wait_if_selected().await;
-
-    let waiting = {
-        let gate = std::sync::Arc::clone(&gate);
-        tokio::spawn(async move { gate.wait_if_selected().await })
-    };
-    tokio::task::yield_now().await;
-    assert!(!waiting.is_finished(), "the selected call must remain held");
-
-    gate.release();
-    tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
-        .await
-        .expect("released gate should wake")
-        .expect("gate task should not panic");
-
-    gate.wait_if_selected().await;
 }
 
 #[cfg(target_os = "linux")]

@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use crate::process::{ProcessSpec, ProcessSupervisor, TeardownReport, DEFAULT_TEARDOWN_BUDGET};
@@ -11,10 +11,6 @@ pub struct Stack {
     pub ws_url: String,
     pub paths: RunLayout,
     processes: ProcessSupervisor,
-    /// Engine spawn recipe, kept for fault-injection respawns:
-    /// (binary, args, cwd). `None` only in test stacks.
-    engine_recipe: Option<(PathBuf, Vec<String>, PathBuf)>,
-    engine_restarts: u32,
 }
 
 #[derive(Debug)]
@@ -69,12 +65,6 @@ impl Stack {
             ws_url,
             paths: paths.clone(),
             processes: ProcessSupervisor::default(),
-            engine_recipe: Some((
-                bins.engine.clone(),
-                engine_args.clone(),
-                paths.engine_dir.clone(),
-            )),
-            engine_restarts: 0,
         };
 
         if let Err(error) =
@@ -120,27 +110,18 @@ impl Stack {
         self.spawn_worker("harness", &bins.harness)
     }
 
-    pub async fn kill_engine(&mut self) -> anyhow::Result<()> {
-        let mut engine = self
-            .processes
-            .remove("engine")
-            .ok_or_else(|| anyhow::anyhow!("no live engine child to kill"))?;
-        engine.kill_now().await?;
-        tracing::info!(
-            target: "harness_integration::stack",
-            "engine SIGKILLed (fault injection)"
-        );
-        Ok(())
-    }
-
-    pub fn respawn_engine(&mut self) -> anyhow::Result<()> {
-        let (bin, args, cwd) = self
-            .engine_recipe
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("stack has no engine recipe (test stack?)"))?;
-        self.engine_restarts += 1;
-        let log_name = format!("engine.restart{}", self.engine_restarts);
-        self.spawn_child_logged("engine", &log_name, &bin, &args, &cwd)
+    /// Spawn the production Console on a run-scoped loopback port.
+    pub fn spawn_console(&mut self, bin: &Path) -> anyhow::Result<String> {
+        let port = free_loopback_port()?;
+        let args = vec![
+            "--url".to_string(),
+            self.ws_url.clone(),
+            "--http-port".to_string(),
+            port.to_string(),
+        ];
+        let root = self.paths.root.clone();
+        self.spawn_child("console", bin, &args, &root)?;
+        Ok(format!("http://127.0.0.1:{port}"))
     }
 
     fn spawn_worker(&mut self, worker: &str, bin: &Path) -> anyhow::Result<()> {
@@ -159,8 +140,6 @@ impl Stack {
             ws_url: "ws://127.0.0.1:0".to_string(),
             paths,
             processes: ProcessSupervisor::new(DEFAULT_TEARDOWN_BUDGET),
-            engine_recipe: None,
-            engine_restarts: 0,
         }
     }
 

@@ -12,12 +12,6 @@ use super::script::SchemaVersion1;
 pub struct RecorderConfigV1 {
     pub target: RecorderTargetV1,
     pub lifecycle: RecorderLifecycleV1,
-    /// Additional run-scoped controlled functions (e.g. hook implementations
-    /// for `harness::hook::*` scenarios). Registered exactly like the target:
-    /// declared description/schema verbatim, every call durably recorded,
-    /// declared response returned.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub extra_functions: Vec<RecorderTargetV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -31,12 +25,6 @@ pub struct RecorderTargetV1 {
     pub request_schema: serde_json::Map<String, serde_json::Value>,
     /// Declared response returned for every target call.
     pub response: serde_json::Value,
-    /// One-based call ordinal whose response is held behind a runner-owned,
-    /// in-process gate after the call has been durably appended. Derived from
-    /// `fault.after_target_calls`; never authored directly.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1))]
-    pub hold_response_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

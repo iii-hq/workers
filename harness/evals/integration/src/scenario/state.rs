@@ -50,4 +50,8 @@ impl ActiveTurn {
             timed_out: false,
         }
     }
+
+    pub(super) fn external(deadline: Deadline) -> Self {
+        Self::new(deadline, None, Value::Null)
+    }
 }

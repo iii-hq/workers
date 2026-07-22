@@ -7,7 +7,7 @@ test('renders one completed function call and its durable result', async ({
   stack,
 }) => {
   const completed = stack.waitForTurnCompleted()
-  await stack.start()
+  await stack.trigger()
   expect(await completed).toMatchObject({ status: 'completed' })
 
   await openSession(page, stack)

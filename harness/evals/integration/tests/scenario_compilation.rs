@@ -1,20 +1,12 @@
-use harness_integration::fixtures::ScenarioFixture;
-use harness_integration::scenarios::RegisteredScenario;
 use harness_integration::types::script::JsonMatcherV1;
-
-fn load(entry: &RegisteredScenario) -> ScenarioFixture {
-    ScenarioFixture::from_registered(entry)
-        .unwrap_or_else(|error| panic!("compiling {}: {error:#}", entry.slug))
-}
 
 #[test]
 fn inferred_function_history_contains_call_and_result() {
-    let registered = harness_integration::scenarios::all();
-    let entry = registered
+    let fixtures = harness_integration::scenarios::all();
+    let fixture = fixtures
         .iter()
-        .find(|entry| entry.slug == "exactly-once-function")
+        .find(|fixture| fixture.slug == "exactly-once-function")
         .expect("exactly-once-function is registered");
-    let fixture = load(entry);
     let matcher = &fixture.script.generations[1].match_.messages;
     let JsonMatcherV1::Exact { expected, .. } = matcher else {
         panic!("function history should use an exact matcher");

@@ -1,21 +1,20 @@
-//! Scenario execution lifecycle:
-//! Allocate → Boot → Arm → Send → Fault/Release → Await →
-//! Collect → Grade → Teardown → Report.
-//! (Observe inserts Probe/wait-start between Arm and Send, then waits for
-//! observer shutdown after Await before Collect.)
+//! Scenario execution lifecycle: allocate → boot → arm → send/observe →
+//! await → collect → grade → teardown → report.
 //!
 //! Every phase returns [`crate::runtime::RunError`]. Classification is derived
 //! once after process state has been inspected.
 
 pub mod floor;
 
-mod observe;
 mod phases;
+mod playground;
 mod report;
 mod runner;
 mod state;
 
-pub use observe::{observe_scenario, ObserveOutcome, ObserveReadyV1, ObserveResultV1};
+pub use playground::{
+    playground_scenario, PlaygroundOutcome, PlaygroundReadyV1, PlaygroundResultV1,
+};
 pub use runner::{run_scenario, RunOutcome};
 
 #[cfg(test)]

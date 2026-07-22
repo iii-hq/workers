@@ -1,6 +1,5 @@
 import { type ChildProcess, spawn } from 'node:child_process'
-import { createServer } from 'node:net'
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile, watch } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, watch } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { Page } from '@playwright/test'
@@ -12,10 +11,11 @@ interface ReadyManifest {
   run_id: string
   scenario_id: string
   scenario_slug: string
-  driver: 'direct' | 'observe'
+  driver: 'direct' | 'playground'
   run_root: string
   result_path: string
   engine_url: string
+  console_url: string
   session: { id: string; title: string }
   model: { id: string; provider: string }
   message: string
@@ -33,7 +33,6 @@ export interface RecorderEvent {
   received_at: string
 }
 
-/** Raw serialized RunEvidence: real ids, checkable against ReadyManifest. */
 export interface RunEvidence {
   run_id: string
   session_id: string
@@ -46,7 +45,7 @@ export interface RunEvidence {
   recorder_events: RecorderEvent[]
 }
 
-export interface ObserveResult {
+export interface PlaygroundResult {
   schema_version: '1'
   scenario_id: string
   classification:
@@ -71,9 +70,9 @@ interface TurnCompletedEvent {
 export interface HarnessStack {
   ready: ReadyManifest
   consoleUrl: string
-  start(): Promise<void>
+  trigger(): Promise<unknown>
   waitForTurnCompleted(): Promise<TurnCompletedEvent>
-  finish(): Promise<ObserveResult>
+  finish(): Promise<PlaygroundResult>
 }
 
 interface FixtureOptions {
@@ -99,39 +98,17 @@ function workerArgs(): string[] {
   ].flatMap(([name, env]) => ['--worker-bin', `${name}=${required(env)}`])
 }
 
-async function freeLoopbackPort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
-    const server = createServer()
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      if (!address || typeof address === 'string') {
-        server.close()
-        reject(new Error('failed to allocate loopback port'))
-        return
-      }
-      const { port } = address
-      server.close((error) => {
-        if (error) reject(error)
-        else resolve(port)
-      })
-    })
-    server.on('error', reject)
+function childExit(
+  child: ChildProcess,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  return new Promise((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }))
   })
-}
-
-async function writeAtomicJson(filePath: string, value: unknown): Promise<void> {
-  const parent = path.dirname(filePath)
-  const temporary = path.join(
-    parent,
-    `.${path.basename(filePath)}.${process.pid}.tmp`,
-  )
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
-  await rename(temporary, filePath)
 }
 
 async function waitForReady(
   readyFile: string,
-  childExit: Promise<{ code: number | null; signal: NodeJS.Signals | null }>,
+  exit: Promise<{ code: number | null; signal: NodeJS.Signals | null }>,
 ): Promise<ReadyManifest> {
   const read = async (): Promise<ReadyManifest | null> => {
     try {
@@ -145,20 +122,19 @@ async function waitForReady(
   const existing = await read()
   if (existing) return existing
 
-  const parent = path.dirname(readyFile)
-  const expectedName = path.basename(readyFile)
-  const changes = watch(parent)
+  const changes = watch(path.dirname(readyFile))
   const timeout = delay(70_000).then(() => {
     throw new Error(`timed out waiting for ${readyFile}`)
   })
-  const exited = childExit.then(({ code, signal }) => {
+  const exited = exit.then(({ code, signal }) => {
     throw new Error(
       `harness-integration exited before ready (code=${String(code)}, signal=${String(signal)})`,
     )
   })
   const appeared = (async () => {
     for await (const event of changes) {
-      if (event.filename && event.filename !== expectedName) continue
+      if (event.filename && event.filename !== path.basename(readyFile))
+        continue
       const manifest = await read()
       if (manifest) return manifest
     }
@@ -169,32 +145,6 @@ async function waitForReady(
   } finally {
     await changes.return?.()
   }
-}
-
-async function waitForConsoleHttp(port: number): Promise<void> {
-  const deadline = Date.now() + 60_000
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/`, {
-        redirect: 'manual',
-      })
-      if (response.ok || (response.status >= 300 && response.status < 400)) {
-        return
-      }
-    } catch {
-      // Console still booting.
-    }
-    await delay(100)
-  }
-  throw new Error(`console HTTP did not become ready on port ${port}`)
-}
-
-function childExit(
-  child: ChildProcess,
-): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-  return new Promise((resolve) => {
-    child.once('exit', (code, signal) => resolve({ code, signal }))
-  })
 }
 
 function armCompletion(
@@ -209,16 +159,12 @@ function armCompletion(
     if (timer) clearTimeout(timer)
     try {
       triggerRef?.unregister()
-    } catch {
-      // The stack may already be shutting down.
-    }
-    try {
       functionRef?.unregister()
     } catch {
-      // The stack may already be shutting down.
+      // The isolated stack may already be shutting down.
     }
   }
-  const completed = new Promise<TurnCompletedEvent>((resolve, reject) => {
+  return new Promise<TurnCompletedEvent>((resolve, reject) => {
     functionRef = sdk.registerFunction(
       functionId,
       async (payload) => {
@@ -240,13 +186,6 @@ function armCompletion(
       reject(new Error('harness::turn-completed was not delivered'))
     }, 60_000)
   })
-  return completed
-}
-
-function stopChild(child: ChildProcess | undefined): void {
-  if (!child) return
-  if (child.exitCode !== null || child.signalCode !== null) return
-  child.kill('SIGTERM')
 }
 
 export const test = base.extend<FixtureValues, FixtureOptions>({
@@ -260,15 +199,16 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
     await mkdir(artifactsRoot, { recursive: true })
     const controlDir = await mkdtemp(path.join(artifactsRoot, 'runner-'))
     const readyFile = path.join(controlDir, 'ready.json')
-    const startFile = path.join(controlDir, 'start.json')
     const args = [
-      'observe',
+      'playground',
       '--scenario',
       scenario,
       '--engine-bin',
       required('III_BIN'),
       '--harness-bin',
       required('HARNESS_BIN'),
+      '--console-bin',
+      required('CONSOLE_BIN'),
       '--artifacts-dir',
       artifactsRoot,
       '--ready-file',
@@ -276,7 +216,7 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
       ...workerArgs(),
     ]
     const child = spawn(required('HARNESS_INTEGRATION_BIN'), args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     })
     const exit = childExit(child)
     const stdout: Buffer[] = []
@@ -285,102 +225,9 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
     child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
 
     let sdk: ISdk | undefined
-    let consoleChild: ChildProcess | undefined
-    let consoleExit: Promise<{
-      code: number | null
-      signal: NodeJS.Signals | null
-    }> | undefined
-    const consoleStdout: Buffer[] = []
-    const consoleStderr: Buffer[] = []
-    let finalized: Promise<ObserveResult> | undefined
-
-    const finish = (): Promise<ObserveResult> => {
-      if (finalized) return finalized
-      finalized = (async () => {
-        if (sdk) await sdk.shutdown().catch(() => undefined)
-        stopChild(consoleChild)
-        if (consoleExit) {
-          let consoleExited = await Promise.race([
-            consoleExit,
-            delay(10_000).then(() => null),
-          ])
-          if (!consoleExited && consoleChild) {
-            consoleChild.kill('SIGKILL')
-            consoleExited = await consoleExit
-          }
-        }
-        if (child.exitCode === null && child.signalCode === null) {
-          child.kill('SIGTERM')
-        }
-        let exited = await Promise.race([exit, delay(30_000).then(() => null)])
-        if (!exited) {
-          child.kill('SIGKILL')
-          exited = await exit
-        }
-        await testInfo.attach('harness-integration.stdout', {
-          body: Buffer.concat(stdout),
-          contentType: 'text/plain',
-        })
-        await testInfo.attach('harness-integration.stderr', {
-          body: Buffer.concat(stderr),
-          contentType: 'text/plain',
-        })
-        if (consoleStdout.length > 0 || consoleStderr.length > 0) {
-          await testInfo.attach('console.stdout', {
-            body: Buffer.concat(consoleStdout),
-            contentType: 'text/plain',
-          })
-          await testInfo.attach('console.stderr', {
-            body: Buffer.concat(consoleStderr),
-            contentType: 'text/plain',
-          })
-        }
-        const result = JSON.parse(
-          await readFile(ready.result_path, 'utf8'),
-        ) as ObserveResult
-        await testInfo.attach('observe-result', {
-          body: JSON.stringify(result, null, 2),
-          contentType: 'application/json',
-        })
-        return result
-      })()
-      return finalized
-    }
-
-    let ready!: ReadyManifest
-    let consoleUrl!: string
-    try {
-      ready = await waitForReady(readyFile, exit)
-      const httpPort = await freeLoopbackPort()
-      consoleUrl = `http://127.0.0.1:${httpPort}`
-      const spawnedConsole = spawn(
-        required('CONSOLE_BIN'),
-        ['--url', ready.engine_url, '--http-port', String(httpPort)],
-        { stdio: ['ignore', 'pipe', 'pipe'] },
-      )
-      consoleChild = spawnedConsole
-      consoleExit = childExit(spawnedConsole)
-      spawnedConsole.stdout.on('data', (chunk: Buffer) =>
-        consoleStdout.push(chunk),
-      )
-      spawnedConsole.stderr.on('data', (chunk: Buffer) =>
-        consoleStderr.push(chunk),
-      )
-      await Promise.race([
-        waitForConsoleHttp(httpPort),
-        consoleExit.then(({ code, signal }) => {
-          throw new Error(
-            `console exited before ready (code=${String(code)}, signal=${String(signal)})`,
-          )
-        }),
-      ])
-    } catch (error) {
-      stopChild(consoleChild)
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill('SIGTERM')
-      }
-      await exit.catch(() => undefined)
-      await consoleExit?.catch(() => undefined)
+    let ready: ReadyManifest | undefined
+    let finalized: Promise<PlaygroundResult> | undefined
+    const attachLogs = async () => {
       await testInfo.attach('harness-integration.stdout', {
         body: Buffer.concat(stdout),
         contentType: 'text/plain',
@@ -389,40 +236,60 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
         body: Buffer.concat(stderr),
         contentType: 'text/plain',
       })
-      if (consoleStdout.length > 0 || consoleStderr.length > 0) {
-        await testInfo.attach('console.stdout', {
-          body: Buffer.concat(consoleStdout),
-          contentType: 'text/plain',
-        })
-        await testInfo.attach('console.stderr', {
-          body: Buffer.concat(consoleStderr),
-          contentType: 'text/plain',
-        })
-      }
-      throw error
     }
-
-    const connectedSdk = registerWorker(ready.engine_url)
-    sdk = connectedSdk
-    let started = false
-    const stack: HarnessStack = {
-      ready,
-      consoleUrl,
-      start: async () => {
-        if (started) return
-        started = true
-        await writeAtomicJson(startFile, { schema_version: '1' })
-      },
-      waitForTurnCompleted: () => armCompletion(connectedSdk, ready),
-      finish,
+    const finish = (): Promise<PlaygroundResult> => {
+      if (finalized) return finalized
+      finalized = (async () => {
+        if (!ready)
+          throw new Error('playground did not publish a ready manifest')
+        if (sdk) await sdk.shutdown().catch(() => undefined)
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill('SIGTERM')
+        }
+        let exited = await Promise.race([exit, delay(30_000).then(() => null)])
+        if (!exited) {
+          child.kill('SIGKILL')
+          exited = await exit
+        }
+        await attachLogs()
+        const result = JSON.parse(
+          await readFile(ready.result_path, 'utf8'),
+        ) as PlaygroundResult
+        await testInfo.attach('playground-result', {
+          body: JSON.stringify(result, null, 2),
+          contentType: 'application/json',
+        })
+        return result
+      })()
+      return finalized
     }
 
     try {
-      await use(stack)
-    } finally {
-      if (!finalized) {
-        await finish().catch(() => undefined)
+      ready = await waitForReady(readyFile, exit)
+      const manifest = ready
+      const connectedSdk = registerWorker(manifest.engine_url)
+      sdk = connectedSdk
+      const stack: HarnessStack = {
+        ready: manifest,
+        consoleUrl: manifest.console_url,
+        trigger: () =>
+          connectedSdk.trigger({
+            function_id: 'harness::send',
+            payload: manifest.send,
+          }),
+        waitForTurnCompleted: () => armCompletion(connectedSdk, manifest),
+        finish,
       }
+      await use(stack)
+    } catch (error) {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM')
+      }
+      await exit.catch(() => undefined)
+      await attachLogs()
+      throw error
+    } finally {
+      if (!finalized && ready) await finish().catch(() => undefined)
       await rm(controlDir, { recursive: true, force: true })
     }
   },
@@ -435,6 +302,11 @@ export async function openSession(
   stack: HarnessStack,
 ): Promise<void> {
   await page.goto(stack.consoleUrl)
+  // Let the Console settle its initial local-draft selection before changing
+  // sessions; otherwise that bootstrap effect can overwrite this click.
+  await expect(
+    page.locator('[role="button"][aria-current="page"]'),
+  ).toHaveCount(1)
   const session = page.getByRole('button', {
     name: `open ${stack.ready.session.title}`,
     exact: true,
@@ -443,6 +315,6 @@ export async function openSession(
   await expect(session).toHaveAttribute('aria-current', 'page')
 }
 
-export function expectPassingResult(result: ObserveResult): void {
+export function expectPassingResult(result: PlaygroundResult): void {
   expect(result.classification).toBe('pass')
 }

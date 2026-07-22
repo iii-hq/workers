@@ -8,11 +8,8 @@ use crate::types::scenario::Classification;
 pub enum RunPhase {
     Allocate,
     Boot,
-    Probe,
     Arm,
     Send,
-    Fault,
-    Release,
     Await,
     Collect,
     Grade,
@@ -25,11 +22,8 @@ impl std::fmt::Display for RunPhase {
         formatter.write_str(match self {
             RunPhase::Allocate => "allocate",
             RunPhase::Boot => "boot",
-            RunPhase::Probe => "probe",
             RunPhase::Arm => "arm",
             RunPhase::Send => "send",
-            RunPhase::Fault => "fault",
-            RunPhase::Release => "release",
             RunPhase::Await => "await",
             RunPhase::Collect => "collect",
             RunPhase::Grade => "grade",

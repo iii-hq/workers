@@ -1,18 +1,12 @@
-use anyhow::Context;
-
-use super::script_validation::validate_script;
-use crate::expand::{compile_scenario, CompiledFixtureV1};
-use crate::scenarios::{RegisteredScenario, ScenarioDriver, VerifyFn};
+use crate::expand::CompiledFixtureV1;
+use crate::scenarios::{ScenarioDriver, VerifyFn};
 use crate::types::scenario::CompiledScenarioV1;
 use crate::types::script::RouterScriptV1;
-
-const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../../../prompts/default.txt");
 
 #[derive(Debug, Clone)]
 pub struct ScenarioFixture {
     pub slug: String,
     pub driver: ScenarioDriver,
-    pub quarantine: bool,
     pub scenario: CompiledScenarioV1,
     pub script: RouterScriptV1,
     /// Compiled Harness default plus inferred session/policy aid.
@@ -22,29 +16,31 @@ pub struct ScenarioFixture {
 }
 
 impl ScenarioFixture {
-    /// Compile one registered scenario against the Harness default prompt.
-    pub fn from_registered(entry: &RegisteredScenario) -> anyhow::Result<Self> {
-        let CompiledFixtureV1 {
-            scenario: compiled,
-            script,
-            system_prompt_template,
-        } = compile_scenario(&entry.authored, DEFAULT_SYSTEM_PROMPT)
-            .with_context(|| format!("compiling scenario {}", entry.slug))?;
-
-        let fixture = ScenarioFixture {
-            slug: entry.slug.clone(),
-            driver: entry.driver,
-            quarantine: entry.authored.quarantine,
-            scenario: compiled,
-            script,
-            system_prompt_template,
-            verify: entry.verify,
-        };
-        fixture.validate()?;
-        Ok(fixture)
-    }
-
     pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.slug.is_empty()
+                && self
+                    .slug
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')),
+            "scenario slug {:?} is not filesystem-safe",
+            self.slug
+        );
+        anyhow::ensure!(
+            !self.scenario.id.is_empty()
+                && self.scenario.id.len() <= 128
+                && self
+                    .scenario
+                    .id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')),
+            "scenario id {:?} is not filesystem-safe",
+            self.scenario.id
+        );
+        anyhow::ensure!(
+            !self.scenario.description.trim().is_empty(),
+            "scenario description must not be empty"
+        );
         if self.script.scenario_id != self.scenario.id {
             anyhow::bail!(
                 "script scenario_id {:?} does not match scenario id {:?}",
@@ -52,26 +48,50 @@ impl ScenarioFixture {
                 self.scenario.id
             );
         }
-        for declared in std::iter::once(&self.scenario.recorder.target)
-            .chain(self.scenario.recorder.extra_functions.iter())
+        if !self
+            .scenario
+            .recorder
+            .target
+            .function_id
+            .starts_with("{{run_id}}::")
         {
-            if !declared.function_id.starts_with("{{run_id}}::") {
-                anyhow::bail!(
-                    "recorder function {:?} must be scoped by the {{{{run_id}}}}:: prefix",
-                    declared.function_id
-                );
-            }
+            anyhow::bail!(
+                "recorder function {:?} must be run-scoped",
+                self.scenario.recorder.target.function_id
+            );
         }
-        for binding in &self.scenario.bindings {
-            if !binding.function_id.starts_with("{{run_id}}::") {
-                anyhow::bail!(
-                    "scenario binding {:?} must bind a run-scoped function",
-                    binding.function_id
-                );
-            }
+        anyhow::ensure!(
+            !self.script.generations.is_empty(),
+            "router script has no generations"
+        );
+        let mut ordinals = std::collections::BTreeSet::new();
+        for generation in &self.script.generations {
+            anyhow::ensure!(
+                ordinals.insert(generation.ordinal),
+                "duplicate router generation ordinal {}",
+                generation.ordinal
+            );
+            anyhow::ensure!(
+                generation
+                    .frames
+                    .last()
+                    .is_some_and(|frame| frame.is_terminal()),
+                "generation {} does not end in a terminal frame",
+                generation.ordinal
+            );
+            anyhow::ensure!(
+                !generation.frames[..generation.frames.len() - 1]
+                    .iter()
+                    .any(|frame| frame.is_terminal()),
+                "generation {} contains an early terminal frame",
+                generation.ordinal
+            );
         }
-        validate_script(&self.script)
-            .with_context(|| format!("router script for {}", self.scenario.id))?;
+        crate::expand::expand_compiled_fixture(
+            &self.compiled(),
+            "validate-run",
+            "validate-session",
+        )?;
         Ok(())
     }
 

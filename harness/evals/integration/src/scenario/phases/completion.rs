@@ -25,7 +25,15 @@ impl ScenarioRunner<'_> {
         // recorder. Once it arrives, make one status call as the durable-state
         // confirmation checked by the floor.
         match services.recorder().wait_for_lifecycle(deadline).await {
-            Ok(_) => {}
+            Ok(event) => {
+                if active.turn_id.is_none() {
+                    active.turn_id = event
+                        .payload
+                        .get("turn_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(String::from);
+                }
+            }
             Err(error) if deadline.is_expired() => {
                 active.timed_out = true;
                 tracing::error!(

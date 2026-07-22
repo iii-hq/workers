@@ -62,26 +62,6 @@ impl ScenarioRunner<'_> {
             )
             .await
             .map_err(|error| RunError::setup(phase, "bind lifecycle recorder", error))?;
-        for binding in &scenario.bindings {
-            recorder
-                .bind(
-                    &binding.trigger_type,
-                    &binding.function_id,
-                    binding.config.clone(),
-                )
-                .await
-                .map_err(|error| {
-                    RunError::setup(
-                        phase,
-                        format!(
-                            "bind trigger {} to {}",
-                            binding.trigger_type, binding.function_id
-                        ),
-                        error,
-                    )
-                })?;
-        }
-
         self.sink_mut(phase)?
             .write_scenario_text(
                 &scenario.id,

@@ -1,9 +1,7 @@
 //! SDK-facing recorder service and controlled-function registration.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
@@ -23,44 +21,6 @@ pub struct Recorder {
     client: Client,
     store: Arc<EventStore>,
     event_notify: Arc<tokio::sync::Notify>,
-    response_gates: Arc<Mutex<BTreeMap<String, Arc<ResponseGate>>>>,
-}
-
-pub(super) struct ResponseGate {
-    hold_at: u64,
-    calls: AtomicU64,
-    released: AtomicBool,
-    notify: tokio::sync::Notify,
-}
-
-impl ResponseGate {
-    pub(super) fn new(hold_at: u64) -> Self {
-        Self {
-            hold_at,
-            calls: AtomicU64::new(0),
-            released: AtomicBool::new(false),
-            notify: tokio::sync::Notify::new(),
-        }
-    }
-
-    pub(super) async fn wait_if_selected(&self) {
-        let ordinal = self.calls.fetch_add(1, Ordering::AcqRel) + 1;
-        if ordinal != self.hold_at {
-            return;
-        }
-        loop {
-            let notified = self.notify.notified();
-            if self.released.load(Ordering::Acquire) {
-                return;
-            }
-            notified.await;
-        }
-    }
-
-    pub(super) fn release(&self) {
-        self.released.store(true, Ordering::Release);
-        self.notify.notify_waiters();
-    }
 }
 
 impl Recorder {
@@ -71,7 +31,6 @@ impl Recorder {
             client,
             store,
             event_notify: Arc::new(tokio::sync::Notify::new()),
-            response_gates: Arc::new(Mutex::new(BTreeMap::new())),
         };
         recorder.register_lifecycle();
         Ok(recorder)
@@ -109,54 +68,19 @@ impl Recorder {
     /// Configure and register the run-scoped controlled functions directly.
     pub fn configure(&self, run_id: &str, config: &RecorderConfigV1) -> anyhow::Result<()> {
         let prefix = format!("{run_id}::");
-        let mut function_ids = BTreeSet::new();
-        for declared in controlled_functions(config) {
-            anyhow::ensure!(
-                declared.function_id.starts_with(&prefix),
-                "integration/target_scope: {} must be prefixed by {prefix}",
-                declared.function_id
-            );
-            anyhow::ensure!(
-                function_ids.insert(declared.function_id.as_str()),
-                "integration/target_duplicate: {} is declared more than once",
-                declared.function_id
-            );
-        }
+        anyhow::ensure!(
+            config.target.function_id.starts_with(&prefix),
+            "integration/target_scope: {} must be prefixed by {prefix}",
+            config.target.function_id
+        );
 
         self.store.configure(run_id)?;
-        let mut gates = self
-            .response_gates
-            .lock()
-            .map_err(|_| anyhow::anyhow!("recorder response gate lock poisoned"))?;
-        gates.clear();
-        for declared in controlled_functions(config) {
-            let gate = declared
-                .hold_response_at
-                .map(|hold_at| Arc::new(ResponseGate::new(hold_at)));
-            if let Some(gate) = &gate {
-                gates.insert(declared.function_id.clone(), Arc::clone(gate));
-            }
-            register_controlled_function(
-                self.client.inner(),
-                &self.store,
-                declared,
-                gate,
-                Arc::clone(&self.event_notify),
-            );
-        }
-        Ok(())
-    }
-
-    /// Release a private response gate after the runner has applied a fault.
-    pub fn release_response(&self, function_id: &str) -> anyhow::Result<()> {
-        let gates = self
-            .response_gates
-            .lock()
-            .map_err(|_| anyhow::anyhow!("recorder response gate lock poisoned"))?;
-        let gate = gates
-            .get(function_id)
-            .ok_or_else(|| anyhow::anyhow!("no response gate configured for {function_id}"))?;
-        gate.release();
+        register_controlled_function(
+            self.client.inner(),
+            &self.store,
+            &config.target,
+            Arc::clone(&self.event_notify),
+        );
         Ok(())
     }
 
@@ -198,32 +122,16 @@ impl Recorder {
     /// (there are none in v1, but the filter is part of the contract) never
     /// deliver here.
     pub async fn bind_lifecycle(&self, trigger_type: &str, session_id: &str) -> anyhow::Result<()> {
-        self.bind(
-            trigger_type,
-            LIFECYCLE_FUNCTION_ID,
-            json!({ "session_id": session_id }),
-        )
-        .await
-    }
-
-    /// Create an arbitrary trigger binding on the recorder's connection
-    /// (scenario `bindings`, e.g. `harness::hook::pre-trigger` chains).
-    pub async fn bind(
-        &self,
-        trigger_type: &str,
-        function_id: &str,
-        config: Value,
-    ) -> anyhow::Result<()> {
         self.client
             .inner()
             .register_trigger(RegisterTriggerInput {
                 trigger_type: trigger_type.to_string(),
-                function_id: function_id.to_string(),
-                config,
+                function_id: LIFECYCLE_FUNCTION_ID.to_string(),
+                config: json!({ "session_id": session_id }),
                 metadata: None,
             })
             .map_err(|error| {
-                anyhow::anyhow!("binding {trigger_type} -> {function_id} failed: {error}")
+                anyhow::anyhow!("binding {trigger_type} -> {LIFECYCLE_FUNCTION_ID} failed: {error}")
             })?;
         Ok(())
     }
@@ -240,18 +148,11 @@ pub(super) fn parse_lifecycle_payload(payload: Value) -> Result<Value, String> {
     serde_json::to_value(event).map_err(|error| format!("integration/lifecycle_serialize: {error}"))
 }
 
-fn controlled_functions(config: &RecorderConfigV1) -> impl Iterator<Item = &RecorderTargetV1> {
-    std::iter::once(&config.target).chain(config.extra_functions.iter())
-}
-
-/// Register one declared controlled function: verbatim description/schema,
-/// durable append per call, and the declared response (after an optional
-/// compiler-owned fault gate).
+/// Register the declared controlled function with durable recording.
 fn register_controlled_function(
     iii: &iii_sdk::IIIClient,
     store: &Arc<EventStore>,
     declared: &RecorderTargetV1,
-    response_gate: Option<Arc<ResponseGate>>,
     event_notify: Arc<tokio::sync::Notify>,
 ) {
     let response = declared.response.clone();
@@ -265,7 +166,6 @@ fn register_controlled_function(
             let event_notify = Arc::clone(&event_notify);
             let response = response.clone();
             let function_id = handler_function_id.clone();
-            let response_gate = response_gate.clone();
             async move {
                 append_handler_event(
                     &store,
@@ -275,9 +175,6 @@ fn register_controlled_function(
                     "integration/target_append",
                 )?;
                 event_notify.notify_waiters();
-                if let Some(gate) = response_gate {
-                    gate.wait_if_selected().await;
-                }
                 Ok::<Value, Error>(response)
             }
         })

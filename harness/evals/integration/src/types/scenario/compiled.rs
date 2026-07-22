@@ -4,9 +4,20 @@ use serde::{Deserialize, Serialize};
 use crate::types::recorder::RecorderConfigV1;
 use crate::types::script::SchemaVersion1;
 
-use super::{DeadlinesV1, FaultKind, ReleaseV1};
+pub fn validate_scenario_id(id: &str) -> anyhow::Result<()> {
+    let valid = !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    anyhow::ensure!(
+        valid,
+        "scenario id must be 1-128 ASCII letters, digits, '-' or '_'"
+    );
+    Ok(())
+}
 
-/// Strict runtime scenario produced from [`super::AuthoredScenarioV1`].
+/// Strict runtime scenario consumed by the integration runner.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CompiledScenarioV1 {
@@ -17,12 +28,6 @@ pub struct CompiledScenarioV1 {
     pub send: CompiledSendV1,
     pub recorder: RecorderConfigV1,
     pub deadlines: DeadlinesV1,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fault: Option<CompiledFaultV1>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bindings: Vec<TriggerBindingV1>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub release: Option<ReleaseV1>,
 }
 
 /// The deliberately narrow `harness::send` request emitted by the scenario
@@ -59,20 +64,23 @@ pub enum CompiledFunctionExposureV1 {
     Native,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct CompiledFaultV1 {
-    pub kind: FaultKind,
-    pub function_id: String,
+pub struct DeadlinesV1 {
     #[schemars(range(min = 1))]
-    pub after_target_calls: u64,
-    pub restart_delay_ms: u64,
+    pub readiness_ms: u64,
+    #[schemars(range(min = 1))]
+    pub scenario_ms: u64,
+    #[schemars(range(min = 1))]
+    pub teardown_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct TriggerBindingV1 {
-    pub trigger_type: String,
-    pub function_id: String,
-    pub config: serde_json::Value,
+impl Default for DeadlinesV1 {
+    fn default() -> Self {
+        Self {
+            readiness_ms: 60_000,
+            scenario_ms: 60_000,
+            teardown_ms: 15_000,
+        }
+    }
 }

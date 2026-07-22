@@ -1,9 +1,8 @@
-//! Observe driver: armed stack for Playwright UI tests.
-//!
-//! The integration owns stimulus (`harness::send` after a start signal).
-//! Playwright owns the Console process and DOM assertions.
+//! Playground driver: the integration owns the stack and production Console;
+//! a person or Playwright owns the turn stimulus.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -21,14 +20,14 @@ use crate::types::scenario::{Classification, CompiledSendV1};
 use crate::types::script::SchemaVersion1;
 
 use super::runner::{BootedRun, ExpandedRun, ScenarioRunner};
-use super::state::PreparedRun;
+use super::state::{ActiveTurn, PreparedRun};
 
-const START_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ObserveReadyV1 {
+pub struct PlaygroundReadyV1 {
     pub schema_version: SchemaVersion1,
     pub run_id: String,
     pub scenario_id: String,
@@ -37,8 +36,9 @@ pub struct ObserveReadyV1 {
     pub run_root: PathBuf,
     pub result_path: PathBuf,
     pub engine_url: String,
-    pub session: ObserveSessionV1,
-    pub model: ObserveModelV1,
+    pub console_url: String,
+    pub session: PlaygroundSessionV1,
+    pub model: PlaygroundModelV1,
     pub message: String,
     pub functions: BTreeMap<String, String>,
     pub send: CompiledSendV1,
@@ -46,66 +46,53 @@ pub struct ObserveReadyV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ObserveSessionV1 {
+pub struct PlaygroundSessionV1 {
     pub id: String,
     pub title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ObserveModelV1 {
+pub struct PlaygroundModelV1 {
     pub id: String,
     pub provider: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ObserveStartV1 {
-    pub schema_version: SchemaVersion1,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ObserveResultV1 {
+pub struct PlaygroundResultV1 {
     pub schema_version: SchemaVersion1,
     pub scenario_id: String,
     pub classification: Classification,
-    /// First floor or verify failure, scrubbed of run-scoped ids.
     pub failure: Option<String>,
-    /// Raw serialized [`crate::evidence_data::RunEvidence`] (JSON null when
-    /// the run failed before collection). Ids are real, so Playwright can
-    /// check evidence against the ready manifest.
     pub evidence: serde_json::Value,
     pub artifacts: Vec<String>,
 }
 
-pub struct ObserveOutcome {
-    pub result: ObserveResultV1,
+pub struct PlaygroundOutcome {
+    pub result: PlaygroundResultV1,
     pub run_id: String,
     pub run_root: PathBuf,
     pub duration_ms: u64,
 }
 
-pub async fn observe_scenario(
+pub async fn playground_scenario(
     bins: &StackBins,
+    console_bin: &Path,
     fixture: &ScenarioFixture,
     artifacts_dir: &Path,
-    ready_file: &Path,
-) -> ObserveOutcome {
+    ready_file: Option<&Path>,
+) -> PlaygroundOutcome {
     let started = std::time::Instant::now();
-    let run_id = format!("iu{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+    let run_id = format!("ip{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
     let run_root = artifacts_dir.join(&run_id);
     let session_id = format!("s_{}", uuid::Uuid::new_v4().simple());
-
     let mut runner = ScenarioRunner::new(bins, fixture, run_id.clone(), session_id);
 
-    // The observe consumer contract is observe-ready.json / ready-file ->
-    // observe-result.json; the direct-run result.json/execution.json pair is
-    // not written here.
-    let mut classification = execute_observe(&mut runner, artifacts_dir, ready_file).await;
+    let mut classification =
+        execute_playground(&mut runner, console_bin, artifacts_dir, ready_file).await;
     let duration_ms = started.elapsed().as_millis() as u64;
-
-    let mut result = ObserveResultV1 {
+    let mut result = PlaygroundResultV1 {
         schema_version: SchemaVersion1::V1,
         scenario_id: fixture.scenario.id.clone(),
         classification,
@@ -117,11 +104,12 @@ pub async fn observe_scenario(
             .map(|sink| sink.paths().to_vec())
             .unwrap_or_default(),
     };
-    if let Err(error) = write_json(&run_root, &run_root.join("observe-result.json"), &result) {
-        tracing::error!(target: "harness_integration::scenario", "observe result failed: {error:#}");
+    let result_path = run_root.join("playground-result.json");
+    if let Err(error) = write_json(&run_root, &result_path, &result) {
+        tracing::error!(target: "harness_integration::scenario", "playground result failed: {error:#}");
         classification = classification.combine(Classification::RunnerError);
         result.classification = classification;
-        let _ = write_json(&run_root, &run_root.join("observe-result.json"), &result);
+        let _ = write_json(&run_root, &result_path, &result);
     }
 
     if classification == Classification::Pass {
@@ -130,7 +118,7 @@ pub async fn observe_scenario(
         }
     }
 
-    ObserveOutcome {
+    PlaygroundOutcome {
         result,
         run_id,
         run_root,
@@ -138,16 +126,16 @@ pub async fn observe_scenario(
     }
 }
 
-async fn execute_observe(
+async fn execute_playground(
     runner: &mut ScenarioRunner<'_>,
+    console_bin: &Path,
     artifacts_dir: &Path,
-    ready_file: &Path,
+    ready_file: Option<&Path>,
 ) -> Classification {
     let ExpandedRun { paths, expanded } = match runner.expand_for_run(artifacts_dir) {
         Ok(expanded) => expanded,
         Err(classification) => return classification,
     };
-
     let mut booted = match runner.boot_prepared(paths, expanded).await {
         Ok(booted) => booted,
         Err(classification) => return classification,
@@ -155,7 +143,7 @@ async fn execute_observe(
 
     let outcome = async {
         runner.arm_booted(&mut booted).await?;
-        run_observe_phases(runner, &mut booted, ready_file).await
+        run_playground_phases(runner, &mut booted, console_bin, ready_file).await
     }
     .await;
     runner
@@ -168,16 +156,17 @@ async fn execute_observe(
         .await
 }
 
-async fn run_observe_phases(
+async fn run_playground_phases(
     runner: &mut ScenarioRunner<'_>,
     booted: &mut BootedRun,
-    ready_file: &Path,
+    console_bin: &Path,
+    ready_file: Option<&Path>,
 ) -> Result<(), RunError> {
     let stack = &mut booted.stack;
     let services = &booted.services;
     let prepared = &booted.prepared;
+    let session_title = format!("Integration {} {}", prepared.scenario.id, runner.run_id);
 
-    let session_title = format!("Console E2E {} {}", prepared.scenario.id, runner.run_id);
     services
         .client()
         .call_with_deadline(
@@ -204,34 +193,126 @@ async fn run_observe_phases(
         .map_err(|error| {
             RunError::setup(
                 RunPhase::Arm,
-                "ensure console test session",
+                "ensure playground session",
                 anyhow::anyhow!(error),
             )
         })?;
 
-    let ready = build_ready_manifest(runner, prepared, stack, &session_title);
-    runner.write_run_artifact("observe-ready.json", &ready, RunPhase::Report)?;
-    write_atomic_json(ready_file, &ready).map_err(|error| {
-        RunError::runner(RunPhase::Report, "publish observe ready manifest", error)
-    })?;
+    let console_url = stack
+        .spawn_console(console_bin)
+        .map_err(|error| RunError::setup(RunPhase::Arm, "spawn production Console", error))?;
+    wait_for_console(stack, &console_url, prepared.setup_deadline).await?;
 
-    let start_file = start_file_path(ready_file)?;
-    wait_for_start(&start_file, prepared.setup_deadline).await?;
+    let ready = build_ready_manifest(runner, prepared, stack, &session_title, &console_url);
+    runner.write_run_artifact("playground-ready.json", &ready, RunPhase::Report)?;
+    if let Some(path) = ready_file {
+        write_atomic_json(path, &ready).map_err(|error| {
+            RunError::runner(RunPhase::Report, "publish playground ready manifest", error)
+        })?;
+    }
+    println!("Console: {console_url}");
+    std::io::stdout()
+        .flush()
+        .map_err(|error| RunError::runner(RunPhase::Report, "flush Console URL", error))?;
 
-    let mut active = runner.send(services, prepared).await?;
-    runner.fault(stack, services, prepared, &active).await?;
-    runner.release(services, prepared, &active).await?;
-    runner.r#await(services, &mut active).await?;
-
-    let scenario_deadline = active.deadline;
-    wait_for_shutdown(stack, scenario_deadline).await?;
+    let deadline = Deadline::after(Duration::from_millis(
+        prepared.scenario.deadlines.scenario_ms,
+    ));
+    let mut active = ActiveTurn::external(deadline);
+    let shutdown_consumed = wait_for_external_turn(runner, stack, services, &mut active).await?;
+    if !shutdown_consumed {
+        wait_for_shutdown(stack, deadline).await?;
+    }
 
     runner.collect(services, prepared, &mut active).await?;
-    let evidence = runner.build_evidence(services, &active, Some(active.send_response.clone()));
+    let evidence = runner.build_evidence(services, &active, None);
     runner.evidence = serde_json::to_value(&evidence).map_err(|error| {
-        RunError::runner(RunPhase::Grade, "serialize observe run evidence", error)
+        RunError::runner(RunPhase::Grade, "serialize playground run evidence", error)
     })?;
     runner.verify_evidence(services, &evidence, active.timed_out)
+}
+
+async fn wait_for_external_turn(
+    runner: &mut ScenarioRunner<'_>,
+    stack: &mut Stack,
+    services: &crate::services::RunServices,
+    active: &mut ActiveTurn,
+) -> Result<bool, RunError> {
+    let completion = runner.r#await(services, active);
+    let shutdown = shutdown_signal();
+    tokio::pin!(completion, shutdown);
+    let mut health = tokio::time::interval(PROCESS_POLL_INTERVAL);
+    health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            result = &mut completion => return result.map(|()| false),
+            result = &mut shutdown => {
+                result.map_err(|error| RunError::runner(
+                    RunPhase::Await,
+                    "wait for playground shutdown",
+                    error,
+                ))?;
+                return match tokio::time::timeout(
+                    SHUTDOWN_COMPLETION_GRACE,
+                    &mut completion,
+                )
+                .await
+                {
+                    Ok(result) => result.map(|()| true),
+                    Err(_) => Err(RunError::new(
+                        RunPhase::Await,
+                        RunErrorKind::Contract,
+                        "playground stopped before a turn completed",
+                    )),
+                };
+            }
+            _ = health.tick() => {
+                if let Some(exit) = stack.early_exit() {
+                    return Err(process_exit_error(exit, "before a turn completed"));
+                }
+            }
+        }
+    }
+}
+
+async fn wait_for_console(
+    stack: &mut Stack,
+    console_url: &str,
+    deadline: Deadline,
+) -> Result<(), RunError> {
+    let port = console_url
+        .rsplit(':')
+        .next()
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| {
+            RunError::new(
+                RunPhase::Arm,
+                RunErrorKind::Runner,
+                format!("invalid Console URL {console_url:?}"),
+            )
+        })?;
+    loop {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        if let Some(exit) = stack.early_exit() {
+            return Err(process_exit_error(
+                exit,
+                "before its HTTP port became ready",
+            ));
+        }
+        if deadline.is_expired() {
+            return Err(RunError::new(
+                RunPhase::Arm,
+                RunErrorKind::Setup,
+                "Console HTTP port did not become ready",
+            ));
+        }
+        tokio::time::sleep(PROCESS_POLL_INTERVAL).await;
+    }
 }
 
 fn build_ready_manifest(
@@ -239,32 +320,39 @@ fn build_ready_manifest(
     prepared: &PreparedRun,
     stack: &Stack,
     session_title: &str,
-) -> ObserveReadyV1 {
+    console_url: &str,
+) -> PlaygroundReadyV1 {
     let prefix = format!("{}::", runner.run_id);
-    let functions = std::iter::once(&prepared.scenario.recorder.target)
-        .chain(prepared.scenario.recorder.extra_functions.iter())
-        .filter_map(|function| {
-            function
-                .function_id
-                .strip_prefix(&prefix)
-                .map(|alias| (alias.to_string(), function.function_id.clone()))
+    let functions = prepared
+        .scenario
+        .recorder
+        .target
+        .function_id
+        .strip_prefix(&prefix)
+        .filter(|alias| *alias != "unused")
+        .map(|alias| {
+            BTreeMap::from([(
+                alias.to_string(),
+                prepared.scenario.recorder.target.function_id.clone(),
+            )])
         })
-        .collect();
+        .unwrap_or_default();
     let run_root = stack.paths.root.clone();
-    ObserveReadyV1 {
+    PlaygroundReadyV1 {
         schema_version: SchemaVersion1::V1,
         run_id: runner.run_id.clone(),
         scenario_id: prepared.scenario.id.clone(),
         scenario_slug: runner.fixture.slug.clone(),
         driver: runner.fixture.driver,
-        result_path: run_root.join("observe-result.json"),
+        result_path: run_root.join("playground-result.json"),
         run_root,
         engine_url: stack.ws_url.clone(),
-        session: ObserveSessionV1 {
+        console_url: console_url.to_string(),
+        session: PlaygroundSessionV1 {
             id: runner.session_id.clone(),
             title: session_title.to_string(),
         },
-        model: ObserveModelV1 {
+        model: PlaygroundModelV1 {
             id: prepared.scenario.send.model.clone(),
             provider: prepared.scenario.send.provider.clone(),
         },
@@ -272,53 +360,6 @@ fn build_ready_manifest(
         functions,
         send: prepared.scenario.send.clone(),
     }
-}
-
-fn start_file_path(ready_file: &Path) -> Result<PathBuf, RunError> {
-    let parent = ready_file.parent().ok_or_else(|| {
-        RunError::new(
-            RunPhase::Probe,
-            RunErrorKind::Runner,
-            "ready file path has no parent directory for start.json",
-        )
-    })?;
-    Ok(parent.join("start.json"))
-}
-
-async fn wait_for_start(start_file: &Path, deadline: Deadline) -> Result<(), RunError> {
-    deadline
-        .poll_until("observer start signal", START_POLL_INTERVAL, || {
-            let start_file = start_file.to_path_buf();
-            async move {
-                match std::fs::read_to_string(&start_file) {
-                    Ok(contents) => {
-                        let parsed: ObserveStartV1 = serde_json::from_str(&contents)
-                            .map_err(|error| anyhow::anyhow!("invalid start.json: {error}"))?;
-                        let _ = parsed;
-                        Ok(Some(()))
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                    Err(error) => Err(anyhow::anyhow!(
-                        "read start signal {}: {error}",
-                        start_file.display()
-                    )),
-                }
-            }
-        })
-        .await
-        .map_err(|error| {
-            let kind = if deadline.is_expired() {
-                RunErrorKind::Timeout
-            } else {
-                RunErrorKind::Setup
-            };
-            RunError::with_source(
-                RunPhase::Probe,
-                kind,
-                "observer did not publish start.json",
-                error,
-            )
-        })
 }
 
 async fn wait_for_shutdown(stack: &mut Stack, deadline: Deadline) -> Result<(), RunError> {
@@ -330,7 +371,7 @@ async fn wait_for_shutdown(stack: &mut Stack, deadline: Deadline) -> Result<(), 
         tokio::select! {
             result = &mut shutdown => {
                 result.map_err(|error| {
-                    RunError::runner(RunPhase::Await, "wait for observe test shutdown", error)
+                    RunError::runner(RunPhase::Await, "wait for playground shutdown", error)
                 })?;
                 return Ok(());
             }
@@ -338,23 +379,24 @@ async fn wait_for_shutdown(stack: &mut Stack, deadline: Deadline) -> Result<(), 
                 return Err(RunError::new(
                     RunPhase::Await,
                     RunErrorKind::Timeout,
-                    "observe test did not finish before the scenario deadline",
+                    "playground was not stopped before the scenario deadline",
                 ));
             }
             _ = health.tick() => {
                 if let Some(exit) = stack.early_exit() {
-                    return Err(RunError::new(
-                        RunPhase::Await,
-                        RunErrorKind::ProcessCrash,
-                        format!(
-                            "{} exited while the observe test was running: {}",
-                            exit.name, exit.status
-                        ),
-                    ));
+                    return Err(process_exit_error(exit, "while the playground was running"));
                 }
             }
         }
     }
+}
+
+fn process_exit_error(exit: crate::stack::EarlyExit, context: &str) -> RunError {
+    RunError::new(
+        RunPhase::Await,
+        RunErrorKind::ProcessCrash,
+        format!("{} exited {context}: {}", exit.name, exit.status),
+    )
 }
 
 async fn shutdown_signal() -> std::io::Result<()> {

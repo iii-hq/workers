@@ -39,10 +39,6 @@ pub fn evaluate(field: &str, matcher: &JsonMatcherV1, actual: Option<&Value>) ->
             None => pass,
             Some(v) => fail(format!("expected absent, got {}", head(v))),
         },
-        JsonMatcherV1::Present => match actual {
-            Some(_) => pass,
-            None => fail("expected present, field is absent".into()),
-        },
         JsonMatcherV1::Regex { pattern } => {
             let Some(actual) = actual else {
                 return fail("regex matcher: field is absent".into());
@@ -190,42 +186,20 @@ fn split_pointer(pointer: &str) -> (&str, String) {
     (&pointer[..idx], token)
 }
 
-/// Array semantics for structural subset comparisons. Objects are always
-/// recursive subsets; callers must choose whether arrays may have an
-/// unmatched suffix or must match in full.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArrayPolicy {
-    Exact,
-    Prefix,
-}
-
-pub fn subset_with_array_policy(
-    expected: &Value,
-    actual: &Value,
-    arrays: ArrayPolicy,
-) -> Option<String> {
-    subset_mismatch_with_arrays(expected, actual, "", arrays)
-}
-
 /// `None` when `expected` is a positional subset of `actual`; otherwise a
 /// description of the first mismatch.
 fn subset_mismatch(expected: &Value, actual: &Value, path: &str) -> Option<String> {
-    subset_mismatch_with_arrays(expected, actual, path, ArrayPolicy::Prefix)
+    subset_mismatch_with_arrays(expected, actual, path)
 }
 
-fn subset_mismatch_with_arrays(
-    expected: &Value,
-    actual: &Value,
-    path: &str,
-    arrays: ArrayPolicy,
-) -> Option<String> {
+fn subset_mismatch_with_arrays(expected: &Value, actual: &Value, path: &str) -> Option<String> {
     match (expected, actual) {
         (Value::Object(exp), Value::Object(act)) => {
             for (k, ev) in exp {
                 match act.get(k) {
                     Some(av) => {
                         if let Some(detail) =
-                            subset_mismatch_with_arrays(ev, av, &format!("{path}/{k}"), arrays)
+                            subset_mismatch_with_arrays(ev, av, &format!("{path}/{k}"))
                         {
                             return Some(detail);
                         }
@@ -236,11 +210,7 @@ fn subset_mismatch_with_arrays(
             None
         }
         (Value::Array(exp), Value::Array(act)) => {
-            let wrong_length = match arrays {
-                ArrayPolicy::Exact => exp.len() != act.len(),
-                ArrayPolicy::Prefix => exp.len() > act.len(),
-            };
-            if wrong_length {
+            if exp.len() > act.len() {
                 return Some(format!(
                     "subset: expected {} array elements at {path}, got {}",
                     exp.len(),
@@ -249,7 +219,7 @@ fn subset_mismatch_with_arrays(
             }
             for (i, ev) in exp.iter().enumerate() {
                 if let Some(detail) =
-                    subset_mismatch_with_arrays(ev, &act[i], &format!("{path}/{i}"), arrays)
+                    subset_mismatch_with_arrays(ev, &act[i], &format!("{path}/{i}"))
                 {
                     return Some(detail);
                 }
@@ -295,11 +265,9 @@ mod tests {
     }
 
     #[test]
-    fn absent_and_present() {
+    fn absent_distinguishes_null_from_missing() {
         assert!(evaluate("f", &JsonMatcherV1::Absent, None).passed);
         assert!(!evaluate("f", &JsonMatcherV1::Absent, Some(&json!(null))).passed);
-        assert!(evaluate("f", &JsonMatcherV1::Present, Some(&json!(null))).passed);
-        assert!(!evaluate("f", &JsonMatcherV1::Present, None).passed);
     }
 
     /// The truncation cut point lands mid-emoji: 199 leading bytes (quote +

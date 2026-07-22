@@ -7,12 +7,9 @@
 
 mod discovery;
 mod loading;
-mod script_validation;
-mod stream_validation;
 
 pub use discovery::scenario_fixtures;
 pub use loading::ScenarioFixture;
-pub use script_validation::validate_script;
 
 #[cfg(test)]
 mod tests;

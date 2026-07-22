@@ -160,7 +160,7 @@ fn generations_failure(run: &RunEvidence) -> Option<String> {
 }
 
 /// Send accepted with clean flags. Skipped only when `send_response` is
-/// absent (should not happen for Direct or Observe after a successful Send).
+/// absent for Playground, where the Console or Playwright owns Send.
 fn send_flags_failure(run: &RunEvidence) -> Option<String> {
     let response = run.send_response.as_ref()?;
     // Absent optional flags normalize to false.

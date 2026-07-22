@@ -1,30 +1,35 @@
 # Harness integration E2E
 
-Deterministic public-path regression tests for the harness. Every scenario
-boots a fresh isolated stack with the pinned engine and real queue,
+Deterministic public-path regression tests for the harness. Each scenario
+boots a fresh isolated stack with the pinned engine and the real queue,
 session-manager, context-manager, iii-directory, and harness workers. Only
 the `router::*` model boundary is replaced by a strict scripted worker.
 
 No provider key or network access is required.
 
-## Run
+## Scenarios
+
+| id | slug | driver | coverage |
+|---|---|---|---|
+| E2E-001 | `streamed-text` | direct | streamed text reaches durable completion |
+| E2E-002 | `exactly-once-function` | direct | a native function executes exactly once |
+| UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
+
+Each fixture is defined end to end in its own `src/scenarios/*.rs` file: the
+exact `harness::send` payload, router request matchers, response frames,
+recorder configuration, and scenario-specific verification function. Shared
+code is limited to wire-format constructors. There is no YAML or generic
+authored-scenario compiler.
+
+## Run the direct scenarios
 
 ```bash
-# Build the stack and run every non-quarantined scenario.
-make -C harness integration-e2e III_BIN=<path-to-iii>
+make -C harness integration-e2e III_BIN=<path-to-pinned-iii>
 
-# Validate every fixture, including quarantined reproductions.
-make -C harness integration-validate
-
-# Run one scenario directly.
-harness-integration run \
-  --engine-bin <iii> \
-  --harness-bin <harness> \
-  --worker-bin queue=<queue> \
-  --worker-bin session-manager=<session-manager> \
-  --worker-bin context-manager=<context-manager> \
-  --worker-bin iii-directory=<iii-directory> \
-  --scenario E2E-001
+# Select one direct scenario by id or slug.
+make -C harness integration-e2e \
+  III_BIN=<path-to-pinned-iii> \
+  INTEGRATION_SCENARIO=E2E-001
 ```
 
 The engine is never downloaded by the runner. CI builds the source revision
@@ -37,143 +42,85 @@ Exit codes are:
 - `2`: contract failure or scenario timeout;
 - `3`: setup, process, or runner error.
 
-## Create a scenario
-
-Each scenario is one Rust module: `src/scenarios/<slug>.rs`, one `scenario()`
-function that builds the authored stimulus through the typed builders in
-`src/scenarios/builder.rs` and closes the chain with `.verify(|run| ...)`,
-registered in `src/scenarios/mod.rs`. A scenario without checks does not
-typecheck. There is no YAML layer — the authored
-shape is enforced by the type system at `cargo build` and is never
-serialized. Model/provider, session id, idempotency key, native function
-policy, run-scoped function ids, request matchers, response frames, and
-system prompt hash are inferred by the compiler.
-
-A typical authored function scenario is:
-
-```rust
-// src/scenarios/my_function_case.rs
-pub(super) fn scenario() -> Scenario {
-    AuthoredScenario::new("E2E-010", "The allowed function runs once.")
-        .trigger(Harness::send("Call the recorder once."))
-        .function(
-            "record",
-            Function::new(
-                "Record one value.",
-                json!({
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": { "value": { "type": "string" } },
-                    "required": ["value"]
-                }),
-                json!({
-                    "content": [{ "type": "text", "text": "recorded" }],
-                    "is_error": false
-                }),
-            ),
-        )
-        .model((
-            Reply::function_call("record", json!({ "value": "expected" })),
-            Reply::text("recorded once"),
-        ))
-        .verify(|run| {
-            let calls = run.calls("record");
-            anyhow::ensure!(calls.len() == 1, "record ran {} times", calls.len());
-            anyhow::ensure!(calls[0].payload == json!({ "value": "expected" }));
-            anyhow::ensure!(!run.has_duplicate_messages());
-            Ok(())
-        })
-}
-```
-
-The scenario returns a dataset; the author writes the checks in plain Rust.
-The floor is enforced by the runner before `verify` is called — turn
-completed (terminal status, lifecycle delivered exactly once), script fully
-consumed (every scripted generation used, none extra), and a clean send —
-and any violation is a `contract_failure` with a `floor: ` message.
-`verify(run)` then receives the full `RunEvidence` dataset (send response,
-final status, transcript, recorder events, router consumption) for
-scenario-specific checks; accessors such as `assistant_texts()`,
-`message_counts()`, `calls(alias)`, and `all_calls_closed()` cover the
-recurring reads. The runner catches panics, so `assert!`/`assert_eq!` are
-allowed; prefer `anyhow::ensure!` where a message helps.
-
-Add the module and its slug to the list in `src/scenarios/mod.rs`, then:
+## Open an isolated Console playground
 
 ```bash
-cargo test                                     # builder and contract tests
-harness-integration validate --scenario all
-harness-integration render E2E-010
+make -C harness integration-playground III_BIN=<path-to-pinned-iii>
 ```
 
-Builders produce data only — a builder that derives scenario content from
-control flow is rejected in review. New scenarios are runnable by
-default; chain `.quarantine()` only for a known reproduction that should be
-excluded from `run --scenario all`. `render` prints deterministic canonical
-JSON with the complete compiled request, router script, and system prompt.
+The command builds and starts the production Console together with the
+isolated integration stack. It creates the scenario session and prints its
+Console URL. For the default UI-001 scenario:
 
-`Function::recorder()` is the canonical string-in/`recorded`-out fixture;
-`Function::new(...)` builds any other controlled function and `.hidden()`
-marks a hook-only one. Function aliases become `<run_id>::<alias>`; every
-exposed function is dispatchable. `Release::execute()` releases a held call
-for execution. Typed text and function-call replies cover normal cases;
-`.recovery_boundary()` matches a reply against the durable outcome only,
-where a fault restart or hook release may rebuild the request, and
-`.match_overrides(...)` is the remaining escape hatch for intentionally
-different wire shapes.
+1. Open the printed URL.
+2. Select the pre-created integration session.
+3. Send `Return the console fixture phrase.` through the message composer.
+4. Wait for `console fixture complete`.
+5. Stop the command with Ctrl-C.
 
-Timeout defaults are 60 seconds for setup waits (e.g. observer start), 60
-seconds for the scenario, and 15 seconds for teardown. The scenario budget
-can be raised with `.scenario_timeout_ms(...)` (crash-recovery does).
+After a completed turn, shutdown collects evidence, grades the scenario, and
+writes `playground-result.json`. Stopping before a turn completes is a
+contract failure.
 
-## Checked-in scenarios
+The underlying command accepts one scenario only:
 
-| id | slug | status |
-|---|---|---|
-| E2E-001 | `streamed-text` | streamed text reaches durable completion |
-| E2E-002 | `exactly-once-function` | a native function executes exactly once |
-| UI-001 | `console-streamed-text` | integration starts a streamed turn; Playwright validates Console UI |
-| E2E-505 | `hold-mutation-505` | quarantined reproduction for issue #505 |
-| E2E-506 | `hook-held-release-506` | quarantined reproduction for issue #506 |
-| E2E-507 | `crash-recovery-507` | quarantined reproduction for issue #507 |
+```bash
+harness-integration playground \
+  --engine-bin <iii> \
+  --harness-bin <harness> \
+  --console-bin <console> \
+  --worker-bin queue=<queue> \
+  --worker-bin session-manager=<session-manager> \
+  --worker-bin context-manager=<context-manager> \
+  --worker-bin iii-directory=<iii-directory> \
+  --scenario console-streamed-text
+```
 
-`run --scenario all` includes non-quarantined direct scenarios. Observe-driven
-UI scenarios (and Direct scenarios used from Playwright) run through
-`observe --scenario <id-or-slug>`: the integration publishes `ready.json`,
-waits for Playwright's `start.json`, then runs `harness::send` and grades
-backend evidence while Playwright owns the Console process and DOM asserts.
-An explicit quarantined direct scenario still runs; `validate --scenario all`
-always includes every driver and quarantine state.
+`--ready-file <path>` optionally publishes an atomic JSON manifest for
+Playwright. The manifest includes the engine and Console URLs, session,
+scenario, model, message, controlled function ids, compiled direct send, and
+result path. There is no separate start signal: Playwright either invokes the
+compiled send through the SDK or submits through the Console UI.
+
+## Validate fixtures
+
+```bash
+make -C harness integration-validate
+cargo test --manifest-path harness/evals/integration/Cargo.toml
+cargo clippy --manifest-path harness/evals/integration/Cargo.toml \
+  --all-targets -- -D warnings
+```
+
+`validate --scenario all` checks exactly the three fixtures. `run --scenario
+all` executes only E2E-001 and E2E-002; UI-001 must use `playground`.
+
+The fixture tests pin:
+
+- the streamed frame sequence and terminal response agreement;
+- function-call and function-result history for E2E-002;
+- the Console-specific system-prompt and `agent_trigger` tool matchers;
+- serialization round trips and the authoritative `harness::send` schema.
 
 ## Runtime and evidence
 
-The lifecycle is allocate → boot → arm → send → optional fault or release →
-await → collect → grade → teardown → report. Observe inserts Probe (wait for
-`start.json`) between Arm and Send, then waits for observer shutdown after
-Await before Collect.
+The direct lifecycle is allocate → boot → arm → send → await → collect →
+grade → teardown → report. Playground replaces send with an externally
+initiated Console or SDK turn and waits for shutdown after completion.
 
-- All RPCs and polling share monotonic phase deadlines.
-- The recorder keeps configuration and snapshots in process; only controlled
-  target functions and the lifecycle sink are registered with the engine.
+- Completion is driven by the `harness::turn-completed` lifecycle event.
+- All RPCs and polling use bounded monotonic deadlines.
 - Recorder acknowledgements happen only after append and `fsync`.
-- Child processes run in dedicated process groups and teardown signals the
-  complete group and direct child with SIGTERM followed by SIGKILL, within
-  one hard cleanup budget.
-- Router and evidence comparisons use explicit JSON array policies.
+- Child processes run in dedicated process groups and teardown uses SIGTERM
+  followed by SIGKILL within one hard cleanup budget.
+- Router matching is explicit for all request fields.
 
-Each run writes `result.json`, `execution.json`, `teardown.json`, and
-`stack.json` below `target/integration/<run-id>/`; scenario evidence lives
-under `scenarios/<scenario-id>/` (transcript, status, router calls, target
-calls, lifecycle events). `result.json` contains the stable byte-comparable
-verdict: the classification plus the first floor or verify failure message,
-with run/session/turn ids scrubbed to placeholders. `execution.json` contains
-the run id, timing, scenario id, and SHA-256 of the exact `result.json`
-bytes. In observe mode, `observe-result.json` additionally carries the raw
-serialized `RunEvidence` (real ids) so Playwright can check it against the
-ready manifest. Passing runs retain the compact reports and remove
-heavyweight stack state unless `--retain-success` is supplied.
+Direct runs write `result.json`, `execution.json`, `teardown.json`, and
+`stack.json` below `target/integration/<run-id>/`. Scenario evidence includes
+the transcript, status, router calls, controlled target calls, and lifecycle
+events. `result.json` is stable across runs because concrete run, session, and
+turn ids are scrubbed from failure text; `execution.json` records the SHA-256
+of those exact result bytes.
 
-The compiler uses the Harness's embedded `prompts/default.txt` directly,
-appends the inferred session and function policy, then hashes the result for
-strict router matching. A scenario may explicitly override the router's prompt
-matcher in its builder without replacing the shared prompt source.
+Playground runs use `target/console-e2e/<run-id>/` and additionally write
+`playground-ready.json` and `playground-result.json`. Passing runs keep compact
+reports and remove heavyweight stack state.

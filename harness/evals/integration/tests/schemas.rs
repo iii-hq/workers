@@ -2,7 +2,7 @@
 //! router, recorder-event, and result), plus validation of compiled payloads
 //! against the producer-owned contracts. There are no generated goldens:
 //! wire shape is pinned by the round trips, and silent compiler weakening is
-//! caught by the property tests in `scenario_compilation.rs`.
+//! caught by focused fixture tests.
 
 use harness_integration::expand::CompiledFixtureV1;
 use harness_integration::types::recorder::{RecorderEventKind, RecorderEventV1};
@@ -11,17 +11,13 @@ use harness_integration::types::scenario::{
 };
 use harness_integration::types::script::{RouterScriptV1, SchemaVersion1};
 
-/// Every registered scenario compiles and its strict runtime representation
-/// round-trips through its typed mirror. The authored layer is code and has
-/// no round trip.
+/// Every strict checked-in fixture round-trips through its typed mirror.
 #[test]
 fn registered_scenarios_compile_and_round_trip() {
-    use harness_integration::fixtures::ScenarioFixture;
-
-    let registered = harness_integration::scenarios::all();
-    assert!(!registered.is_empty(), "expected at least one scenario");
-    for entry in &registered {
-        let fixture = ScenarioFixture::from_registered(entry).unwrap();
+    let fixtures = harness_integration::scenarios::all();
+    assert!(!fixtures.is_empty(), "expected at least one scenario");
+    for fixture in &fixtures {
+        fixture.validate().unwrap();
 
         let compiled_value = serde_json::to_value(&fixture.scenario).unwrap();
         let compiled_again: CompiledScenarioV1 = serde_json::from_value(compiled_value).unwrap();
@@ -85,16 +81,13 @@ fn evidence_and_report_contracts_round_trip() {
 
 #[test]
 fn compiled_send_is_accepted_by_the_authoritative_harness_contract() {
-    use harness_integration::fixtures::ScenarioFixture;
-
     let golden: serde_json::Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../harness/tests/golden/schemas/harness.send.json"
     )))
     .unwrap();
     let validator = jsonschema::JSONSchema::compile(&golden["request_schema"]).unwrap();
-    for entry in &harness_integration::scenarios::all() {
-        let fixture = ScenarioFixture::from_registered(entry).unwrap();
+    for fixture in &harness_integration::scenarios::all() {
         let send = serde_json::to_value(&fixture.scenario.send).unwrap();
         let errors = validator
             .validate(&send)
@@ -111,24 +104,23 @@ fn compiled_send_is_accepted_by_the_authoritative_harness_contract() {
 
 #[test]
 fn compiled_schema_matches_runtime_safety_constraints() {
-    use harness_integration::expand::{compile_scenario, scenario_template, ScenarioTemplateKind};
-
     let schema = serde_json::to_value(schemars::schema_for!(CompiledScenarioV1)).unwrap();
     let validator = jsonschema::JSONSchema::compile(&schema).unwrap();
-    let authored = scenario_template(
-        "E2E-COMPILED-SCHEMA",
-        "Validate compiled schema constraints.",
-        ScenarioTemplateKind::Crash,
-    );
-    let valid =
-        serde_json::to_value(compile_scenario(&authored, "prompt").unwrap().scenario).unwrap();
+    let valid = serde_json::to_value(
+        harness_integration::scenarios::all()
+            .into_iter()
+            .next()
+            .unwrap()
+            .scenario,
+    )
+    .unwrap();
     assert!(validator.is_valid(&valid));
 
     let mut unsafe_id = valid.clone();
     unsafe_id["id"] = serde_json::json!("../../escape");
     assert!(!validator.is_valid(&unsafe_id));
 
-    let mut zero_fault_threshold = valid;
-    zero_fault_threshold["fault"]["after_target_calls"] = serde_json::json!(0);
-    assert!(!validator.is_valid(&zero_fault_threshold));
+    let mut zero_deadline = valid;
+    zero_deadline["deadlines"]["scenario_ms"] = serde_json::json!(0);
+    assert!(!validator.is_valid(&zero_deadline));
 }
