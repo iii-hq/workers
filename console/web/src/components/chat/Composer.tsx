@@ -24,6 +24,7 @@ import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import { LexicalShell } from './LexicalShell'
 import { ModelPicker } from './ModelPicker'
 import { ModePicker } from './ModePicker'
+import { PromptPicker } from './PromptPicker'
 import { nextHistoryTarget } from './queue-history'
 
 export interface ComposerSubmitPayload {
@@ -67,6 +68,11 @@ interface ComposerProps {
   /** This chat's memory bank; null = the worker's default bank. */
   memoryBank?: string | null
   onMemoryBankChange?: (next: string | null) => void
+  /** Show the system-prompt picker (iii-directory worker present, real backend). */
+  showSystemPrompt?: boolean
+  /** This chat's named directory prompt; null = built-in prompt only. */
+  systemPromptName?: string | null
+  onSystemPromptNameChange?: (next: string | null) => void
   /**
    * When true, the picker renders read-only. NOT set after the first send —
    * the working dir stays re-scopable mid-conversation (ChatView always
@@ -151,6 +157,9 @@ export function Composer({
   showMemoryBank,
   memoryBank,
   onMemoryBankChange,
+  showSystemPrompt,
+  systemPromptName,
+  onSystemPromptNameChange,
   workingDirLocked,
   workingDirError,
   defaultWorkingDir,
@@ -355,6 +364,13 @@ export function Composer({
             <BankPicker
               value={memoryBank ?? null}
               onChange={onMemoryBankChange}
+              disabled={optionsDisabled}
+            />
+          ) : null}
+          {showSystemPrompt && onSystemPromptNameChange ? (
+            <PromptPicker
+              value={systemPromptName ?? null}
+              onChange={onSystemPromptNameChange}
               disabled={optionsDisabled}
             />
           ) : null}

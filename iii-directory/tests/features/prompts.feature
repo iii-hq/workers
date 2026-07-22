@@ -1,5 +1,5 @@
 @engine @prompts
-Feature: filesystem-backed prompts (directory::prompts::list / directory::prompts::get)
+Feature: filesystem-backed prompts (directory::prompts::list / ::get / ::save)
   Prompts live at `<skills_folder>/<ns>/prompts/*.md` with YAML
   frontmatter declaring at least `description`. Both endpoints return
   plain JSON shapes — no MCP envelope, no role/messages wrapper — so
@@ -59,3 +59,26 @@ Feature: filesystem-backed prompts (directory::prompts::list / directory::prompt
   Scenario: directory::prompts::get rejects a name with invalid characters
     When I get prompt "Bad/Name"
     Then the directory::prompts::get call fails with a message mentioning "lowercase"
+
+  # ── directory::prompts::save ───────────────────────────────────────
+
+  Scenario: directory::prompts::save creates a prompt readable via get
+    When I save prompt "bdd-created" with strategy "override" and body:
+      """
+      Reply only in haiku.
+      """
+    And I get prompt "bdd-created"
+    Then the prompt response has name "bdd-created"
+    And  the prompt response has strategy "override"
+    And  the prompt response body contains "Reply only in haiku."
+
+  Scenario: directory::prompts::save is create-only
+    When I save prompt "bdd-dupe" with strategy "enrich" and body:
+      """
+      First body.
+      """
+    And I save prompt "bdd-dupe" with strategy "enrich" and body:
+      """
+      Second body.
+      """
+    Then the directory::prompts::save call fails with a message mentioning "already exists"

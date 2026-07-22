@@ -251,6 +251,14 @@ export interface Conversation {
    * configured default bank.
    */
   memoryBank?: string | null
+  /**
+   * Named directory prompt for this chat (session metadata
+   * `system_prompt_name`). Resolved via `directory::prompts::get` on every
+   * send and passed as the turn's `options.system_prompt` with the prompt's
+   * frontmatter strategy (enrich = append to the built-in identity prompt,
+   * override = replace it). Null = the built-in prompt only.
+   */
+  systemPromptName?: string | null
   messages: Message[]
   /**
    * Spawn-parent session id, from the child session's

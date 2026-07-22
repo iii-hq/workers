@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::functions::prompts::validate_name;
+use crate::functions::prompts::{validate_name, PromptStrategy};
 use crate::functions::skills::{validate_id, SKILL_BODY_MAX_BYTES};
 
 /// One filesystem-backed skill entry.
@@ -50,6 +50,7 @@ pub struct FsSkill {
 pub struct FsPrompt {
     pub name: String,
     pub description: String,
+    pub strategy: PromptStrategy,
     pub abs_path: PathBuf,
 }
 
@@ -74,6 +75,8 @@ struct PromptFrontmatter {
     name: Option<String>,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    strategy: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -385,6 +388,7 @@ pub fn scan_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
         prompts.push(FsPrompt {
             name,
             description,
+            strategy: PromptStrategy::parse_lenient(fm.strategy.as_deref()),
             abs_path: abs,
         });
     }
@@ -802,6 +806,33 @@ mod tests {
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].name, "open-pr");
         assert_eq!(prompts[0].description, "Open a PR.");
+    }
+
+    #[test]
+    fn scan_prompts_parses_strategy_leniently() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "ns/prompts/replace.md",
+            "---\ndescription: x\nstrategy: override\n---\nBody.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "ns/prompts/plain.md",
+            "---\ndescription: x\n---\nBody.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "ns/prompts/garbage.md",
+            "---\ndescription: x\nstrategy: bananas\n---\nBody.\n",
+        );
+
+        let (prompts, skipped) = scan_prompts(tmp.path());
+        assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
+        let by_name = |n: &str| prompts.iter().find(|p| p.name == n).unwrap().strategy;
+        assert_eq!(by_name("replace"), PromptStrategy::Override);
+        assert_eq!(by_name("plain"), PromptStrategy::Enrich);
+        assert_eq!(by_name("garbage"), PromptStrategy::Enrich);
     }
 
     #[test]

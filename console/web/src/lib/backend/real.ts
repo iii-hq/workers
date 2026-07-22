@@ -14,6 +14,7 @@
 
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
 import { getIiiClient } from '@/lib/iii-client'
+import { getPrompt } from '@/lib/prompts'
 import { newMessageId, newSessionId } from '@/lib/session-id'
 import { appendCustomEntry, fetchTranscript } from '@/lib/sessions/api'
 import { COMPACTION_CUSTOM_TYPE } from '@/lib/sessions/entry-mapper'
@@ -178,6 +179,24 @@ async function buildSendRequest(
 
   const message = buildMessageInput(prompt, opts?.attachedBlocks ?? [])
 
+  let promptOpts:
+    | { system_prompt: string; system_prompt_strategy: 'enrich' | 'override' }
+    | undefined
+  if (opts?.systemPromptName) {
+    try {
+      const p = await getPrompt(opts.systemPromptName)
+      promptOpts = {
+        system_prompt: p.body,
+        system_prompt_strategy: p.strategy,
+      }
+    } catch (err) {
+      // Fail the send visibly — never silently drop the selected prompt.
+      throw new Error(
+        `system prompt "${opts.systemPromptName}" unavailable — deselect it in the composer or recreate the prompt (${err instanceof Error ? err.message : String(err)})`,
+      )
+    }
+  }
+
   return {
     session_id: sessionId,
     message,
@@ -190,6 +209,7 @@ async function buildSendRequest(
       functions: functionPolicy,
       ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
       ...(providerOptions ? { provider_options: providerOptions } : {}),
+      ...(promptOpts ?? {}),
       metadata: buildTurnMetadata(sessionId, messageId, opts?.workingDir),
     },
   }

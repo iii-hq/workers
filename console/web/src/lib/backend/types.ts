@@ -128,6 +128,13 @@ export interface ChatStreamOptions {
    */
   workingDir?: string | null
   /**
+   * Named directory prompt. The real backend resolves it via
+   * `directory::prompts::get` on every send and forwards body + strategy as
+   * `harness::send` `options.system_prompt` / `system_prompt_strategy`.
+   * A failed fetch FAILS the send (no silent fallback).
+   */
+  systemPromptName?: string | null
+  /**
    * Extra text content blocks appended after the prompt on the outgoing
    * user message — `#file(...)` mention expansions (`<attached-file …>`
    * blocks). When present the real backend sends a structured

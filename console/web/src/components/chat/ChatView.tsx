@@ -1004,6 +1004,7 @@ export function ChatView({
               messageId,
               thinkingLevel,
               workingDir: conversation.workingDir,
+              systemPromptName: conversation.systemPromptName,
               approvalGateAvailable: approvalEnabled,
               ...(attachedBlocks && attachedBlocks.length > 0
                 ? { attachedBlocks }
@@ -1049,6 +1050,7 @@ export function ChatView({
             messageId,
             thinkingLevel,
             workingDir: conversation.workingDir,
+            systemPromptName: conversation.systemPromptName,
             approvalGateAvailable: approvalEnabled,
             approvalSessionMatcher,
             approvalEventsExternallyManaged: true,
@@ -1325,6 +1327,7 @@ export function ChatView({
       conversation.mode,
       conversation.model,
       conversation.workingDir,
+      conversation.systemPromptName,
       effectiveModel,
       thinkingLevel,
       sessionId,
@@ -1791,6 +1794,18 @@ export function ChatView({
             memoryBank={conversation.memoryBank ?? null}
             onMemoryBankChange={(next) =>
               conversationsCtx?.setMemoryBank(conversation.id, next)
+            }
+            showSystemPrompt={
+              backend.id === 'real' &&
+              // Keep the picker reachable when a prompt is selected but the
+              // worker vanished, so the user can DESELECT instead of being
+              // trapped behind failing sends.
+              ((conversationsCtx?.directoryAvailable ?? false) ||
+                conversation.systemPromptName != null)
+            }
+            systemPromptName={conversation.systemPromptName ?? null}
+            onSystemPromptNameChange={(next) =>
+              conversationsCtx?.setSystemPromptName(conversation.id, next)
             }
             workingDirLocked={false}
             workingDirError={workingDirError}

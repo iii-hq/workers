@@ -17,6 +17,10 @@ import {
   type ConversationsApi,
   useConversations,
 } from '@/hooks/use-conversations'
+import {
+  isDirectoryAvailable,
+  useDirectoryStatus,
+} from '@/hooks/use-directory-status'
 import { isGithubAvailable, useGithubStatus } from '@/hooks/use-github-status'
 import {
   type HarnessStatus,
@@ -99,6 +103,12 @@ interface ConversationsContextValue extends ConversationsApi {
    * backend.
    */
   githubAvailable: boolean
+  /**
+   * Whether the optional `iii-directory` worker is connected. Gates the
+   * chat's system-prompt picker (`directory::prompts::*`). Only meaningful
+   * on the real backend.
+   */
+  directoryAvailable: boolean
 }
 
 const ConversationsContext = createContext<ConversationsContextValue | null>(
@@ -135,6 +145,9 @@ export function ConversationsProvider({
   )
   const githubAvailable = isGithubAvailable(
     useGithubStatus(backend.id === 'real'),
+  )
+  const directoryAvailable = isDirectoryAvailable(
+    useDirectoryStatus(backend.id === 'real'),
   )
   const {
     modelOptions,
@@ -186,6 +199,7 @@ export function ConversationsProvider({
     browserAvailable,
     memoryAvailable,
     githubAvailable,
+    directoryAvailable,
   }
 
   return (

@@ -60,7 +60,7 @@ pub fn register_all(
     engine_fn::register(iii);
     tracing::info!(
         "iii-directory registered 3 directory::skills::* (list + get + index), \
-         2 directory::prompts::* (list + get), 1 directory::skills::download, \
+         3 directory::prompts::* (list + get + save), 1 directory::skills::download, \
          2 directory::registry::workers::*, and 1 directory::engine::functions::info"
     );
 }
@@ -80,7 +80,7 @@ pub fn register_all_with_cache(
     engine_fn::register(iii);
     tracing::info!(
         "iii-directory registered 3 directory::skills::* (list + get + index), \
-         2 directory::prompts::* (list + get), 1 directory::skills::download, \
+         3 directory::prompts::* (list + get + save), 1 directory::skills::download, \
          2 directory::registry::workers::*, and 1 directory::engine::functions::info"
     );
 }

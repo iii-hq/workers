@@ -1,8 +1,8 @@
 //! Step defs for `tests/features/prompts.feature`.
 //!
-//! Drives `directory::prompts::list` and `directory::prompts::get`
-//! (the post-MCP-purge, plain-shape API). No MCP envelope or
-//! role/messages wrapper.
+//! Drives `directory::prompts::list`, `directory::prompts::get`, and
+//! `directory::prompts::save` (the post-MCP-purge, plain-shape API).
+//! No MCP envelope or role/messages wrapper.
 
 use cucumber::{given, then, when};
 use iii_sdk::protocol::TriggerRequest;
@@ -13,6 +13,7 @@ use crate::common::world::IiiSkillsWorld;
 const LAST_LIST: &str = "prompts_last_list";
 const LAST_GET: &str = "prompts_last_get";
 const LAST_GET_ERR: &str = "prompts_last_get_err";
+const LAST_SAVE_ERR: &str = "prompts_last_save_err";
 
 fn write_prompt_fixture(world: &IiiSkillsWorld, rel: &str, content: &str) {
     let Some(root) = world.skills_folder.as_ref() else {
@@ -165,6 +166,62 @@ fn get_modified_nonempty(world: &mut IiiSkillsWorld) {
     let v = world.stash.get(LAST_GET).expect("no prompts::get recorded");
     let modified = v["modified_at"].as_str().unwrap_or("");
     assert!(!modified.is_empty(), "modified_at empty: {v}");
+}
+
+#[then(regex = r#"^the prompt response has strategy "([^"]+)"$"#)]
+fn get_strategy(world: &mut IiiSkillsWorld, expected: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = world.stash.get(LAST_GET).expect("no prompts::get recorded");
+    assert_eq!(v["strategy"].as_str().unwrap_or(""), expected);
+}
+
+// ── prompts::save ───────────────────────────────────────────────────
+
+#[when(regex = r#"^I save prompt "([^"]+)" with strategy "([^"]+)" and body:$"#)]
+async fn call_save(
+    world: &mut IiiSkillsWorld,
+    name: String,
+    strategy: String,
+    step: &cucumber::gherkin::Step,
+) {
+    world.stash.remove(LAST_SAVE_ERR);
+    let Some(iii) = world.iii.clone() else {
+        return;
+    };
+    let body = step.docstring.as_deref().unwrap_or("").to_string();
+    if let Err(e) = iii
+        .trigger(TriggerRequest {
+            function_id: "directory::prompts::save".to_string(),
+            payload: json!({ "name": name, "strategy": strategy, "body": body }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+    {
+        world
+            .stash
+            .insert(LAST_SAVE_ERR.into(), Value::String(e.to_string()));
+    }
+}
+
+#[then(regex = r#"^the directory::prompts::save call fails with a message mentioning "([^"]+)"$"#)]
+fn save_fails(world: &mut IiiSkillsWorld, needle: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let err = world
+        .stash
+        .get(LAST_SAVE_ERR)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    assert!(!err.is_empty(), "expected save error; got success");
+    assert!(
+        err.contains(&needle),
+        "expected error to mention {needle:?}; got: {err:?}"
+    );
 }
 
 #[then(regex = r#"^the directory::prompts::get call fails with a message mentioning "([^"]+)"$"#)]

@@ -108,7 +108,12 @@ function isMode(v: unknown): v is Mode {
 function metadataFor(
   c: Pick<
     Conversation,
-    'model' | 'mode' | 'titleManual' | 'workingDir' | 'memoryBank'
+    | 'model'
+    | 'mode'
+    | 'titleManual'
+    | 'workingDir'
+    | 'memoryBank'
+    | 'systemPromptName'
   >,
 ): Record<string, unknown> {
   return {
@@ -118,6 +123,7 @@ function metadataFor(
     ...(c.titleManual ? { title_manual: true } : {}),
     ...(c.workingDir ? { fs_scope: { root: c.workingDir } } : {}),
     ...(c.memoryBank ? { memory_bank: c.memoryBank } : {}),
+    ...(c.systemPromptName ? { system_prompt_name: c.systemPromptName } : {}),
   }
 }
 
@@ -140,6 +146,11 @@ function conversationFromMeta(meta: SessionMeta): Conversation {
     memoryBank:
       typeof md.memory_bank === 'string' && md.memory_bank.length > 0
         ? md.memory_bank
+        : null,
+    systemPromptName:
+      typeof md.system_prompt_name === 'string' &&
+      md.system_prompt_name.length > 0
+        ? md.system_prompt_name
         : null,
     parentId:
       typeof md.parent_session_id === 'string'
@@ -258,6 +269,8 @@ export interface ConversationsApi {
   setModel: (id: string, model: ModelId) => void
   /** Point this chat at a named memory bank (null = worker default). */
   setMemoryBank: (id: string, memoryBank: string | null) => void
+  /** Named directory prompt for this chat (null = built-in prompt only). */
+  setSystemPromptName: (id: string, name: string | null) => void
   setMode: (id: string, mode: Mode) => void
   /** Per-session working directory; only meaningful while the chat is a draft. */
   setWorkingDir: (id: string, dir: string) => void
@@ -469,6 +482,11 @@ export function useConversations(
               memoryBank:
                 typeof md.memory_bank === 'string' && md.memory_bank.length > 0
                   ? md.memory_bank
+                  : null,
+              systemPromptName:
+                typeof md.system_prompt_name === 'string' &&
+                md.system_prompt_name.length > 0
+                  ? md.system_prompt_name
                   : null,
               parentId:
                 typeof md.parent_session_id === 'string'
@@ -798,6 +816,19 @@ export function useConversations(
     [patchConversation, conversations, writeMeta],
   )
 
+  const setSystemPromptName = useCallback(
+    (id: string, name: string | null) => {
+      patchConversation(id, (c) => ({
+        ...c,
+        systemPromptName: name,
+        updatedAt: Date.now(),
+      }))
+      const conv = conversations.find((c) => c.id === id)
+      if (conv) writeMeta({ ...conv, systemPromptName: name })
+    },
+    [patchConversation, conversations, writeMeta],
+  )
+
   const setWorkingDir = useCallback(
     (id: string, dir: string) => {
       patchConversation(id, (c) => ({
@@ -974,6 +1005,7 @@ export function useConversations(
     remove,
     setModel,
     setMemoryBank,
+    setSystemPromptName,
     setMode,
     setWorkingDir,
     prefillWorkingDir,
