@@ -13,12 +13,15 @@ export function CopyMessageButton({
   text,
   className,
 }: {
-  text: string
+  /** A thunk defers building large payloads (e.g. serialized function calls)
+      until the click, keeping streaming re-renders free. */
+  text: string | (() => string)
   className?: string
 }) {
   const [copied, setCopied] = useState(false)
   const copy = () => {
-    void copyTextToClipboard(text).then((ok) => {
+    const value = typeof text === 'function' ? text() : text
+    void copyTextToClipboard(value).then((ok) => {
       if (!ok) return
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1200)

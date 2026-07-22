@@ -35,6 +35,9 @@ interface MessageProps {
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
   workingDir?: string | null
+  /** Copy payload for an assistant turn (prose + its function calls). Lazy so
+      the string is built on click, not on every streaming re-render. */
+  copyText?: string | (() => string)
 }
 
 export function Message({
@@ -44,6 +47,7 @@ export function Message({
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
   workingDir,
+  copyText,
 }: MessageProps) {
   switch (message.role) {
     case 'user':
@@ -57,7 +61,7 @@ export function Message({
         <UserMessage message={message} />
       )
     case 'assistant':
-      return <AssistantMessage message={message} />
+      return <AssistantMessage message={message} copyText={copyText} />
     case 'thought':
       return <ThoughtMessage message={message} />
     case 'function-call': {
@@ -296,7 +300,13 @@ function UserMessage({ message }: { message: UserMessageType }) {
   )
 }
 
-function AssistantMessage({ message }: { message: AssistantMessageType }) {
+function AssistantMessage({
+  message,
+  copyText,
+}: {
+  message: AssistantMessageType
+  copyText?: string | (() => string)
+}) {
   const showCaret = !!message.streaming
   return (
     <article className="group flex flex-col gap-2">
@@ -311,7 +321,7 @@ function AssistantMessage({ message }: { message: AssistantMessageType }) {
         {message.memory ? <MemoryChip memory={message.memory} /> : null}
         {message.content && !message.streaming ? (
           <CopyMessageButton
-            text={message.content}
+            text={copyText ?? message.content}
             className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
           />
         ) : null}

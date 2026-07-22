@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef } from 'react'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
+import {
+  assistantCopyText,
+  functionCallsByAssistant,
+} from '@/lib/function-call-copy'
 import { cn } from '@/lib/utils'
 import type {
   FunctionCallMessage as FunctionCallMessageType,
@@ -101,6 +105,10 @@ export function MessageList({
   const lastPendingIdRef = useRef<string | null>(null)
 
   const items = useMemo(() => groupConsecutiveFcalls(messages), [messages])
+  const fcallsByAssistant = useMemo(
+    () => functionCallsByAssistant(messages),
+    [messages],
+  )
 
   // Read optionally so isolated renders (Storybook) still work without the
   // ConversationsProvider; the empty state falls back to `ready` there.
@@ -167,29 +175,44 @@ export function MessageList({
   return (
     <div ref={containerRef} className={cn('flex-1 overflow-y-auto', listPad)}>
       <div className="mx-auto max-w-[760px] flex flex-col gap-y-8">
-        {items.map((item) =>
-          item.kind === 'message' ? (
+        {items.map((item) => {
+          if (item.kind === 'fcall-group') {
+            return (
+              <FunctionCallGroup
+                key={item.key}
+                messages={item.messages}
+                onResolveApproval={onResolveApproval}
+                onAlwaysAllow={onAlwaysAllow}
+                onResolveFilesystemAccess={onResolveFilesystemAccess}
+                onManageFilesystemAccess={onManageFilesystemAccess}
+                workingDir={workingDir}
+              />
+            )
+          }
+          const m = item.message
+          // Assistant turns copy their prose plus the calls that follow them;
+          // the thunk defers building that string until the copy click.
+          const copyText =
+            m.role === 'assistant'
+              ? () =>
+                  assistantCopyText(
+                    m.content,
+                    fcallsByAssistant.get(m.id) ?? [],
+                  )
+              : undefined
+          return (
             <Message
               key={item.key}
-              message={item.message}
+              message={m}
+              copyText={copyText}
               onResolveApproval={onResolveApproval}
               onAlwaysAllow={onAlwaysAllow}
               onResolveFilesystemAccess={onResolveFilesystemAccess}
               onManageFilesystemAccess={onManageFilesystemAccess}
               workingDir={workingDir}
             />
-          ) : (
-            <FunctionCallGroup
-              key={item.key}
-              messages={item.messages}
-              onResolveApproval={onResolveApproval}
-              onAlwaysAllow={onAlwaysAllow}
-              onResolveFilesystemAccess={onResolveFilesystemAccess}
-              onManageFilesystemAccess={onManageFilesystemAccess}
-              workingDir={workingDir}
-            />
-          ),
-        )}
+          )
+        })}
         {isThinking ? (
           <div className="font-mono text-[13px] italic thinking-shimmer text-ink-faint">
             {thinkingDetail ?? 'thinking…'}
