@@ -163,7 +163,7 @@ async fn main() -> Result<()> {
     // Optional pre-generate hook: appends a compact skills index to the agent
     // system prompt while `inject_index` is enabled (read per fire, so the
     // toggle needs no restart). The binding itself is requested once here.
-    iii_directory::inject_index::setup(&iii, &cfg_handle);
+    iii_directory::inject_index::setup(&iii, &cfg_handle, &registered_cache);
 
     // Auto-download: subscribe to worker add events + boot reconcile. Wired
     // from the boot value of `auto_download` (a topology field — changing it
