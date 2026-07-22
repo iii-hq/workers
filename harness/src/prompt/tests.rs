@@ -124,7 +124,7 @@ fn directory_allowlist_invariant() {
     assert!(out.contains("directory::skills::get"));
     for id in extract_directory_ids(&out) {
         assert!(
-            id == "directory::skills::get" || id.starts_with("directory::registry::workers::"),
+            id == "directory::skills::get",
             "unexpected directory id: {id}"
         );
     }
@@ -357,10 +357,7 @@ fn default_variant_invariants() {
     assert!(out.contains("directory::skills::get"));
     assert!(out.contains("<example>"));
     for id in extract_directory_ids(out) {
-        assert!(
-            id == "directory::skills::get" || id.starts_with("directory::registry::workers::"),
-            "bad directory id {id}"
-        );
+        assert!(id == "directory::skills::get", "bad directory id {id}");
     }
     // The install walkthrough moved verbatim into the building playbook.
     assert!(BUILDING.contains("email::send"));
