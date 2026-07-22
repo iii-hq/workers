@@ -894,6 +894,20 @@ async fn dispatch_call(
             )));
         }
     };
+    // SECURITY: a reaction's call payload is model-authored at registration
+    // time and dispatches OUTSIDE the turn loop, so it never passes the
+    // trusted fs_scope stamp path. Strip any authored scope from stamped
+    // targets (shell::*/coder::*/fp::pipe) — root=None is the fail-closed
+    // strip — AFTER event injection, so a scope threaded via `event_into`
+    // cannot survive either. Scoped calls from reactions are therefore
+    // refused downstream until a trusted per-reaction scope source exists.
+    let payload = crate::filesystem_scope::inject(
+        &call.function_id,
+        payload,
+        None,
+        &[],
+        crate::filesystem_scope::FilesystemBoundary::ConfiguredRoots,
+    );
     match deps
         .iii
         .trigger(TriggerRequest {
@@ -1598,6 +1612,44 @@ mod tests {
                 .unwrap_err()
                 .contains("must name the function")
         );
+    }
+
+    #[test]
+    fn call_dispatch_strips_an_authored_fs_scope_from_stamped_targets() {
+        // The dispatch_call composition: a model-authored scope in the call
+        // payload — literal, or threaded to /fs_scope via event_into — must
+        // not survive to a stamped target (the reaction path never runs the
+        // turn loop's trusted stamp, so anything left here would arrive at
+        // shell/fp as trusted).
+        let forged = json!({ "root": "/", "grants": ["/"], "boundary": "configured_roots" });
+        let authored = json!({ "path": "/etc/hosts", "fs_scope": forged });
+        let threaded = inject_at(authored, "/fs_scope", json!({ "root": "/" })).unwrap();
+        let out = crate::filesystem_scope::inject(
+            "shell::fs::read",
+            threaded,
+            None,
+            &[],
+            crate::filesystem_scope::FilesystemBoundary::ConfiguredRoots,
+        );
+        assert_eq!(out, json!({ "path": "/etc/hosts" }));
+        // fp::pipe is a stamped target too; non-stamped targets pass through.
+        let out = crate::filesystem_scope::inject(
+            "fp::pipe",
+            json!({ "through": [], "fs_scope": { "root": "/" } }),
+            None,
+            &[],
+            crate::filesystem_scope::FilesystemBoundary::ConfiguredRoots,
+        );
+        assert_eq!(out, json!({ "through": [] }));
+        let unscoped = json!({ "scope": "s", "key": "k", "fs_scope": { "root": "/" } });
+        let out = crate::filesystem_scope::inject(
+            "state::set",
+            unscoped.clone(),
+            None,
+            &[],
+            crate::filesystem_scope::FilesystemBoundary::ConfiguredRoots,
+        );
+        assert_eq!(out, unscoped);
     }
 
     #[test]
