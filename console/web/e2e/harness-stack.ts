@@ -1,4 +1,4 @@
-import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
+import { type ChildProcess, spawn } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, watch } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -11,16 +11,16 @@ interface ReadyManifest {
   run_id: string
   scenario_id: string
   scenario_slug: string
-  driver: 'direct' | 'console'
+  driver: 'direct' | 'playground'
   run_root: string
   result_path: string
-  console_url: string
   engine_url: string
+  console_url: string
   session: { id: string; title: string }
   model: { id: string; provider: string }
   message: string
   functions: Record<string, string>
-  send?: Record<string, unknown>
+  send: Record<string, unknown>
 }
 
 export interface RecorderEvent {
@@ -33,7 +33,6 @@ export interface RecorderEvent {
   received_at: string
 }
 
-/** Raw serialized RunEvidence: real ids, checkable against ReadyManifest. */
 export interface RunEvidence {
   run_id: string
   session_id: string
@@ -46,7 +45,7 @@ export interface RunEvidence {
   recorder_events: RecorderEvent[]
 }
 
-export interface ServeResult {
+export interface PlaygroundResult {
   schema_version: '1'
   scenario_id: string
   classification:
@@ -70,9 +69,10 @@ interface TurnCompletedEvent {
 
 export interface HarnessStack {
   ready: ReadyManifest
-  trigger<T>(functionId: string, payload: unknown): Promise<T>
+  consoleUrl: string
+  trigger(): Promise<unknown>
   waitForTurnCompleted(): Promise<TurnCompletedEvent>
-  finish(): Promise<ServeResult>
+  finish(): Promise<PlaygroundResult>
 }
 
 interface FixtureOptions {
@@ -98,9 +98,17 @@ function workerArgs(): string[] {
   ].flatMap(([name, env]) => ['--worker-bin', `${name}=${required(env)}`])
 }
 
+function childExit(
+  child: ChildProcess,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  return new Promise((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }))
+  })
+}
+
 async function waitForReady(
   readyFile: string,
-  childExit: Promise<{ code: number | null; signal: NodeJS.Signals | null }>,
+  exit: Promise<{ code: number | null; signal: NodeJS.Signals | null }>,
 ): Promise<ReadyManifest> {
   const read = async (): Promise<ReadyManifest | null> => {
     try {
@@ -114,20 +122,19 @@ async function waitForReady(
   const existing = await read()
   if (existing) return existing
 
-  const parent = path.dirname(readyFile)
-  const expectedName = path.basename(readyFile)
-  const changes = watch(parent)
+  const changes = watch(path.dirname(readyFile))
   const timeout = delay(70_000).then(() => {
     throw new Error(`timed out waiting for ${readyFile}`)
   })
-  const exited = childExit.then(({ code, signal }) => {
+  const exited = exit.then(({ code, signal }) => {
     throw new Error(
       `harness-integration exited before ready (code=${String(code)}, signal=${String(signal)})`,
     )
   })
   const appeared = (async () => {
     for await (const event of changes) {
-      if (event.filename && event.filename !== expectedName) continue
+      if (event.filename && event.filename !== path.basename(readyFile))
+        continue
       const manifest = await read()
       if (manifest) return manifest
     }
@@ -138,14 +145,6 @@ async function waitForReady(
   } finally {
     await changes.return?.()
   }
-}
-
-function childExit(
-  child: ChildProcessWithoutNullStreams,
-): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-  return new Promise((resolve) => {
-    child.once('exit', (code, signal) => resolve({ code, signal }))
-  })
 }
 
 function armCompletion(
@@ -160,16 +159,12 @@ function armCompletion(
     if (timer) clearTimeout(timer)
     try {
       triggerRef?.unregister()
-    } catch {
-      // The stack may already be shutting down.
-    }
-    try {
       functionRef?.unregister()
     } catch {
-      // The stack may already be shutting down.
+      // The isolated stack may already be shutting down.
     }
   }
-  const completed = new Promise<TurnCompletedEvent>((resolve, reject) => {
+  return new Promise<TurnCompletedEvent>((resolve, reject) => {
     functionRef = sdk.registerFunction(
       functionId,
       async (payload) => {
@@ -191,7 +186,6 @@ function armCompletion(
       reject(new Error('harness::turn-completed was not delivered'))
     }, 60_000)
   })
-  return completed
 }
 
 export const test = base.extend<FixtureValues, FixtureOptions>({
@@ -206,7 +200,7 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
     const controlDir = await mkdtemp(path.join(artifactsRoot, 'runner-'))
     const readyFile = path.join(controlDir, 'ready.json')
     const args = [
-      'serve',
+      'playground',
       '--scenario',
       scenario,
       '--engine-bin',
@@ -222,7 +216,7 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
       ...workerArgs(),
     ]
     const child = spawn(required('HARNESS_INTEGRATION_BIN'), args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     })
     const exit = childExit(child)
     const stdout: Buffer[] = []
@@ -231,10 +225,23 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
     child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
 
     let sdk: ISdk | undefined
-    let finalized: Promise<ServeResult> | undefined
-    const finish = (): Promise<ServeResult> => {
+    let ready: ReadyManifest | undefined
+    let finalized: Promise<PlaygroundResult> | undefined
+    const attachLogs = async () => {
+      await testInfo.attach('harness-integration.stdout', {
+        body: Buffer.concat(stdout),
+        contentType: 'text/plain',
+      })
+      await testInfo.attach('harness-integration.stderr', {
+        body: Buffer.concat(stderr),
+        contentType: 'text/plain',
+      })
+    }
+    const finish = (): Promise<PlaygroundResult> => {
       if (finalized) return finalized
       finalized = (async () => {
+        if (!ready)
+          throw new Error('playground did not publish a ready manifest')
         if (sdk) await sdk.shutdown().catch(() => undefined)
         if (child.exitCode === null && child.signalCode === null) {
           child.kill('SIGTERM')
@@ -244,18 +251,11 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
           child.kill('SIGKILL')
           exited = await exit
         }
-        await testInfo.attach('harness-integration.stdout', {
-          body: Buffer.concat(stdout),
-          contentType: 'text/plain',
-        })
-        await testInfo.attach('harness-integration.stderr', {
-          body: Buffer.concat(stderr),
-          contentType: 'text/plain',
-        })
+        await attachLogs()
         const result = JSON.parse(
           await readFile(ready.result_path, 'utf8'),
-        ) as ServeResult
-        await testInfo.attach('serve-result', {
+        ) as PlaygroundResult
+        await testInfo.attach('playground-result', {
           body: JSON.stringify(result, null, 2),
           contentType: 'application/json',
         })
@@ -264,44 +264,32 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
       return finalized
     }
 
-    let ready!: ReadyManifest
     try {
       ready = await waitForReady(readyFile, exit)
+      const manifest = ready
+      const connectedSdk = registerWorker(manifest.engine_url)
+      sdk = connectedSdk
+      const stack: HarnessStack = {
+        ready: manifest,
+        consoleUrl: manifest.console_url,
+        trigger: () =>
+          connectedSdk.trigger({
+            function_id: 'harness::send',
+            payload: manifest.send,
+          }),
+        waitForTurnCompleted: () => armCompletion(connectedSdk, manifest),
+        finish,
+      }
+      await use(stack)
     } catch (error) {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill('SIGTERM')
       }
       await exit.catch(() => undefined)
-      await testInfo.attach('harness-integration.stdout', {
-        body: Buffer.concat(stdout),
-        contentType: 'text/plain',
-      })
-      await testInfo.attach('harness-integration.stderr', {
-        body: Buffer.concat(stderr),
-        contentType: 'text/plain',
-      })
+      await attachLogs()
       throw error
-    }
-    const connectedSdk = registerWorker(ready.engine_url)
-    sdk = connectedSdk
-    const stack: HarnessStack = {
-      ready,
-      trigger: <T>(functionId: string, payload: unknown) =>
-        connectedSdk.trigger<unknown, T>({
-          function_id: functionId,
-          payload,
-          timeoutMs: 30_000,
-        }),
-      waitForTurnCompleted: () => armCompletion(connectedSdk, ready),
-      finish,
-    }
-
-    try {
-      await use(stack)
     } finally {
-      if (!finalized) {
-        await finish().catch(() => undefined)
-      }
+      if (!finalized && ready) await finish().catch(() => undefined)
       await rm(controlDir, { recursive: true, force: true })
     }
   },
@@ -311,17 +299,22 @@ export { expect }
 
 export async function openSession(
   page: Page,
-  ready: ReadyManifest,
+  stack: HarnessStack,
 ): Promise<void> {
-  await page.goto(ready.console_url)
+  await page.goto(stack.consoleUrl)
+  // Let the Console settle its initial local-draft selection before changing
+  // sessions; otherwise that bootstrap effect can overwrite this click.
+  await expect(
+    page.locator('[role="button"][aria-current="page"]'),
+  ).toHaveCount(1)
   const session = page.getByRole('button', {
-    name: `open ${ready.session.title}`,
+    name: `open ${stack.ready.session.title}`,
     exact: true,
   })
   await session.click()
   await expect(session).toHaveAttribute('aria-current', 'page')
 }
 
-export function expectPassingResult(result: ServeResult): void {
+export function expectPassingResult(result: PlaygroundResult): void {
   expect(result.classification).toBe('pass')
 }

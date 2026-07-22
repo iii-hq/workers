@@ -7,10 +7,10 @@ test('hydrates a durable transcript again after a page reload', async ({
   stack,
 }) => {
   const completed = stack.waitForTurnCompleted()
-  await stack.trigger('harness::send', stack.ready.send)
+  await stack.trigger()
   expect(await completed).toMatchObject({ status: 'completed' })
 
-  await openSession(page, stack.ready)
+  await openSession(page, stack)
   await expect(
     page.locator('[data-message-role="user"]', {
       hasText: stack.ready.message,

@@ -7,10 +7,10 @@ test('renders one completed function call and its durable result', async ({
   stack,
 }) => {
   const completed = stack.waitForTurnCompleted()
-  await stack.trigger('harness::send', stack.ready.send)
+  await stack.trigger()
   expect(await completed).toMatchObject({ status: 'completed' })
 
-  await openSession(page, stack.ready)
+  await openSession(page, stack)
   const functionId = stack.ready.functions.record
   expect(functionId).toBeTruthy()
   const card = page.locator('[data-message-role="function-call"]', {
