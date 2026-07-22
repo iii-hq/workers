@@ -82,6 +82,9 @@ pub struct LifecycleEventV1 {
     pub session_id: String,
     pub turn_id: String,
     pub status: LifecycleStatusV1,
+    /// `false` marks a non-final completion (the session still owns an
+    /// armed wake); consumers finalize only on `true`.
+    pub terminal: bool,
     pub timestamp: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,

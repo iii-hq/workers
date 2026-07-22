@@ -56,6 +56,7 @@ fn evidence(run_id: &str, session_id: &str, turn_id: &str) -> RunEvidence {
                     "session_id": session_id,
                     "turn_id": turn_id,
                     "status": "completed",
+                    "terminal": true,
                     "timestamp": 1
                 }),
             ),

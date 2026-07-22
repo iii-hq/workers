@@ -135,6 +135,7 @@ fn lifecycle_contract_strips_only_engine_fields_and_rejects_unknown_shape() {
         "session_id": "s_1",
         "turn_id": "t_1",
         "status": "completed",
+        "terminal": true,
         "timestamp": 1,
         "parent": {
             "session_id": "s_parent",

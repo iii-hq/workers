@@ -92,6 +92,9 @@ fn lifecycle_failure(run: &RunEvidence) -> Option<String> {
     let bound = lifecycle.iter().all(|event| {
         event.function_id == LIFECYCLE_SINK
             && event.payload.get("status").and_then(Value::as_str) == Some("completed")
+            // `terminal: false` is a non-final completion (armed wake); the
+            // scenarios here run single, final turns.
+            && event.payload.get("terminal").and_then(Value::as_bool) == Some(true)
             && event.payload.get("session_id").and_then(Value::as_str)
                 == Some(run.session_id.as_str())
             && match &run.turn_id {
@@ -102,6 +105,7 @@ fn lifecycle_failure(run: &RunEvidence) -> Option<String> {
 
     let allowed_keys = BTreeSet::from([
         "session_id",
+        "terminal",
         "turn_id",
         "status",
         "timestamp",
@@ -202,6 +206,7 @@ mod tests {
             "session_id": "s_1",
             "turn_id": "t_1",
             "status": "completed",
+            "terminal": true,
             "timestamp": timestamp
         })
     }
