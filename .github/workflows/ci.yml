@@ -387,7 +387,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────
   # Harness integration E2E (non-required): deterministic public-path
   # regression scenarios against the engine pinned in
-  # harness/evals/integration/engine.lock (see that crate's README; the
+  # harness/tests/e2e/engine.lock (see that crate's README; the
   # architecture spec lives in the iii repo). Runs on EVERY PR — the
   # suite is the harness stack's public-contract gate, and engine/worker
   # builds are cached. The engine is BUILT from the pinned source, never
@@ -404,7 +404,7 @@ jobs:
         id: lock
         run: |
           set -euo pipefail
-          lock=harness/evals/integration/engine.lock
+          lock=harness/tests/e2e/engine.lock
           read_field() {
             local field=$1 values
             values=$(sed -n "s/^${field} = \"\\([^\"]*\\)\"$/\\1/p" "$lock")
@@ -484,10 +484,9 @@ jobs:
             session-manager -> target
             context-manager -> target
             iii-directory -> target
-            harness/evals/integration -> target
 
       - name: Integration crate unit tests
-        run: cargo test --manifest-path harness/evals/integration/Cargo.toml
+        run: cargo test --manifest-path harness/Cargo.toml -p harness-integration
 
       - name: Validate integration scenarios
         run: make -C harness integration-validate

@@ -61,7 +61,7 @@ help:
 	  '  make build [workers...]             cargo build stack or selected workers' \
 	  '  make cargo-clean [workers...]       cargo clean stack or selected workers' \
 	  '  make install-local [workers...]     build and symlink into ~/.iii/workers' \
-	  '  make integration-e2e III_BIN=<iii>  run the harness integration scenarios (evals/integration)' \
+	  '  make integration-e2e III_BIN=<iii>  run the harness integration scenarios (tests/e2e)' \
 	  '  make integration-playground III_BIN=<iii>  open the Console against an isolated integration stack' \
 	  '  make integration-validate           validate every integration scenario'
 
@@ -310,12 +310,12 @@ where:
 	  echo "  no tmux session named $(TMUX_SESSION)"
 
 # ---------------------------------------------------------------------------
-# Harness integration E2E (see harness/evals/integration/README.md)
+# Harness integration E2E (see harness/tests/e2e/README.md)
 #
-# Builds the subject stack + the standalone runner (evals/integration, its own
-# workspace) and runs every scenario against the pinned engine binary. The
+# Builds the subject stack + the harness workspace's E2E runner and runs every
+# scenario against the pinned engine binary. The
 # engine is never downloaded here: pass III_BIN (CI builds it from
-# evals/integration/engine.lock; locally see that file for the pinned source).
+# tests/e2e/engine.lock; locally see that file for the pinned source).
 INTEGRATION_WORKERS := queue iii-directory session-manager context-manager
 INTEGRATION_PROFILE ?= release
 INTEGRATION_FLAG    := $(if $(filter release,$(INTEGRATION_PROFILE)),--release,)
@@ -327,7 +327,7 @@ INTEGRATION_PLAYGROUND_ARTIFACTS ?= $(REPO_ROOT)/target/console-e2e
 integration-e2e:
 	@if [ -z "$(III_BIN)" ]; then \
 	  echo "III_BIN is required: path to the pinned iii engine binary."; \
-	  echo "Pinned source: harness/evals/integration/engine.lock"; \
+	  echo "Pinned source: harness/tests/e2e/engine.lock"; \
 	  exit 3; \
 	fi
 	@for w in $(INTEGRATION_WORKERS) harness; do \
@@ -335,8 +335,8 @@ integration-e2e:
 	  cargo build $(INTEGRATION_FLAG) --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
 	done
 	@echo "building harness-integration ($(INTEGRATION_PROFILE))"
-	@cargo build $(INTEGRATION_FLAG) --manifest-path "$(MAKEFILE_DIR)evals/integration/Cargo.toml"
-	@"$(MAKEFILE_DIR)evals/integration/target/$(INTEGRATION_PROFILE)/harness-integration" \
+	@cargo build $(INTEGRATION_FLAG) --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration
+	@"$(MAKEFILE_DIR)target/$(INTEGRATION_PROFILE)/harness-integration" \
 	  run \
 	  --engine-bin "$(III_BIN)" \
 	  --harness-bin "$(REPO_ROOT)/harness/target/$(INTEGRATION_PROFILE)/harness" \
@@ -350,7 +350,7 @@ integration-e2e:
 integration-playground:
 	@if [ -z "$(III_BIN)" ]; then \
 	  echo "III_BIN is required: path to the pinned iii engine binary."; \
-	  echo "Pinned source: harness/evals/integration/engine.lock"; \
+	  echo "Pinned source: harness/tests/e2e/engine.lock"; \
 	  exit 3; \
 	fi
 	@for w in $(INTEGRATION_WORKERS) harness console; do \
@@ -358,8 +358,8 @@ integration-playground:
 	  cargo build $(INTEGRATION_FLAG) --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
 	done
 	@echo "building harness-integration ($(INTEGRATION_PROFILE))"
-	@cargo build $(INTEGRATION_FLAG) --manifest-path "$(MAKEFILE_DIR)evals/integration/Cargo.toml"
-	@"$(MAKEFILE_DIR)evals/integration/target/$(INTEGRATION_PROFILE)/harness-integration" \
+	@cargo build $(INTEGRATION_FLAG) --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration
+	@"$(MAKEFILE_DIR)target/$(INTEGRATION_PROFILE)/harness-integration" \
 	  playground \
 	  --engine-bin "$(III_BIN)" \
 	  --harness-bin "$(REPO_ROOT)/harness/target/$(INTEGRATION_PROFILE)/harness" \
@@ -372,7 +372,7 @@ integration-playground:
 	  --artifacts-dir "$(INTEGRATION_PLAYGROUND_ARTIFACTS)"
 
 integration-validate:
-	@cargo run --quiet --manifest-path "$(MAKEFILE_DIR)evals/integration/Cargo.toml" -- \
+	@cargo run --quiet --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration -- \
 	  validate --scenario all
 
 $(STACK):

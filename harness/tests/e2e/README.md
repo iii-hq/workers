@@ -87,9 +87,9 @@ compiled send through the SDK or submits through the Console UI.
 
 ```bash
 make -C harness integration-validate
-cargo test --manifest-path harness/evals/integration/Cargo.toml
-cargo clippy --manifest-path harness/evals/integration/Cargo.toml \
-  --all-targets -- -D warnings
+cargo test --manifest-path harness/Cargo.toml -p harness-integration
+cargo clippy --manifest-path harness/Cargo.toml \
+  -p harness-integration --all-targets -- -D warnings
 ```
 
 `validate --scenario all` checks exactly the three fixtures. `run --scenario

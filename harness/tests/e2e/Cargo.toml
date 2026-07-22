@@ -1,7 +1,3 @@
-# Standalone workspace: keeps this crate out of any parent workspace, per the
-# repo-wide one-worker-one-workspace convention and the integration spec.
-[workspace]
-
 [package]
 name = "harness-integration"
 version = "0.1.0"
@@ -39,8 +35,3 @@ nix = { version = "0.29", features = ["signal", "process"] }
 [dev-dependencies]
 tempfile = "3"
 jsonschema = { version = "0.18", default-features = false }
-
-# stack.json digests every spawned binary (spec: recorded before boot);
-# debug-mode sha2 turns ~800MB of debug worker binaries into a ~40s stall.
-[profile.dev.package.sha2]
-opt-level = 3
