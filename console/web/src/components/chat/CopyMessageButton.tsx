@@ -35,7 +35,11 @@ export function CopyMessageButton({
       aria-label={copied ? 'copied' : 'copy message'}
       title={copied ? 'copied' : 'copy message'}
     >
-      {copied ? <Check size={12} aria-hidden /> : <Copy size={12} aria-hidden />}
+      {copied ? (
+        <Check size={12} aria-hidden />
+      ) : (
+        <Copy size={12} aria-hidden />
+      )}
     </button>
   )
 }
