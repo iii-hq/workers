@@ -206,7 +206,10 @@ mod tests {
 
         // Non-DriverError variants → None
         assert_eq!(
-            failed_index_of(&crate::error::DbError::UnknownDb { db: "x".into() }),
+            failed_index_of(&crate::error::DbError::UnknownDb {
+                db: "x".into(),
+                available: vec![]
+            }),
             None
         );
         assert_eq!(

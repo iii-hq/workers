@@ -57,13 +57,15 @@ async fn main() -> Result<()> {
         "starting"
     );
 
-    let iii = register_worker(
+    // Arc-wrapped for `ui::register` (the console-ui crate clones the client
+    // into its hot-reload watcher task); everything else auto-derefs.
+    let iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {
             otel: Some(OtelConfig::default()),
             ..Default::default()
         },
-    );
+    ));
 
     let seed = match &cli.config {
         Some(path) => match WorkerConfig::from_file(path) {
@@ -314,6 +316,10 @@ async fn main() -> Result<()> {
 
     configuration::register_config_trigger(&iii, state.clone())
         .context("registering configuration change trigger")?;
+
+    // Injectable console UI (function-trigger renderer) — after the
+    // database::* functions so the console can attribute the assets.
+    database::ui::register(&iii);
 
     tracing::info!(
         "database worker registered 13 functions and 1 trigger type, waiting for invocations"
