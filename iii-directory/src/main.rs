@@ -42,7 +42,7 @@ use iii_directory::functions::skills::{
     make_registered_cache, RegisteredWorkersCache, ENGINE_NAMESPACE,
 };
 use iii_directory::sources::registry::VersionSpec;
-use iii_directory::{configuration, functions, manifest, trigger_types};
+use iii_directory::{configuration, functions, guidance, manifest, trigger_types};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -159,6 +159,7 @@ async fn main() -> Result<()> {
         registry_cache.clone(),
     );
     functions::log_fs_health(&cfg_handle.load_full());
+    guidance::setup(&iii);
 
     // Auto-download: subscribe to worker add events + boot reconcile. Wired
     // from the boot value of `auto_download` (a topology field — changing it
