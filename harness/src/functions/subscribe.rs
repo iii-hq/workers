@@ -71,7 +71,11 @@ pub struct SubscribeRequest {
     /// ["state::get"] } }`). Only raw engine-side registrations fall back to
     /// the read-only default policy. Join predecessors auto-unregister after
     /// the join fires unless `join.rearm: true` keeps them registered for the
-    /// next complete set.
+    /// next complete set. Under burst load fires past the per-subscription
+    /// rate cap COALESCE: only the newest event is delivered (stamped
+    /// `__coalesced_fires`/`__coalesced_note`), so a reaction task must
+    /// recompute from the source of truth on such a fire rather than treat
+    /// it as one change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }

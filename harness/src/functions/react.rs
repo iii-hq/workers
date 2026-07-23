@@ -271,7 +271,11 @@ pub struct ReactSpec {
     pub model: Option<String>,
     /// The sub-agent's opening task; the event (simple) or all predecessor
     /// results (join) are appended fenced so it sees its inputs. Mutually
-    /// exclusive with `call`.
+    /// exclusive with `call`. Under burst load an event may carry
+    /// `__coalesced_fires`/`__coalesced_note`: it stands in for N fires
+    /// collapsed by the rate cap (only the newest survives) — a task that
+    /// processes single events per key must recompute from the source of
+    /// truth on such a fire.
     #[serde(default)]
     pub task: Option<String>,
     /// Function-call reaction (no sub-agent, no model). Mutually exclusive
@@ -492,6 +496,30 @@ pub fn validate_spec(metadata: Option<&Value>) -> Result<(), String> {
     Ok(())
 }
 
+/// Mark a trailing coalesced event as standing in for a collapsed burst.
+/// Only the NEWEST event survives coalescing, so a reaction that processes
+/// per-key/per-entity state from single events would silently skip the
+/// collapsed ones — rctest-k7m2: a per-writer upsert reactor missed one
+/// writer entirely because its events were among the collapsed. The note
+/// spells out the recovery at the exact moment the reaction reads the event;
+/// the count is machine-readable. Non-object events can't carry the stamp
+/// and pass through unchanged.
+fn stamp_coalesced(mut event: Value, dropped: usize) -> Value {
+    if let Some(obj) = event.as_object_mut() {
+        obj.insert("__coalesced_fires".to_string(), json!(dropped));
+        obj.insert(
+            "__coalesced_note".to_string(),
+            json!(format!(
+                "This event stands in for {dropped} fires collapsed by the rate cap; the \
+                 earlier events were NOT delivered. Do not process it as a single change — \
+                 recompute from the source of truth so the collapsed events' effects are \
+                 covered."
+            )),
+        );
+    }
+    event
+}
+
 /// Type-erased re-entry for the trailing coalesced fire: `handle` recursing
 /// through `tokio::spawn` can't prove its own future `Send` (the bound is
 /// self-referential); the `dyn` boxing breaks the inference cycle.
@@ -578,11 +606,7 @@ pub async fn handle(
                 let Some(pending) = deps.react_gate.take_pending(&key) else {
                     return;
                 };
-                let mut event = pending.event;
-                if let Some(obj) = event.as_object_mut() {
-                    // Tell the reaction it stands in for a collapsed burst.
-                    obj.insert("__coalesced_fires".to_string(), json!(pending.dropped));
-                }
+                let event = stamp_coalesced(pending.event, pending.dropped);
                 // Re-enters the gate: if the window is still hot the fire
                 // parks again and a fresh trailing task takes over.
                 if let Err(e) = handle_boxed(&deps, event, Some(pending.metadata)).await {
@@ -1827,6 +1851,24 @@ mod tests {
         );
         assert_eq!(d3.dropped, 1, "drop count resets after a drain");
         assert!(d3.schedule_delay_ms.is_some(), "new cycle reschedules");
+    }
+
+    /// The rctest-k7m2 lesson: a per-key reactor missed a writer whose
+    /// events were all collapsed. The trailing event must say — in text the
+    /// reacting model reads — that it stands in for the collapsed fires.
+    #[test]
+    fn stamp_coalesced_marks_the_event_with_count_and_recovery_note() {
+        let stamped = stamp_coalesced(serde_json::json!({"seq": 15, "writer": "w3"}), 5);
+        assert_eq!(stamped["__coalesced_fires"], 5);
+        let note = stamped["__coalesced_note"].as_str().unwrap();
+        assert!(note.contains("stands in for 5 fires"));
+        assert!(note.contains("recompute from the source of truth"));
+        // Original payload survives beside the stamps.
+        assert_eq!(stamped["writer"], "w3");
+
+        // Non-object events cannot carry the stamp and pass through unchanged.
+        let passthrough = stamp_coalesced(serde_json::json!("bare"), 3);
+        assert_eq!(passthrough, serde_json::json!("bare"));
     }
 
     #[test]
