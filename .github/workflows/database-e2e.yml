@@ -33,6 +33,13 @@ jobs:
         with:
           workspaces: database
 
+      # database/build.rs shells out to pnpm to build the injected console
+      # UI (ui/dist) before embedding it via include_str! — mirrors the
+      # ci.yml rust job. Version comes from the repo-root package.json
+      # `packageManager` field (the UI pnpm workspace root).
+      - name: Setup pnpm (for build.rs UI build)
+        uses: pnpm/action-setup@v4
+
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
