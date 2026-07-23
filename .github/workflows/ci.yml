@@ -152,9 +152,12 @@ jobs:
 
       - name: Pre-build frontend bundle (web/ and/or ui/)
         if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+        # Paths are relative to the job's working-directory (the worker dir),
+        # unlike the interface-smoke job below, which runs this from the
+        # repo root and prefixes the worker.
         run: |
           set -euo pipefail
-          for d in "${{ matrix.worker }}/web" "${{ matrix.worker }}/ui"; do
+          for d in web ui; do
             if [[ -f "$d/package.json" ]]; then
               (cd "$d" && pnpm install --frozen-lockfile && pnpm build)
             fi
