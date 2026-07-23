@@ -58,7 +58,6 @@ jobs:
           BASE: ${{ steps.base.outputs.ref }}
         run: |
           set -euo pipefail
-          pip install --quiet pyyaml
           python3 .github/scripts/discover_changed_workers.py --base "$BASE"
 
   # ──────────────────────────────────────────────────────────────

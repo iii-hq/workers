@@ -121,7 +121,6 @@ jobs:
           FORCE_HARNESS: ${{ steps.refs.outputs.force_harness }}
         run: |
           set -euo pipefail
-          pip install --quiet pyyaml
           args=(--base "$BASE" --head HEAD)
           if [[ "$FORCE_HARNESS" == "true" ]]; then
             args+=(--force-worker harness)

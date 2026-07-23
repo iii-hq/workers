@@ -37,17 +37,8 @@ IGNORE_DIRS = {".git", ".github", "registry", "target", "node_modules"}
 # Special non-worker dir tracked separately for the vscode-changed gate.
 VSCODE_DIR = "lsp-vscode"
 
-# Source changes in this worker fan out: every in-repo dep listed in its
-# iii.worker.yaml joins the changed-workers matrix so the rust lint+test
-# job exercises them against the new shared crate. Deps are deliberately
-# NOT added to source_changed — version-bump / README / tests/ gates only
-# apply to workers the PR author actually edited. Bundle-release handles
-# downstream version bumps at tag time.
-FANOUT_PARENT = "harness"
-
-# The integration suite boots this stack directly. Changes to other harness
-# dependencies are covered by the ordinary worker fan-out, but do not need to
-# pay for the full live stack in a pull request.
+# The integration suite boots this stack directly. Its path gate is separate
+# from the per-worker matrices, which only contain directly changed workers.
 INTEGRATION_WORKERS = {
     "harness",
     "queue",
@@ -117,27 +108,6 @@ def language_of(worker_dir: pathlib.Path) -> str | None:
     return None
 
 
-def fanout_dependents(repo_root: pathlib.Path, workers: set[str]) -> list[str]:
-    """In-repo workers listed as deps in FANOUT_PARENT/iii.worker.yaml.
-
-    Missing manifest or unreadable yaml → empty list (no fan-out).
-    """
-    meta = repo_root / FANOUT_PARENT / "iii.worker.yaml"
-    if not meta.exists():
-        return []
-    try:
-        import yaml  # type: ignore[import-not-found]
-        data = yaml.safe_load(meta.read_text()) or {}
-    except Exception:  # noqa: BLE001
-        return []
-    if not isinstance(data, dict):
-        return []
-    deps = data.get("dependencies")
-    if not isinstance(deps, dict):
-        return []
-    return sorted(d for d in deps if d in workers and d != FANOUT_PARENT)
-
-
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--base", required=True, help="base git ref")
@@ -171,12 +141,8 @@ def main(argv: list[str] | None = None) -> int:
     if unknown_forced:
         p.error(f"unknown --force-worker: {', '.join(unknown_forced)}")
 
-    forced: set[str] = set(args.force_worker)
-    parent_rels = touched.get(FANOUT_PARENT, [])
-    if FANOUT_PARENT in forced or any(not is_metadata(rel) for rel in parent_rels):
-        forced.update(fanout_dependents(repo_root, workers))
-
-    changed = sorted(set(touched.keys()) | forced)
+    forced = set(args.force_worker)
+    changed = sorted(set(touched) | forced)
     source_changed = sorted(
         w for w, rels in touched.items()
         if any(not is_metadata(rel) for rel in rels)
