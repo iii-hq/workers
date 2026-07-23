@@ -198,12 +198,17 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// `worker` trigger payload for `directory::__on_worker_added`. Only `worker`
-/// is read; declared as a struct so the function publishes a typed schema.
+/// `worker` trigger payload for `directory::__on_worker_added`. Declared as a
+/// struct so the function publishes a typed schema.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 struct WorkerAddedEvent {
     #[serde(default)]
     worker: Option<String>,
+    /// Installed version, when the event carries it (the wire schema
+    /// reserves the field on terminal add/update stages). Preferred over a
+    /// `worker::list` lookup when present.
+    #[serde(default)]
+    version: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
@@ -212,7 +217,8 @@ struct WorkerAddedAck {
 }
 
 /// Register the internal `directory::__on_worker_added` handler and
-/// subscribe to the `worker` trigger type for `add` operations.
+/// subscribe to the `worker` trigger type for `add` and `update`
+/// operations.
 fn setup_auto_download(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
@@ -222,16 +228,18 @@ fn setup_auto_download(
     let cfg_inner = cfg.clone();
     let cache_inner = cache.clone();
     let in_flight_inner = in_flight.clone();
+    let iii_inner = iii.clone();
 
-    // Register the internal handler that fires on worker-add events.
+    // Register the internal handler that fires on worker add/update events.
     iii.register_function(
         "directory::__on_worker_added",
         RegisterFunction::new_async(move |event: WorkerAddedEvent| {
             let cfg = cfg_inner.load_full();
             let cache = cache_inner.clone();
             let in_flight = in_flight_inner.clone();
+            let iii = iii_inner.clone();
             async move {
-                handle_worker_added(&cfg, &cache, &in_flight, &event).await;
+                handle_worker_added(&iii, &cfg, &cache, &in_flight, &event).await;
                 Ok::<_, Error>(WorkerAddedAck { ok: true })
             }
         })
@@ -247,7 +255,7 @@ fn setup_auto_download(
                 trigger_type: "worker".to_string(),
                 function_id: "directory::__on_worker_added".to_string(),
                 config: json!({
-                    "operations": ["add"],
+                    "operations": ["add", "update"],
                     "stages": ["done"]
                 }),
                 metadata: None,
@@ -274,9 +282,14 @@ fn setup_auto_download(
     });
 }
 
-/// Handle a `worker` trigger add event. Downloads skills for the
-/// newly added worker if not already in-flight.
+/// Handle a `worker` trigger add/update event. Downloads skills for the
+/// worker if not already in-flight. The spec is pinned to the installed
+/// version when the event or `worker::list` reports one, so the
+/// completion marker records the concrete semver the skills belong to;
+/// otherwise it falls back to the `latest` tag (the pre-existing
+/// behavior).
 async fn handle_worker_added(
+    iii: &IIIClient,
     cfg: &SkillsConfig,
     cache: &RegisteredWorkersCache,
     in_flight: &Arc<InFlightGuard>,
@@ -296,7 +309,15 @@ async fn handle_worker_added(
         return;
     };
 
-    let spec = VersionSpec::Tag("latest".to_string());
+    // Prefer the version on the event; fall back to one worker::list call.
+    let installed = match event.version.as_deref().filter(|v| !v.is_empty()) {
+        Some(v) => Some(v.to_string()),
+        None => installed_worker_version(iii, &worker).await,
+    };
+    let spec = match installed {
+        Some(v) => VersionSpec::Version(v),
+        None => VersionSpec::Tag("latest".to_string()),
+    };
     match download_worker_skills(cfg, &worker, &spec).await {
         Ok(true) => {
             tracing::info!(worker = %worker, "auto-download complete on worker add");
@@ -340,6 +361,42 @@ async fn reconcile_one(
     }
 }
 
+/// One `worker::list` call, parsed to the worker row array. The single
+/// place that encodes the request shape and response parse.
+async fn worker_list_once(iii: &IIIClient) -> Result<Vec<serde_json::Value>, Error> {
+    let val = iii
+        .trigger(TriggerRequest {
+            function_id: "worker::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await?;
+    Ok(val
+        .get("workers")
+        .and_then(|w| w.as_array())
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// Extract a worker row's non-empty `version` string.
+fn worker_version(row: &serde_json::Value) -> Option<&str> {
+    row.get("version")?.as_str().filter(|v| !v.is_empty())
+}
+
+/// Look up one worker's installed version via a single `worker::list`
+/// call. Returns `None` when the list is unavailable or the worker is
+/// absent / reports no version; callers fall back to the `latest` tag.
+async fn installed_worker_version(iii: &IIIClient, worker: &str) -> Option<String> {
+    worker_list_once(iii)
+        .await
+        .ok()?
+        .iter()
+        .find(|w| w.get("name").and_then(|n| n.as_str()) == Some(worker))
+        .and_then(worker_version)
+        .map(str::to_string)
+}
+
 /// Fetch the installed-worker list, retrying with backoff while the
 /// engine's worker-manager — which registers `worker::list` — is still
 /// coming up. On a cold engine start the worker-manager registers late,
@@ -351,24 +408,10 @@ async fn reconcile_one(
 async fn fetch_worker_list_with_retry(iii: &IIIClient) -> Option<Vec<serde_json::Value>> {
     const MAX_ATTEMPTS: u32 = 6;
     for attempt in 1..=MAX_ATTEMPTS {
-        let result = iii
-            .trigger(TriggerRequest {
-                function_id: "worker::list".to_string(),
-                payload: json!({}),
-                action: None,
-                timeout_ms: Some(10_000),
-            })
-            .await;
+        let result = worker_list_once(iii).await;
 
         match result {
-            Ok(val) => {
-                return Some(
-                    val.get("workers")
-                        .and_then(|w| w.as_array())
-                        .cloned()
-                        .unwrap_or_default(),
-                );
-            }
+            Ok(workers) => return Some(workers),
             Err(e) if attempt == MAX_ATTEMPTS => {
                 tracing::warn!(
                     attempt,
@@ -394,7 +437,9 @@ async fn fetch_worker_list_with_retry(iii: &IIIClient) -> Option<Vec<serde_json:
 /// own skill (`iii`) is present, then fetches the installed worker list
 /// and downloads skills for any worker whose global namespace is
 /// absent/incomplete (no completion marker) AND has no local override
-/// AND name validates.
+/// AND name validates. With `auto_refresh` enabled, a namespace whose
+/// marker records a different version than the installed worker is also
+/// re-downloaded (see `reconcile_decision`).
 fn spawn_boot_reconcile(
     iii: Arc<IIIClient>,
     cfg: SharedConfig,
@@ -419,7 +464,13 @@ fn spawn_boot_reconcile(
         // it directly (registry pull), independent of — and before — the
         // worker list, so it lands even when `worker::list` isn't ready
         // yet on a cold start.
-        if let Some(spec) = reconcile_decision(ENGINE_NAMESPACE, None, &local_root, &global_root) {
+        if let Some(spec) = reconcile_decision(
+            ENGINE_NAMESPACE,
+            None,
+            &local_root,
+            &global_root,
+            cfg.auto_refresh,
+        ) {
             if reconcile_one(&cfg, &in_flight, ENGINE_NAMESPACE, &spec).await {
                 reconciled += 1;
             }
@@ -449,8 +500,14 @@ fn spawn_boot_reconcile(
                 None => continue,
             };
 
-            let version = w.get("version").and_then(|v| v.as_str());
-            let spec = match reconcile_decision(name, version, &local_root, &global_root) {
+            let version = worker_version(w);
+            let spec = match reconcile_decision(
+                name,
+                version,
+                &local_root,
+                &global_root,
+                cfg.auto_refresh,
+            ) {
                 Some(s) => s,
                 None => continue,
             };

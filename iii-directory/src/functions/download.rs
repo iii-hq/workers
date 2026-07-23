@@ -401,12 +401,20 @@ async fn fan_out(
 /// Marker filename written inside a namespace after a complete download.
 const COMPLETION_MARKER: &str = ".iii-skill-complete";
 
-/// Marker payload shape: `{ worker, source, tag_or_version, schema }`.
+/// Marker payload shape: `{ worker, source, tag_or_version, version?, schema }`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct CompletionMarker {
     worker: String,
     source: String,
     tag_or_version: String,
+    /// Resolved semver the namespace was downloaded at, when the download
+    /// was pinned to a concrete version. `None` for tag downloads (e.g.
+    /// `latest`) and for markers written before this field existed; both
+    /// deserialize tolerantly. Invariant: when `Some`, it equals
+    /// `tag_or_version` (kept separate because `tag_or_version` is frozen
+    /// schema and a tag can be semver-shaped).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
     schema: u32,
 }
 
@@ -422,6 +430,10 @@ fn write_completion_marker(
         tag_or_version: match spec {
             VersionSpec::Version(v) => v.clone(),
             VersionSpec::Tag(t) => t.clone(),
+        },
+        version: match spec {
+            VersionSpec::Version(v) => Some(v.clone()),
+            VersionSpec::Tag(_) => None,
         },
         schema: 1,
     };
@@ -576,7 +588,12 @@ use std::path::Path;
 /// Skip guards (in order):
 ///   1. Name doesn't validate → skip.
 ///   2. Local override directory exists → skip.
-///   3. Completion marker already present in global root → skip.
+///   3. Completion marker already present in global root → skip, UNLESS
+///      `auto_refresh` is enabled AND the installed `version` is a
+///      concrete semver that differs from the version recorded in the
+///      marker. A marker without a recorded version (tag download, or
+///      written before the field existed) counts as differing, so one
+///      refresh pass converges it to a versioned marker.
 ///
 /// When not skipped, `version` from the worker info determines the
 /// spec: `Some(v)` (non-empty) → `VersionSpec::Version(v)`, else
@@ -586,6 +603,7 @@ pub fn reconcile_decision(
     version: Option<&str>,
     local_root: &Path,
     global_root: &Path,
+    auto_refresh: bool,
 ) -> Option<VersionSpec> {
     // Guard 1: invalid name.
     if crate::sources::registry::validate_worker_name(name).is_err() {
@@ -595,14 +613,32 @@ pub fn reconcile_decision(
     if local_root.join(name).is_dir() {
         return None;
     }
-    // Guard 3: completion marker already present.
-    if has_completion_marker(global_root, name) {
-        return None;
-    }
-    // Determine version spec.
-    match version {
-        Some(v) if !v.is_empty() => Some(VersionSpec::Version(v.to_string())),
-        _ => Some(VersionSpec::Tag("latest".to_string())),
+    let installed = version.filter(|v| !v.is_empty());
+    // Guard 3: completion marker. One read serves both the presence check
+    // and the recorded version; any read failure other than NotFound still
+    // counts as marker-present.
+    match std::fs::read_to_string(global_root.join(name).join(COMPLETION_MARKER)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(match installed {
+            Some(v) => VersionSpec::Version(v.to_string()),
+            None => VersionSpec::Tag("latest".to_string()),
+        }),
+        marker => {
+            if !auto_refresh {
+                return None;
+            }
+            // Version-aware refresh: only a concrete installed version can
+            // signal drift; without one there is nothing to compare against.
+            // A marker whose version can't be read (tag download, older
+            // release, or parse failure) counts as differing, so one refresh
+            // pass converges it to a versioned marker.
+            let installed = installed?;
+            let recorded = marker
+                .ok()
+                .and_then(|raw| serde_json::from_str::<CompletionMarker>(&raw).ok())
+                .and_then(|m| m.version);
+            (recorded.as_deref() != Some(installed))
+                .then(|| VersionSpec::Version(installed.to_string()))
+        }
     }
 }
 
@@ -999,7 +1035,7 @@ mod tests {
     #[test]
     fn reconcile_skips_invalid_name() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = reconcile_decision("INVALID", None, tmp.path(), tmp.path());
+        let result = reconcile_decision("INVALID", None, tmp.path(), tmp.path(), false);
         assert!(result.is_none(), "invalid name should be skipped");
     }
 
@@ -1011,7 +1047,7 @@ mod tests {
         // Create a local override directory.
         std::fs::create_dir_all(local_root.join("resend")).unwrap();
         std::fs::create_dir_all(&global_root).unwrap();
-        let result = reconcile_decision("resend", None, &local_root, &global_root);
+        let result = reconcile_decision("resend", None, &local_root, &global_root, false);
         assert!(result.is_none(), "local override should skip download");
     }
 
@@ -1025,14 +1061,14 @@ mod tests {
         // Write a completion marker.
         write_completion_marker(&global_root, "resend", &VersionSpec::Tag("latest".into()))
             .unwrap();
-        let result = reconcile_decision("resend", None, &local_root, &global_root);
+        let result = reconcile_decision("resend", None, &local_root, &global_root, false);
         assert!(result.is_none(), "existing marker should skip download");
     }
 
     #[test]
     fn reconcile_returns_version_spec_when_version_present() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = reconcile_decision("resend", Some("2.0.0"), tmp.path(), tmp.path());
+        let result = reconcile_decision("resend", Some("2.0.0"), tmp.path(), tmp.path(), false);
         assert_eq!(
             result,
             Some(VersionSpec::Version("2.0.0".to_string())),
@@ -1043,7 +1079,7 @@ mod tests {
     #[test]
     fn reconcile_returns_latest_tag_when_no_version() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = reconcile_decision("resend", None, tmp.path(), tmp.path());
+        let result = reconcile_decision("resend", None, tmp.path(), tmp.path(), false);
         assert_eq!(
             result,
             Some(VersionSpec::Tag("latest".to_string())),
@@ -1054,11 +1090,94 @@ mod tests {
     #[test]
     fn reconcile_returns_latest_tag_when_empty_version() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = reconcile_decision("resend", Some(""), tmp.path(), tmp.path());
+        let result = reconcile_decision("resend", Some(""), tmp.path(), tmp.path(), false);
         assert_eq!(
             result,
             Some(VersionSpec::Tag("latest".to_string())),
             "empty version string should fall back to latest"
+        );
+    }
+
+    // ── reconcile_decision with auto_refresh ──────────────────────────
+
+    /// Roots with a completion marker for "resend" already written under
+    /// the global root (`write_completion_marker` creates the parents).
+    fn roots_with_marker(
+        tmp: &tempfile::TempDir,
+        spec: &VersionSpec,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let global_root = tmp.path().join("global");
+        write_completion_marker(&global_root, "resend", spec).unwrap();
+        (tmp.path().join("local"), global_root)
+    }
+
+    #[test]
+    fn refresh_redownloads_on_version_drift() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (local, global) = roots_with_marker(&tmp, &VersionSpec::Version("1.0.0".into()));
+        assert_eq!(
+            reconcile_decision("resend", Some("1.2.0"), &local, &global, true),
+            Some(VersionSpec::Version("1.2.0".to_string())),
+            "marker at 1.0.0 with 1.2.0 installed should re-download"
+        );
+    }
+
+    #[test]
+    fn refresh_skips_when_versions_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (local, global) = roots_with_marker(&tmp, &VersionSpec::Version("1.2.0".into()));
+        assert!(
+            reconcile_decision("resend", Some("1.2.0"), &local, &global, true).is_none(),
+            "matching versions should skip"
+        );
+    }
+
+    #[test]
+    fn refresh_converges_tag_marker_to_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (local, global) = roots_with_marker(&tmp, &VersionSpec::Tag("latest".into()));
+        assert_eq!(
+            reconcile_decision("resend", Some("1.2.0"), &local, &global, true),
+            Some(VersionSpec::Version("1.2.0".to_string())),
+            "tag marker has no recorded version; a concrete installed version should re-download"
+        );
+    }
+
+    #[test]
+    fn refresh_skips_without_installed_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (local, global) = roots_with_marker(&tmp, &VersionSpec::Tag("latest".into()));
+        assert!(
+            reconcile_decision("resend", None, &local, &global, true).is_none(),
+            "no installed version means no drift signal; must not re-download"
+        );
+    }
+
+    #[test]
+    fn refresh_disabled_preserves_marker_skip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (local, global) = roots_with_marker(&tmp, &VersionSpec::Version("1.0.0".into()));
+        assert!(
+            reconcile_decision("resend", Some("1.2.0"), &local, &global, false).is_none(),
+            "auto_refresh=false must keep the marker-skip behavior even on drift"
+        );
+    }
+
+    #[test]
+    fn refresh_converges_legacy_marker_without_version_field() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("global");
+        let dest = global.join("resend").join(COMPLETION_MARKER);
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(
+            &dest,
+            r#"{"worker":"resend","source":"registry","tag_or_version":"latest","schema":1}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            reconcile_decision("resend", Some("1.2.0"), tmp.path(), &global, true),
+            Some(VersionSpec::Version("1.2.0".to_string())),
+            "a marker written before the version field existed converges on refresh"
         );
     }
 }

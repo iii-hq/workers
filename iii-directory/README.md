@@ -94,16 +94,39 @@ or use the console Workers tab — all three propagate without a redeploy.
 # TOPOLOGY — changing any of these requires a worker restart.
 skills_folder: ~/.iii/skills          # read/write root for skills + prompts
 local_skills_folder: ./.iii/skills    # project-scoped overrides (whole-namespace local-wins)
-auto_download: true                   # subscribe to worker-add + run the boot reconcile
+auto_download: true                   # subscribe to worker add/update + run the boot reconcile
 
 # TUNABLE — hot-reload live on `configuration:updated`.
 registry_url: https://api.workers.iii.dev   # workers registry base URL
 download_timeout_ms: 60000                   # per git-clone / HTTP request timeout (ms)
 registry_cache_ttl_ms: 60000                 # in-process TTL for registry::workers::* responses
 filter_unregistered: true                    # hide skills whose namespace isn't an installed worker
+auto_refresh: false                          # boot reconcile also re-downloads namespaces whose marker
+                                             # records a different version than the installed worker
 ```
 
 The `skills_folder` is created on first download if it doesn't exist.
+
+### Keeping skills current
+
+Without `auto_refresh`, a namespace is downloaded once (on worker add or the
+first boot reconcile) and then left alone: the completion marker makes every
+later boot reconcile skip it, so skills can drift behind the worker they
+describe as `iii worker update` moves the installed version forward.
+
+Two mechanisms close that gap:
+
+- The worker-event subscription now covers `update` as well as `add`, so
+  `iii worker update <name>` re-downloads that worker's skills immediately,
+  pinned to the newly installed version.
+- With `auto_refresh: true`, the boot reconcile compares the version recorded
+  in each namespace's completion marker against the installed worker version
+  from `worker::list` and re-downloads on mismatch. Markers written by older
+  releases (or by tag downloads) carry no version and are converged to a
+  versioned marker on their first refresh pass.
+
+Re-downloads keep the existing overwrite semantics: files are replaced
+file-by-file and hand-added sibling files in the namespace survive.
 
 ### Zero-config default + seed
 

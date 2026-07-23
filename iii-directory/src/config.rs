@@ -61,6 +61,10 @@ fn default_auto_download() -> bool {
     true
 }
 
+fn default_auto_refresh() -> bool {
+    false
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct SkillsConfig {
     /// Folder that backs every read (`directory::skills::list`,
@@ -113,6 +117,15 @@ pub struct SkillsConfig {
     /// folder.
     #[serde(default = "default_auto_download")]
     pub auto_download: bool,
+
+    /// When `true`, the boot reconcile also re-downloads a namespace whose
+    /// completion marker records a different version than the one currently
+    /// installed, so skills follow `iii worker update` across restarts.
+    /// When `false` (default), a namespace with a completion marker is
+    /// never re-downloaded at boot (the pre-existing behavior). Requires
+    /// `auto_download: true` to have any effect.
+    #[serde(default = "default_auto_refresh")]
+    pub auto_refresh: bool,
 }
 
 impl Default for SkillsConfig {
@@ -125,6 +138,7 @@ impl Default for SkillsConfig {
             registry_cache_ttl_ms: default_registry_cache_ttl_ms(),
             filter_unregistered: default_filter_unregistered(),
             auto_download: default_auto_download(),
+            auto_refresh: default_auto_refresh(),
         }
     }
 }
