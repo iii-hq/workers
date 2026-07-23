@@ -159,7 +159,9 @@ async fn main() -> Result<()> {
         registry_cache.clone(),
     );
     functions::log_fs_health(&cfg_handle.load_full());
-    guidance::setup(&iii);
+    if cfg_handle.load_full().inject_guidance {
+        guidance::setup(&iii);
+    }
 
     // Auto-download: subscribe to worker add events + boot reconcile. Wired
     // from the boot value of `auto_download` (a topology field — changing it

@@ -95,6 +95,8 @@ or use the console Workers tab — all three propagate without a redeploy.
 skills_folder: ~/.iii/skills          # read/write root for skills + prompts
 local_skills_folder: ./.iii/skills    # project-scoped overrides (whole-namespace local-wins)
 auto_download: true                   # subscribe to worker-add + run the boot reconcile
+inject_guidance: false                # bind a pre-generate hook that points agent prompts
+                                      # at directory::skills::index (opt-in)
 
 # TUNABLE — hot-reload live on `configuration:updated`.
 registry_url: https://api.workers.iii.dev   # workers registry base URL
@@ -104,6 +106,16 @@ filter_unregistered: true                    # hide skills whose namespace isn't
 ```
 
 The `skills_folder` is created on first download if it doesn't exist.
+
+### Prompt guidance hook
+
+With `inject_guidance: true`, the worker binds a `harness::hook::pre-generate`
+trigger (`on_error: fail_open`) at boot and appends a short pointer to
+`directory::skills::index` to the agent system prompt while it is connected.
+Pointer only: the index body costs context solely when an agent calls the
+function. The hook is a no-op when the base prompt is empty or already
+mentions the index function. Off by default so a stock deployment leaves
+prompts untouched.
 
 ### Zero-config default + seed
 
