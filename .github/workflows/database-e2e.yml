@@ -43,7 +43,9 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # 22, not 20: pnpm@11 requires the node:sqlite builtin (Node ≥22.5)
+          # for its store, and ci.yml's pnpm jobs already standardize on 22.
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: database/tests/e2e/workers/harness/package-lock.json
 
