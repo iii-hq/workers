@@ -1,5 +1,5 @@
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
-import type { FunctionCallMessage } from '@/types/chat'
+import type { FunctionTriggerMessage } from '@/types/chat'
 import { ShellConfigStatusView } from './ConfigStatusView'
 import { ShellExecBgPreview, ShellExecBgView } from './ExecBgView'
 import { ShellExecPreview, ShellExecView } from './ExecView'
@@ -43,7 +43,7 @@ export function ShellFunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-function tryRender(message: FunctionCallMessage): React.ReactNode | null {
+function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
   if (!isShellFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -101,7 +101,7 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
 }
 
 function tryRenderPreview(
-  message: FunctionCallMessage,
+  message: FunctionTriggerMessage,
 ): React.ReactNode | null {
   if (!isShellFunction(message.functionId)) return null
   const input = unwrapEnvelope(message.input)

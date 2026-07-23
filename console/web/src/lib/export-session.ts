@@ -9,7 +9,7 @@ import { getIiiClient } from '@/lib/iii-client'
 import type {
   Attachment,
   Conversation,
-  FunctionCallMessage,
+  FunctionTriggerMessage,
   Message,
 } from '@/types/chat'
 
@@ -66,8 +66,8 @@ function renderMessage(message: Message): string {
     case 'thought': {
       return `## Thought\n${message.content || '_(empty)_'}`
     }
-    case 'function-call': {
-      return renderFunctionCall(message)
+    case 'function-trigger': {
+      return renderFunctionTrigger(message)
     }
     case 'system': {
       const tone = message.tone ? ` — ${message.tone}` : ''
@@ -77,7 +77,7 @@ function renderMessage(message: Message): string {
   }
 }
 
-function renderFunctionCall(message: FunctionCallMessage): string {
+function renderFunctionTrigger(message: FunctionTriggerMessage): string {
   const status = message.pendingApproval
     ? ' (pending approval)'
     : message.running

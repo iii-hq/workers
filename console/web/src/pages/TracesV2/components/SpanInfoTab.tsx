@@ -1,9 +1,9 @@
 import { Copy } from 'lucide-react'
 import { useMemo } from 'react'
-import { FunctionCallCard } from '@/components/function-call/FunctionCallCard'
+import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
 import { Badge } from '@/components/ui/Badge'
 import { StatusDot } from '@/components/ui/StatusDot'
-import { functionCallFromSpan } from '../lib/functionCallFromSpan'
+import { functionTriggerFromSpan } from '../lib/functionTriggerFromSpan'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import {
   formatDuration,
@@ -43,20 +43,20 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
 
   // Function-invocation spans get the same call card chat renders — the
   // adapter synthesizes its data shape from the span's attributes/events.
-  const functionCall = useMemo(
-    () => functionCallFromSpan(span, spansById),
+  const functionTrigger = useMemo(
+    () => functionTriggerFromSpan(span, spansById),
     [span, spansById],
   )
 
   return (
     <div className="p-5 space-y-5">
-      {/* Function call — read-only card (no approval handlers) */}
-      {functionCall && (
+      {/* Function trigger — read-only card (no approval handlers) */}
+      {functionTrigger && (
         <div>
           <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-2.5">
-            function call
+            function trigger
           </div>
-          <FunctionCallCard message={functionCall} defaultOpen />
+          <FunctionTriggerCard message={functionTrigger} defaultOpen />
         </div>
       )}
 

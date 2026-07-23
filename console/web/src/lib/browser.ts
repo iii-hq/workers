@@ -5,7 +5,7 @@ import { getIiiClient } from '@/lib/iii-client'
  * Control plane for the optional `browser` worker: typed wrappers over its
  * session surface (start / list / stop / navigate / screenshot / act /
  * console / network / pick) plus parsers and formatting helpers for the
- * Browser page, the chat function-call view, and the pick-to-chat flow.
+ * Browser page, the chat function-trigger view, and the pick-to-chat flow.
  * Everything here is gated by the caller on browser presence
  * (`use-browser-status`).
  */
@@ -308,7 +308,7 @@ export function decodeBrowserResult(output: unknown): unknown {
 }
 
 /**
- * Session id carried by a `browser::*` function call, wherever the worker
+ * Session id carried by a `browser::*` function trigger, wherever the worker
  * put it: the result (`sessions::start`), the harness result envelope
  * around it, or the request payload (everything else).
  */
@@ -344,7 +344,7 @@ export function errorMessage(err: unknown): string {
 }
 
 /** 24-hour clock for a console/network entry timestamp. Shared by the live
- * panels and the chat function-call views. */
+ * panels and the chat function-trigger views. */
 export function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString(undefined, { hour12: false })
 }

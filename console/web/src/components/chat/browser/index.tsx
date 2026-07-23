@@ -8,7 +8,7 @@ import {
   parseScreenshotOutput,
 } from '@/lib/browser'
 import { JsonHighlight } from '@/lib/syntax'
-import type { FunctionCallMessage } from '@/types/chat'
+import type { FunctionTriggerMessage } from '@/types/chat'
 import {
   ActView,
   ConsoleReadView,
@@ -70,7 +70,7 @@ function ScreenshotBody({ output }: { output: unknown }) {
  * payload doesn't parse, in which case the caller falls back to the
  * decoded-JSON rendering.
  */
-function renderBody(message: FunctionCallMessage): React.ReactNode | null {
+function renderBody(message: FunctionTriggerMessage): React.ReactNode | null {
   const input = message.input
   const output = message.output
   switch (message.functionId) {
@@ -114,7 +114,7 @@ function renderBody(message: FunctionCallMessage): React.ReactNode | null {
  * back to the decoded result as clamped JSON; the raw json tab keeps the
  * untouched request/response panes.
  */
-function BrowserCallView({ message }: { message: FunctionCallMessage }) {
+function BrowserCallView({ message }: { message: FunctionTriggerMessage }) {
   const sessionId = browserSessionIdFromCall(message.input, message.output)
   const running = !!message.running
 
@@ -163,7 +163,7 @@ function BrowserCallView({ message }: { message: FunctionCallMessage }) {
   )
 }
 
-function tryRender(message: FunctionCallMessage): React.ReactNode | null {
+function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
   if (!isBrowserFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -182,7 +182,7 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
 
 /** `browser::*` calls have no bespoke pending preview. */
 function tryRenderPreview(
-  _message: FunctionCallMessage,
+  _message: FunctionTriggerMessage,
 ): React.ReactNode | null {
   return null
 }

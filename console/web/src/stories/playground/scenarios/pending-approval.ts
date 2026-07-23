@@ -6,7 +6,7 @@ approval was granted, the trigger fired, the downstream function returned
 the expected ack. nothing else to do here.`
 
 /**
- * Function call gated on user approval. The renderer shows approve/deny
+ * Function trigger gated on user approval. The renderer shows approve/deny
  * affordances; this scenario auto-resolves after a short wait so we can
  * see the lifecycle pending → running → done in motion.
  */

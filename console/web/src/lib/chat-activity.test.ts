@@ -48,7 +48,7 @@ describe('getDockSignal', () => {
     const m: Message = {
       id: '1',
       createdAt: 0,
-      role: 'function-call',
+      role: 'function-trigger',
       functionId: 'shell::run',
       input: {},
       running: true,
@@ -92,7 +92,7 @@ describe('getDockSignal', () => {
     const pending: Message = {
       id: '1',
       createdAt: 0,
-      role: 'function-call',
+      role: 'function-trigger',
       functionId: 'shell::write',
       input: {},
       pendingApproval: true,

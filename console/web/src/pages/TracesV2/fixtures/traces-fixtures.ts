@@ -126,8 +126,8 @@ export const TRACE_1_SPANS: StoredSpan[] = [
       ['code.namespace', 'handlers.chat'],
     ],
     // iii-sdk auto-capture: invocation payload + result as span events with
-    // `iii.payload.json` attributes. Feeds the FunctionCallCard in the span
-    // info tab (see lib/functionCallFromSpan.ts).
+    // `iii.payload.json` attributes. Feeds the FunctionTriggerCard in the span
+    // info tab (see lib/functionTriggerFromSpan.ts).
     events: [
       {
         name: 'iii.invocation.payload',

@@ -2,7 +2,7 @@
  * Pure translator from the harness/approval trigger payloads the console binds
  * around a turn to console/web's `StreamEvent` contract.
  *
- * Transcript CONTENT (assistant text, thinking, function-call blocks, function
+ * Transcript CONTENT (assistant text, thinking, function-trigger blocks, function
  * results) renders from `session::message-added` / `session::message-updated`
  * reconciled by the conversations layer — NOT from this translator. These
  * trigger events carry only the ephemeral turn surface:
@@ -60,7 +60,7 @@ export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
           functionId: record.function_id,
           input: record.arguments_excerpt ?? {},
           pendingApproval: true,
-          functionCallId: record.function_call_id,
+          functionTriggerId: record.function_call_id,
           sessionId: record.session_id,
           ...(accessRequest
             ? {
@@ -82,7 +82,7 @@ export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
       return [
         {
           kind: 'fcall-approval-cleared',
-          functionCallId: event.event.function_call_id,
+          functionTriggerId: event.event.function_call_id,
           running: event.event.outcome === 'allow',
         },
       ]

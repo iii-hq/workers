@@ -1,4 +1,4 @@
-import { FunctionCallCard } from '@/components/function-call/FunctionCallCard'
+import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { Caret } from '@/components/ui/Caret'
 import { Prompt } from '@/components/ui/Prompt'
@@ -20,17 +20,17 @@ interface MessageProps {
   message: MessageType
   onResolveApproval?: (
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     decision: 'allow' | 'deny',
   ) => Promise<void>
   onAlwaysAllow?: (
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     functionId: string,
   ) => Promise<void>
   onResolveFilesystemAccess?: (
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     action: FilesystemAccessAction,
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
@@ -64,29 +64,30 @@ export function Message({
       return <AssistantMessage message={message} copyText={copyText} />
     case 'thought':
       return <ThoughtMessage message={message} />
-    case 'function-call': {
+    case 'function-trigger': {
       const sessionId = message.sessionId
-      const functionCallId = message.functionCallId
+      const functionTriggerId = message.functionTriggerId
       let onApprove: (() => Promise<void>) | undefined
       let onDeny: (() => Promise<void>) | undefined
       let onAlwaysAllowHandler: (() => Promise<void>) | undefined
       let onResolveFilesystemAccessHandler:
         | ((action: FilesystemAccessAction) => Promise<void>)
         | undefined
-      if (onResolveApproval && sessionId && functionCallId) {
-        onApprove = () => onResolveApproval(sessionId, functionCallId, 'allow')
-        onDeny = () => onResolveApproval(sessionId, functionCallId, 'deny')
+      if (onResolveApproval && sessionId && functionTriggerId) {
+        onApprove = () =>
+          onResolveApproval(sessionId, functionTriggerId, 'allow')
+        onDeny = () => onResolveApproval(sessionId, functionTriggerId, 'deny')
       }
-      if (onAlwaysAllow && sessionId && functionCallId) {
+      if (onAlwaysAllow && sessionId && functionTriggerId) {
         onAlwaysAllowHandler = () =>
-          onAlwaysAllow(sessionId, functionCallId, message.functionId)
+          onAlwaysAllow(sessionId, functionTriggerId, message.functionId)
       }
-      if (onResolveFilesystemAccess && sessionId && functionCallId) {
+      if (onResolveFilesystemAccess && sessionId && functionTriggerId) {
         onResolveFilesystemAccessHandler = (action) =>
-          onResolveFilesystemAccess(sessionId, functionCallId, action)
+          onResolveFilesystemAccess(sessionId, functionTriggerId, action)
       }
       return (
-        <FunctionCallCard
+        <FunctionTriggerCard
           message={message}
           onApprove={onApprove}
           onDeny={onDeny}
@@ -271,7 +272,10 @@ function SpawnTaskMessage({ message }: { message: UserMessageType }) {
 
 function UserMessage({ message }: { message: UserMessageType }) {
   return (
-    <article className="group flex flex-col items-end gap-2">
+    <article
+      className="group flex flex-col items-end gap-2"
+      data-message-role="user"
+    >
       <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2">
         {message.content ? (
           <CopyMessageButton
@@ -313,7 +317,10 @@ function AssistantMessage({
   // payload fall back to the prose gate.
   const copySource = copyText ?? (message.content || undefined)
   return (
-    <article className="group flex flex-col gap-2">
+    <article
+      className="group flex flex-col gap-2"
+      data-message-role="assistant"
+    >
       <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2 flex-wrap">
         <Prompt symbol=">">assistant</Prompt>
         {message.model ? (

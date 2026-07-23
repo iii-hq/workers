@@ -1,0 +1,226 @@
+name: Cache warm
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: cache-maintenance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cleanup-pr:
+    name: Delete closed PR caches
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete caches scoped to the closed PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          ref="refs/pull/$PR_NUMBER/merge"
+          mapfile -t ids < <(
+            gh api --method GET "repos/$REPOSITORY/actions/caches" \
+              -f ref="$ref" -F per_page=100 --paginate \
+              --jq '.actions_caches[].id'
+          )
+          for id in "${ids[@]}"; do
+            gh api --method DELETE "repos/$REPOSITORY/actions/caches/$id"
+          done
+          {
+            echo "### Closed PR cache cleanup"
+            echo
+            echo "Deleted ${#ids[@]} cache(s) for $ref."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  prune-closed-prs:
+    name: Prune caches from previously closed PRs
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete caches whose pull request is closed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mapfile -t refs < <(
+            gh api --method GET "repos/$REPOSITORY/actions/caches" \
+              -F per_page=100 --paginate \
+              --jq '.actions_caches[].ref | select(startswith("refs/pull/"))' \
+              | sort -u
+          )
+          deleted=0
+          for ref in "${refs[@]}"; do
+            pr=${ref#refs/pull/}
+            pr=${pr%/merge}
+            state=$(gh api "repos/$REPOSITORY/pulls/$pr" --jq '.state' 2>/dev/null || true)
+            [[ "$state" == "closed" ]] || continue
+            mapfile -t ids < <(
+              gh api --method GET "repos/$REPOSITORY/actions/caches" \
+                -f ref="$ref" -F per_page=100 --paginate \
+                --jq '.actions_caches[].id'
+            )
+            for id in "${ids[@]}"; do
+              gh api --method DELETE "repos/$REPOSITORY/actions/caches/$id"
+              ((deleted += 1))
+            done
+          done
+          echo "Deleted $deleted cache(s) belonging to previously closed PRs." \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  discover:
+    name: Discover caches to warm
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.bucket.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select comparison and forced workers
+        id: refs
+        env:
+          BEFORE: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            base="$BEFORE"
+            if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+              base=HEAD~1
+            fi
+            force_harness=false
+          else
+            base=HEAD
+            force_harness=true
+          fi
+          {
+            echo "base=$base"
+            echo "force_harness=$force_harness"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Discover worker matrix
+        id: bucket
+        env:
+          BASE: ${{ steps.refs.outputs.base }}
+          FORCE_HARNESS: ${{ steps.refs.outputs.force_harness }}
+        run: |
+          set -euo pipefail
+          args=(--base "$BASE" --head HEAD)
+          if [[ "$FORCE_HARNESS" == "true" ]]; then
+            args+=(--force-worker harness)
+          fi
+          python3 .github/scripts/discover_changed_workers.py "${args[@]}"
+
+  warm-rust:
+    name: "${{ matrix.worker }}: warm Rust cache"
+    needs: discover
+    if: needs.discover.outputs.rust != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: ${{ fromJSON(needs.discover.outputs.rust) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.worker }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Restore and save worker Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: worker-${{ matrix.worker }}
+          save-if: true
+          cache-on-failure: false
+          workspaces: ${{ matrix.worker }} -> target
+
+      - name: Setup pnpm for bundled web
+        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node for bundled web
+        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ${{ matrix.worker }}/web/pnpm-lock.yaml
+
+      - name: Pre-build SPA bundle
+        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
+        working-directory: ${{ matrix.worker }}/web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Build default worker binary
+        run: cargo build
+
+      - name: Compile clippy targets
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Compile tests
+        run: cargo test --all-features --no-run
+
+  harness-integration:
+    name: Warm and verify integration stack
+    if: github.event_name != 'pull_request_target'
+    uses: ./.github/workflows/_harness-integration.yml
+    with:
+      save-cache: true
+
+  cache-budget:
+    name: Report cache budget
+    needs: [warm-rust, harness-integration, prune-closed-prs]
+    if: always() && github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report active cache usage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          usage=$(gh api "repos/$REPOSITORY/actions/cache/usage")
+          bytes=$(jq -r '.active_caches_size_in_bytes' <<< "$usage")
+          count=$(jq -r '.active_caches_count' <<< "$usage")
+          gib=$(awk -v bytes="$bytes" 'BEGIN { printf "%.2f", bytes / 1073741824 }')
+          {
+            echo "### Actions cache budget"
+            echo
+            echo "- Active caches: $count"
+            echo "- Active size: $gib GiB"
+            echo "- Target: at most 8 GiB"
+            echo "- Hard budget: 10 GiB"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if (( bytes > 10737418240 )); then
+            echo "::error::Actions cache usage is above the 10 GiB budget ($gib GiB)"
+            exit 1
+          elif (( bytes > 8589934592 )); then
+            echo "::warning::Actions cache usage is above the 8 GiB target ($gib GiB)"
+          fi

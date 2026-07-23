@@ -1,0 +1,26 @@
+[workspace]
+
+[package]
+name = "iii-console-ui"
+version = "0.1.0"
+edition = "2024"
+description = "Worker-side helper for the injectable console UI — registers the content function, one console:script/console:style trigger per asset, and the dev-loop hot-reload watcher"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+# Deliberately unpublished: workers in this repo link it by path
+# (iii-console-ui = { path = "../crates/console-ui" }) so it versions with
+# the console worker here, not with the SDK's crates.io release train.
+publish = false
+
+[dependencies]
+# Same exact pin the workers carry — path-linking this crate must never be
+# what drags a worker onto a different SDK build.
+iii-sdk = "=0.21.6"
+tokio = { version = "1", features = ["rt", "sync", "time", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

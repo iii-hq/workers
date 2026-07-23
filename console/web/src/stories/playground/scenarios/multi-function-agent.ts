@@ -22,7 +22,7 @@ list -> info(worker-7) -> echo(worker-7, "ping")
 ready for the next instruction.`
 
 /**
- * Three sequential function calls back-to-back. Surfaces any pointer-reset
+ * Three sequential function triggers back-to-back. Surfaces any pointer-reset
  * bug in ChatView (the consumer must clear its fcallId after each fcall-end
  * so the next fcall-start gets a fresh slot).
  */

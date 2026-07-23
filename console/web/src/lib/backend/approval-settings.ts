@@ -1,7 +1,7 @@
 /**
  * RPC adapters for the per-session approval settings (`approval::*`
  * functions on the standalone approval-gate worker). These are
- * user-initiated RPCs only — agent function calls cannot reach them
+ * user-initiated RPCs only — agent function triggers cannot reach them
  * (the gate hard-denies approval::* function ids).
  */
 

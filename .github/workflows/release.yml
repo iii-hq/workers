@@ -32,6 +32,7 @@ on:
       - 'opencode/v*'
       - 'pi/v*'
       - 'provider-anthropic/v*'
+      - 'provider-claude-code/v*'
       - 'provider-kimi/v*'
       - 'provider-llamacpp/v*'
       - 'provider-openai/v*'
@@ -120,9 +121,9 @@ jobs:
         env:
           WORKER: ${{ steps.meta.outputs.worker }}
         run: |
-          if [[ -f "$WORKER/web/package.json" ]]; then
+          if [[ -f "$WORKER/web/package.json" || -f "$WORKER/ui/package.json" ]]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::$WORKER has web/package.json; will pre-build SPA bundle"
+            echo "::notice::$WORKER has a web/ or ui/ frontend; will pre-build its bundle"
           else
             echo "needed=false" >> "$GITHUB_OUTPUT"
           fi

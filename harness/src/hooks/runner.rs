@@ -29,7 +29,9 @@ struct HookMutations {
 enum HookOutcome {
     Continue(HookMutations),
     Deny(String),
-    Hold,
+    // A holding hook may mutate as it holds (approval-gate: park the call AND
+    // stamp validated context onto it) — its mutations must not be dropped.
+    Hold(HookMutations),
 }
 
 /// Outcome of the `pre_generate` chain.
@@ -51,6 +53,9 @@ pub enum PreTriggerOutcome {
     Deny(String),
     Hold {
         held_by: String,
+        /// Arguments as mutated by the chain up to (not including) the holder,
+        /// checkpointed so a release executes the mutated call (issue #506).
+        arguments: Value,
         annotations: Map<String, Value>,
     },
 }
@@ -88,7 +93,7 @@ impl HookRegistry {
             match self.invoke(&binding, input).await {
                 HookOutcome::Continue(_) => {}
                 HookOutcome::Deny(reason) => return Err(reason),
-                HookOutcome::Hold => {}
+                HookOutcome::Hold(_) => {}
             }
         }
         Ok(())
@@ -125,7 +130,7 @@ impl HookRegistry {
                     merge(&mut annotations, m.annotations);
                 }
                 HookOutcome::Deny(reason) => return PreGenerateOutcome::Deny(reason),
-                HookOutcome::Hold => {}
+                HookOutcome::Hold(_) => {}
             }
         }
         PreGenerateOutcome::Continue {
@@ -145,7 +150,10 @@ impl HookRegistry {
     }
 
     /// `pre_trigger`: deny / hold / rewrite arguments. Only bindings whose
-    /// `functions` globs match the target are consulted.
+    /// `functions` globs match the target are consulted. `resume_after` is
+    /// the hook-held release path (harness.md § `function::resolve`): the
+    /// chain resumes AFTER the named holder (see [`chain_slice`]), over the
+    /// checkpointed arguments it already mutated.
     pub async fn run_pre_trigger(
         &self,
         record: &TurnRecord,
@@ -153,13 +161,11 @@ impl HookRegistry {
         call_id: &str,
         function_id: &str,
         arguments: &Value,
+        resume_after: Option<&str>,
     ) -> PreTriggerOutcome {
         let mut args = arguments.clone();
         let mut annotations = Map::new();
-        for binding in self.pre_trigger.ordered() {
-            if !functions_match(&binding, function_id) {
-                continue;
-            }
+        for binding in chain_slice(self.pre_trigger.ordered(), function_id, resume_after) {
             let mut input = self.envelope(HookPoint::PreTrigger, record, step);
             input["call"] = serde_json::json!({
                 "id": call_id,
@@ -174,11 +180,18 @@ impl HookRegistry {
                     merge(&mut annotations, m.annotations);
                 }
                 HookOutcome::Deny(reason) => return PreTriggerOutcome::Deny(reason),
-                HookOutcome::Hold => {
+                HookOutcome::Hold(m) => {
+                    // Apply the holding hook's own rewrite before parking, so
+                    // the release runs with the full chain's effective args.
+                    if let Some(a) = m.arguments {
+                        args = a;
+                    }
+                    merge(&mut annotations, m.annotations);
                     return PreTriggerOutcome::Hold {
                         held_by: binding.function_id.clone(),
+                        arguments: args,
                         annotations,
-                    }
+                    };
                 }
             }
         }
@@ -233,7 +246,7 @@ impl HookRegistry {
                 // Deny is not valid at post_trigger; fail-open like existing
                 // post-trigger error handling.
                 HookOutcome::Deny(_) => {}
-                HookOutcome::Hold => {
+                HookOutcome::Hold(_) => {
                     return PostTriggerOutcome::Hold {
                         held_by: binding.function_id.clone(),
                         annotations,
@@ -293,35 +306,63 @@ fn parse_output(value: Value) -> HookOutcome {
                 .unwrap_or("denied by hook")
                 .to_string(),
         ),
-        Some("hold") => HookOutcome::Hold,
-        _ => {
-            let mut muts = HookMutations::default();
-            if let Some(m) = value.get("mutations") {
-                muts.system_prompt = m
-                    .get("system_prompt")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                if let Some(arr) = m.get("append_messages").and_then(Value::as_array) {
-                    muts.append_messages = arr.clone();
-                }
-                muts.arguments = m.get("arguments").cloned();
-                if let Some(c) = m.get("content") {
-                    muts.content = serde_json::from_value(c.clone()).ok();
-                }
-                muts.details = m.get("details").cloned();
-                muts.is_error = m.get("is_error").and_then(Value::as_bool);
-            }
-            if let Some(Value::Object(ann)) = value.get("annotations") {
-                muts.annotations = ann.clone();
-            }
-            HookOutcome::Continue(muts)
-        }
+        Some("hold") => HookOutcome::Hold(parse_mutations(&value)),
+        _ => HookOutcome::Continue(parse_mutations(&value)),
     }
+}
+
+/// Parse a hook's `mutations`/`annotations` — shared by the continue and hold
+/// branches so a holding hook's rewrites are honored, not dropped.
+fn parse_mutations(value: &Value) -> HookMutations {
+    let mut muts = HookMutations::default();
+    if let Some(m) = value.get("mutations") {
+        muts.system_prompt = m
+            .get("system_prompt")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if let Some(arr) = m.get("append_messages").and_then(Value::as_array) {
+            muts.append_messages = arr.clone();
+        }
+        muts.arguments = m.get("arguments").cloned();
+        if let Some(c) = m.get("content") {
+            muts.content = serde_json::from_value(c.clone()).ok();
+        }
+        muts.details = m.get("details").cloned();
+        muts.is_error = m.get("is_error").and_then(Value::as_bool);
+    }
+    if let Some(Value::Object(ann)) = value.get("annotations") {
+        muts.annotations = ann.clone();
+    }
+    muts
 }
 
 fn merge(into: &mut Map<String, Value>, from: Map<String, Value>) {
     for (k, v) in from {
         into.insert(k, v);
+    }
+}
+
+/// The bindings a `pre_trigger` run consults for this target: the glob-matched
+/// chain, cut down to everything AFTER `resume_after` when resuming a released
+/// hold — hooks up to and including the holder already ran and mutated the
+/// checkpointed arguments, so re-running them would double-apply mutations
+/// (and re-hold). If the holder is no longer bound, nothing runs: the chain
+/// shape changed under the hold and the safe resume point is unknowable.
+fn chain_slice(
+    bindings: Vec<HookBinding>,
+    function_id: &str,
+    resume_after: Option<&str>,
+) -> Vec<HookBinding> {
+    let mut matched: Vec<HookBinding> = bindings
+        .into_iter()
+        .filter(|b| functions_match(b, function_id))
+        .collect();
+    let Some(holder) = resume_after else {
+        return matched;
+    };
+    match matched.iter().position(|b| b.function_id == holder) {
+        Some(i) => matched.split_off(i + 1),
+        None => Vec::new(),
     }
 }
 
@@ -370,14 +411,30 @@ mod tests {
             _ => panic!("expected deny"),
         }
         match parse_output(json!({ "decision": "hold" })) {
-            HookOutcome::Hold => {}
+            HookOutcome::Hold(m) => assert!(m.arguments.is_none()),
             _ => panic!("expected hold"),
         }
         // Legacy hooks may still send pending_timeout_ms; it is ignored.
         assert!(matches!(
             parse_output(json!({ "decision": "hold", "pending_timeout_ms": 1000 })),
-            HookOutcome::Hold
+            HookOutcome::Hold(_)
         ));
+    }
+
+    #[test]
+    fn hold_keeps_mutations_and_annotations() {
+        let out = parse_output(json!({
+            "decision": "hold",
+            "mutations": { "arguments": { "value": "expected+approved" } },
+            "annotations": { "approved_by": "gate" }
+        }));
+        match out {
+            HookOutcome::Hold(m) => {
+                assert_eq!(m.arguments, Some(json!({ "value": "expected+approved" })));
+                assert_eq!(m.annotations.get("approved_by"), Some(&json!("gate")));
+            }
+            _ => panic!("expected hold"),
+        }
     }
 
     #[test]
@@ -400,6 +457,61 @@ mod tests {
             }
             _ => panic!("expected continue"),
         }
+    }
+
+    fn binding(function_id: &str, priority: i64) -> HookBinding {
+        HookBinding {
+            function_id: function_id.into(),
+            functions: Some(vec!["shell::*".into()]),
+            priority,
+            timeout_ms: 5000,
+            fail_closed: true,
+        }
+    }
+
+    fn ids(bindings: &[HookBinding]) -> Vec<&str> {
+        bindings.iter().map(|b| b.function_id.as_str()).collect()
+    }
+
+    #[test]
+    fn chain_slice_without_resume_runs_the_matched_chain() {
+        let chain = vec![binding("mutate", 10), binding("gate", 20)];
+        assert_eq!(
+            ids(&chain_slice(chain, "shell::run", None)),
+            vec!["mutate", "gate"]
+        );
+    }
+
+    #[test]
+    fn chain_slice_resumes_after_the_holder() {
+        let chain = vec![
+            binding("mutate", 10),
+            binding("gate", 20),
+            binding("audit", 30),
+        ];
+        // The mutator and the holder already ran — only `audit` remains.
+        assert_eq!(
+            ids(&chain_slice(chain.clone(), "shell::run", Some("gate"))),
+            vec!["audit"]
+        );
+        // Holder last in the chain → nothing remains.
+        assert!(chain_slice(chain, "shell::run", Some("audit")).is_empty());
+    }
+
+    #[test]
+    fn chain_slice_runs_nothing_when_the_holder_was_unbound() {
+        let chain = vec![binding("mutate", 10), binding("audit", 30)];
+        assert!(chain_slice(chain, "shell::run", Some("gone")).is_empty());
+    }
+
+    #[test]
+    fn chain_slice_positions_by_the_glob_matched_chain() {
+        // A holder bound to a different target never matches; the released
+        // call's matched chain decides the resume point.
+        let mut other = binding("gate", 20);
+        other.functions = Some(vec!["fs::*".into()]);
+        let chain = vec![binding("mutate", 10), other, binding("audit", 30)];
+        assert!(chain_slice(chain, "shell::run", Some("gate")).is_empty());
     }
 
     #[test]

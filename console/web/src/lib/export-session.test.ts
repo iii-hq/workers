@@ -8,7 +8,7 @@ vi.mock('@/lib/iii-client', () => ({
 import type {
   AssistantMessage,
   Conversation,
-  FunctionCallMessage,
+  FunctionTriggerMessage,
   Message,
   SystemMessage,
   ThoughtMessage,
@@ -67,16 +67,16 @@ describe('conversationToMarkdown', () => {
       durationMs: 100,
       createdAt: 3,
     }
-    const fcallNoOutput: FunctionCallMessage = {
+    const fcallNoOutput: FunctionTriggerMessage = {
       id: 'f1',
-      role: 'function-call',
+      role: 'function-trigger',
       functionId: 'search',
       input: { query: 'foo' },
       createdAt: 4,
     }
-    const fcallWithOutput: FunctionCallMessage = {
+    const fcallWithOutput: FunctionTriggerMessage = {
       id: 'f2',
-      role: 'function-call',
+      role: 'function-trigger',
       functionId: 'search',
       input: { query: 'bar' },
       output: { hits: 3 },
@@ -113,9 +113,9 @@ describe('conversationToMarkdown', () => {
   })
 
   it('omits the Output block when output is undefined', () => {
-    const fcall: FunctionCallMessage = {
+    const fcall: FunctionTriggerMessage = {
       id: 'f1',
-      role: 'function-call',
+      role: 'function-trigger',
       functionId: 'search',
       input: { q: 'x' },
       createdAt: 1,
@@ -152,9 +152,9 @@ describe('conversationToMarkdown', () => {
   it('falls back to String(value) for non-serialisable tool input', () => {
     const circular: { self?: unknown } = {}
     circular.self = circular
-    const fcall: FunctionCallMessage = {
+    const fcall: FunctionTriggerMessage = {
       id: 'f1',
-      role: 'function-call',
+      role: 'function-trigger',
       functionId: 'broken',
       input: circular,
       createdAt: 1,
@@ -195,9 +195,9 @@ describe('conversationToMarkdown', () => {
   })
 
   it('annotates a pending-approval trigger in the heading', () => {
-    const fcall: FunctionCallMessage = {
+    const fcall: FunctionTriggerMessage = {
       id: 'f1',
-      role: 'function-call',
+      role: 'function-trigger',
       functionId: 'delete_file',
       input: { path: '/tmp/x' },
       pendingApproval: true,

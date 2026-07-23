@@ -6,13 +6,19 @@
 //! between [`axum::extract::ws::Message`] and
 //! [`tokio_tungstenite::tungstenite::Message`].
 //!
-//! The proxy is intentionally dumb — no buffering, no auth — with ONE
-//! exception: browser→engine `registerfunction` messages get
-//! `metadata.internal = true` stamped on (see
-//! [`stamp_internal_registration`]). Everything a console page registers
-//! is a live-update delivery target for that page, never a discoverable
-//! API, and stamping here (not just in the SPA) means stale/cached
-//! bundles can't pollute `engine::functions::list` either.
+//! The proxy is intentionally dumb — no buffering, no auth — with TWO
+//! exceptions on the browser→engine leg:
+//!
+//! 1. `registerfunction` messages get `metadata.internal = true` stamped
+//!    on (see [`stamp_internal_registration`]). Everything a console page
+//!    registers is a live-update delivery target for that page, never a
+//!    discoverable API, and stamping here (not just in the SPA) means
+//!    stale/cached bundles can't pollute `engine::functions::list` either.
+//! 2. `registertriggertype` frames are dropped (see
+//!    [`is_trigger_type_registration`]). Trigger-type ownership is
+//!    last-writer-wins engine-wide — a hostile page could re-register
+//!    `console:script` and intercept every UI-asset registration. The SPA
+//!    never sends this frame, so dropping it breaks nothing.
 
 use std::sync::Arc;
 
@@ -87,10 +93,19 @@ async fn handle_ws(client: WebSocket, engine_url: Arc<String>) {
             };
             let is_close = matches!(msg, AxumMessage::Close(_));
             let msg = match msg {
-                AxumMessage::Text(t) => match stamp_internal_registration(&t) {
-                    Some(stamped) => AxumMessage::Text(stamped),
-                    None => AxumMessage::Text(t),
-                },
+                AxumMessage::Text(t) => {
+                    if is_trigger_type_registration(&t) {
+                        tracing::warn!(
+                            "dropped browser-originated registertriggertype frame \
+                             (trigger-type ownership is not available through the /ws proxy)"
+                        );
+                        continue;
+                    }
+                    match stamp_internal_registration(&t) {
+                        Some(stamped) => AxumMessage::Text(stamped),
+                        None => AxumMessage::Text(t),
+                    }
+                }
                 other => other,
             };
             if let Some(out) = axum_to_tungstenite(msg) {
@@ -133,6 +148,19 @@ async fn handle_ws(client: WebSocket, engine_url: Arc<String>) {
         _ = client_to_engine => {}
         _ = engine_to_client => {}
     }
+}
+
+/// `true` if `text` is a wire `registertriggertype` message — the one
+/// frame the proxy refuses to forward (tab-originated trigger-type
+/// hijack; worker-originated hijack remains an RBAC concern).
+pub(crate) fn is_trigger_type_registration(text: &str) -> bool {
+    if !text.contains("\"registertriggertype\"") {
+        return false;
+    }
+    let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    msg.get("type").and_then(|t| t.as_str()) == Some("registertriggertype")
 }
 
 /// If `text` is a wire `registerfunction` message, return a copy with
@@ -281,6 +309,18 @@ mod tests {
             r#"{"type":"registerfunction","id":"x","metadata":"weird"}"#
         )
         .is_none());
+    }
+
+    #[test]
+    fn trigger_type_registration_is_detected() {
+        assert!(is_trigger_type_registration(
+            r#"{"type":"registertriggertype","id":"console:script","description":"x"}"#
+        ));
+        // Payload mentions it, but the frame is a different type — forward.
+        assert!(!is_trigger_type_registration(
+            r#"{"type":"invokefunction","payload":"\"registertriggertype\""}"#
+        ));
+        assert!(!is_trigger_type_registration("registertriggertype{"));
     }
 
     #[test]

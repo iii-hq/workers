@@ -1,8 +1,10 @@
 [workspace]
+members = ["tests/e2e"]
+resolver = "2"
 
 [package]
 name = "harness"
-version = "1.5.2"
+version = "1.5.3"
 edition = "2021"
 publish = false
 
@@ -44,3 +46,8 @@ jsonschema = { version = "0.18", default-features = false }
 serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+
+# The E2E runner digests every spawned binary before boot. Optimizing sha2 in
+# development avoids a long stall when hashing large debug worker binaries.
+[profile.dev.package.sha2]
+opt-level = 3

@@ -599,7 +599,10 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
     selectedTraceId !== null && paged.some((t) => t.traceId === selectedTraceId)
 
   return (
-    <section className="flex-1 flex flex-col overflow-hidden">
+    <section
+      aria-label="traces"
+      className="flex-1 flex flex-col overflow-hidden"
+    >
       <TimelineStrip
         spans={allSpans}
         spanFilter={spanFilter}

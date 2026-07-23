@@ -1,0 +1,228 @@
+/*
+ * The state worker's console stylesheet, shipped as its own `console:style`
+ * asset (state/styles.css) — the console mounts it as a <link> in
+ * document.head and link-swaps it on hot reload, styles-before-scripts on
+ * boot. Every rule is scoped under `[data-iii-ui="state"]`, the wrapper the
+ * console mounts around every injected render — page, function-trigger
+ * message, and config form alike. Styling uses the console's design tokens,
+ * so light/dark theming is free.
+ */
+
+[data-iii-ui="state"] .state-ui {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink);
+}
+[data-iii-ui="state"] .state-ui-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  min-height: 32px;
+}
+[data-iii-ui="state"] .state-ui-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--color-ink-faint);
+  font-weight: 600;
+}
+[data-iii-ui="state"] .state-ui-live {
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="state"] .state-ui-live .dot {
+  color: var(--color-ok);
+  animation: state-ui-live-pulse 2.4s ease-in-out infinite;
+}
+@keyframes state-ui-live-pulse {
+  0%, 100% { opacity: 1 }
+  50% { opacity: 0.35 }
+}
+[data-iii-ui="state"] .state-ui-crumb {
+  font-size: 13px;
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="state"] .state-ui-crumb .sep { color: var(--color-ink-ghost); }
+[data-iii-ui="state"] .state-ui-list {
+  border: 1px solid var(--color-rule);
+  background: var(--color-bg);
+}
+[data-iii-ui="state"] .state-ui-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  font-size: 13px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--color-rule-2);
+  color: var(--color-ink);
+  cursor: pointer;
+  font-family: inherit;
+}
+[data-iii-ui="state"] .state-ui-row:last-child { border-bottom: 0; }
+[data-iii-ui="state"] .state-ui-row:hover { background: var(--color-paper-2); }
+[data-iii-ui="state"] .state-ui-row .arrow { color: var(--color-ink-ghost); }
+[data-iii-ui="state"] .state-ui-row.flash {
+  animation: state-ui-flash 1.4s ease-out;
+}
+@keyframes state-ui-flash {
+  from { background: color-mix(in srgb, var(--color-accent) 16%, transparent) }
+  to { background: transparent }
+}
+[data-iii-ui="state"] .state-ui-note {
+  padding: 16px 12px;
+  font-size: 12.5px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="state"] .state-ui-error {
+  border: 1px solid var(--color-alert);
+  color: var(--color-alert);
+  padding: 10px 12px;
+  font-size: 12.5px;
+}
+[data-iii-ui="state"] .state-ui-editor {
+  width: 100%;
+  min-height: 320px;
+  border: 1px solid var(--color-rule);
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.55;
+  padding: 12px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+[data-iii-ui="state"] .state-ui-editor:focus {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -1px;
+}
+[data-iii-ui="state"] .state-ui-editor-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="state"] .state-ui-saved { color: var(--color-ok); }
+[data-iii-ui="state"] .state-ui-invalid { color: var(--color-alert); }
+[data-iii-ui="state"] .state-ui-dirty { color: var(--color-ink-faint); }
+[data-iii-ui="state"] .state-ui-server { color: var(--color-warn); }
+[data-iii-ui="state"] .state-ui-linklike {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--color-accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* --- function-trigger message (chat / traces card) ------------------- */
+[data-iii-ui="state"] .state-ui-msg {
+  border-top: 1px solid var(--color-rule-2);
+  background: var(--color-bg);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+[data-iii-ui="state"] .state-ui-msg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="state"] .state-ui-pill {
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 1px 8px;
+}
+[data-iii-ui="state"] .state-ui-pill.quiet {
+  border-color: var(--color-rule);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="state"] .state-ui-chip {
+  border: 1px solid var(--color-rule);
+  color: var(--color-ink);
+  font-size: 11.5px;
+  padding: 1px 8px;
+}
+[data-iii-ui="state"] .state-ui-chip .k { color: var(--color-ink-ghost); }
+[data-iii-ui="state"] .state-ui-msg-tag {
+  margin-left: auto;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="state"] .state-ui-msg-note {
+  padding: 0 12px 10px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="state"] .state-ui-msg-note.pulse { animation: state-ui-live-pulse 1.6s ease-in-out infinite; }
+
+/* --- configuration form ---------------------------------------------- */
+[data-iii-ui="state"] .state-ui-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink);
+}
+[data-iii-ui="state"] .state-ui-form-caption {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="state"] .state-ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui="state"] .state-ui-field > label {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="state"] .state-ui-field .hint {
+  font-size: 11.5px;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="state"] .state-ui-input,
+[data-iii-ui="state"] .state-ui-select {
+  border: 1px solid var(--color-rule);
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 7px 10px;
+  max-width: 420px;
+}
+[data-iii-ui="state"] .state-ui-input:focus,
+[data-iii-ui="state"] .state-ui-select:focus {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -1px;
+}
+[data-iii-ui="state"] .state-ui-checkrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--color-ink);
+}
+[data-iii-ui="state"] .state-ui-checkrow input { accent-color: var(--color-accent); }

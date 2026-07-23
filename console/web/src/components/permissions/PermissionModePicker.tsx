@@ -46,12 +46,14 @@ export function PermissionModePicker({
           {
             value: 'manual',
             label: 'manual',
-            title: 'manual: pause every function call until you approve or deny it',
+            title:
+              'manual: pause every function trigger until you approve or deny it',
           },
           {
             value: 'auto',
             label: 'auto',
-            title: 'auto: use configured safe functions automatically; ask for the rest',
+            title:
+              'auto: use configured safe functions automatically; ask for the rest',
           },
           {
             value: 'full',

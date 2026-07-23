@@ -1,4 +1,4 @@
-import type { FunctionCallMessage } from '@/types/chat'
+import type { FunctionTriggerMessage } from '@/types/chat'
 import { CreateView } from './CreateView'
 import { SandboxErrorView } from './ErrorView'
 import { ExecPreview, ExecView } from './ExecView'
@@ -58,7 +58,7 @@ export function SandboxFunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-function tryRender(message: FunctionCallMessage): React.ReactNode | null {
+function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
   if (!isSandboxFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -114,7 +114,7 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
 }
 
 function tryRenderPreview(
-  message: FunctionCallMessage,
+  message: FunctionTriggerMessage,
 ): React.ReactNode | null {
   if (!isSandboxFunction(message.functionId)) return null
   const input = unwrapEnvelope(message.input)
