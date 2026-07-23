@@ -323,6 +323,13 @@ pub struct ReactSpec {
     /// carries no session id (state/cron/stream).
     #[serde(default, rename = "__owner_session_id")]
     pub owner_session_id: Option<String>,
+    /// Stamped by the interceptor at registration (never caller-supplied): the
+    /// registering turn's dispatch policy. A reaction with no
+    /// `options.functions` inherits it; explicit options are subset against
+    /// it (narrow, never escalate) — the in-turn child rule. Absent on raw
+    /// engine-side registrations, which keep the read-only-baseline fallback.
+    #[serde(default, rename = "__registrant_functions")]
+    pub registrant_functions: Option<crate::types::turn::FunctionPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1635,6 +1642,29 @@ fn build_spawn_payload(task: String, spec: &ReactSpec, parent_session_id: Option
     if let Some(o) = &spec.options {
         payload["options"] = o.clone();
     }
+    // Interceptor-registered reactions inherit the REGISTRANT's dispatch
+    // policy, subset when the spec narrows it (the in-turn child rule).
+    // Without this the spawned turn is parentless and lands on the read-only
+    // baseline — a wrap-up reaction delivered into the registrant's own chat
+    // suddenly can't call what every earlier turn there could (rctest-k7m3:
+    // database::query / state::set / engine::unregister_trigger all denied).
+    // Raw engine-side registrations carry no stamp and keep the baseline.
+    if let Some(registrant) = &spec.registrant_functions {
+        let requested: Option<crate::types::turn::FunctionPolicy> = spec
+            .options
+            .as_ref()
+            .and_then(|o| o.get("functions"))
+            .and_then(|f| serde_json::from_value(f.clone()).ok());
+        if let Some(effective) = crate::policy::subset_policy(Some(registrant), requested.as_ref())
+        {
+            if let Ok(v) = serde_json::to_value(&effective) {
+                if !payload["options"].is_object() {
+                    payload["options"] = json!({});
+                }
+                payload["options"]["functions"] = v;
+            }
+        }
+    }
     if let Some(pp) = parent_session_id {
         payload["parent_session_id"] = json!(pp);
     }
@@ -1845,7 +1875,62 @@ mod tests {
             subscription_id: None,
             once: false,
             owner_session_id: None,
+            registrant_functions: None,
         }
+    }
+
+    /// The rctest-k7m3 wrap-up failure: a reaction registered with no
+    /// `options` used to spawn parentless onto the read-only baseline —
+    /// denied database::query / state::set / engine::unregister_trigger in
+    /// the very chat whose earlier turns could call all three. With the
+    /// registrant stamp, the reaction inherits that policy; explicit options
+    /// subset it and can never escalate past it.
+    #[test]
+    fn spawn_payload_inherits_registrant_policy_and_subsets_requests() {
+        let registrant = crate::types::turn::FunctionPolicy {
+            allow: vec!["database::query".into(), "state::set".into()],
+            deny: vec!["shell::run".into()],
+            expose: Default::default(),
+        };
+
+        // No options: full inheritance.
+        let mut s = spec();
+        s.registrant_functions = Some(registrant.clone());
+        let payload = build_spawn_payload("t".into(), &s, None);
+        assert_eq!(
+            payload["options"]["functions"]["allow"],
+            json!(["database::query", "state::set"])
+        );
+        assert_eq!(
+            payload["options"]["functions"]["deny"],
+            json!(["shell::run"])
+        );
+
+        // Requested subset survives; escalation beyond the registrant is
+        // filtered out.
+        let mut s = spec();
+        s.registrant_functions = Some(registrant);
+        s.options = Some(json!({
+            "functions": { "allow": ["state::set", "engine::unregister_trigger"] },
+            "max_turns": 3
+        }));
+        let payload = build_spawn_payload("t".into(), &s, None);
+        assert_eq!(
+            payload["options"]["functions"]["allow"],
+            json!(["state::set"]),
+            "an option the registrant never held must not survive"
+        );
+        assert_eq!(
+            payload["options"]["max_turns"],
+            json!(3),
+            "other options pass through"
+        );
+
+        // No stamp (raw engine-side registration): payload untouched, the
+        // read-only baseline fallback stays in force downstream.
+        let s = spec();
+        let payload = build_spawn_payload("t".into(), &s, None);
+        assert!(payload.get("options").is_none());
     }
 
     #[test]
