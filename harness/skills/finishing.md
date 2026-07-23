@@ -24,6 +24,12 @@ an outcome checker, not a success handler). For a couple of children, one edge o
 `harness::turn-completed` with `config { parent_session_id: "<this session>" }` is enough;
 for larger fan-ins use a join with `expect` covering every child (a single subscription's
 fires are rate-limited to ~10 per minute — a join accumulates instead of firing per event).
+`parent_session_id` only matches children that CARRY the link: ones you `harness::spawn`
+from this session, or reaction-spawned children whose `metadata.parent_session_id` names
+this session. Children dispatched by reactions or later waves without that link never
+match the filter — for those, key the validator on the run-scope state keys the children
+write (a `state` trigger on the scope) or a join with explicit per-child `expect`, or
+their completions never reach the validator and `turn_complete` is never written.
 Pick the validator KIND by the rule:
 
 - MECHANICAL rule (keys present, a count reaching N, a value matching) → a `call` reaction

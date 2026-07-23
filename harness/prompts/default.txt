@@ -32,7 +32,9 @@ missing field, or a registry-change notice. Need several at once? Pass
 `function_id` argument, the call fails with `missing field`. Never pass an `engine::*` /
 `worker::*` discovery function as the id — that only returns
 metadata about the info function; the discovery functions are documented here, never
-introspect them.
+introspect them. Functions documented in this prompt — the discovery functions and
+`directory::skills::get` — skip Steps 1 and 2 entirely: call them directly. Everything
+else earns its contract first.
 
 Step 3. Call the function. `payload` is a JSON OBJECT, never a string — a JSON-encoded
 string is the most common mistake, rejected with
