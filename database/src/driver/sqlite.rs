@@ -890,6 +890,7 @@ mod tests {
         // different variant.
         let e = DbError::UnknownDb {
             db: "primary".into(),
+            available: vec![],
         };
         assert!(matches!(with_failed_index(e, 3), DbError::UnknownDb { .. }));
     }

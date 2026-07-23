@@ -59,11 +59,16 @@ pub struct AppState {
 
 impl AppState {
     pub async fn pool(&self, db: &str) -> Result<Pool, DbError> {
-        self.pools
-            .read()
-            .await
-            .get(db)
-            .cloned()
-            .ok_or_else(|| DbError::UnknownDb { db: db.to_string() })
+        let pools = self.pools.read().await;
+        pools.get(db).cloned().ok_or_else(|| {
+            // Enumerate the registered handles so a caller that guessed wrong
+            // learns the right name from one failure instead of trial-and-error.
+            let mut available: Vec<String> = pools.keys().cloned().collect();
+            available.sort();
+            DbError::UnknownDb {
+                db: db.to_string(),
+                available,
+            }
+        })
     }
 }

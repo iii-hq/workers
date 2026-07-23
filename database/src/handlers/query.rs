@@ -154,6 +154,9 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("UNKNOWN_DB"), "got: {err}");
+        // The error must enumerate the registered handles so a caller that
+        // guessed a wrong name can self-correct from one failure.
+        assert!(err.contains("\"available\":[\"primary\"]"), "got: {err}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
