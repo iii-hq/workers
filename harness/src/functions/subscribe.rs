@@ -229,6 +229,27 @@ fn standing_binding_advisory(req: &SubscribeRequest, once: bool) -> Option<Strin
     )
 }
 
+/// Advisory for a `state` binding with no `key` filter: it fires for EVERY
+/// key written in the scope (or every write anywhere, with no scope either) —
+/// order signals, done markers, completion keys, all of it. Registered beside
+/// a keyed binding it double-fires every event and burns the fire-rate budget
+/// twice (rctest-k7m3 postmortem). Purely informative — a deliberate
+/// catch-all watcher ignores it.
+fn state_catchall_advisory(req: &SubscribeRequest) -> Option<String> {
+    if req.trigger_type != "state" || req.config.get("key").is_some() {
+        return None;
+    }
+    let breadth = match req.config.get("scope").and_then(Value::as_str) {
+        Some(scope) => format!("EVERY key written in scope \"{scope}\""),
+        None => "EVERY state write in EVERY scope".to_string(),
+    };
+    Some(format!(
+        "warning: this state binding has no `key` filter — it fires for {breadth} (done \
+         markers, completion signals, everything), each fire spending this subscription's \
+         fire-rate budget. Add a `key` to the config unless you deliberately want a catch-all."
+    ))
+}
+
 /// `once` on a react binding: simple non-cron edges default to one-shot, while
 /// cron remains standing. Callers that truly want a standing state/turn watcher
 /// opt out with `once: false`. Join predecessors ignore this field because the
@@ -409,10 +430,19 @@ async fn handle(
         }
     }
 
+    let notes: Vec<String> = [
+        session_filter_advisory(deps, &req).await,
+        // A key-less state notify wakes the owning session on every write in
+        // the scope — same catch-all hazard as a react binding.
+        state_catchall_advisory(&req),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     Ok(SubscribeResponse {
         subscription_id: sub_id,
         once,
-        note: session_filter_advisory(deps, &req).await,
+        note: (!notes.is_empty()).then(|| notes.join(" ")),
     })
 }
 
@@ -736,6 +766,7 @@ async fn handle_react(
         session_filter_advisory(deps, &req).await,
         join_wiring_advisory(deps, &req).await,
         standing_binding_advisory(&req, once),
+        state_catchall_advisory(&req),
     ]
     .into_iter()
     .flatten()
@@ -1036,6 +1067,37 @@ mod tests {
         let mut state_req = mk(json!({ "parent_session_id": "s_p" }), join2);
         state_req.trigger_type = "state".into();
         assert!(parent_filter_join_advisory(&state_req).is_none());
+    }
+
+    /// The rctest-k7m3 miswire: a key-less state binding beside a keyed one
+    /// fires for every key in the scope and burns the fire-rate budget twice.
+    #[test]
+    fn state_catchall_advisory_flags_keyless_state_bindings() {
+        let mk = |ty: &str, config: serde_json::Value| -> SubscribeRequest {
+            serde_json::from_value(json!({
+                "trigger_type": ty,
+                "config": config,
+                "function_id": "harness::react",
+                "metadata": { "model": "m", "task": "t" },
+            }))
+            .unwrap()
+        };
+        // Scope without key: warned, naming the scope.
+        let note = state_catchall_advisory(&mk("state", json!({ "scope": "run-1" })));
+        assert!(note.as_deref().unwrap_or("").contains("run-1"));
+        assert!(note.as_deref().unwrap_or("").contains("no `key` filter"));
+        // No scope AND no key: the global catch-all, warned harder.
+        let note = state_catchall_advisory(&mk("state", json!({})));
+        assert!(note.as_deref().unwrap_or("").contains("EVERY scope"));
+        // A key filter silences it, with or without scope.
+        assert!(state_catchall_advisory(&mk(
+            "state",
+            json!({ "scope": "run-1", "key": "change" })
+        ))
+        .is_none());
+        assert!(state_catchall_advisory(&mk("state", json!({ "key": "change" }))).is_none());
+        // Non-state trigger types are not advised on.
+        assert!(state_catchall_advisory(&mk("cron", json!({}))).is_none());
     }
 
     #[test]

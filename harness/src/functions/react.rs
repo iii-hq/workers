@@ -108,31 +108,109 @@ const JOIN_SCOPE: &str = "harness::react_join";
 pub const MAX_FIRES_PER_WINDOW: usize = 10;
 pub const FIRE_WINDOW_MS: i64 = 60_000;
 
+/// The latest fire dropped by a capped binding, held for the trailing
+/// coalesced fire. Only the newest event is kept: react patterns are
+/// recompute-style (aggregate from source of truth), so the last event
+/// subsumes the dropped ones; `dropped` carries how many were collapsed.
+pub struct PendingFire {
+    pub event: Value,
+    pub metadata: Value,
+    pub dropped: usize,
+}
+
+/// Outcome of deferring a capped fire: how many fires the pending slot has
+/// collapsed so far, and — on the FIRST deferral of a window — the delay
+/// after which the caller must run the trailing fire.
+pub struct Deferred {
+    pub dropped: usize,
+    pub schedule_delay_ms: Option<i64>,
+}
+
+#[derive(Default)]
+struct GateSlot {
+    fires: std::collections::VecDeque<i64>,
+    pending: Option<PendingFire>,
+    /// A trailing task is already scheduled for this key — deferrals only
+    /// update `pending` until it drains.
+    trailing_scheduled: bool,
+}
+
 /// Sliding-window fire counter per subscription (or per spec-hash for
 /// bindings that carry no `__subscription_id`, e.g. `state`-provider ones).
+///
+/// Capped fires COALESCE instead of dropping: the newest event parks in the
+/// slot and one trailing fire delivers it when the window frees. Bounded: at
+/// most one pending event and one trailing task per key, so a true runaway
+/// still costs at most `MAX_FIRES_PER_WINDOW + 1` reactions per window.
 #[derive(Default)]
 pub struct FireGate {
-    inner: std::sync::Mutex<std::collections::HashMap<String, std::collections::VecDeque<i64>>>,
+    inner: std::sync::Mutex<std::collections::HashMap<String, GateSlot>>,
 }
 
 impl FireGate {
     /// Record a fire attempt for `key` at `now_ms`; `false` when the key has
-    /// exhausted its window budget — the caller must refuse to react.
+    /// exhausted its window budget — the caller must defer instead of react.
     pub fn admit(&self, key: &str, now_ms: i64) -> bool {
         let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        // Opportunistic GC so dead keys can't grow the map unboundedly.
+        // Opportunistic GC so dead keys can't grow the map unboundedly. Keys
+        // with a parked pending fire stay: a trailing task will drain them.
         if map.len() > 1024 {
-            map.retain(|_, q| q.back().is_some_and(|t| now_ms - t < FIRE_WINDOW_MS));
+            map.retain(|_, s| {
+                s.pending.is_some() || s.fires.back().is_some_and(|t| now_ms - t < FIRE_WINDOW_MS)
+            });
         }
-        let q = map.entry(key.to_string()).or_default();
-        while q.front().is_some_and(|t| now_ms - t >= FIRE_WINDOW_MS) {
-            q.pop_front();
+        let s = map.entry(key.to_string()).or_default();
+        while s
+            .fires
+            .front()
+            .is_some_and(|t| now_ms - t >= FIRE_WINDOW_MS)
+        {
+            s.fires.pop_front();
         }
-        if q.len() >= MAX_FIRES_PER_WINDOW {
+        if s.fires.len() >= MAX_FIRES_PER_WINDOW {
             return false;
         }
-        q.push_back(now_ms);
+        s.fires.push_back(now_ms);
         true
+    }
+
+    /// Park a capped fire as the key's pending trailing event (newest wins,
+    /// prior drops accumulate). Returns the trailing delay exactly once per
+    /// drain cycle — the caller that receives `Some` owns scheduling.
+    pub fn defer(&self, key: &str, event: Value, metadata: Value, now_ms: i64) -> Deferred {
+        let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let s = map.entry(key.to_string()).or_default();
+        let dropped = s.pending.as_ref().map_or(0, |p| p.dropped) + 1;
+        s.pending = Some(PendingFire {
+            event,
+            metadata,
+            dropped,
+        });
+        let schedule_delay_ms = if s.trailing_scheduled {
+            None
+        } else {
+            s.trailing_scheduled = true;
+            // Fire when the oldest window entry expires (budget frees). The
+            // floor guards clock skew; the ceiling guards a corrupt queue.
+            let delay = s
+                .fires
+                .front()
+                .map_or(FIRE_WINDOW_MS, |t| t + FIRE_WINDOW_MS - now_ms);
+            Some(delay.clamp(1_000, FIRE_WINDOW_MS))
+        };
+        Deferred {
+            dropped,
+            schedule_delay_ms,
+        }
+    }
+
+    /// Drain the key's pending fire for the trailing task. Clears the
+    /// scheduled flag: a later deferral starts a new drain cycle.
+    pub fn take_pending(&self, key: &str) -> Option<PendingFire> {
+        let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let s = map.get_mut(key)?;
+        s.trailing_scheduled = false;
+        s.pending.take()
     }
 }
 
@@ -407,13 +485,29 @@ pub fn validate_spec(metadata: Option<&Value>) -> Result<(), String> {
     Ok(())
 }
 
+/// Type-erased re-entry for the trailing coalesced fire: `handle` recursing
+/// through `tokio::spawn` can't prove its own future `Send` (the bound is
+/// self-referential); the `dyn` boxing breaks the inference cycle.
+fn handle_boxed<'a>(
+    deps: &'a Deps,
+    event: Value,
+    metadata: Option<Value>,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<ReactResult, HarnessError>> + Send + 'a>,
+> {
+    Box::pin(handle(deps, event, metadata))
+}
+
 pub async fn handle(
     deps: &Deps,
     event: Value,
     metadata: Option<Value>,
 ) -> Result<ReactResult, HarnessError> {
     // A bad/absent spec must never error out: an erroring trigger target just
-    // spams the engine's dispatch log. Log and no-op instead.
+    // spams the engine's dispatch log. Log and no-op instead. The raw metadata
+    // is kept beside the parsed spec: a capped fire parks it for the trailing
+    // coalesced re-entry.
+    let raw_metadata = metadata.clone();
     let spec: ReactSpec = match metadata {
         Some(m) => match serde_json::from_value(m) {
             Ok(s) => s,
@@ -453,14 +547,49 @@ pub async fn handle(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     if !deps.react_gate.admit(&gate_key, now_ms) {
+        // Coalesce instead of dropping: react patterns are recompute-style,
+        // so the newest event subsumes the capped ones. Park it and let one
+        // trailing fire deliver it when the window frees — without this, a
+        // burst's TAIL is exactly what gets dropped and aggregates freeze
+        // one step behind the source of truth (rctest-k7m3 postmortem).
+        let deferred = deps.react_gate.defer(
+            &gate_key,
+            event.clone(),
+            raw_metadata.unwrap_or(Value::Null),
+            now_ms,
+        );
         tracing::warn!(
             subscription = %gate_key,
-            "harness::react: fire-rate breaker tripped ({MAX_FIRES_PER_WINDOW} fires/{FIRE_WINDOW_MS}ms); not reacting"
+            dropped = deferred.dropped,
+            "harness::react: fire-rate breaker tripped ({MAX_FIRES_PER_WINDOW} fires/{FIRE_WINDOW_MS}ms); coalescing"
         );
+        if let Some(delay_ms) = deferred.schedule_delay_ms {
+            let deps = deps.clone();
+            let key = gate_key.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
+                let Some(pending) = deps.react_gate.take_pending(&key) else {
+                    return;
+                };
+                let mut event = pending.event;
+                if let Some(obj) = event.as_object_mut() {
+                    // Tell the reaction it stands in for a collapsed burst.
+                    obj.insert("__coalesced_fires".to_string(), json!(pending.dropped));
+                }
+                // Re-enters the gate: if the window is still hot the fire
+                // parks again and a fresh trailing task takes over.
+                if let Err(e) = handle_boxed(&deps, event, Some(pending.metadata)).await {
+                    tracing::warn!(subscription = %key, error = %e,
+                        "harness::react: trailing coalesced fire failed");
+                }
+            });
+        }
         let note = format!(
-            "fire-rate cap ({MAX_FIRES_PER_WINDOW} per {FIRE_WINDOW_MS}ms) reached for this subscription; not spawning"
+            "fire-rate cap ({MAX_FIRES_PER_WINDOW} per {FIRE_WINDOW_MS}ms) reached; coalescing — \
+             the latest event fires once the window frees ({} collapsed so far)",
+            deferred.dropped
         );
-        record_reaction_outcome(deps, &spec, &event, "failed", &note, None).await;
+        record_reaction_outcome(deps, &spec, &event, "waiting", &note, None).await;
         return Ok(ReactResult::note(note));
     }
 
@@ -1612,6 +1741,80 @@ mod tests {
         assert!(gate.admit("sub-2", t0 + 100));
         // Once the window slides past the early fires, the key recovers.
         assert!(gate.admit("sub-1", t0 + FIRE_WINDOW_MS + 1));
+    }
+
+    /// The coalescing contract: capped fires park (newest event wins, drops
+    /// accumulate), exactly one caller per drain cycle owns scheduling, and
+    /// draining resets the cycle. Without this, a burst's TAIL is exactly
+    /// what gets dropped and recompute-style reactions freeze one step
+    /// behind the source of truth (rctest-k7m3 postmortem).
+    #[test]
+    fn fire_gate_coalesces_capped_fires_newest_wins() {
+        let gate = FireGate::default();
+        let t0 = 1_000_000;
+        for i in 0..MAX_FIRES_PER_WINDOW {
+            assert!(gate.admit("sub-1", t0 + i as i64));
+        }
+        assert!(!gate.admit("sub-1", t0 + 100));
+
+        // First deferral owns scheduling; the delay lands when the oldest
+        // window entry expires.
+        let d1 = gate.defer(
+            "sub-1",
+            serde_json::json!({"seq": 11}),
+            serde_json::json!({"task": "t"}),
+            t0 + 100,
+        );
+        assert_eq!(d1.dropped, 1);
+        let delay = d1.schedule_delay_ms.expect("first deferral schedules");
+        assert_eq!(delay, FIRE_WINDOW_MS - 100);
+
+        // Later deferrals only update the pending slot.
+        let d2 = gate.defer(
+            "sub-1",
+            serde_json::json!({"seq": 12}),
+            serde_json::json!({"task": "t"}),
+            t0 + 200,
+        );
+        assert_eq!(d2.dropped, 2);
+        assert!(
+            d2.schedule_delay_ms.is_none(),
+            "one trailing task per cycle"
+        );
+
+        // The trailing task drains the NEWEST event with the full drop count.
+        let pending = gate.take_pending("sub-1").expect("pending fire parked");
+        assert_eq!(pending.event["seq"], 12);
+        assert_eq!(pending.dropped, 2);
+
+        // Drained: nothing pending, and a new deferral starts a new cycle.
+        assert!(gate.take_pending("sub-1").is_none());
+        let d3 = gate.defer(
+            "sub-1",
+            serde_json::json!({"seq": 13}),
+            serde_json::Value::Null,
+            t0 + 300,
+        );
+        assert_eq!(d3.dropped, 1, "drop count resets after a drain");
+        assert!(d3.schedule_delay_ms.is_some(), "new cycle reschedules");
+    }
+
+    #[test]
+    fn fire_gate_gc_keeps_keys_with_parked_fires() {
+        let gate = FireGate::default();
+        let t0 = 1_000_000;
+        gate.admit("parked", t0);
+        gate.defer("parked", serde_json::json!({}), serde_json::Value::Null, t0);
+        // Blow past the GC threshold with dead keys, long after the window.
+        let later = t0 + 10 * FIRE_WINDOW_MS;
+        for i in 0..1030 {
+            gate.admit(&format!("dead-{i}"), later);
+        }
+        gate.admit("trigger-gc", later);
+        assert!(
+            gate.take_pending("parked").is_some(),
+            "GC must never drop a key holding a parked trailing fire"
+        );
     }
 
     #[test]
