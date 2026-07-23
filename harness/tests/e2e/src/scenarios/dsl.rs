@@ -191,6 +191,16 @@ impl Send {
         self
     }
 
+    /// Allow a function the scripted worker does NOT provide — a real engine
+    /// or harness builtin (e.g. `engine::register_trigger`) the scenario
+    /// drives through the model.
+    pub(super) fn allow_id(mut self, function_id: &str) -> Self {
+        if !self.allowed_functions.iter().any(|id| id == function_id) {
+            self.allowed_functions.push(function_id.to_string());
+        }
+        self
+    }
+
     fn compile(self, scenario_id: &str, model: &ModelFixtureV1) -> CompiledSendV1 {
         CompiledSendV1 {
             session_id: "{{session_id}}".to_string(),
@@ -313,6 +323,19 @@ impl Request {
         self.messages = Some(JsonMatcherV1::Exact {
             expected: Value::Array(messages),
             normalize: Some(normalize),
+        });
+        self
+    }
+
+    /// Positional subset match over the assembled history: element `i` of
+    /// `messages` is compared as a subset of history element `i` — pin the
+    /// stable keys (`role`, `function_call_id`, `is_error`) of each entry and
+    /// leave nondeterministic content (subscription ids, …) unmatched. The
+    /// history must still have at least `messages.len()` entries.
+    pub(super) fn messages_subset(mut self, messages: impl IntoIterator<Item = Value>) -> Self {
+        self.messages = Some(JsonMatcherV1::Subset {
+            expected: Value::Array(messages.into_iter().collect()),
+            normalize: None,
         });
         self
     }
@@ -497,10 +520,28 @@ impl Response {
         input_tokens: u64,
         output_tokens: u64,
     ) -> Self {
+        Self::function_call_raw(
+            call_id,
+            function.id(),
+            arguments,
+            input_tokens,
+            output_tokens,
+        )
+    }
+
+    /// A scripted call to a function id the scripted worker does not own —
+    /// a real engine/harness builtin (pair with [`Send::allow_id`]).
+    pub(super) fn function_call_raw(
+        call_id: &str,
+        function_id: &str,
+        arguments: Value,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Self {
         Self {
             kind: ResponseKind::FunctionCall {
                 call_id: call_id.to_string(),
-                function_id: function.id().to_string(),
+                function_id: function_id.to_string(),
                 arguments,
             },
             usage: usage(input_tokens, output_tokens),
