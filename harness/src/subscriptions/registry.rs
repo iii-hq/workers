@@ -19,6 +19,19 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde_json::Value;
 
+/// Reaction-spec fingerprint of a live join predecessor. All predecessors of
+/// one join id must agree on it — the join fires with the COMPLETING
+/// predecessor's spec, so a divergent spec on any predecessor would silently
+/// replace the real reaction at fire time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JoinProbe {
+    /// The shared join id (the accumulator record key — globally namespaced).
+    pub id: String,
+    /// The canonicalized reaction spec minus per-predecessor fields (see
+    /// `react::join_canon`).
+    pub canon: Value,
+}
+
 /// One live subscription's local bookkeeping. Held in an `Arc` so a firing
 /// handler reads it without holding the registry lock.
 pub struct SubEntry {
@@ -40,6 +53,10 @@ pub struct SubEntry {
     /// `harness::turn-completed` — a session with an armed wake completes
     /// non-terminally. Standing watchers and react bindings don't count.
     wake: bool,
+    /// Set post-insert for join-predecessor react bindings (see
+    /// [`set_join_probe`](SubscriptionRegistry::set_join_probe)); dies with
+    /// the entry, so conflict checks never see retired predecessors.
+    join: Mutex<Option<JoinProbe>>,
 }
 
 impl SubEntry {
@@ -50,6 +67,7 @@ impl SubEntry {
             trigger_id: Mutex::new(None),
             dedup_key,
             wake,
+            join: Mutex::new(None),
         }
     }
 }
@@ -186,6 +204,36 @@ impl SubscriptionRegistry {
         }
     }
 
+    /// Attach a join-predecessor fingerprint after a successful insert. Same
+    /// race posture as [`set_trigger_id`](Self::set_trigger_id): `false` means
+    /// the entry is already gone.
+    pub fn set_join_probe(&self, sub_id: &str, probe: JoinProbe) -> bool {
+        match self.lock().by_id.get(sub_id) {
+            Some(entry) => {
+                *entry.join.lock().unwrap_or_else(|p| p.into_inner()) = Some(probe);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Find a LIVE join predecessor of `join_id` whose reaction spec differs
+    /// from `canon`. Join ids are globally namespaced (the accumulator record
+    /// key), so this scans across sessions. `Some(sub_id)` names the
+    /// conflicting predecessor for the registration error.
+    pub fn conflicting_join_spec(&self, join_id: &str, canon: &Value) -> Option<String> {
+        let inner = self.lock();
+        for (sub_id, entry) in inner.by_id.iter() {
+            let guard = entry.join.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(probe) = guard.as_ref() {
+                if probe.id == join_id && probe.canon != *canon {
+                    return Some(sub_id.clone());
+                }
+            }
+        }
+        None
+    }
+
     /// Claim a fired subscription against local liveness/ownership. One-shot
     /// fires remove the entry and return the trigger id for teardown; recurring
     /// fires keep the entry and return a monotonic notification entry id.
@@ -307,6 +355,43 @@ mod tests {
         assert!(reg.try_insert("sub_3", "s", 2).is_err());
         // A different session has its own budget.
         assert!(reg.try_insert("sub_4", "s2", 2).is_ok());
+    }
+
+    #[test]
+    fn join_probe_conflict_detection_and_lifecycle() {
+        let reg = SubscriptionRegistry::new();
+        let canon = serde_json::json!({"task": "the real task", "model": "m"});
+        reg.try_insert("sub_w1", "s", 8).unwrap();
+        assert!(reg.set_join_probe(
+            "sub_w1",
+            JoinProbe {
+                id: "j1".into(),
+                canon: canon.clone()
+            }
+        ));
+
+        // Identical spec on another predecessor: no conflict.
+        assert!(reg.conflicting_join_spec("j1", &canon).is_none());
+        // Divergent spec (the "placeholder" shape): conflict names the live twin.
+        let placeholder = serde_json::json!({"task": "placeholder", "model": "m"});
+        assert_eq!(
+            reg.conflicting_join_spec("j1", &placeholder).as_deref(),
+            Some("sub_w1")
+        );
+        // A different join id is unaffected.
+        assert!(reg.conflicting_join_spec("j2", &placeholder).is_none());
+
+        // The probe dies with the entry — retired predecessors never conflict.
+        assert!(reg.take("sub_w1").is_some());
+        assert!(reg.conflicting_join_spec("j1", &placeholder).is_none());
+        // And a probe cannot attach to a gone entry.
+        assert!(!reg.set_join_probe(
+            "sub_w1",
+            JoinProbe {
+                id: "j1".into(),
+                canon
+            }
+        ));
     }
 
     #[test]
