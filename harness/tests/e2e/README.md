@@ -15,6 +15,7 @@ No provider key or network access is required.
 | E2E-002 | `exactly-once-function` | direct | a native function executes exactly once |
 | E2E-003 | `reseed-parked-message` | direct | a message parked during a turn's failing final step is delivered by a harness-reseeded turn |
 | E2E-004 | `join-spec-mismatch` | direct | a join predecessor registered with a divergent reaction spec is rejected at registration |
+| E2E-005 | `reaction-policy-inheritance` | direct | a reaction with no options inherits the registering turn's dispatch policy |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 

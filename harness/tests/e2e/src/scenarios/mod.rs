@@ -5,6 +5,7 @@ mod dsl;
 mod exactly_once_function;
 mod join_spec_mismatch;
 mod multi_turn_traces;
+mod reaction_policy_inheritance;
 mod reseed_parked_message;
 mod streamed_text;
 
@@ -27,6 +28,7 @@ pub fn all() -> Vec<ScenarioFixture> {
         exactly_once_function::scenario(),
         join_spec_mismatch::scenario(),
         multi_turn_traces::scenario(),
+        reaction_policy_inheritance::scenario(),
         reseed_parked_message::scenario(),
         streamed_text::scenario(),
     ]
@@ -39,7 +41,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 6);
+        assert_eq!(fixtures.len(), 7);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {
