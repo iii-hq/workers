@@ -367,6 +367,27 @@ fn parse_worker_names(val: &serde_json::Value) -> HashSet<String> {
 /// namespace segment matches a registered (installed) worker name are
 /// returned. On daemon-down or first-boot-no-cache, falls back to
 /// the unfiltered set.
+/// Build the canonical skills-index markdown plus its worker-overview
+/// count. Shared by the directory::skills::index handler and the
+/// pre-generate injection hook (crate::inject_index) so the index has
+/// exactly one semantics: same overview classification, same title and
+/// teaser resolution, same never-drop-a-worker budget policy.
+pub(crate) async fn build_index(
+    cfg: &SkillsConfig,
+    cache: &RegisteredWorkersCache,
+    iii: &IIIClient,
+    fresh: bool,
+) -> (String, usize) {
+    let entries = resolve_visible_skills(cfg, cache, iii, fresh).await;
+    let siblings = id_set(&entries);
+    let rows: Vec<SkillEntry> = entries
+        .into_iter()
+        .map(|fs| skill_entry_from_fs(fs, &siblings))
+        .collect();
+    let workers_count = rows.iter().filter(|e| is_index_overview(e)).count();
+    (render_index_markdown(&rows), workers_count)
+}
+
 pub async fn resolve_visible_skills(
     cfg: &SkillsConfig,
     cache: &RegisteredWorkersCache,
@@ -598,14 +619,7 @@ fn register_index_skills(
             let iii = iii_inner.clone();
             let cache = cache_inner.clone();
             async move {
-                let entries = resolve_visible_skills(&cfg, &cache, &iii, true).await;
-                let siblings = id_set(&entries);
-                let rows: Vec<SkillEntry> = entries
-                    .into_iter()
-                    .map(|fs| skill_entry_from_fs(fs, &siblings))
-                    .collect();
-                let body = render_index_markdown(&rows);
-                let workers_count = rows.iter().filter(|e| is_index_overview(e)).count();
+                let (body, workers_count) = build_index(&cfg, &cache, &iii, true).await;
                 Ok::<_, Error>(IndexSkillsOutput {
                     body,
                     workers_count,
