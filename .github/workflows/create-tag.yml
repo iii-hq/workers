@@ -38,6 +38,7 @@ on:
           - opencode
           - pi
           - provider-anthropic
+          - provider-claude-code
           - provider-kimi
           - provider-llamacpp
           - provider-openai
