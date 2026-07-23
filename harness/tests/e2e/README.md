@@ -13,6 +13,7 @@ No provider key or network access is required.
 |---|---|---|---|
 | E2E-001 | `streamed-text` | direct | streamed text reaches durable completion |
 | E2E-002 | `exactly-once-function` | direct | a native function executes exactly once |
+| E2E-003 | `reseed-parked-message` | direct | a message parked during a turn's failing final step is delivered by a harness-reseeded turn |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 
@@ -93,9 +94,19 @@ cargo clippy --manifest-path harness/Cargo.toml \
   -p harness-integration --all-targets -- -D warnings
 ```
 
-`validate --scenario all` checks exactly the four fixtures. `run --scenario
-all` executes only E2E-001 and E2E-002; UI-001 and UI-002 must use
-`playground`.
+`validate --scenario all` checks every fixture. `run --scenario all` executes
+the direct scenarios (E2E-001, E2E-002, E2E-003); UI-001 and UI-002 must use
+`playground`. E2E-003 produces two terminal turns from one send: generation 1
+steers a message into the running session (it parks durably) and then fails,
+so the harness's failed finalize drains the parked row and reseeds a turn to
+react to it. The failed route is deliberate — a park during a *completing*
+terminal generation is always delivered earlier by the loop's steering check,
+so only the failed finalize (which has no steering check) reaches the drain
+deterministically from the public boundary; both finalize paths share the
+drain-and-reseed under test. The fixture declares the per-turn statuses
+(`failed`, then `completed`) and the floor enforces them positionally, along
+with a single trace covering both turns (harness-seeded turns chain into the
+originating send's trace).
 
 The fixture tests pin:
 

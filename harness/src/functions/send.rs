@@ -638,7 +638,11 @@ async fn seed_or_merge(
     }
 }
 
-async fn seed_new(
+/// Seed a fresh turn record and enqueue its first step. Exposed to the turn
+/// loop's finalize-drain reseed path (`turn_loop::reseed_after_finalize_drain`)
+/// so a notification that parked during a turn's final step gets a turn to
+/// react to it, instead of being drained to the transcript and stranded.
+pub(crate) async fn seed_new(
     deps: &Deps,
     cfg: &WorkerConfig,
     session_id: &str,

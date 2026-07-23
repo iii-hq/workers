@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 use super::{ScenarioDriver, VerifyFn};
 use crate::fixtures::ScenarioFixture;
 use crate::types::frames::{
-    AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, RouterChatResponse,
-    StopReason, Usage,
+    AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, ErrorShape,
+    RouterChatResponse, StopReason, Usage,
 };
 use crate::types::probe::ControlledTargetV1;
 use crate::types::scenario::{
@@ -19,7 +19,7 @@ use crate::types::scenario::{
 };
 use crate::types::script::{
     GenerationMatchV1, JsonMatcherV1, JsonNormalizerV1, ModelFixtureV1, NormalizerOperation,
-    RouterScriptV1, SchemaVersion1, ScriptedGenerationV1,
+    RouterScriptV1, SchemaVersion1, ScriptedGenerationV1, ServeEffectV1, SteerSendV1,
 };
 
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../../../prompts/default.txt");
@@ -53,7 +53,7 @@ pub(super) struct Scenario {
     send: Option<Send>,
     target: Option<ControlledTargetV1>,
     generations: Vec<Generation>,
-    expected_terminal_turns: usize,
+    expected_turn_statuses: Vec<String>,
     verify: Option<VerifyFn>,
 }
 
@@ -74,7 +74,7 @@ impl Scenario {
             send: None,
             target: None,
             generations: Vec::new(),
-            expected_terminal_turns: 1,
+            expected_turn_statuses: vec!["completed".to_string()],
             verify: None,
         }
     }
@@ -96,7 +96,23 @@ impl Scenario {
 
     pub(super) fn terminal_turns(mut self, count: usize) -> Self {
         assert!(count > 0, "scenario must expect at least one terminal turn");
-        self.expected_terminal_turns = count;
+        self.expected_turn_statuses = vec!["completed".to_string(); count];
+        self
+    }
+
+    /// Declare each terminal turn's status, in completion order, when not
+    /// every turn completes (e.g. a failed turn whose finalize drain reseeds a
+    /// completing follow-on turn). The last turn must complete: the floor's
+    /// durable-status check has no meaning for a run that ends failed.
+    pub(super) fn terminal_turn_statuses<'a>(
+        mut self,
+        statuses: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        self.expected_turn_statuses = statuses.into_iter().map(str::to_string).collect();
+        assert!(
+            !self.expected_turn_statuses.is_empty(),
+            "scenario must expect at least one terminal turn"
+        );
         self
     }
 
@@ -118,7 +134,8 @@ impl Scenario {
         ScenarioFixture {
             slug: self.slug,
             driver: self.driver,
-            expected_terminal_turns: self.expected_terminal_turns,
+            expected_terminal_turns: self.expected_turn_statuses.len(),
+            expected_turn_statuses: self.expected_turn_statuses,
             scenario: CompiledScenarioV1 {
                 schema_version: SchemaVersion1::V1,
                 id: self.id.clone(),
@@ -357,6 +374,8 @@ pub(super) struct Generation {
     ordinal: u64,
     request: Option<Request>,
     response: Option<Response>,
+    parked_message: Option<String>,
+    failure: Option<String>,
 }
 
 impl Generation {
@@ -365,6 +384,8 @@ impl Generation {
             ordinal,
             request: None,
             response: None,
+            parked_message: None,
+            failure: None,
         }
     }
 
@@ -378,11 +399,33 @@ impl Generation {
         self
     }
 
+    /// Before this generation resolves, steer the scenario session with
+    /// `text`. Because the harness is blocked awaiting this generation (turn
+    /// `Running`), the message parks durably in the turn's queue before the
+    /// generation's outcome — streamed frames or a scripted failure —
+    /// proceeds.
+    pub(super) fn parked_message(mut self, text: &str) -> Self {
+        self.parked_message = Some(text.to_string());
+        self
+    }
+
+    /// Instead of streaming, fail this generation with a handler error. The
+    /// harness treats a router handler error as permanent and finalizes the
+    /// turn `failed` WITHOUT the completed path's steering check — the only
+    /// deterministic public-path route into the finalize drain with a parked
+    /// message present (a park during a *completing* terminal generation is
+    /// always seen first by the steering check and delivered by an advance).
+    pub(super) fn fails(mut self, message: &str) -> Self {
+        self.failure = Some(message.to_string());
+        self
+    }
+
     fn compile(self, model: &ModelFixtureV1) -> ScriptedGenerationV1 {
-        let (frames, response) = self
-            .response
-            .expect("generation response is required")
-            .compile(model, self.ordinal);
+        let (frames, response) = match (self.response, &self.failure) {
+            (Some(response), None) => response.compile(model, self.ordinal),
+            (None, Some(message)) => (Vec::new(), failure_response(model, message)),
+            _ => panic!("generation needs exactly one of respond/fails"),
+        };
         ScriptedGenerationV1 {
             ordinal: self.ordinal,
             match_: self
@@ -391,6 +434,13 @@ impl Generation {
                 .compile(model, self.ordinal),
             frames,
             response,
+            on_serve: self.parked_message.map(|message| ServeEffectV1 {
+                steer: SteerSendV1 {
+                    session_id: "{{session_id}}".to_string(),
+                    message,
+                },
+            }),
+            failure: self.failure,
         }
     }
 }
@@ -554,6 +604,19 @@ impl Message {
         })
     }
 
+    /// The durable residue of a failed generation: the harness appends an empty
+    /// assistant row before streaming, and a scripted failure never fills it.
+    /// A later turn in the session sees it in its assembled context.
+    pub(super) fn assistant_empty(model: &ModelFixtureV1) -> Value {
+        json!({
+            "role": "assistant",
+            "content": [],
+            "stop_reason": "end",
+            "model": model.id,
+            "provider": model.provider
+        })
+    }
+
     pub(super) fn function_result(
         call_id: &str,
         function: &ControlledFunction,
@@ -575,6 +638,22 @@ pub(super) struct Tool;
 impl Tool {
     pub(super) fn named(name: &str) -> Value {
         json!({ "name": name })
+    }
+}
+
+/// The response slot of a scripted-failure generation. Never sent — the
+/// router fails the call before responding — but kept honest in the fixture.
+fn failure_response(model: &ModelFixtureV1, message: &str) -> RouterChatResponse {
+    RouterChatResponse {
+        ok: false,
+        provider: model.provider.clone(),
+        model: model.id.clone(),
+        stop_reason: None,
+        usage: None,
+        error: Some(ErrorShape {
+            code: "scripted_failure".to_string(),
+            message: message.to_string(),
+        }),
     }
 }
 
