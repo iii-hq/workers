@@ -1,4 +1,5 @@
 ---
+type: index
 name: http
 tags: http, routing, triggers, webhooks, endpoints
 description: >-

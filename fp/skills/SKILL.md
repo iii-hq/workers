@@ -1,4 +1,5 @@
 ---
+type: index
 name: fp
 description: >-
   Move and reshape big values between iii functions without routing them

@@ -1,4 +1,5 @@
 ---
+type: index
 name: hermes
 description: >-
   Run headless Hermes agent turns over the iii bus, deliver messages to 27+

@@ -1,4 +1,5 @@
 ---
+type: index
 name: queue
 tags: queue, durable, retries, dlq, pubsub
 description: >-

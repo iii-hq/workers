@@ -1,4 +1,5 @@
 ---
+type: index
 name: bridge
 tags: bridge, websocket, remote, cross-engine, invoke
 description: >-

@@ -1,4 +1,5 @@
 ---
+type: index
 name: database
 description: >-
   Run SQL against PostgreSQL, MySQL, or SQLite from the iii engine — reads,

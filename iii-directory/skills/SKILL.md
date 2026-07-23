@@ -1,4 +1,5 @@
 ---
+type: index
 name: iii-directory
 description: >-
   Discovery entry point for the engine — read the skill and prompt docs that

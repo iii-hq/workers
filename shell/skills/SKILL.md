@@ -1,4 +1,5 @@
 ---
+type: index
 name: shell
 tags: shell, exec, filesystem, jobs, sandbox
 description: >-

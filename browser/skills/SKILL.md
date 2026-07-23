@@ -1,4 +1,5 @@
 ---
+type: index
 name: browser
 description: >-
   Interactive Chromium sessions for reading and driving real web pages: open a

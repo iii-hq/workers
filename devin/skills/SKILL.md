@@ -1,4 +1,5 @@
 ---
+type: index
 name: devin
 description: >-
   Drive Devin over the iii bus. Run the local Devin CLI agent (SWE-1.6) with the

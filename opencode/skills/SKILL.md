@@ -1,4 +1,5 @@
 ---
+type: index
 name: opencode
 description: >-
   Run headless OpenCode turns over the iii bus — file edits, shell, and search

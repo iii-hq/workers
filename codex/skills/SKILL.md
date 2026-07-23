@@ -1,4 +1,5 @@
 ---
+type: index
 name: codex
 description: >-
   Run headless OpenAI Codex turns over the iii bus — sandboxed shell, file

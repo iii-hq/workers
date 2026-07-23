@@ -1,4 +1,5 @@
 ---
+type: index
 name: pi
 description: >-
   Run headless Pi coding-agent turns over the iii bus — file edits, shell, and

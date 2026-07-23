@@ -1,4 +1,5 @@
 ---
+type: index
 name: grok
 description: >-
   Run headless xAI Grok CLI turns over the iii bus — shell, file edits, and

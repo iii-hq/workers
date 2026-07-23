@@ -1,4 +1,5 @@
 ---
+type: index
 name: claude-code
 description: >-
   Run headless Claude Code turns over the iii bus — file edits, shell, and

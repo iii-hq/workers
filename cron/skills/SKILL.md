@@ -1,4 +1,5 @@
 ---
+type: index
 name: cron
 tags: cron, scheduling, triggers, jobs
 description: >-
