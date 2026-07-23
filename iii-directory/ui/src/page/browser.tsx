@@ -153,6 +153,11 @@ export function CollectionBrowser({
     refreshList()
   }, [refreshList])
 
+  const dirtyRef = useRef(dirty)
+  dirtyRef.current = dirty
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+
   const open = useCallback(
     (key: string) => {
       setSelected(key)
@@ -164,20 +169,22 @@ export function CollectionBrowser({
       adapter
         .load(host, key)
         .then((content) => {
+          // Stale async result: the user opened another entry (or drilled
+          // out) while this load was in flight — applying it would show A's
+          // content under B's title and risk saving it there.
+          if (selectedRef.current !== key) return
           setLoaded({ key, content })
           setDraft(content)
         })
-        .catch((e) => setLoadError(String(e)))
+        .catch((e) => {
+          if (selectedRef.current === key) setLoadError(String(e))
+        })
     },
     [host, adapter],
   )
 
   // External change (download / update from anywhere): refresh the list;
   // reload the open entry only when the editor has no unsaved edits.
-  const dirtyRef = useRef(dirty)
-  dirtyRef.current = dirty
-  const selectedRef = useRef(selected)
-  selectedRef.current = selected
   useOnChange(host, adapter.onChangeType, () => {
     refreshList()
     const key = selectedRef.current
@@ -204,19 +211,26 @@ export function CollectionBrowser({
 
   const save = useCallback(() => {
     if (!loaded || saving || draft === loaded.content) return
+    const key = loaded.key
     setSaving(true)
     setSaveError(null)
     adapter
-      .save(host, loaded.key, draft)
+      .save(host, key, draft)
       .then((effectiveKey) => {
+        // The write happened either way; only the editor state is stale if
+        // the user navigated away mid-save — don't yank them back to the
+        // saved entry or overwrite what they're looking at now.
+        refreshList()
+        if (selectedRef.current !== key) return
         setLoaded({ key: effectiveKey, content: draft })
         setSelected(effectiveKey)
         setStaleOnDisk(false)
         setSavedFlash(true)
         window.setTimeout(() => setSavedFlash(false), 1600)
-        refreshList()
       })
-      .catch((e) => setSaveError(String(e)))
+      .catch((e) => {
+        if (selectedRef.current === key) setSaveError(String(e))
+      })
       .finally(() => setSaving(false))
   }, [host, adapter, loaded, draft, saving, refreshList])
 

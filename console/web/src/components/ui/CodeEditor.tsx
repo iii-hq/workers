@@ -183,17 +183,32 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
 
     React.useEffect(() => {
       if (!ready) return
-      editorRef.current?.updateOptions({
+      const editor = editorRef.current
+      if (!editor) return
+      editor.updateOptions({
         readOnly: !!(readOnly || disabled),
         domReadOnly: !!(readOnly || disabled),
         placeholder,
         ariaLabel,
       })
+      // The wrapper's `inert` already blurs in browsers that support it;
+      // this is the explicit fallback so a disabled editor never keeps a
+      // hidden focused textarea.
+      if (disabled && (editor.hasTextFocus() || editor.hasWidgetFocus())) {
+        const active = document.activeElement
+        if (active instanceof HTMLElement) active.blur()
+      }
     }, [ready, readOnly, disabled, placeholder, ariaLabel])
 
     return (
       // biome-ignore lint/a11y/noStaticElementInteractions: shortcut relay + gap-click focus around a real editor
       <div
+        // The id lives on the wrapper — the only DOM node that survives the
+        // fallback-to-Monaco swap — so anchors/deep-links keep their target.
+        id={id}
+        // `inert` removes the whole editor (including Monaco's hidden
+        // textarea) from the tab order while disabled.
+        inert={disabled || undefined}
         className={cn(
           'relative bg-bg',
           disabled && 'pointer-events-none opacity-40',
@@ -229,7 +244,6 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         {!ready ? (
           <textarea
             ref={fallbackRef}
-            id={id}
             value={value}
             onChange={(e) => onChange(e.currentTarget.value)}
             placeholder={placeholder}

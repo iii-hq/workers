@@ -55,7 +55,7 @@ Two packages, one per side of the wire:
 
 ## Project layout
 
-```
+```text
 mywork/
   ui/
     page.tsx      # the script asset — default-exports setup(host)

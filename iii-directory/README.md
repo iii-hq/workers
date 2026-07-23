@@ -229,7 +229,7 @@ other adapter.
 
 | Function ID | Description |
 |---|---|
-| `directory::skills::download` | Pull markdown into `skills_folder`. Either `{repo, skill, branch?}` (defaults `branch=main`) or `{worker, version?|tag?}` (defaults `tag=latest`). |
+| `directory::skills::download` | Pull markdown into `skills_folder`. Either `{repo, skill, branch?}` (defaults `branch=main`) or `{worker, version?\|tag?}` (defaults `tag=latest`). |
 | `directory::skills::list` | Enriched listing of every fs-backed skill: `{ id, title, type, description, bytes, modified_at }` per row. `title` prefers the YAML frontmatter `title:` over the body H1, `type` is lifted from frontmatter `type:` (`null` when absent), and `description` is the first paragraph of the body — so consumers can render a picker without a follow-up `get` per row. |
 | `directory::skills::get` | Fetch one skill by id. Returns `{ id, title, type, description, body, modified_at }` — same shape `directory::skills::list` rows use, plus the raw markdown `body`. Same title-resolution and `type` precedence as `list`. Accepts a bare id or the same id prefixed with `iii://`. Pass `raw: true` to additionally get the FULL on-disk file (frontmatter included) as `raw` — the round-trip form `update` takes. |
 | `directory::skills::update` | Overwrite one EXISTING skill file with new full-file content: `{ id, content }` where `content` is the edited `raw` from `get { raw: true }`. Validated against the read invariants (size cap, non-empty body after frontmatter); atomic write; fans out `directory::skills::on-change` with `op: "update"`. Never creates files. |
