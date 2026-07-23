@@ -1,0 +1,135 @@
+/*
+ * Styles for the database worker's injected console UI. Shipped as its own
+ * `console:style` asset (database/styles.css) — the console mounts it as a
+ * <link> and link-swaps it on change.
+ *
+ * EVERY rule is scoped under [data-iii-ui="database"] — the wrapper the
+ * console mounts around every injected render. Unscoped rules would beat
+ * the console's layered CSS document-wide (injected sheets are unlayered).
+ * Keyframe names are global: keep the db-ui- prefix. Colors come from the
+ * console's design tokens so light/dark theming is free.
+ */
+
+/* --- function-trigger message (chat / traces card) ------------------- */
+[data-iii-ui="database"] .db-ui-msg {
+  border-top: 1px solid var(--color-rule-2);
+  background: var(--color-bg);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+[data-iii-ui="database"] .db-ui-msg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="database"] .db-ui-pill {
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 1px 8px;
+}
+[data-iii-ui="database"] .db-ui-pill.quiet {
+  border-color: var(--color-rule);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-ui-chip {
+  border: 1px solid var(--color-rule);
+  color: var(--color-ink);
+  font-size: 11.5px;
+  padding: 1px 8px;
+}
+[data-iii-ui="database"] .db-ui-chip .k { color: var(--color-ink-ghost); }
+[data-iii-ui="database"] .db-ui-chip.ok { border-color: var(--color-ok); color: var(--color-ok); }
+[data-iii-ui="database"] .db-ui-chip.alert { border-color: var(--color-alert); color: var(--color-alert); }
+[data-iii-ui="database"] .db-ui-msg-tag {
+  margin-left: auto;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="database"] .db-ui-msg-note {
+  padding: 0 12px 10px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-ui-msg-note.pulse { animation: db-ui-pulse 1.6s ease-in-out infinite; }
+@keyframes db-ui-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* --- SQL block -------------------------------------------------------- */
+[data-iii-ui="database"] .db-ui-sql {
+  padding: 0 12px 8px;
+  font-size: 12px;
+  overflow-x: auto;
+}
+[data-iii-ui="database"] .db-ui-params {
+  padding: 0 12px 8px;
+  font-size: 11.5px;
+  color: var(--color-ink-faint);
+  overflow-x: auto;
+}
+[data-iii-ui="database"] .db-ui-params .k { color: var(--color-ink-ghost); }
+
+/* --- result rows table ------------------------------------------------ */
+[data-iii-ui="database"] .db-ui-table-wrap {
+  padding: 0 12px 10px;
+  overflow-x: auto;
+}
+[data-iii-ui="database"] .db-ui-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  width: 100%;
+}
+[data-iii-ui="database"] .db-ui-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+  border-bottom: 1px solid var(--color-rule);
+  padding: 3px 10px 3px 0;
+  white-space: nowrap;
+}
+[data-iii-ui="database"] .db-ui-table td {
+  color: var(--color-ink);
+  border-bottom: 1px solid var(--color-rule-2);
+  padding: 3px 10px 3px 0;
+  vertical-align: top;
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="database"] .db-ui-table td.null { color: var(--color-ink-ghost); font-style: italic; }
+
+/* --- batch / transaction step list ------------------------------------ */
+[data-iii-ui="database"] .db-ui-steps {
+  padding: 0 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="database"] .db-ui-step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+[data-iii-ui="database"] .db-ui-step .idx {
+  color: var(--color-ink-ghost);
+  min-width: 1.5em;
+  text-align: right;
+}
+[data-iii-ui="database"] .db-ui-step .sql {
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="database"] .db-ui-step .meta { color: var(--color-ink-faint); white-space: nowrap; }
+[data-iii-ui="database"] .db-ui-step.failed .idx,
+[data-iii-ui="database"] .db-ui-step.failed .sql { color: var(--color-alert); }
