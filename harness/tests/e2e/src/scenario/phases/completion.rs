@@ -24,10 +24,35 @@ impl ScenarioRunner<'_> {
 
         // The event only wakes collection; trace evidence verifies the
         // lifecycle delivery itself. Status remains the durable-state check.
-        match services.probe().wait_for_completion(deadline).await {
-            Ok(observation) => {
+        //
+        // A single send can still produce more than one terminal turn when the
+        // harness seeds a follow-on turn from it (a reseed after a message
+        // parks mid-final-step). Such a scenario declares `terminal_turns(n)`;
+        // wait for all n and bind evidence to the latest, mirroring how
+        // Playground awaits its externally driven turns.
+        let expected = self.fixture.expected_terminal_turns;
+        let latest_turn_id = if expected > 1 {
+            services
+                .probe()
+                .wait_for_completion_turns(expected, deadline)
+                .await
+                .map(|events| {
+                    latest_terminal_observation(&events).map(|o| o.event.turn_id.clone())
+                })
+        } else {
+            services
+                .probe()
+                .wait_for_completion(deadline)
+                .await
+                .map(|observation| Some(observation.event.turn_id))
+        };
+        match latest_turn_id {
+            // Evidence binds to the LATEST terminal turn: with harness-seeded
+            // follow-on turns, Send's own turn id is the first, not the last.
+            Ok(Some(turn_id)) if expected > 1 => active.turn_id = Some(turn_id),
+            Ok(turn_id) => {
                 if active.turn_id.is_none() {
-                    active.turn_id = Some(observation.event.turn_id);
+                    active.turn_id = turn_id;
                 }
             }
             Err(error) if deadline.is_expired() => {
@@ -41,7 +66,7 @@ impl ScenarioRunner<'_> {
             Err(error) => {
                 return Err(RunError::runner(
                     phase,
-                    "wait for harness::turn-completed signal",
+                    "wait for harness::turn-completed signal(s)",
                     error,
                 ));
             }

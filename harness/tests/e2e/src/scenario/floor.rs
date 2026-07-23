@@ -10,18 +10,40 @@ use crate::probe::LIFECYCLE_FUNCTION_ID;
 use crate::scenarios::VerifyFn;
 use crate::types::trace::strip_engine_fields;
 
-/// First violated floor post-condition, if any.
-pub fn floor_failure(run: &RunEvidence) -> Option<String> {
-    floor_failure_for_turns(run, 1)
+/// Scenario-declared shape of a passing run.
+pub struct FloorExpectations<'a> {
+    /// Each terminal turn's lifecycle status, in completion order.
+    pub turn_statuses: &'a [String],
+    /// Distinct trace trees (one per externally initiated send).
+    pub traces: usize,
 }
 
-pub fn floor_failure_for_turns(
-    run: &RunEvidence,
-    expected_terminal_turns: usize,
-) -> Option<String> {
+impl FloorExpectations<'_> {
+    fn turns(&self) -> usize {
+        self.turn_statuses.len()
+    }
+
+    fn declares_failure(&self) -> bool {
+        self.turn_statuses.iter().any(|status| status != "completed")
+    }
+}
+
+/// First violated floor post-condition for a single-completed-turn run.
+pub fn floor_failure(run: &RunEvidence) -> Option<String> {
+    let statuses = ["completed".to_string()];
+    floor_failure_for(
+        run,
+        &FloorExpectations {
+            turn_statuses: &statuses,
+            traces: 1,
+        },
+    )
+}
+
+pub fn floor_failure_for(run: &RunEvidence, expected: &FloorExpectations) -> Option<String> {
     terminal_failure(run)
-        .or_else(|| trace_failure(run, expected_terminal_turns))
-        .or_else(|| lifecycle_failure(run, expected_terminal_turns))
+        .or_else(|| trace_failure(run, expected))
+        .or_else(|| lifecycle_failure(run, expected))
         .or_else(|| generations_failure(run))
         .or_else(|| send_flags_failure(run))
 }
@@ -68,19 +90,28 @@ fn status_list_len(run: &RunEvidence, key: &str) -> usize {
         .unwrap_or(0)
 }
 
-fn trace_failure(run: &RunEvidence, expected_terminal_turns: usize) -> Option<String> {
+fn trace_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<String> {
     let summary = &run.traces.summary;
-    let trace_count = summary.trace_count == expected_terminal_turns;
-    let turn_count = summary.turn_ids.len() == expected_terminal_turns;
+    let trace_count = summary.trace_count == expected.traces;
+    let turn_count = summary.turn_ids.len() == expected.turns();
     let complete = summary.pending_span_count == 0;
-    let clean = summary.error_count == 0;
+    // A declared-failed turn must surface its failure in the traces; a run
+    // declared all-completed must stay clean.
+    let clean = if expected.declares_failure() {
+        summary.error_count > 0
+    } else {
+        summary.error_count == 0
+    };
     let latest_bound = summary.turn_ids.last().map(String::as_str) == run.turn_id.as_deref();
     if trace_count && turn_count && complete && clean && latest_bound {
         return None;
     }
     Some(format!(
-        "floor: traces must cover {expected_terminal_turns} completed clean turn(s) (trace count: \
+        "floor: {} trace(s) must cover {} terminal turn(s) with statuses {:?} (trace count: \
          {}, turn count: {}, pending spans: {}, error spans: {}, latest turn bound: {latest_bound})",
+        expected.traces,
+        expected.turns(),
+        expected.turn_statuses,
         summary.trace_count,
         summary.turn_ids.len(),
         summary.pending_span_count,
@@ -89,7 +120,8 @@ fn trace_failure(run: &RunEvidence, expected_terminal_turns: usize) -> Option<St
 }
 
 /// Validate `harness::turn-completed` from the lifecycle sink's trace events.
-fn lifecycle_failure(run: &RunEvidence, expected_terminal_turns: usize) -> Option<String> {
+fn lifecycle_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<String> {
+    let expected_terminal_turns = expected.turns();
     let lifecycle_name = format!("execute {LIFECYCLE_FUNCTION_ID}");
     let lifecycle: Vec<Option<Value>> = run
         .spans_named(&lifecycle_name)
@@ -134,14 +166,25 @@ fn lifecycle_failure(run: &RunEvidence, expected_terminal_turns: usize) -> Optio
         }
     }
     let turn_count = turns.len() == expected_terminal_turns;
+    // Each turn's status must equal the declared status for its position in
+    // trace order (summary turn ids are ordered by first span start).
+    let expected_by_turn: BTreeMap<&str, &str> = run
+        .traces
+        .summary
+        .turn_ids
+        .iter()
+        .map(String::as_str)
+        .zip(expected.turn_statuses.iter().map(String::as_str))
+        .collect();
     let bound = payloads.iter().all(|payload| {
-        payload.get("status").and_then(Value::as_str) == Some("completed")
+        let declared = payload
+            .get("turn_id")
+            .and_then(Value::as_str)
+            .and_then(|turn_id| expected_by_turn.get(turn_id).copied());
+        declared.is_some()
+            && payload.get("status").and_then(Value::as_str) == declared
             && payload.get("terminal").and_then(Value::as_bool) == Some(true)
             && payload.get("session_id").and_then(Value::as_str) == Some(run.session_id.as_str())
-            && payload
-                .get("turn_id")
-                .and_then(Value::as_str)
-                .is_some_and(|turn_id| run.traces.summary.turn_ids.iter().any(|id| id == turn_id))
     });
 
     let allowed_keys = BTreeSet::from([
@@ -248,14 +291,18 @@ mod tests {
         }
     }
 
-    fn completed_lifecycle(turn_id: &str, timestamp: i64) -> Value {
+    fn terminal_lifecycle(turn_id: &str, status: &str, timestamp: i64) -> Value {
         json!({
             "session_id": "session-1",
             "turn_id": turn_id,
-            "status": "completed",
+            "status": status,
             "terminal": true,
             "timestamp": timestamp
         })
+    }
+
+    fn completed_lifecycle(turn_id: &str, timestamp: i64) -> Value {
+        terminal_lifecycle(turn_id, "completed", timestamp)
     }
 
     fn clean_evidence() -> RunEvidence {
@@ -328,6 +375,13 @@ mod tests {
             .contains("consistent retries: false"));
     }
 
+    fn expectations<'a>(turn_statuses: &'a [String], traces: usize) -> FloorExpectations<'a> {
+        FloorExpectations {
+            turn_statuses,
+            traces,
+        }
+    }
+
     #[test]
     fn multiple_turns_are_bound_in_trace_order() {
         let mut evidence = clean_evidence();
@@ -337,7 +391,41 @@ mod tests {
             roots: vec![lifecycle_span("turn-2", completed_lifecycle("turn-2", 2))],
         });
         evidence.traces = TraceEvidenceV1::new(evidence.traces.traces);
-        assert_eq!(floor_failure_for_turns(&evidence, 2), None);
+        let statuses = vec!["completed".to_string(), "completed".to_string()];
+        assert_eq!(floor_failure_for(&evidence, &expectations(&statuses, 2)), None);
+    }
+
+    /// The reseed shape: one send, one trace, a failed turn whose finalize
+    /// drain seeded a completing follow-on turn — with the failure visible as
+    /// an error span.
+    #[test]
+    fn declared_failed_turn_passes_with_error_spans_in_one_trace() {
+        let mut evidence = clean_evidence();
+        evidence.turn_id = Some("turn-2".into());
+        let mut failed_root = lifecycle_span("turn-1", terminal_lifecycle("turn-1", "failed", 1));
+        failed_root.status = "error".into();
+        evidence.traces = TraceEvidenceV1::new(vec![TraceTreeV1 {
+            trace_id: "trace-turn-1".into(),
+            roots: vec![
+                failed_root,
+                lifecycle_span("turn-2", completed_lifecycle("turn-2", 2)),
+            ],
+        }]);
+        let statuses = vec!["failed".to_string(), "completed".to_string()];
+        assert_eq!(floor_failure_for(&evidence, &expectations(&statuses, 1)), None);
+
+        // The same evidence fails an all-completed expectation.
+        let all_completed = vec!["completed".to_string(), "completed".to_string()];
+        assert!(floor_failure_for(&evidence, &expectations(&all_completed, 1))
+            .unwrap()
+            .contains("error spans: 1"));
+
+        // Statuses are positional: swapping the declaration fails binding.
+        let swapped = vec!["completed".to_string(), "failed".to_string()];
+        assert!(
+            floor_failure_for(&evidence, &expectations(&swapped, 1)).is_some(),
+            "swapped statuses must not pass"
+        );
     }
 
     #[test]

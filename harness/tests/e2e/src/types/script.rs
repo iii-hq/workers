@@ -144,4 +144,40 @@ pub struct ScriptedGenerationV1 {
     pub match_: GenerationMatchV1,
     pub frames: Vec<AssistantMessageEvent>,
     pub response: RouterChatResponse,
+    /// Optional side effect the router performs *before* it streams this
+    /// generation's frames (or fails the call): an awaited steer send. Because
+    /// the harness is blocked awaiting this generation (its turn is `Running`),
+    /// the steered message parks durably in the turn's queue before the
+    /// generation's outcome proceeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_serve: Option<ServeEffectV1>,
+    /// When set, the router streams nothing: after `on_serve`, the call fails
+    /// with this handler-error message. The harness classifies a router
+    /// handler error as permanent and finalizes the turn `failed` WITHOUT the
+    /// completed path's steering check — the only deterministic public-path
+    /// route into the finalize drain with a parked message present, which the
+    /// reseed regression scenario requires. `frames` must be empty and
+    /// `response` is never sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+}
+
+/// A serve-time side effect. Kept as a struct (not a bare field) so future
+/// effects can be added without another optional column.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ServeEffectV1 {
+    pub steer: SteerSendV1,
+}
+
+/// An awaited `harness::send` into a live session. The router issues it before
+/// streaming, so the message is durably enqueued before the frames (and thus
+/// the turn's finalize) proceed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SteerSendV1 {
+    /// Target session, placeholder-expanded (e.g. `"{{session_id}}"`).
+    pub session_id: String,
+    /// User-message text steered into the session before streaming.
+    pub message: String,
 }

@@ -7,8 +7,14 @@ use crate::types::script::RouterScriptV1;
 pub struct ScenarioFixture {
     pub slug: String,
     pub driver: ScenarioDriver,
-    /// Number of distinct terminal turns the playground must observe.
+    /// Number of distinct terminal turns the run must observe. Usually 1;
+    /// Playground turns and harness-initiated follow-on turns (e.g. a reseed
+    /// after a message parks mid-final-step) push it higher. Always equals
+    /// `expected_turn_statuses.len()`.
     pub expected_terminal_turns: usize,
+    /// Each terminal turn's lifecycle status, in completion order. The last
+    /// must be `completed` — the floor's durable-status check binds to it.
+    pub expected_turn_statuses: Vec<String>,
     pub scenario: CompiledScenarioV1,
     pub script: RouterScriptV1,
     /// Compiled Harness default plus inferred session/policy aid.
@@ -48,9 +54,25 @@ impl ScenarioFixture {
             "scenario must expect at least one terminal turn"
         );
         anyhow::ensure!(
-            self.driver == ScenarioDriver::Playground || self.expected_terminal_turns == 1,
-            "direct scenarios must expect exactly one terminal turn"
+            self.expected_turn_statuses.len() == self.expected_terminal_turns,
+            "scenario declares {} turn status(es) for {} terminal turn(s)",
+            self.expected_turn_statuses.len(),
+            self.expected_terminal_turns
         );
+        for status in &self.expected_turn_statuses {
+            anyhow::ensure!(
+                matches!(status.as_str(), "completed" | "failed" | "cancelled"),
+                "unknown terminal turn status {status:?}"
+            );
+        }
+        anyhow::ensure!(
+            self.expected_turn_statuses.last().map(String::as_str) == Some("completed"),
+            "the last terminal turn must be completed"
+        );
+        // A direct scenario is one external send, but the harness may seed
+        // further turns from it (a reseed after a parked message); those extra
+        // terminal turns are declared with `terminal_turns(n)` and awaited the
+        // same way Playground awaits its externally driven turns.
         if self.script.scenario_id != self.scenario.id {
             anyhow::bail!(
                 "script scenario_id {:?} does not match scenario id {:?}",
@@ -76,6 +98,14 @@ impl ScenarioFixture {
                 "duplicate router generation ordinal {}",
                 generation.ordinal
             );
+            if generation.failure.is_some() {
+                anyhow::ensure!(
+                    generation.frames.is_empty(),
+                    "failing generation {} must stream no frames",
+                    generation.ordinal
+                );
+                continue;
+            }
             anyhow::ensure!(
                 generation
                     .frames
@@ -98,6 +128,18 @@ impl ScenarioFixture {
             "validate-session",
         )?;
         Ok(())
+    }
+
+    /// Distinct trace trees the run must produce. Turns chain into their
+    /// initiating trace through the durable queue, so a direct scenario's one
+    /// send yields exactly one trace no matter how many turns it seeds (a
+    /// finalize reseed enqueues from inside the finalizing step); Playground
+    /// turns are each externally initiated and trace separately.
+    pub fn expected_traces(&self) -> usize {
+        match self.driver {
+            ScenarioDriver::Direct => 1,
+            ScenarioDriver::Playground => self.expected_terminal_turns,
+        }
     }
 
     pub fn compiled(&self) -> CompiledFixtureV1 {

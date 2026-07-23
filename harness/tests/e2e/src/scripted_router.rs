@@ -18,12 +18,13 @@ use std::sync::{Arc, Mutex};
 
 use iii_sdk::channel::{ChannelWriter, StreamChannelRef};
 use iii_sdk::errors::Error;
-use iii_sdk::RegisterFunction;
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
-use crate::client::Client;
+use crate::client::{Client, DEFAULT_CALL_TIMEOUT_MS};
 use crate::matcher::{evaluate, FieldMatchResult};
-use crate::types::script::{ModelFixtureV1, RouterScriptV1, ScriptedGenerationV1};
+use crate::types::script::{ModelFixtureV1, RouterScriptV1, ScriptedGenerationV1, ServeEffectV1};
 
 /// One `router::chat` call's evidence, stored raw (never normalized).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -86,13 +87,15 @@ impl ScriptedRouter {
         {
             let state = self.state.clone();
             let address = address.clone();
+            let client = iii.clone();
             iii.register_function(
                 "router::chat",
                 with_router_contract(
                     RegisterFunction::new_async(move |input: Value| {
                         let state = state.clone();
                         let address = address.clone();
-                        async move { chat(state, address, input).await }
+                        let client = client.clone();
+                        async move { chat(state, address, client, input).await }
                     }),
                     "router::chat",
                 )
@@ -359,7 +362,12 @@ fn model_supports(model: &ModelFixtureV1, capability: &str) -> bool {
     }
 }
 
-async fn chat(state: Arc<Mutex<State>>, address: String, input: Value) -> Result<Value, Error> {
+async fn chat(
+    state: Arc<Mutex<State>>,
+    address: String,
+    client: Arc<IIIClient>,
+    input: Value,
+) -> Result<Value, Error> {
     // Match under the lock; stream outside it.
     let (generation, writer_ref, request_id) = {
         let mut state = state.lock().expect("router state");
@@ -424,6 +432,22 @@ async fn chat(state: Arc<Mutex<State>>, address: String, input: Value) -> Result
         (generation, writer_ref, request_id)
     };
 
+    // Serve-time side effect, BEFORE streaming or failing: the harness is now
+    // blocked awaiting this generation with its turn `Running`, so an awaited
+    // steer parks in the turn's queue before the outcome proceeds.
+    if let Some(effect) = &generation.on_serve {
+        perform_serve_effect(&client, effect).await?;
+    }
+
+    // Scripted failure: the generation is consumed and recorded as matched;
+    // the error is the scripted subject behavior, not a contract violation.
+    if let Some(message) = &generation.failure {
+        state.lock().expect("router state").live.remove(&request_id);
+        return Err(Error::Handler(format!(
+            "integration/scripted_failure: {message}"
+        )));
+    }
+
     let stream_result =
         stream_frames(&address, &writer_ref, &generation, &state, &request_id).await;
 
@@ -433,6 +457,27 @@ async fn chat(state: Arc<Mutex<State>>, address: String, input: Value) -> Result
     // Response only after terminal streaming has been relayed.
     serde_json::to_value(&generation.response)
         .map_err(|e| Error::Handler(format!("integration/response_serialize: {e}")))
+}
+
+/// Run a generation's serve-time side effect. The steer is *awaited*:
+/// `harness::send` enqueues the parked row before it returns, so once this
+/// resolves the message is durably queued and the subsequent terminal frame
+/// will drive the turn into finalize with that row present.
+async fn perform_serve_effect(client: &IIIClient, effect: &ServeEffectV1) -> Result<(), Error> {
+    let steer = &effect.steer;
+    client
+        .trigger(TriggerRequest {
+            function_id: "harness::send".to_string(),
+            payload: json!({
+                "session_id": steer.session_id,
+                "message": steer.message,
+            }),
+            action: None,
+            timeout_ms: Some(DEFAULT_CALL_TIMEOUT_MS),
+        })
+        .await
+        .map(|_| ())
+        .map_err(|e| Error::Handler(format!("integration/serve_effect harness::send: {e}")))
 }
 
 async fn stream_frames(

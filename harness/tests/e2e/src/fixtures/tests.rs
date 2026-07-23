@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn all_selection_returns_the_four_checked_in_fixtures() {
+fn all_selection_returns_the_checked_in_fixtures() {
     let fixtures = scenario_fixtures("all").unwrap();
     let ids = fixtures
         .iter()
@@ -9,14 +9,14 @@ fn all_selection_returns_the_four_checked_in_fixtures() {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
         ids,
-        std::collections::BTreeSet::from(["E2E-001", "E2E-002", "UI-001", "UI-002"])
+        std::collections::BTreeSet::from(["E2E-001", "E2E-002", "E2E-003", "UI-001", "UI-002"])
     );
     assert_eq!(
         fixtures
             .iter()
             .filter(|fixture| fixture.driver == crate::scenarios::ScenarioDriver::Direct)
             .count(),
-        2
+        3
     );
 }
 
