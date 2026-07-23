@@ -205,6 +205,35 @@ impl RunEvidence {
             .iter()
             .filter_map(|item| item.get("message"))
     }
+
+    /// Durable `function_result` messages for one function id, in transcript
+    /// order. For harness-intercepted builtins (e.g. `engine::register_trigger`)
+    /// the transcript is the only evidence surface — they never produce
+    /// `execute` spans like controlled functions do.
+    pub fn function_results(&self, function_id: &str) -> Vec<&Value> {
+        self.messages()
+            .filter(|message| role(message) == Some("function_result"))
+            .filter(|message| {
+                message.get("function_id").and_then(Value::as_str) == Some(function_id)
+            })
+            .collect()
+    }
+}
+
+/// Concatenated text blocks of one message's `content` array.
+pub fn message_text(message: &Value) -> String {
+    message
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .concat()
+        })
+        .unwrap_or_default()
 }
 
 fn role(message: &Value) -> Option<&str> {

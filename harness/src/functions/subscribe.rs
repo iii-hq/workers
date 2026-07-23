@@ -612,6 +612,24 @@ async fn handle_react(
             .await
             .map_err(HarnessError::InvalidRequest)?;
     }
+    // Join predecessors must agree on the reaction spec: the join fires with
+    // the COMPLETING predecessor's spec, so a divergent spec on any
+    // predecessor (e.g. a `task: "placeholder"` shorthand on later ones)
+    // would silently replace the real reaction at fire time. Fingerprinted
+    // post-`inherit_model` so same-session registrations compare stamped
+    // metadata consistently.
+    let join_probe = crate::functions::react::join_canon(req.metadata.as_ref());
+    if let Some((join_id, canon)) = &join_probe {
+        if let Some(conflict) = deps.subscriptions.conflicting_join_spec(join_id, canon) {
+            return Err(HarnessError::InvalidRequest(format!(
+                "join `{join_id}`: this predecessor's reaction spec differs from live \
+                 predecessor {conflict}'s. Every predecessor of a join must carry the \
+                 IDENTICAL spec (task/call, model, session_id, options, expect) — only \
+                 `join.key` may differ. Repeat the full spec on every registration; the \
+                 join fires with the completing predecessor's spec."
+            )));
+        }
+    }
     if let Some(existing) = deps.subscriptions.find_duplicate(session_id, &dedup) {
         return Ok(SubscribeResponse {
             subscription_id: existing,
@@ -637,6 +655,13 @@ async fn handle_react(
                 subscriptions::MAX_SUBSCRIPTIONS_PER_SESSION
             ))
         })?;
+
+    if let Some((join_id, canon)) = join_probe {
+        deps.subscriptions.set_join_probe(
+            &sub_id,
+            crate::subscriptions::registry::JoinProbe { id: join_id, canon },
+        );
+    }
 
     // Stamp the owning session into the metadata so startup reconciliation can
     // GC this binding if the session is deleted while the harness is down.

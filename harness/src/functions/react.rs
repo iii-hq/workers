@@ -299,6 +299,33 @@ impl ReactResult {
     }
 }
 
+/// Canonical reaction-spec fingerprint for a join predecessor registration:
+/// the metadata minus this predecessor's own `join.key` and the harness
+/// stamps (which legitimately differ per predecessor). `None` when the spec
+/// is not a join predecessor.
+///
+/// All predecessors of one join id must agree on this fingerprint — the join
+/// fires with the COMPLETING predecessor's spec (`join_edge` → `spec.task`),
+/// so a divergent spec on a later predecessor (e.g. `task: "placeholder"`)
+/// silently replaces the real reaction. The registration interceptor rejects
+/// mismatches against live predecessors using it.
+pub fn join_canon(metadata: Option<&Value>) -> Option<(String, Value)> {
+    let m = metadata?;
+    let join_id = m.pointer("/join/id")?.as_str()?.to_string();
+    let mut canon = m.clone();
+    if let Some(obj) = canon.as_object_mut() {
+        // Stamps differ per registration by design; strip them defensively
+        // even though the interceptor fingerprints pre-stamp metadata.
+        obj.remove("__subscription_id");
+        obj.remove("__once");
+        obj.remove(crate::subscriptions::OWNER_SESSION_KEY);
+        if let Some(j) = obj.get_mut("join").and_then(Value::as_object_mut) {
+            j.remove("key");
+        }
+    }
+    Some((join_id, canon))
+}
+
 /// Registration-time validation for subscriptions targeting `harness::react`:
 /// once bound, a bad spec would only surface as a silent no-op when the event
 /// fires, so reject it loudly at `engine::register_trigger` time instead.
@@ -1523,6 +1550,54 @@ fn pretty(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn join_canon_none_for_non_join_specs() {
+        assert!(join_canon(None).is_none());
+        let md = serde_json::json!({"model": "m", "task": "t"});
+        assert!(join_canon(Some(&md)).is_none());
+    }
+
+    #[test]
+    fn join_canon_strips_per_predecessor_fields_only() {
+        let md = |key: &str, sub: &str| {
+            serde_json::json!({
+                "model": "m", "task": "the real task",
+                "join": {"id": "j1", "expect": ["a", "b"], "key": key},
+                "__subscription_id": sub, "__once": true,
+                "__owner_session_id": "s1",
+            })
+        };
+        let (id_a, canon_a) = join_canon(Some(&md("a", "sub_1"))).unwrap();
+        let (id_b, canon_b) = join_canon(Some(&md("b", "sub_2"))).unwrap();
+        assert_eq!(id_a, "j1");
+        assert_eq!(id_b, "j1");
+        // Same reaction, different key/stamps → identical fingerprint.
+        assert_eq!(canon_a, canon_b);
+        // The reaction fields survive; the per-predecessor ones are gone.
+        assert_eq!(canon_a["task"], "the real task");
+        assert_eq!(canon_a["join"]["expect"], serde_json::json!(["a", "b"]));
+        assert!(canon_a["join"].get("key").is_none());
+        assert!(canon_a.get("__subscription_id").is_none());
+    }
+
+    /// The rctest-x7k2 failure shape: full task on one predecessor,
+    /// "placeholder" on another — the fingerprints must differ so the
+    /// interceptor can reject the second registration.
+    #[test]
+    fn join_canon_differs_when_the_reaction_differs() {
+        let full = serde_json::json!({
+            "model": "m", "task": "verify and report",
+            "join": {"id": "j1", "expect": ["w1", "w2"], "key": "w1"},
+        });
+        let placeholder = serde_json::json!({
+            "model": "m", "task": "placeholder",
+            "join": {"id": "j1", "expect": ["w1", "w2"], "key": "w2"},
+        });
+        let (_, canon_full) = join_canon(Some(&full)).unwrap();
+        let (_, canon_ph) = join_canon(Some(&placeholder)).unwrap();
+        assert_ne!(canon_full, canon_ph);
+    }
 
     #[test]
     fn fire_gate_caps_per_key_within_window_and_recovers() {
