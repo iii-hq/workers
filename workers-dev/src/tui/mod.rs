@@ -43,10 +43,10 @@ const LOG_HEIGHT_DEFAULT: u16 = 18;
 /// log pane can never squeeze the primary content off-screen.
 const MIN_TABLE_HEIGHT: u16 = 9;
 /// Two-column (master/detail) sizing. The worker list is content-fit on the
-/// left — 66 cols fits all five columns exactly — and the log pane flexes to
-/// fill the rest on the right. Below the combined minimum the two panes stack
-/// vertically instead, so neither is crushed on a narrow terminal.
-const TABLE_PANE_WIDTH: u16 = 66;
+/// left — 73 cols fits all six columns (incl. UI) exactly — and the log pane
+/// flexes to fill the rest on the right. Below the combined minimum the two
+/// panes stack vertically instead, so neither is crushed on a narrow terminal.
+const TABLE_PANE_WIDTH: u16 = 73;
 const MIN_LOG_PANE_WIDTH: u16 = 36;
 /// Floor for the user-dragged divider (+/-): below this the list loses its
 /// less-critical right columns (PID, uptime) to hand width to the logs.
@@ -67,7 +67,7 @@ const ENGINE_START_WAIT_MS: u64 = 8_000;
 /// Footer help, by available width. The narrowest tier always keeps the two
 /// keys a lost user needs (help, quit).
 const HELP_FULL: &str =
-    " ↑↓ select · s start · x stop · r restart · / filter · f follow · ? keys · q quit ";
+    " ↑↓ select · s start · x stop · r restart · w ui-watch · / filter · f follow · ? keys · q quit ";
 const HELP_MID: &str = " s start · x stop · r restart · / filter · ? keys · q quit ";
 const HELP_MIN: &str = " / filter · ? keys · q quit ";
 
@@ -524,6 +524,31 @@ fn handle_dashboard_key(
                 }
             }
         }
+        // Injectable-UI watcher mode (SOP dev loop): flip `pnpm watch` +
+        // `III_<WORKER>_UI_WATCH=1` for the selected worker. A running worker
+        // restarts to apply the env var; a stopped one picks it up next start.
+        KeyCode::Char('w') => {
+            if let Some(name) = worker_name {
+                match views
+                    .iter()
+                    .find(|v| v.name == name)
+                    .and_then(|v| v.ui_watch)
+                {
+                    None => {
+                        *mode =
+                            UiMode::Busy(format!("{name} ships no ui/ project — nothing to watch"));
+                    }
+                    Some(currently_on) => {
+                        spawn_toggle_ui_watch(actions, name.clone());
+                        *mode = UiMode::Busy(if currently_on {
+                            format!("disabling ui watch for {name}…")
+                        } else {
+                            format!("enabling ui watch for {name}…")
+                        });
+                    }
+                }
+            }
+        }
         KeyCode::Char('x') => {
             if let Some(name) = worker_name {
                 // Only stop workers with a live local child; `external` and
@@ -672,6 +697,13 @@ fn spawn_restart(actions: &Actions, worker: String) {
     let orchestrator = actions.orchestrator.clone();
     spawn_action(actions, async move {
         orchestrator.restart_worker(&worker).await
+    });
+}
+
+fn spawn_toggle_ui_watch(actions: &Actions, worker: String) {
+    let orchestrator = actions.orchestrator.clone();
+    spawn_action(actions, async move {
+        orchestrator.toggle_ui_watch(&worker).await.map(|_| ())
     });
 }
 
@@ -1107,6 +1139,12 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
                     .local_pid
                     .map(|p| p.to_string())
                     .unwrap_or_else(|| "—".to_string());
+                let ui = crate::status::ui_watch_label(v.ui_watch);
+                let ui_style = if v.ui_watch == Some(true) {
+                    styled_if(color, Style::default().fg(Color::Cyan))
+                } else {
+                    styled_if(color, muted_cell_style())
+                };
                 Row::new(vec![
                     name_cell,
                     Cell::from(Span::styled(process_text, process_st)),
@@ -1114,6 +1152,7 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
                         v.engine_status.clone(),
                         styled_if(color, engine_style(&v.engine_status)),
                     )),
+                    Cell::from(Span::styled(ui, ui_style)),
                     Cell::from(Span::styled(
                         pid.clone(),
                         styled_if(color, muted_cell_style_for(&pid)),
@@ -1155,12 +1194,13 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
             Constraint::Length(24),
             Constraint::Length(10),
             Constraint::Length(11),
+            Constraint::Length(6),
             Constraint::Length(7),
             Constraint::Min(8),
         ],
     )
     .header(
-        Row::new(vec!["Worker", "Process", "Engine", "PID", "Uptime"])
+        Row::new(vec!["Worker", "Process", "Engine", "UI", "PID", "Uptime"])
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
     .block(Block::default().borders(Borders::ALL).title(title))
@@ -1385,6 +1425,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
         ("s", "start selected worker"),
         ("x", "stop selected worker"),
         ("r", "restart selected + dependents"),
+        ("w", "toggle injectable-UI watch (hot reload)"),
         ("d", "show dependencies + dependents"),
         ("f", "toggle live log follow"),
         ("PgUp PgDn", "scroll logs"),
@@ -1429,6 +1470,10 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
     )));
     lines.push(Line::from(Span::styled(
         "   elsewhere = connected, started outside workers-dev",
+        styled_if(color, hint_style()),
+    )));
+    lines.push(Line::from(Span::styled(
+        "   UI: ui = ships injectable console UI · watch = hot-reload on (w)",
         styled_if(color, hint_style()),
     )));
     draw_dialog(

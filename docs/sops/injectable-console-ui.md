@@ -18,6 +18,15 @@ implementation. The `state` worker is the living reference — copy it.
 | The `iii-console-ui` crate (Rust worker-side registration) | `workers/crates/console-ui/` |
 | Worker reference implementation | `workers/state/src/ui.rs` + `workers/state/ui/` |
 
+> **Companion skill — keep it in sync.** `workers/console/SKILL.md` is a
+> standalone skill teaching this same workflow to authors *outside* this
+> repo: it consumes `@iii-dev/console-ui` via `npm install` and the
+> `iii-console-ui` crate via `cargo add`, instead of the workspace/path
+> links this SOP uses. By design it references no repo files, so nothing
+> keeps it honest automatically — any change to this SOP, the wire
+> contract, the shared component surface, or either package MUST update
+> the skill in the same change.
+
 ## How it works (one paragraph)
 
 The console worker owns three trigger types. A worker registers a
@@ -137,6 +146,13 @@ per-asset cap (a slot component should be tens of KiB). Two footguns:
 - **Only those five specifiers exist in the import map.** A transitive
   dependency importing any other bare react-family specifier
   (`react-dom/server`, …) fails at `import()` time, not build time.
+- **Never bundle an editor.** Every code/text editing surface — in the
+  console and in injected worker UI alike — is the shared Monaco-backed
+  `CodeEditor` from `@iii-dev/console-ui` (Monaco runs once, inside the
+  console, themed by the design tokens in both themes). Bundling
+  `monaco-editor`, CodeMirror, or any other editor into a worker asset
+  ships megabytes toward the 8 MiB cap to duplicate what the console
+  already provides.
 
 Rust workers embed `dist/` with `include_str!` and rebuild it from
 `build.rs` (see `workers/state/build.rs`) so the worker stays one
@@ -147,8 +163,9 @@ self-contained binary.
 The wire contract is: one content function serving all of the worker's
 assets (dispatch on `path`), one trigger per asset. Rust workers don't
 hand-roll it — the shared **`iii-console-ui`** crate
-(`workers/crates/console-ui`) is the whole worker side, linked directly by
-path (never published; it versions with the console worker in this repo):
+(`workers/crates/console-ui`) is the whole worker side. Workers in this
+repo link it directly by path so it versions with the console worker here
+(out-of-repo workers install it instead — see `workers/console/SKILL.md`):
 
 ```toml
 # <worker>/Cargo.toml
@@ -281,7 +298,7 @@ SaveBar stay host-owned. You draw the fields and call `onChange`.
 | Surface | What it is |
 |---|---|
 | `host.iii` | The tab's bus client: `trigger(functionId, payload?, {timeoutMs?})`, `on(functionId, handler)` (returns un-listen), `registerTrigger({type, function_id, config})` (returns un-register), `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. |
-| shared components | The curated, pre-styled component library: `Badge`, `Button`, `Dialog`(+`Trigger/Close/Content/Title/Description`), `DropdownMenu`(+parts), `EmptyState`, `ErrorBoundary`, `Input`, `Select`, `Skeleton`, `StatusDot`, `StatusPanel`, `Tabs`(+parts), `Tooltip`(+parts), `CodeHighlight`, `JsonHighlight`, `Markdown`. Import them by name from `@iii-dev/console-ui` (typed props); `host.components` carries the same objects as an untyped record. For richer components, copy the pattern into your worker — small duplication across workers is the accepted cost; `@iii-dev/console-ui` is deliberately the only versioned contract. |
+| shared components | The curated, pre-styled component library: `Badge`, `Button`, `Dialog`(+`Trigger/Close/Content/Title/Description`), `DropdownMenu`(+parts), `EmptyState`, `ErrorBoundary`, `Input`, `Select`, `Skeleton`, `StatusDot`, `StatusPanel`, `Tabs`(+parts), `Tooltip`(+parts), `CodeEditor`, `CodeHighlight`, `JsonHighlight`, `Markdown`, `MarkdownPreview`. Import them by name from `@iii-dev/console-ui` (typed props); `host.components` carries the same objects as an untyped record. `CodeEditor` is **Monaco** — the console's one code editor, global by contract: every editing surface uses it (see the build-footgun note above; never ship your own). For richer components, copy the pattern into your worker — small duplication across workers is the accepted cost; `@iii-dev/console-ui` is deliberately the only versioned contract. |
 | `host.useTheme()` | `'light' \| 'dark'`, reactive. Extensions follow the theme, never set it. |
 | `host.path` | Your script's asset path. |
 
@@ -417,7 +434,7 @@ slot kinds. Not shipped yet (don't design against them):
 |---|---|
 | Composer slot (`host.composer`) | not implemented — pages, function-trigger renderers, and config forms are the three v1 slots |
 | `@iii-dev/console-build` CLI + Tailwind preset | not implemented — hand-write scoped CSS (as `state` does) or scope your own Tailwind output; there is no automatic scoping pass to save you |
-| Types package | shipped as the **workspace-linked** `@iii-dev/console-ui` (`packages/console-ui`) — not published to npm; the runtime module specifier was renamed from the spec's `@iii/console` |
+| Types package | shipped as `@iii-dev/console-ui` (`packages/console-ui`) — in-repo workers consume it **workspace-linked** (out-of-repo authors install it from npm, see `workers/console/SKILL.md`); the runtime module specifier was renamed from the spec's `@iii/console` |
 | Rust worker-side registration | shipped **beyond spec** as the path-linked `iii-console-ui` crate (`crates/console-ui`) — the spec's authoring doc had each worker hand-roll the content function, triggers, and watcher |
 | Named typed component exports on the runtime module | shipped (beyond spec: the spec only had the `components` record) |
 | Manifest `worker` attribution | always `null` |

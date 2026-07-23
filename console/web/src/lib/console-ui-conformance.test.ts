@@ -21,6 +21,7 @@ import componentNames from '@iii-dev/console-ui/component-names'
 import { describe, expect, it } from 'vitest'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
+import { CodeEditor } from '@/components/ui/CodeEditor'
 import {
   Dialog,
   DialogClose,
@@ -40,6 +41,7 @@ import {
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { Input } from '@/components/ui/Input'
+import { MarkdownPreview } from '@/components/ui/MarkdownPreview'
 import { Select } from '@/components/ui/Select'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
@@ -62,6 +64,7 @@ import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
 const conformance: {
   Badge: typeof ConsoleUi.Badge
   Button: typeof ConsoleUi.Button
+  CodeEditor: typeof ConsoleUi.CodeEditor
   CodeHighlight: typeof ConsoleUi.CodeHighlight
   Dialog: typeof ConsoleUi.Dialog
   DialogClose: typeof ConsoleUi.DialogClose
@@ -80,6 +83,7 @@ const conformance: {
   Input: typeof ConsoleUi.Input
   JsonHighlight: typeof ConsoleUi.JsonHighlight
   Markdown: typeof ConsoleUi.Markdown
+  MarkdownPreview: typeof ConsoleUi.MarkdownPreview
   Select: typeof ConsoleUi.Select
   Skeleton: typeof ConsoleUi.Skeleton
   StatusDot: typeof ConsoleUi.StatusDot
@@ -94,6 +98,7 @@ const conformance: {
 } = {
   Badge,
   Button,
+  CodeEditor,
   CodeHighlight,
   Dialog,
   DialogClose,
@@ -112,6 +117,7 @@ const conformance: {
   Input,
   JsonHighlight,
   Markdown,
+  MarkdownPreview,
   Select,
   Skeleton,
   StatusDot,

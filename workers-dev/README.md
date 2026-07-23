@@ -54,9 +54,27 @@ workers-dev status
 
 Starting a worker (CLI `start <name>` or `s` in the TUI) pulls in its dependencies, but a dependency **already connected to the engine is left running as-is** — no rebuild, no restart, no duplicate spawn. Explicitly requested workers always (re)start; use `restart` when a dependency itself needs a rebuild. The group commands count every member as explicitly requested: `up`, bare `start`, and `Ctrl+u` always restart the whole harness stack, `start --all` and `Ctrl+a` every managed Rust worker.
 
-Global flags: `--repo`, `--url`, `--port`, `--release`, `--config workers-dev.yaml`, `--stop-on-exit`, `--color auto|always|never`.
+Global flags: `--repo`, `--url`, `--port`, `--release`, `--config workers-dev.yaml`, `--stop-on-exit`, `--color auto|always|never`, `--ui-watch`.
 
 Environment: `WORKERS_DEV_REPO` overrides repo auto-detection. Set `NO_COLOR` to disable colors (also respected when `--color auto`).
+
+## Injectable-UI watcher mode
+
+Workers that ship injectable console UI (a `ui/package.json` — see
+`docs/sops/injectable-console-ui.md`) can run in the SOP's dev loop straight
+from workers-dev. When watch is on for a worker, starting it:
+
+1. spawns **`pnpm watch`** in `<worker>/ui/` (esbuild `--watch` → `dist/`),
+   stopped with the worker, output in the same log pane tagged `[ui]`;
+2. sets **`III_<WORKER>_UI_WATCH=1`** on the worker process, arming the
+   `iii-console-ui` crate's poller — every rebuild re-registers the changed
+   asset and open console tabs hot-swap it in place.
+
+Enable it globally with `--ui-watch` (or `ui_watch: true` in
+`workers-dev.yaml`), or per worker with the **`w`** key in the TUI — a
+running worker restarts so the env var takes effect; a stopped one picks it
+up on next start. The dashboard's **UI** column shows `—` (no ui project),
+`ui` (ships UI, watch off), or `watch` (watcher mode on).
 
 ## Colors
 
@@ -76,6 +94,7 @@ Use `--color never` or `NO_COLOR=1` to force plain output. Default `--color auto
 | `s` | Start selected worker |
 | `x` | Stop selected worker |
 | `r` | Restart selected worker + dependents (confirm lists the blast radius with live status) |
+| `w` | Toggle injectable-UI watcher mode for the selected worker (restarts it when running) |
 | `d` | Show selected worker's dependencies + dependents with live status |
 | `f` | Toggle live-follow of the selected worker's logs |
 | `PgUp`/`PgDn` | Scroll the log pane (pauses follow; resumes at the bottom) |
@@ -106,6 +125,7 @@ harness_stack:    # optional roots override (must be a subset of `workers`);
   - llm-router        # plus their transitive dependencies
   - harness
 color: auto   # auto | always | never (respects NO_COLOR)
+ui_watch: false   # start injectable-UI workers in watcher mode (pnpm watch + III_<WORKER>_UI_WATCH=1)
 ```
 
 ## Troubleshooting

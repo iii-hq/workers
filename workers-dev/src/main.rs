@@ -54,6 +54,12 @@ struct Cli {
     #[arg(long, global = true, default_value = "auto")]
     color: String,
 
+    /// Start injectable-UI workers in watcher mode: run `pnpm watch` in
+    /// <worker>/ui and set III_<WORKER>_UI_WATCH=1 so open console tabs
+    /// hot-reload the worker's UI on rebuild (toggle per worker with `w`)
+    #[arg(long, global = true)]
+    ui_watch: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -108,6 +114,7 @@ async fn main() -> Result<()> {
         cli.config,
         cli.stop_on_exit,
         Some(cli.color),
+        cli.ui_watch,
     )?;
 
     let progress = matches!(

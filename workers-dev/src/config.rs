@@ -30,6 +30,11 @@ pub struct Config {
     pub worker_specs: Vec<WorkerSpec>,
     pub stop_on_exit: bool,
     pub color_mode: ColorMode,
+    /// Start injectable-UI workers in the SOP's watcher mode by default:
+    /// spawn `pnpm watch` in `<worker>/ui` and set `III_<WORKER>_UI_WATCH=1`
+    /// so console tabs hot-reload the worker's UI on rebuild. Per-worker
+    /// override at runtime via the TUI's `w` key.
+    pub ui_watch: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -43,9 +48,11 @@ struct FileConfig {
     harness_stack: Option<Vec<String>>,
     stop_on_exit: Option<bool>,
     color: Option<String>,
+    ui_watch: Option<bool>,
 }
 
 impl Config {
+    #[allow(clippy::too_many_arguments)]
     pub fn load(
         repo: Option<PathBuf>,
         engine_url: Option<String>,
@@ -54,6 +61,7 @@ impl Config {
         config_path: Option<PathBuf>,
         stop_on_exit: bool,
         color: Option<String>,
+        ui_watch: bool,
     ) -> Result<Self> {
         let file_cfg = if let Some(path) = config_path {
             let raw = std::fs::read_to_string(&path)
@@ -169,6 +177,7 @@ impl Config {
             worker_specs,
             stop_on_exit: stop_on_exit || file_cfg.stop_on_exit.unwrap_or(false),
             color_mode,
+            ui_watch: ui_watch || file_cfg.ui_watch.unwrap_or(false),
         })
     }
 

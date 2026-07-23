@@ -48,6 +48,11 @@ pub struct WorkerSpec {
     /// Direct dependencies declared in iii.worker.yaml, filtered to workers
     /// that actually exist in this repo, sorted.
     pub deps: Vec<String>,
+    /// `<worker>/ui` when the worker ships an injectable console UI project
+    /// (detected by `ui/package.json` — the same filesystem check CI uses).
+    /// Drives the SOP dev loop: `pnpm watch` here + `III_<WORKER>_UI_WATCH=1`
+    /// on the worker (docs/sops/injectable-console-ui.md § the dev loop).
+    pub ui_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,12 +100,18 @@ pub fn discover_repo_workers(repo_root: &Path) -> Result<Vec<WorkerSpec>> {
             .unwrap_or_default()
             .into_keys()
             .collect();
+        let ui_dir = dir
+            .join("ui")
+            .join("package.json")
+            .is_file()
+            .then(|| dir.join("ui"));
         specs.push(WorkerSpec {
             name,
             dir,
             group: WorkerGroup::Other, // assigned below once all names are known
             spawn,
             deps,
+            ui_dir,
         });
     }
 
@@ -239,6 +250,25 @@ mod tests {
             specs.iter().find(|s| s.name == "harness").unwrap().deps,
             vec!["state".to_string()]
         );
+    }
+
+    /// `ui/package.json` marks an injectable-UI worker; a bare `ui/` dir
+    /// without a package.json (or no ui/ at all) does not.
+    #[test]
+    fn detects_injectable_ui_projects() {
+        let tmp = TempDir::new().unwrap();
+        write_worker(&tmp, "state", "rust", "binary", true);
+        write_worker(&tmp, "harness", "rust", "binary", true);
+        let ui = tmp.path().join("state").join("ui");
+        fs::create_dir_all(&ui).unwrap();
+        fs::write(ui.join("package.json"), "{}").unwrap();
+        // Empty ui/ dir on harness must NOT count.
+        fs::create_dir_all(tmp.path().join("harness").join("ui")).unwrap();
+
+        let specs = discover_repo_workers(tmp.path()).unwrap();
+        let spec = |n: &str| specs.iter().find(|s| s.name == n).unwrap();
+        assert_eq!(spec("state").ui_dir.as_deref(), Some(ui.as_path()));
+        assert!(spec("harness").ui_dir.is_none());
     }
 
     #[test]

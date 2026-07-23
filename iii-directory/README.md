@@ -221,25 +221,27 @@ tree-shaped picker iterate `list` rows themselves and indent by
 
 ## Functions
 
-Sixteen functions, all under `directory::*`. All registrations are
+Thirteen functions, all under `directory::*`. All registrations are
 namespace-clean; this worker is intentionally agnostic to MCP and any
 other adapter.
 
-### `directory::skills::*` (filesystem reader)
+### `directory::skills::*` (filesystem reader + editor)
 
 | Function ID | Description |
 |---|---|
 | `directory::skills::download` | Pull markdown into `skills_folder`. Either `{repo, skill, branch?}` (defaults `branch=main`) or `{worker, version?|tag?}` (defaults `tag=latest`). |
 | `directory::skills::list` | Enriched listing of every fs-backed skill: `{ id, title, type, description, bytes, modified_at }` per row. `title` prefers the YAML frontmatter `title:` over the body H1, `type` is lifted from frontmatter `type:` (`null` when absent), and `description` is the first paragraph of the body — so consumers can render a picker without a follow-up `get` per row. |
-| `directory::skills::get` | Fetch one skill by id. Returns `{ id, title, type, description, body, modified_at }` — same shape `directory::skills::list` rows use, plus the raw markdown `body`. Same title-resolution and `type` precedence as `list`. Accepts a bare id or the same id prefixed with `iii://`. |
+| `directory::skills::get` | Fetch one skill by id. Returns `{ id, title, type, description, body, modified_at }` — same shape `directory::skills::list` rows use, plus the raw markdown `body`. Same title-resolution and `type` precedence as `list`. Accepts a bare id or the same id prefixed with `iii://`. Pass `raw: true` to additionally get the FULL on-disk file (frontmatter included) as `raw` — the round-trip form `update` takes. |
+| `directory::skills::update` | Overwrite one EXISTING skill file with new full-file content: `{ id, content }` where `content` is the edited `raw` from `get { raw: true }`. Validated against the read invariants (size cap, non-empty body after frontmatter); atomic write; fans out `directory::skills::on-change` with `op: "update"`. Never creates files. |
 | `directory::skills::index` | Render one short markdown entry per installed worker (skills with frontmatter `type: index`). Returns `{ body, workers_count }` where `body` is a ready-to-paste page: `# Skills index`, then one `## <worker title>` heading + the worker's first overview paragraph + a `Read iii://<ns>/index` pointer the agent can follow with `directory::skills::get`. Token-light by design; use `directory::skills::list` for per-skill rows. |
 
-### `directory::prompts::*` (filesystem reader)
+### `directory::prompts::*` (filesystem reader + editor)
 
 | Function ID | Description |
 |---|---|
 | `directory::prompts::list` | Metadata-only listing of every fs-backed prompt. |
-| `directory::prompts::get` | Fetch one prompt's body + `{name, description, modified_at}`. Plain shape, no envelope. |
+| `directory::prompts::get` | Fetch one prompt's body + `{name, description, modified_at}`. Plain shape, no envelope. Pass `raw: true` to additionally get the FULL on-disk file (frontmatter included) as `raw`. |
+| `directory::prompts::update` | Overwrite one EXISTING prompt file with new full-file content: `{ name, content }`. The frontmatter must keep a non-empty `description` (and a valid `name` when declared) — the same rules the scanner enforces. Atomic write; fans out `directory::prompts::on-change` with `op: "update"`. Returns the prompt's effective name after the write. |
 
 ### Engine introspection (native)
 
@@ -278,10 +280,10 @@ There is **no** `directory::skills::register` /
 
 | Trigger type | Fires when | Payload to subscribers |
 |---|---|---|
-| `directory::skills::on-change` | After a `directory::skills::download` that wrote at least one skill markdown file | `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }` |
-| `directory::prompts::on-change` | After a `directory::skills::download` that wrote at least one prompt markdown file | `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }` |
+| `directory::skills::on-change` | After a `directory::skills::download` that wrote at least one skill markdown file, or a `directory::skills::update` | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update: `{ "op": "update", "namespace": "<ns>", "id": "<id>" }` |
+| `directory::prompts::on-change` | After a `directory::skills::download` that wrote at least one prompt markdown file, or a `directory::prompts::update` | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update: `{ "op": "update", "name": "<name>" }` |
 
-Dispatches are fire-and-forget (Void), so the download path doesn't
+Dispatches are fire-and-forget (Void), so the write path doesn't
 block on downstream latency.
 
 ---

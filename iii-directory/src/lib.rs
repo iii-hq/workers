@@ -28,14 +28,19 @@
 //! `engine::triggers::list`, `engine::workers::list`). See the harness
 //! `iii` skill for recommended composition patterns.
 //!
-//! `directory::skills::download` is the only write path. It pulls
-//! markdown either from the workers registry (`worker=NAME
-//! version=X.Y.Z|tag=latest`; defaults to `tag=latest`) or from a
-//! GitHub repo (`repo=URL skill=NAME branch?=main`) and writes the
-//! contents into `<skills_folder>/<namespace>/...`. After every
-//! successful download the worker fires `directory::skills::on-change`
-//! and/or `directory::prompts::on-change` so subscribers can forward
-//! change notifications to their clients.
+//! Write paths: `directory::skills::download*` pulls markdown either
+//! from the workers registry (`worker=NAME version=X.Y.Z|tag=latest`;
+//! defaults to `tag=latest`) or from a GitHub repo (`repo=URL
+//! skill=NAME branch?=main`) and writes the contents into
+//! `<skills_folder>/<namespace>/...`; `directory::skills::update` /
+//! `directory::prompts::update` overwrite one existing file with edited
+//! full-file content. After every successful write the worker fires
+//! `directory::skills::on-change` and/or `directory::prompts::on-change`
+//! so subscribers can forward change notifications to their clients.
+//!
+//! The worker also ships an injectable console UI (see [`ui`]): a
+//! skills & prompts browser/editor page, a `directory::*`
+//! function-trigger renderer, and a custom configuration form.
 
 pub mod config;
 pub mod configuration;
@@ -44,3 +49,4 @@ pub mod functions;
 pub mod manifest;
 pub mod sources;
 pub mod trigger_types;
+pub mod ui;

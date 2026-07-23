@@ -13,6 +13,7 @@
 export const componentNames = [
   'Badge',
   'Button',
+  'CodeEditor',
   'CodeHighlight',
   'Dialog',
   'DialogClose',
@@ -31,6 +32,7 @@ export const componentNames = [
   'Input',
   'JsonHighlight',
   'Markdown',
+  'MarkdownPreview',
   'Select',
   'Skeleton',
   'StatusDot',

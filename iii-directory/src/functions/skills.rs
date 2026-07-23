@@ -173,6 +173,13 @@ pub struct SkillGetInput {
     /// schemes are rejected. The filename `SKILLS.md` is aliased to
     /// `index.md` to match the filesystem scanner.
     pub id: String,
+    /// When `true`, the response includes the FULL on-disk file content
+    /// (frontmatter block included) as `raw`. For editors that need to
+    /// round-trip the exact file (`directory::skills::update` takes the
+    /// same full-file form); agent readers should leave this unset and
+    /// use `body`.
+    #[serde(default)]
+    pub raw: Option<bool>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -199,6 +206,12 @@ pub struct SkillGetOutput {
     /// twice. Use `directory::skills::list` rows when you want the
     /// teaser without the full body.
     pub body: String,
+    /// FULL on-disk file content (frontmatter block included). Present
+    /// only when the request set `raw: true`. This is the exact string
+    /// to hand back to `directory::skills::update`; fallback notes that
+    /// `get` may prepend to `body` are never added here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
     /// File mtime as RFC 3339.
     pub modified_at: String,
 }
@@ -660,6 +673,7 @@ fn id_set(skills: &[FsSkill]) -> std::collections::HashSet<String> {
 fn read_skill_output(
     fs: &FsSkill,
     siblings: &std::collections::HashSet<String>,
+    include_raw: bool,
 ) -> Result<SkillGetOutput, String> {
     let (fm, body) = fs_source::read_skill_with_frontmatter(&fs.abs_path)?;
     let display = display_id(&fs.id, siblings);
@@ -667,12 +681,18 @@ fn read_skill_output(
     let kind = clean_optional(fm.kind);
     let function_id = clean_optional(fm.function_id);
     let (_, modified_at) = fs_metadata(fs);
+    let raw = if include_raw {
+        Some(fs_source::read_raw(&fs.abs_path)?)
+    } else {
+        None
+    };
     Ok(SkillGetOutput {
         id: display,
         title,
         kind,
         function_id,
         body,
+        raw,
         modified_at,
     })
 }
@@ -859,11 +879,12 @@ async fn get_skill_visible(
     let id = normalize_get_id(&req.id)?;
     reject_function_id_shaped(&id)?;
     validate_id(&id)?;
+    let include_raw = req.raw.unwrap_or(false);
     let visible = resolve_visible_skills(cfg, cache, iii, false).await;
     let siblings = id_set(&visible);
 
     if let Some(fs) = find_fs_skill_in(&visible, &id) {
-        return read_skill_output(&fs, &siblings);
+        return read_skill_output(&fs, &siblings, include_raw);
     }
 
     // Miss. Two recovery paths, in order of specificity:
@@ -874,7 +895,7 @@ async fn get_skill_visible(
     //    collapses straight to that worker's overview — one call, not three.
     if let Some(overview_id) = worker_overview_fallback(&id, &visible, &registered) {
         if let Some(fs) = find_fs_skill_in(&visible, &overview_id) {
-            let mut out = read_skill_output(&fs, &siblings)?;
+            let mut out = read_skill_output(&fs, &siblings, include_raw)?;
             out.body = format!(
                 "{}{}",
                 worker_overview_redirect_note(&id, &overview_id, &siblings),
@@ -890,7 +911,7 @@ async fn get_skill_visible(
     if let Some(worker) = engine_fallback_worker(&id, &visible, &registered) {
         let engine_id = format!("{ENGINE_NAMESPACE}/index");
         if let Some(eng) = find_fs_skill_in(&visible, &engine_id) {
-            let mut out = read_skill_output(&eng, &siblings)?;
+            let mut out = read_skill_output(&eng, &siblings, include_raw)?;
             out.body = format!("{}{}", skilless_worker_note(&worker), out.body);
             return Ok(out);
         }
@@ -916,6 +937,7 @@ pub async fn get_skill(cfg: &SkillsConfig, req: SkillGetInput) -> Result<SkillGe
     let id = normalize_get_id(&req.id)?;
     reject_function_id_shaped(&id)?;
     validate_id(&id)?;
+    let include_raw = req.raw.unwrap_or(false);
     let (fs_all, _skipped) = fs_source::scan_skills(&cfg.resolved_skills_folder());
     let siblings = id_set(&fs_all);
     let Some(fs) = find_fs_skill_in(&fs_all, &id) else {
@@ -937,12 +959,18 @@ pub async fn get_skill(cfg: &SkillsConfig, req: SkillGetInput) -> Result<SkillGe
     let kind = clean_optional(fm.kind);
     let function_id = clean_optional(fm.function_id);
     let (_, modified_at) = fs_metadata(&fs);
+    let raw = if include_raw {
+        Some(fs_source::read_raw(&fs.abs_path)?)
+    } else {
+        None
+    };
     Ok(SkillGetOutput {
         id: display,
         title,
         kind,
         function_id,
         body,
+        raw,
         modified_at,
     })
 }
@@ -1035,7 +1063,7 @@ pub fn validate_id(id: &str) -> Result<(), String> {
 /// `::` can never appear in a valid skill id, so detect it and return a
 /// targeted, self-correcting message instead of a raw "invalid segment"
 /// rejection the agent can't act on.
-fn reject_function_id_shaped(id: &str) -> Result<(), String> {
+pub(crate) fn reject_function_id_shaped(id: &str) -> Result<(), String> {
     if id.contains("::") {
         return Err(invalid_input_message(
             "D112",
@@ -1252,7 +1280,7 @@ fn render_index_markdown(entries: &[SkillEntry]) -> String {
 /// `<id>/index` overview that exists, never to a sibling skill — so a
 /// function-shaped typo like `sandbox/exec` (no `sandbox/exec/index`)
 /// still misses rather than silently resolving wrong.
-fn find_fs_skill_in(skills: &[FsSkill], id: &str) -> Option<FsSkill> {
+pub(crate) fn find_fs_skill_in(skills: &[FsSkill], id: &str) -> Option<FsSkill> {
     let alias = format!("{id}/index");
     let mut exact: Option<FsSkill> = None;
     let mut aliased: Option<FsSkill> = None;
@@ -1852,6 +1880,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "ns/doc".into(),
+                ..Default::default()
             },
         )
         .await
@@ -1860,6 +1889,41 @@ First paragraph.
         assert_eq!(out.title, "Real title");
         assert_eq!(out.kind.as_deref(), Some("how-to"));
         assert!(out.body.contains("Body H1"));
+    }
+
+    #[tokio::test]
+    async fn get_with_raw_returns_full_file_for_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("ns");
+        std::fs::create_dir_all(&ns).unwrap();
+        let full = "---\ntitle: Real title\n---\n# H1\n\nThe body.\n";
+        std::fs::write(ns.join("doc.md"), full).unwrap();
+        let cfg = cfg_with_skills_folder(tmp.path());
+
+        let out = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "ns/doc".into(),
+                raw: Some(true),
+            },
+        )
+        .await
+        .unwrap();
+        // `raw` is the exact on-disk file (frontmatter included) while
+        // `body` stays frontmatter-stripped — the update round-trip form.
+        assert_eq!(out.raw.as_deref(), Some(full));
+        assert!(!out.body.contains("title: Real title"));
+
+        let without = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "ns/doc".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(without.raw.is_none(), "raw must be opt-in");
     }
 
     #[tokio::test]
@@ -1873,6 +1937,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "ns/plain".into(),
+                ..Default::default()
             },
         )
         .await
@@ -1894,6 +1959,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "sandbox/create".into(),
+                ..Default::default()
             },
         )
         .await
@@ -1913,9 +1979,15 @@ First paragraph.
         let tmp = tempfile::tempdir().unwrap();
         let cfg = cfg_with_skills_folder(tmp.path());
         for fid in ["database::execute", "shell::fs::mv"] {
-            let err = get_skill(&cfg, SkillGetInput { id: fid.into() })
-                .await
-                .expect_err("function id must be rejected");
+            let err = get_skill(
+                &cfg,
+                SkillGetInput {
+                    id: fid.into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect_err("function id must be rejected");
             assert!(err.contains("D112"), "got: {err}");
             assert!(err.contains("invalid_input"), "got: {err}");
             assert!(err.contains("FUNCTION id"), "got: {err}");
@@ -1945,6 +2017,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "sandbox/exec".into(),
+                ..Default::default()
             },
         )
         .await
@@ -1975,6 +2048,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "sandbox/exec".into(),
+                ..Default::default()
             },
         )
         .await
@@ -2020,6 +2094,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "iii/skills/sandbox/index".into(),
+                ..Default::default()
             },
         )
         .await
@@ -2050,6 +2125,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "anything/here".into(),
+                ..Default::default()
             },
         )
         .await
@@ -2084,6 +2160,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "ns/doc".into(),
+                ..Default::default()
             },
         )
         .await
@@ -2112,6 +2189,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "sandbox".into(),
+                ..Default::default()
             },
         )
         .await
@@ -2138,6 +2216,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "sandbox".into(),
+                ..Default::default()
             },
         )
         .await
@@ -2146,6 +2225,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "sandbox/index".into(),
+                ..Default::default()
             },
         )
         .await
@@ -2176,6 +2256,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "sandbox/exec".into(),
+                ..Default::default()
             },
         )
         .await
@@ -2200,6 +2281,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "resend/emails".into(),
+                ..Default::default()
             },
         )
         .await
@@ -2224,6 +2306,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "sandbox".into(),
+                ..Default::default()
             },
         )
         .await
@@ -2256,6 +2339,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "sandbox/skills/sandbox/create".into(),
+                ..Default::default()
             },
         )
         .await
@@ -2279,6 +2363,7 @@ First paragraph.
             &cfg,
             SkillGetInput {
                 id: "ns/readme".into(),
+                ..Default::default()
             },
         )
         .await

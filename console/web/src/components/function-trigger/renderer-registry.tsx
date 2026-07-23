@@ -1,6 +1,6 @@
 /**
  * Ordered renderer registry for `FunctionTriggerCard` — replaces the
- * hand-chained `??` dispatch across the 13 first-party ToolView families,
+ * hand-chained `??` dispatch across the first-party ToolView families,
  * and prepends runtime-injected renderers (injectable UI's
  * `host.functionTriggers.register`).
  *
@@ -15,10 +15,6 @@ import {
   BrowserToolView,
 } from '@/components/chat/browser'
 import { CoderFunctionIdLabel, CoderToolView } from '@/components/chat/coder'
-import {
-  DirectoryFunctionIdLabel,
-  DirectoryToolView,
-} from '@/components/chat/directory'
 import { EngineFunctionIdLabel, EngineToolView } from '@/components/chat/engine'
 import { FpFunctionIdLabel, FpToolView } from '@/components/chat/fp'
 import {
@@ -48,7 +44,7 @@ import type { FunctionTriggerMessage } from '@/types/chat'
 import type { FunctionTriggerRenderer } from '@/types/injectable-ui'
 
 /**
- * The 13 first-party families, in the exact order of the old `??` chains.
+ * The first-party families (12 since directory moved into its worker's injected UI), in the exact order of the old `??` chains.
  * Each family's `tryRender*` already gates on its own function ids, so an
  * entry returning `null` falls through to the next.
  */
@@ -69,14 +65,8 @@ export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
     tryRenderPreview: EngineToolView.tryRenderPreview,
     FunctionIdLabel: EngineFunctionIdLabel,
   },
-  {
-    id: 'first-party/directory',
-    isMatch: DirectoryToolView.isDirectoryFunction,
-    tryRender: DirectoryToolView.tryRender,
-    tryRenderRunning: DirectoryToolView.tryRenderRunning,
-    tryRenderPreview: DirectoryToolView.tryRenderPreview,
-    FunctionIdLabel: DirectoryFunctionIdLabel,
-  },
+  // directory::* rendering is no longer first-party: the iii-directory
+  // worker ships it as injected UI (iii-directory/ui/src/function-trigger).
   {
     id: 'first-party/worker',
     isMatch: WorkerToolView.isWorkerFunction,

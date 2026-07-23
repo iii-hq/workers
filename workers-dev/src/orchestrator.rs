@@ -37,7 +37,9 @@ pub struct Orchestrator {
 impl Orchestrator {
     pub fn new(config: Config, progress: bool) -> Result<Self> {
         let graph = WorkerGraph::load(&config.repo_root, &config.workers)?;
-        let runtimes = crate::runtime::new_runtimes(&config.workers);
+        let runtimes = crate::runtime::new_runtimes(&config.workers, |name| {
+            config.ui_watch && config.worker_spec(name).is_some_and(|s| s.ui_dir.is_some())
+        });
         Ok(Self {
             config,
             graph,
@@ -325,6 +327,16 @@ impl Orchestrator {
             bail!("worker directory not found: {}", worker_dir.display());
         }
 
+        // Injectable-UI dev loop (docs/sops/injectable-console-ui.md): arm the
+        // worker's iii-console-ui watcher via its env var and run the esbuild
+        // rebuild (`pnpm watch`) alongside. Effective only when the worker
+        // ships a ui/ project and its runtime flag is on.
+        let ui_dir = spec.ui_dir.clone();
+        let ui_watch = ui_dir.is_some() && {
+            let runtimes = self.runtimes.read().await;
+            runtimes.get(name).is_some_and(|rt| rt.ui_watch)
+        };
+
         let mut cmd = Command::new("cargo");
         cmd.arg("run");
         if self.config.release {
@@ -338,6 +350,10 @@ impl Orchestrator {
         cmd.env("CARGO_TERM_COLOR", "never");
         cmd.env("CARGO_TERM_PROGRESS", "never");
         cmd.env("CLICOLOR_FORCE", "0");
+        if ui_watch {
+            // `1` = the crate's default ui/dist, relative to the worker cwd.
+            cmd.env(ui_watch_env(name), "1");
+        }
         // Run the worker in its own process group so stopping it can signal the
         // whole group. `cargo run` forks the worker binary as a child; killing
         // only cargo orphans the worker (it keeps running, still connected to
@@ -384,6 +400,12 @@ impl Orchestrator {
             wait_for_exit(&name_wait, expected_pid, runtimes_wait).await;
         });
 
+        if ui_watch {
+            if let Some(ui_dir) = &ui_dir {
+                self.spawn_ui_watcher(name, ui_dir).await;
+            }
+        }
+
         if wait_connected {
             self.wait_connected(name).await?;
         }
@@ -391,14 +413,112 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Spawn the `pnpm watch` companion for a worker's ui/ project (the SOP
+    /// dev loop's build half; the worker's own `III_<WORKER>_UI_WATCH` poller
+    /// is the re-register half). Output streams into the worker's log ring
+    /// tagged `[ui]`. Spawn failure is a warn line, not a start failure —
+    /// the worker itself is unaffected.
+    async fn spawn_ui_watcher(&self, name: &str, ui_dir: &std::path::Path) {
+        let mut cmd = Command::new("pnpm");
+        cmd.args(["run", "watch"]);
+        cmd.current_dir(ui_dir);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        cmd.kill_on_drop(true);
+        cmd.env("NO_COLOR", "1");
+        // Own process group, same as the worker: `pnpm run` forks node, and
+        // stopping must take the whole tree down (see terminate_process_group).
+        #[cfg(unix)]
+        cmd.process_group(0);
+
+        match cmd.spawn() {
+            Ok(mut child) => {
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
+                {
+                    let mut runtimes = self.runtimes.write().await;
+                    if let Some(rt) = runtimes.get_mut(name) {
+                        push_log(
+                            rt,
+                            format!(
+                                "[ui] watch: pnpm watch in {} · {}=1 (console tabs hot-reload on rebuild)",
+                                ui_dir.display(),
+                                ui_watch_env(name)
+                            ),
+                        );
+                        rt.set_ui_child(child);
+                    }
+                }
+                if let Some(stdout) = stdout {
+                    let worker = name.to_string();
+                    let runtimes = self.runtimes.clone();
+                    tokio::spawn(async move {
+                        read_stream_tagged(worker, stdout, runtimes, UI_LOG_TAG, false).await;
+                    });
+                }
+                if let Some(stderr) = stderr {
+                    let worker = name.to_string();
+                    let runtimes = self.runtimes.clone();
+                    tokio::spawn(async move {
+                        read_stream_tagged(worker, stderr, runtimes, UI_LOG_TAG, false).await;
+                    });
+                }
+            }
+            Err(err) => {
+                let mut runtimes = self.runtimes.write().await;
+                if let Some(rt) = runtimes.get_mut(name) {
+                    push_log(
+                        rt,
+                        format!(
+                            "[ui] failed to spawn `pnpm watch` in {}: {err} — UI hot reload \
+                             inactive (is pnpm on PATH?)",
+                            ui_dir.display()
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Flip the injectable-UI watcher flag for one worker (TUI `w` key).
+    /// Errors when the worker ships no ui/ project. A running worker is
+    /// restarted so the `III_<WORKER>_UI_WATCH` env var takes effect; a
+    /// stopped one just starts with the new flag next time. Returns the new
+    /// state.
+    pub async fn toggle_ui_watch(&self, name: &str) -> Result<bool> {
+        let spec = self
+            .config
+            .worker_spec(name)
+            .with_context(|| format!("unknown worker {name}"))?;
+        if spec.ui_dir.is_none() {
+            bail!("worker {name} ships no ui/ project — nothing to watch");
+        }
+        let (next, running) = {
+            let mut runtimes = self.runtimes.write().await;
+            let rt = runtimes.get_mut(name).context("unknown worker runtime")?;
+            rt.ui_watch = !rt.ui_watch;
+            (rt.ui_watch, rt.pid().is_some())
+        };
+        if running {
+            self.start_one(name, false).await?;
+        }
+        Ok(next)
+    }
+
     async fn stop_one(&self, name: &str) {
-        let child = {
+        let (child, ui_child) = {
             let mut runtimes = self.runtimes.write().await;
             let Some(rt) = runtimes.get_mut(name) else {
                 return;
             };
-            rt.take_child()
+            (rt.take_child(), rt.take_ui_child())
         };
+
+        if let Some(mut child) = ui_child {
+            terminate_process_group(&mut child).await;
+            let _ = child.wait().await;
+        }
 
         if let Some(mut child) = child {
             terminate_process_group(&mut child).await;
@@ -529,6 +649,35 @@ impl Orchestrator {
     }
 }
 
+/// Log-line prefix for the `pnpm watch` companion's output, so esbuild
+/// chatter is tellable apart from the worker's own logs in the shared ring.
+const UI_LOG_TAG: &str = "[ui] ";
+
+/// The worker's hot-reload env var, derived exactly like the
+/// `iii-console-ui` crate does in `ConsoleUi::new` (non-alphanumerics → `_`,
+/// uppercased): `III_<WORKER>_UI_WATCH`. Workers that override
+/// `.watch_env(…)` in their builder won't match — none in this repo do.
+fn ui_watch_env(worker: &str) -> String {
+    let stem: String = worker
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("III_{stem}_UI_WATCH")
+}
+
+/// Push a line into a worker's ring buffer AND its live-follow channel —
+/// the same pair every streamed log line goes through.
+fn push_log(rt: &mut WorkerRuntime, line: String) {
+    rt.logs.push(line.clone());
+    let _ = rt.log_tx.send(line);
+}
+
 fn build_view(
     spec: &crate::discover::WorkerSpec,
     rt: &WorkerRuntime,
@@ -563,6 +712,7 @@ fn build_view(
         local_pid: rt.pid(),
         uptime,
         exit_code: rt.exit_code,
+        ui_watch: spec.ui_dir.is_some().then_some(rt.ui_watch),
     }
 }
 
@@ -589,6 +739,20 @@ async fn read_stream(
     stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
     runtimes: SharedRuntimes,
 ) {
+    read_stream_tagged(worker, stream, runtimes, "", true).await;
+}
+
+/// Stream lines into a worker's log ring. `tag` prefixes every line (the ui
+/// watcher's `[ui] `); `track_state` gates the cargo-output → ProcState
+/// heuristics, which must never run on watcher output (an esbuild "error"
+/// line is not the WORKER compiling or crashing).
+async fn read_stream_tagged(
+    worker: String,
+    stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
+    runtimes: SharedRuntimes,
+    tag: &'static str,
+    track_state: bool,
+) {
     let mut lines = BufReader::new(stream).lines();
     loop {
         match lines.next_line().await {
@@ -597,20 +761,20 @@ async fn read_stream(
                 if normalized.is_empty() {
                     continue;
                 }
+                let tagged = format!("{tag}{normalized}");
                 let mut runtimes = runtimes.write().await;
                 if let Some(rt) = runtimes.get_mut(&worker) {
-                    rt.logs.push(normalized.clone());
-                    update_proc_state_from_line(rt, &normalized);
-                    let _ = rt.log_tx.send(normalized);
+                    if track_state {
+                        update_proc_state_from_line(rt, &normalized);
+                    }
+                    push_log(rt, tagged);
                 }
             }
             Ok(None) => break,
             Err(err) => {
                 let mut runtimes = runtimes.write().await;
                 if let Some(rt) = runtimes.get_mut(&worker) {
-                    let msg = format!("log read error: {err}");
-                    rt.logs.push(msg.clone());
-                    let _ = rt.log_tx.send(msg);
+                    push_log(rt, format!("{tag}log read error: {err}"));
                 }
                 break;
             }
@@ -764,6 +928,7 @@ mod tests {
             worker_specs,
             stop_on_exit: false,
             color_mode: Default::default(),
+            ui_watch: false,
         };
         let orch = Orchestrator::new(config, false).unwrap();
 
@@ -776,6 +941,16 @@ mod tests {
             .closure_with_deps(&["harness".to_string()])
             .unwrap();
         assert!(order.contains(&"scrapling".to_string()));
+    }
+
+    /// The env var must match what `iii-console-ui`'s `ConsoleUi::new`
+    /// derives, or the worker's poller never arms. Locks the two known
+    /// shapes: plain names and hyphenated ones.
+    #[test]
+    fn ui_watch_env_matches_console_ui_crate_derivation() {
+        assert_eq!(ui_watch_env("state"), "III_STATE_UI_WATCH");
+        assert_eq!(ui_watch_env("iii-directory"), "III_III_DIRECTORY_UI_WATCH");
+        assert_eq!(ui_watch_env("console"), "III_CONSOLE_UI_WATCH");
     }
 
     /// Dependencies already connected to the engine are left alone; only

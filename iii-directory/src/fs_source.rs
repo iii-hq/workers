@@ -69,11 +69,23 @@ pub enum SourceKind {
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct PromptFrontmatter {
+pub struct PromptFrontmatter {
     #[serde(default)]
-    name: Option<String>,
+    pub name: Option<String>,
     #[serde(default)]
-    description: Option<String>,
+    pub description: Option<String>,
+}
+
+/// Parse the REQUIRED prompt frontmatter block out of raw file content.
+/// Shared by [`scan_prompts`] (scan-time) and `directory::prompts::update`
+/// (write-time) so the two validations can't drift: a write that this
+/// function rejects is exactly a file the next scan would skip.
+pub fn parse_prompt_frontmatter(content: &str) -> Result<PromptFrontmatter, String> {
+    let (fm_text, _) = split_frontmatter(content);
+    let Some(fm_text) = fm_text else {
+        return Err("missing YAML frontmatter (expected --- ... --- block at file start)".into());
+    };
+    serde_yaml::from_str(fm_text).map_err(|e| format!("invalid frontmatter YAML: {e}"))
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -311,23 +323,13 @@ pub fn scan_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
                 continue;
             }
         };
-        let (fm_text, _) = split_frontmatter(&content);
-        let Some(fm_text) = fm_text else {
-            skipped.push(SkipReason {
-                kind: SourceKind::Prompt,
-                path: abs,
-                reason: "missing YAML frontmatter (expected --- ... --- block at file start)"
-                    .into(),
-            });
-            continue;
-        };
-        let fm: PromptFrontmatter = match serde_yaml::from_str(fm_text) {
+        let fm = match parse_prompt_frontmatter(&content) {
             Ok(f) => f,
-            Err(e) => {
+            Err(reason) => {
                 skipped.push(SkipReason {
                     kind: SourceKind::Prompt,
                     path: abs,
-                    reason: format!("invalid frontmatter YAML: {e}"),
+                    reason,
                 });
                 continue;
             }
@@ -402,6 +404,24 @@ pub fn scan_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
 pub fn read_body(abs_path: &Path) -> Result<String, String> {
     let (_, body) = read_skill_with_frontmatter(abs_path)?;
     Ok(body)
+}
+
+/// Read a file's FULL raw content (frontmatter block included) with the
+/// same size cap as [`read_skill_with_frontmatter`]. Serves the `raw: true`
+/// read path so editors can round-trip the exact on-disk file; unlike the
+/// body readers it accepts an empty-after-frontmatter body (the raw form
+/// is for editing, not serving).
+pub fn read_raw(abs_path: &Path) -> Result<String, String> {
+    let raw = std::fs::read_to_string(abs_path)
+        .map_err(|e| format!("read {}: {e}", abs_path.display()))?;
+    if raw.len() > SKILL_BODY_MAX_BYTES {
+        return Err(format!(
+            "file {} is too large ({} bytes; max {SKILL_BODY_MAX_BYTES})",
+            abs_path.display(),
+            raw.len()
+        ));
+    }
+    Ok(raw)
 }
 
 /// Like [`read_body`] but also returns the parsed [`SkillFrontmatter`].

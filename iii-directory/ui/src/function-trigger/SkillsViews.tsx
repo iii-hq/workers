@@ -1,9 +1,15 @@
+import { MarkdownPreview } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
+import { formatBytes, formatRelativeTime } from '../lib/format'
 import {
   ActionLine,
+  Card,
+  EmptyRow,
+  KvChip,
   MetaRow,
+  PulseLine,
   StatusPill,
-} from '@/components/chat/sandbox/shared'
+} from '../lib/widgets'
 import {
   type SkillsListRequest,
   safeParseRequest,
@@ -14,7 +20,6 @@ import {
   skillsListRequestSchema,
   skillsListResponseSchema,
 } from './parsers'
-import { formatBytes, formatRelativeTime, KvChip, MarkdownPane } from './shared'
 
 interface ViewProps {
   input: unknown
@@ -50,27 +55,21 @@ export function SkillsListView({ input, output, running }: ViewProps) {
       {resp.skills.length === 0 ? (
         <EmptyRow label="no skills match" />
       ) : (
-        <ul className="divide-y divide-rule-2">
+        <ul className="dir-ui-list">
           {resp.skills.map((s) => (
-            <li key={s.id} className="px-3 py-2 flex flex-col gap-0.5">
-              <div className="flex items-baseline gap-2 flex-wrap">
-                <span className="font-mono text-[12.5px] text-accent break-all">
-                  {s.id}
-                </span>
+            <li key={s.id} className="dir-ui-row">
+              <div className="dir-ui-row-head">
+                <span className="dir-ui-id">{s.id}</span>
                 {s.type ? <KvChip label="type">{s.type}</KvChip> : null}
                 {s.function_id ? (
                   <KvChip label="fn">{s.function_id}</KvChip>
                 ) : null}
               </div>
-              <div className="font-mono text-[12px] text-ink leading-[1.55]">
-                {s.title}
-              </div>
+              <div className="dir-ui-title">{s.title}</div>
               {s.description ? (
-                <div className="font-mono text-[11.5px] text-ink-faint leading-[1.55]">
-                  {s.description}
-                </div>
+                <div className="dir-ui-desc">{s.description}</div>
               ) : null}
-              <div className="font-mono text-[11px] text-ink-ghost tabular-nums">
+              <div className="dir-ui-fine">
                 {formatBytes(s.bytes)} · {formatRelativeTime(s.modified_at)}
               </div>
             </li>
@@ -88,15 +87,13 @@ export function SkillsGetView({ input, output, running }: ViewProps) {
 
   if (running) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <Card>
         <MetaRow>
           <StatusPill label="loading…" variant="default" />
           {req ? <KvChip label="id">{req.id}</KvChip> : null}
         </MetaRow>
-        <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost animate-pulse">
-          · fetching skill…
-        </div>
-      </div>
+        <PulseLine label="fetching skill…" />
+      </Card>
     )
   }
 
@@ -104,7 +101,7 @@ export function SkillsGetView({ input, output, running }: ViewProps) {
   if (!resp) return null
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <Card>
       <MetaRow>
         <StatusPill label="skill" variant="accent" />
         {resp.type ? <KvChip label="type">{resp.type}</KvChip> : null}
@@ -114,17 +111,13 @@ export function SkillsGetView({ input, output, running }: ViewProps) {
         <KvChip label="modified">{formatRelativeTime(resp.modified_at)}</KvChip>
       </MetaRow>
       <ActionLine symbol="ƒ" tone="accent">
-        <div className="flex flex-col">
-          <span className="font-mono text-[13px] text-accent break-all">
-            {resp.id}
-          </span>
-          <span className="font-mono text-[11.5px] text-ink-faint">
-            {resp.title}
-          </span>
+        <div className="dir-ui-stack">
+          <span className="dir-ui-id lg">{resp.id}</span>
+          <span className="dir-ui-desc">{resp.title}</span>
         </div>
       </ActionLine>
-      <MarkdownPane body={resp.body} />
-    </div>
+      <MarkdownPreview markdown={resp.body} />
+    </Card>
   )
 }
 
@@ -133,14 +126,12 @@ export function SkillsGetView({ input, output, running }: ViewProps) {
 export function SkillsIndexView({ output, running }: ViewProps) {
   if (running) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <Card>
         <MetaRow>
           <StatusPill label="indexing…" variant="default" />
         </MetaRow>
-        <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost animate-pulse">
-          · building index…
-        </div>
-      </div>
+        <PulseLine label="building index…" />
+      </Card>
     )
   }
 
@@ -148,7 +139,7 @@ export function SkillsIndexView({ output, running }: ViewProps) {
   if (!resp) return null
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <Card>
       <MetaRow>
         <StatusPill
           label={`${resp.workers_count} ${
@@ -160,9 +151,9 @@ export function SkillsIndexView({ output, running }: ViewProps) {
       {resp.workers_count === 0 ? (
         <EmptyRow label="no workers indexed" />
       ) : (
-        <MarkdownPane body={resp.body} />
+        <MarkdownPreview markdown={resp.body} />
       )}
-    </div>
+    </Card>
   )
 }
 
@@ -176,13 +167,7 @@ interface ListShellProps {
   children?: ReactNode
 }
 
-function ListShell({
-  count,
-  noun,
-  filters,
-  running,
-  children,
-}: ListShellProps) {
+function ListShell({ count, noun, filters, running, children }: ListShellProps) {
   const label =
     running || count === null
       ? `listing ${noun}…`
@@ -195,29 +180,13 @@ function ListShell({
       ? 'warn'
       : 'accent'
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <Card>
       <MetaRow>
         <StatusPill label={label} variant={pillVariant} />
-        {filters ? (
-          <span className="flex flex-wrap items-center gap-1.5">{filters}</span>
-        ) : null}
+        {filters ? <span className="dir-ui-filters">{filters}</span> : null}
       </MetaRow>
-      {running ? (
-        <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost animate-pulse">
-          · scanning skills folder…
-        </div>
-      ) : (
-        children
-      )}
-    </div>
-  )
-}
-
-function EmptyRow({ label }: { label: string }) {
-  return (
-    <div className="px-3 py-4 font-mono text-[12.5px] text-ink-ghost">
-      · {label}
-    </div>
+      {running ? <PulseLine label={`scanning ${noun} folder…`} /> : children}
+    </Card>
   )
 }
 
