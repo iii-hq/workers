@@ -24,7 +24,9 @@ impl FloorExpectations<'_> {
     }
 
     fn declares_failure(&self) -> bool {
-        self.turn_statuses.iter().any(|status| status != "completed")
+        self.turn_statuses
+            .iter()
+            .any(|status| status != "completed")
     }
 }
 
@@ -392,7 +394,10 @@ mod tests {
         });
         evidence.traces = TraceEvidenceV1::new(evidence.traces.traces);
         let statuses = vec!["completed".to_string(), "completed".to_string()];
-        assert_eq!(floor_failure_for(&evidence, &expectations(&statuses, 2)), None);
+        assert_eq!(
+            floor_failure_for(&evidence, &expectations(&statuses, 2)),
+            None
+        );
     }
 
     /// The reseed shape: one send, one trace, a failed turn whose finalize
@@ -412,13 +417,18 @@ mod tests {
             ],
         }]);
         let statuses = vec!["failed".to_string(), "completed".to_string()];
-        assert_eq!(floor_failure_for(&evidence, &expectations(&statuses, 1)), None);
+        assert_eq!(
+            floor_failure_for(&evidence, &expectations(&statuses, 1)),
+            None
+        );
 
         // The same evidence fails an all-completed expectation.
         let all_completed = vec!["completed".to_string(), "completed".to_string()];
-        assert!(floor_failure_for(&evidence, &expectations(&all_completed, 1))
-            .unwrap()
-            .contains("error spans: 1"));
+        assert!(
+            floor_failure_for(&evidence, &expectations(&all_completed, 1))
+                .unwrap()
+                .contains("error spans: 1")
+        );
 
         // Statuses are positional: swapping the declaration fails binding.
         let swapped = vec!["completed".to_string(), "failed".to_string()];

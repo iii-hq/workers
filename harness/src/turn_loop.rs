@@ -1105,11 +1105,7 @@ async fn drain_queued(
 /// reseed a parked notification sits unread with no turn to process it, which
 /// strands an autonomous run that ended its turn expecting the fire to wake it.
 /// Never blocks the finalise.
-async fn drain_queued_best_effort(
-    deps: &Deps,
-    session: &SessionClient,
-    session_id: &str,
-) -> bool {
+async fn drain_queued_best_effort(deps: &Deps, session: &SessionClient, session_id: &str) -> bool {
     match drain_queued(deps, session, session_id).await {
         Ok(model_visible) => model_visible > 0,
         Err(e) => {

@@ -113,7 +113,10 @@ mod tests {
         // The parked steer rides generation 1, which then fails without
         // streaming — the deterministic route into the finalize drain.
         let first = &fixture.script.generations[0];
-        let effect = first.on_serve.as_ref().expect("generation 1 parks a message");
+        let effect = first
+            .on_serve
+            .as_ref()
+            .expect("generation 1 parks a message");
         assert_eq!(effect.steer.session_id, "{{session_id}}");
         assert!(!effect.steer.message.is_empty());
         assert!(first.failure.is_some());

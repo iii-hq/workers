@@ -36,9 +36,7 @@ impl ScenarioRunner<'_> {
                 .probe()
                 .wait_for_completion_turns(expected, deadline)
                 .await
-                .map(|events| {
-                    latest_terminal_observation(&events).map(|o| o.event.turn_id.clone())
-                })
+                .map(|events| latest_terminal_observation(&events).map(|o| o.event.turn_id.clone()))
         } else {
             services
                 .probe()
