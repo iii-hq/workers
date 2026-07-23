@@ -237,11 +237,11 @@ fn sdk_doc_gate() {
     // Moved verbatim from the identity prompt into the building playbook.
     assert!(BUILDING.contains("the FIRST line of worker code"));
     for url in [
-        "https://iii.dev/docs/api-reference/sdk-node",
-        "https://iii.dev/docs/api-reference/sdk-python",
-        "https://iii.dev/docs/api-reference/sdk-rust",
-        "https://iii.dev/docs/api-reference/sdk-browser",
-        "https://iii.dev/docs/sdk-reference/engine-sdk",
+        "https://iii.dev/docs/reference/sdk-node",
+        "https://iii.dev/docs/reference/sdk-python",
+        "https://iii.dev/docs/reference/sdk-rust",
+        "https://iii.dev/docs/reference/sdk-browser",
+        "https://iii.dev/docs/reference/engine-protocol",
     ] {
         assert!(BUILDING.contains(url), "missing {url}");
     }
