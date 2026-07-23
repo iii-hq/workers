@@ -659,10 +659,7 @@ async fn handle_react(
     if let Some((join_id, canon)) = join_probe {
         deps.subscriptions.set_join_probe(
             &sub_id,
-            crate::subscriptions::registry::JoinProbe {
-                id: join_id,
-                canon,
-            },
+            crate::subscriptions::registry::JoinProbe { id: join_id, canon },
         );
     }
 
