@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { useExtConfigForm } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import type { ConfigurationSchemaView, JsonValue } from './api'
 import { isDirty } from './dirty'
@@ -42,6 +43,9 @@ interface WorkerEditorProps {
 export function WorkerEditor({ entry, onDirtyChange }: WorkerEditorProps) {
   const valueQuery = useConfigurationValue(entry.id)
   const setMutation = useSetConfiguration(entry.id)
+  // Injectable-UI configForms slot: a worker-registered form replaces the
+  // FORM REGION only — the save lifecycle below stays host-owned either way.
+  const formOverride = useExtConfigForm(entry.id)
 
   const [draft, setDraft] = useState<JsonValue | undefined>(undefined)
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' })
@@ -183,7 +187,32 @@ export function WorkerEditor({ entry, onDirtyChange }: WorkerEditorProps) {
           />
         ) : null}
         {!valueQuery.isLoading && !valueQuery.isError && draft !== undefined ? (
-          isObjectSchema(entry.schema) ? (
+          formOverride ? (
+            <>
+              <div className="mx-auto max-w-3xl w-full px-6 py-8">
+                <formOverride.component
+                  id={entry.id}
+                  schema={isObjectSchema(entry.schema) ? entry.schema : null}
+                  value={draft}
+                  onChange={handleDraftChange}
+                  errors={displayErrors}
+                  focusField={fieldPathFromHash(entry.id)?.map(String)}
+                />
+                {rootError ? (
+                  <p className={cn(wt.bodySm, 'text-alert mt-4')} role="alert">
+                    {rootError}
+                  </p>
+                ) : null}
+              </div>
+              <SaveBar
+                dirty={dirty}
+                status={status}
+                onSave={handleSave}
+                onReset={handleReset}
+                saveDisabled={clientErrors.size > 0}
+              />
+            </>
+          ) : isObjectSchema(entry.schema) ? (
             <>
               <div className="mx-auto max-w-3xl w-full px-6 py-8">
                 <SchemaForm

@@ -11,7 +11,7 @@
  *   - `approval::pending-created` / `approval::pending-resolved`
  *     (`approval-gate/tests/golden/schemas/approval.pending-*.json`)
  *
- * Transcript CONTENT (assistant text, thinking, function-call blocks, function
+ * Transcript CONTENT (assistant text, thinking, function-trigger blocks, function
  * results) is NOT carried here — it renders from `session::message-added` /
  * `session::message-updated` reconciled by the conversations layer
  * (`lib/sessions/*`). These trigger payloads carry only turn lifecycle and
@@ -76,7 +76,7 @@ export type ResolvedOutcome = 'allow' | 'deny' | 'timeout' | 'aborted'
 
 /**
  * `approval::pending-created` payload (the `PendingApprovalRecord`). A model
- * function call was held for a human. `arguments_excerpt` is redacted and
+ * function trigger was held for a human. `arguments_excerpt` is redacted and
  * clipped — safe to render, but the un-redacted input also arrives via the
  * session transcript's `function_call` block.
  */
@@ -95,7 +95,7 @@ export interface PendingApprovalRecord {
   session_metadata?: Record<string, unknown> | null
   /** Always `"pending"` on the create event; absent on `list-pending` rows. */
   status?: 'pending'
-  /** Discriminates a plain function-call approval from a filesystem-access request. */
+  /** Discriminates a plain function-trigger approval from a filesystem-access request. */
   kind?: 'function' | 'filesystem_access'
   /** Present when `kind === 'filesystem_access'` — the jail-scope rejection that
    * triggered the ask. */

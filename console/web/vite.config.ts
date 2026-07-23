@@ -40,6 +40,14 @@ export default defineConfig({
         changeOrigin: false,
         rewrite: (path) => path.replace(/^\/ws/, ''),
       },
+      // Injected UI assets are registered with (and served by) the console
+      // WORKER, not this dev server — proxy the asset routes to it so the
+      // injectable-UI dev loop works against `vite dev` too. (`/vendor/*`
+      // needs no proxy: the shims live in public/ and Vite serves them.)
+      '/ui': {
+        target: process.env.III_CONSOLE_URL ?? 'http://127.0.0.1:3113',
+        changeOrigin: true,
+      },
     },
   },
 })

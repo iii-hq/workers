@@ -186,7 +186,7 @@ export function applyCatalogModelFallback(
  * Mark every backgrounded server-backed conversation stale so the next
  * activation re-hydrates it. A transcript subscription exists only for the
  * ACTIVE session, so entry events emitted while a session is backgrounded
- * are lost — a function call caught mid-snapshot freezes as `ƒ …` with an
+ * are lost — a function trigger caught mid-snapshot freezes as `ƒ …` with an
  * empty request/response until durable truth is re-fetched. Returns the
  * same array when nothing changed.
  */

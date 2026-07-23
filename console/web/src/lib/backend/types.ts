@@ -24,13 +24,13 @@ export type StreamEvent =
       input: unknown
       pendingApproval?: boolean
       /** iii function_call_id — needed to resolve approval. */
-      functionCallId?: string
+      functionTriggerId?: string
       /** iii session_id owning this call — needed to resolve approval. */
       sessionId?: string
       /**
        * Present when the pending approval is a filesystem-access request
        * (`PendingApprovalRecord.kind === 'filesystem_access'`) rather than a
-       * plain function-call approval. Drives `FilesystemAccessPrompt` instead of
+       * plain function-trigger approval. Drives `FilesystemAccessPrompt` instead of
        * the standard approve/deny/always row.
        */
       filesystemAccess?: {
@@ -49,7 +49,7 @@ export type StreamEvent =
        * order, so the consumer MUST match the end to its card by this id, not
        * by "the most recently started call".
        */
-      functionCallId?: string
+      functionTriggerId?: string
     }
   | {
       /**
@@ -59,7 +59,7 @@ export type StreamEvent =
        * `fcall-end`; both patching to non-pending is idempotent.
        */
       kind: 'fcall-approval-cleared'
-      functionCallId: string
+      functionTriggerId: string
       /**
        * True when the approval was allowed: the released call is now
        * executing, so the card flips to the running state until its result
@@ -249,7 +249,7 @@ export interface ChatBackend {
    */
   resolveApproval?(
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     decision: 'allow' | 'deny',
     /**
      * Filesystem access duration. Sent only for filesystem_access resolutions.

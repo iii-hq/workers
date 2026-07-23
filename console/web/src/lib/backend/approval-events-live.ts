@@ -34,14 +34,14 @@ type PendingApprovalIdentity = Pick<
   'session_id' | 'function_call_id'
 >
 
-/** Stable inbox slot shared by each approval stage for one function call. */
+/** Stable inbox slot shared by each approval stage for one function trigger. */
 export function pendingApprovalKey(record: PendingApprovalIdentity): string {
   return `${record.session_id}:${record.function_call_id}`
 }
 
 /**
  * Revision within an inbox slot. A generic approval can transition into a
- * filesystem approval without changing its function-call id, so deduping by
+ * filesystem approval without changing its function-trigger id, so deduping by
  * slot alone hides the follow-up prompt until refresh.
  */
 export function pendingApprovalRevision(record: PendingApprovalRecord): string {

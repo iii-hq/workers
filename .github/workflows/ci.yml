@@ -34,6 +34,7 @@ jobs:
       rust: ${{ steps.bucket.outputs.rust }}
       node: ${{ steps.bucket.outputs.node }}
       python: ${{ steps.bucket.outputs.python }}
+      crates: ${{ steps.bucket.outputs.crates }}
       all: ${{ steps.bucket.outputs.all }}
       source_changed: ${{ steps.bucket.outputs.source_changed }}
       integration_changed: ${{ steps.bucket.outputs.integration_changed }}
@@ -134,25 +135,74 @@ jobs:
       # the pnpm step. Detection is filesystem-based: workers without
       # a `web/package.json` skip all three steps cleanly.
       - name: Setup pnpm (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
+        # version comes from the repo-root package.json `packageManager`
+        # field (the UI pnpm workspace root).
 
       - name: Setup Node (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: 'pnpm'
-          cache-dependency-path: ${{ matrix.worker }}/web/pnpm-lock.yaml
+          # console/web is a member of the repo-root pnpm workspace (root
+          # pnpm-lock.yaml); the glob also covers standalone web/ locks.
+          cache-dependency-path: '**/pnpm-lock.yaml'
 
-      - name: Pre-build SPA bundle
-        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
-        working-directory: ${{ matrix.worker }}/web
+      - name: Pre-build frontend bundle (web/ and/or ui/)
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+        # Paths are relative to the job's working-directory (the worker dir),
+        # unlike the interface-smoke job below, which runs this from the
+        # repo root and prefixes the worker.
         run: |
-          pnpm install --frozen-lockfile
-          pnpm build
+          set -euo pipefail
+          for d in web ui; do
+            if [[ -f "$d/package.json" ]]; then
+              (cd "$d" && pnpm install --frozen-lockfile && pnpm build)
+            fi
+          done
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-features
+
+  # ──────────────────────────────────────────────────────────────
+  # Shared Rust crates (crates/*): lint + test. Workers link these by
+  # path; discover also fans a changed crate's dependents into the rust
+  # matrix above, so dependents rebuild against the change while this
+  # job runs the crate's own suite.
+  # ──────────────────────────────────────────────────────────────
+  crates:
+    name: "crates/${{ matrix.crate }}: rust lint + test"
+    needs: discover
+    if: needs.discover.outputs.crates != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: ${{ fromJSON(needs.discover.outputs.crates) }}
+    defaults:
+      run:
+        working-directory: crates/${{ matrix.crate }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/${{ matrix.crate }} -> target
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -230,25 +280,30 @@ jobs:
       # build.rs that shells out to pnpm. Pre-build the dist so `cargo build`
       # short-circuits it — mirrors the `rust` job above.
       - name: Setup pnpm (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
+        # version comes from the repo-root package.json `packageManager`
+        # field (the UI pnpm workspace root).
 
       - name: Setup Node (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: 'pnpm'
-          cache-dependency-path: ${{ matrix.worker }}/web/pnpm-lock.yaml
+          # console/web is a member of the repo-root pnpm workspace (root
+          # pnpm-lock.yaml); the glob also covers standalone web/ locks.
+          cache-dependency-path: '**/pnpm-lock.yaml'
 
-      - name: Pre-build SPA bundle
-        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
-        working-directory: ${{ matrix.worker }}/web
+      - name: Pre-build frontend bundle (web/ and/or ui/)
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
         run: |
-          pnpm install --frozen-lockfile
-          pnpm build
+          set -euo pipefail
+          for d in "${{ matrix.worker }}/web" "${{ matrix.worker }}/ui"; do
+            if [[ -f "$d/package.json" ]]; then
+              (cd "$d" && pnpm install --frozen-lockfile && pnpm build)
+            fi
+          done
 
       # Build with default features so we boot the same artifact that ships
       # in the GitHub Release (`_rust-binary.yml` builds default features).

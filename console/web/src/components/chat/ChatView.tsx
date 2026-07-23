@@ -58,7 +58,7 @@ import {
   type Attachment,
   type Conversation,
   DEFAULT_THINKING_LEVEL,
-  type FunctionCallMessage,
+  type FunctionTriggerMessage,
   type Message,
   type MessagePatch,
   type Mode,
@@ -169,7 +169,7 @@ export function ChatView({
 
   // Live view of the transcript for the long-running stream loop: the
   // session-events reconciler (use-conversations) may add/replace rows while
-  // a turn is in flight, and dedupe-by-functionCallId must see them.
+  // a turn is in flight, and dedupe-by-functionTriggerId must see them.
   const messagesRef = useRef(conversation.messages)
   messagesRef.current = conversation.messages
 
@@ -565,9 +565,9 @@ export function ChatView({
     if (!fn) return undefined
     return (
       sessionId: string,
-      functionCallId: string,
+      functionTriggerId: string,
       decision: 'allow' | 'deny',
-    ) => fn(sessionId, functionCallId, decision)
+    ) => fn(sessionId, functionTriggerId, decision)
   }, [backend])
 
   // Approval UI + `approval::*` RPC require BOTH the harness AND the optional
@@ -585,31 +585,31 @@ export function ChatView({
   const handleApprovalEvent = useCallback(
     (event: ApprovalStreamEvent) => {
       if (event.kind === 'fcall-start') {
-        const existing = event.functionCallId
+        const existing = event.functionTriggerId
           ? messagesRef.current.find(
               (message) =>
-                message.role === 'function-call' &&
-                message.functionCallId === event.functionCallId,
+                message.role === 'function-trigger' &&
+                message.functionTriggerId === event.functionTriggerId,
             )
           : undefined
         if (existing) {
           onPatchMessage(conversation.id, existing.id, {
             pendingApproval: true,
             running: false,
-            functionCallId: event.functionCallId,
+            functionTriggerId: event.functionTriggerId,
             sessionId: event.sessionId,
             filesystemAccess: event.filesystemAccess,
           })
           return
         }
-        const message: FunctionCallMessage = {
+        const message: FunctionTriggerMessage = {
           id: uid(),
-          role: 'function-call',
+          role: 'function-trigger',
           functionId: event.functionId,
           input: event.input,
           running: false,
           pendingApproval: true,
-          functionCallId: event.functionCallId,
+          functionTriggerId: event.functionTriggerId,
           sessionId: event.sessionId,
           filesystemAccess: event.filesystemAccess,
           createdAt: Date.now(),
@@ -620,8 +620,8 @@ export function ChatView({
 
       const existing = messagesRef.current.find(
         (message) =>
-          message.role === 'function-call' &&
-          message.functionCallId === event.functionCallId,
+          message.role === 'function-trigger' &&
+          message.functionTriggerId === event.functionTriggerId,
       )
       if (existing) {
         onPatchMessage(conversation.id, existing.id, {
@@ -749,9 +749,13 @@ export function ChatView({
   const handleAlwaysAllow = useMemo(() => {
     const resolveFn = backend.resolveApproval
     if (!resolveFn) return undefined
-    return async (sId: string, functionCallId: string, functionId: string) => {
+    return async (
+      sId: string,
+      functionTriggerId: string,
+      functionId: string,
+    ) => {
       await approvalSettings.approveAlways(functionId)
-      await resolveFn(sId, functionCallId, 'allow')
+      await resolveFn(sId, functionTriggerId, 'allow')
       announcer.announce(`approved always this session: ${functionId}`)
     }
   }, [backend, approvalSettings, announcer])
@@ -767,16 +771,17 @@ export function ChatView({
     if (!resolveFn) return undefined
     return async (
       sId: string,
-      functionCallId: string,
+      functionTriggerId: string,
       action: FilesystemAccessAction,
     ) => {
       const requestedRoot = messagesRef.current.find(
-        (m): m is FunctionCallMessage =>
-          m.role === 'function-call' && m.functionCallId === functionCallId,
+        (m): m is FunctionTriggerMessage =>
+          m.role === 'function-trigger' &&
+          m.functionTriggerId === functionTriggerId,
       )?.filesystemAccess?.requestedRoot
 
       if (action === 'deny') {
-        await resolveFn(sId, functionCallId, 'deny')
+        await resolveFn(sId, functionTriggerId, 'deny')
         announcer.announce(
           requestedRoot
             ? `denied filesystem access to ${requestedRoot}`
@@ -785,7 +790,9 @@ export function ChatView({
         return
       }
 
-      await resolveFn(sId, functionCallId, 'allow', { accessDuration: action })
+      await resolveFn(sId, functionTriggerId, 'allow', {
+        accessDuration: action,
+      })
       if (requestedRoot && (action === 'session' || action === 'always')) {
         filesystemGrants.addOptimistic(requestedRoot)
       }
@@ -1089,24 +1096,24 @@ export function ChatView({
               break
             }
             case 'fcall-start': {
-              if (event.functionCallId) {
+              if (event.functionTriggerId) {
                 // Dedupe against rows created earlier in this stream AND
                 // rows the session-events reconciler derived from the
                 // assistant entry's function_call blocks.
                 const existing =
                   [...fcallMap.entries()].find(
-                    ([, fcid]) => fcid === event.functionCallId,
+                    ([, fcid]) => fcid === event.functionTriggerId,
                   )?.[0] ??
                   messagesRef.current.find(
                     (m) =>
-                      m.role === 'function-call' &&
-                      m.functionCallId === event.functionCallId,
+                      m.role === 'function-trigger' &&
+                      m.functionTriggerId === event.functionTriggerId,
                   )?.id
                 if (existing) {
                   onPatchMessage(conversationId, existing, {
                     pendingApproval: event.pendingApproval,
                     running: !event.pendingApproval,
-                    functionCallId: event.functionCallId,
+                    functionTriggerId: event.functionTriggerId,
                     sessionId: event.sessionId,
                     filesystemAccess: event.filesystemAccess,
                   })
@@ -1121,35 +1128,35 @@ export function ChatView({
                 assistantId = null
                 assistantBuffer = ''
               }
-              const msg: FunctionCallMessage = {
+              const msg: FunctionTriggerMessage = {
                 id: uid(),
-                role: 'function-call',
+                role: 'function-trigger',
                 functionId: event.functionId,
                 input: event.input,
                 running: !event.pendingApproval,
                 pendingApproval: event.pendingApproval,
-                functionCallId: event.functionCallId,
+                functionTriggerId: event.functionTriggerId,
                 sessionId: event.sessionId,
                 filesystemAccess: event.filesystemAccess,
                 createdAt: Date.now(),
               }
               fcallId = msg.id
-              if (event.functionCallId)
-                fcallMap.set(msg.id, event.functionCallId)
+              if (event.functionTriggerId)
+                fcallMap.set(msg.id, event.functionTriggerId)
               onAppendMessage(conversationId, msg)
               break
             }
             case 'fcall-end': {
-              // Prefer targeting by functionCallId (parallel batches end out
+              // Prefer targeting by functionTriggerId (parallel batches end out
               // of order; the row may also be an entry-derived segment).
-              const targetId: string | null = event.functionCallId
+              const targetId: string | null = event.functionTriggerId
                 ? ([...fcallMap.entries()].find(
-                    ([, fcid]) => fcid === event.functionCallId,
+                    ([, fcid]) => fcid === event.functionTriggerId,
                   )?.[0] ??
                   messagesRef.current.find(
                     (m) =>
-                      m.role === 'function-call' &&
-                      m.functionCallId === event.functionCallId,
+                      m.role === 'function-trigger' &&
+                      m.functionTriggerId === event.functionTriggerId,
                   )?.id ??
                   null)
                 : fcallId
@@ -1167,12 +1174,12 @@ export function ChatView({
             case 'fcall-approval-cleared': {
               const clearedId =
                 [...fcallMap.entries()].find(
-                  ([, fcid]) => fcid === event.functionCallId,
+                  ([, fcid]) => fcid === event.functionTriggerId,
                 )?.[0] ??
                 messagesRef.current.find(
                   (m) =>
-                    m.role === 'function-call' &&
-                    m.functionCallId === event.functionCallId,
+                    m.role === 'function-trigger' &&
+                    m.functionTriggerId === event.functionTriggerId,
                 )?.id
               if (clearedId) {
                 onPatchMessage(conversationId, clearedId, {
@@ -1378,7 +1385,7 @@ export function ChatView({
       if (!last) return true
       if (last.role === 'user') return true
       if (
-        last.role === 'function-call' &&
+        last.role === 'function-trigger' &&
         !last.running &&
         !last.pendingApproval
       ) {
@@ -1481,7 +1488,7 @@ export function ChatView({
     const tracker = browserNoticesRef.current
     const fresh: string[] = []
     for (const m of conversation.messages) {
-      if (m.role !== 'function-call') continue
+      if (m.role !== 'function-trigger') continue
       if (m.functionId !== BROWSER_SESSIONS_START_FUNCTION_ID) continue
       if (m.running || m.pendingApproval) continue
       if (tracker.seen.has(m.id)) continue

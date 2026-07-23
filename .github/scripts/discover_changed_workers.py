@@ -6,8 +6,9 @@ Outputs a JSON object to stdout AND (if $GITHUB_OUTPUT is set) writes keys:
     source_changed                : workers whose change wasn't only metadata
     rust / node / python          : language buckets (subset of changed_workers)
     integration_changed          : bool, did an integration-stack input change
+    crates                        : shared crates/<name> dirs with source changes
     vscode_changed                : bool, did lsp-vscode/ change
-    any                           : bool, any worker or vscode change
+    any                           : bool, any worker, crate, or vscode change
 """
 from __future__ import annotations
 
@@ -62,6 +63,22 @@ INTEGRATION_INFRA_PATHS = {
     ".github/workflows/cache-warm.yml",
 }
 
+# Shared Rust crates live under crates/<name>/ (no iii.worker.yaml — not
+# workers). A source change there (1) reports the crate in the `crates`
+# bucket so ci.yml's crate lint+test job runs it, and (2) fans out to every
+# worker whose Cargo.toml declares a path dependency on it: dependents join
+# the matrix but not source_changed (no version-bump gate on the PR author).
+CRATES_DIR = "crates"
+
+# Docs-only files inside a crate dir. Everything else — including Cargo.toml
+# and Cargo.lock, which change what dependents build against — counts as a
+# source change.
+CRATE_METADATA_GLOBS = (
+    "README.md",
+    "AGENTS.md",
+    "AGENTS-*.md",
+)
+
 
 def is_metadata(rel: str) -> bool:
     return any(fnmatch.fnmatch(rel, g) for g in METADATA_GLOBS)
@@ -69,6 +86,10 @@ def is_metadata(rel: str) -> bool:
 
 def is_integration_doc(rel: str) -> bool:
     return any(fnmatch.fnmatch(rel, g) for g in INTEGRATION_DOC_GLOBS)
+
+
+def is_crate_metadata(rel: str) -> bool:
+    return any(fnmatch.fnmatch(rel, g) for g in CRATE_METADATA_GLOBS)
 
 
 def list_worker_dirs(repo_root: pathlib.Path) -> set[str]:
@@ -108,6 +129,26 @@ def language_of(worker_dir: pathlib.Path) -> str | None:
     return None
 
 
+def crate_dependents(repo_root: pathlib.Path, crate: str, workers: set[str]) -> list[str]:
+    """Workers whose Cargo.toml declares a path dependency on crates/<crate>.
+
+    Textual match on `crates/<crate>` inside the manifest — loose on purpose
+    (path deps read `{ path = "../crates/<crate>" }`, and a TOML parser is a
+    new CI dependency); a false positive only adds a worker to the matrix.
+    """
+    needle = f"{CRATES_DIR}/{crate}"
+    out = []
+    for w in sorted(workers):
+        manifest = repo_root / w / "Cargo.toml"
+        try:
+            text = manifest.read_text()
+        except OSError:
+            continue
+        if needle in text:
+            out.append(w)
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--base", required=True, help="base git ref")
@@ -125,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     files = changed_files(args.base, args.head)
 
     touched: dict[str, list[str]] = {}
+    touched_crates: dict[str, list[str]] = {}
     vscode_changed = False
     for f in files:
         parts = f.split("/", 1)
@@ -134,6 +176,11 @@ def main(argv: list[str] | None = None) -> int:
         if top == VSCODE_DIR:
             vscode_changed = True
             continue
+        if top == CRATES_DIR:
+            crate_parts = rel.split("/", 1)
+            if len(crate_parts) == 2:
+                touched_crates.setdefault(crate_parts[0], []).append(crate_parts[1])
+            continue
         if top in workers:
             touched.setdefault(top, []).append(rel)
 
@@ -141,7 +188,18 @@ def main(argv: list[str] | None = None) -> int:
     if unknown_forced:
         p.error(f"unknown --force-worker: {', '.join(unknown_forced)}")
 
+    changed_crates = sorted(
+        c for c, rels in touched_crates.items()
+        if any(not is_crate_metadata(rel) for rel in rels)
+    )
+
+    # Crate dependents join the matrix exactly like --force-worker picks:
+    # in `changed` (so lint+test runs against the new crate) but never in
+    # `source_changed`. Dependents in INTEGRATION_WORKERS also flip the
+    # integration gate below — a shared-crate change rebuilds them.
     forced = set(args.force_worker)
+    for crate in changed_crates:
+        forced.update(crate_dependents(repo_root, crate, workers))
     changed = sorted(set(touched) | forced)
     source_changed = sorted(
         w for w, rels in touched.items()
@@ -169,13 +227,14 @@ def main(argv: list[str] | None = None) -> int:
         "source_changed": source_changed,
         "by_language": by_language,
         "integration_changed": integration_changed,
+        "crates": changed_crates,
         "vscode_changed": vscode_changed,
     }
     print(json.dumps(payload))
 
     gh_out = os.environ.get("GITHUB_OUTPUT")
     if gh_out:
-        any_change = bool(changed) or vscode_changed
+        any_change = bool(changed) or bool(changed_crates) or vscode_changed
         with open(gh_out, "a") as f:
             f.write(f"changed_workers={json.dumps(changed)}\n")
             # Back-compat alias used by ci.yml downstream matrix jobs.
@@ -186,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
             f.write(
                 f"integration_changed={'true' if integration_changed else 'false'}\n"
             )
+            f.write(f"crates={json.dumps(changed_crates)}\n")
             f.write(f"vscode_changed={'true' if vscode_changed else 'false'}\n")
             f.write(f"any={'true' if any_change else 'false'}\n")
 

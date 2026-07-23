@@ -11,7 +11,12 @@ import { ModeToggle } from '@/components/ui/ModeToggle'
 import { Sheet } from '@/components/ui/Sheet'
 import { Wordmark } from '@/components/ui/Wordmark'
 import { useChatDock } from '@/hooks/use-chat-dock'
-import { useHashRoute, type View } from '@/hooks/use-hash-route'
+import {
+  hashForExtPage,
+  useExtPageRoute,
+  useHashRoute,
+  type View,
+} from '@/hooks/use-hash-route'
 import { useTheme } from '@/hooks/use-theme'
 import { type DockSignal, getDockSignal } from '@/lib/chat-activity'
 import {
@@ -19,9 +24,11 @@ import {
   useConversationsCtx,
 } from '@/lib/conversations-context'
 import { buildViewOptions } from '@/lib/nav-options'
+import { type RegisteredPage, useExtPages } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import { Browser } from '@/pages/Browser'
 import { Configuration } from '@/pages/Configuration'
+import { ExtPage } from '@/pages/Ext'
 import { Github } from '@/pages/Github'
 import { Memory } from '@/pages/Memory'
 import { TracesV2 } from '@/pages/TracesV2'
@@ -31,8 +38,15 @@ import { Worktrees } from '@/pages/Worktrees'
 export function App() {
   const [theme, setTheme] = useTheme()
   const [view, setView] = useHashRoute()
+  const extPageId = useExtPageRoute()
   const dock = useChatDock()
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+
+  // An active extension page that disappears (hot-reload failure, worker
+  // disconnect, unregister) falls back to the default view.
+  const onExtMissing = useCallback(() => {
+    setView('traces')
+  }, [setView])
 
   /* When the dock transitions from collapsed → expanded, focus the
      composer so the user can start typing immediately. requestAnimationFrame
@@ -78,6 +92,7 @@ export function App() {
       <Sheet>
         <Header
           view={view}
+          extPageId={extPageId}
           onViewChange={setView}
           dockCollapsed={dock.collapsed}
           onToggleDock={dock.toggleCollapsed}
@@ -103,6 +118,8 @@ export function App() {
               <Memory />
             ) : view === 'github' ? (
               <Github />
+            ) : view === 'ext' ? (
+              <ExtPage onMissing={onExtMissing} />
             ) : (
               <TracesV2 />
             )}
@@ -116,14 +133,23 @@ export function App() {
 
 interface HeaderProps {
   view: View
+  extPageId: string | null
   onViewChange: (next: View) => void
   dockCollapsed: boolean
   onToggleDock: () => void
   onOpenShortcuts: () => void
 }
 
+/** Nav value for an injected page — distinct from every first-party View. */
+const EXT_NAV_PREFIX = 'ext:'
+
+function extNavValue(page: RegisteredPage): string {
+  return `${EXT_NAV_PREFIX}${page.id}`
+}
+
 function Header({
   view,
+  extPageId,
   onViewChange,
   dockCollapsed,
   onToggleDock,
@@ -138,12 +164,31 @@ function Header({
     memoryAvailable,
     githubAvailable,
   } = useConversationsCtx()
-  const viewOptions = buildViewOptions(
-    worktreeAvailable,
-    browserAvailable,
-    memoryAvailable,
-    githubAvailable,
-  )
+  // Injected pages: the runtime analogue of worker-presence gating —
+  // presence is the script being loaded, which already tracks worker
+  // connectedness via trigger GC.
+  const extPages = useExtPages()
+  const viewOptions: { value: string; label: string }[] = [
+    ...buildViewOptions(
+      worktreeAvailable,
+      browserAvailable,
+      memoryAvailable,
+      githubAvailable,
+    ),
+    ...extPages.map((page) => ({
+      value: extNavValue(page),
+      label: page.title,
+    })),
+  ]
+  const navValue =
+    view === 'ext' && extPageId ? `${EXT_NAV_PREFIX}${extPageId}` : view
+  const onNavChange = (next: string) => {
+    if (next.startsWith(EXT_NAV_PREFIX)) {
+      window.location.hash = hashForExtPage(next.slice(EXT_NAV_PREFIX.length))
+    } else {
+      onViewChange(next as View)
+    }
+  }
   const onConsoleSettings = view === 'configuration'
   return (
     <header className="flex items-center justify-between pl-3 pr-6 h-12 border-b border-rule shrink-0">
@@ -151,13 +196,15 @@ function Header({
         <DockToggle collapsed={dockCollapsed} onToggle={onToggleDock} />
         <Wordmark />
         <span className="font-mono text-[11px] mb-[-2px] leading-[14px] uppercase tracking-[0.16em] text-ink-faint font-semibold">
-          {view}
+          {view === 'ext'
+            ? (extPages.find((p) => p.id === extPageId)?.title ?? 'extension')
+            : view}
         </span>
       </div>
       <div className="flex items-center gap-3">
-        <ModeToggle<View>
-          value={view}
-          onChange={onViewChange}
+        <ModeToggle<string>
+          value={navValue}
+          onChange={onNavChange}
           options={viewOptions}
         />
         <button

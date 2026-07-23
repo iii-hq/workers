@@ -1,38 +1,10 @@
 import { Check, Copy, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import {
-  BrowserFunctionIdLabel,
-  BrowserToolView,
-} from '@/components/chat/browser'
 import { CopyMessageButton } from '@/components/chat/CopyMessageButton'
-import { CoderFunctionIdLabel, CoderToolView } from '@/components/chat/coder'
 import {
-  DirectoryFunctionIdLabel,
-  DirectoryToolView,
-} from '@/components/chat/directory'
-import { EngineFunctionIdLabel, EngineToolView } from '@/components/chat/engine'
-import { FpFunctionIdLabel, FpToolView } from '@/components/chat/fp'
-import {
-  HarnessFunctionIdLabel,
-  HarnessToolView,
-} from '@/components/chat/harness'
-import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
-import {
-  SandboxFunctionIdLabel,
-  SandboxToolView,
-} from '@/components/chat/sandbox'
-import {
-  ScraplingFunctionIdLabel,
-  ScraplingToolView,
-} from '@/components/chat/scrapling'
-import { ShellFunctionIdLabel, ShellToolView } from '@/components/chat/shell'
-import { StateFunctionIdLabel, StateToolView } from '@/components/chat/state'
-import { WebFunctionIdLabel, WebToolView } from '@/components/chat/web'
-import { WorkerFunctionIdLabel, WorkerToolView } from '@/components/chat/worker'
-import {
-  WorkflowFunctionIdLabel,
-  WorkflowToolView,
-} from '@/components/chat/workflow'
+  firstNonNull,
+  useFunctionTriggerRenderers,
+} from '@/components/function-trigger/renderer-registry'
 import { AlwaysAllowButton } from '@/components/permissions/AlwaysAllowButton'
 import {
   type FilesystemAccessAction,
@@ -44,22 +16,22 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
-import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/chat'
+import type { FunctionTriggerMessage as FunctionTriggerMessageType } from '@/types/chat'
 
 /**
- * FunctionCallCard — the canonical rendering of one iii function call:
+ * FunctionTriggerCard — the canonical rendering of one iii function trigger:
  * collapsible header (status dot, ƒ id, duration), request/response panes,
  * per-family tool views, and the optional approval bar.
  *
  * Location-agnostic by design: it is props-only (no chat store, no session
  * context). Chat renders it from live session messages; TracesV2 renders it
- * in the span info tab by synthesizing a `FunctionCallMessage` from an OTel
- * span (`pages/TracesV2/lib/functionCallFromSpan.ts`); any other surface can
- * do the same — `FunctionCallMessage` (types/chat.ts) is a plain data shape
+ * in the span info tab by synthesizing a `FunctionTriggerMessage` from an OTel
+ * span (`pages/TracesV2/lib/functionTriggerFromSpan.ts`); any other surface can
+ * do the same — `FunctionTriggerMessage` (types/chat.ts) is a plain data shape
  * whose base is just `{ id, createdAt }`.
  */
-interface FunctionCallCardProps {
-  message: FunctionCallMessageType
+interface FunctionTriggerCardProps {
+  message: FunctionTriggerMessageType
   defaultOpen?: boolean
   /**
    * Approve handler. May be sync or async; the component shows a
@@ -88,7 +60,7 @@ interface FunctionCallCardProps {
   workingDir?: string | null
   /**
    * When true, render without the outer `border border-rule bg-bg` chrome
-   * so the parent (typically a `FunctionCallGroup`) can frame the stack.
+   * so the parent (typically a `FunctionTriggerGroup`) can frame the stack.
    * The internal layout — header, body, pending bar — stays identical.
    */
   embedded?: boolean
@@ -222,57 +194,22 @@ function formatPrimitive(v: Primitive): string {
 }
 
 /**
- * Branch the function-id label across registered renderer families. New
- * families slot in here — no other change to FCM is needed. The default
+ * Branch the function-id label across the renderer registry — injected
+ * renderers first, then the 13 first-party families. The default
  * (unbranded) span keeps unknown ids readable.
  */
 function FunctionIdLabel({ functionId }: { functionId: string }) {
-  if (DirectoryToolView.isDirectoryFunction(functionId)) {
-    return <DirectoryFunctionIdLabel functionId={functionId} />
-  }
-  if (EngineToolView.isEngineListFunction(functionId)) {
-    return <EngineFunctionIdLabel functionId={functionId} />
-  }
-  if (WorkerToolView.isWorkerFunction(functionId)) {
-    return <WorkerFunctionIdLabel functionId={functionId} />
-  }
-  if (WebToolView.isWebFunction(functionId)) {
-    return <WebFunctionIdLabel functionId={functionId} />
-  }
-  if (CoderToolView.isCoderFunction(functionId)) {
-    return <CoderFunctionIdLabel functionId={functionId} />
-  }
-  if (SandboxToolView.isSandboxFunction(functionId)) {
-    return <SandboxFunctionIdLabel functionId={functionId} />
-  }
-  if (ScraplingToolView.isScraplingFunction(functionId)) {
-    return <ScraplingFunctionIdLabel functionId={functionId} />
-  }
-  if (ShellToolView.isShellFunction(functionId)) {
-    return <ShellFunctionIdLabel functionId={functionId} />
-  }
-  if (WorkflowToolView.isWorkflowFunction(functionId)) {
-    return <WorkflowFunctionIdLabel functionId={functionId} />
-  }
-  if (RouterToolView.isRouterFunction(functionId)) {
-    return <RouterFunctionIdLabel functionId={functionId} />
-  }
-  if (HarnessToolView.isHarnessFunction(functionId)) {
-    return <HarnessFunctionIdLabel functionId={functionId} />
-  }
-  if (FpToolView.isFpFunction(functionId)) {
-    return <FpFunctionIdLabel functionId={functionId} />
-  }
-  if (StateToolView.isStateFunction(functionId)) {
-    return <StateFunctionIdLabel functionId={functionId} />
-  }
-  if (BrowserToolView.isBrowserFunction(functionId)) {
-    return <BrowserFunctionIdLabel functionId={functionId} />
+  const renderers = useFunctionTriggerRenderers()
+  for (const renderer of renderers) {
+    const Label = renderer.FunctionIdLabel
+    if (Label && renderer.isMatch(functionId)) {
+      return <Label functionId={functionId} />
+    }
   }
   return <span className="text-ink">{functionId}</span>
 }
 
-export function FunctionCallCard({
+export function FunctionTriggerCard({
   message,
   defaultOpen,
   onApprove,
@@ -282,7 +219,7 @@ export function FunctionCallCard({
   onManageFilesystemAccess,
   workingDir,
   embedded,
-}: FunctionCallCardProps) {
+}: FunctionTriggerCardProps) {
   const pending = !!message.pendingApproval
   const running = !!message.running
   // Raw in-flight arguments tail (`_streaming`, injected by the harness
@@ -302,36 +239,20 @@ export function FunctionCallCard({
   >(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
-  const customPreview =
-    SandboxToolView.tryRenderPreview(message) ??
-    EngineToolView.tryRenderPreview(message) ??
-    DirectoryToolView.tryRenderPreview(message) ??
-    WorkerToolView.tryRenderPreview(message) ??
-    WebToolView.tryRenderPreview(message) ??
-    CoderToolView.tryRenderPreview(message) ??
-    ScraplingToolView.tryRenderPreview(message) ??
-    ShellToolView.tryRenderPreview(message) ??
-    WorkflowToolView.tryRenderPreview(message) ??
-    RouterToolView.tryRenderPreview(message) ??
-    HarnessToolView.tryRenderPreview(message) ??
-    FpToolView.tryRenderPreview(message) ??
-    StateToolView.tryRenderPreview(message) ??
-    BrowserToolView.tryRenderPreview(message)
+  // Registry-dispatched custom panes: injected renderers first, then the
+  // first-party families, then the JSON fallback below. First non-null
+  // wins; null falls through.
+  const renderers = useFunctionTriggerRenderers()
+  const customPreview = firstNonNull(
+    renderers,
+    (r) => r.tryRenderPreview?.(message) ?? null,
+  )
   const customTerminal = !pending
-    ? (SandboxToolView.tryRender(message) ??
-      EngineToolView.tryRender(message) ??
-      DirectoryToolView.tryRender(message) ??
-      WorkerToolView.tryRender(message) ??
-      WebToolView.tryRender(message) ??
-      CoderToolView.tryRender(message) ??
-      ScraplingToolView.tryRender(message) ??
-      ShellToolView.tryRender(message) ??
-      WorkflowToolView.tryRender(message) ??
-      RouterToolView.tryRender(message) ??
-      HarnessToolView.tryRender(message) ??
-      FpToolView.tryRender(message) ??
-      StateToolView.tryRender(message) ??
-      BrowserToolView.tryRender(message))
+    ? firstNonNull(renderers, (r) =>
+        running
+          ? (r.tryRenderRunning ?? r.tryRender)(message)
+          : r.tryRender(message),
+      )
     : null
   const hasCustomTerminal = customTerminal != null
   // The top request pane renders only while the call is in flight and no
@@ -377,7 +298,7 @@ export function FunctionCallCard({
   return (
     <div
       className={cn(
-        'function-call-surface',
+        'function-trigger-surface',
         !embedded && 'border border-rule bg-bg',
       )}
       data-message-id={message.id}

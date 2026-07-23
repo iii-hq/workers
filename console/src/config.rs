@@ -1,9 +1,12 @@
 //! Runtime configuration for the `console` worker.
 //!
-//! The YAML config file exposes one operator-facing knob:
+//! The YAML config file exposes two operator-facing knobs:
 //!
 //! - `http_port` — TCP port the worker binds for `/`, `/assets/*`, and
 //!   `/ws`. Defaults to `3113`.
+//! - `injectable_ui` — kill switch for runtime-injected worker UI
+//!   (`console:script` / `console:style` / `console:assets` trigger types,
+//!   the `/ui` + `/vendor` routes, and the SPA loader). Defaults to `true`.
 //!
 //! The iii engine WebSocket URL is set via the CLI (`--url`); see
 //! [`DEFAULT_ENGINE_URL`] for the default.
@@ -18,16 +21,23 @@ pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 pub struct ConsoleConfig {
     #[serde(default = "default_http_port")]
     pub http_port: u16,
+    #[serde(default = "default_injectable_ui")]
+    pub injectable_ui: bool,
 }
 
 fn default_http_port() -> u16 {
     3113
 }
 
+fn default_injectable_ui() -> bool {
+    true
+}
+
 impl Default for ConsoleConfig {
     fn default() -> Self {
         Self {
             http_port: default_http_port(),
+            injectable_ui: default_injectable_ui(),
         }
     }
 }
@@ -46,6 +56,13 @@ mod tests {
     fn defaults_from_empty_yaml() {
         let cfg: ConsoleConfig = serde_yaml::from_str("{}").unwrap();
         assert_eq!(cfg.http_port, 3113);
+        assert!(cfg.injectable_ui);
+    }
+
+    #[test]
+    fn injectable_ui_kill_switch() {
+        let cfg: ConsoleConfig = serde_yaml::from_str("injectable_ui: false\n").unwrap();
+        assert!(!cfg.injectable_ui);
     }
 
     #[test]

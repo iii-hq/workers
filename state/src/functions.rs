@@ -15,7 +15,8 @@ use crate::config::StateConfig;
 use crate::events::{Invoker, fan_out};
 use crate::structs::{
     StateDeleteInput, StateEventData, StateEventType, StateGetGroupInput, StateGetInput,
-    StateListGroupsInput, StateListGroupsResult, StateSetInput, StateUpdateInput,
+    StateListGroupsInput, StateListGroupsResult, StateListKeysResult, StateSetInput,
+    StateUpdateInput,
 };
 use crate::trigger::TriggerTable;
 
@@ -245,6 +246,26 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                 "The values in the given scope, as a JSON array (or null on the \
                  rare serialization failure).",
             )),
+        );
+    }
+
+    // state::list_keys — keys within a scope. Added alongside the console
+    // state UI: state::list returns values only, which cannot drive per-item
+    // navigation (no builtin counterpart; additive surface).
+    {
+        let ctx = ctx.clone();
+        iii.register_function(
+            "state::list_keys",
+            RegisterFunction::new_async(move |input: StateGetGroupInput| {
+                let ctx = ctx.clone();
+                async move {
+                    let keys = ctx.adapter.list_keys(&input.scope).await.map_err(|e| {
+                        Error::Handler(format!("LIST_KEYS_ERROR: Failed to list keys: {e}"))
+                    })?;
+                    Ok(StateListKeysResult { keys })
+                }
+            })
+            .description("List the keys stored in a scope"),
         );
     }
 

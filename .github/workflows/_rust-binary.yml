@@ -144,38 +144,48 @@ jobs:
             echo "::error::could not derive worker dir from manifest_path=$MANIFEST"
             exit 1
           fi
-          if [[ ! -f "$worker/web/package.json" ]]; then
-            echo "::error::$worker/web/package.json not found; web_bundle=true requires a vite project under <worker>/web/"
+          # A worker's frontend lives in web/ (embedded SPA, e.g. console)
+          # or ui/ (injected console UI, e.g. state).
+          if [[ -f "$worker/web/package.json" ]]; then
+            webdir="web"
+          elif [[ -f "$worker/ui/package.json" ]]; then
+            webdir="ui"
+          else
+            echo "::error::$worker has neither web/package.json nor ui/package.json; web_bundle=true requires one"
             exit 1
           fi
           echo "worker=$worker" >> "$GITHUB_OUTPUT"
-          echo "::notice::pre-building SPA bundle in $worker/web/"
+          echo "webdir=$webdir" >> "$GITHUB_OUTPUT"
+          echo "::notice::pre-building bundle in $worker/$webdir/"
 
       # `pnpm/action-setup` must run before `setup-node` so that
-      # `setup-node`'s `cache: 'pnpm'` finds the binary on PATH.
+      # `setup-node`'s `cache: 'pnpm'` finds the binary on PATH. The pnpm
+      # version comes from the repo-root package.json `packageManager`
+      # field (the UI pnpm workspace root).
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: 'pnpm'
-          cache-dependency-path: ${{ steps.dirs.outputs.worker }}/web/pnpm-lock.yaml
+          # The console SPA is a member of the repo-root pnpm workspace, so
+          # its lockfile is the root pnpm-lock.yaml; the glob also covers
+          # any standalone <worker>/web lockfile.
+          cache-dependency-path: '**/pnpm-lock.yaml'
 
       - name: pnpm install
-        working-directory: ${{ steps.dirs.outputs.worker }}/web
+        working-directory: ${{ steps.dirs.outputs.worker }}/${{ steps.dirs.outputs.webdir }}
         run: pnpm install --frozen-lockfile
 
       - name: pnpm build
-        working-directory: ${{ steps.dirs.outputs.worker }}/web
+        working-directory: ${{ steps.dirs.outputs.worker }}/${{ steps.dirs.outputs.webdir }}
         run: pnpm build
 
       - name: Upload web bundle
         uses: actions/upload-artifact@v4
         with:
           name: web-bundle
-          path: ${{ steps.dirs.outputs.worker }}/web/dist/
+          path: ${{ steps.dirs.outputs.worker }}/${{ steps.dirs.outputs.webdir }}/dist/
           if-no-files-found: error
           retention-days: 1
 
@@ -278,9 +288,9 @@ jobs:
           print(f"::notice::set [package].version to {version} in {path}")
           PY
 
-      # When `web_bundle: true`, the SPA was built by the `web-build` job
-      # above. Download the artifact, drop it at `<worker>/web/dist/`, and
-      # signal `build.rs` to skip its own pnpm invocation. Without this
+      # When `web_bundle: true`, the bundle was built by the `web-build` job
+      # above. Download the artifact, drop it at `<worker>/<web|ui>/dist/`,
+      # and signal `build.rs` to skip its own pnpm invocation. Without this
       # the cross-compile shards would either fail (no Node/pnpm) or
       # rebuild the same platform-independent bundle nine times.
       - name: Resolve worker dir
@@ -292,23 +302,29 @@ jobs:
         run: |
           set -euo pipefail
           worker=$(dirname "$MANIFEST")
+          webdir="web"
+          [[ ! -f "$worker/web/package.json" && -f "$worker/ui/package.json" ]] && webdir="ui"
           echo "worker=$worker" >> "$GITHUB_OUTPUT"
+          echo "webdir=$webdir" >> "$GITHUB_OUTPUT"
 
       - name: Download web bundle
         if: inputs.web_bundle
         uses: actions/download-artifact@v4
         with:
           name: web-bundle
-          path: ${{ steps.dirs.outputs.worker }}/web/dist/
+          path: ${{ steps.dirs.outputs.worker }}/${{ steps.dirs.outputs.webdir }}/dist/
 
       - name: Build and upload binary
         uses: taiki-e/upload-rust-binary-action@v1
         env:
-          # Honored by `console/build.rs` (and any future build.rs that
-          # wraps a pnpm SPA): when set, the script trusts the `web/dist/`
-          # already on disk and never invokes pnpm. The dist comes from
-          # the `web-build` job's artifact above.
+          # Honored by the worker's build.rs: when set, the script trusts
+          # the dist/ already on disk and never invokes pnpm. The dist comes
+          # from the `web-build` job's artifact above. `SKIP_WEB_BUILD` is
+          # console/build.rs (embedded SPA under web/); `SKIP_UI_BUILD` is
+          # state/build.rs (injected console UI under ui/) — setting both is
+          # harmless, each build.rs reads only its own.
           SKIP_WEB_BUILD: ${{ inputs.web_bundle && '1' || '' }}
+          SKIP_UI_BUILD: ${{ inputs.web_bundle && '1' || '' }}
         with:
           bin: ${{ inputs.bin_name }}
           target: ${{ matrix.target }}

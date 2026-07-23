@@ -203,7 +203,7 @@ describe('mergeSessionListSnapshot', () => {
 
 describe('markBackgroundedStale', () => {
   // Regression: transcript events subscribe for the ACTIVE session only, so
-  // a session backgrounded mid-turn misses entry updates (a function call
+  // a session backgrounded mid-turn misses entry updates (a function trigger
   // freezes as `ƒ …` with empty request/response). Staling it on switch
   // makes re-activation re-hydrate from durable truth.
   it('marks hydrated backgrounded sessions stale, leaves the active one', () => {

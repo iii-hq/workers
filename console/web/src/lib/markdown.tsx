@@ -51,9 +51,11 @@ function walk(node: Root | Element): void {
 }
 
 /* hast's `className` lands as either `string[]` or a space-joined `string`,
-   depending on how it was parsed. Normalize both shapes to a single check. */
+   depending on how it was parsed. Normalize both shapes to a single check.
+   (Typed `unknown` on purpose: current @types/hast declares only the array
+   shape, but the string shape still occurs at runtime.) */
 function hasLanguageJson(node: Element): boolean {
-  const cls = node.properties?.className
+  const cls: unknown = node.properties?.className
   if (Array.isArray(cls)) return cls.includes('language-json')
   if (typeof cls === 'string') return cls.split(/\s+/).includes('language-json')
   return false

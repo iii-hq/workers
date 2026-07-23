@@ -15,6 +15,10 @@ path = "src/lib.rs"
 
 [dependencies]
 iii-sdk = "=0.21.6"
+# Worker-side injectable console UI (content function + console:script/style
+# triggers + hot-reload watcher) — the console dogfoods its own protocol to
+# ship the injectable-UI toggle form. Direct link, never published.
+iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "net", "io-util", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -27,6 +31,7 @@ clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 async-trait = "0.1"
 url = "2"
+sha2 = "0.10"
 
 # HTTP + WS proxy
 axum = { version = "0.7", features = ["ws"] }

@@ -282,3 +282,93 @@ class TestHarnessSelection:
         r = run_script(repo, "HEAD", "HEAD", "--force-worker", "missing")
         assert r.returncode == 2
         assert "unknown --force-worker: missing" in r.stderr
+
+
+def make_repo_with_crate(tmp_path: Path) -> Path:
+    """Tmp repo: a shared crate under crates/, one worker path-depending on
+    it, and one unrelated rust worker."""
+    def run(*args):
+        return subprocess.run(args, cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
+    run("git", "init", "-q", "-b", "main")
+    run("git", "config", "user.email", "t@e.com")
+    run("git", "config", "user.name", "T")
+    (tmp_path / "crates" / "shared" / "src").mkdir(parents=True)
+    (tmp_path / "crates" / "shared" / "Cargo.toml").write_text(
+        '[package]\nname = "iii-shared"\nversion = "0.1.0"\n'
+    )
+    (tmp_path / "crates" / "shared" / "src" / "lib.rs").write_text("// lib\n")
+    (tmp_path / "dependent").mkdir()
+    (tmp_path / "dependent" / "iii.worker.yaml").write_text(
+        'iii: v1\nname: dependent\nlanguage: rust\ndeploy: binary\nmanifest: Cargo.toml\n'
+    )
+    (tmp_path / "dependent" / "Cargo.toml").write_text(
+        '[package]\nname = "dependent"\nversion = "0.1.0"\n\n[dependencies]\n'
+        'iii-shared = { path = "../crates/shared" }\n'
+    )
+    (tmp_path / "unrelated").mkdir()
+    (tmp_path / "unrelated" / "iii.worker.yaml").write_text(
+        'iii: v1\nname: unrelated\nlanguage: rust\ndeploy: binary\nmanifest: Cargo.toml\n'
+    )
+    (tmp_path / "unrelated" / "Cargo.toml").write_text(
+        '[package]\nname = "unrelated"\nversion = "0.1.0"\n'
+    )
+    run("git", "add", ".")
+    run("git", "commit", "-q", "-m", "init")
+    return tmp_path
+
+
+class TestCrateFanOut:
+    def test_crate_source_change_fans_out_to_path_dependents(self, tmp_path):
+        repo = make_repo_with_crate(tmp_path)
+        (repo / "crates" / "shared" / "src" / "lib.rs").write_text("// edit\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "crate edit"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["crates"] == ["shared"]
+        assert data["changed_workers"] == ["dependent"]
+        assert data["by_language"]["rust"] == ["dependent"]
+        assert "unrelated" not in data["changed_workers"]
+        # The dependent joins the matrix (like --force-worker picks) but is
+        # NOT source_changed (no version-bump gate on the PR author).
+        assert data["source_changed"] == []
+
+    def test_crate_manifest_change_fans_out(self, tmp_path):
+        """Cargo.toml is metadata for workers but source for crates — a dep
+        bump in the crate changes what dependents build against."""
+        repo = make_repo_with_crate(tmp_path)
+        (repo / "crates" / "shared" / "Cargo.toml").write_text(
+            '[package]\nname = "iii-shared"\nversion = "0.1.1"\n'
+        )
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "crate manifest"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["crates"] == ["shared"]
+        assert data["changed_workers"] == ["dependent"]
+
+    def test_crate_docs_only_change_does_not_fan_out(self, tmp_path):
+        repo = make_repo_with_crate(tmp_path)
+        (repo / "crates" / "shared" / "README.md").write_text("# shared\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "crate docs"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["crates"] == []
+        assert data["changed_workers"] == []
+
+    def test_crate_dir_is_not_a_worker(self, tmp_path):
+        repo = make_repo_with_crate(tmp_path)
+        (repo / "crates" / "shared" / "src" / "lib.rs").write_text("// edit\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "crate edit"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        # The crate never appears as a changed *worker* — it has no
+        # iii.worker.yaml and must not hit worker gates like validate_worker.
+        assert "shared" not in data["changed_workers"]
+        assert "crates" not in data["changed_workers"]

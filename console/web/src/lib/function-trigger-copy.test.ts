@@ -1,23 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import type {
   AssistantMessage,
-  FunctionCallMessage,
+  FunctionTriggerMessage,
   ThoughtMessage,
   UserMessage,
 } from '@/types/chat'
 import {
   assistantCopyText,
-  functionCallsByAssistant,
-  functionCallToText,
-} from './function-call-copy'
+  functionTriggersByAssistant,
+  functionTriggerToText,
+} from './function-trigger-copy'
 
 function fcall(
-  overrides: Partial<FunctionCallMessage> = {},
-): FunctionCallMessage {
+  overrides: Partial<FunctionTriggerMessage> = {},
+): FunctionTriggerMessage {
   return {
     id: 'f1',
     createdAt: 0,
-    role: 'function-call',
+    role: 'function-trigger',
     functionId: 'shell::exec',
     input: { command: 'npm test' },
     ...overrides,
@@ -50,17 +50,17 @@ function thought(): ThoughtMessage {
   }
 }
 
-describe('functionCallToText', () => {
+describe('functionTriggerToText', () => {
   it('renders the id and pretty-printed arguments', () => {
-    expect(functionCallToText(fcall())).toBe(
+    expect(functionTriggerToText(fcall())).toBe(
       'ƒ shell::exec\n{\n  "command": "npm test"\n}',
     )
   })
 
   it('omits the argument block when input is empty', () => {
-    expect(functionCallToText(fcall({ input: {} }))).toBe('ƒ shell::exec')
-    expect(functionCallToText(fcall({ input: null }))).toBe('ƒ shell::exec')
-    expect(functionCallToText(fcall({ input: undefined }))).toBe(
+    expect(functionTriggerToText(fcall({ input: {} }))).toBe('ƒ shell::exec')
+    expect(functionTriggerToText(fcall({ input: null }))).toBe('ƒ shell::exec')
+    expect(functionTriggerToText(fcall({ input: undefined }))).toBe(
       'ƒ shell::exec',
     )
   })
@@ -92,12 +92,12 @@ describe('assistantCopyText', () => {
   })
 })
 
-describe('functionCallsByAssistant', () => {
+describe('functionTriggersByAssistant', () => {
   it('maps an assistant to the run of calls that immediately follows it', () => {
     const a = assistant({ id: 'a1' })
     const c1 = fcall({ id: 'c1' })
     const c2 = fcall({ id: 'c2' })
-    expect(functionCallsByAssistant([a, c1, c2]).get('a1')).toEqual([c1, c2])
+    expect(functionTriggersByAssistant([a, c1, c2]).get('a1')).toEqual([c1, c2])
   })
 
   it('starts a fresh run at the next assistant message', () => {
@@ -105,7 +105,7 @@ describe('functionCallsByAssistant', () => {
     const c1 = fcall({ id: 'c1' })
     const a2 = assistant({ id: 'a2' })
     const c2 = fcall({ id: 'c2' })
-    const map = functionCallsByAssistant([a1, c1, a2, c2])
+    const map = functionTriggersByAssistant([a1, c1, a2, c2])
     expect(map.get('a1')).toEqual([c1])
     expect(map.get('a2')).toEqual([c2])
   })
@@ -113,27 +113,27 @@ describe('functionCallsByAssistant', () => {
   it('does not attach calls separated from the assistant by another role', () => {
     const a1 = assistant({ id: 'a1' })
     const c1 = fcall({ id: 'c1' })
-    expect(functionCallsByAssistant([a1, user(), c1]).has('a1')).toBe(false)
+    expect(functionTriggersByAssistant([a1, user(), c1]).has('a1')).toBe(false)
   })
 
   it('attributes leading calls forward to the turn-closing assistant', () => {
     // The canonical agent flow: thought → calls → summarizing prose.
     const c1 = fcall({ id: 'c1' })
     const a1 = assistant({ id: 'a1' })
-    const map = functionCallsByAssistant([user(), thought(), c1, a1])
+    const map = functionTriggersByAssistant([user(), thought(), c1, a1])
     expect(map.get('a1')).toEqual([c1])
   })
 
   it('treats thought messages as transparent within a trailing run', () => {
     const a1 = assistant({ id: 'a1' })
     const c1 = fcall({ id: 'c1' })
-    expect(functionCallsByAssistant([a1, thought(), c1]).get('a1')).toEqual([
+    expect(functionTriggersByAssistant([a1, thought(), c1]).get('a1')).toEqual([
       c1,
     ])
   })
 
   it('drops leading calls when the turn ends without an assistant', () => {
-    const map = functionCallsByAssistant([
+    const map = functionTriggersByAssistant([
       fcall({ id: 'c1' }),
       user(),
       assistant({ id: 'a1' }),
@@ -145,7 +145,7 @@ describe('functionCallsByAssistant', () => {
     const c1 = fcall({ id: 'c1' })
     const a1 = assistant({ id: 'a1' })
     const c2 = fcall({ id: 'c2' })
-    expect(functionCallsByAssistant([user(), c1, a1, c2]).get('a1')).toEqual([
+    expect(functionTriggersByAssistant([user(), c1, a1, c2]).get('a1')).toEqual([
       c1,
       c2,
     ])
@@ -155,7 +155,7 @@ describe('functionCallsByAssistant', () => {
     const a1 = assistant({ id: 'a1' })
     const c1 = fcall({ id: 'c1' })
     const a2 = assistant({ id: 'a2' })
-    const map = functionCallsByAssistant([a1, c1, a2])
+    const map = functionTriggersByAssistant([a1, c1, a2])
     expect(map.get('a1')).toEqual([c1])
     expect(map.has('a2')).toBe(false)
   })

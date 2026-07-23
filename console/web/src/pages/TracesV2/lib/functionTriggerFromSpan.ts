@@ -1,8 +1,8 @@
 /**
- * Adapter: OTel span → the shared FunctionCallCard's data shape.
+ * Adapter: OTel span → the shared FunctionTriggerCard's data shape.
  *
- * The card (`components/function-call/FunctionCallCard`) renders a
- * `FunctionCallMessage` — a plain data object — wherever it comes from.
+ * The card (`components/function-trigger/FunctionTriggerCard`) renders a
+ * `FunctionTriggerMessage` — a plain data object — wherever it comes from.
  * Chat builds it from live session events; here we synthesize one from a
  * function-invocation span so the trace detail shows the same call card.
  *
@@ -24,7 +24,7 @@
  * event for an error output.
  */
 
-import type { FunctionCallMessage } from '@/types/chat'
+import type { FunctionTriggerMessage } from '@/types/chat'
 import type { VisualizationSpan } from './traceTransform'
 
 const PAYLOAD_ATTR = 'iii.payload.json'
@@ -160,14 +160,14 @@ export function spanFunctionId(
 }
 
 /**
- * Synthesize a `FunctionCallMessage` from a function-invocation span, or
+ * Synthesize a `FunctionTriggerMessage` from a function-invocation span, or
  * null when the span isn't one. Pass `spansById` (all spans of the trace)
  * so nested spans resolve to their owning function via the parent chain.
  */
-export function functionCallFromSpan(
+export function functionTriggerFromSpan(
   span: VisualizationSpan,
   spansById?: Map<string, VisualizationSpan>,
-): FunctionCallMessage | null {
+): FunctionTriggerMessage | null {
   const functionId = spanFunctionId(span, spansById)
   if (!functionId) return null
 
@@ -206,7 +206,7 @@ export function functionCallFromSpan(
     // `running` pulse instead.
     return {
       id: span.span_id,
-      role: 'function-call',
+      role: 'function-trigger',
       createdAt: 0,
       functionId,
       input,
@@ -217,7 +217,7 @@ export function functionCallFromSpan(
 
   return {
     id: span.span_id,
-    role: 'function-call',
+    role: 'function-trigger',
     createdAt: 0,
     functionId,
     input,
