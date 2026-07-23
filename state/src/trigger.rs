@@ -31,6 +31,11 @@ pub struct StateTriggerSpec {
 pub struct StateTriggerEntry {
     pub config: StateTriggerSpec,
     pub function_id: String,
+    /// Registration metadata, replayed as the fire-time sidecar. Consumers
+    /// like `harness::react` / `harness::notify_agent` resolve which
+    /// reaction/subscription fired from it; dropping it makes every fire a
+    /// silent no-op on their side.
+    pub metadata: Option<serde_json::Value>,
 }
 
 pub type TriggerTable = Arc<RwLock<HashMap<String, StateTriggerEntry>>>;
@@ -80,6 +85,7 @@ impl TriggerHandler for StateTriggerHandler {
             StateTriggerEntry {
                 config: spec,
                 function_id: config.function_id,
+                metadata: config.metadata,
             },
         );
         Ok(())
@@ -111,6 +117,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(h.triggers.read().await.len(), 1);
+        assert!(h.triggers.read().await["t1"].metadata.is_none());
         // SDK sends a stub on unregister: only `id` is real.
         h.unregister_trigger(trigger_config("t1", serde_json::Value::Null))
             .await
@@ -130,6 +137,20 @@ mod tests {
         let t = h.triggers.read().await;
         assert_eq!(t.len(), 1);
         assert_eq!(t["t1"].config.scope.as_deref(), Some("b"));
+    }
+
+    #[tokio::test]
+    async fn register_retains_metadata_for_fire_time_sidecar() {
+        let h = StateTriggerHandler::new();
+        let mut cfg = trigger_config("t1", serde_json::json!({"key": "change"}));
+        cfg.metadata = Some(serde_json::json!({"task": "react to it", "session_id": "s1"}));
+        h.register_trigger(cfg).await.unwrap();
+        let t = h.triggers.read().await;
+        assert_eq!(
+            t["t1"].metadata.as_ref().unwrap()["task"],
+            "react to it",
+            "metadata must survive registration — it is the fire-time sidecar"
+        );
     }
 
     #[tokio::test]
