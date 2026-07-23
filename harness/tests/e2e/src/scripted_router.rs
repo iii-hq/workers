@@ -461,12 +461,17 @@ async fn chat(
 
 /// Run a generation's serve-time side effect. The steer is *awaited*:
 /// `harness::send` enqueues the parked row before it returns, so once this
-/// resolves the message is durably queued and the subsequent terminal frame
-/// will drive the turn into finalize with that row present.
+/// resolves the message is durably queued and the subsequent generation
+/// outcome (frames or scripted failure) drives the turn into finalize with
+/// that row present. Outer timeout as in `Client::call_with_timeout`: the
+/// SDK timeout covers the engine round-trip, but a connection that never
+/// establishes can park the future — and with it this `chat` handler.
 async fn perform_serve_effect(client: &IIIClient, effect: &ServeEffectV1) -> Result<(), Error> {
     let steer = &effect.steer;
-    client
-        .trigger(TriggerRequest {
+    let outer = std::time::Duration::from_millis(DEFAULT_CALL_TIMEOUT_MS + 5_000);
+    match tokio::time::timeout(
+        outer,
+        client.trigger(TriggerRequest {
             function_id: "harness::send".to_string(),
             payload: json!({
                 "session_id": steer.session_id,
@@ -474,10 +479,19 @@ async fn perform_serve_effect(client: &IIIClient, effect: &ServeEffectV1) -> Res
             }),
             action: None,
             timeout_ms: Some(DEFAULT_CALL_TIMEOUT_MS),
-        })
-        .await
-        .map(|_| ())
-        .map_err(|e| Error::Handler(format!("integration/serve_effect harness::send: {e}")))
+        }),
+    )
+    .await
+    {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(Error::Handler(format!(
+            "integration/serve_effect harness::send: {e}"
+        ))),
+        Err(_) => Err(Error::Handler(format!(
+            "integration/serve_effect harness::send: no response within {}ms",
+            outer.as_millis()
+        ))),
+    }
 }
 
 async fn stream_frames(

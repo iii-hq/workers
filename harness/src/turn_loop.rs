@@ -1309,6 +1309,13 @@ async fn finalize_completed(
     if let Some(parent) = record.parent.clone() {
         crate::deferred::resolve_parent(deps, &parent, "completed", result.as_ref(), None).await;
     }
+    // Second sweep, AFTER the terminal write, pairing with `try_enqueue`'s
+    // post-enqueue recheck: a send whose recheck still saw `Running` must have
+    // enqueued before the terminal write landed, so this sweep collects its
+    // row; a recheck that sees the terminal record seeds its own turn. Without
+    // it, a row enqueued between the first drain and the terminal write would
+    // strand — queued against a turn that will never drain again.
+    let woke = woke || drain_queued_best_effort(deps, session, &record.session_id).await;
     // A message parked during this turn's final step was just drained to the
     // transcript with no turn to react to it; seed one now (after the terminal
     // write above, or it would clobber the fresh turn's slot).
@@ -1411,6 +1418,9 @@ async fn finalize_failed(
             notify_parent_of_child_failure(deps, &parent.session_id, record, reason, failure).await;
         }
     }
+    // Second post-terminal sweep, as in `finalize_completed`: closes the
+    // enqueue-after-drain window against `try_enqueue`'s recheck.
+    let woke = woke || drain_queued_best_effort(deps, session, &record.session_id).await;
     // As in `finalize_completed`: a message that parked during the failing
     // turn's final step is genuine new input (a notification, a steer) and
     // deserves a turn, the same as an external send arriving at a failed
@@ -1648,6 +1658,10 @@ async fn finalize_cancelled(
     if let Some(parent) = record.parent.clone() {
         crate::deferred::resolve_parent(deps, &parent, "cancelled", None, Some(reason)).await;
     }
+    // Second post-terminal sweep (see `finalize_completed`): a row enqueued
+    // between the first drain and the terminal write still reaches the
+    // transcript. Still no reseed — the user cancelled.
+    let _ = drain_queued_best_effort(deps, session, &record.session_id).await;
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
         status: TurnStatus::Cancelled,
