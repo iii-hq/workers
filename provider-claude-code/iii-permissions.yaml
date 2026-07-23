@@ -6,5 +6,6 @@ rules:
   # Direct provider calls bypass the router's accounting, budgets, and retry
   # policy — never agent-callable. The router invokes these worker-to-worker.
   - '!provider::claude-code::stream'
+  - '!provider::claude-code::abort'
   - '!provider::claude-code::refresh_models'
   - '!provider::claude-code::on_router_ready'

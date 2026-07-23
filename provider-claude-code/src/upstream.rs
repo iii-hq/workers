@@ -137,7 +137,12 @@ async fn run_upstream(
     }
     if !text.trim().is_empty() {
         let remainder = std::mem::take(&mut text);
-        let _ = drain_blocks(&mut (remainder + "\n\n"), &mut state, &args.model, &tx).await;
+        // A terminal event can arrive in the final, undelimited chunk. If the
+        // flush forwards one, stop — otherwise the branch below emits a second
+        // terminal frame, breaking the single-terminal contract.
+        if drain_blocks(&mut (remainder + "\n\n"), &mut state, &args.model, &tx).await {
+            return;
+        }
     }
 
     if state.saw_message_stop {
@@ -253,6 +258,32 @@ mod tests {
             other => panic!("want done, got {other:?}"),
         }
         assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn terminal_in_unterminated_final_chunk_yields_single_terminal() {
+        // The connection closes right after message_stop, with no trailing
+        // "\n\n", so the terminal is decoded only in the post-loop flush.
+        // Exactly one terminal must reach the receiver — the flush's Done, not
+        // a second synthetic "ended before message_stop".
+        let body: &'static str = Box::leak(
+            HAPPY
+                .strip_suffix("\n\n")
+                .unwrap()
+                .to_string()
+                .into_boxed_str(),
+        );
+        let url = stub(body).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        assert_eq!(
+            events.iter().filter(|e| e.is_terminal()).count(),
+            1,
+            "exactly one terminal frame"
+        );
+        assert!(matches!(
+            events.last(),
+            Some(AssistantMessageEvent::Done { .. })
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread")]
