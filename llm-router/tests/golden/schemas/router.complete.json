@@ -1,5 +1,5 @@
 {
-  "description": "Non-streaming convenience over router::chat: run the turn on an internal channel and return the final assistant message + usage.",
+  "description": "Non-streaming convenience over router::chat: run the turn on an internal channel and return the final assistant message + usage. Message content is an ARRAY OF BLOCKS ([{type: text, text}]), never a plain string.",
   "function_id": "router::complete",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
