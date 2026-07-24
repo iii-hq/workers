@@ -110,6 +110,18 @@ impl ScenarioFixture {
                 "await_target_calls needs a controlled function (`.function(...)`) to count"
             );
         }
+        for action in &self.probe_actions {
+            if let Some(calls) = action.after_target_calls {
+                anyhow::ensure!(
+                    calls > 0,
+                    "probe action after_target_calls must be positive"
+                );
+                anyhow::ensure!(
+                    self.scenario.target.is_some(),
+                    "a probe action gated on target calls needs a controlled function to count"
+                );
+            }
+        }
         anyhow::ensure!(
             self.expected_turn_statuses.last().map(String::as_str) == Some("completed"),
             "the last terminal turn must be completed"
