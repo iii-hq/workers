@@ -70,7 +70,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_exact([
                         Message::user(FIRST_MESSAGE),
-                        Message::function_call(CALL_ID, &record, arguments.clone(), &model),
+                        Message::function_call(CALL_ID, &record, arguments.clone(), &model, 8, 4),
                         Message::function_result(CALL_ID, &record, "recorded"),
                     ])
                     .tools_exact([record.tool()]),
@@ -85,9 +85,9 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .system_prompt_regex("agent_trigger")
                     .messages_exact([
                         Message::user(FIRST_MESSAGE),
-                        Message::function_call(CALL_ID, &record, arguments.clone(), &model),
+                        Message::function_call(CALL_ID, &record, arguments.clone(), &model, 8, 4),
                         Message::function_result(CALL_ID, &record, "recorded"),
-                        Message::assistant_text(FIRST_TEXT, &model),
+                        Message::assistant_text(FIRST_TEXT, &model, 18, 2),
                         Message::user(SECOND_MESSAGE),
                     ])
                     .tools_subset([Tool::named("agent_trigger")]),

@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::Deps;
 use crate::error::SessionError;
-use crate::types::{ContentBlock, JsonMap};
+use crate::types::{ContentBlock, JsonMap, Usage};
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct UpdateMessageRequest {
@@ -17,6 +17,9 @@ pub struct UpdateMessageRequest {
     pub content: Vec<ContentBlock>,
     /// New `details` — only for `function_result` / `custom` messages.
     pub details: Option<Value>,
+    /// Final token/cost accounting — only for `assistant` messages. Omit for
+    /// streaming content updates that do not yet have terminal usage.
+    pub usage: Option<Usage>,
     /// Optimistic concurrency: when supplied and it does not match the
     /// entry's current revision, nothing is written and
     /// `{ updated: false, revision }` returns the current revision.

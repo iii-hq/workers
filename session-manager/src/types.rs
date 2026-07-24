@@ -191,6 +191,16 @@ impl AgentMessage {
             | AgentMessage::Custom { content, .. } => *content = new_content,
         }
     }
+
+    /// Set terminal usage on an assistant message. Returns false for roles
+    /// that cannot carry model usage.
+    pub fn set_usage(&mut self, new_usage: Usage) -> bool {
+        let AgentMessage::Assistant { usage, .. } = self else {
+            return false;
+        };
+        *usage = Some(new_usage);
+        true
+    }
 }
 
 /// Bookkeeping payload of a `kind: "custom"` session entry.
@@ -377,6 +387,35 @@ mod tests {
         // Optional assistant fields absent from input stay absent.
         assert!(round[1].get("error_message").is_none());
         assert_eq!(round[2]["details"], json!({ "x": 1 }));
+    }
+
+    #[test]
+    fn usage_updates_only_assistant_messages() {
+        let mut assistant: AgentMessage = serde_json::from_value(json!({
+            "role": "assistant",
+            "content": [],
+            "stop_reason": "end",
+            "model": "m1",
+            "provider": "p1",
+            "timestamp": 2
+        }))
+        .unwrap();
+        assert!(assistant.set_usage(Usage {
+            input: Some(10),
+            output: Some(4),
+            ..Usage::default()
+        }));
+        let value = serde_json::to_value(assistant).unwrap();
+        assert_eq!(value["usage"]["input"], 10);
+        assert_eq!(value["usage"]["output"], 4);
+
+        let mut user: AgentMessage = serde_json::from_value(json!({
+            "role": "user",
+            "content": [],
+            "timestamp": 1
+        }))
+        .unwrap();
+        assert!(!user.set_usage(Usage::default()));
     }
 
     #[test]
