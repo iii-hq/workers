@@ -63,8 +63,10 @@ impl ScenarioRunner<'_> {
                 // call-mode reaction on its completion), so an action can gate
                 // on that instead of tracked-session turns alone.
                 if let Some(calls) = action.after_target_calls {
-                    if let Err(error) =
-                        services.probe().wait_for_target_calls(calls, deadline).await
+                    if let Err(error) = services
+                        .probe()
+                        .wait_for_target_calls(calls, deadline)
+                        .await
                     {
                         if deadline.is_expired() {
                             active.timed_out = true;
@@ -151,8 +153,7 @@ impl ScenarioRunner<'_> {
             // streaming. Hold until every generation is consumed so collect
             // doesn't race that turn's finish — the floor requires full
             // consumption anyway.
-            while services.router().generations_consumed() < services.router().total_generations()
-            {
+            while services.router().generations_consumed() < services.router().total_generations() {
                 if deadline.is_expired() {
                     active.timed_out = true;
                     return Ok(());

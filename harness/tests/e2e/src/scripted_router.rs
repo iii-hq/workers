@@ -441,10 +441,7 @@ async fn chat(
                 .map_err(|e| Error::Handler(format!("integration/capture_serialize: {e}")))?;
             for capture in &generation.captures {
                 let regex = regex::Regex::new(&capture.pattern).map_err(|e| {
-                    Error::Handler(format!(
-                        "integration/capture_regex {}: {e}",
-                        capture.name
-                    ))
+                    Error::Handler(format!("integration/capture_regex {}: {e}", capture.name))
                 })?;
                 let value = regex
                     .captures(&raw)
@@ -533,11 +530,7 @@ async fn stream_frames(
     request_id: &str,
 ) -> Result<(), Error> {
     let writer = ChannelWriter::new(address, writer_ref);
-    let captured = state
-        .lock()
-        .expect("router state")
-        .captured
-        .clone();
+    let captured = state.lock().expect("router state").captured.clone();
     for frame in &generation.frames {
         if request_aborted(state, request_id) {
             writer.close().await?;

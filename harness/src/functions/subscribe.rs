@@ -834,7 +834,11 @@ async fn handle_react(
     // rare double-delivery idempotent, and a completion BARRIER is only
     // correct level-triggered.
     let mut replay_note = None;
-    if req.metadata.as_ref().is_some_and(|m| m.get("join").is_some()) {
+    if req
+        .metadata
+        .as_ref()
+        .is_some_and(|m| m.get("join").is_some())
+    {
         if let Some(event) = late_join_replay_event(deps, &req).await {
             replay_note = Some(format!(
                 "note: session {} had already completed when this join predecessor was \
@@ -1341,7 +1345,10 @@ mod tests {
         };
         // A one-shot state wake: warned, naming scope/key, with the
         // sleeps-forever consequence spelled out.
-        let note = armed_wake_advisory(&mk("state", json!({ "scope": "run-1", "key": "report_ready" })), true);
+        let note = armed_wake_advisory(
+            &mk("state", json!({ "scope": "run-1", "key": "report_ready" })),
+            true,
+        );
         let note = note.as_deref().unwrap_or("");
         assert!(note.contains("run-1/report_ready"), "got: {note}");
         assert!(note.contains("sleeps forever"), "got: {note}");
