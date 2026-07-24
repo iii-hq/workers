@@ -80,7 +80,12 @@ impl Default for DeadlinesV1 {
     fn default() -> Self {
         Self {
             readiness_ms: 60_000,
-            scenario_ms: 60_000,
+            // Stack boot is budgeted by `readiness_ms`; this covers only the
+            // await phase, where the slowest passing scenario observed in CI
+            // takes ~4s. 25s keeps ~6x headroom while capping what a wedged
+            // scenario costs — at 60s, a red run spent more time waiting on
+            // deadlines than doing work.
+            scenario_ms: 25_000,
             teardown_ms: 15_000,
         }
     }
