@@ -344,7 +344,10 @@ async fn intercept_unregister(deps: &Deps, args: &Value, session_id: &str) -> Re
     };
 
     if let Some(owner) = deps.subscriptions.session_of(id) {
-        if owner != session_id {
+        // The registrant itself, or any session in its reaction lineage: a
+        // reaction cleaning up its run is the legitimate teardown path when
+        // the registrant is parked on a wake its children must satisfy.
+        if owner != session_id && !deps.subscriptions.in_lineage_of(session_id, &owner) {
             return error_result("subscription belongs to a different session".to_string());
         }
     }

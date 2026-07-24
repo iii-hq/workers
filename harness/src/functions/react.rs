@@ -1246,6 +1246,13 @@ async fn spawn_reaction(
                 .get("child_turn_id")
                 .and_then(Value::as_str)
                 .map(str::to_string);
+            // Reaction sessions may need to clean up their own run while the
+            // registrant is parked on a wake: record child → registrant so
+            // the unregister ownership check accepts lineage descendants.
+            if let (Some(owner), Some(child)) = (spec.owner_session_id.as_deref(), child.as_deref())
+            {
+                deps.subscriptions.record_lineage(child, owner);
+            }
             tracing::info!(
                 child_session_id = child.as_deref(),
                 model = spec.model.as_deref(),
