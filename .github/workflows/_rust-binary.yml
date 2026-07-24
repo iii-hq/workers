@@ -115,16 +115,11 @@ jobs:
           print(f"::notice::building {len(include)} target(s): {[t['target'] for t in include]}")
           PY
 
-  # Workers like `console` embed a Vite-built SPA into the binary via
-  # `rust-embed` (see `console/build.rs`). The matrix runners only carry
-  # the Rust toolchain — running pnpm there would either fail outright
-  # (Windows / cross-compile shards lack Node) or rebuild the same
-  # platform-independent bundle nine times. Instead we build the SPA
-  # once on a Linux runner, upload `<worker>/web/dist/` as an artifact,
-  # and have every matrix shard download it before `cargo build`. The
-  # crate's `build.rs` short-circuits when `web/dist/index.html` exists,
-  # so the embed-time check is satisfied without ever touching pnpm
-  # inside the cross-compile shards.
+  # Some workers embed more than one frontend bundle. `console`, for
+  # example, ships its SPA from `web/dist/` and its own injectable UI from
+  # `ui/dist/`. Build every present frontend once on Linux, then make those
+  # immutable outputs available to every cross-compile shard. The matrix
+  # runners only need Rust; they must never need a Node/pnpm toolchain.
   web-build:
     name: Pre-build SPA bundle
     needs: [matrix]
@@ -144,19 +139,24 @@ jobs:
             echo "::error::could not derive worker dir from manifest_path=$MANIFEST"
             exit 1
           fi
-          # A worker's frontend lives in web/ (embedded SPA, e.g. console)
-          # or ui/ (injected console UI, e.g. state).
+          # A worker can have a web/ embedded SPA, a ui/ injected bundle, or
+          # both. Keep the relative paths so the download step can restore
+          # them exactly where each build.rs expects them.
+          frontends=()
           if [[ -f "$worker/web/package.json" ]]; then
-            webdir="web"
-          elif [[ -f "$worker/ui/package.json" ]]; then
-            webdir="ui"
-          else
+            frontends+=(web)
+          fi
+          if [[ -f "$worker/ui/package.json" ]]; then
+            frontends+=(ui)
+          fi
+          if [[ ${#frontends[@]} -eq 0 ]]; then
             echo "::error::$worker has neither web/package.json nor ui/package.json; web_bundle=true requires one"
             exit 1
           fi
+          frontend_csv=$(IFS=,; echo "${frontends[*]}")
           echo "worker=$worker" >> "$GITHUB_OUTPUT"
-          echo "webdir=$webdir" >> "$GITHUB_OUTPUT"
-          echo "::notice::pre-building bundle in $worker/$webdir/"
+          echo "frontends=$frontend_csv" >> "$GITHUB_OUTPUT"
+          echo "::notice::pre-building frontend bundle(s) in $worker/$frontend_csv"
 
       # `pnpm/action-setup` must run before `setup-node` so that
       # `setup-node`'s `cache: 'pnpm'` finds the binary on PATH. The pnpm
@@ -173,19 +173,40 @@ jobs:
           # any standalone <worker>/web lockfile.
           cache-dependency-path: '**/pnpm-lock.yaml'
 
-      - name: pnpm install
-        working-directory: ${{ steps.dirs.outputs.worker }}/${{ steps.dirs.outputs.webdir }}
-        run: pnpm install --frozen-lockfile
+      - name: Build frontend bundles
+        env:
+          WORKER: ${{ steps.dirs.outputs.worker }}
+          FRONTENDS: ${{ steps.dirs.outputs.frontends }}
+        run: |
+          set -euo pipefail
+          IFS=, read -ra frontends <<< "$FRONTENDS"
+          for frontend in "${frontends[@]}"; do
+            (
+              cd "$WORKER/$frontend"
+              pnpm install --frozen-lockfile
+              pnpm build
+            )
+          done
 
-      - name: pnpm build
-        working-directory: ${{ steps.dirs.outputs.worker }}/${{ steps.dirs.outputs.webdir }}
-        run: pnpm build
+      - name: Stage frontend bundles
+        env:
+          WORKER: ${{ steps.dirs.outputs.worker }}
+          FRONTENDS: ${{ steps.dirs.outputs.frontends }}
+        run: |
+          set -euo pipefail
+          IFS=, read -ra frontends <<< "$FRONTENDS"
+          stage=".release-frontend-bundle/$WORKER"
+          for frontend in "${frontends[@]}"; do
+            test -d "$WORKER/$frontend/dist"
+            mkdir -p "$stage/$frontend"
+            cp -a "$WORKER/$frontend/dist" "$stage/$frontend/"
+          done
 
-      - name: Upload web bundle
+      - name: Upload frontend bundles
         uses: actions/upload-artifact@v4
         with:
-          name: web-bundle
-          path: ${{ steps.dirs.outputs.worker }}/${{ steps.dirs.outputs.webdir }}/dist/
+          name: frontend-bundles
+          path: .release-frontend-bundle/${{ steps.dirs.outputs.worker }}/
           if-no-files-found: error
           retention-days: 1
 
@@ -288,11 +309,9 @@ jobs:
           print(f"::notice::set [package].version to {version} in {path}")
           PY
 
-      # When `web_bundle: true`, the bundle was built by the `web-build` job
-      # above. Download the artifact, drop it at `<worker>/<web|ui>/dist/`,
-      # and signal `build.rs` to skip its own pnpm invocation. Without this
-      # the cross-compile shards would either fail (no Node/pnpm) or
-      # rebuild the same platform-independent bundle nine times.
+      # When `web_bundle: true`, every frontend bundle was built by the
+      # `web-build` job. Restore their original web/dist and ui/dist paths,
+      # then signal build.rs to skip its own pnpm invocation.
       - name: Resolve worker dir
         if: inputs.web_bundle
         id: dirs
@@ -302,17 +321,14 @@ jobs:
         run: |
           set -euo pipefail
           worker=$(dirname "$MANIFEST")
-          webdir="web"
-          [[ ! -f "$worker/web/package.json" && -f "$worker/ui/package.json" ]] && webdir="ui"
           echo "worker=$worker" >> "$GITHUB_OUTPUT"
-          echo "webdir=$webdir" >> "$GITHUB_OUTPUT"
 
-      - name: Download web bundle
+      - name: Download frontend bundles
         if: inputs.web_bundle
         uses: actions/download-artifact@v4
         with:
-          name: web-bundle
-          path: ${{ steps.dirs.outputs.worker }}/${{ steps.dirs.outputs.webdir }}/dist/
+          name: frontend-bundles
+          path: ${{ steps.dirs.outputs.worker }}/
 
       - name: Build and upload binary
         uses: taiki-e/upload-rust-binary-action@v1
