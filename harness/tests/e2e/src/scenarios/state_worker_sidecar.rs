@@ -84,7 +84,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request()
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_exact([Message::user(MESSAGE)])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-arm",
@@ -108,7 +108,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "function_result", "function_call_id": "call-arm",
                                 "is_error": false }),
                     ])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::text("armed", 10, 2)),
     )
@@ -121,7 +121,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(0)
                     .system_prompt_regex(".")
                     .messages_subset([json!({ "role": "user" })])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::function_call(
                 "call-record",
@@ -142,7 +142,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     // strict-ordinal router + step already sequence gen3→gen4.
                     // The recorder call itself is asserted in `verify`.
                     .messages_subset([json!({ "role": "user" })])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::text("state reaction recorded", 12, 3)),
     )

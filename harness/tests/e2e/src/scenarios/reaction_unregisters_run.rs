@@ -99,7 +99,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request()
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_exact([Message::user(MESSAGE)])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER, UNREGISTER], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-arm",
@@ -123,7 +123,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "function_result", "function_call_id": "call-arm",
                                 "is_error": false }),
                     ])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER, UNREGISTER], [record.tool()]),
             )
             // The registration function_result in THIS request carries the
             // runtime subscription id; capture it for the cleaner's call.
@@ -139,7 +139,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(0)
                     .system_prompt_regex(".")
                     .messages_subset([json!({ "role": "user" })])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER, UNREGISTER], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-unreg",
@@ -169,7 +169,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                                 "is_error": false,
                                 "content": [{ "type": "text", "text": "{\"removed\":true}" }] }),
                     ])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER, UNREGISTER], [record.tool()]),
             )
             .respond(Response::function_call(
                 "call-record",
@@ -186,7 +186,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(2)
                     .system_prompt_regex(".")
                     .messages_subset([json!({ "role": "user" })])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER, UNREGISTER], [record.tool()]),
             )
             .respond(Response::text("cleaned up", 12, 3)),
     )

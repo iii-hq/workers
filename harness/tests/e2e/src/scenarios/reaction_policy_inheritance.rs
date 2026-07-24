@@ -65,7 +65,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request()
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_exact([Message::user(MESSAGE)])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-arm",
@@ -99,7 +99,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "function_result", "function_call_id": "call-arm",
                                 "is_error": false }),
                     ])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::text("armed", 10, 2)),
     )
@@ -121,7 +121,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         // The reaction seed, fenced with the fired event.
                         json!({ "role": "user" }),
                     ])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::function_call(
                 "call-record",
@@ -151,7 +151,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "function_result", "function_call_id": "call-record",
                                 "is_error": false }),
                     ])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::text("reaction recorded", 12, 3)),
     )
