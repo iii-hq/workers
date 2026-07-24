@@ -144,19 +144,22 @@ jobs:
             echo "::error::could not derive worker dir from manifest_path=$MANIFEST"
             exit 1
           fi
-          # A worker's frontend lives in web/ (embedded SPA, e.g. console)
-          # or ui/ (injected console UI, e.g. state).
-          if [[ -f "$worker/web/package.json" ]]; then
-            webdir="web"
-          elif [[ -f "$worker/ui/package.json" ]]; then
-            webdir="ui"
-          else
+          # A worker's frontend lives in web/ (embedded SPA, e.g. console),
+          # ui/ (injected console UI, e.g. state), or both (console ships an
+          # embedded SPA and an injected config form). Build every dir that
+          # exists — the matrix shards skip pnpm entirely (SKIP_WEB_BUILD +
+          # SKIP_UI_BUILD), so any dist missing here panics their build.rs.
+          webdirs=""
+          [[ -f "$worker/web/package.json" ]] && webdirs="web"
+          [[ -f "$worker/ui/package.json" ]] && webdirs="$webdirs ui"
+          webdirs="${webdirs# }"
+          if [[ -z "$webdirs" ]]; then
             echo "::error::$worker has neither web/package.json nor ui/package.json; web_bundle=true requires one"
             exit 1
           fi
           echo "worker=$worker" >> "$GITHUB_OUTPUT"
-          echo "webdir=$webdir" >> "$GITHUB_OUTPUT"
-          echo "::notice::pre-building bundle in $worker/$webdir/"
+          echo "webdirs=$webdirs" >> "$GITHUB_OUTPUT"
+          echo "::notice::pre-building bundle(s): $webdirs in $worker/"
 
       # `pnpm/action-setup` must run before `setup-node` so that
       # `setup-node`'s `cache: 'pnpm'` finds the binary on PATH. The pnpm
@@ -173,19 +176,30 @@ jobs:
           # any standalone <worker>/web lockfile.
           cache-dependency-path: '**/pnpm-lock.yaml'
 
-      - name: pnpm install
-        working-directory: ${{ steps.dirs.outputs.worker }}/${{ steps.dirs.outputs.webdir }}
-        run: pnpm install --frozen-lockfile
-
-      - name: pnpm build
-        working-directory: ${{ steps.dirs.outputs.worker }}/${{ steps.dirs.outputs.webdir }}
-        run: pnpm build
+      - name: pnpm install + build
+        env:
+          WORKER: ${{ steps.dirs.outputs.worker }}
+          WEBDIRS: ${{ steps.dirs.outputs.webdirs }}
+        run: |
+          set -euo pipefail
+          for d in $WEBDIRS; do
+            (cd "$WORKER/$d" && pnpm install --frozen-lockfile && pnpm build)
+          done
+          # Stage a fixed <dir>/dist layout: with a single upload path the
+          # artifact root is deterministic no matter how many dirs were
+          # built (multi-path uploads re-root at the common ancestor, which
+          # would flatten the single-dir case).
+          mkdir -p /tmp/web-bundle
+          for d in $WEBDIRS; do
+            mkdir -p "/tmp/web-bundle/$d"
+            cp -R "$WORKER/$d/dist" "/tmp/web-bundle/$d/dist"
+          done
 
       - name: Upload web bundle
         uses: actions/upload-artifact@v4
         with:
           name: web-bundle
-          path: ${{ steps.dirs.outputs.worker }}/${{ steps.dirs.outputs.webdir }}/dist/
+          path: /tmp/web-bundle/
           if-no-files-found: error
           retention-days: 1
 
@@ -302,27 +316,43 @@ jobs:
         run: |
           set -euo pipefail
           worker=$(dirname "$MANIFEST")
-          webdir="web"
-          [[ ! -f "$worker/web/package.json" && -f "$worker/ui/package.json" ]] && webdir="ui"
           echo "worker=$worker" >> "$GITHUB_OUTPUT"
-          echo "webdir=$webdir" >> "$GITHUB_OUTPUT"
 
       - name: Download web bundle
         if: inputs.web_bundle
         uses: actions/download-artifact@v4
         with:
           name: web-bundle
-          path: ${{ steps.dirs.outputs.worker }}/${{ steps.dirs.outputs.webdir }}/dist/
+          path: ${{ steps.dirs.outputs.worker }}/.web-bundle/
+
+      # The artifact carries a fixed <dir>/dist layout (web/dist, ui/dist —
+      # whichever the pre-build job produced). Move each into place so the
+      # worker's build.rs finds every dist it will refuse to build itself.
+      - name: Place pre-built dist(s)
+        if: inputs.web_bundle
+        shell: bash
+        env:
+          WORKER: ${{ steps.dirs.outputs.worker }}
+        run: |
+          set -euo pipefail
+          for d in web ui; do
+            if [[ -d "$WORKER/.web-bundle/$d/dist" ]]; then
+              rm -rf "$WORKER/$d/dist"
+              mkdir -p "$WORKER/$d"
+              mv "$WORKER/.web-bundle/$d/dist" "$WORKER/$d/dist"
+            fi
+          done
+          rm -rf "$WORKER/.web-bundle"
 
       - name: Build and upload binary
         uses: taiki-e/upload-rust-binary-action@v1
         env:
           # Honored by the worker's build.rs: when set, the script trusts
-          # the dist/ already on disk and never invokes pnpm. The dist comes
-          # from the `web-build` job's artifact above. `SKIP_WEB_BUILD` is
-          # console/build.rs (embedded SPA under web/); `SKIP_UI_BUILD` is
-          # state/build.rs (injected console UI under ui/) — setting both is
-          # harmless, each build.rs reads only its own.
+          # the dist/ already on disk and never invokes pnpm. The dists come
+          # from the `web-build` job's artifact above. `SKIP_WEB_BUILD`
+          # covers the embedded SPA under web/; `SKIP_UI_BUILD` covers the
+          # injected console UI under ui/ (console reads both; state only
+          # the latter) — setting both is always harmless.
           SKIP_WEB_BUILD: ${{ inputs.web_bundle && '1' || '' }}
           SKIP_UI_BUILD: ${{ inputs.web_bundle && '1' || '' }}
         with:
