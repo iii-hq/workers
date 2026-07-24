@@ -202,6 +202,85 @@ subscription is rate-limited to roughly 10 spawns per minute.
   sub-tree, bounded by the spawn-depth limit.
 - **Cancellation.** `harness::stop` on the parent cascades to children.
 
+## The mesh around a turn: dependency workers
+
+The harness owns no storage and no model access; every capability is a
+sibling worker reached over the bus. What it calls, per dependency:
+
+- **session-manager** — the transcript of record. `session::ensure` /
+  `session::create` on send, `session::append` for every message and
+  function result, `session::update-message` as the assistant message
+  streams, `session::set-status`, `session::messages` / `session::get` for
+  reads, and the `session::deleted` event (the harness cleans up turn state
+  when a session goes away). The console renders chats from session events,
+  not from the harness.
+- **context-manager** — `context::assemble` fits the transcript to the
+  model's window before each generation (compaction lives here), and
+  `context::count-tokens` prices prompts and messages.
+- **llm-router** — `router::chat` streams the generation over a channel;
+  `router::abort` cancels it; `router::models::get` / `list` / `supports`
+  resolve the model and its capabilities; `router::system_prompt::get`
+  serves the per-provider identity (operator override, then
+  provider-declared, then the harness falls back to its embedded default).
+  Behind the router sit the provider workers (`provider::<id>::stream`),
+  which the harness never calls directly.
+- **queue** — the harness defines a dedicated `harness-turn` queue at boot
+  (`queue::define`, required) and every loop step is a job on it; this is
+  what makes turns durable across harness restarts.
+- **state** — `state::get` / `set` / `delete` / `list` hold the turn
+  records the loop resumes from and the `harness_idem` webhook-dedupe rows.
+  (Agents share the same state surface for their own run scopes.)
+- **engine** — the bus itself: function dispatch, the trigger registry the
+  harness's event types and hook types register into, and the function
+  catalog that backs discovery.
+
+Optional policy siblings extend a turn without the harness knowing them by
+name: **approval-gate** binds the `pre-trigger` hook to hold calls for human
+approval; **fp**, **web**, and **memory** bind `pre-generate` to inject
+usage guidance or recalled rules into the system prompt while they are
+connected. Stop any of them and their contribution vanishes; the harness
+keeps running.
+
+## Discovery and worker lifecycle: the surface an agent drives
+
+The harness executes calls, but finding and installing what to call is
+engine + worker-manager + directory surface:
+
+- **Discovery (engine, always present):** `engine::functions::list`
+  (filter by `search` / `prefix` / `worker`) finds ids;
+  `engine::functions::info` returns the contract (request/response schema,
+  owning worker, bound triggers) — fetch it before a function's first use.
+  `engine::workers::list` / `engine::workers::info { name }` show who is
+  connected and what they register. `engine::triggers::list` /
+  `engine::triggers::info { id }` enumerate bindable trigger types and
+  their config schemas; `engine::registered-triggers::list` shows existing
+  bindings.
+- **Worker lifecycle (worker-manager):** `worker::list` (installed +
+  running, including daemon-managed builtins — merge with
+  `engine::workers::list` by name to check liveness), `worker::add`
+  (install from `{ kind: "registry", name }` or an OCI source; new
+  function ids appear when the worker connects), `worker::start`,
+  `worker::update`, and `worker::stop` / `remove` / `clear` (the
+  destructive three require exactly `yes: true`, the boolean).
+- **The directory worker** is the docs-and-catalog layer over all of it:
+  `directory::skills::index` / `list` / `get` serve the markdown skills
+  installed workers ship (this document included);
+  `directory::prompts::list` / `get` serve prompt templates;
+  `directory::registry::workers::list` / `info` proxy the public registry
+  so a capability can be judged BEFORE installing (`info` shows the same
+  api_reference shape you would get after install). With `auto_download`
+  on, the directory subscribes to the engine's worker-add event and pulls a
+  newly installed worker's skills automatically, and its
+  `directory::skills::on-change` / `directory::prompts::on-change`
+  triggers let other workers react when the on-disk doc set changes.
+
+The composed flow an agent actually runs: `engine::functions::list` finds
+nothing fitting, `directory::registry::workers::list { search }` finds a
+candidate, `registry::workers::info` judges it, `worker::add` installs it,
+`engine::functions::list { prefix }` confirms the new ids,
+`engine::functions::info` fetches the contract, and only then the call —
+with the worker's skills already on disk for `directory::skills::get`.
+
 ## Reading this alongside the playbooks
 
 This doc is mechanics. For conduct — wire-before-spawn ordering,
