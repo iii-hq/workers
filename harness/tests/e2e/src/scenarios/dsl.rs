@@ -55,6 +55,7 @@ pub(super) struct Scenario {
     generations: Vec<Generation>,
     expected_turn_statuses: Vec<String>,
     verify: Option<VerifyFn>,
+    probe_actions: Vec<crate::fixtures::ProbeAction>,
 }
 
 impl Scenario {
@@ -76,6 +77,7 @@ impl Scenario {
             generations: Vec::new(),
             expected_turn_statuses: vec!["completed".to_string()],
             verify: None,
+            probe_actions: Vec::new(),
         }
     }
 
@@ -91,6 +93,23 @@ impl Scenario {
 
     pub(super) fn generation(mut self, generation: Generation) -> Self {
         self.generations.push(generation);
+        self
+    }
+
+    /// Fire `function_id(payload)` from the probe once `after_turns` terminal
+    /// completions are observed — trips a reaction while the tracked session
+    /// is idle, so its turn runs alone and ordinal-clean.
+    pub(super) fn probe_after(
+        mut self,
+        after_turns: usize,
+        function_id: &str,
+        payload: serde_json::Value,
+    ) -> Self {
+        self.probe_actions.push(crate::fixtures::ProbeAction {
+            after_turns,
+            function_id: function_id.to_string(),
+            payload,
+        });
         self
     }
 
@@ -152,6 +171,7 @@ impl Scenario {
             },
             system_prompt_template: system_prompt(&allowed_functions),
             verify: self.verify.expect("scenario verification is required"),
+            probe_actions: self.probe_actions,
         }
     }
 }

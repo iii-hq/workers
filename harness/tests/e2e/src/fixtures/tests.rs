@@ -10,7 +10,7 @@ fn all_selection_returns_the_checked_in_fixtures() {
     assert_eq!(
         ids,
         std::collections::BTreeSet::from([
-            "E2E-001", "E2E-002", "E2E-003", "E2E-004", "E2E-005", "UI-001", "UI-002"
+            "E2E-001", "E2E-002", "E2E-003", "E2E-004", "E2E-005", "E2E-006", "UI-001", "UI-002"
         ])
     );
     assert_eq!(
@@ -18,7 +18,7 @@ fn all_selection_returns_the_checked_in_fixtures() {
             .iter()
             .filter(|fixture| fixture.driver == crate::scenarios::ScenarioDriver::Direct)
             .count(),
-        5
+        6
     );
 }
 

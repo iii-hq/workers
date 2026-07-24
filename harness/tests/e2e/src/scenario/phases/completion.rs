@@ -31,6 +31,37 @@ impl ScenarioRunner<'_> {
         // wait for all n and bind evidence to the latest, mirroring how
         // Playground awaits its externally driven turns.
         let expected = self.fixture.expected_terminal_turns;
+
+        // Probe-driven actions fire at completion boundaries: wait for their
+        // `after_turns` count, invoke the function, then continue. A reaction
+        // the action trips therefore runs while the tracked session is idle,
+        // so its turn is the only active one and the scripted (strict-ordinal)
+        // router matches it deterministically. Sorted so earlier boundaries
+        // fire first; `wait_for_completion_turns` accumulates, so re-waiting a
+        // higher count only blocks on the not-yet-seen turns.
+        if !self.fixture.probe_actions.is_empty() {
+            let mut actions = self.fixture.probe_actions.clone();
+            actions.sort_by_key(|a| a.after_turns);
+            for action in actions {
+                if let Err(error) = services
+                    .probe()
+                    .wait_for_completion_turns(action.after_turns, deadline)
+                    .await
+                {
+                    if deadline.is_expired() {
+                        active.timed_out = true;
+                        return Ok(());
+                    }
+                    return Err(RunError::runner(
+                        phase,
+                        "wait for probe-action completion boundary",
+                        error,
+                    ));
+                }
+                self.fire_probe_action(services, &action, deadline).await?;
+            }
+        }
+
         let latest_turn_id = if expected > 1 {
             services
                 .probe()
@@ -97,6 +128,36 @@ impl ScenarioRunner<'_> {
             active.turn_id = Some(observation.event.turn_id.clone());
         }
         self.confirm_terminal_status(services, active).await
+    }
+
+    /// Invoke a probe action, expanding `{{run_id}}`/`{{session_id}}` in its
+    /// payload first. A failed dispatch is a runner error — the scenario's
+    /// premise (the reaction it should trip) can't hold without it.
+    async fn fire_probe_action(
+        &self,
+        services: &RunServices,
+        action: &crate::fixtures::ProbeAction,
+        deadline: Deadline,
+    ) -> Result<(), RunError> {
+        let mut payload = action.payload.clone();
+        crate::expand::Placeholders::new(&self.run_id, &self.session_id)
+            .expand_value(&mut payload)
+            .map_err(|error| {
+                RunError::runner(RunPhase::Await, "expand probe-action payload", error)
+            })?;
+        services
+            .client()
+            .call_with_deadline(
+                &action.function_id,
+                payload,
+                deadline,
+                DEFAULT_CALL_TIMEOUT_MS,
+            )
+            .await
+            .map_err(|error| {
+                RunError::runner(RunPhase::Await, "fire probe action", anyhow::anyhow!(error))
+            })?;
+        Ok(())
     }
 
     async fn confirm_terminal_status(

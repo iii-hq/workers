@@ -21,6 +21,21 @@ pub struct ScenarioFixture {
     pub system_prompt_template: String,
     /// Scenario-specific checks over the collected run evidence.
     pub verify: VerifyFn,
+    /// Probe-driven actions to fire between terminal turns. Each runs after
+    /// its `after_turns` completion count is observed, so a reaction it trips
+    /// runs while the tracked session is idle (ordinal-clean under the
+    /// scripted router). `{{run_id}}`/`{{session_id}}` in the payload expand.
+    pub probe_actions: Vec<ProbeAction>,
+}
+
+/// A function the PROBE (test infra, not a model turn) invokes at a completion
+/// boundary — the seam that lets a scenario trip a state key after the main
+/// turn is idle instead of mid-turn.
+#[derive(Debug, Clone)]
+pub struct ProbeAction {
+    pub after_turns: usize,
+    pub function_id: String,
+    pub payload: serde_json::Value,
 }
 
 impl ScenarioFixture {
@@ -137,7 +152,11 @@ impl ScenarioFixture {
     /// turns are each externally initiated and trace separately.
     pub fn expected_traces(&self) -> usize {
         match self.driver {
-            ScenarioDriver::Direct => 1,
+            // The send's own trace, plus one per probe action: a probe-tripped
+            // reaction fires from a fresh externally-initiated flow (the
+            // state/cron worker's fan-out), so it forms its own trace tree —
+            // exactly like a Playground-driven external turn.
+            ScenarioDriver::Direct => 1 + self.probe_actions.len(),
             ScenarioDriver::Playground => self.expected_terminal_turns,
         }
     }
