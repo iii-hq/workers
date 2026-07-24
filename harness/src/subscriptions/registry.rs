@@ -94,7 +94,18 @@ struct Inner {
     /// on a wake its children must tear down). Ephemeral like the rest of the
     /// registry; entries are purged on `session::deleted`.
     lineage: HashMap<String, String>,
+    /// Lifetime delivered-fire counts for budgeted react bindings
+    /// (`max_fires`), keyed by subscription id — or by the react gate's
+    /// spec-hash fallback for raw engine-side registrations that carry no
+    /// `__subscription_id`. Counters die with their entry; fallback keys are
+    /// pruned once the map outgrows [`MAX_FIRE_COUNTERS`].
+    fire_counts: HashMap<String, u64>,
 }
+
+/// Bound on [`Inner::fire_counts`] growth from spec-hash fallback keys, which
+/// have no eviction event of their own. Far above any realistic number of
+/// distinct live budgeted bindings.
+const MAX_FIRE_COUNTERS: usize = 4096;
 
 /// Upper bound when walking the lineage chain — bounds cycles (a session id
 /// can be re-targeted across runs) and pathological depth alike. Deeper than
@@ -279,6 +290,25 @@ impl SubscriptionRegistry {
         self.lock().by_id.get(sub_id).map(|e| e.session_id.clone())
     }
 
+    /// Count one delivered fire for a budgeted (`max_fires`) binding and
+    /// return the new lifetime total. `key` is the subscription id, or the
+    /// react gate's spec-hash fallback for raw bindings; counters for
+    /// registered subscriptions are dropped with their entry, fallback keys
+    /// are pruned when the map outgrows its bound.
+    pub fn record_budgeted_fire(&self, key: &str) -> u64 {
+        let mut inner = self.lock();
+        if inner.fire_counts.len() >= MAX_FIRE_COUNTERS && !inner.fire_counts.contains_key(key) {
+            // Only fallback keys can accumulate without an eviction event:
+            // keep counters that still back a live subscription entry.
+            let by_id = std::mem::take(&mut inner.by_id);
+            inner.fire_counts.retain(|k, _| by_id.contains_key(k));
+            inner.by_id = by_id;
+        }
+        let count = inner.fire_counts.entry(key.to_string()).or_insert(0);
+        *count += 1;
+        *count
+    }
+
     /// Record that `child_session` was spawned by a reaction of a subscription
     /// registered by `registrant_session`. Overwrites any prior parent — the
     /// latest spawner is the live lineage.
@@ -378,6 +408,7 @@ fn trigger_id(entry: &SubEntry) -> Option<String> {
 
 fn remove_entry(inner: &mut Inner, sub_id: &str) -> Option<Arc<SubEntry>> {
     let entry = inner.by_id.remove(sub_id)?;
+    inner.fire_counts.remove(sub_id);
     if let Some(set) = inner.by_session.get_mut(&entry.session_id) {
         set.remove(sub_id);
         if set.is_empty() {
@@ -616,6 +647,21 @@ mod tests {
             !reg.in_lineage_of("grandchild", "child"),
             "entries pointing AT the deleted session are purged too"
         );
+    }
+
+    #[test]
+    fn budgeted_fire_counts_are_monotonic_and_die_with_their_entry() {
+        let reg = SubscriptionRegistry::new();
+        reg.try_insert("sub_1", "s", 8).unwrap();
+        assert_eq!(reg.record_budgeted_fire("sub_1"), 1);
+        assert_eq!(reg.record_budgeted_fire("sub_1"), 2);
+        // Independent keys have independent budgets (spec-hash fallback).
+        assert_eq!(reg.record_budgeted_fire("spec:abc"), 1);
+        // Retiring the entry resets its counter — a re-registered binding
+        // under a fresh sub id starts a fresh budget anyway, but a reused id
+        // must not inherit spent fires.
+        reg.take("sub_1");
+        assert_eq!(reg.record_budgeted_fire("sub_1"), 1);
     }
 
     #[test]

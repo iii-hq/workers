@@ -257,6 +257,41 @@ fn state_catchall_advisory(req: &SubscribeRequest) -> Option<String> {
     ))
 }
 
+/// Advisory for a standing cron binding with no termination path: it fires
+/// every interval FOREVER until something unregisters it. rctest7 postmortem:
+/// a 10-second gate-check cron polled forever when its gate condition became
+/// unreachable (the reactor had aggregated into mistyped tables) — and at 6
+/// fires/min the fire-rate breaker correctly never engaged. `react` bindings
+/// can bound themselves with `metadata.max_fires`; notify bindings only via
+/// an explicit unregister. Purely informative — a deliberate heartbeat with
+/// its own teardown step ignores it.
+fn unbounded_cron_advisory(req: &SubscribeRequest, once: bool, react: bool) -> Option<String> {
+    if req.trigger_type != "cron" || once {
+        return None;
+    }
+    if react
+        && req
+            .metadata
+            .as_ref()
+            .is_some_and(|m| m.get("max_fires").is_some())
+    {
+        return None;
+    }
+    let bound = if react {
+        "Set `metadata.max_fires: N` (the binding retires itself after N fires) and/or give \
+         the task a deadline escape (\"if past <deadline>, engine::unregister_trigger this \
+         subscription and report failure\")."
+    } else {
+        "Make sure some step explicitly calls engine::unregister_trigger when the work is done \
+         or a deadline passes."
+    };
+    Some(format!(
+        "warning: this cron binding fires FOREVER on every tick until \
+         engine::unregister_trigger removes it — nothing terminates it automatically, and a \
+         gate-check whose condition never becomes true polls unbounded. {bound}"
+    ))
+}
+
 /// `once` on a react binding: simple non-cron edges default to one-shot, while
 /// cron remains standing. Callers that truly want a standing state/turn watcher
 /// opt out with `once: false`. Join predecessors ignore this field because the
@@ -471,6 +506,9 @@ async fn handle(
         // the scope — same catch-all hazard as a react binding.
         state_catchall_advisory(&req),
         armed_wake_advisory(&req, once),
+        // A standing cron notify pokes the owning session every tick forever
+        // — same unbounded hazard as a cron react binding, minus max_fires.
+        unbounded_cron_advisory(&req, once, false),
     ]
     .into_iter()
     .flatten()
@@ -654,6 +692,25 @@ async fn handle_react(
     }
 
     let once = react_once(&req);
+
+    // A one-shot binding retires after its first fire, so a `max_fires`
+    // budget above 1 can never be reached — one of the two is a mistake.
+    // (`max_fires: 1` on a once binding is merely redundant; allow it.)
+    if once
+        && req
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("max_fires"))
+            .and_then(Value::as_u64)
+            .is_some_and(|n| n > 1)
+    {
+        return Err(HarnessError::InvalidRequest(
+            "`max_fires` > 1 on a `once` binding can never be reached — the binding retires \
+             after its first fire. Pass `once: false` for a standing budgeted binding, or drop \
+             `max_fires`."
+                .to_string(),
+        ));
+    }
 
     // Idempotency: same rule as the notify path — an identical re-registration
     // returns the standing subscription instead of a twin reaction that would
@@ -867,6 +924,7 @@ async fn handle_react(
         join_wiring_advisory(deps, &req).await,
         standing_binding_advisory(&req, once),
         state_catchall_advisory(&req),
+        unbounded_cron_advisory(&req, once, true),
         replay_note,
     ]
     .into_iter()
@@ -1355,6 +1413,45 @@ mod tests {
         // Standing notifies and non-state types are not wakes.
         assert!(armed_wake_advisory(&mk("state", json!({ "key": "k" })), false).is_none());
         assert!(armed_wake_advisory(&mk("cron", json!({})), true).is_none());
+    }
+
+    #[test]
+    fn unbounded_cron_advisory_warns_unless_bounded() {
+        let mk = |metadata: Option<serde_json::Value>| -> SubscribeRequest {
+            let mut v =
+                json!({ "trigger_type": "cron", "config": { "schedule": "*/10 * * * * *" } });
+            if let Some(m) = metadata {
+                v["metadata"] = m;
+            }
+            serde_json::from_value(v).unwrap()
+        };
+        // A standing cron react binding with no fire budget: warned, with the
+        // polls-forever consequence and both escape hatches spelled out.
+        let note =
+            unbounded_cron_advisory(&mk(Some(json!({ "task": "check the gate" }))), false, true);
+        let note = note.as_deref().unwrap_or("");
+        assert!(note.contains("FOREVER"), "got: {note}");
+        assert!(note.contains("max_fires"), "got: {note}");
+        assert!(note.contains("deadline"), "got: {note}");
+        // A budgeted binding terminates itself: no warning.
+        assert!(unbounded_cron_advisory(
+            &mk(Some(json!({ "task": "check", "max_fires": 30 }))),
+            false,
+            true
+        )
+        .is_none());
+        // Notify bindings can't carry max_fires — warned toward an explicit
+        // unregister instead.
+        let notify = unbounded_cron_advisory(&mk(None), false, false);
+        let notify = notify.as_deref().unwrap_or("");
+        assert!(notify.contains("unregister_trigger"), "got: {notify}");
+        assert!(!notify.contains("max_fires"), "got: {notify}");
+        // One-shot and non-cron bindings are bounded by construction.
+        assert!(unbounded_cron_advisory(&mk(None), true, true).is_none());
+        let state: SubscribeRequest =
+            serde_json::from_value(json!({ "trigger_type": "state", "config": { "key": "k" } }))
+                .unwrap();
+        assert!(unbounded_cron_advisory(&state, false, true).is_none());
     }
 
     #[test]

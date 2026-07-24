@@ -20,6 +20,7 @@ No provider key or network access is required.
 | E2E-007 | `coalesced-fire` | direct | a burst past the fire-rate cap coalesces: cap + 1 dispatches, the trailing one stamped `__coalesced_fires` (shrunken gate via harness env; probe-side whole-run call evidence) |
 | E2E-008 | `reaction-unregisters-run` | direct | a reaction session in the registrant's lineage unregisters the registrant's subscription (serve-time capture of the runtime sub id; probe-side call await) |
 | E2E-009 | `late-join-predecessor-replay` | direct | a join predecessor registered after its watched session completed receives a catch-up completion fire (level-triggered join barrier; `probe_after_calls` gating) |
+| E2E-010 | `fire-budget-retires-binding` | direct | a standing reaction with `max_fires` delivers exactly N stamped fires and then unregisters itself (budget exhaustion; per-fire probe gating) |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 

@@ -330,6 +330,14 @@ pub struct ReactSpec {
     /// the failed event and any preserved partial result.
     #[serde(default)]
     pub continue_on_error: bool,
+    /// Caller-supplied lifetime fire budget: after this many delivered fires
+    /// the binding retires itself through the `once` teardown path. THE
+    /// termination guarantee for recurring bindings whose stop condition
+    /// lives in agent logic — rctest7 postmortem: a 10-second gate-check
+    /// cron polled forever when its gate became unreachable, and at 6
+    /// fires/min the fire-rate breaker (correctly) never engaged.
+    #[serde(default)]
+    pub max_fires: Option<u64>,
     /// When present, this subscription is one predecessor of a join barrier.
     #[serde(default)]
     pub join: Option<JoinSpec>,
@@ -519,6 +527,22 @@ pub fn validate_spec(metadata: Option<&Value>) -> Result<(), String> {
             ));
         }
     }
+    if let Some(budget) = spec.max_fires {
+        if budget == 0 {
+            return Err(
+                "`max_fires` must be >= 1 (a binding that may never fire is a mis-registration; \
+                 don't register it instead)"
+                    .into(),
+            );
+        }
+        if spec.join.is_some() {
+            return Err(
+                "`max_fires` cannot combine with `join` — the join lifecycle owns predecessor \
+                 bindings (they auto-unregister when the join fires; `rearm` re-arms them)"
+                    .into(),
+            );
+        }
+    }
     Ok(())
 }
 
@@ -562,7 +586,7 @@ pub(crate) fn handle_boxed<'a>(
 
 pub async fn handle(
     deps: &Deps,
-    event: Value,
+    mut event: Value,
     metadata: Option<Value>,
 ) -> Result<ReactResult, HarnessError> {
     // A bad/absent spec must never error out: an erroring trigger target just
@@ -570,7 +594,7 @@ pub async fn handle(
     // is kept beside the parsed spec: a capped fire parks it for the trailing
     // coalesced re-entry.
     let raw_metadata = metadata.clone();
-    let spec: ReactSpec = match metadata {
+    let mut spec: ReactSpec = match metadata {
         Some(m) => match serde_json::from_value(m) {
             Ok(s) => s,
             Err(e) => {
@@ -665,6 +689,48 @@ pub async fn handle(
         return Ok(ReactResult::note(note));
     }
 
+    // Fire budget: a caller-declared lifetime cap on DELIVERED fires. The
+    // final budgeted fire is delivered normally and then retires the binding
+    // through the exact `once` teardown path (fired records carry
+    // retired: true). This is the platform's termination guarantee for
+    // recurring bindings whose stop condition lives in agent logic — rctest7
+    // postmortem: a 10-second gate-check cron whose gate became unreachable
+    // polled forever, and at 6 fires/min the rate breaker above (correctly)
+    // never engaged. Counted AFTER gate admission so coalesced parks don't
+    // burn budget their trailing fire will spend.
+    if let Some(budget) = spec.max_fires {
+        let count = deps.subscriptions.record_budgeted_fire(&gate_key);
+        if count > budget {
+            // A fire slipped past retirement (teardown raced the source, or
+            // a prior unregister failed and left the engine binding live).
+            // Never deliver; retry the teardown instead.
+            once_unregister(deps, &spec).await;
+            let note =
+                format!("fire budget ({budget}) exhausted; binding retired — not delivering");
+            record_reaction_outcome(deps, &spec, &event, "blocked", &note, None).await;
+            return Ok(ReactResult::note(note));
+        }
+        if count == budget {
+            spec.once = true;
+        }
+        // The delivered reaction (and the e2e evidence) can see where in the
+        // budget this fire sits and that no further fires are coming.
+        if let Some(obj) = event.as_object_mut() {
+            obj.insert("__fire_seq".to_string(), json!(count));
+            obj.insert("__fire_budget".to_string(), json!(budget));
+            if count == budget {
+                obj.insert("__final_fire".to_string(), json!(true));
+                obj.insert(
+                    "__fire_budget_note".to_string(),
+                    json!(format!(
+                        "This is fire {count} of {budget} — the binding's fire budget is now \
+                         exhausted and it has been unregistered; no further fires will arrive."
+                    )),
+                );
+            }
+        }
+    }
+
     // Fire-time model check (task mode only — call reactions have no model):
     // registrations made through OTHER trigger-type providers (e.g. `state`)
     // never pass the harness's registration-time validation, so a
@@ -729,7 +795,6 @@ pub async fn handle(
     // explicit pin wins; otherwise the registering (owner) session, so a
     // reaction with no pin lands as a turn in the chat that wired it instead
     // of a detached child nobody watches.
-    let mut spec = spec;
     spec.session_id = reaction_delivery_session(&spec);
 
     let completion_failure = turn_completion_failure(&event);
@@ -1972,6 +2037,7 @@ mod tests {
             options: None,
             parent_session_id: None,
             continue_on_error: false,
+            max_fires: None,
             join: None,
             subscription_id: None,
             once: false,
@@ -2442,5 +2508,28 @@ mod tests {
         assert!(validate_spec(None).unwrap_err().contains("metadata"));
         let err = validate_spec(Some(&json!({ "model": "m" }))).unwrap_err();
         assert!(err.contains("task"), "{err}");
+    }
+
+    #[test]
+    fn validate_spec_max_fires_bounds_and_join_exclusion() {
+        // A budget bounds task and call reactions alike.
+        assert!(
+            validate_spec(Some(&json!({ "model": "m", "task": "t", "max_fires": 30 }))).is_ok()
+        );
+        assert!(validate_spec(Some(&json!({
+            "call": { "function_id": "state::set" }, "max_fires": 1
+        })))
+        .is_ok());
+        // Zero can never fire — a mis-registration, not a no-op.
+        let err =
+            validate_spec(Some(&json!({ "model": "m", "task": "t", "max_fires": 0 }))).unwrap_err();
+        assert!(err.contains(">= 1"), "{err}");
+        // The join lifecycle owns predecessor bindings.
+        let err = validate_spec(Some(&json!({
+            "model": "m", "task": "t", "max_fires": 2,
+            "join": { "id": "J", "expect": ["a"], "key": "a" }
+        })))
+        .unwrap_err();
+        assert!(err.contains("join"), "{err}");
     }
 }
