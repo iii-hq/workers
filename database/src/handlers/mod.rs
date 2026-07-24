@@ -45,6 +45,29 @@ mod tx_sql_guard;
 
 pub(crate) use query::rows_to_objects as query_rows_to_objects;
 
+/// Reject transaction-control SQL on the pooled per-call surfaces. Each call
+/// runs on whichever connection the pool hands out, so BEGIN/COMMIT can never
+/// pair up — worse, a BEGIN that "succeeds" returns its connection to the
+/// pool still inside an open transaction, and every later caller unlucky
+/// enough to draw it fails with `cannot start a transaction within a
+/// transaction` (rctest5 postmortem: three writer agents starved on one
+/// poisoned connection). Point the caller at the real transactional surfaces.
+pub(crate) fn reject_tx_control_sql(sql: &str) -> Result<(), DbError> {
+    if tx_sql_guard::is_transaction_control_sql(sql) {
+        return Err(DbError::InvalidParam {
+            index: 0,
+            reason: "transaction-control SQL (BEGIN/COMMIT/ROLLBACK/SAVEPOINT) is not valid \
+                     here: each call runs on its own pooled connection, so the statements \
+                     cannot pair up and a leaked BEGIN poisons the pool for every later \
+                     caller. Use database::beginTransaction + database::transactionExecute + \
+                     database::commitTransaction, or database::executeBatch for an atomic \
+                     batch."
+                .into(),
+        });
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub pools: Arc<RwLock<HashMap<String, Pool>>>,
@@ -58,6 +81,30 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Resolve an optional logical db name to a concrete pool key.
+    ///
+    /// `Some(name)` passes through untouched (unknown names still surface
+    /// `UNKNOWN_DB` from [`AppState::pool`]). `None` falls back to the sole
+    /// configured pool, then to `primary` when several exist; the omission is
+    /// only an error (`MISSING_DB`) when neither rule disambiguates. This
+    /// exists because LLM callers routinely omit `db` on their first call —
+    /// a hard serde failure there is a wasted round-trip on every session.
+    pub async fn resolve_db(&self, db: Option<String>) -> Result<String, DbError> {
+        if let Some(name) = db {
+            return Ok(name);
+        }
+        let pools = self.pools.read().await;
+        if pools.len() == 1 {
+            return Ok(pools.keys().next().expect("len checked above").clone());
+        }
+        if pools.contains_key(crate::config::DEFAULT_DB_NAME) {
+            return Ok(crate::config::DEFAULT_DB_NAME.to_string());
+        }
+        let mut available: Vec<String> = pools.keys().cloned().collect();
+        available.sort();
+        Err(DbError::MissingDb { available })
+    }
+
     pub async fn pool(&self, db: &str) -> Result<Pool, DbError> {
         let pools = self.pools.read().await;
         pools.get(db).cloned().ok_or_else(|| {

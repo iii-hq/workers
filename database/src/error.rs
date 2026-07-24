@@ -29,6 +29,10 @@ pub enum DbError {
     #[error("unknown db {db}; available: [{}]", available.join(", "))]
     UnknownDb { db: String, available: Vec<String> },
 
+    #[serde(rename = "MISSING_DB")]
+    #[error("no `db` specified and none of the configured databases is an unambiguous default; available: [{}]", available.join(", "))]
+    MissingDb { available: Vec<String> },
+
     #[serde(rename = "INVALID_PARAM")]
     #[error("invalid parameter at index {index}: {reason}")]
     InvalidParam { index: usize, reason: String },
@@ -102,6 +106,20 @@ mod tests {
         assert_eq!(
             e.to_string(),
             "unknown db missing; available: [analytics, primary]"
+        );
+    }
+
+    #[test]
+    fn missing_db_serializes_with_stable_code_and_available_handles() {
+        let e = DbError::MissingDb {
+            available: vec!["analytics".into(), "main".into()],
+        };
+        let v: serde_json::Value = serde_json::to_value(&e).unwrap();
+        assert_eq!(v["code"], "MISSING_DB");
+        assert_eq!(v["available"], serde_json::json!(["analytics", "main"]));
+        assert_eq!(
+            e.to_string(),
+            "no `db` specified and none of the configured databases is an unambiguous default; available: [analytics, main]"
         );
     }
 
