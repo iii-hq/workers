@@ -2,12 +2,13 @@
 //! turn's dispatch policy.
 //!
 //! The rctest-k7m3 run-3 failure shape: an agent registers a wrap-up reaction
-//! (no `options.functions`) that spawns a fresh child session; the reaction
-//! used to fall back to the read-only baseline and was denied the functions
-//! the registering turn could call. With the registrant-policy stamp the
-//! child inherits the registering turn's policy, so its scripted call to the
-//! controlled function must dispatch successfully — before the fix that call
-//! errors with "not permitted by this agent's dispatch policy".
+//! (no `options.functions`) explicitly delivered back into its own session;
+//! the reaction used to fall back to the read-only baseline and was denied the
+//! functions every earlier turn in that chat could call. With the
+//! registrant-policy stamp the reaction inherits the registering turn's
+//! policy, so its scripted call to the controlled function must dispatch
+//! successfully — before the fix that call errors with "not permitted by this
+//! agent's dispatch policy".
 //!
 //! The coalescing half of the same PR is pinned at the unit level
 //! (`fire_gate_coalesces_capped_fires_newest_wins`): its trailing fire lands
@@ -54,11 +55,9 @@ pub(super) fn scenario() -> ScenarioFixture {
             .allow_id(REGISTER)
             .allow_function(&record),
     )
-    // The reaction runs in a fresh, untracked child. Its controlled-function
-    // call is both the await signal and the whole-run evidence; only the
-    // registering session's terminal turn and traces are tracked directly.
-    .await_target_calls(1)
-    .expect_traces(1)
+    // Turn 1 completes, the turn-completed binding fires, and the explicitly
+    // pinned reaction seeds a SECOND terminal turn in the same session.
+    .terminal_turn_statuses(["completed", "completed"])
     .generation(
         Generation::new(1)
             .expect(
@@ -78,6 +77,9 @@ pub(super) fn scenario() -> ScenarioFixture {
                     "metadata": {
                         // Deliberately NO `options`: the reaction must inherit
                         // the registering turn's policy to call the recorder.
+                        // Pin the delivery session explicitly; unpinned
+                        // reactions intentionally create fresh children.
+                        "session_id": "{{session_id}}",
                         "task": "The wrap-up fired. Call the recorder exactly once \
                                  with value \"from-reaction\", then stop."
                     }
@@ -114,9 +116,14 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(0)
                     // Reaction turns run the sub-agent prompt, not the default.
                     .system_prompt_regex(".")
-                    // A fresh child begins with only the reaction seed, fenced
-                    // with the fired event.
-                    .messages_subset([json!({ "role": "user" })])
+                    .messages_subset([
+                        json!({ "role": "user" }),
+                        json!({ "role": "assistant" }),
+                        json!({ "role": "function_result", "function_call_id": "call-arm" }),
+                        json!({ "role": "assistant" }),
+                        // The reaction seed, fenced with the fired event.
+                        json!({ "role": "user" }),
+                    ])
                     .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::function_call(
@@ -135,6 +142,10 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .system_prompt_regex(".")
                     .messages_subset([
                         json!({ "role": "user" }),
+                        json!({ "role": "assistant" }),
+                        json!({ "role": "function_result" }),
+                        json!({ "role": "assistant" }),
+                        json!({ "role": "user" }),
                         json!({ "role": "assistant", "content": [
                             { "type": "function_call", "id": "call-record" }
                         ] }),
@@ -149,13 +160,9 @@ pub(super) fn scenario() -> ScenarioFixture {
     )
     .function(record.clone())
     .verify(|run| {
-        run.expect_assistant_texts(["armed"])?;
-        run.expect_target_calls(1)?;
-        anyhow::ensure!(
-            run.target_calls[0] == json!({ "value": "from-reaction" }),
-            "recorder payload {:?} != from-reaction",
-            run.target_calls[0]
-        );
+        run.expect_assistant_texts(["armed", "reaction recorded"])?;
+        run.expect_function_calls("record", 1)?;
+        run.expect_call_payload("record", json!({ "value": "from-reaction" }))?;
 
         let regs = run.function_results(REGISTER);
         anyhow::ensure!(
@@ -163,9 +170,9 @@ pub(super) fn scenario() -> ScenarioFixture {
             "the reaction registration must succeed: {regs:?}"
         );
 
-        // The router's fourth generation requires the child recorder result
-        // to be successful. Keep the tracked transcript free of policy
-        // denials as an additional registration-path assertion.
+        // The core claim: nothing in the whole run was policy-denied. Before
+        // the registrant-policy stamp, the reaction turn's recorder call died
+        // here with "not permitted by this agent's dispatch policy".
         for item in &run.transcript {
             let msg = item.get("message").cloned().unwrap_or(Value::Null);
             if msg.get("role").and_then(Value::as_str) == Some("function_result") {
@@ -188,11 +195,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixture_is_valid_and_awaits_the_untracked_reaction() {
+    fn fixture_is_valid_and_expects_two_terminal_turns() {
         let fixture = scenario();
         fixture.validate().unwrap();
-        assert_eq!(fixture.expected_terminal_turns, 1);
-        assert_eq!(fixture.await_target_calls, Some(1));
+        assert_eq!(fixture.expected_terminal_turns, 2);
+        assert_eq!(fixture.await_target_calls, None);
         assert_eq!(fixture.expected_traces(), 1);
     }
 }
