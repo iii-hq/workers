@@ -31,7 +31,8 @@ pub const CHAT_DESC: &str =
 
 pub const COMPLETE_ID: &str = "router::complete";
 pub const COMPLETE_DESC: &str = "Non-streaming convenience over router::chat: run the turn on an \
-     internal channel and return the final assistant message + usage.";
+     internal channel and return the final assistant message + usage. Message content is an \
+     ARRAY OF BLOCKS ([{type: text, text}]), never a plain string.";
 
 pub const ABORT_ID: &str = "router::abort";
 pub const ABORT_DESC: &str =

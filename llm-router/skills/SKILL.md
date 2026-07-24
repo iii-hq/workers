@@ -1,147 +1,99 @@
 ---
 name: llm-router
 description: >-
-  The model gateway: how a chat request routes to a provider worker and
-  streams back, the model catalog and its reconcile lifecycle, provider
-  registration and the token binding that guards it, the per-provider
-  identity prompt precedence, credentials, and the trigger types the router
-  fires. Read this before calling router::chat/complete, before wiring a
-  provider worker, and before debugging "no provider for model" or
-  "registration rejected".
+  What the API reference cannot tell you about the router: how the model
+  catalog is fed and why a registered provider can still serve zero models,
+  the provider token binding and its recovery runbook, the identity prompt
+  precedence, and the rebind semantics behind router::ready. For the
+  function surface itself, read the contracts with engine::functions::info.
 ---
 
 # llm-router
 
-The router is the single gateway between agents and model providers. A
-caller names `{ model, provider? }`; the router resolves the provider,
-relays the generation from the provider worker's stream surface, and owns
-every cross-cutting concern on the way: the model catalog, per-provider
-identity prompts, output budgets, abort, and provider credentials. Provider
-workers (`provider::<id>::stream`) are never called directly by consumers.
+The router is the single gateway between agents and model providers:
+callers name `{ model, provider? }`, the router resolves and relays, and
+provider workers are never called directly. The function surface is in the API
+reference (https://workers.iii.dev/workers/llm-router?tab=api, or live via
+`engine::functions::info`); this document covers only the
+semantics that span functions and the failure modes no schema shows.
 
-## Calling models
+## The catalog is provider-fed, and the split state that implies
 
-- `router::chat` — stream a chat completion: routes `{ model, provider? }`
-  to a provider, relays assistant frames to the caller's `writer_ref`
-  channel, and returns the terminal response. This is what the harness uses
-  per generation.
-- `router::complete` — non-streaming convenience over `router::chat`: runs
-  the turn on an internal channel and returns the final assistant message
-  plus usage. The `messages` it takes are full message objects — content is
-  an ARRAY OF BLOCKS (`[{ "type": "text", "text": ... }]`), never a plain
-  string. A string-shaped message dies before the upstream call with a
-  misleading `stream ended without a terminal frame` error.
-- `router::abort` — cancel an in-flight chat/complete by `request_id`;
-  reports whether a live request was actually cancelled.
-- `router::embed` — batch text embeddings through a provider's
-  `provider::<id>::embed` surface. Names a provider or discovers the first
-  embed-capable one from the live registry; one vector per input, order
-  preserved.
+Models enter the catalog when a provider worker reconciles its slice —
+usually right after registering, again on its own refresh cycles. Config
+never adds models. Two consequences:
 
-Model selection: a bare model id resolves through the catalog; `provider`
-disambiguates when two providers serve the same id. `router/no_provider_for_model`
-means the catalog has no row for that id — see the catalog lifecycle below
-before assuming the model name is wrong.
+- A provider can be REGISTERED yet contribute ZERO models: it appears in
+  the provider list while its models are missing from the catalog. That
+  split state is the diagnostic signature of a declare/refresh that never
+  completed — not of a wrong model name.
+- `router/no_provider_for_model` therefore has two distinct causes: the id
+  genuinely does not exist, or the provider that serves it is in the split
+  state above. Check the provider list before trusting the error at face
+  value.
 
-## The model catalog
+Capability checks fail OPEN for unknown models: absence of a catalog row is
+not evidence a feature is unsupported.
 
-- `router::models::list` — catalog models, optionally filtered by provider
-  and/or a capability flag.
-- `router::models::get` — one catalog record by `{ provider, id }`; null
-  when not registered.
-- `router::models::supports` — capability check (fails OPEN for unknown
-  models: absence of a row is not evidence of absence of a feature).
-- `router::models::budget` — the effective output budget for a model,
-  resolved with the same precedence `router::chat` uses.
+## Provider binding: the token, the rejection, the recovery
 
-The catalog is fed by providers, not by config: each provider worker calls
-`router::models::reconcile` (internal) to replace its slice, usually right
-after registering and again on its own refresh cycles. A provider that is
-registered but has not reconciled contributes zero models — the provider
-appears in `router::provider::list` while its models are missing from
-`router::models::list`. That split state is the signature of a provider
-whose declare/refresh never completed.
-
-## Providers: registration, binding, availability
-
-Provider workers register with `router::provider::register` (internal),
-presenting a declaration (id, optional identity prompt, optional config
-schema). The FIRST registration mints a binding token; the router persists
+A provider's FIRST registration mints a binding token; the router persists
 its hash (state scope `llm-router`, key `registry`) and returns the raw
-token to the provider — it exists nowhere else. Every later registration
-must present that token; without it the router answers
-`router/registration_rejected: provider <id> is bound to another worker;
-re-binding is an operator action`.
+token, which then exists only in the provider's process memory. Every later
+registration must present it, else:
 
-Operational consequences, learned the hard way:
+    router/registration_rejected: provider <id> is bound to another worker;
+    re-binding is an operator action
 
-- The raw token lives in provider process memory. An upgrade or restart
-  cycle that loses it leaves the provider permanently rejected — and some
-  released provider binaries swallow the rejection silently, so the only
-  symptom is missing catalog models.
-- The recovery recipe (no release function exists yet): back up
-  `state::get { scope: "llm-router", key: "registry" }`, set the value to
-  `{}` (or remove the affected records), restart the llm-router worker (it
-  reloads the registry at boot and fires `router::ready`), and restart any
-  provider whose declare task already died. Providers then first-register
-  and mint fresh tokens.
-- `router::provider::list` shows `configured` (has usable credentials) and
-  `available` (currently serving). Registration sets `available: true`; a
-  dispatch-time function-not-found flips it back down. `router/provider_unavailable`
-  on a call means the record exists but the router does not currently trust
-  the worker behind it.
+Operational facts learned from a live 0.21 to 0.22 migration:
 
-`router::provider::resolve` (internal) hands a provider its effective
-settings (api_url, max_tokens) from the config slice;
-`router::provider::update_credential` (internal) is the vault/refresh
-write path.
+- An upgrade or restart cycle that loses the in-memory token leaves the
+  provider permanently rejected, and some released provider binaries
+  swallow the rejection without a log line — the only symptom is the split
+  state above.
+- There is no release function yet; the operator action is manual: back up
+  the registry state value, clear the affected records (or set the value to
+  `{}`), restart the llm-router worker — it reloads the registry at boot
+  and fires `router::ready` — and restart any provider whose declare task
+  already died. Providers then first-register and mint fresh tokens.
+- `configured` and `available` are independent flags: registration sets a
+  provider available; a dispatch-time function-not-found flips it back
+  down. `router/provider_unavailable` means the record exists but the
+  router does not currently trust the worker behind it.
 
-## Configuration and the identity prompt
+## The identity prompt precedence
 
-The router's configuration entry carries one slice per provider. A provider
-that declares no custom `config_schema` gets the default slice
-`{ api_key, api_url, max_tokens }` — api_key is write-only in the schema so
-the console never re-displays it. Every slice additionally gets a nullable
-`system_prompt` knob: the console renders it as a set/unset toggle plus a
-textarea prefilled with the provider-declared prompt.
+`router::system_prompt::get` resolves the per-provider identity prompt:
+operator override when set and non-empty, else the provider-declared
+prompt, else null — and on null the harness falls back to its embedded
+default. An empty or null override means "use the provider's default", so
+unsetting the console knob is always safe. Prompt lookup never errors by
+design: an identity miss must not take a turn down.
 
-`router::system_prompt::get { provider? }` resolves the effective identity
-prompt (`default_provider` when omitted): operator override when set and
-non-empty, else the provider-declared prompt, else null — and the harness
-falls back to its embedded default on null. Empty or null override means
-"use the provider's default", so unsetting the knob is always safe. Prompt
-lookup never errors; it must not take a turn down.
+Every provider's config slice carries the override knob; a provider that
+declares no custom config schema gets the default credentials slice with a
+write-only api key (the console never re-displays it). Config hot-reloads:
+changes apply on the next call, no restart.
 
-Config changes hot-reload (`router::on_config_changed`, internal): the
-router snapshots the whole entry, so a change takes effect on the next call
-without a restart.
+## Rebind semantics: router::ready
 
-## Trigger types the router publishes
-
-- `router::ready` — fired when the router comes up. Provider workers bind
-  their re-declare handlers to it so a router restart re-collects every
-  declaration. If a provider boots BEFORE the router, its first declare
-  retries with backoff, and the `ready` binding covers the restart case.
-- `router::models::changed` — the catalog changed (a reconcile landed).
-  Consumers that cache model lists (console pickers) invalidate on it.
-- `router::provider::changed` — a provider record changed (registration,
-  availability flip, credential update).
+The router fires `router::ready` when it comes up. Provider workers bind
+their re-declare handlers to it, which is what makes a router restart
+self-healing: on ready, every connected provider re-registers and
+re-reconciles. A provider that boots BEFORE the router retries its declare
+with backoff, and the ready binding covers the restart case. The other two
+published events — catalog changed and provider changed — exist for
+consumers that cache model or provider lists and must invalidate on change.
 
 ## Boundaries
 
-- The router never stores prompts beyond the per-provider override knob and
-  never stores a content catalog of its own: models come from provider
-  reconciles, identity prompts from provider declarations, credentials from
-  the config slices or the vault path.
-- `router::route` is internal resolution plumbing; call `chat`/`complete`.
+- The router stores no content catalog of its own: models come from
+  provider reconciles, identity prompts from declarations plus the one
+  override knob, credentials from config slices or the vault path.
 - Streaming budgets and idle guards live router-side; providers bound their
   own upstream reads. A healthy stream emits frames or pings — prolonged
-  silence is treated as a dead connection, surfaced to the caller as a
-  terminal error frame.
+  silence is treated as a dead connection and surfaced as a terminal error
+  frame, not a hang.
 
-## Reading this with the harness reference
-
-`harness/reference` documents when the harness calls `router::chat`,
-`router::abort`, `router::models::*`, and `router::system_prompt::get`
-during a turn. This document is the router-side contract behind those
-calls.
+`harness/reference` documents where a harness turn touches the router; this
+is the router-side contract behind those calls.
