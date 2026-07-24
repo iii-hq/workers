@@ -17,6 +17,7 @@ on:
       - 'cron/v*'
       - 'database/v*'
       - 'email/v*'
+      - 'eval/v*'
       - 'harness/v*'
       - 'hermes/v*'
       - 'http/v*'

@@ -22,6 +22,7 @@ on:
           - cron
           - database
           - email
+          - eval
           - harness
           - hermes
           - http
