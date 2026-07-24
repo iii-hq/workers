@@ -81,11 +81,10 @@ pub struct WorkerConfig {
     /// Dispatch policy for a PARENTLESS spawn (a direct/CLI `harness::spawn`
     /// or a trigger-fired `harness::react` spawn) whose request carries no
     /// `options.functions`. Children of live turns still inherit/subset the
-    /// parent policy, and explicit options always win. Defaults to a
-    /// read-only baseline (discovery, reads, subscription management — no
-    /// writes, no spend, no spawning); set to `null` explicitly to restore
-    /// deny-all. Doubles as the ceiling every ask-mode turn's policy is
-    /// clamped to — `null` makes ask mode a plain chat loop.
+    /// parent policy, and explicit options always win. Defaults to allowing
+    /// every function; set to `null` explicitly to restore deny-all. Doubles
+    /// as the ceiling every ask-mode turn's policy is clamped to — `null`
+    /// makes ask mode a plain chat loop.
     #[serde(default = "default_functions")]
     pub default_functions: Option<FunctionPolicy>,
 
@@ -243,48 +242,16 @@ fn default_sweep_expression() -> String {
     "0 0 0 * * *".to_string()
 }
 fn default_functions() -> Option<FunctionPolicy> {
-    // Read-only baseline for PARENTLESS spawns (direct/CLI/trigger-fired) —
-    // the only children with no parent policy to inherit. Discovery and reads
-    // only: excludes every write surface, router spend, spawning, and trigger
-    // registration; a caller grants anything more explicitly via options /
-    // react metadata.options. (In-turn children instead inherit their parent's
-    // full policy — see `subagent::seed_child`.)
+    // Default policy for PARENTLESS spawns that carry no inherited policy
+    // (direct/CLI/raw trigger calls). In-turn children inherit their parent
+    // directly; harness::react persists the registering turn's policy into
+    // its parentless spawn options.
     //
     // DOUBLES AS THE ASK-MODE CEILING: every ask-mode send / steer / child has
-    // its dispatch policy clamped to this list (see `functions::send::
-    // clamp_for_mode`). Editing the allow set below widens or narrows what
-    // EVERY ask-mode turn may call, not just parentless spawns — keep it to
-    // non-mutating ids. Prefer exact ids over globs here: `clamp_policy`
-    // under-approximates against glob baseline entries (see its doc).
+    // its dispatch policy clamped to this policy (see
+    // `functions::send::clamp_for_mode`).
     Some(FunctionPolicy {
-        allow: [
-            "engine::functions::list",
-            "engine::functions::info",
-            "engine::triggers::list",
-            "engine::triggers::info",
-            "engine::workers::list",
-            "engine::workers::info",
-            "engine::registered-triggers::list",
-            "engine::registered-triggers::info",
-            "state::get",
-            "state::list",
-            "router::models::list",
-            "router::models::get",
-            "router::models::supports",
-            "harness::status",
-            "worker::list",
-            "directory::registry::workers::list",
-            "directory::registry::workers::info",
-            "coder::info",
-            "coder::read-file",
-            "coder::search",
-            "coder::list-folder",
-            "coder::tree",
-            "scrapling::fetch",
-        ]
-        .into_iter()
-        .map(String::from)
-        .collect(),
+        allow: vec!["*".to_string()],
         deny: vec![],
         expose: Default::default(),
     })
@@ -353,28 +320,11 @@ mod tests {
     }
 
     #[test]
-    fn default_functions_is_read_only_baseline_and_nullable() {
+    fn default_functions_allows_everything_and_is_nullable() {
         let cfg = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
-        let policy = cfg.default_functions.expect("baseline present by default");
-        assert!(policy
-            .allow
-            .contains(&"engine::functions::list".to_string()));
-        assert!(policy.allow.contains(&"state::get".to_string()));
-        // No write surface, no spend, no spawning, no trigger registration in
-        // the baseline — children are leaves.
-        for denied in [
-            "state::set",
-            "harness::spawn",
-            "engine::register_trigger",
-            "engine::unregister_trigger",
-            "router::chat",
-            "shell::exec",
-        ] {
-            assert!(
-                !policy.allow.contains(&denied.to_string()),
-                "{denied} must not be in the baseline"
-            );
-        }
+        let policy = cfg.default_functions.expect("policy present by default");
+        assert_eq!(policy.allow, vec!["*"]);
+        assert!(policy.deny.is_empty());
         // Explicit null restores deny-all.
         let cfg =
             WorkerConfig::from_json(&serde_json::json!({ "default_functions": null })).unwrap();

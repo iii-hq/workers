@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// Console / send operating mode — prepends a short paragraph before the
 /// shared identity prompt. `ask` is also structural: the turn's dispatch
-/// policy is capped at the operator's read-only baseline, never widened.
+/// policy is capped at the configured default policy, never widened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {

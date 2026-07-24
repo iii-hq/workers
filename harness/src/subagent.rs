@@ -133,8 +133,8 @@ pub async fn spawn_child(
 /// request. Dumbness is a prompt/data-flow property, not a capability wall — a
 /// child CAN spawn/register, it just shouldn't (subagent.txt). A parentless
 /// (direct/CLI/trigger-fired) spawn has no parent to mirror: explicit options
-/// win, else the read-only baseline. Whatever was resolved, an ask-mode child
-/// is then capped at the baseline — ask is structurally read-only everywhere.
+/// win, else the configured default policy. Whatever was resolved, an ask-mode
+/// child is then capped at that policy.
 fn child_functions(
     cfg: &WorkerConfig,
     parent_record: Option<&TurnRecord>,
@@ -301,6 +301,17 @@ async fn seed_child(
             ),
             mode: req.options.as_ref().and_then(|o| o.mode),
             max_turns,
+            max_output_tokens: req
+                .options
+                .as_ref()
+                .and_then(|o| o.max_output_tokens)
+                .or_else(|| parent_record.and_then(|p| p.options.max_output_tokens)),
+            // Children cannot widen or replace their root turn's execution
+            // budget; every generation charges the same durable ledger.
+            max_total_tokens: parent_record.and_then(|p| p.options.max_total_tokens),
+            max_cost_usd: parent_record.and_then(|p| p.options.max_cost_usd),
+            budget_root_session_id: parent_record
+                .and_then(|p| p.options.budget_root_session_id.clone()),
             thinking_level: req.options.as_ref().and_then(|o| o.thinking_level),
             provider_options: None,
             output: req
@@ -435,6 +446,10 @@ mod tests {
                 system_prompt: None,
                 mode: None,
                 max_turns: 16,
+                max_output_tokens: None,
+                max_total_tokens: None,
+                max_cost_usd: None,
+                budget_root_session_id: None,
                 thinking_level: None,
                 provider_options: None,
                 output: OutputContract::Text,
@@ -577,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn ask_mode_child_is_capped_at_the_read_only_baseline() {
+    fn ask_mode_child_is_capped_at_the_default_policy() {
         let cfg = WorkerConfig::default();
         let mut parent = parent_record(None);
         parent.options.functions = Some(broad_policy());
@@ -586,12 +601,12 @@ mod tests {
         let inherited = child_functions(&cfg, Some(&parent), None, Some(Mode::Agent));
         assert!(policy::CompiledPolicy::from(inherited.as_ref()).allows("state::set"));
 
-        // An ask-mode child is capped at the baseline, whatever it inherited.
+        // An ask-mode child is capped at the wildcard default, whatever it inherited.
         let asked = child_functions(&cfg, Some(&parent), None, Some(Mode::Ask));
         let compiled = policy::CompiledPolicy::from(asked.as_ref());
         assert!(compiled.allows("state::get"));
-        assert!(!compiled.allows("state::set"));
-        assert!(!compiled.allows("harness::spawn"));
+        assert!(compiled.allows("state::set"));
+        assert!(compiled.allows("harness::spawn"));
     }
 
     #[test]
@@ -611,18 +626,17 @@ mod tests {
     }
 
     #[test]
-    fn parentless_ask_child_keeps_the_baseline() {
+    fn parentless_ask_child_keeps_the_default_policy() {
         let cfg = WorkerConfig::default();
         let f = child_functions(&cfg, None, None, Some(Mode::Ask));
         let compiled = policy::CompiledPolicy::from(f.as_ref());
         assert!(compiled.allows("state::get"));
-        assert!(!compiled.allows("state::set"));
+        assert!(compiled.allows("state::set"));
     }
 
     #[test]
     fn ask_mode_child_clamps_an_explicit_broad_request() {
-        // The direct escalation vector: a spawn that explicitly asks for `*`.
-        // Both a parented and a parentless ask child must still be capped.
+        // A wildcard request remains unrestricted under the wildcard default.
         let cfg = WorkerConfig::default();
         let mut parent = parent_record(None);
         parent.options.functions = Some(broad_policy());
@@ -630,8 +644,8 @@ mod tests {
             let f = child_functions(&cfg, parent_rec, Some(&broad_policy()), Some(Mode::Ask));
             let compiled = policy::CompiledPolicy::from(f.as_ref());
             assert!(compiled.allows("state::get"));
-            assert!(!compiled.allows("state::set"));
-            assert!(!compiled.allows("harness::spawn"));
+            assert!(compiled.allows("state::set"));
+            assert!(compiled.allows("harness::spawn"));
         }
     }
 
@@ -645,6 +659,6 @@ mod tests {
         let defaulted = child_functions(&cfg, None, None, None);
         let compiled = policy::CompiledPolicy::from(defaulted.as_ref());
         assert!(compiled.allows("state::get"));
-        assert!(!compiled.allows("state::set"));
+        assert!(compiled.allows("state::set"));
     }
 }

@@ -1,10 +1,10 @@
 [workspace]
-members = ["tests/e2e"]
+members = ["tests/e2e", "tests/agent-quality"]
 resolver = "2"
 
 [package]
 name = "harness"
-version = "1.6.0"
+version = "1.6.1"
 edition = "2021"
 publish = false
 

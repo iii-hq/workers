@@ -47,6 +47,18 @@ const CONTEXT_OVERFLOW_FAILURE: FailureInfo = FailureInfo {
     retryable: false,
 };
 
+const BUDGET_EXCEEDED_FAILURE: FailureInfo = FailureInfo {
+    code: "harness.budget_exceeded",
+    phase: "budget_preflight",
+    retryable: false,
+};
+
+const BUDGET_UNAVAILABLE_FAILURE: FailureInfo = FailureInfo {
+    code: "harness.budget_unavailable",
+    phase: "budget_preflight",
+    retryable: false,
+};
+
 /// Provider adapters add framing outside the fields visible to the harness.
 /// Keep a small fixed reserve in addition to the deterministic JSON estimate.
 const PROVIDER_FRAMING_ALLOWANCE_TOKENS: u64 = 64;
@@ -315,7 +327,13 @@ pub async fn run_step(
         PRE_GENERATE_HOOK_ALLOWANCE_TOKENS
     };
     let mut reassembled = false;
-    let (gen_system_prompt, gen_annotations, gen_messages) = loop {
+    let (
+        gen_system_prompt,
+        gen_annotations,
+        gen_messages,
+        generation_input_tokens,
+        generation_max_output_tokens,
+    ) = loop {
         let assembled = match assemble_context(
             deps,
             &session,
@@ -448,7 +466,18 @@ pub async fn run_step(
             final_count.tokens.saturating_add(request_overhead_tokens)
         };
         if final_request_tokens <= assembled.usable {
-            break (gen_system_prompt, gen_annotations, gen_messages);
+            let max_output_tokens = record
+                .options
+                .max_output_tokens
+                .unwrap_or(assembled.effective_max_output_tokens)
+                .min(assembled.effective_max_output_tokens);
+            break (
+                gen_system_prompt,
+                gen_annotations,
+                gen_messages,
+                final_request_tokens,
+                max_output_tokens,
+            );
         }
         if reassembled {
             let reason = format!(
@@ -483,6 +512,33 @@ pub async fn run_step(
         );
     };
 
+    // A stop that landed during context assembly is visible through the
+    // in-process signal even though its durable write is blocked by this
+    // session lock. Do not reserve budget for a call that will never start.
+    if deps.cancels.is_fired(&record.turn_id) {
+        record.abort = true;
+        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+    }
+
+    let budget_reservation = match crate::budget::reserve(
+        deps,
+        &record,
+        generation_input_tokens,
+        generation_max_output_tokens,
+    )
+    .await?
+    {
+        crate::budget::ReserveOutcome::Unlimited => None,
+        crate::budget::ReserveOutcome::Reserved(reservation) => Some(reservation),
+        crate::budget::ReserveOutcome::Rejected(rejection) => {
+            let failure = match &rejection {
+                crate::budget::BudgetRejection::Exceeded(_) => BUDGET_EXCEEDED_FAILURE,
+                crate::budget::BudgetRejection::Unavailable(_) => BUDGET_UNAVAILABLE_FAILURE,
+            };
+            return finalize_failed(deps, &session, &mut record, rejection.reason(), failure).await;
+        }
+    };
+
     let assistant_origin = origin_with(&record.turn_id, &gen_annotations);
 
     // Generate: append an empty assistant under a deterministic id, stream
@@ -490,7 +546,7 @@ pub async fn run_step(
     let assistant_id = ids::assistant_entry_id(&record.turn_id, payload.step);
     let provider = record.options.provider.clone().unwrap_or_default();
     let empty = empty_assistant(&provider, &record.options.model);
-    let _ = session
+    if let Err(error) = session
         .append(
             &record.session_id,
             &AgentMessage::Assistant(empty),
@@ -498,7 +554,13 @@ pub async fn run_step(
             None,
             Some(&assistant_origin),
         )
-        .await?;
+        .await
+    {
+        if let Some(reservation) = budget_reservation.as_ref() {
+            crate::budget::release(deps, reservation).await?;
+        }
+        return Err(error);
+    }
 
     let sink = SessionStreamSink {
         session: session.clone(),
@@ -514,17 +576,26 @@ pub async fn run_step(
         messages: gen_messages,
         tools,
         response_format,
+        // Make the provider request match the amount reserved above. Context
+        // assembly already caps this at the selected model's effective limit.
+        max_output_tokens: Some(generation_max_output_tokens),
         thinking_level: record.options.thinking_level,
         provider_options,
     };
     record.stream_request_id = Some(params.request_id.clone());
-    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+    if let Err(error) = crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await {
+        if let Some(reservation) = budget_reservation.as_ref() {
+            crate::budget::release(deps, reservation).await?;
+        }
+        return Err(error);
+    }
 
-    // A stop that landed during context assembly (its durable write blocked on
-    // the guard held here) is only visible via the in-process signal. Bail
-    // before dispatching generation at all — otherwise the provider starts a
-    // stream that is dead on arrival.
+    // A stop may land after reservation but before dispatch. Release the
+    // unused amount before finalising the cancelled turn.
     if deps.cancels.is_fired(&record.turn_id) {
+        if let Some(reservation) = budget_reservation.as_ref() {
+            crate::budget::release(deps, reservation).await?;
+        }
         record.abort = true;
         return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
     }
@@ -549,7 +620,21 @@ pub async fn run_step(
     // was a no-op (registration race / router restart). Level-triggered, so a
     // stop fired before this subscribe is still observed.
     let abort_rx = deps.cancels.watch(&record.turn_id);
-    let mut outcome = router.chat(params, &sink, abort_rx).await?;
+    let mut outcome = match router.chat(params, &sink, abort_rx).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            // The provider may have consumed the request without returning
+            // usage. Charge the full reservation so transport failures cannot
+            // bypass a hard budget.
+            if let Some(reservation) = budget_reservation.as_ref() {
+                crate::budget::reconcile(deps, reservation, None).await?;
+            }
+            return Err(error);
+        }
+    };
+    if let Some(reservation) = budget_reservation.as_ref() {
+        crate::budget::reconcile(deps, reservation, outcome.message.usage.as_ref()).await?;
+    }
 
     // A stop mid-generation truncates tool-call blocks before their arguments
     // stream. An argument-less call can never execute (the turn is cancelled)
@@ -575,6 +660,7 @@ pub async fn run_step(
             &record.session_id,
             &assistant_id,
             &outcome.message.content,
+            outcome.message.usage.as_ref(),
             None,
             Some(&assistant_origin),
         )
@@ -1996,6 +2082,7 @@ async fn assemble_context(
         messages,
         usable: out.usable,
         token_count: out.token_count,
+        effective_max_output_tokens: out.effective_max_output_tokens,
     })
 }
 
@@ -2072,6 +2159,8 @@ struct Assembled {
     /// prompt + tools + request overhead). Reused as the final request
     /// count when nothing mutates the request after assembly.
     token_count: u64,
+    /// Model/output ceiling resolved by context-manager for this request.
+    effective_max_output_tokens: u64,
 }
 
 struct ContextAssemblyInputs<'a> {
@@ -2250,9 +2339,16 @@ async fn build_tools(deps: &Deps, record: &TurnRecord) -> Vec<crate::types::mode
         ExposeMode::Native => {
             let policy = CompiledPolicy::from(record.options.functions.as_ref());
             let snapshot = deps.functions().await;
-            let mut tools = Vec::new();
+            // Subscription controls are harness-intercepted virtual functions,
+            // so the engine's public registry intentionally does not list
+            // them. Publish their real schemas alongside registry functions
+            // whenever this turn's dispatch policy allows them.
+            let mut tools = crate::functions::subscribe::native_control_tools(&policy);
             for descriptor in snapshot.functions.iter() {
                 if !policy.allows(&descriptor.function_id) {
+                    continue;
+                }
+                if tools.iter().any(|tool| tool.name == descriptor.function_id) {
                     continue;
                 }
                 tools.push(crate::types::model::AgentFunction {
@@ -2296,6 +2392,7 @@ impl StreamSink for SessionStreamSink {
                 &self.session_id,
                 &self.entry_id,
                 &message.content,
+                message.usage.as_ref(),
                 None,
                 Some(&origin),
             )

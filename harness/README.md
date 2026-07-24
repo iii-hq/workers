@@ -172,11 +172,9 @@ escape hatch.
 An optional `mode` (`ask` | `agent`) prepends a short operating-mode
 paragraph; `ask` is also enforced structurally — the dispatch policy of an
 ask-mode send (a steer's inherited one, and an ask-mode spawned child's
-resolved one) is capped at the configured read-only baseline
-(`default_functions`), so reads stay available while writes, spawning, and
-trigger registration are denied regardless of the request. The cap applies to
-a NEW turn; a steer folded into an already-running turn keeps that turn's
-frozen policy until it finalises.
+resolved one) is capped at the configured default policy (`default_functions`).
+The cap applies to a NEW turn; a steer folded into an already-running turn
+keeps that turn's frozen policy until it finalises.
 
 A non-empty `options.system_prompt` is combined with the built-in
 prompt per `options.system_prompt_strategy`: `enrich` (default) appends it to

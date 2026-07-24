@@ -82,19 +82,16 @@ pub fn subset_policy(
     })
 }
 
-/// Cap a requested policy at the operator's read-only baseline (ask mode):
+/// Cap a requested policy at the operator's configured baseline (ask mode):
 /// the effective allow is the baseline kept only where the REQUEST covers it,
 /// denies are unioned, and the request's exposure choice is kept. Never
 /// widens — an absent or deny-all request stays deny-all, and an absent or
 /// hollow (empty-allow) baseline denies everything.
 ///
 /// Coverage is [`glob_covered`] (exact id, `*`, or `<prefix>::*`), so the
-/// result is a conservative UNDER-approximation of a set intersection, not a
-/// true one: a glob baseline entry (e.g. `coder::*`) survives only when a
-/// request glob covers it, so a narrower exact request (`coder::read-file`)
-/// against that baseline yields deny-all. That fails closed, never open — the
-/// shipped baseline (`config::default_functions`) is all exact ids, where the
-/// distinction does not arise.
+/// result is a conservative UNDER-approximation of a set intersection for
+/// prefix globs. A wildcard baseline is handled as an unrestricted ceiling,
+/// so a narrower requested allow-list remains effective.
 pub fn clamp_policy(
     baseline: Option<&FunctionPolicy>,
     requested: Option<&FunctionPolicy>,
@@ -110,6 +107,13 @@ pub fn clamp_policy(
         !baseline.allow.is_empty(),
         "clamp baseline must be non-empty here or the flip widens"
     );
+    // A wildcard baseline covers every requested function. Preserve the
+    // request's allow-list and add any baseline denies.
+    if baseline.allow.iter().any(|pattern| pattern == "*") {
+        let mut unrestricted = requested.clone();
+        unrestricted.deny.extend(baseline.deny.iter().cloned());
+        return Some(unrestricted);
+    }
     // Subset with the roles flipped — keep the baseline's ids where the
     // REQUEST covers them — so broad requests (`*`, `<prefix>::*`) intersect
     // down to the baseline instead of collapsing to deny-all.
@@ -417,6 +421,16 @@ mod tests {
             CompiledPolicy::from(clamp_policy(Some(&baseline), Some(&requested)).as_ref());
         assert!(compiled.allows("state::get"));
         assert!(!compiled.allows("state::list")); // baseline deny bites through the clamp
+    }
+
+    #[test]
+    fn ask_clamp_wildcard_baseline_preserves_narrow_request() {
+        let baseline = policy(&["*"], &[]);
+        let requested = policy(&["state::get"], &[]);
+        let compiled =
+            CompiledPolicy::from(clamp_policy(Some(&baseline), Some(&requested)).as_ref());
+        assert!(compiled.allows("state::get"));
+        assert!(!compiled.allows("state::set"));
     }
 
     #[test]

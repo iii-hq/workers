@@ -35,13 +35,24 @@ pub struct SendOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     /// How `system_prompt` combines with the built-in prompt: `override`
-    /// replaces it; `enrich` (default) appends to it.
+    /// replaces it; `enrich` (default) appends to it; `disabled` omits it.
     #[serde(default)]
     pub system_prompt_strategy: SystemPromptStrategy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
+    /// Per-generation output-token ceiling forwarded to the router.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    /// Hard input-plus-output token budget for the complete root-and-subagent
+    /// session tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_tokens: Option<u64>,
+    /// Hard USD budget for the complete root-and-subagent session tree.
+    /// Every model used by the tree must advertise catalog pricing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
     /// Provider-native per-call options, namespaced by provider id.
@@ -54,7 +65,7 @@ pub struct SendOptions {
     /// call; omitted when steering an EXISTING session → inherit the prior
     /// turn's policy (a nudge must not disarm a live run). Pass
     /// `{ allow: [] }` to strip explicitly. On a NEW `ask`-mode turn the
-    /// effective policy is capped at the operator's read-only baseline; a
+    /// effective policy is capped at the configured default policy; a
     /// steer folded into an already-running turn keeps that turn's frozen
     /// policy until it finalises.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -222,6 +233,7 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
         }
         None => session.create(title.as_deref(), metadata.as_ref()).await?,
     };
+    crate::budget::prepare_root(deps, &session_id, &mut options, prev.as_ref()).await?;
 
     // Entry id: idempotent when a dedupe key is set.
     let entry_id = req
@@ -512,6 +524,10 @@ fn build_options(
         ),
         mode: opts.mode,
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
+        max_output_tokens: opts.max_output_tokens,
+        max_total_tokens: opts.max_total_tokens,
+        max_cost_usd: opts.max_cost_usd,
+        budget_root_session_id: None,
         thinking_level: opts.thinking_level,
         provider_options: opts.provider_options,
         output: opts.output.unwrap_or_default(),
@@ -522,10 +538,10 @@ fn build_options(
     }
 }
 
-/// The single chokepoint for the "ask is structurally read-only" invariant:
+/// The single chokepoint for the ask-mode policy cap:
 /// every turn-seeding path (a fresh send, an inherited steer, a spawned child)
 /// routes its resolved dispatch policy through here, so ask mode is capped at
-/// the operator's read-only baseline no matter how the policy was assembled.
+/// the configured default policy no matter how the policy was assembled.
 /// A non-ask turn passes through untouched.
 pub(crate) fn clamp_for_mode(
     cfg: &WorkerConfig,
@@ -854,6 +870,10 @@ mod tests {
             system_prompt: None,
             mode,
             max_turns: 16,
+            max_output_tokens: None,
+            max_total_tokens: None,
+            max_cost_usd: None,
+            budget_root_session_id: None,
             thinking_level: None,
             provider_options: None,
             output: OutputContract::Text,
@@ -873,12 +893,13 @@ mod tests {
             expose: Default::default(),
         };
 
-        // An ask-mode steer keeps the run armed but capped at the baseline.
+        // An ask-mode steer keeps the run armed and is capped at the wildcard
+        // default policy.
         let mut options = options_with(Some(Mode::Ask), None);
         inherit_prior_functions(&cfg, &mut options, Some(&broad));
         let compiled = policy::CompiledPolicy::from(options.functions.as_ref());
         assert!(compiled.allows("state::get"));
-        assert!(!compiled.allows("state::set"));
+        assert!(compiled.allows("state::set"));
 
         // Outside ask mode the prior policy is inherited whole.
         let mut options = options_with(Some(Mode::Agent), None);
@@ -897,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn build_options_clamps_functions_to_the_read_only_baseline_in_ask_mode() {
+    fn build_options_clamps_functions_to_the_default_policy_in_ask_mode() {
         let cfg = WorkerConfig::default();
         let req = SendRequest {
             session_id: None,
@@ -918,21 +939,13 @@ mod tests {
         };
         let opts = build_options(&cfg, &req, "m".into(), req.provider.clone(), None);
         let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
-        // Baseline reads survive the clamp…
+        // The wildcard default preserves the requested policy…
         assert!(compiled.allows("state::get"));
         assert!(compiled.allows("engine::functions::list"));
-        // …every write/orchestration surface is out, wildcard request or not.
-        for denied in [
-            "state::set",
-            "harness::spawn",
-            "engine::register_trigger",
-            "shell::run",
-        ] {
-            assert!(
-                !compiled.allows(denied),
-                "{denied} must be denied in ask mode"
-            );
-        }
+        assert!(compiled.allows("state::set"));
+        assert!(compiled.allows("harness::spawn"));
+        assert!(compiled.allows("engine::register_trigger"));
+        assert!(compiled.allows("shell::run"));
     }
 
     #[test]
