@@ -352,6 +352,37 @@ export interface TooltipContentProps
 }
 export declare const TooltipContent: React.ComponentType<TooltipContentProps>
 
+export interface CodeEditorHandle {
+  focus(): void
+}
+export interface CodeEditorProps {
+  value: string
+  onChange(next: string): void
+  /** Monaco language id (`'markdown'`, `'json'`, `'yaml'`, …); unknown ids render plain. */
+  language: string
+  /** Class for the outer wrapper (borders, min-height, width). */
+  className?: string
+  placeholder?: string
+  /** Read-only: content stays selectable/copyable, chrome unchanged. */
+  readOnly?: boolean
+  /** Inert and dimmed (implies read-only). */
+  disabled?: boolean
+  autoFocus?: boolean
+  id?: string
+  'aria-label'?: string
+  /** Observes keys bubbling out of the editor (shortcuts like ⌘S) — keys
+      the editor consumes for editing never reach it. */
+  onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>
+}
+/** The console's Monaco-backed code editor — the one editor for every code
+    or long-text editing surface, themed by the console's design tokens in
+    both themes. Grows with content — put it inside an `overflow-auto` pane.
+    Never bundle `monaco-editor` (or any other editor) into a worker asset;
+    import this instead. */
+export declare const CodeEditor: React.ComponentType<
+  CodeEditorProps & React.RefAttributes<CodeEditorHandle>
+>
+
 export interface CodeHighlightProps {
   code: string
   /** Prism language id (`'javascript'`, `'python'`, …); unknown ids render plain. */
@@ -374,3 +405,11 @@ export interface MarkdownProps {
   className?: string
 }
 export declare const Markdown: React.ComponentType<MarkdownProps>
+
+export interface MarkdownPreviewProps {
+  markdown: string
+  className?: string
+}
+/** `Markdown` inside the standard `bg-bg` pane chrome — the preview
+    counterpart to `CodeEditor` for markdown-editing UIs. */
+export declare const MarkdownPreview: React.ComponentType<MarkdownPreviewProps>

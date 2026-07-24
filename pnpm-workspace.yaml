@@ -11,6 +11,7 @@ packages:
   - console/ui
   - database/ui
   - state/ui
+  - iii-directory/ui
 
 # pnpm ≥11 blocks dependency postinstall scripts by default; esbuild's
 # installs its platform binary.

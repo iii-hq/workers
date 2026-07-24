@@ -1,9 +1,14 @@
 import type { ReactNode } from 'react'
 import {
   ActionLine,
+  Card,
+  EmptyRow,
+  KvChip,
   MetaRow,
+  PulseLine,
+  SectionHead,
   StatusPill,
-} from '@/components/chat/sandbox/shared'
+} from '../lib/widgets'
 import {
   type SkillsDownloadRequest,
   safeParseRequest,
@@ -11,7 +16,6 @@ import {
   skillsDownloadRequestSchema,
   skillsDownloadResponseSchema,
 } from './parsers'
-import { KvChip } from './shared'
 
 interface ViewProps {
   input: unknown
@@ -24,11 +28,7 @@ interface ViewProps {
  * request was malformed and the dispatcher will fall back to JSON. */
 function classifySource(req: SkillsDownloadRequest):
   | { kind: 'repo'; repo: string; skill: string; branch: string }
-  | {
-      kind: 'registry'
-      worker: string
-      spec: string
-    }
+  | { kind: 'registry'; worker: string; spec: string }
   | null {
   if (req.repo && req.skill) {
     return {
@@ -57,18 +57,16 @@ export function SkillsDownloadView({ input, output, running }: ViewProps) {
 
   if (running) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <Card>
         <MetaRow>
           <StatusPill label="downloading…" variant="default" />
           {sourceChips(source)}
         </MetaRow>
         <ActionLine symbol="↓" tone="ink">
-          <span className="break-all">{describeSource(source)}</span>
+          <span>{describeSource(source)}</span>
         </ActionLine>
-        <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost animate-pulse">
-          · cloning + writing skills…
-        </div>
-      </div>
+        <PulseLine label="cloning + writing skills…" />
+      </Card>
     )
   }
 
@@ -79,7 +77,7 @@ export function SkillsDownloadView({ input, output, running }: ViewProps) {
   const promptsCount = resp.prompts_written.length
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <Card>
       <MetaRow>
         <StatusPill label="downloaded" variant="accent" />
         <KvChip label="namespace">{resp.namespace}</KvChip>
@@ -87,31 +85,26 @@ export function SkillsDownloadView({ input, output, running }: ViewProps) {
         <KvChip label="prompts">{promptsCount}</KvChip>
       </MetaRow>
       <ActionLine symbol="↓" tone="ink">
-        <span className="break-all">{describeSource(source)}</span>
+        <span>{describeSource(source)}</span>
       </ActionLine>
       <WrittenList label="skills written" names={resp.skills_written} />
       <WrittenList label="prompts written" names={resp.prompts_written} />
-    </div>
+    </Card>
   )
 }
 
 function WrittenList({ label, names }: { label: string; names: string[] }) {
   return (
-    <div className="border-b border-rule-2">
-      <div className="px-3 py-1.5 bg-paper-2 border-b border-rule-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
+    <div className="dir-ui-section">
+      <SectionHead>
         {label} · {names.length}
-      </div>
+      </SectionHead>
       {names.length === 0 ? (
-        <div className="px-3 py-2 font-mono text-[11.5px] text-ink-ghost">
-          · none
-        </div>
+        <EmptyRow label="none" />
       ) : (
-        <ul className="divide-y divide-rule-2">
+        <ul className="dir-ui-list">
           {names.map((n) => (
-            <li
-              key={n}
-              className="px-3 py-1 font-mono text-[11.5px] text-ink break-all"
-            >
+            <li key={n} className="dir-ui-item">
               {n}
             </li>
           ))}

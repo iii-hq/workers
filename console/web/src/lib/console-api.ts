@@ -12,6 +12,7 @@
 
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
+import { CodeEditor } from '@/components/ui/CodeEditor'
 import {
   Dialog,
   DialogClose,
@@ -31,6 +32,7 @@ import {
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { Input } from '@/components/ui/Input'
+import { MarkdownPreview } from '@/components/ui/MarkdownPreview'
 import { Select } from '@/components/ui/Select'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
@@ -82,9 +84,11 @@ export const components: ConsoleApi['components'] = {
   Tooltip,
   TooltipTrigger,
   TooltipContent,
+  CodeEditor,
   CodeHighlight,
   JsonHighlight,
   Markdown,
+  MarkdownPreview,
 }
 
 /** Token names mirroring `index.css`'s `@theme` block (documentation aid). */

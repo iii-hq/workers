@@ -1,10 +1,18 @@
+import { MarkdownPreview } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
+import { formatCount } from '../lib/format'
 import {
   ActionLine,
+  Card,
   Chip,
+  EmptyRow,
+  KvChip,
   MetaRow,
+  PulseLine,
+  SectionHead,
   StatusPill,
-} from '@/components/chat/sandbox/shared'
+  SubHead,
+} from '../lib/widgets'
 import {
   type ApiReferenceShape,
   registryWorkerInfoRequestSchema,
@@ -15,7 +23,6 @@ import {
   safeParseRequest,
   safeParseResponse,
 } from './parsers'
-import { KvChip, MarkdownPane } from './shared'
 
 interface ViewProps {
   input: unknown
@@ -30,16 +37,14 @@ export function RegistryWorkersListView({ input, output, running }: ViewProps) {
 
   if (running) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <Card>
         <MetaRow>
           <StatusPill label="searching…" variant="default" />
           {req?.search ? <KvChip label="search">{req.search}</KvChip> : null}
           {req?.cursor ? <KvChip label="cursor">·next page·</KvChip> : null}
         </MetaRow>
-        <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost animate-pulse">
-          · querying registry…
-        </div>
-      </div>
+        <PulseLine label="querying registry…" />
+      </Card>
     )
   }
 
@@ -47,7 +52,7 @@ export function RegistryWorkersListView({ input, output, running }: ViewProps) {
   if (!resp) return null
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <Card>
       <MetaRow>
         <StatusPill
           label={`${resp.workers.length} ${
@@ -61,23 +66,16 @@ export function RegistryWorkersListView({ input, output, running }: ViewProps) {
         ) : null}
       </MetaRow>
       {resp.workers.length === 0 ? (
-        <div className="px-3 py-4 font-mono text-[12.5px] text-ink-ghost">
-          · no published workers match
-        </div>
+        <EmptyRow label="no published workers match" />
       ) : (
-        <ul className="divide-y divide-rule-2">
+        <ul className="dir-ui-list">
           {resp.workers.map((w) => (
-            <li
-              key={`${w.name}@${w.version ?? ''}`}
-              className="px-3 py-2 flex flex-col gap-0.5"
-            >
-              <div className="flex items-baseline gap-2 flex-wrap">
-                <span className="font-mono text-[12.5px] text-accent break-all">
-                  {w.name}
-                </span>
+            <li key={`${w.name}@${w.version ?? ''}`} className="dir-ui-row">
+              <div className="dir-ui-row-head">
+                <span className="dir-ui-id">{w.name}</span>
                 {w.version ? (
                   <Chip>
-                    <span className="text-ink">v{w.version}</span>
+                    <span className="v">v{w.version}</span>
                   </Chip>
                 ) : null}
                 {w.type ? <KvChip label="type">{w.type}</KvChip> : null}
@@ -88,19 +86,13 @@ export function RegistryWorkersListView({ input, output, running }: ViewProps) {
                   </KvChip>
                 ) : null}
                 {w.author?.verified ? (
-                  <Chip className="text-accent border-accent/40">
-                    <span className="uppercase tracking-[0.06em]">
-                      verified
-                    </span>
-                  </Chip>
+                  <Chip className="verified">verified</Chip>
                 ) : null}
               </div>
               {w.description ? (
-                <div className="font-mono text-[12px] text-ink-faint leading-[1.55]">
-                  {w.description}
-                </div>
+                <div className="dir-ui-desc">{w.description}</div>
               ) : null}
-              <div className="font-mono text-[11px] text-ink-ghost flex flex-wrap gap-x-3 gap-y-0.5">
+              <div className="dir-ui-fine wrap">
                 {w.author?.name ? <span>by {w.author.name}</span> : null}
                 {w.repo ? <span>{w.repo}</span> : null}
                 {w.image ? <span>image: {w.image}</span> : null}
@@ -113,11 +105,11 @@ export function RegistryWorkersListView({ input, output, running }: ViewProps) {
         </ul>
       )}
       {resp.pagination.has_more && resp.pagination.next_cursor ? (
-        <div className="px-3 py-1.5 bg-paper-2 border-t border-rule-2 font-mono text-[11px] text-ink-faint">
+        <div className="dir-ui-next-note">
           next cursor available — pass back to fetch more
         </div>
       ) : null}
-    </div>
+    </Card>
   )
 }
 
@@ -128,17 +120,15 @@ export function RegistryWorkerInfoView({ input, output, running }: ViewProps) {
 
   if (running) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <Card>
         <MetaRow>
           <StatusPill label="loading…" variant="default" />
           {req ? <KvChip label="worker">{req.name}</KvChip> : null}
           {req?.version ? <KvChip label="version">{req.version}</KvChip> : null}
           {req?.tag ? <KvChip label="tag">{req.tag}</KvChip> : null}
         </MetaRow>
-        <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost animate-pulse">
-          · fetching worker manifest…
-        </div>
-      </div>
+        <PulseLine label="fetching worker manifest…" />
+      </Card>
     )
   }
 
@@ -147,7 +137,7 @@ export function RegistryWorkerInfoView({ input, output, running }: ViewProps) {
   const { worker, readme, api_reference, skills_tree } = resp
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <Card>
       <MetaRow>
         <StatusPill label="worker" variant="accent" />
         {worker.version ? (
@@ -161,20 +151,14 @@ export function RegistryWorkerInfoView({ input, output, running }: ViewProps) {
           </KvChip>
         ) : null}
         {worker.author?.verified ? (
-          <Chip className="text-accent border-accent/40">
-            <span className="uppercase tracking-[0.06em]">verified</span>
-          </Chip>
+          <Chip className="verified">verified</Chip>
         ) : null}
       </MetaRow>
       <ActionLine symbol="ƒ" tone="accent">
-        <div className="flex flex-col">
-          <span className="font-mono text-[13px] text-accent break-all">
-            {worker.name}
-          </span>
+        <div className="dir-ui-stack">
+          <span className="dir-ui-id lg">{worker.name}</span>
           {worker.description ? (
-            <span className="font-mono text-[11.5px] text-ink-faint">
-              {worker.description}
-            </span>
+            <span className="dir-ui-desc">{worker.description}</span>
           ) : null}
         </div>
       </ActionLine>
@@ -182,14 +166,12 @@ export function RegistryWorkerInfoView({ input, output, running }: ViewProps) {
       <ApiReferenceSection api={api_reference} />
       <SkillsTreeSection tree={skills_tree} />
       {readme ? (
-        <div className="border-b border-rule-2">
-          <div className="px-3 py-1.5 bg-paper-2 border-b border-rule-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
-            readme
-          </div>
-          <MarkdownPane body={readme} />
+        <div className="dir-ui-section">
+          <SectionHead>readme</SectionHead>
+          <MarkdownPreview markdown={readme} />
         </div>
       ) : null}
-    </div>
+    </Card>
   )
 }
 
@@ -220,11 +202,9 @@ function IdentityRow({
   }
   if (bits.length === 0) return null
   return (
-    <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[11px] text-ink-faint flex flex-wrap gap-x-3 gap-y-0.5">
+    <div className="dir-ui-identity">
       {bits.map((b) => (
-        <span key={b} className="break-all">
-          {b}
-        </span>
+        <span key={b}>{b}</span>
       ))}
     </div>
   )
@@ -235,10 +215,10 @@ function ApiReferenceSection({ api }: { api: ApiReferenceShape }) {
   const triggers = api.triggers ?? []
   if (fns.length === 0 && triggers.length === 0) return null
   return (
-    <div className="border-b border-rule-2">
-      <div className="px-3 py-1.5 bg-paper-2 border-b border-rule-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
+    <div className="dir-ui-section">
+      <SectionHead>
         api · {fns.length} fns · {triggers.length} triggers
-      </div>
+      </SectionHead>
       {renderRefList('functions', fns)}
       {renderRefList('triggers', triggers)}
     </div>
@@ -251,20 +231,14 @@ function renderRefList(
 ): ReactNode {
   if (items.length === 0) return null
   return (
-    <div className="border-b border-rule-2 last:border-b-0">
-      <div className="px-3 py-1 bg-bg font-mono text-[10px] uppercase tracking-[0.06em] text-ink-ghost">
-        {label}
-      </div>
-      <ul className="divide-y divide-rule-2">
+    <div className="dir-ui-section">
+      <SubHead>{label}</SubHead>
+      <ul className="dir-ui-list">
         {items.map((it) => (
-          <li key={it.name} className="px-3 py-1.5 flex flex-col gap-0.5">
-            <span className="font-mono text-[12px] text-accent break-all">
-              {it.name}
-            </span>
+          <li key={it.name} className="dir-ui-row tight">
+            <span className="dir-ui-id sm">{it.name}</span>
             {it.description ? (
-              <span className="font-mono text-[11.5px] text-ink-faint leading-[1.5]">
-                {it.description}
-              </span>
+              <span className="dir-ui-desc">{it.description}</span>
             ) : null}
           </li>
         ))}
@@ -278,17 +252,14 @@ function SkillsTreeSection({ tree }: { tree: SkillsTreeShape }) {
   const prompts = tree.prompts ?? []
   if (skills.length === 0 && prompts.length === 0) return null
   return (
-    <div className="border-b border-rule-2">
-      <div className="px-3 py-1.5 bg-paper-2 border-b border-rule-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
+    <div className="dir-ui-section">
+      <SectionHead>
         skills tree · {skills.length} skills · {prompts.length} prompts
-      </div>
+      </SectionHead>
       {skills.length > 0 ? (
-        <ul className="divide-y divide-rule-2">
+        <ul className="dir-ui-list">
           {skills.map((s) => (
-            <li
-              key={s.path}
-              className="px-3 py-1 font-mono text-[11.5px] text-ink break-all"
-            >
+            <li key={s.path} className="dir-ui-item">
               {s.path}
             </li>
           ))}
@@ -296,19 +267,13 @@ function SkillsTreeSection({ tree }: { tree: SkillsTreeShape }) {
       ) : null}
       {prompts.length > 0 ? (
         <div>
-          <div className="px-3 py-1 bg-bg font-mono text-[10px] uppercase tracking-[0.06em] text-ink-ghost">
-            prompts
-          </div>
-          <ul className="divide-y divide-rule-2">
+          <SubHead>prompts</SubHead>
+          <ul className="dir-ui-list">
             {prompts.map((p) => (
-              <li key={p.name} className="px-3 py-1 flex flex-col gap-0.5">
-                <span className="font-mono text-[11.5px] text-accent break-all">
-                  {p.name}
-                </span>
+              <li key={p.name} className="dir-ui-row tight">
+                <span className="dir-ui-id sm">{p.name}</span>
                 {p.description ? (
-                  <span className="font-mono text-[11px] text-ink-faint leading-[1.5]">
-                    {p.description}
-                  </span>
+                  <span className="dir-ui-desc">{p.description}</span>
                 ) : null}
               </li>
             ))}
@@ -317,10 +282,4 @@ function SkillsTreeSection({ tree }: { tree: SkillsTreeShape }) {
       ) : null}
     </div>
   )
-}
-
-function formatCount(n: number): string {
-  if (n < 1000) return `${n}`
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`
-  return `${(n / 1_000_000).toFixed(1)}M`
 }

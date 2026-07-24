@@ -195,7 +195,7 @@ function formatPrimitive(v: Primitive): string {
 
 /**
  * Branch the function-id label across the renderer registry — injected
- * renderers first, then the 13 first-party families. The default
+ * renderers first, then the first-party families. The default
  * (unbranded) span keeps unknown ids readable.
  */
 function FunctionIdLabel({ functionId }: { functionId: string }) {

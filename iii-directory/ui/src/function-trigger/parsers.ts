@@ -1,24 +1,29 @@
 /**
- * Zod schemas for the `directory::*` namespace (iii-directory worker).
+ * Zod schemas for the `directory::*` namespace — moved out of the console
+ * SPA (formerly console/web/src/components/chat/directory/parsers.ts) into
+ * the worker's own injected UI.
  *
  * Wire source: `iii-directory/src/functions/*.rs`
  *   - skills.rs        — directory::skills::list / get / index
- *   - download.rs      — directory::skills::download
+ *   - download.rs      — directory::skills::download (+ _from_registry / _from_repo)
+ *   - update.rs        — directory::skills::update / directory::prompts::update
  *   - prompts.rs       — directory::prompts::list / get
  *   - registry.rs      — directory::registry::workers::list / info
  */
 import { z } from 'zod'
-import { unwrapEnvelope } from '@/components/chat/sandbox/parsers'
-
-export { unwrapEnvelope }
+import { unwrapEnvelope } from '../lib/envelope'
 
 export const DIRECTORY_FUNCTION_IDS = [
   'directory::skills::list',
   'directory::skills::get',
   'directory::skills::index',
   'directory::skills::download',
+  'directory::skills::download_from_registry',
+  'directory::skills::download_from_repo',
+  'directory::skills::update',
   'directory::prompts::list',
   'directory::prompts::get',
+  'directory::prompts::update',
   'directory::registry::workers::list',
   'directory::registry::workers::info',
 ] as const
@@ -63,6 +68,7 @@ export type SkillsListResponse = z.infer<typeof skillsListResponseSchema>
 
 export const skillsGetRequestSchema = z.object({
   id: z.string(),
+  raw: z.boolean().optional(),
 })
 export type SkillsGetRequest = z.infer<typeof skillsGetRequestSchema>
 
@@ -72,6 +78,7 @@ export const skillsGetResponseSchema = z.object({
   type: z.string().nullable().optional(),
   function_id: z.string().nullable().optional(),
   body: z.string(),
+  raw: z.string().nullable().optional(),
   modified_at: z.string(),
 })
 export type SkillsGetResponse = z.infer<typeof skillsGetResponseSchema>
@@ -87,7 +94,7 @@ export const skillsIndexResponseSchema = z.object({
 })
 export type SkillsIndexResponse = z.infer<typeof skillsIndexResponseSchema>
 
-/* ---------------- skills::download ---------------- */
+/* ---------------- skills::download (all three variants) ---------------- */
 
 export const skillsDownloadRequestSchema = z.object({
   repo: z.string().nullable().optional(),
@@ -108,6 +115,24 @@ export const skillsDownloadResponseSchema = z.object({
 export type SkillsDownloadResponse = z.infer<
   typeof skillsDownloadResponseSchema
 >
+
+/* ---------------- skills::update ---------------- */
+
+export const skillsUpdateRequestSchema = z.object({
+  id: z.string(),
+  content: z.string(),
+})
+export type SkillsUpdateRequest = z.infer<typeof skillsUpdateRequestSchema>
+
+export const skillsUpdateResponseSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  type: z.string().nullable().optional(),
+  function_id: z.string().nullable().optional(),
+  bytes: z.number(),
+  modified_at: z.string(),
+})
+export type SkillsUpdateResponse = z.infer<typeof skillsUpdateResponseSchema>
 
 /* ---------------- prompts::list ---------------- */
 
@@ -130,6 +155,7 @@ export type PromptsListResponse = z.infer<typeof promptsListResponseSchema>
 
 export const promptsGetRequestSchema = z.object({
   name: z.string(),
+  raw: z.boolean().optional(),
 })
 export type PromptsGetRequest = z.infer<typeof promptsGetRequestSchema>
 
@@ -137,9 +163,26 @@ export const promptsGetResponseSchema = z.object({
   name: z.string(),
   description: z.string(),
   body: z.string(),
+  raw: z.string().nullable().optional(),
   modified_at: z.string(),
 })
 export type PromptsGetResponse = z.infer<typeof promptsGetResponseSchema>
+
+/* ---------------- prompts::update ---------------- */
+
+export const promptsUpdateRequestSchema = z.object({
+  name: z.string(),
+  content: z.string(),
+})
+export type PromptsUpdateRequest = z.infer<typeof promptsUpdateRequestSchema>
+
+export const promptsUpdateResponseSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  bytes: z.number(),
+  modified_at: z.string(),
+})
+export type PromptsUpdateResponse = z.infer<typeof promptsUpdateResponseSchema>
 
 /* ---------------- registry::workers::list ---------------- */
 

@@ -59,11 +59,19 @@ pub struct WorkerRuntime {
     pub started_at: Option<Instant>,
     pub logs: RingBuffer,
     pub log_tx: broadcast::Sender<String>,
+    /// Injectable-UI watcher mode desired for the NEXT (re)start: run
+    /// `pnpm watch` in the worker's ui/ and set `III_<WORKER>_UI_WATCH=1`.
+    /// Meaningful only for workers whose spec has a `ui_dir`; seeded from
+    /// `Config::ui_watch` and flipped at runtime by the TUI's `w` key.
+    pub ui_watch: bool,
     child: Option<tokio::process::Child>,
+    /// The `pnpm watch` companion process (esbuild --watch → ui/dist),
+    /// started and stopped with the worker.
+    ui_child: Option<tokio::process::Child>,
 }
 
 impl WorkerRuntime {
-    fn new() -> Self {
+    fn new(ui_watch: bool) -> Self {
         let (log_tx, _) = broadcast::channel(256);
         Self {
             proc_state: ProcState::Stopped,
@@ -71,7 +79,9 @@ impl WorkerRuntime {
             started_at: None,
             logs: RingBuffer::new(LOG_RING_CAPACITY),
             log_tx,
+            ui_watch,
             child: None,
+            ui_child: None,
         }
     }
 
@@ -103,14 +113,24 @@ impl WorkerRuntime {
     pub(crate) fn clear_child(&mut self) {
         self.child = None;
     }
+
+    pub(crate) fn set_ui_child(&mut self, child: tokio::process::Child) {
+        self.ui_child = Some(child);
+    }
+
+    pub(crate) fn take_ui_child(&mut self) -> Option<tokio::process::Child> {
+        self.ui_child.take()
+    }
 }
 
 pub type SharedRuntimes = Arc<RwLock<HashMap<String, WorkerRuntime>>>;
 
-pub fn new_runtimes(workers: &[String]) -> SharedRuntimes {
+/// `ui_watch` seeds each worker's initial watcher-mode flag (true only for
+/// workers that both ship a ui/ project and have watch enabled globally).
+pub fn new_runtimes(workers: &[String], ui_watch: impl Fn(&str) -> bool) -> SharedRuntimes {
     let mut map = HashMap::new();
     for worker in workers {
-        map.insert(worker.clone(), WorkerRuntime::new());
+        map.insert(worker.clone(), WorkerRuntime::new(ui_watch(worker)));
     }
     Arc::new(RwLock::new(map))
 }
