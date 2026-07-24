@@ -11,7 +11,10 @@ use serde_json::Value;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ExecuteReq {
-    pub db: String,
+    /// Logical database name. Optional — omitting it targets the sole
+    /// configured database, or `primary` when several are configured.
+    #[serde(default)]
+    pub db: Option<String>,
     #[serde(alias = "query")]
     pub sql: String,
     #[serde(default, deserialize_with = "crate::handlers::lenient_params")]
@@ -28,7 +31,8 @@ pub struct ExecuteResp {
 }
 
 pub async fn handle(state: &AppState, req: ExecuteReq) -> Result<ExecuteResp, String> {
-    let pool = state.pool(&req.db).await.map_err(err_to_str)?;
+    let db = state.resolve_db(req.db).await.map_err(err_to_str)?;
+    let pool = state.pool(&db).await.map_err(err_to_str)?;
     // Reject empty SQL uniformly. See the matching guard in query.rs for why
     // this is at the handler boundary rather than per-driver: postgres' driver
     // accepts empty SQL as a no-op success, sqlite/mysql reject — guarding

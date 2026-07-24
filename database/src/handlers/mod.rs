@@ -58,6 +58,30 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Resolve an optional logical db name to a concrete pool key.
+    ///
+    /// `Some(name)` passes through untouched (unknown names still surface
+    /// `UNKNOWN_DB` from [`AppState::pool`]). `None` falls back to the sole
+    /// configured pool, then to `primary` when several exist; the omission is
+    /// only an error (`MISSING_DB`) when neither rule disambiguates. This
+    /// exists because LLM callers routinely omit `db` on their first call —
+    /// a hard serde failure there is a wasted round-trip on every session.
+    pub async fn resolve_db(&self, db: Option<String>) -> Result<String, DbError> {
+        if let Some(name) = db {
+            return Ok(name);
+        }
+        let pools = self.pools.read().await;
+        if pools.len() == 1 {
+            return Ok(pools.keys().next().expect("len checked above").clone());
+        }
+        if pools.contains_key(crate::config::DEFAULT_DB_NAME) {
+            return Ok(crate::config::DEFAULT_DB_NAME.to_string());
+        }
+        let mut available: Vec<String> = pools.keys().cloned().collect();
+        available.sort();
+        Err(DbError::MissingDb { available })
+    }
+
     pub async fn pool(&self, db: &str) -> Result<Pool, DbError> {
         let pools = self.pools.read().await;
         pools.get(db).cloned().ok_or_else(|| {

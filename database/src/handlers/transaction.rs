@@ -12,7 +12,10 @@ use serde_json::{json, Value};
 
 #[derive(Deserialize, JsonSchema)]
 pub struct TxReq {
-    pub db: String,
+    /// Logical database name. Optional — omitting it targets the sole
+    /// configured database, or `primary` when several are configured.
+    #[serde(default)]
+    pub db: Option<String>,
     pub statements: Vec<TxStmtReq>,
     #[serde(default)]
     pub isolation: Option<String>,
@@ -56,7 +59,8 @@ fn failed_index_of(e: &crate::error::DbError) -> Option<usize> {
 }
 
 pub async fn handle(state: &AppState, req: TxReq) -> Result<TxResp, String> {
-    let pool = state.pool(&req.db).await.map_err(err_to_str)?;
+    let db = state.resolve_db(req.db).await.map_err(err_to_str)?;
+    let pool = state.pool(&db).await.map_err(err_to_str)?;
 
     let isolation = match req.isolation.as_deref() {
         Some("read_committed") => Some(Isolation::ReadCommitted),

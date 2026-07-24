@@ -19,7 +19,10 @@ use std::time::Duration;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct BeginTxReq {
-    pub db: String,
+    /// Logical database name. Optional — omitting it targets the sole
+    /// configured database, or `primary` when several are configured.
+    #[serde(default)]
+    pub db: Option<String>,
     #[serde(default)]
     pub isolation: Option<String>,
     #[serde(default)]
@@ -55,7 +58,8 @@ fn parse_isolation(s: Option<&str>) -> Result<Option<Isolation>, DbError> {
 }
 
 pub async fn handle(state: &AppState, req: BeginTxReq) -> Result<BeginTxResp, String> {
-    let pool = state.pool(&req.db).await.map_err(err_to_str)?;
+    let db = state.resolve_db(req.db).await.map_err(err_to_str)?;
+    let pool = state.pool(&db).await.map_err(err_to_str)?;
     let driver = pool.driver();
     let isolation = parse_isolation(req.isolation.as_deref()).map_err(err_to_str)?;
     let timeout_ms = req
@@ -84,7 +88,7 @@ pub async fn handle(state: &AppState, req: BeginTxReq) -> Result<BeginTxResp, St
             "db_tx_begin_failed",
             Some(json!({
                 "db.system": driver_system(driver),
-                "db.name": req.db,
+                "db.name": db,
                 "isolation": req.isolation,
                 "error": serde_json::to_value(&e).ok(),
             })),
@@ -94,14 +98,14 @@ pub async fn handle(state: &AppState, req: BeginTxReq) -> Result<BeginTxResp, St
 
     let handle = state
         .transactions
-        .insert(req.db.clone(), driver, pinned, timeout)
+        .insert(db.clone(), driver, pinned, timeout)
         .await;
 
     state.log.info(
         "db_tx_started",
         Some(json!({
             "db.system": driver_system(driver),
-            "db.name": req.db,
+            "db.name": db,
             "db.operation": "BEGIN",
             "db.transaction.id": handle.id,
             "isolation": req.isolation,
