@@ -48,6 +48,11 @@ pub struct ScenarioFixture {
 #[derive(Debug, Clone)]
 pub struct ProbeAction {
     pub after_turns: usize,
+    /// Additionally wait until the controlled function served this many
+    /// invocations (probe-side, whole-run) before firing. The only ordering
+    /// signal an UNTRACKED session can emit: e.g. fire the next action only
+    /// after a call-mode reaction proved a worker session completed.
+    pub after_target_calls: Option<usize>,
     pub function_id: String,
     pub payload: serde_json::Value,
 }

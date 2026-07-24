@@ -546,10 +546,11 @@ fn stamp_coalesced(mut event: Value, dropped: usize) -> Value {
     event
 }
 
-/// Type-erased re-entry for the trailing coalesced fire: `handle` recursing
-/// through `tokio::spawn` can't prove its own future `Send` (the bound is
+/// Type-erased re-entry for the trailing coalesced fire and the
+/// late-join-predecessor catch-up fire: `handle` recursing through
+/// `tokio::spawn` can't prove its own future `Send` (the bound is
 /// self-referential); the `dyn` boxing breaks the inference cycle.
-fn handle_boxed<'a>(
+pub(crate) fn handle_boxed<'a>(
     deps: &'a Deps,
     event: Value,
     metadata: Option<Value>,

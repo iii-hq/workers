@@ -824,12 +824,46 @@ async fn handle_react(
         }
     }
 
+    // Level-triggered join predecessors: a turn-completed predecessor whose
+    // filtered session ALREADY finished would otherwise never fire — the
+    // exact registration-vs-completion race that starves a join when a
+    // rejected sibling forces a re-registration round while the watched
+    // workers finish (rctest5 attempt 4). If the session's durable status is
+    // already terminally completed, deliver a catch-up fire shaped like the
+    // real completion event. Joins only: the per-key accumulator makes a
+    // rare double-delivery idempotent, and a completion BARRIER is only
+    // correct level-triggered.
+    let mut replay_note = None;
+    if req.metadata.as_ref().is_some_and(|m| m.get("join").is_some()) {
+        if let Some(event) = late_join_replay_event(deps, &req).await {
+            replay_note = Some(format!(
+                "note: session {} had already completed when this join predecessor was \
+                 registered — a catch-up completion fire was delivered so the join cannot \
+                 starve waiting for an event that already happened.",
+                event
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+            ));
+            let deps = deps.clone();
+            let metadata = metadata.clone();
+            tokio::spawn(async move {
+                if let Err(e) =
+                    crate::functions::react::handle_boxed(&deps, event, Some(metadata)).await
+                {
+                    tracing::warn!(error = %e, "late join predecessor catch-up fire failed");
+                }
+            });
+        }
+    }
+
     let notes: Vec<String> = [
         parent_filter_join_advisory(&req),
         session_filter_advisory(deps, &req).await,
         join_wiring_advisory(deps, &req).await,
         standing_binding_advisory(&req, once),
         state_catchall_advisory(&req),
+        replay_note,
     ]
     .into_iter()
     .flatten()
@@ -840,6 +874,61 @@ async fn handle_react(
         once,
         note,
     })
+}
+
+/// The synthetic completion event for a join predecessor registered AFTER its
+/// watched session finished; `None` when there is no session filter, the
+/// session is still live (or non-terminally parked on a wake — more turns are
+/// coming), or the status lookup fails (fail-open: no replay, edge semantics).
+async fn late_join_replay_event(deps: &Deps, req: &SubscribeRequest) -> Option<Value> {
+    if req.trigger_type != crate::events::TURN_COMPLETED {
+        return None;
+    }
+    let sid = req.config.get("session_id").and_then(Value::as_str)?;
+    let status = deps
+        .iii
+        .trigger(TriggerRequest {
+            function_id: "harness::status".to_string(),
+            payload: json!({ "session_id": sid }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await
+        .ok()?;
+    build_replay_event(sid, &status)
+}
+
+/// Pure shaping half of the late-join catch-up: `Some(event)` iff the durable
+/// status says the session's last turn completed TERMINALLY (an armed wake
+/// means more turns are coming and replay would be premature).
+fn build_replay_event(session_id: &str, status: &Value) -> Option<Value> {
+    if status.get("status").and_then(Value::as_str) != Some("completed") {
+        return None;
+    }
+    if status
+        .get("expects_wake")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let turn_id = status.get("turn_id").and_then(Value::as_str)?;
+    if turn_id.is_empty() {
+        return None;
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    Some(json!({
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "status": "completed",
+        "terminal": true,
+        "timestamp": now_ms,
+        "result": status.get("result").cloned().unwrap_or(Value::Null),
+        "__late_subscription_replay": true,
+    }))
 }
 
 /// Best-effort engine-side teardown; `true` when the engine accepted it, so
@@ -1213,6 +1302,36 @@ mod tests {
         assert!(state_catchall_advisory(&mk("state", json!({ "key": "change" }))).is_none());
         // Non-state trigger types are not advised on.
         assert!(state_catchall_advisory(&mk("cron", json!({}))).is_none());
+    }
+
+    #[test]
+    fn build_replay_event_fires_only_for_terminally_completed_sessions() {
+        // A finished child: replay carries the completion shape + marker.
+        let done = json!({
+            "status": "completed",
+            "turn_id": "t_1",
+            "expects_wake": false,
+            "result": "wrote 5 orders"
+        });
+        let event = build_replay_event("s_child", &done).unwrap();
+        assert_eq!(event["session_id"], "s_child");
+        assert_eq!(event["turn_id"], "t_1");
+        assert_eq!(event["status"], "completed");
+        assert_eq!(event["terminal"], true);
+        assert_eq!(event["result"], "wrote 5 orders");
+        assert_eq!(event["__late_subscription_replay"], true);
+
+        // Still running: no replay.
+        assert!(build_replay_event("s", &json!({"status":"running","turn_id":"t_1"})).is_none());
+        // Completed but parked on an armed wake: more turns are coming.
+        assert!(build_replay_event(
+            "s",
+            &json!({"status":"completed","turn_id":"t_1","expects_wake":true})
+        )
+        .is_none());
+        // No turn ever ran.
+        assert!(build_replay_event("s", &json!({"status":"completed","turn_id":""})).is_none());
+        assert!(build_replay_event("s", &json!({"status":"completed"})).is_none());
     }
 
     #[test]

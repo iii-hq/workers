@@ -5,6 +5,7 @@ mod console_streamed_text;
 mod dsl;
 mod exactly_once_function;
 mod join_spec_mismatch;
+mod late_join_replay;
 mod multi_turn_traces;
 mod reaction_policy_inheritance;
 mod reaction_unregisters_run;
@@ -31,6 +32,7 @@ pub fn all() -> Vec<ScenarioFixture> {
         console_streamed_text::scenario(),
         exactly_once_function::scenario(),
         join_spec_mismatch::scenario(),
+        late_join_replay::scenario(),
         multi_turn_traces::scenario(),
         reaction_policy_inheritance::scenario(),
         reaction_unregisters_run::scenario(),
@@ -47,7 +49,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 10);
+        assert_eq!(fixtures.len(), 11);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

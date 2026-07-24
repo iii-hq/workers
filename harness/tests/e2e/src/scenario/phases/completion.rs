@@ -58,6 +58,25 @@ impl ScenarioRunner<'_> {
                         error,
                     ));
                 }
+                // A second, call-count boundary: an untracked session's only
+                // observable milestone is a controlled-function call (e.g. a
+                // call-mode reaction on its completion), so an action can gate
+                // on that instead of tracked-session turns alone.
+                if let Some(calls) = action.after_target_calls {
+                    if let Err(error) =
+                        services.probe().wait_for_target_calls(calls, deadline).await
+                    {
+                        if deadline.is_expired() {
+                            active.timed_out = true;
+                            return Ok(());
+                        }
+                        return Err(RunError::runner(
+                            phase,
+                            "wait for probe-action call boundary",
+                            error,
+                        ));
+                    }
+                }
                 self.fire_probe_action(services, &action, deadline).await?;
             }
         }

@@ -113,6 +113,27 @@ impl Scenario {
     ) -> Self {
         self.probe_actions.push(crate::fixtures::ProbeAction {
             after_turns,
+            after_target_calls: None,
+            function_id: function_id.to_string(),
+            payload,
+        });
+        self
+    }
+
+    /// [`probe_after`](Self::probe_after) that additionally gates on the
+    /// controlled function having served `after_target_calls` invocations —
+    /// the only milestone an UNTRACKED session can signal (e.g. a call-mode
+    /// reaction on that session's completion).
+    pub(super) fn probe_after_calls(
+        mut self,
+        after_turns: usize,
+        after_target_calls: usize,
+        function_id: &str,
+        payload: serde_json::Value,
+    ) -> Self {
+        self.probe_actions.push(crate::fixtures::ProbeAction {
+            after_turns,
+            after_target_calls: Some(after_target_calls),
             function_id: function_id.to_string(),
             payload,
         });
