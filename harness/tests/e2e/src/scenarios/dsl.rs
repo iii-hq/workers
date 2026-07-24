@@ -452,6 +452,7 @@ pub(super) struct Generation {
     response: Option<Response>,
     parked_message: Option<String>,
     failure: Option<String>,
+    captures: Vec<(String, String)>,
 }
 
 impl Generation {
@@ -462,7 +463,17 @@ impl Generation {
             response: None,
             parked_message: None,
             failure: None,
+            captures: Vec::new(),
         }
+    }
+
+    /// Capture a runtime value from this generation's matched request: the
+    /// regex's first group is stored under `name`, and later frames may echo
+    /// it as `[[cap:<name>]]` — e.g. a `sub_…` subscription id from a
+    /// registration function_result in the history.
+    pub(super) fn capture(mut self, name: &str, pattern: &str) -> Self {
+        self.captures.push((name.to_string(), pattern.to_string()));
+        self
     }
 
     pub(super) fn expect(mut self, request: Request) -> Self {
@@ -508,6 +519,11 @@ impl Generation {
                 .request
                 .expect("generation request is required")
                 .compile(model, self.ordinal),
+            captures: self
+                .captures
+                .into_iter()
+                .map(|(name, pattern)| crate::types::script::CaptureV1 { name, pattern })
+                .collect(),
             frames,
             response,
             on_serve: self.parked_message.map(|message| ServeEffectV1 {

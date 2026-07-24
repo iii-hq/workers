@@ -127,6 +127,19 @@ impl ScenarioRunner<'_> {
                     error,
                 ));
             }
+            // The awaited call may land mid-turn in an UNTRACKED session (the
+            // whole reason this await exists), with the script's tail still
+            // streaming. Hold until every generation is consumed so collect
+            // doesn't race that turn's finish — the floor requires full
+            // consumption anyway.
+            while services.router().generations_consumed() < services.router().total_generations()
+            {
+                if deadline.is_expired() {
+                    active.timed_out = true;
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
         }
 
         self.confirm_terminal_status(services, active).await

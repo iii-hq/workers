@@ -470,6 +470,7 @@ async fn handle(
         // A key-less state notify wakes the owning session on every write in
         // the scope — same catch-all hazard as a react binding.
         state_catchall_advisory(&req),
+        armed_wake_advisory(&req, once),
     ]
     .into_iter()
     .flatten()
@@ -479,6 +480,30 @@ async fn handle(
         once,
         note: (!notes.is_empty()).then(|| notes.join(" ")),
     })
+}
+
+/// Advisory for a one-shot state-key WAKE: the registering session parks
+/// until someone writes that exact scope/key, and the harness cannot verify
+/// any task is wired to do so. rctest postmortem: an orchestrator armed
+/// `report_ready` while its finalizer's task never mentioned the key — every
+/// row landed correctly and the orchestrator still slept forever, leaving
+/// the run's teardown permanently pending. Purely informative.
+fn armed_wake_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
+    if !once || req.trigger_type != "state" {
+        return None;
+    }
+    let scope = req
+        .config
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or("*");
+    let key = req.config.get("key").and_then(Value::as_str).unwrap_or("*");
+    Some(format!(
+        "note: one-shot WAKE — this session stays parked until state {scope}/{key} is \
+         written, and nothing fires it automatically. Double-check that a task you \
+         registered (reactor/finalizer) EXPLICITLY sets that exact scope/key when its \
+         condition is met, or this session sleeps forever and its cleanup never runs."
+    ))
 }
 
 /// True when an existing react binding (its `::info` JSON) is a sibling
@@ -1188,6 +1213,22 @@ mod tests {
         assert!(state_catchall_advisory(&mk("state", json!({ "key": "change" }))).is_none());
         // Non-state trigger types are not advised on.
         assert!(state_catchall_advisory(&mk("cron", json!({}))).is_none());
+    }
+
+    #[test]
+    fn armed_wake_advisory_names_the_exact_key_for_one_shot_state_wakes() {
+        let mk = |ty: &str, config: serde_json::Value| -> SubscribeRequest {
+            serde_json::from_value(json!({ "trigger_type": ty, "config": config })).unwrap()
+        };
+        // A one-shot state wake: warned, naming scope/key, with the
+        // sleeps-forever consequence spelled out.
+        let note = armed_wake_advisory(&mk("state", json!({ "scope": "run-1", "key": "report_ready" })), true);
+        let note = note.as_deref().unwrap_or("");
+        assert!(note.contains("run-1/report_ready"), "got: {note}");
+        assert!(note.contains("sleeps forever"), "got: {note}");
+        // Standing notifies and non-state types are not wakes.
+        assert!(armed_wake_advisory(&mk("state", json!({ "key": "k" })), false).is_none());
+        assert!(armed_wake_advisory(&mk("cron", json!({})), true).is_none());
     }
 
     #[test]

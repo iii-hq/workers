@@ -132,6 +132,43 @@ impl ScenarioFixture {
             "router script has no generations"
         );
         let mut ordinals = std::collections::BTreeSet::new();
+        // Serve-time capture wiring: a `[[cap:name]]` frame reference is only
+        // resolvable when an earlier-or-same-ordinal generation declared the
+        // capture (strict-ordinal consumption guarantees it ran first).
+        let mut sorted: Vec<_> = self.script.generations.iter().collect();
+        sorted.sort_by_key(|g| g.ordinal);
+        let mut declared = std::collections::BTreeSet::new();
+        for generation in sorted {
+            for capture in &generation.captures {
+                let regex = regex::Regex::new(&capture.pattern).map_err(|error| {
+                    anyhow::anyhow!("capture {} pattern invalid: {error}", capture.name)
+                })?;
+                anyhow::ensure!(
+                    regex.captures_len() >= 2,
+                    "capture {} pattern must have a capture group",
+                    capture.name
+                );
+                declared.insert(capture.name.clone());
+            }
+            let frames = serde_json::to_string(&generation.frames)?;
+            let mut rest = frames.as_str();
+            while let Some(start) = rest.find("[[cap:") {
+                let name_start = &rest[start + 6..];
+                let end = name_start.find("]]").ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "generation {} has an unterminated [[cap: reference",
+                        generation.ordinal
+                    )
+                })?;
+                let name = &name_start[..end];
+                anyhow::ensure!(
+                    declared.contains(name),
+                    "generation {} references [[cap:{name}]] before any generation captured it",
+                    generation.ordinal
+                );
+                rest = &name_start[end..];
+            }
+        }
         for generation in &self.script.generations {
             anyhow::ensure!(
                 ordinals.insert(generation.ordinal),

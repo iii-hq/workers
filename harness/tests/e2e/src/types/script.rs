@@ -136,12 +136,29 @@ impl GenerationMatchV1 {
     }
 }
 
+/// A serve-time capture: after its generation MATCHES, `pattern` runs over
+/// the raw serialized request and the first capture group is stored under
+/// `name`. Later (or same-ordinal) generations' frames may reference it as
+/// `[[cap:<name>]]` — the only way a fixture can echo a RUNTIME-generated
+/// identifier (e.g. a `sub_…` subscription id) back into a scripted call.
+/// Distinct from `{{…}}` placeholders, which expand before the stack boots.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureV1 {
+    pub name: String,
+    /// Regex with exactly one capture group.
+    pub pattern: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScriptedGenerationV1 {
     pub ordinal: u64,
     #[serde(rename = "match")]
     pub match_: GenerationMatchV1,
+    /// Runtime-value captures taken from this generation's matched request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub captures: Vec<CaptureV1>,
     pub frames: Vec<AssistantMessageEvent>,
     pub response: RouterChatResponse,
     /// Optional side effect the router performs *before* it streams this
