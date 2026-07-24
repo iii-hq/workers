@@ -218,6 +218,27 @@ jobs:
             echo "- Target: at most 8 GiB"
             echo "- Hard budget: 10 GiB"
           } >> "$GITHUB_STEP_SUMMARY"
+          # Going over budget evicts by last-access, so the entries that every
+          # PR depends on lose to bulk written by rarely-run workflows. Name the
+          # biggest consumers so the trade-off is visible instead of implicit.
+          {
+            echo
+            echo "<details><summary>Largest cache entries</summary>"
+            echo
+            echo "| Size (GiB) | Last accessed | Key | Ref |"
+            echo "| ---: | --- | --- | --- |"
+            # `head` would close sort's stdout early and SIGPIPE it under
+            # pipefail, so cap the row count inside the same awk pass.
+            gh api --method GET "repos/$REPOSITORY/actions/caches" \
+              -F per_page=100 --paginate \
+              --jq '.actions_caches[] | [.size_in_bytes, .last_accessed_at, .key, .ref] | @tsv' \
+              | sort -rn \
+              | awk -F"$(printf '\t')" 'NR <= 15 \
+                  { printf "| %.2f | %s | `%s` | `%s` |\n", \
+                      $1 / 1073741824, substr($2, 1, 10), $3, $4 }'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
           if (( bytes > 10737418240 )); then
             echo "::error::Actions cache usage is above the 10 GiB budget ($gib GiB)"
             exit 1
