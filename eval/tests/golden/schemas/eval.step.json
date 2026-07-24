@@ -1,0 +1,52 @@
+{
+  "function_id": "eval::step",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "evaluation_id": {
+        "type": "string"
+      },
+      "step": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "evaluation_id",
+      "step"
+    ],
+    "title": "StepRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "EvalStatusV1": {
+        "enum": [
+          "queued",
+          "running",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "skipped": {
+        "type": "boolean"
+      },
+      "status": {
+        "$ref": "#/definitions/EvalStatusV1"
+      }
+    },
+    "required": [
+      "skipped",
+      "status"
+    ],
+    "title": "StepResponseV1",
+    "type": "object"
+  }
+}

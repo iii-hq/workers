@@ -1,0 +1,15 @@
+iii: v1
+name: eval
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: eval
+tags: [evaluation, benchmark, prompt, system-prompt, ab-test]
+description: Compare prompt or system-prompt variants on the same model using durable harness runs and correctness-first reports.
+
+dependencies:
+  harness: "^1.5.5"
+  state: "^0.21.3"
+  queue: "^0.2.0"
+  cron: "^0.21.0"
+  iii-observability: "^0.21.6"

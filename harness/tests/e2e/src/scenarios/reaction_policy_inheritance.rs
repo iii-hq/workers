@@ -2,13 +2,13 @@
 //! turn's dispatch policy.
 //!
 //! The rctest-k7m3 run-3 failure shape: an agent registers a wrap-up reaction
-//! (no `options.functions`) delivered back into its own session; the reaction
-//! turn used to spawn parentless onto the read-only baseline and was denied
-//! the very functions every earlier turn in that chat could call. With the
-//! registrant-policy stamp the reaction turn inherits the registering turn's
-//! policy, so its scripted call to the controlled function must now dispatch
+//! (no `options.functions`) explicitly delivered back into its own session;
+//! the reaction used to fall back to the read-only baseline and was denied the
+//! functions every earlier turn in that chat could call. With the
+//! registrant-policy stamp the reaction inherits the registering turn's
+//! policy, so its scripted call to the controlled function must dispatch
 //! successfully — before the fix that call errors with "not permitted by this
-//! agent's dispatch policy" and the second terminal turn's history pins fail.
+//! agent's dispatch policy".
 //!
 //! The coalescing half of the same PR is pinned at the unit level
 //! (`fire_gate_coalesces_capped_fires_newest_wins`): its trailing fire lands
@@ -55,8 +55,8 @@ pub(super) fn scenario() -> ScenarioFixture {
             .allow_id(REGISTER)
             .allow_function(&record),
     )
-    // Turn 1 completes, the turn-completed binding fires, and the reaction
-    // seeds a SECOND terminal turn in the same session.
+    // Turn 1 completes, the turn-completed binding fires, and the explicitly
+    // pinned reaction seeds a SECOND terminal turn in the same session.
     .terminal_turn_statuses(["completed", "completed"])
     .generation(
         Generation::new(1)
@@ -65,7 +65,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request()
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_exact([Message::user(MESSAGE)])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-arm",
@@ -77,6 +77,9 @@ pub(super) fn scenario() -> ScenarioFixture {
                     "metadata": {
                         // Deliberately NO `options`: the reaction must inherit
                         // the registering turn's policy to call the recorder.
+                        // Pin the delivery session explicitly; unpinned
+                        // reactions intentionally create fresh children.
+                        "session_id": "{{session_id}}",
                         "task": "The wrap-up fired. Call the recorder exactly once \
                                  with value \"from-reaction\", then stop."
                     }
@@ -99,7 +102,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "function_result", "function_call_id": "call-arm",
                                 "is_error": false }),
                     ])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::text("armed", 10, 2)),
     )
@@ -121,7 +124,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         // The reaction seed, fenced with the fired event.
                         json!({ "role": "user" }),
                     ])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::function_call(
                 "call-record",
@@ -151,7 +154,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "function_result", "function_call_id": "call-record",
                                 "is_error": false }),
                     ])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::text("reaction recorded", 12, 3)),
     )
@@ -196,5 +199,7 @@ mod tests {
         let fixture = scenario();
         fixture.validate().unwrap();
         assert_eq!(fixture.expected_terminal_turns, 2);
+        assert_eq!(fixture.await_target_calls, None);
+        assert_eq!(fixture.expected_traces(), 1);
     }
 }

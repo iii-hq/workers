@@ -1,0 +1,46 @@
+{
+  "function_id": "eval::cancel",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "evaluation_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "evaluation_id"
+    ],
+    "title": "EvaluationIdRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "EvalStatusV1": {
+        "enum": [
+          "queued",
+          "running",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "cancelled": {
+        "type": "boolean"
+      },
+      "status": {
+        "$ref": "#/definitions/EvalStatusV1"
+      }
+    },
+    "required": [
+      "cancelled",
+      "status"
+    ],
+    "title": "EvalCancelResponseV1",
+    "type": "object"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "function_id": "eval::delete",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "evaluation_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "evaluation_id"
+    ],
+    "title": "EvaluationIdRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "deleted": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "deleted"
+    ],
+    "title": "EvalDeleteResponseV1",
+    "type": "object"
+  }
+}

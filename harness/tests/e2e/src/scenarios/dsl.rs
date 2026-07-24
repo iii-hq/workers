@@ -424,6 +424,39 @@ impl Request {
         self
     }
 
+    /// Native exposure publishes the harness's intercepted subscription
+    /// controls (`subscribe::native_control_tools`) AHEAD of the registry
+    /// functions this turn's policy allows. Their descriptions and schemas
+    /// live in the harness crate, which fixtures cannot import, so the leading
+    /// control tools are pinned by name while the registry tools that follow
+    /// stay byte-exact. Still an exact match on the list as a whole: an
+    /// unexpected extra tool keeps its prose and fails the comparison.
+    pub(super) fn tools_exact_after_controls(
+        mut self,
+        controls: impl IntoIterator<Item = &'static str>,
+        tools: impl IntoIterator<Item = Value>,
+    ) -> Self {
+        let controls: Vec<&str> = controls.into_iter().collect();
+        let normalize = (0..controls.len())
+            .flat_map(|index| {
+                ["description", "parameters"].map(|field| JsonNormalizerV1 {
+                    pointer: format!("/{index}/{field}"),
+                    operation: NormalizerOperation::Delete,
+                })
+            })
+            .collect::<Vec<_>>();
+        let expected = controls
+            .iter()
+            .map(|name| json!({ "name": name, "execution_mode": "sequential" }))
+            .chain(tools)
+            .collect();
+        self.tools = Some(JsonMatcherV1::Exact {
+            expected: Value::Array(expected),
+            normalize: Some(normalize),
+        });
+        self
+    }
+
     pub(super) fn tools_subset(mut self, tools: impl IntoIterator<Item = Value>) -> Self {
         self.tools = Some(JsonMatcherV1::Subset {
             expected: Value::Array(tools.into_iter().collect()),

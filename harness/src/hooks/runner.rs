@@ -263,12 +263,24 @@ impl HookRegistry {
     /// Invoke one bound hook function, bounded by `timeout_ms` and resolved by
     /// `on_error`. A redelivered step re-runs hooks — they must be idempotent.
     async fn invoke(&self, binding: &HookBinding, input: Value) -> HookOutcome {
-        let fut = self.iii.trigger(TriggerRequest {
-            function_id: binding.function_id.clone(),
-            payload: input,
-            action: None,
-            timeout_ms: Some(binding.timeout_ms),
-        });
+        let point = input
+            .get("point")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        let baggage = [
+            ("iii.tag.kind", "harness.hook"),
+            ("iii.hook.point", point.as_str()),
+        ];
+        let fut = iii_helpers::observability::run_with_baggage(
+            &baggage,
+            self.iii.trigger(TriggerRequest {
+                function_id: binding.function_id.clone(),
+                payload: input,
+                action: None,
+                timeout_ms: Some(binding.timeout_ms),
+            }),
+        );
         let bounded = tokio::time::timeout(
             Duration::from_millis(binding.timeout_ms.saturating_add(1_000)),
             fut,

@@ -20,6 +20,7 @@ use crate::policy::CompiledPolicy;
 use crate::subscriptions::{self, NOTIFY_AGENT_ID};
 use crate::trigger::{self, ResultData};
 use crate::types::content::ContentBlock;
+use crate::types::model::AgentFunction;
 
 /// The engine function the agent calls to subscribe. The harness intercepts it
 /// (the agent never reaches the raw engine registrar) so it can stamp the
@@ -90,6 +91,48 @@ pub struct SubscribeResponse {
     /// exist). Read it and fix the wiring if it applies.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+}
+
+/// Agent-facing unsubscribe contract. The id is the harness subscription id
+/// returned by [`SubscribeResponse`], not the underlying engine binding id.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[schemars(rename = "UnsubscribeArgs")]
+pub struct UnsubscribeRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct UnsubscribeResponse {
+    pub removed: bool,
+}
+
+/// Subscription controls are intercepted by the harness and therefore do not
+/// appear in the engine's public function registry. Native exposure still has
+/// to publish their real contracts when the turn policy allows them.
+pub fn native_control_tools(policy: &CompiledPolicy) -> Vec<AgentFunction> {
+    [
+        (
+            REGISTER_TRIGGER_ID,
+            "Subscribe the current harness session to a iii trigger. Omit function_id to wake \
+             this session, or use harness::react with a reaction spec in metadata.",
+            crate::surface::schema_value::<SubscribeRequest>(),
+        ),
+        (
+            UNREGISTER_TRIGGER_ID,
+            "Remove a trigger subscription owned by the current harness session.",
+            crate::surface::schema_value::<UnsubscribeRequest>(),
+        ),
+    ]
+    .into_iter()
+    .filter(|(function_id, _, _)| policy.allows(function_id))
+    .map(|(function_id, description, parameters)| AgentFunction {
+        name: function_id.to_string(),
+        description: description.to_string(),
+        parameters,
+        label: None,
+        execution_mode: Some("sequential".to_string()),
+    })
+    .collect()
 }
 
 /// The `session_id` a turn-event registration filters on, if any — the only
@@ -338,10 +381,15 @@ fn inherit_model(metadata: &mut Option<Value>, caller: Option<CallerModel<'_>>) 
 }
 
 async fn intercept_unregister(deps: &Deps, args: &Value, session_id: &str) -> ResultData {
-    let id = match unregister_subscription_id(args) {
-        Ok(id) => id,
-        Err(e) => return error_result(e),
+    let req: UnsubscribeRequest = match serde_json::from_value(args.clone()) {
+        Ok(req) => req,
+        Err(error) => {
+            return error_result(format!(
+                "{UNREGISTER_TRIGGER_ID} requires a string `id`: {error}"
+            ))
+        }
     };
+    let id = req.id.as_str();
 
     if let Some(owner) = deps.subscriptions.session_of(id) {
         // The registrant itself, or any session in its reaction lineage: a
@@ -361,13 +409,7 @@ async fn intercept_unregister(deps: &Deps, args: &Value, session_id: &str) -> Re
         }
         None => false,
     };
-    ok_result(&json!({ "removed": removed }))
-}
-
-fn unregister_subscription_id(args: &Value) -> Result<&str, String> {
-    args.get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "engine::unregister_trigger requires an `id`".to_string())
+    ok_result(&UnsubscribeResponse { removed })
 }
 
 async fn handle(
@@ -1465,17 +1507,29 @@ mod tests {
     }
 
     #[test]
-    fn unregister_requires_string_subscription_id() {
+    fn native_subscription_controls_follow_dispatch_policy() {
+        let policy = crate::types::turn::FunctionPolicy {
+            allow: vec![REGISTER_TRIGGER_ID.into(), UNREGISTER_TRIGGER_ID.into()],
+            deny: vec![UNREGISTER_TRIGGER_ID.into()],
+            expose: crate::types::turn::ExposeMode::Native,
+        };
+        let tools = native_control_tools(&CompiledPolicy::from(Some(&policy)));
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, REGISTER_TRIGGER_ID);
+        assert_eq!(tools[0].parameters["required"], json!(["trigger_type"]));
+        assert!(tools[0].parameters["properties"]
+            .get("session_id")
+            .is_none());
+    }
+
+    #[test]
+    fn unregister_contract_requires_string_subscription_id() {
+        assert!(serde_json::from_value::<UnsubscribeRequest>(json!({})).is_err());
+        assert!(serde_json::from_value::<UnsubscribeRequest>(json!({ "id": 42 })).is_err());
         assert_eq!(
-            unregister_subscription_id(&json!({})).unwrap_err(),
-            "engine::unregister_trigger requires an `id`"
-        );
-        assert_eq!(
-            unregister_subscription_id(&json!({ "id": 42 })).unwrap_err(),
-            "engine::unregister_trigger requires an `id`"
-        );
-        assert_eq!(
-            unregister_subscription_id(&json!({ "id": "sub_1" })).unwrap(),
+            serde_json::from_value::<UnsubscribeRequest>(json!({ "id": "sub_1" }))
+                .unwrap()
+                .id,
             "sub_1"
         );
     }

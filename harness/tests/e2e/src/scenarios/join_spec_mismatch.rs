@@ -62,7 +62,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request()
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_exact([Message::user(MESSAGE)])
-                    .without_tools(),
+                    .tools_exact_after_controls([REGISTER], []),
             )
             .respond(Response::function_call_raw(
                 "call-w1",
@@ -92,7 +92,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "function_result", "function_call_id": "call-w1",
                                 "is_error": false }),
                     ])
-                    .without_tools(),
+                    .tools_exact_after_controls([REGISTER], []),
             )
             .respond(Response::function_call_raw(
                 "call-w2",
@@ -121,7 +121,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "function_result", "function_call_id": "call-w2",
                                 "is_error": true }),
                     ])
-                    .without_tools(),
+                    .tools_exact_after_controls([REGISTER], []),
             )
             .respond(Response::text("join mismatch rejected", 12, 3)),
     )

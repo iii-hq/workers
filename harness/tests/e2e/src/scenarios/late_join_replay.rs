@@ -121,7 +121,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(0)
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_exact([Message::user(MESSAGE)])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-spawn",
@@ -143,7 +143,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "function_result", "function_call_id": "call-spawn",
                                 "is_error": false }),
                     ])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-witness",
@@ -167,7 +167,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "function_result", "function_call_id": "call-witness",
                                 "is_error": false }),
                     ])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::text("armed", 10, 2)),
     )
@@ -179,7 +179,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(0)
                     .system_prompt_regex(".")
                     .messages_subset([json!({ "role": "user" })])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::text("work done", 8, 2)),
     )
@@ -201,7 +201,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                             { "type": "text", "text": MESSAGE_2 }
                         ] }),
                     ])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-late-join",
@@ -229,7 +229,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "function_result", "function_call_id": "call-late-join",
                                 "is_error": false }),
                     ])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::text("late join armed", 10, 2)),
     )

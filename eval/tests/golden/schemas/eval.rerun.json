@@ -1,0 +1,50 @@
+{
+  "function_id": "eval::rerun",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "evaluation_id": {
+        "type": "string"
+      },
+      "reverse_order": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "evaluation_id"
+    ],
+    "title": "EvalRerunRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "EvalStatusV1": {
+        "enum": [
+          "queued",
+          "running",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "evaluation_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/EvalStatusV1"
+      }
+    },
+    "required": [
+      "evaluation_id",
+      "status"
+    ],
+    "title": "EvalStartResponseV1",
+    "type": "object"
+  }
+}

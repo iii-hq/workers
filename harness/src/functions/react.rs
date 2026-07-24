@@ -105,7 +105,9 @@ const JOIN_SCOPE: &str = "harness::react_join";
 /// breaker #2) only guards chains that stay on turn events — a cycle routed
 /// through an agent's `state::set` re-enters at depth 0, so a runaway there
 /// shows up as raw fire RATE instead of depth. Cap fires per subscription.
-pub const MAX_FIRES_PER_WINDOW: usize = 10;
+/// Allows a moderate event fan-out (for example, one reaction per item in a
+/// small parallel batch) while still stopping an accidental tight loop.
+pub const MAX_FIRES_PER_WINDOW: usize = 32;
 pub const FIRE_WINDOW_MS: i64 = 60_000;
 
 /// Effective gate limits. Overridable via `III_HARNESS_MAX_FIRES_PER_WINDOW`
@@ -304,10 +306,9 @@ pub struct ReactSpec {
     /// with `task`.
     #[serde(default)]
     pub call: Option<CallSpec>,
-    /// Spawn into this session (e.g. a fork); when omitted, defaults to the
-    /// registering session (the pipeline's owner) so the result lands back
-    /// as a turn in that chat — a fresh detached child only for raw
-    /// registrations that carry no owner stamp.
+    /// Spawn into this existing session (e.g. a fork). When omitted, each
+    /// event creates a fresh child session under `parent_session_id` or the
+    /// registering session's root.
     #[serde(default)]
     pub session_id: Option<String>,
     #[serde(default)]
@@ -372,9 +373,9 @@ pub struct ReactResult {
     /// already fired, error). Present iff `!spawned && !called`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-    /// The spawned turn id — per-fire unique even when delivery reuses the
-    /// pinned/owner session (the default). Local bookkeeping for fired-record
-    /// entry ids only; kept off the wire.
+    /// The spawned turn id — per-fire unique even when delivery uses an
+    /// explicitly pinned session. Local bookkeeping for fired-record entry ids
+    /// only; kept off the wire.
     #[serde(skip)]
     #[schemars(skip)]
     pub child_turn_id: Option<String>,
@@ -725,10 +726,9 @@ pub async fn handle(
         },
     };
 
-    // Delivery session, resolved once for BOTH dispatch paths below: an
-    // explicit pin wins; otherwise the registering (owner) session, so a
-    // reaction with no pin lands as a turn in the chat that wired it instead
-    // of a detached child nobody watches.
+    // Delivery session, resolved once for BOTH dispatch paths below. Only an
+    // explicit pin reuses a session; otherwise spawn creates a fresh child
+    // under the console-tree parent resolved above.
     let mut spec = spec;
     spec.session_id = reaction_delivery_session(&spec);
 
@@ -763,8 +763,8 @@ pub async fn handle(
                 if r.spawned {
                     let sub = spec.subscription_id.as_deref().unwrap_or("sub");
                     // Per-fire suffix: the spawned turn id is unique even when
-                    // delivery reuses the pinned/owner session (the default),
-                    // where the child session id repeats and would dedup every
+                    // delivery reuses an explicitly pinned session, where the
+                    // child session id repeats and would dedup every
                     // recurring fire after the first into one record.
                     // ponytail: `spawn` fallback when the spawn returned no
                     // ids — such fires dedup to one record, bounded by the
@@ -947,8 +947,8 @@ async fn join_edge(
     }
 
     // Fire the downstream fed ALL predecessors' results, then GC the
-    // accumulator record. The delivery session (owner fallback when unpinned)
-    // is already resolved by the caller. Joins fire once, so this cannot spam.
+    // accumulator record. The delivery session is already resolved by the
+    // caller. Joins fire once, so this cannot spam.
     let res = match spec.call.clone() {
         // Call downstream: the accumulated results map replaces the single
         // fired event as the injected value.
@@ -1285,14 +1285,10 @@ async fn state_update(deps: &Deps, key: &str, ops: Vec<Value>) -> Result<Value, 
 }
 
 /// The session a reaction's spawn delivers into — simple edge or a completed
-/// join's downstream alike: an explicit spec pin wins; otherwise the
-/// registering session (the pipeline's owner), so the result lands as a turn
-/// in the chat that wired it. `None` (a fresh detached child) only for raw
-/// registrations that carry no owner stamp.
+/// join's downstream alike. An explicit pin is preserved; otherwise `None`
+/// tells `harness::spawn` to create a fresh child session.
 fn reaction_delivery_session(spec: &ReactSpec) -> Option<String> {
-    spec.session_id
-        .clone()
-        .or_else(|| spec.owner_session_id.clone())
+    spec.session_id.clone()
 }
 
 async fn record_reaction_outcome(
@@ -2216,21 +2212,18 @@ mod tests {
     }
 
     #[test]
-    fn reaction_delivery_session_prefers_pin_then_owner_stamp() {
+    fn reaction_delivery_session_only_reuses_explicit_pin() {
         // Applies uniformly to both dispatch paths: a simple (non-join) edge
         // and a join's downstream spawn both resolve through this function.
         let mut s = spec();
         s.owner_session_id = Some("console-owner".into());
         // Explicit pin wins.
         assert_eq!(reaction_delivery_session(&s).as_deref(), Some("s_run"));
-        // No pin: a non-join reaction lands in the chat that wired it, same
-        // as a join's fan-in result would.
+        // No pin: both simple and join reactions create a fresh child. The
+        // owner remains the tree/lifecycle anchor, not the delivery session.
         s.session_id = None;
-        assert_eq!(
-            reaction_delivery_session(&s).as_deref(),
-            Some("console-owner")
-        );
-        // Raw registration without an owner stamp: fresh child stands.
+        assert_eq!(reaction_delivery_session(&s), None);
+        // The owner stamp does not change delivery semantics.
         s.owner_session_id = None;
         assert_eq!(reaction_delivery_session(&s), None);
     }

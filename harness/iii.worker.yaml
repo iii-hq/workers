@@ -8,7 +8,7 @@ tags: [agent, harness, loop, autonomous]
 description: Thin durable turn loop that wires session-manager, context-manager, and llm-router into an agent loop; spawns sub-agents as child sessions.
 
 dependencies:
-  state: "^0.21.2"
+  state: "^0.21.3"
   queue: "^0.2.0"
   cron: "^0.21.0"
   configuration: "^0.21.6"

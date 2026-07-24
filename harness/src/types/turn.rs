@@ -75,6 +75,20 @@ pub struct TurnOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
     pub max_turns: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    /// Hard input-plus-output token budget shared by this root turn and every
+    /// in-turn sub-agent it spawns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_tokens: Option<u64>,
+    /// Hard USD budget shared by this root turn and every in-turn sub-agent it
+    /// spawns. Requires catalog pricing for every model used by the tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_usd: Option<f64>,
+    /// Root session whose durable budget ledger this turn charges. Internal
+    /// bookkeeping populated by `harness::send` and inherited by sub-agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_root_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -312,6 +326,10 @@ mod tests {
                 system_prompt: None,
                 mode: None,
                 max_turns: 16,
+                max_output_tokens: None,
+                max_total_tokens: None,
+                max_cost_usd: None,
+                budget_root_session_id: None,
                 thinking_level: None,
                 provider_options: None,
                 output: OutputContract::Text,

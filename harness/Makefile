@@ -17,8 +17,10 @@ SCRAPLING_ROOT := $(WORKTREE_ROOT_ABS)/scrapling
 SCRAPLING_VENV := $(SCRAPLING_ROOT)/.venv
 SCRAPLING_STAMP := $(SCRAPLING_VENV)/.installed
 
-STACK := iii-directory llm-router session-manager context-manager \
-         provider-anthropic provider-openai provider-openai-codex shell scrapling queue harness approval-gate console
+BASE_STACK := state queue iii-directory llm-router session-manager context-manager \
+              provider-anthropic provider-openai provider-openai-codex shell scrapling cron \
+              approval-gate harness console
+STACK := $(BASE_STACK) eval
 
 # scrapling is a Python worker (pyproject + venv, see prepare-scrapling);
 # every other STACK member is a Rust crate with <worker>/Cargo.toml. Cargo
@@ -26,8 +28,8 @@ STACK := iii-directory llm-router session-manager context-manager \
 PYTHON_WORKERS := scrapling
 RUST_WORKERS   := $(filter-out $(PYTHON_WORKERS),$(STACK))
 
-GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart \
-                    engine wait-engine restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
+GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-run dev-up dev-down dev-restart \
+                    engine wait-engine wait-base wait-stack restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
                     ensure-session prepare-scrapling require-engine where integration-e2e integration-playground integration-validate,$(MAKECMDGOALS))
 SELECTED_WORKERS := $(strip $(GOAL_ARGS))
 ACTIVE_WORKERS   := $(if $(SELECTED_WORKERS),$(SELECTED_WORKERS),$(STACK))
@@ -38,13 +40,14 @@ RUN_FLAG   := $(if $(filter release,$(RUN_PROFILE)),--release,)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart engine wait-engine \
+.PHONY: help install-iii-next build install-local clean cargo-clean dev-run dev-up dev-down dev-restart engine wait-engine wait-base wait-stack \
         restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach ensure-session prepare-scrapling \
         require-engine where integration-e2e integration-playground integration-validate $(STACK)
 
 help:
 	@printf '%s\n' \
 	  'Harness local development targets:' \
+	  '  make dev-run                        start engine + harness stack in tmux' \
 	  '  make dev-up                         start engine + harness stack in tmux' \
 	  '  make dev-down                       stop the tmux stack' \
 	  '  make dev-restart                    restart all workers in the stack' \
@@ -121,8 +124,14 @@ cargo-clean:
 	  echo "skipping $$w: no cargo artifacts"; \
 	done
 
+dev-run: dev-up
+
 dev-up: engine wait-engine
-	@$(MAKE) --no-print-directory restart $(STACK)
+	@$(MAKE) --no-print-directory build PROFILE=$(RUN_PROFILE) $(STACK)
+	@$(MAKE) --no-print-directory restart $(BASE_STACK)
+	@$(MAKE) --no-print-directory wait-base
+	@$(MAKE) --no-print-directory restart eval
+	@$(MAKE) --no-print-directory wait-stack
 	@$(MAKE) --no-print-directory status
 	@echo "console: http://127.0.0.1:$(CONSOLE_PORT)"
 	@echo "tmux:    tmux attach -t $(TMUX_SESSION)"
@@ -131,7 +140,11 @@ dev-down:
 	@tmux kill-session -t "$(TMUX_SESSION)" 2>/dev/null || true
 
 dev-restart:
-	@$(MAKE) --no-print-directory restart $(STACK)
+	@$(MAKE) --no-print-directory build PROFILE=$(RUN_PROFILE) $(STACK)
+	@$(MAKE) --no-print-directory restart $(BASE_STACK)
+	@$(MAKE) --no-print-directory wait-base
+	@$(MAKE) --no-print-directory restart eval
+	@$(MAKE) --no-print-directory wait-stack
 
 ensure-session:
 	@tmux has-session -t "$(TMUX_SESSION)" 2>/dev/null || \
@@ -168,6 +181,44 @@ wait-engine:
 	  sleep 0.5; \
 	done; \
 	echo "engine did not become ready in $(TMUX_SESSION):engine on $(ENGINE_URL)"; \
+	exit 1
+
+wait-base:
+	@i=0; \
+	while [ $$i -lt 120 ]; do \
+	  workers=$$(iii trigger engine::workers::list --port "$(ENGINE_PORT)" --json '{}' 2>/dev/null || true); \
+	  missing=""; \
+	  for worker in $(BASE_STACK); do \
+	    echo "$$workers" | grep -Fq "\"name\": \"$$worker\"" || missing="$$missing $$worker"; \
+	  done; \
+	  if [ -z "$$missing" ] && \
+	     iii trigger harness::status --help --port "$(ENGINE_PORT)" >/dev/null 2>&1 && \
+	     iii trigger console::ui-manifest --port "$(ENGINE_PORT)" --json '{}' >/dev/null 2>&1; then \
+	    echo "base stack ready in $(TMUX_SESSION)"; \
+	    exit 0; \
+	  fi; \
+	  i=$$((i + 1)); \
+	  sleep 0.5; \
+	done; \
+	echo "base stack did not become ready; missing workers:$${missing:- none}"; \
+	echo "inspect logs with: tmux attach -t $(TMUX_SESSION)"; \
+	exit 1
+
+wait-stack:
+	@i=0; \
+	while [ $$i -lt 120 ]; do \
+	  workers=$$(iii trigger engine::workers::list --port "$(ENGINE_PORT)" --json '{}' 2>/dev/null || true); \
+	  if echo "$$workers" | grep -Fq '"name": "eval"' && \
+	     iii trigger eval::status --help --port "$(ENGINE_PORT)" >/dev/null 2>&1 && \
+	     iii trigger console::ui-manifest --port "$(ENGINE_PORT)" --json '{}' 2>/dev/null | grep -Fq '"worker": "eval"'; then \
+	    echo "stack ready in $(TMUX_SESSION)"; \
+	    exit 0; \
+	  fi; \
+	  i=$$((i + 1)); \
+	  sleep 0.5; \
+	done; \
+	echo "eval did not become ready"; \
+	echo "inspect logs with: tmux attach -t $(TMUX_SESSION)"; \
 	exit 1
 
 require-engine:

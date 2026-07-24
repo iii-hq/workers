@@ -85,6 +85,19 @@ fn resolve_enrich_with_empty_custom_falls_through_to_builtin() {
 }
 
 #[test]
+fn resolve_disabled_omits_system_prompt() {
+    assert_eq!(
+        resolve_system_prompt(
+            Some("ignored".into()),
+            SystemPromptStrategy::Disabled,
+            Some(Mode::Agent),
+            Some(IDENTITY),
+        ),
+        None
+    );
+}
+
+#[test]
 fn identity_line_and_agent_trigger_preserved() {
     let out = default_prompt();
     assert!(out.contains("You are an iii agent worker"));
@@ -107,6 +120,34 @@ fn mesh_model() {
     assert!(out.contains("The function id is the only contract"));
     assert!(out.contains("workers registering the same id load-balance"));
     assert!(out.contains("register a trigger; do not poll"));
+}
+
+#[test]
+fn delegation_carries_resolved_resource_selectors() {
+    let out = default_prompt().replace('\n', " ");
+    assert!(out.contains("every resolved resource selector the child must pass"));
+    assert!(out.contains("`db: \"primary\"`"));
+    assert!(out.contains("Use database db: \"<resolved name>\""));
+    assert!(out.contains("Do not dispatch a task until this audit passes."));
+    assert!(out.contains("ends a child immediately after discovery"));
+}
+
+#[test]
+fn reaction_defaults_match_runtime() {
+    let out = default_prompt().replace('\n', " ");
+    assert!(out.contains("every event creates a fresh distinct child"));
+    assert!(out.contains("you MUST omit `metadata.session_id`"));
+    assert!(out.contains("edges are standing by default"));
+    assert!(out.contains("Set `once: true` only for a deliberate one-shot reaction"));
+    assert!(out.contains("`once` is a TOP-LEVEL"));
+    assert!(out.contains("putting it inside `metadata` does nothing"));
+}
+
+#[test]
+fn fresh_namespaces_are_derived_and_checked() {
+    let out = default_prompt().replace('\n', " ");
+    assert!(out.contains("derive its variable suffix from the unique session id"));
+    assert!(out.contains("confirm the namespace is absent"));
 }
 
 #[test]
