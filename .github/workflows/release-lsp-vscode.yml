@@ -83,12 +83,15 @@ jobs:
       run:
         working-directory: lsp-vscode
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.setup.outputs.tag }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
+          # setup-node v5 auto-caches when package.json declares packageManager.
+          # This step never cached; the repository is already over its cache budget.
+          package-manager-cache: false
           node-version: 20
 
       - name: Install dependencies
@@ -112,7 +115,7 @@ jobs:
         run: npx @vscode/vsce package --out iii-lsp-${{ needs.setup.outputs.version }}.vsix
 
       - name: Upload VSIX artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: iii-lsp-vsix-${{ needs.setup.outputs.version }}
           path: lsp-vscode/iii-lsp-${{ needs.setup.outputs.version }}.vsix
@@ -127,19 +130,22 @@ jobs:
       run:
         working-directory: lsp-vscode
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.setup.outputs.tag }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
+          # setup-node v5 auto-caches when package.json declares packageManager.
+          # This step never cached; the repository is already over its cache budget.
+          package-manager-cache: false
           node-version: 20
 
       - name: Install dependencies
         run: npm ci
 
       - name: Download VSIX artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: iii-lsp-vsix-${{ needs.setup.outputs.version }}
           path: lsp-vscode/dist
@@ -158,19 +164,22 @@ jobs:
       run:
         working-directory: lsp-vscode
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.setup.outputs.tag }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
+          # setup-node v5 auto-caches when package.json declares packageManager.
+          # This step never cached; the repository is already over its cache budget.
+          package-manager-cache: false
           node-version: 20
 
       - name: Install dependencies
         run: npm ci
 
       - name: Download VSIX artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: iii-lsp-vsix-${{ needs.setup.outputs.version }}
           path: lsp-vscode/dist
@@ -187,13 +196,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download VSIX artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: iii-lsp-vsix-${{ needs.setup.outputs.version }}
           path: lsp-vscode/dist
 
       - name: Upload VSIX to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.setup.outputs.tag }}
           name: lsp-vscode ${{ needs.setup.outputs.version }}

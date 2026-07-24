@@ -52,12 +52,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: inputs.skip_create_release != true && inputs.dry_run != true
 
       - name: Create GitHub Release
         if: inputs.skip_create_release != true && inputs.dry_run != true
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag_name }}
           name: ${{ inputs.worker }} ${{ inputs.tag_name }}
@@ -73,19 +73,19 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # ── Node bundle path ─────────────────────────────────────────────
       # esbuild produces `<worker>/dist/bundle/index.mjs`, a single ESM
       # file with all npm deps + JSON assets inlined. Only Node built-ins
       # and `fsevents` (macOS-only optional native dep used by chokidar)
       # are external. See `<worker>/scripts/build-bundle.mjs`.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         if: inputs.language == 'node' || inputs.language == 'javascript'
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         if: inputs.language == 'node' || inputs.language == 'javascript'
         with:
           node-version: 22
@@ -182,7 +182,7 @@ jobs:
 
       - name: Upload to GitHub Release
         if: inputs.dry_run != true
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag_name }}
           files: |
