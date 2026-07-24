@@ -66,8 +66,11 @@ pub(super) fn scenario() -> ScenarioFixture {
             .allow_id(REGISTER)
             .allow_function(&record),
     )
-    // Main turn (1) + the state-fired reaction turn (2).
-    .terminal_turn_statuses(["completed", "completed"])
+    // The state-fired reaction runs in a fresh, untracked child. Its recorder
+    // call proves the child ran; only the registering session's terminal turn
+    // and traces are tracked directly.
+    .await_target_calls(1)
+    .expect_traces(1)
     // The probe trips the key AFTER the main turn completes, so the reaction
     // turn runs alone. `state::set` on the standalone worker fans out to the
     // react binding — the seam under test.
@@ -137,21 +140,28 @@ pub(super) fn scenario() -> ScenarioFixture {
                 Request::new()
                     .turn_request_step(1)
                     .system_prompt_regex(".")
-                    // The reaction runs in the registering session, so its
-                    // history begins with the original user message; the
-                    // strict-ordinal router + step already sequence gen3→gen4.
-                    // The recorder call itself is asserted in `verify`.
-                    .messages_subset([json!({ "role": "user" })])
+                    .messages_subset([
+                        json!({ "role": "user" }),
+                        json!({ "role": "assistant", "content": [
+                            { "type": "function_call", "id": "call-record" }
+                        ] }),
+                        json!({ "role": "function_result", "function_call_id": "call-record",
+                                "is_error": false }),
+                    ])
                     .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::text("state reaction recorded", 12, 3)),
     )
     .verify(|run| {
-        // The second terminal turn exists ONLY if the state worker delivered
-        // the metadata sidecar so harness::react could resolve the task.
-        run.expect_assistant_texts(["armed", "state reaction recorded"])?;
-        run.expect_function_calls("record", 1)?;
-        run.expect_call_payload("record", json!({ "value": "from-state-reaction" }))?;
+        // The recorder is reachable only if the state worker delivered the
+        // metadata sidecar so harness::react could resolve and spawn the task.
+        run.expect_assistant_texts(["armed"])?;
+        run.expect_target_calls(1)?;
+        anyhow::ensure!(
+            run.target_calls[0] == json!({ "value": "from-state-reaction" }),
+            "recorder payload {:?} != from-state-reaction",
+            run.target_calls[0]
+        );
 
         for item in &run.transcript {
             let msg = item.get("message").cloned().unwrap_or(Value::Null);
@@ -183,10 +193,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixture_is_valid_and_awaits_the_reaction_turn() {
+    fn fixture_is_valid_and_awaits_the_untracked_reaction() {
         let fixture = scenario();
         fixture.validate().unwrap();
-        assert_eq!(fixture.expected_terminal_turns, 2);
+        assert_eq!(fixture.expected_terminal_turns, 1);
+        assert_eq!(fixture.await_target_calls, Some(1));
+        assert_eq!(fixture.expected_traces(), 1);
         assert_eq!(fixture.probe_actions.len(), 1);
         assert_eq!(fixture.probe_actions[0].after_turns, 1);
     }
