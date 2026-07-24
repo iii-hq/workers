@@ -81,20 +81,30 @@ impl SqlitePool {
         let timeout = self.acquire_timeout;
         let db_name = self.db_name.to_string();
         let res = tokio::task::spawn_blocking(move || {
-            pool.get_timeout(timeout).inspect(|conn| {
-                // Defense in depth against pool poisoning: if a previous
-                // holder leaked an open transaction (the handler-boundary
-                // guard blocks the known path, but drivers and future
-                // surfaces can regress), roll it back instead of handing
-                // every later caller `cannot start a transaction within a
-                // transaction` forever.
-                if !conn.is_autocommit() {
-                    tracing::warn!(
-                        "sqlite pool: connection acquired with an open transaction; rolling back"
-                    );
-                    let _ = conn.execute_batch("ROLLBACK");
+            let conn = pool.get_timeout(timeout).map_err(AcquireFailure::Pool)?;
+            // Defense in depth against pool poisoning: if a previous holder
+            // leaked an open transaction (the handler-boundary guard blocks
+            // the known path, but drivers and future surfaces can regress),
+            // roll it back instead of handing every later caller `cannot
+            // start a transaction within a transaction` forever.
+            if !conn.is_autocommit() {
+                tracing::warn!(
+                    "sqlite pool: connection acquired with an open transaction; rolling back"
+                );
+                let rollback = conn.execute_batch("ROLLBACK");
+                // A failed or ineffective rollback means the connection is
+                // still inside a transaction — handing it out would recreate
+                // the exact poisoning this check exists to prevent. Refuse
+                // this acquire; the connection returns to the pool and the
+                // rollback is retried on its next checkout, so a transient
+                // failure self-heals instead of poisoning forever.
+                if rollback.is_err() || !conn.is_autocommit() {
+                    return Err(AcquireFailure::StuckTransaction(
+                        rollback.err().map(|e| e.to_string()),
+                    ));
                 }
-            })
+            }
+            Ok(conn)
         })
         .await
         .map_err(|e| DbError::DriverError {
@@ -105,9 +115,30 @@ impl SqlitePool {
         })?;
         match res {
             Ok(conn) => Ok(SqliteConn { conn }),
-            Err(e) => Err(classify_acquire_error(&e.to_string(), db_name, timeout)),
+            Err(AcquireFailure::Pool(e)) => {
+                Err(classify_acquire_error(&e.to_string(), db_name, timeout))
+            }
+            Err(AcquireFailure::StuckTransaction(rollback_error)) => Err(DbError::DriverError {
+                driver: "sqlite".into(),
+                code: None,
+                message: format!(
+                    "pooled connection is stuck inside a leaked transaction and ROLLBACK did \
+                     not clear it{}; refusing to hand it out",
+                    rollback_error
+                        .map(|e| format!(" ({e})"))
+                        .unwrap_or_default()
+                ),
+                failed_index: None,
+            }),
         }
     }
+}
+
+/// Why an acquire failed, kept apart so a stuck-transaction refusal is never
+/// misclassified as pool exhaustion or a connect error.
+enum AcquireFailure {
+    Pool(r2d2::Error),
+    StuckTransaction(Option<String>),
 }
 
 /// Compute the parent directory that must exist before SQLite can open
