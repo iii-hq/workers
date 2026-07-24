@@ -743,6 +743,8 @@ impl Message {
         function: &ControlledFunction,
         arguments: Value,
         model: &ModelFixtureV1,
+        input_tokens: u64,
+        output_tokens: u64,
     ) -> Value {
         json!({
             "role": "assistant",
@@ -754,17 +756,24 @@ impl Message {
             }],
             "stop_reason": "end",
             "model": model.id,
-            "provider": model.provider
+            "provider": model.provider,
+            "usage": usage(input_tokens, output_tokens)
         })
     }
 
-    pub(super) fn assistant_text(text: &str, model: &ModelFixtureV1) -> Value {
+    pub(super) fn assistant_text(
+        text: &str,
+        model: &ModelFixtureV1,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Value {
         json!({
             "role": "assistant",
             "content": [{ "type": "text", "text": text }],
             "stop_reason": "end",
             "model": model.id,
-            "provider": model.provider
+            "provider": model.provider,
+            "usage": usage(input_tokens, output_tokens)
         })
     }
 
