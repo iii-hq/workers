@@ -9,7 +9,8 @@ test('sends and renders a streamed turn through the Console', async ({
   const completed = stack.waitForTurnCompleted()
   await openSession(page, stack)
   const composer = page.getByLabel('message composer')
-  await composer.fill(stack.ready.message)
+  await composer.pressSequentially(stack.ready.message)
+  await expect(composer).toHaveText(stack.ready.message)
   await page.getByRole('button', { name: 'send message' }).click()
 
   await expect(
