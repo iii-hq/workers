@@ -10,6 +10,7 @@ packages:
   - console/web
   - console/ui
   - database/ui
+  - eval/ui
   - state/ui
   - iii-directory/ui
 

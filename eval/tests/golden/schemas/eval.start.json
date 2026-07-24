@@ -1,0 +1,444 @@
+{
+  "function_id": "eval::start",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ComparisonDimensionV1": {
+        "enum": [
+          "prompt",
+          "system_prompt"
+        ],
+        "type": "string"
+      },
+      "EvalLimitsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "evaluation": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/EvaluationLimitsV1"
+              }
+            ],
+            "default": {}
+          },
+          "execution": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ExecutionLimitsV1"
+              }
+            ],
+            "default": {
+              "invocation_timeout_seconds": 120,
+              "max_output_tokens_per_call": 8192,
+              "max_turns": 1000,
+              "scenario_timeout_seconds": 600
+            }
+          }
+        },
+        "type": "object"
+      },
+      "EvalModelConfigV1": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Mode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_options": {
+            "additionalProperties": true,
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "system_prompt_strategy": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/SystemPromptStrategy"
+              }
+            ],
+            "default": "enrich"
+          },
+          "thinking_level": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ThinkingLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "type": "object"
+      },
+      "EvalVariantV1": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "system_prompt": {
+            "description": "`null` disables the system prompt for this variant. An empty string keeps the harness behavior of resolving the provider or built-in prompt.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "EvaluationLimitsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "max_error_spans": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_function_call_errors": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "EvaluatorSpecV1": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {
+            "default": {}
+          },
+          "function_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "function_id"
+        ],
+        "type": "object"
+      },
+      "ExecutionLimitsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "invocation_timeout_seconds": {
+            "default": 120,
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "max_output_tokens_per_call": {
+            "default": 8192,
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_total_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_turns": {
+            "default": 1000,
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "scenario_timeout_seconds": {
+            "default": 600,
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ExecutionOrderV1": {
+        "enum": [
+          "balanced_control_first",
+          "balanced_treatment_first"
+        ],
+        "type": "string"
+      },
+      "ExposeMode": {
+        "description": "How allowed functions reach the model (harness.md § Exposure modes).",
+        "enum": [
+          "agent_trigger",
+          "native"
+        ],
+        "type": "string"
+      },
+      "FunctionPolicy": {
+        "description": "The fail-closed dispatch policy (harness.md § Functions). Absent on the send => every call denied (a plain chat loop).",
+        "properties": {
+          "allow": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "deny": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "expose": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ExposeMode"
+              }
+            ],
+            "default": "agent_trigger"
+          }
+        },
+        "type": "object"
+      },
+      "Mode": {
+        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt. `ask` is also structural: the turn's dispatch policy is capped at the operator's read-only baseline, never widened.",
+        "enum": [
+          "ask",
+          "agent"
+        ],
+        "type": "string"
+      },
+      "OutputContract": {
+        "description": "Free text by default; `json` constrains the final answer to a JSON value, validated against `schema` when supplied.",
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "text"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "schema": true,
+              "type": {
+                "enum": [
+                  "json"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SystemPromptStrategy": {
+        "description": "How a caller-supplied system prompt combines with the built-in identity prompt.",
+        "oneOf": [
+          {
+            "description": "Caller prompt replaces the built-in prompt verbatim.",
+            "enum": [
+              "override"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Caller prompt is appended to the built-in identity prompt.",
+            "enum": [
+              "enrich"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No system prompt is sent to the model.",
+            "enum": [
+              "disabled"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ThinkingLevel": {
+        "enum": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "control": {
+        "$ref": "#/definitions/EvalVariantV1"
+      },
+      "dimension": {
+        "$ref": "#/definitions/ComparisonDimensionV1"
+      },
+      "evaluator": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/EvaluatorSpecV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "execution_order": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ExecutionOrderV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "functions": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/FunctionPolicy"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Shared function policy for both variants. Omitted means deny all."
+      },
+      "limits": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/EvalLimitsV1"
+          }
+        ],
+        "default": {
+          "evaluation": {},
+          "execution": {
+            "invocation_timeout_seconds": 120,
+            "max_output_tokens_per_call": 8192,
+            "max_turns": 1000,
+            "scenario_timeout_seconds": 600
+          }
+        }
+      },
+      "metadata": {
+        "description": "Shared harness metadata, including an optional filesystem scope."
+      },
+      "model": {
+        "$ref": "#/definitions/EvalModelConfigV1"
+      },
+      "output": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/OutputContract"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Shared output contract for both variants. Omitted means text."
+      },
+      "runs": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "treatment": {
+        "$ref": "#/definitions/EvalVariantV1"
+      }
+    },
+    "required": [
+      "control",
+      "dimension",
+      "model",
+      "treatment"
+    ],
+    "title": "EvalStartRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "EvalStatusV1": {
+        "enum": [
+          "queued",
+          "running",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "evaluation_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/EvalStatusV1"
+      }
+    },
+    "required": [
+      "evaluation_id",
+      "status"
+    ],
+    "title": "EvalStartResponseV1",
+    "type": "object"
+  }
+}
