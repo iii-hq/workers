@@ -313,12 +313,12 @@ pub(crate) async fn run_download(
     std::fs::create_dir_all(&folder)
         .map_err(|e| format!("create_dir_all {}: {e}", folder.display()))?;
 
-    match classified {
+    let result = match classified {
         ClassifiedInput::Repo {
             repo,
             skill,
             branch,
-        } => sources::git::download(repo, skill, branch, &folder, cfg.download_timeout_ms).await,
+        } => sources::git::download(repo, skill, branch, &folder, cfg.download_timeout_ms).await?,
         ClassifiedInput::Registry { worker, spec } => {
             sources::registry::download(
                 cfg.registry_base(),
@@ -327,9 +327,23 @@ pub(crate) async fn run_download(
                 &folder,
                 cfg.download_timeout_ms,
             )
-            .await
+            .await?
+        }
+    };
+
+    // Record provenance for every function-path download, mirroring the
+    // auto-download path: the reconcile keys on the marker, and the
+    // visibility filter keeps repo-sourced namespaces because of it.
+    match classified {
+        ClassifiedInput::Repo { branch, .. } => {
+            write_marker(&folder, &result.namespace, "repo", branch)?;
+        }
+        ClassifiedInput::Registry { worker, spec } => {
+            write_completion_marker(&folder, worker, spec)?;
         }
     }
+
+    Ok(result)
 }
 
 fn build_output(classified: &ClassifiedInput, result: DownloadResult) -> DownloadOutput {
@@ -393,10 +407,12 @@ async fn fan_out(
 
 // ────────────────── completion marker ──────────────────────────────────
 //
-// After a successful registry download, a `.iii-skill-complete` JSON
-// marker is written inside the namespace directory. The reconcile path
-// treats a namespace as "present" only if the marker exists — this
-// prevents half-downloaded namespaces from hiding a needed re-download.
+// After a successful download, a `.iii-skill-complete` JSON marker is
+// written inside the namespace directory. The reconcile path treats a
+// namespace as "present" only if the marker exists — this prevents
+// half-downloaded namespaces from hiding a needed re-download — and the
+// visibility filter keeps repo-sourced namespaces because their marker
+// records the explicit pull.
 
 /// Marker filename written inside a namespace after a complete download.
 const COMPLETION_MARKER: &str = ".iii-skill-complete";
@@ -410,29 +426,74 @@ struct CompletionMarker {
     schema: u32,
 }
 
-/// Write the completion marker under `<skills_folder>/<worker>/`.
+/// Write a completion marker under `<skills_folder>/<namespace>/`.
+/// `source` is `"registry"` or `"repo"`; `tag_or_version` records the
+/// requested version/tag (registry) or branch (repo).
+fn write_marker(
+    skills_folder: &std::path::Path,
+    namespace: &str,
+    source: &str,
+    tag_or_version: &str,
+) -> Result<(), String> {
+    let marker = CompletionMarker {
+        worker: namespace.to_string(),
+        source: source.to_string(),
+        tag_or_version: tag_or_version.to_string(),
+        schema: 1,
+    };
+    let json = serde_json::to_string_pretty(&marker).map_err(|e| format!("encode marker: {e}"))?;
+    let dest = skills_folder.join(namespace).join(COMPLETION_MARKER);
+    sources::write_file_atomic(&dest, json.as_bytes())
+}
+
+/// Write the registry completion marker under `<skills_folder>/<worker>/`.
 fn write_completion_marker(
     skills_folder: &std::path::Path,
     worker: &str,
     spec: &VersionSpec,
 ) -> Result<(), String> {
-    let marker = CompletionMarker {
-        worker: worker.to_string(),
-        source: "registry".to_string(),
-        tag_or_version: match spec {
-            VersionSpec::Version(v) => v.clone(),
-            VersionSpec::Tag(t) => t.clone(),
-        },
-        schema: 1,
+    let tag_or_version = match spec {
+        VersionSpec::Version(v) => v.as_str(),
+        VersionSpec::Tag(t) => t.as_str(),
     };
-    let json = serde_json::to_string_pretty(&marker).map_err(|e| format!("encode marker: {e}"))?;
-    let dest = skills_folder.join(worker).join(COMPLETION_MARKER);
-    sources::write_file_atomic(&dest, json.as_bytes())
+    write_marker(skills_folder, worker, "registry", tag_or_version)
 }
 
 /// Check if a completion marker exists for `worker` under `skills_folder`.
 pub fn has_completion_marker(skills_folder: &std::path::Path, worker: &str) -> bool {
     skills_folder.join(worker).join(COMPLETION_MARKER).exists()
+}
+
+/// Namespaces under `skills_folder` whose completion marker records an
+/// explicit repo download. These represent knowledge the operator pulled
+/// on purpose (e.g. the README quickstart's `repo=` examples), so the
+/// visibility filter keeps them even though no worker by that name is
+/// installed. An unreadable or unparseable marker is simply not counted.
+pub fn repo_pinned_namespaces(
+    skills_folder: &std::path::Path,
+) -> std::collections::HashSet<String> {
+    let mut pinned = std::collections::HashSet::new();
+    let Ok(entries) = std::fs::read_dir(skills_folder) else {
+        return pinned;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(path.join(COMPLETION_MARKER)) else {
+            continue;
+        };
+        let Ok(marker) = serde_json::from_str::<CompletionMarker>(&raw) else {
+            continue;
+        };
+        if marker.source == "repo" {
+            if let Some(name) = entry.file_name().to_str() {
+                pinned.insert(name.to_string());
+            }
+        }
+    }
+    pinned
 }
 
 // ────────────────── auto-download helper ──────────────────────────────
