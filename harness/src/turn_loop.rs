@@ -576,9 +576,17 @@ pub async fn run_step(
         messages: gen_messages,
         tools,
         response_format,
-        // Make the provider request match the amount reserved above. Context
-        // assembly already caps this at the selected model's effective limit.
-        max_output_tokens: Some(generation_max_output_tokens),
+        // Forward a cap only when the caller set one. `generation_max_output_tokens`
+        // is the internal reservation context assembly budgets against; sending it
+        // unasked would put the model's own ceiling on every request and let a
+        // provider apply a different policy than its default. When the caller DID
+        // ask, send the reservation rather than the raw request — it is their value
+        // already clamped to the model's effective limit, so the provider is never
+        // told it may emit more than we reserved.
+        max_output_tokens: record
+            .options
+            .max_output_tokens
+            .map(|_| generation_max_output_tokens),
         thinking_level: record.options.thinking_level,
         provider_options,
     };
