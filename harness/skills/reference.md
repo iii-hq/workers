@@ -6,7 +6,7 @@ description: >-
   delivery semantics, the three reaction forms a session can register, and
   the sub-agent lifecycle from fire-and-forget spawn to [child-failure].
   For the function surface read the API reference
-  (https://workers.iii.dev/workers/harness?tab=api). The conduct playbooks
+  (https://workers.iii.dev/workers/harness.md). The conduct playbooks
   say what an agent SHOULD do; this says what the machine DOES.
 ---
 
@@ -66,7 +66,7 @@ park: they are fire-and-forget (below).
 
 ## The function surface lives in the API reference
 
-Read contracts at https://workers.iii.dev/workers/harness?tab=api or live
+Read contracts at https://workers.iii.dev/workers/harness.md or live
 with `engine::functions::info`. Two semantics the schemas cannot express:
 `harness::react` is a trigger TARGET only (direct calls are denied - use
 the id in `engine::register_trigger` without probing it first), and the
