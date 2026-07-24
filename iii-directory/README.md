@@ -132,8 +132,8 @@ On `configuration::set` (or an external edit to the persisted file), the worker
 re-fetches the authoritative value. Tunable changes apply in place and the
 registry caches are cleared so a repointed `registry_url` takes effect
 immediately. Topology changes (`skills_folder` / `local_skills_folder` /
-`auto_download`) are refused with a "restart required" log; the previous
-configuration is kept until the worker restarts.
+`auto_download` / `inject_guidance`) are refused with a "restart required"
+log; the previous configuration is kept until the worker restarts.
 
 ---
 
