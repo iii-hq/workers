@@ -13,7 +13,7 @@ description: >-
 The router is the single gateway between agents and model providers:
 callers name `{ model, provider? }`, the router resolves and relays, and
 provider workers are never called directly. The function surface is in the API
-reference (https://workers.iii.dev/workers/llm-router?tab=api, or live via
+reference (https://workers.iii.dev/workers/llm-router.md, or live via
 `engine::functions::info`); this document covers only the
 semantics that span functions and the failure modes no schema shows.
 
