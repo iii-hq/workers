@@ -2,7 +2,7 @@
 Feature: session::update-message — streaming deltas and edited output
 
   Contract (session-manager.md § session::update-message): replaces the
-  content (and optionally details) of an existing message entry. Each
+  content (and optionally assistant usage or result details) of an existing message entry. Each
   successful update increments the entry's revision (echoed on the
   event, monotonic per entry — consumers keep the highest). With
   expected_revision set, a mismatch writes nothing and returns
@@ -45,6 +45,24 @@ Feature: session::update-message — streaming deltas and edited output
       """
     Then the response field "entry.revision" is 2
     And the response field "entry.message.content.0.text" is "Hello world"
+
+  # Prevents: terminal provider usage being discarded when the harness
+  # replaces the final content of its streamed assistant placeholder.
+  Scenario: terminal usage is persisted on assistant messages
+    When I call "session::update-message" with:
+      """
+      { "session_id": "s_001", "entry_id": "e_001",
+        "content": [{ "type": "text", "text": "done" }],
+        "usage": { "input": 120, "output": 18, "reasoning": 7 } }
+      """
+    Then the response field "updated" is true
+    When I call "session::get-message" with:
+      """
+      { "session_id": "s_001", "entry_id": "e_001" }
+      """
+    Then the response field "entry.message.usage.input" is 120
+    And the response field "entry.message.usage.output" is 18
+    And the response field "entry.message.usage.reasoning" is 7
 
   # Prevents: updates rewriting history's position — the entry keeps its
   # creation timestamp (ordering anchor) while the event carries the
