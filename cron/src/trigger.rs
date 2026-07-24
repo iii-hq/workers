@@ -47,6 +47,7 @@ impl TriggerHandler for CronTriggerHandler {
                 expression: spec.expression,
                 function_id: config.function_id,
                 condition_function_id: spec.condition_function_id,
+                metadata: config.metadata,
             })
             .await
             .map_err(|e| Error::Handler(e.to_string()))
@@ -78,6 +79,7 @@ mod tests {
             &self,
             _function_id: &str,
             _payload: serde_json::Value,
+            _metadata: Option<serde_json::Value>,
         ) -> Result<Option<serde_json::Value>, String> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(None)
@@ -117,6 +119,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(h.scheduler.read().await.job_specs().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn register_retains_metadata_for_fire_time_sidecar() {
+        let h = handler();
+        let mut cfg = trigger_config("t1", serde_json::json!({"expression": "0 0 * * * *"}));
+        cfg.metadata = Some(serde_json::json!({"task": "wake me", "session_id": "s1"}));
+        h.register_trigger(cfg).await.unwrap();
+        let specs = h.scheduler.read().await.job_specs().await;
+        assert_eq!(
+            specs[0].metadata.as_ref().unwrap()["task"],
+            "wake me",
+            "metadata must survive registration — it is the fire-time sidecar"
+        );
     }
 
     #[tokio::test]
