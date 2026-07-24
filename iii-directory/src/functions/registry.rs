@@ -139,6 +139,11 @@ pub struct Worker {
     pub dependencies: Vec<Dependency>,
     #[serde(default)]
     pub author: Option<WorkerAuthor>,
+    /// Discovery tags from the worker's `iii.worker.yaml` manifest,
+    /// passed through from the registry envelope (omitted when the
+    /// publisher declared none).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 fn default_config_object() -> Value {
@@ -347,7 +352,7 @@ fn register_worker_info(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: Registr
             "Fetch full registry metadata for one worker: worker envelope \
              (same core fields as the engine's `engine::workers::list` row \
              shape, plus registry-only `type` / `config` / `supported_targets` / \
-             `total_downloads` / `dependencies` / `image`), readme, full \
+             `total_downloads` / `dependencies` / `image` / `tags`), readme, full \
              API reference (functions + triggers schemas), and the tree \
              of skill / prompt file paths fetched from the registry's \
              /w/{slug}/skills endpoint. Pass either `version` or `tag` \
@@ -623,6 +628,7 @@ pub fn parse_worker_info_response(
         total_downloads: 0,
         dependencies: Vec::new(),
         author: None,
+        tags: Vec::new(),
     });
 
     let readme = detail
