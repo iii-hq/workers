@@ -1,14 +1,13 @@
 ---
 name: harness/reference
 description: >-
-  The harness mechanics reference: how a turn runs from harness::send to its
-  terminal status, every public function and what the internal ones do, the
-  trigger types the harness publishes (turn-started, turn-completed,
-  message-queued, the five hooks), how a session registers triggers and what
-  fires back into it, and the full sub-agent lifecycle from spawn to
-  [child-failure]. The conduct playbooks (harness/orchestration,
-  harness/finishing) say what an agent SHOULD do; this says what the machine
-  DOES.
+  What the API reference cannot tell you about the harness: how a turn runs
+  from send to terminal status, the trigger types it publishes and their
+  delivery semantics, the three reaction forms a session can register, and
+  the sub-agent lifecycle from fire-and-forget spawn to [child-failure].
+  For the function surface read the API reference
+  (https://workers.iii.dev/workers/harness?tab=api). The conduct playbooks
+  say what an agent SHOULD do; this says what the machine DOES.
 ---
 
 # harness/reference
@@ -65,34 +64,14 @@ releasing the hold — and resumes the parked turn; a sweep expires stragglers
 so an abandoned approval can never park a turn forever. Sub-agent spawns never
 park: they are fire-and-forget (below).
 
-## Function surface
+## The function surface lives in the API reference
 
-Public, for consumers and agents:
-
-- `harness::send` — the entry point (message string sugar or a full
-  `AgentMessage`; `model` required; `provider`, `session_id`,
-  `idempotency_key`, `session` init metadata, and `options` optional).
-  Options: `system_prompt` + `system_prompt_strategy`, `mode`, `max_turns`,
-  `thinking_level`, `provider_options`, `output` contract, `functions`
-  allow/deny policy, `metadata` (tracing passthrough + `fs_scope`).
-- `harness::spawn` — seed a child session fire-and-forget; returns
-  `{ child_session_id, child_turn_id }` immediately (details below).
-- `harness::status` — recovery read for one session: `status`, `turn_id`,
-  `turn_count` / `max_turns`, `pending_function_calls`, `children`, `depth`,
-  `step`, `transient_resumes`, `validation_retries`,
-  `partial_result_available`, and the final `result` once terminal.
-- `harness::stop` — request cancellation of the in-flight turn; cascades to
-  spawned children.
-- `harness::react` — NEVER called directly (agents are denied); it exists as
-  a trigger TARGET that reshapes a subscribed event into a sub-agent spawn or
-  a function call (below).
-
-Internal (registered, visible in `engine::functions::info`, not for callers):
-`harness::turn` (the queued loop step), `harness::function::trigger` /
-`harness::function::resolve` (dispatch and pending-call settlement),
-`harness::unqueue` / `harness::edit_queued` (console queued-message editing),
-and `harness::filesystem::grant` / `grants` / `revoke` / `info` (per-session
-filesystem roots).
+Read contracts at https://workers.iii.dev/workers/harness?tab=api or live
+with `engine::functions::info`. Two semantics the schemas cannot express:
+`harness::react` is a trigger TARGET only (direct calls are denied - use
+the id in `engine::register_trigger` without probing it first), and the
+dispatch policy on `harness::send` `options.functions` is FAIL-CLOSED -
+absent means every call is denied and the session is a plain chat loop.
 
 ## Trigger types the harness publishes
 
@@ -207,29 +186,23 @@ subscription is rate-limited to roughly 10 spawns per minute.
 The harness owns no storage and no model access; every capability is a
 sibling worker reached over the bus. What it calls, per dependency:
 
-- **session-manager** — the transcript of record. `session::ensure` /
-  `session::create` on send, `session::append` for every message and
-  function result, `session::update-message` as the assistant message
-  streams, `session::set-status`, `session::messages` / `session::get` for
-  reads, and the `session::deleted` event (the harness cleans up turn state
-  when a session goes away). The console renders chats from session events,
-  not from the harness.
-- **context-manager** — `context::assemble` fits the transcript to the
-  model's window before each generation (compaction lives here), and
-  `context::count-tokens` prices prompts and messages.
-- **llm-router** — `router::chat` streams the generation over a channel;
-  `router::abort` cancels it; `router::models::get` / `list` / `supports`
-  resolve the model and its capabilities; `router::system_prompt::get`
-  serves the per-provider identity (operator override, then
-  provider-declared, then the harness falls back to its embedded default).
-  Behind the router sit the provider workers (`provider::<id>::stream`),
-  which the harness never calls directly.
+- **session-manager** — the transcript of record: every message, function
+  result, and streaming assistant update lands there, and the harness cleans
+  up turn state when a session is deleted. The console renders chats from
+  session events, not from the harness.
+- **context-manager** — fits the transcript to the model's window before
+  each generation (compaction lives here) and prices prompts and messages.
+- **llm-router** — streams each generation over a channel, resolves models
+  and capabilities, and serves the per-provider identity prompt (operator
+  override, then provider-declared, then the harness falls back to its
+  embedded default). Provider workers sit behind the router and are never
+  called directly. See the llm-router skill for its own semantics.
 - **queue** — the harness defines a dedicated `harness-turn` queue at boot
-  (`queue::define`, required) and every loop step is a job on it; this is
-  what makes turns durable across harness restarts.
-- **state** — `state::get` / `set` / `delete` / `list` hold the turn
-  records the loop resumes from and the `harness_idem` webhook-dedupe rows.
-  (Agents share the same state surface for their own run scopes.)
+  (required) and every loop step is a job on it; this is what makes turns
+  durable across harness restarts.
+- **state** — holds the turn records the loop resumes from and the
+  webhook-dedupe rows. Agents share the same state surface for their own
+  run scopes.
 - **engine** — the bus itself: function dispatch, the trigger registry the
   harness's event types and hook types register into, and the function
   catalog that backs discovery.
@@ -240,46 +213,6 @@ approval; **fp**, **web**, and **memory** bind `pre-generate` to inject
 usage guidance or recalled rules into the system prompt while they are
 connected. Stop any of them and their contribution vanishes; the harness
 keeps running.
-
-## Discovery and worker lifecycle: the surface an agent drives
-
-The harness executes calls, but finding and installing what to call is
-engine + worker-manager + directory surface:
-
-- **Discovery (engine, always present):** `engine::functions::list`
-  (filter by `search` / `prefix` / `worker`) finds ids;
-  `engine::functions::info` returns the contract (request/response schema,
-  owning worker, bound triggers) — fetch it before a function's first use.
-  `engine::workers::list` / `engine::workers::info { name }` show who is
-  connected and what they register. `engine::triggers::list` /
-  `engine::triggers::info { id }` enumerate bindable trigger types and
-  their config schemas; `engine::registered-triggers::list` shows existing
-  bindings.
-- **Worker lifecycle (worker-manager):** `worker::list` (installed +
-  running, including daemon-managed builtins — merge with
-  `engine::workers::list` by name to check liveness), `worker::add`
-  (install from `{ kind: "registry", name }` or an OCI source; new
-  function ids appear when the worker connects), `worker::start`,
-  `worker::update`, and `worker::stop` / `remove` / `clear` (the
-  destructive three require exactly `yes: true`, the boolean).
-- **The directory worker** is the docs-and-catalog layer over all of it:
-  `directory::skills::index` / `list` / `get` serve the markdown skills
-  installed workers ship (this document included);
-  `directory::prompts::list` / `get` serve prompt templates;
-  `directory::registry::workers::list` / `info` proxy the public registry
-  so a capability can be judged BEFORE installing (`info` shows the same
-  api_reference shape you would get after install). With `auto_download`
-  on, the directory subscribes to the engine's worker-add event and pulls a
-  newly installed worker's skills automatically, and its
-  `directory::skills::on-change` / `directory::prompts::on-change`
-  triggers let other workers react when the on-disk doc set changes.
-
-The composed flow an agent actually runs: `engine::functions::list` finds
-nothing fitting, `directory::registry::workers::list { search }` finds a
-candidate, `registry::workers::info` judges it, `worker::add` installs it,
-`engine::functions::list { prefix }` confirms the new ids,
-`engine::functions::info` fetches the contract, and only then the call —
-with the worker's skills already on disk for `directory::skills::get`.
 
 ## Reading this alongside the playbooks
 
