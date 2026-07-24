@@ -113,6 +113,27 @@ impl Scenario {
     ) -> Self {
         self.probe_actions.push(crate::fixtures::ProbeAction {
             after_turns,
+            after_target_calls: None,
+            function_id: function_id.to_string(),
+            payload,
+        });
+        self
+    }
+
+    /// [`probe_after`](Self::probe_after) that additionally gates on the
+    /// controlled function having served `after_target_calls` invocations —
+    /// the only milestone an UNTRACKED session can signal (e.g. a call-mode
+    /// reaction on that session's completion).
+    pub(super) fn probe_after_calls(
+        mut self,
+        after_turns: usize,
+        after_target_calls: usize,
+        function_id: &str,
+        payload: serde_json::Value,
+    ) -> Self {
+        self.probe_actions.push(crate::fixtures::ProbeAction {
+            after_turns,
+            after_target_calls: Some(after_target_calls),
             function_id: function_id.to_string(),
             payload,
         });
@@ -452,6 +473,7 @@ pub(super) struct Generation {
     response: Option<Response>,
     parked_message: Option<String>,
     failure: Option<String>,
+    captures: Vec<(String, String)>,
 }
 
 impl Generation {
@@ -462,7 +484,17 @@ impl Generation {
             response: None,
             parked_message: None,
             failure: None,
+            captures: Vec::new(),
         }
+    }
+
+    /// Capture a runtime value from this generation's matched request: the
+    /// regex's first group is stored under `name`, and later frames may echo
+    /// it as `[[cap:<name>]]` — e.g. a `sub_…` subscription id from a
+    /// registration function_result in the history.
+    pub(super) fn capture(mut self, name: &str, pattern: &str) -> Self {
+        self.captures.push((name.to_string(), pattern.to_string()));
+        self
     }
 
     pub(super) fn expect(mut self, request: Request) -> Self {
@@ -508,6 +540,11 @@ impl Generation {
                 .request
                 .expect("generation request is required")
                 .compile(model, self.ordinal),
+            captures: self
+                .captures
+                .into_iter()
+                .map(|(name, pattern)| crate::types::script::CaptureV1 { name, pattern })
+                .collect(),
             frames,
             response,
             on_serve: self.parked_message.map(|message| ServeEffectV1 {

@@ -54,6 +54,9 @@ struct State {
     calls: Vec<RouterCallEvidence>,
     /// request_id → aborted-once flag, for `router::abort` semantics.
     live: BTreeMap<String, bool>,
+    /// Serve-time captures (name → value) taken from matched requests; frames
+    /// reference them as `[[cap:<name>]]`.
+    captured: BTreeMap<String, String>,
 }
 
 pub struct ScriptedRouter {
@@ -73,6 +76,7 @@ impl ScriptedRouter {
             next: 0,
             calls: Vec::new(),
             live: BTreeMap::new(),
+            captured: BTreeMap::new(),
         }));
 
         let router = ScriptedRouter { client, state };
@@ -429,6 +433,30 @@ async fn chat(
             request: input.clone(),
             field_results,
         });
+        // Serve-time captures: pull runtime values (e.g. a `sub_…` id from a
+        // function_result in the history) out of the matched request so later
+        // frames can echo them via `[[cap:<name>]]`.
+        if !generation.captures.is_empty() {
+            let raw = serde_json::to_string(&input)
+                .map_err(|e| Error::Handler(format!("integration/capture_serialize: {e}")))?;
+            for capture in &generation.captures {
+                let regex = regex::Regex::new(&capture.pattern).map_err(|e| {
+                    Error::Handler(format!("integration/capture_regex {}: {e}", capture.name))
+                })?;
+                let value = regex
+                    .captures(&raw)
+                    .and_then(|c| c.get(1))
+                    .map(|m| m.as_str().to_string())
+                    .ok_or_else(|| {
+                        Error::Handler(format!(
+                            "integration/capture_missed: generation {} capture {} found no \
+                             match in the request",
+                            generation.ordinal, capture.name
+                        ))
+                    })?;
+                state.captured.insert(capture.name.clone(), value);
+            }
+        }
         (generation, writer_ref, request_id)
     };
 
@@ -502,6 +530,7 @@ async fn stream_frames(
     request_id: &str,
 ) -> Result<(), Error> {
     let writer = ChannelWriter::new(address, writer_ref);
+    let captured = state.lock().expect("router state").captured.clone();
     for frame in &generation.frames {
         if request_aborted(state, request_id) {
             writer.close().await?;
@@ -509,8 +538,22 @@ async fn stream_frames(
                 "integration/aborted: request {request_id}"
             )));
         }
-        let text = serde_json::to_string(frame)
+        let mut text = serde_json::to_string(frame)
             .map_err(|e| Error::Handler(format!("integration/frame_serialize: {e}")))?;
+        // Late-bind serve-time captures. `[[cap:…]]` (not `{{…}}`) because
+        // placeholder expansion is strict and runs before any capture exists.
+        if text.contains("[[cap:") {
+            for (name, value) in &captured {
+                text = text.replace(&format!("[[cap:{name}]]"), value);
+            }
+            if let Some(start) = text.find("[[cap:") {
+                let tail: String = text[start..].chars().take(48).collect();
+                return Err(Error::Handler(format!(
+                    "integration/capture_unresolved: frame references an uncaptured value \
+                     near {tail:?}"
+                )));
+            }
+        }
         writer.send_message(&text).await?;
     }
     if request_aborted(state, request_id) {

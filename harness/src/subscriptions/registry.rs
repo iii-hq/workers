@@ -87,7 +87,20 @@ pub struct FireClaim {
 struct Inner {
     by_id: HashMap<String, Arc<SubEntry>>,
     by_session: HashMap<String, HashSet<String>>,
+    /// Reaction session → registrant session, recorded when a subscription's
+    /// fire spawns into a distinct session. Lets a reaction clean up its own
+    /// run: unregistering a subscription is permitted for any session whose
+    /// lineage chain reaches the owner (the registrant may be parked waiting
+    /// on a wake its children must tear down). Ephemeral like the rest of the
+    /// registry; entries are purged on `session::deleted`.
+    lineage: HashMap<String, String>,
 }
+
+/// Upper bound when walking the lineage chain — bounds cycles (a session id
+/// can be re-targeted across runs) and pathological depth alike. Deeper than
+/// any real reactive chain, which is itself capped by the reactive-depth
+/// breaker.
+const MAX_LINEAGE_HOPS: usize = 16;
 
 /// The process-wide index of active ephemeral subscriptions.
 pub struct SubscriptionRegistry {
@@ -264,6 +277,43 @@ impl SubscriptionRegistry {
     /// The owning session of a subscription (unsubscribe ownership check).
     pub fn session_of(&self, sub_id: &str) -> Option<String> {
         self.lock().by_id.get(sub_id).map(|e| e.session_id.clone())
+    }
+
+    /// Record that `child_session` was spawned by a reaction of a subscription
+    /// registered by `registrant_session`. Overwrites any prior parent — the
+    /// latest spawner is the live lineage.
+    pub fn record_lineage(&self, child_session: &str, registrant_session: &str) {
+        if child_session == registrant_session {
+            return;
+        }
+        self.lock()
+            .lineage
+            .insert(child_session.to_string(), registrant_session.to_string());
+    }
+
+    /// Whether `caller`'s lineage chain (reaction session → registrant,
+    /// transitively) reaches `owner`. Grants a reaction the right to
+    /// unregister its run's subscriptions even though another session
+    /// registered them.
+    pub fn in_lineage_of(&self, caller: &str, owner: &str) -> bool {
+        let inner = self.lock();
+        let mut current = caller;
+        for _ in 0..MAX_LINEAGE_HOPS {
+            match inner.lineage.get(current) {
+                Some(parent) if parent == owner => return true,
+                Some(parent) => current = parent,
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// Drop lineage entries pointing at or from a deleted session so the map
+    /// stays bounded by live sessions.
+    pub fn forget_lineage(&self, session_id: &str) {
+        let mut inner = self.lock();
+        inner.lineage.remove(session_id);
+        inner.lineage.retain(|_, parent| parent != session_id);
     }
 
     /// The engine trigger id bound to a subscription, WITHOUT evicting the
@@ -524,6 +574,48 @@ mod tests {
         // Unknown / already-evicted trigger ids are a no-op.
         assert!(reg.take_by_trigger_id("trig_1").is_none());
         assert!(reg.take_by_trigger_id("trig_unknown").is_none());
+    }
+
+    #[test]
+    fn lineage_grants_transitive_descendants_and_nothing_else() {
+        let reg = SubscriptionRegistry::new();
+        // orchestrator → reactor → repair (a reaction spawning a reaction).
+        reg.record_lineage("reactor", "orchestrator");
+        reg.record_lineage("repair", "reactor");
+
+        assert!(reg.in_lineage_of("reactor", "orchestrator"));
+        assert!(reg.in_lineage_of("repair", "orchestrator"), "transitive");
+        assert!(reg.in_lineage_of("repair", "reactor"));
+        // Never the other direction, never a stranger.
+        assert!(!reg.in_lineage_of("orchestrator", "reactor"));
+        assert!(!reg.in_lineage_of("stranger", "orchestrator"));
+        assert!(!reg.in_lineage_of("reactor", "repair"));
+    }
+
+    #[test]
+    fn lineage_self_edges_are_not_recorded_and_cycles_terminate() {
+        let reg = SubscriptionRegistry::new();
+        reg.record_lineage("s", "s");
+        assert!(!reg.in_lineage_of("s", "s"), "self edge is meaningless");
+        // A ↔ B cycle (session ids re-targeted across runs) must terminate
+        // instead of spinning, and must not grant unrelated ownership.
+        reg.record_lineage("a", "b");
+        reg.record_lineage("b", "a");
+        assert!(!reg.in_lineage_of("a", "z"));
+        assert!(reg.in_lineage_of("a", "b"));
+    }
+
+    #[test]
+    fn forget_lineage_purges_both_directions() {
+        let reg = SubscriptionRegistry::new();
+        reg.record_lineage("child", "parent");
+        reg.record_lineage("grandchild", "child");
+        reg.forget_lineage("child");
+        assert!(!reg.in_lineage_of("child", "parent"));
+        assert!(
+            !reg.in_lineage_of("grandchild", "child"),
+            "entries pointing AT the deleted session are purged too"
+        );
     }
 
     #[test]

@@ -48,6 +48,11 @@ pub struct ScenarioFixture {
 #[derive(Debug, Clone)]
 pub struct ProbeAction {
     pub after_turns: usize,
+    /// Additionally wait until the controlled function served this many
+    /// invocations (probe-side, whole-run) before firing. The only ordering
+    /// signal an UNTRACKED session can emit: e.g. fire the next action only
+    /// after a call-mode reaction proved a worker session completed.
+    pub after_target_calls: Option<usize>,
     pub function_id: String,
     pub payload: serde_json::Value,
 }
@@ -105,6 +110,18 @@ impl ScenarioFixture {
                 "await_target_calls needs a controlled function (`.function(...)`) to count"
             );
         }
+        for action in &self.probe_actions {
+            if let Some(calls) = action.after_target_calls {
+                anyhow::ensure!(
+                    calls > 0,
+                    "probe action after_target_calls must be positive"
+                );
+                anyhow::ensure!(
+                    self.scenario.target.is_some(),
+                    "a probe action gated on target calls needs a controlled function to count"
+                );
+            }
+        }
         anyhow::ensure!(
             self.expected_turn_statuses.last().map(String::as_str) == Some("completed"),
             "the last terminal turn must be completed"
@@ -132,6 +149,43 @@ impl ScenarioFixture {
             "router script has no generations"
         );
         let mut ordinals = std::collections::BTreeSet::new();
+        // Serve-time capture wiring: a `[[cap:name]]` frame reference is only
+        // resolvable when an earlier-or-same-ordinal generation declared the
+        // capture (strict-ordinal consumption guarantees it ran first).
+        let mut sorted: Vec<_> = self.script.generations.iter().collect();
+        sorted.sort_by_key(|g| g.ordinal);
+        let mut declared = std::collections::BTreeSet::new();
+        for generation in sorted {
+            for capture in &generation.captures {
+                let regex = regex::Regex::new(&capture.pattern).map_err(|error| {
+                    anyhow::anyhow!("capture {} pattern invalid: {error}", capture.name)
+                })?;
+                anyhow::ensure!(
+                    regex.captures_len() >= 2,
+                    "capture {} pattern must have a capture group",
+                    capture.name
+                );
+                declared.insert(capture.name.clone());
+            }
+            let frames = serde_json::to_string(&generation.frames)?;
+            let mut rest = frames.as_str();
+            while let Some(start) = rest.find("[[cap:") {
+                let name_start = &rest[start + 6..];
+                let end = name_start.find("]]").ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "generation {} has an unterminated [[cap: reference",
+                        generation.ordinal
+                    )
+                })?;
+                let name = &name_start[..end];
+                anyhow::ensure!(
+                    declared.contains(name),
+                    "generation {} references [[cap:{name}]] before any generation captured it",
+                    generation.ordinal
+                );
+                rest = &name_start[end..];
+            }
+        }
         for generation in &self.script.generations {
             anyhow::ensure!(
                 ordinals.insert(generation.ordinal),

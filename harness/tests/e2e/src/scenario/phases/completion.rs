@@ -58,6 +58,27 @@ impl ScenarioRunner<'_> {
                         error,
                     ));
                 }
+                // A second, call-count boundary: an untracked session's only
+                // observable milestone is a controlled-function call (e.g. a
+                // call-mode reaction on its completion), so an action can gate
+                // on that instead of tracked-session turns alone.
+                if let Some(calls) = action.after_target_calls {
+                    if let Err(error) = services
+                        .probe()
+                        .wait_for_target_calls(calls, deadline)
+                        .await
+                    {
+                        if deadline.is_expired() {
+                            active.timed_out = true;
+                            return Ok(());
+                        }
+                        return Err(RunError::runner(
+                            phase,
+                            "wait for probe-action call boundary",
+                            error,
+                        ));
+                    }
+                }
                 self.fire_probe_action(services, &action, deadline).await?;
             }
         }
@@ -126,6 +147,18 @@ impl ScenarioRunner<'_> {
                     "wait for controlled-function call count",
                     error,
                 ));
+            }
+            // The awaited call may land mid-turn in an UNTRACKED session (the
+            // whole reason this await exists), with the script's tail still
+            // streaming. Hold until every generation is consumed so collect
+            // doesn't race that turn's finish — the floor requires full
+            // consumption anyway.
+            while services.router().generations_consumed() < services.router().total_generations() {
+                if deadline.is_expired() {
+                    active.timed_out = true;
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
 

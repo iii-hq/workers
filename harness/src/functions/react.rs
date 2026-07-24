@@ -546,10 +546,11 @@ fn stamp_coalesced(mut event: Value, dropped: usize) -> Value {
     event
 }
 
-/// Type-erased re-entry for the trailing coalesced fire: `handle` recursing
-/// through `tokio::spawn` can't prove its own future `Send` (the bound is
+/// Type-erased re-entry for the trailing coalesced fire and the
+/// late-join-predecessor catch-up fire: `handle` recursing through
+/// `tokio::spawn` can't prove its own future `Send` (the bound is
 /// self-referential); the `dyn` boxing breaks the inference cycle.
-fn handle_boxed<'a>(
+pub(crate) fn handle_boxed<'a>(
     deps: &'a Deps,
     event: Value,
     metadata: Option<Value>,
@@ -1246,6 +1247,13 @@ async fn spawn_reaction(
                 .get("child_turn_id")
                 .and_then(Value::as_str)
                 .map(str::to_string);
+            // Reaction sessions may need to clean up their own run while the
+            // registrant is parked on a wake: record child → registrant so
+            // the unregister ownership check accepts lineage descendants.
+            if let (Some(owner), Some(child)) = (spec.owner_session_id.as_deref(), child.as_deref())
+            {
+                deps.subscriptions.record_lineage(child, owner);
+            }
             tracing::info!(
                 child_session_id = child.as_deref(),
                 model = spec.model.as_deref(),

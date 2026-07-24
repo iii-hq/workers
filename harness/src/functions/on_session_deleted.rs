@@ -24,6 +24,7 @@ pub async fn handle(
     event: SessionDeletedEvent,
 ) -> Result<SessionDeletedAck, HarnessError> {
     let dropped = deps.subscriptions.take_session(&event.session_id);
+    deps.subscriptions.forget_lineage(&event.session_id);
     let tracked = dropped.len() as u64;
     if tracked > 0 {
         for (_sub_id, trigger_id) in dropped {
