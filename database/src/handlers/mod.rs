@@ -45,6 +45,29 @@ mod tx_sql_guard;
 
 pub(crate) use query::rows_to_objects as query_rows_to_objects;
 
+/// Reject transaction-control SQL on the pooled per-call surfaces. Each call
+/// runs on whichever connection the pool hands out, so BEGIN/COMMIT can never
+/// pair up — worse, a BEGIN that "succeeds" returns its connection to the
+/// pool still inside an open transaction, and every later caller unlucky
+/// enough to draw it fails with `cannot start a transaction within a
+/// transaction` (rctest5 postmortem: three writer agents starved on one
+/// poisoned connection). Point the caller at the real transactional surfaces.
+pub(crate) fn reject_tx_control_sql(sql: &str) -> Result<(), DbError> {
+    if tx_sql_guard::is_transaction_control_sql(sql) {
+        return Err(DbError::InvalidParam {
+            index: 0,
+            reason: "transaction-control SQL (BEGIN/COMMIT/ROLLBACK/SAVEPOINT) is not valid \
+                     here: each call runs on its own pooled connection, so the statements \
+                     cannot pair up and a leaked BEGIN poisons the pool for every later \
+                     caller. Use database::beginTransaction + database::transactionExecute + \
+                     database::commitTransaction, or database::executeBatch for an atomic \
+                     batch."
+                .into(),
+        });
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub pools: Arc<RwLock<HashMap<String, Pool>>>,

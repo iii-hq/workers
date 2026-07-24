@@ -80,14 +80,29 @@ impl SqlitePool {
         let pool = Arc::clone(&self.inner);
         let timeout = self.acquire_timeout;
         let db_name = self.db_name.to_string();
-        let res = tokio::task::spawn_blocking(move || pool.get_timeout(timeout))
-            .await
-            .map_err(|e| DbError::DriverError {
-                driver: "sqlite".into(),
-                code: None,
-                message: format!("spawn_blocking join: {e}"),
-                failed_index: None,
-            })?;
+        let res = tokio::task::spawn_blocking(move || {
+            pool.get_timeout(timeout).inspect(|conn| {
+                // Defense in depth against pool poisoning: if a previous
+                // holder leaked an open transaction (the handler-boundary
+                // guard blocks the known path, but drivers and future
+                // surfaces can regress), roll it back instead of handing
+                // every later caller `cannot start a transaction within a
+                // transaction` forever.
+                if !conn.is_autocommit() {
+                    tracing::warn!(
+                        "sqlite pool: connection acquired with an open transaction; rolling back"
+                    );
+                    let _ = conn.execute_batch("ROLLBACK");
+                }
+            })
+        })
+        .await
+        .map_err(|e| DbError::DriverError {
+            driver: "sqlite".into(),
+            code: None,
+            message: format!("spawn_blocking join: {e}"),
+            failed_index: None,
+        })?;
         match res {
             Ok(conn) => Ok(SqliteConn { conn }),
             Err(e) => Err(classify_acquire_error(&e.to_string(), db_name, timeout)),
@@ -232,6 +247,46 @@ mod tests {
             crate::error::DbError::PoolTimeout { waited_ms, .. } => assert!(waited_ms >= 50),
             other => panic!("expected PoolTimeout, got {other:?}"),
         }
+    }
+
+    /// Regression (rctest5 postmortem): a caller that opened a transaction
+    /// and never closed it returned its connection to the pool mid-txn;
+    /// every later acquire of that connection failed `cannot start a
+    /// transaction within a transaction`, starving three writer agents at
+    /// once. Acquire now rolls back any leaked open transaction.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn acquire_rolls_back_a_leaked_open_transaction() {
+        let pool = SqlitePool::new(
+            "sqlite::memory:",
+            &PoolConfig {
+                max: 1, // force reuse of the poisoned connection
+                idle_timeout_ms: 30_000,
+                acquire_timeout_ms: 500,
+            },
+        )
+        .unwrap();
+        let conn = pool.acquire().await.unwrap();
+        tokio::task::spawn_blocking(move || {
+            conn.with(|c| {
+                c.execute_batch("BEGIN; CREATE TABLE t (n INT);").unwrap();
+                assert!(!c.is_autocommit(), "transaction must be open when leaked");
+            })
+            // `conn` drops here still inside the transaction.
+        })
+        .await
+        .unwrap();
+
+        let healed = pool.acquire().await.unwrap();
+        tokio::task::spawn_blocking(move || {
+            healed.with(|c| {
+                assert!(c.is_autocommit(), "leaked transaction must be rolled back");
+                // And the connection is fully usable, including a fresh BEGIN.
+                c.execute_batch("BEGIN; CREATE TABLE t2 (n INT); COMMIT;")
+                    .unwrap();
+            })
+        })
+        .await
+        .unwrap();
     }
 
     #[test]

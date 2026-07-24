@@ -23,7 +23,7 @@ pub struct ExecuteReq {
     pub returning: Vec<String>,
 }
 
-#[derive(Serialize, JsonSchema)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct ExecuteResp {
     pub affected_rows: u64,
     pub last_insert_id: Option<String>,
@@ -45,6 +45,7 @@ pub async fn handle(state: &AppState, req: ExecuteReq) -> Result<ExecuteResp, St
             failed_index: None,
         }));
     }
+    crate::handlers::reject_tx_control_sql(&req.sql).map_err(err_to_str)?;
     let params = JsonParam::from_json_slice(&req.params).map_err(err_to_str)?;
 
     let result = match &pool {
@@ -164,6 +165,23 @@ mod tests {
         assert!(properties.contains_key("sql"));
         assert!(!properties.contains_key("query"));
         assert_eq!(properties["params"]["type"], "array");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_rejects_transaction_control_sql_with_pointer() {
+        // rctest5 postmortem: agents run execute("BEGIN") + execute("COMMIT")
+        // expecting a session — but each call draws a fresh pooled
+        // connection, and the leaked BEGIN poisoned the pool for every later
+        // caller. The guard must name the real transactional surfaces.
+        let st = state();
+        for sql in ["BEGIN", "commit;", "  ROLLBACK", "/* tx */ BEGIN IMMEDIATE"] {
+            let err = handle(&st, req(json!({"db":"primary","sql": sql})))
+                .await
+                .unwrap_err();
+            assert!(err.contains("INVALID_PARAM"), "{sql}: {err}");
+            assert!(err.contains("beginTransaction"), "{sql}: {err}");
+            assert!(err.contains("executeBatch"), "{sql}: {err}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -47,6 +47,9 @@ pub async fn handle(state: &AppState, req: PrepareReq) -> Result<PrepareResp, St
             failed_index: None,
         }));
     }
+    // A prepared BEGIN executed via runStatement opens a transaction on the
+    // pinned connection that outlives the handle — same pool poison.
+    crate::handlers::reject_tx_control_sql(&req.sql).map_err(err_to_str)?;
 
     let h = match pool {
         Pool::Sqlite(p) => {

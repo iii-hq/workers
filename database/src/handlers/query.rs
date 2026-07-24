@@ -50,6 +50,9 @@ pub async fn handle(state: &AppState, req: QueryReq) -> Result<QueryResp, String
             failed_index: None,
         }));
     }
+    // A `query("BEGIN")` is just as pool-poisoning as an execute — sqlite
+    // happily starts the transaction and returns zero rows.
+    crate::handlers::reject_tx_control_sql(&req.sql).map_err(err_to_str)?;
     let params = JsonParam::from_json_slice(&req.params).map_err(err_to_str)?;
 
     let result = match &pool {
@@ -161,6 +164,18 @@ mod tests {
         // The error must enumerate the registered handles so a caller that
         // guessed a wrong name can self-correct from one failure.
         assert!(err.contains("\"available\":[\"primary\"]"), "got: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn query_rejects_transaction_control_sql() {
+        // sqlite happily starts a transaction from a query("BEGIN") and
+        // returns zero rows — the same pool poison as the execute path.
+        let st = state();
+        let err = handle(&st, req(json!({"db":"primary","sql":"BEGIN"})))
+            .await
+            .unwrap_err();
+        assert!(err.contains("INVALID_PARAM"), "got: {err}");
+        assert!(err.contains("beginTransaction"), "got: {err}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
