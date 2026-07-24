@@ -214,7 +214,9 @@ mod tests {
             let extra = SqlitePool::new("sqlite::memory:", &PoolConfig::default()).unwrap();
             pools.insert("analytics".to_string(), Pool::Sqlite(extra));
         }
-        let err = handle(&st, req(json!({"sql":"SELECT 1"}))).await.unwrap_err();
+        let err = handle(&st, req(json!({"sql":"SELECT 1"})))
+            .await
+            .unwrap_err();
         assert!(err.contains("MISSING_DB"), "got: {err}");
         assert!(
             err.contains("\"available\":[\"analytics\",\"main\"]"),
