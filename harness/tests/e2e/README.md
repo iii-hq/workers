@@ -17,6 +17,7 @@ No provider key or network access is required.
 | E2E-004 | `join-spec-mismatch` | direct | a join predecessor registered with a divergent reaction spec is rejected at registration |
 | E2E-005 | `reaction-policy-inheritance` | direct | a reaction with no options inherits the registering turn's dispatch policy |
 | E2E-006 | `state-worker-sidecar` | direct | a state-key reaction fires through the standalone state worker with its metadata sidecar (probe-hook driven) |
+| E2E-007 | `coalesced-fire` | direct | a burst past the fire-rate cap coalesces: cap + 1 dispatches, the trailing one stamped `__coalesced_fires` (shrunken gate via harness env; probe-side whole-run call evidence) |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 

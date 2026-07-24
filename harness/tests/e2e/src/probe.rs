@@ -49,6 +49,13 @@ pub struct ScenarioProbe {
     trace_generation: Arc<AtomicU64>,
     trace_notify: Arc<tokio::sync::Notify>,
     bindings: Mutex<Vec<BoundTrigger>>,
+    /// Every invocation payload the controlled function served, in arrival
+    /// order. Probe-side WHOLE-RUN evidence: the serving process sees every
+    /// execution regardless of which session (or no session at all — e.g. a
+    /// call-mode reaction) dispatched it, where session-scoped trace
+    /// collection cannot.
+    target_calls: Arc<Mutex<Vec<Value>>>,
+    target_notify: Arc<tokio::sync::Notify>,
 }
 
 impl ScenarioProbe {
@@ -62,6 +69,8 @@ impl ScenarioProbe {
             trace_generation: Arc::new(AtomicU64::new(0)),
             trace_notify: Arc::new(tokio::sync::Notify::new()),
             bindings: Mutex::new(Vec::new()),
+            target_calls: Arc::new(Mutex::new(Vec::new())),
+            target_notify: Arc::new(tokio::sync::Notify::new()),
         };
         probe.register_sinks();
         Ok(probe)
@@ -154,8 +163,44 @@ impl ScenarioProbe {
             "integration/target_scope: {} must be prefixed by {prefix}",
             target.function_id
         );
-        register_controlled_function(self.client.inner(), target);
+        register_controlled_function(
+            self.client.inner(),
+            target,
+            Arc::clone(&self.target_calls),
+            Arc::clone(&self.target_notify),
+        );
         Ok(())
+    }
+
+    /// Snapshot of every controlled-function invocation payload so far
+    /// (engine fields stripped), in arrival order.
+    pub fn target_calls(&self) -> Vec<Value> {
+        self.target_calls
+            .lock()
+            .map(|calls| calls.clone())
+            .unwrap_or_default()
+    }
+
+    /// Wait until the controlled function has served at least `expected`
+    /// invocations. This is how a scenario awaits work that produces no
+    /// session turn — a call-mode reaction's dispatch, including the trailing
+    /// coalesced fire that lands only after the rate-cap window frees.
+    pub async fn wait_for_target_calls(
+        &self,
+        expected: usize,
+        deadline: Deadline,
+    ) -> anyhow::Result<Vec<Value>> {
+        anyhow::ensure!(expected > 0, "expected call count must be positive");
+        loop {
+            let notified = self.target_notify.notified();
+            let calls = self.target_calls();
+            if calls.len() >= expected {
+                return Ok(calls);
+            }
+            deadline
+                .timeout("controlled-function call count", notified)
+                .await?;
+        }
     }
 
     /// Bind every observer through acknowledged engine RPCs. Because these
@@ -430,13 +475,28 @@ fn parse_trace_payload(payload: &Value) -> Result<(), String> {
     }
 }
 
-fn register_controlled_function(iii: &iii_sdk::IIIClient, target: &ControlledTargetV1) {
+fn register_controlled_function(
+    iii: &iii_sdk::IIIClient,
+    target: &ControlledTargetV1,
+    calls: Arc<Mutex<Vec<Value>>>,
+    notify: Arc<tokio::sync::Notify>,
+) {
     let response = target.response.clone();
     iii.register_function(
         &target.function_id,
-        RegisterFunction::new_async(move |_payload: Value| {
+        RegisterFunction::new_async(move |mut payload: Value| {
             let response = response.clone();
-            async move { Ok::<Value, Error>(response) }
+            let calls = Arc::clone(&calls);
+            let notify = Arc::clone(&notify);
+            async move {
+                strip_engine_fields(&mut payload);
+                calls
+                    .lock()
+                    .map_err(|_| Error::Handler("integration/target_calls_lock_poisoned".into()))?
+                    .push(payload);
+                notify.notify_waiters();
+                Ok::<Value, Error>(response)
+            }
         })
         .description(target.description.clone())
         .request_format(Value::Object(target.request_schema.clone()))

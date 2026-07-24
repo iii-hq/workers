@@ -108,6 +108,33 @@ const JOIN_SCOPE: &str = "harness::react_join";
 pub const MAX_FIRES_PER_WINDOW: usize = 10;
 pub const FIRE_WINDOW_MS: i64 = 60_000;
 
+/// Effective gate limits. Overridable via `III_HARNESS_MAX_FIRES_PER_WINDOW`
+/// / `III_HARNESS_FIRE_WINDOW_MS` — production never sets them; the
+/// integration suite shrinks the window so a coalescing scenario observes the
+/// trailing fire in seconds instead of parking for a minute. Read once: the
+/// gate's sliding-window math must never see two different window sizes.
+fn max_fires_per_window() -> usize {
+    static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("III_HARNESS_MAX_FIRES_PER_WINDOW")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|v| *v >= 1)
+            .unwrap_or(MAX_FIRES_PER_WINDOW)
+    })
+}
+
+fn fire_window_ms() -> i64 {
+    static LIMIT: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("III_HARNESS_FIRE_WINDOW_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|v| *v >= 1)
+            .unwrap_or(FIRE_WINDOW_MS)
+    })
+}
+
 /// The latest fire dropped by a capped binding, held for the trailing
 /// coalesced fire. Only the newest event is kept: react patterns are
 /// recompute-style (aggregate from source of truth), so the last event
@@ -151,23 +178,20 @@ impl FireGate {
     /// Record a fire attempt for `key` at `now_ms`; `false` when the key has
     /// exhausted its window budget — the caller must defer instead of react.
     pub fn admit(&self, key: &str, now_ms: i64) -> bool {
+        let window = fire_window_ms();
         let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         // Opportunistic GC so dead keys can't grow the map unboundedly. Keys
         // with a parked pending fire stay: a trailing task will drain them.
         if map.len() > 1024 {
             map.retain(|_, s| {
-                s.pending.is_some() || s.fires.back().is_some_and(|t| now_ms - t < FIRE_WINDOW_MS)
+                s.pending.is_some() || s.fires.back().is_some_and(|t| now_ms - t < window)
             });
         }
         let s = map.entry(key.to_string()).or_default();
-        while s
-            .fires
-            .front()
-            .is_some_and(|t| now_ms - t >= FIRE_WINDOW_MS)
-        {
+        while s.fires.front().is_some_and(|t| now_ms - t >= window) {
             s.fires.pop_front();
         }
-        if s.fires.len() >= MAX_FIRES_PER_WINDOW {
+        if s.fires.len() >= max_fires_per_window() {
             return false;
         }
         s.fires.push_back(now_ms);
@@ -192,11 +216,9 @@ impl FireGate {
             s.trailing_scheduled = true;
             // Fire when the oldest window entry expires (budget frees). The
             // floor guards clock skew; the ceiling guards a corrupt queue.
-            let delay = s
-                .fires
-                .front()
-                .map_or(FIRE_WINDOW_MS, |t| t + FIRE_WINDOW_MS - now_ms);
-            Some(delay.clamp(1_000, FIRE_WINDOW_MS))
+            let window = fire_window_ms();
+            let delay = s.fires.front().map_or(window, |t| t + window - now_ms);
+            Some(delay.clamp(1_000.min(window), window))
         };
         Deferred {
             dropped,
@@ -593,10 +615,11 @@ pub async fn handle(
             raw_metadata.unwrap_or(Value::Null),
             now_ms,
         );
+        let (max_fires, window_ms) = (max_fires_per_window(), fire_window_ms());
         tracing::warn!(
             subscription = %gate_key,
             dropped = deferred.dropped,
-            "harness::react: fire-rate breaker tripped ({MAX_FIRES_PER_WINDOW} fires/{FIRE_WINDOW_MS}ms); coalescing"
+            "harness::react: fire-rate breaker tripped ({max_fires} fires/{window_ms}ms); coalescing"
         );
         if let Some(delay_ms) = deferred.schedule_delay_ms {
             let deps = deps.clone();
@@ -616,7 +639,7 @@ pub async fn handle(
             });
         }
         let note = format!(
-            "fire-rate cap ({MAX_FIRES_PER_WINDOW} per {FIRE_WINDOW_MS}ms) reached; coalescing — \
+            "fire-rate cap ({max_fires} per {window_ms}ms) reached; coalescing — \
              the latest event fires once the window frees ({} collapsed so far)",
             deferred.dropped
         );

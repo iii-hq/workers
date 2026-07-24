@@ -26,6 +26,20 @@ pub struct ScenarioFixture {
     /// runs while the tracked session is idle (ordinal-clean under the
     /// scripted router). `{{run_id}}`/`{{session_id}}` in the payload expand.
     pub probe_actions: Vec<ProbeAction>,
+    /// Extra environment for the harness process under test. The integration
+    /// knobs live here (e.g. `III_HARNESS_FIRE_WINDOW_MS` to shrink the
+    /// fire-rate window so a coalescing scenario completes in seconds).
+    pub harness_env: Vec<(String, String)>,
+    /// Await this many controlled-function invocations (probe-side, whole-run)
+    /// after every terminal turn arrived. This is the only way to await work
+    /// that produces no session turn — a call-mode reaction's dispatch,
+    /// including a trailing coalesced fire.
+    pub await_target_calls: Option<usize>,
+    /// Session-trace-count override for the floor. `None` keeps the driver
+    /// formula. Needed when probe actions trip CALL-mode reactions, which
+    /// dispatch a function without seeding any session turn — no extra trace
+    /// tree ever forms.
+    pub traces_override: Option<usize>,
 }
 
 /// A function the PROBE (test infra, not a model turn) invokes at a completion
@@ -151,11 +165,16 @@ impl ScenarioFixture {
     /// finalize reseed enqueues from inside the finalizing step); Playground
     /// turns are each externally initiated and trace separately.
     pub fn expected_traces(&self) -> usize {
+        if let Some(traces) = self.traces_override {
+            return traces;
+        }
         match self.driver {
             // The send's own trace, plus one per probe action: a probe-tripped
-            // reaction fires from a fresh externally-initiated flow (the
+            // TASK reaction fires from a fresh externally-initiated flow (the
             // state/cron worker's fan-out), so it forms its own trace tree —
-            // exactly like a Playground-driven external turn.
+            // exactly like a Playground-driven external turn. Scenarios whose
+            // probe actions trip CALL reactions (no session turn, no trace)
+            // override via `traces_override`.
             ScenarioDriver::Direct => 1 + self.probe_actions.len(),
             ScenarioDriver::Playground => self.expected_terminal_turns,
         }

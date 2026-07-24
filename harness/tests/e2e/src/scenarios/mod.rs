@@ -1,5 +1,6 @@
 //! The checked-in integration fixtures.
 
+mod coalesced_fire;
 mod console_streamed_text;
 mod dsl;
 mod exactly_once_function;
@@ -25,6 +26,7 @@ pub enum ScenarioDriver {
 /// Every fixture, in stable slug order.
 pub fn all() -> Vec<ScenarioFixture> {
     vec![
+        coalesced_fire::scenario(),
         console_streamed_text::scenario(),
         exactly_once_function::scenario(),
         join_spec_mismatch::scenario(),
@@ -43,7 +45,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 8);
+        assert_eq!(fixtures.len(), 9);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

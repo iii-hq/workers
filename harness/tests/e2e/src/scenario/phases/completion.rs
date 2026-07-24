@@ -101,6 +101,34 @@ impl ScenarioRunner<'_> {
             }
         }
 
+        // Turn completions can't witness call-mode reaction dispatches (no
+        // turn is ever seeded), so a scenario that expects them declares a
+        // probe-side call count and the run holds here until the controlled
+        // function served that many — including a trailing coalesced fire
+        // that only lands after the rate-cap window frees.
+        if let Some(expected_calls) = self.fixture.await_target_calls {
+            if let Err(error) = services
+                .probe()
+                .wait_for_target_calls(expected_calls, deadline)
+                .await
+            {
+                if deadline.is_expired() {
+                    active.timed_out = true;
+                    tracing::error!(
+                        target: "harness_integration::scenario",
+                        "await timed out waiting for {expected_calls} controlled-function \
+                         call(s): {error:#}"
+                    );
+                    return Ok(());
+                }
+                return Err(RunError::runner(
+                    phase,
+                    "wait for controlled-function call count",
+                    error,
+                ));
+            }
+        }
+
         self.confirm_terminal_status(services, active).await
     }
 
