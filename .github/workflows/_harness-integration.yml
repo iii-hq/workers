@@ -120,6 +120,7 @@ jobs:
             session-manager -> target
             context-manager -> target
             iii-directory -> target
+            state -> target
             console -> target
 
       - name: Integration crate unit tests
@@ -161,6 +162,7 @@ jobs:
           III_DIRECTORY_BIN: ${{ github.workspace }}/iii-directory/target/release/iii-directory
           SESSION_MANAGER_BIN: ${{ github.workspace }}/session-manager/target/release/session-manager
           CONTEXT_MANAGER_BIN: ${{ github.workspace }}/context-manager/target/release/context-manager
+          STATE_BIN: ${{ github.workspace }}/state/target/release/state
           CONSOLE_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/console-e2e
         run: pnpm test:e2e
 

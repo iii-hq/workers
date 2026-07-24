@@ -20,7 +20,9 @@
 
 use serde_json::{json, Value};
 
-use super::dsl::{ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send};
+use super::dsl::{
+    ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send,
+};
 use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
