@@ -6,11 +6,16 @@ use super::RunLayout;
 
 /// Start order matters: the harness retries `queue::define` only briefly at
 /// boot, so queue precedes harness. The harness itself is spawned after Arm.
-pub const WORKER_START_ORDER: [&str; 4] = [
+pub const WORKER_START_ORDER: [&str; 5] = [
     "queue",
     "iii-directory",
     "session-manager",
     "context-manager",
+    // The standalone state worker (NOT the engine builtin): it owns the
+    // `state` trigger type in production, and its fan-out is the fire-time
+    // metadata-sidecar seam MOT-4209 broke on. E2E-006 drives a reaction
+    // through it; the builtin would mask exactly that path.
+    "state",
 ];
 
 /// No provider keys or developer secrets leak into the subject stack.
@@ -30,7 +35,8 @@ workers:
         name: fs
         config:
           directory: {config_dir}
-  - name: iii-state
+  # iii-state deliberately absent: the standalone `state` worker owns the
+  # `state` trigger type (its boot guard refuses to start beside the builtin).
   - name: iii-stream
   - name: iii-cron
   - name: iii-observability

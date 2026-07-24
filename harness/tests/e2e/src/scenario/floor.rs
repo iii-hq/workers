@@ -331,6 +331,7 @@ mod tests {
                 trace_id: "trace-turn-1".into(),
                 roots: vec![lifecycle_span("turn-1", completed_lifecycle("turn-1", 1))],
             }]),
+            target_calls: Vec::new(),
         }
     }
 

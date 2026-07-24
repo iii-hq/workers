@@ -65,13 +65,17 @@ pub struct SubscribeRequest {
     /// parent_session_id?, options?, join? }`. Required (with `task`) when
     /// `function_id` is `harness::react`; forwarded verbatim, with `model`
     /// (and `provider`, when unset) defaulted to the registering turn's
-    /// when omitted. A
-    /// trigger-fired sub-agent starts with only the read-only default policy —
-    /// grant what the reaction needs via `options` (same shape as
-    /// `harness::spawn` options, e.g. `{ "functions": { "allow":
-    /// ["state::get"] } }`). Join predecessors auto-unregister after the join
-    /// fires unless `join.rearm: true` keeps them registered for the next
-    /// complete set.
+    /// when omitted. The reaction INHERITS the registering turn's dispatch
+    /// policy; `options.functions` narrows it and can never escalate (same
+    /// shape as `harness::spawn` options, e.g. `{ "functions": { "allow":
+    /// ["state::get"] } }`). Only raw engine-side registrations fall back to
+    /// the read-only default policy. Join predecessors auto-unregister after
+    /// the join fires unless `join.rearm: true` keeps them registered for the
+    /// next complete set. Under burst load fires past the per-subscription
+    /// rate cap COALESCE: only the newest event is delivered (stamped
+    /// `__coalesced_fires`/`__coalesced_note`), so a reaction task must
+    /// recompute from the source of truth on such a fire rather than treat
+    /// it as one change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }
@@ -158,12 +162,14 @@ async fn session_filter_advisory(deps: &Deps, req: &SubscribeRequest) -> Option<
     ))
 }
 
-/// The registering turn's model identity, threaded from the dispatch
-/// chokepoints so a model-less react spec can inherit it (see [`inherit_model`]).
+/// The registering turn's model identity and dispatch policy, threaded from
+/// the dispatch chokepoints so a react spec can inherit them (see
+/// [`inherit_model`] and [`stamp_registrant_functions`]).
 #[derive(Clone, Copy)]
 pub struct CallerModel<'a> {
     pub model: &'a str,
     pub provider: Option<&'a str>,
+    pub functions: Option<&'a crate::types::turn::FunctionPolicy>,
 }
 
 impl<'a> CallerModel<'a> {
@@ -171,6 +177,7 @@ impl<'a> CallerModel<'a> {
         Self {
             model: &options.model,
             provider: options.provider.as_deref(),
+            functions: options.functions.as_ref(),
         }
     }
 }
@@ -229,6 +236,27 @@ fn standing_binding_advisory(req: &SubscribeRequest, once: bool) -> Option<Strin
     )
 }
 
+/// Advisory for a `state` binding with no `key` filter: it fires for EVERY
+/// key written in the scope (or every write anywhere, with no scope either) —
+/// order signals, done markers, completion keys, all of it. Registered beside
+/// a keyed binding it double-fires every event and burns the fire-rate budget
+/// twice (rctest-k7m3 postmortem). Purely informative — a deliberate
+/// catch-all watcher ignores it.
+fn state_catchall_advisory(req: &SubscribeRequest) -> Option<String> {
+    if req.trigger_type != "state" || req.config.get("key").is_some() {
+        return None;
+    }
+    let breadth = match req.config.get("scope").and_then(Value::as_str) {
+        Some(scope) => format!("EVERY key written in scope \"{scope}\""),
+        None => "EVERY state write in EVERY scope".to_string(),
+    };
+    Some(format!(
+        "warning: this state binding has no `key` filter — it fires for {breadth} (done \
+         markers, completion signals, everything), each fire spending this subscription's \
+         fire-rate budget. Add a `key` to the config unless you deliberately want a catch-all."
+    ))
+}
+
 /// `once` on a react binding: simple non-cron edges default to one-shot, while
 /// cron remains standing. Callers that truly want a standing state/turn watcher
 /// opt out with `once: false`. Join predecessors ignore this field because the
@@ -264,6 +292,31 @@ async fn intercept_register(
 /// (ambiguous ids resolve per-provider). Only a truly absent or empty-string
 /// `model` inherits: present-but-mistyped values (`null`, `false`, `0`) still
 /// fail spec validation loudly rather than silently running on another model.
+/// Metadata key carrying the registering turn's dispatch policy on a react
+/// binding. At fire time a reaction with no `options.functions` inherits it,
+/// and explicit options are subset against it (narrow, never escalate) —
+/// matching the in-turn child rule instead of dropping a reaction delivered
+/// into the registrant's own chat to the read-only baseline (the rctest-k7m3
+/// wrap-up turn was denied database::query / state::set /
+/// engine::unregister_trigger for exactly that reason).
+pub const REGISTRANT_FUNCTIONS_KEY: &str = "__registrant_functions";
+
+/// Stamp the registering turn's dispatch policy onto a react binding's
+/// metadata. Harness stamp, never caller-supplied: any smuggled value is
+/// dropped even when there is no caller policy to stamp.
+fn stamp_registrant_functions(metadata: &mut Option<Value>, caller: Option<CallerModel<'_>>) {
+    let Some(Value::Object(m)) = metadata.as_mut() else {
+        return;
+    };
+    m.remove(REGISTRANT_FUNCTIONS_KEY);
+    let Some(functions) = caller.and_then(|c| c.functions) else {
+        return;
+    };
+    if let Ok(v) = serde_json::to_value(functions) {
+        m.insert(REGISTRANT_FUNCTIONS_KEY.to_string(), v);
+    }
+}
+
 fn inherit_model(metadata: &mut Option<Value>, caller: Option<CallerModel<'_>>) {
     let (Some(Value::Object(m)), Some(caller)) = (metadata.as_mut(), caller) else {
         return;
@@ -409,10 +462,19 @@ async fn handle(
         }
     }
 
+    let notes: Vec<String> = [
+        session_filter_advisory(deps, &req).await,
+        // A key-less state notify wakes the owning session on every write in
+        // the scope — same catch-all hazard as a react binding.
+        state_catchall_advisory(&req),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     Ok(SubscribeResponse {
         subscription_id: sub_id,
         once,
-        note: session_filter_advisory(deps, &req).await,
+        note: (!notes.is_empty()).then(|| notes.join(" ")),
     })
 }
 
@@ -605,6 +667,9 @@ async fn handle_react(
     } else {
         inherit_model(&mut req.metadata, caller);
     }
+    // Both modes: strips any smuggled registrant-policy stamp; inert for call
+    // reactions (they dispatch with worker authority, no spawned turn).
+    stamp_registrant_functions(&mut req.metadata, caller);
     crate::functions::react::validate_spec(req.metadata.as_ref())
         .map_err(HarnessError::InvalidRequest)?;
     if !call_mode {
@@ -736,6 +801,7 @@ async fn handle_react(
         session_filter_advisory(deps, &req).await,
         join_wiring_advisory(deps, &req).await,
         standing_binding_advisory(&req, once),
+        state_catchall_advisory(&req),
     ]
     .into_iter()
     .flatten()
@@ -803,6 +869,7 @@ mod tests {
             Some(CallerModel {
                 model: "claude-opus-4-8",
                 provider: None,
+                functions: None,
             }),
         );
         assert_eq!(md.as_ref().unwrap()["model"], json!("claude-opus-4-8"));
@@ -815,6 +882,7 @@ mod tests {
             Some(CallerModel {
                 model: "claude-opus-4-8",
                 provider: None,
+                functions: None,
             }),
         );
         assert_eq!(explicit.as_ref().unwrap()["model"], json!("kimi-k2"));
@@ -825,6 +893,7 @@ mod tests {
             Some(CallerModel {
                 model: "claude-opus-4-8",
                 provider: None,
+                functions: None,
             }),
         );
         assert_eq!(empty.as_ref().unwrap()["model"], json!("claude-opus-4-8"));
@@ -840,6 +909,7 @@ mod tests {
             Some(CallerModel {
                 model: "m",
                 provider: Some("anthropic"),
+                functions: None,
             }),
         );
         assert_eq!(md.as_ref().unwrap()["model"], json!("m"));
@@ -852,6 +922,7 @@ mod tests {
             Some(CallerModel {
                 model: "m",
                 provider: Some("anthropic"),
+                functions: None,
             }),
         );
         assert_eq!(pinned.as_ref().unwrap()["provider"], json!("openai"));
@@ -863,6 +934,7 @@ mod tests {
             Some(CallerModel {
                 model: "m",
                 provider: Some("anthropic"),
+                functions: None,
             }),
         );
         assert!(explicit.as_ref().unwrap().get("provider").is_none());
@@ -879,6 +951,7 @@ mod tests {
                 Some(CallerModel {
                     model: "m",
                     provider: None,
+                    functions: None,
                 }),
             );
             assert_eq!(md.as_ref().unwrap()["model"], json!(bad), "{bad}");
@@ -906,6 +979,7 @@ mod tests {
             Some(CallerModel {
                 model: "claude-opus-4-8",
                 provider: Some("anthropic"),
+                functions: None,
             }),
         );
         let key_stamped_input = registration_dedup_key(&stamped, react_once(&stamped));
@@ -1036,6 +1110,81 @@ mod tests {
         let mut state_req = mk(json!({ "parent_session_id": "s_p" }), join2);
         state_req.trigger_type = "state".into();
         assert!(parent_filter_join_advisory(&state_req).is_none());
+    }
+
+    /// The rctest-k7m3 miswire: a key-less state binding beside a keyed one
+    /// fires for every key in the scope and burns the fire-rate budget twice.
+    /// The registrant-policy stamp: written from the trusted caller, never
+    /// from the agent's own metadata (a smuggled value is dropped even when
+    /// there is nothing to stamp).
+    #[test]
+    fn stamp_registrant_functions_writes_trusted_policy_and_strips_smuggled() {
+        let policy = crate::types::turn::FunctionPolicy {
+            allow: vec!["database::query".into()],
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let caller = CallerModel {
+            model: "m",
+            provider: None,
+            functions: Some(&policy),
+        };
+
+        // Genuine stamp from the caller.
+        let mut md = Some(json!({ "model": "m", "task": "t" }));
+        stamp_registrant_functions(&mut md, Some(caller));
+        assert_eq!(
+            md.as_ref().unwrap()[REGISTRANT_FUNCTIONS_KEY]["allow"],
+            json!(["database::query"])
+        );
+
+        // A smuggled stamp is replaced by the trusted one...
+        let mut md = Some(json!({
+            "model": "m", "task": "t",
+            REGISTRANT_FUNCTIONS_KEY: { "allow": ["*"] }
+        }));
+        stamp_registrant_functions(&mut md, Some(caller));
+        assert_eq!(
+            md.as_ref().unwrap()[REGISTRANT_FUNCTIONS_KEY]["allow"],
+            json!(["database::query"])
+        );
+
+        // ...and dropped outright when there is no caller policy.
+        let mut md = Some(json!({
+            "model": "m", "task": "t",
+            REGISTRANT_FUNCTIONS_KEY: { "allow": ["*"] }
+        }));
+        stamp_registrant_functions(&mut md, None);
+        assert!(md.as_ref().unwrap().get(REGISTRANT_FUNCTIONS_KEY).is_none());
+    }
+
+    #[test]
+    fn state_catchall_advisory_flags_keyless_state_bindings() {
+        let mk = |ty: &str, config: serde_json::Value| -> SubscribeRequest {
+            serde_json::from_value(json!({
+                "trigger_type": ty,
+                "config": config,
+                "function_id": "harness::react",
+                "metadata": { "model": "m", "task": "t" },
+            }))
+            .unwrap()
+        };
+        // Scope without key: warned, naming the scope.
+        let note = state_catchall_advisory(&mk("state", json!({ "scope": "run-1" })));
+        assert!(note.as_deref().unwrap_or("").contains("run-1"));
+        assert!(note.as_deref().unwrap_or("").contains("no `key` filter"));
+        // No scope AND no key: the global catch-all, warned harder.
+        let note = state_catchall_advisory(&mk("state", json!({})));
+        assert!(note.as_deref().unwrap_or("").contains("EVERY scope"));
+        // A key filter silences it, with or without scope.
+        assert!(state_catchall_advisory(&mk(
+            "state",
+            json!({ "scope": "run-1", "key": "change" })
+        ))
+        .is_none());
+        assert!(state_catchall_advisory(&mk("state", json!({ "key": "change" }))).is_none());
+        // Non-state trigger types are not advised on.
+        assert!(state_catchall_advisory(&mk("cron", json!({}))).is_none());
     }
 
     #[test]

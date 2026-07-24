@@ -31,7 +31,7 @@ impl ScenarioRunner<'_> {
             .map_err(|error| RunError::setup(phase, "bind scenario observers", error))?;
 
         stack
-            .spawn_harness(self.bins)
+            .spawn_harness(self.bins, &self.fixture.harness_env)
             .map_err(|error| RunError::setup(phase, "spawn harness under test", error))?;
 
         probe

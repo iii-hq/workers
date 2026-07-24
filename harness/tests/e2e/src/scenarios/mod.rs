@@ -1,11 +1,14 @@
 //! The checked-in integration fixtures.
 
+mod coalesced_fire;
 mod console_streamed_text;
 mod dsl;
 mod exactly_once_function;
 mod join_spec_mismatch;
 mod multi_turn_traces;
+mod reaction_policy_inheritance;
 mod reseed_parked_message;
+mod state_worker_sidecar;
 mod streamed_text;
 
 use crate::evidence_data::RunEvidence;
@@ -23,10 +26,13 @@ pub enum ScenarioDriver {
 /// Every fixture, in stable slug order.
 pub fn all() -> Vec<ScenarioFixture> {
     vec![
+        coalesced_fire::scenario(),
         console_streamed_text::scenario(),
         exactly_once_function::scenario(),
         join_spec_mismatch::scenario(),
         multi_turn_traces::scenario(),
+        reaction_policy_inheritance::scenario(),
+        state_worker_sidecar::scenario(),
         reseed_parked_message::scenario(),
         streamed_text::scenario(),
     ]
@@ -39,7 +45,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 6);
+        assert_eq!(fixtures.len(), 9);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

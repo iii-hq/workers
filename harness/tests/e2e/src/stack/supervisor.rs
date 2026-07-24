@@ -127,9 +127,14 @@ impl Stack {
     }
 
     /// Spawn the harness after Arm so its first registry snapshot includes
-    /// the run-scoped target.
-    pub fn spawn_harness(&mut self, bins: &StackBins) -> anyhow::Result<()> {
-        self.spawn_worker("harness", &bins.harness)
+    /// the run-scoped target. `extra_env` carries fixture-declared knobs
+    /// (e.g. a shrunken fire-rate window) into the process under test.
+    pub fn spawn_harness(
+        &mut self,
+        bins: &StackBins,
+        extra_env: &[(String, String)],
+    ) -> anyhow::Result<()> {
+        self.spawn_worker_with_env("harness", &bins.harness, extra_env)
     }
 
     /// Spawn the production Console on a run-scoped loopback port.
@@ -147,13 +152,22 @@ impl Stack {
     }
 
     fn spawn_worker(&mut self, worker: &str, bin: &Path) -> anyhow::Result<()> {
+        self.spawn_worker_with_env(worker, bin, &[])
+    }
+
+    fn spawn_worker_with_env(
+        &mut self,
+        worker: &str,
+        bin: &Path,
+        extra_env: &[(String, String)],
+    ) -> anyhow::Result<()> {
         let paths = self.paths.clone();
         let mut args = vec!["--url".to_string(), self.ws_url.clone()];
         if let Some(seed_path) = write_seed(worker, &paths)? {
             args.push("--config".to_string());
             args.push(seed_path.to_string_lossy().into_owned());
         }
-        self.spawn_child(worker, bin, &args, &paths.root)
+        self.spawn_child_with_env(worker, bin, &args, &paths.root, extra_env)
     }
 
     #[doc(hidden)]
@@ -184,25 +198,28 @@ impl Stack {
         args: &[String],
         cwd: &Path,
     ) -> anyhow::Result<()> {
-        self.spawn_child_logged(name, name, bin, args, cwd)
+        self.spawn_child_with_env(name, bin, args, cwd, &[])
     }
 
-    fn spawn_child_logged(
+    fn spawn_child_with_env(
         &mut self,
         name: &str,
-        log_name: &str,
         bin: &Path,
         args: &[String],
         cwd: &Path,
+        extra_env: &[(String, String)],
     ) -> anyhow::Result<()> {
-        let stdout_log = self.paths.log_path(log_name, "out")?;
-        let stderr_log = self.paths.log_path(log_name, "err")?;
+        let stdout_log = self.paths.log_path(name, "out")?;
+        let stderr_log = self.paths.log_path(name, "err")?;
         let mut spec =
             ProcessSpec::new(name, bin, cwd, stdout_log, stderr_log).args(args.iter().cloned());
         for key in ENV_ALLOWLIST {
             if let Ok(value) = std::env::var(key) {
                 spec = spec.env(key, value);
             }
+        }
+        for (key, value) in extra_env {
+            spec = spec.env(key, value);
         }
         self.processes.spawn(spec).map(|_| ())
     }

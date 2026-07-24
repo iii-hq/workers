@@ -86,6 +86,7 @@ impl ScenarioRunner<'_> {
             generations_consumed: services.router().generations_consumed(),
             generations_total: services.router().total_generations(),
             traces: active.traces.clone(),
+            target_calls: services.probe().target_calls(),
         }
     }
 

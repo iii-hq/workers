@@ -21,6 +21,11 @@ pub struct RunEvidence {
     pub generations_total: u64,
     /// Complete trace trees for the run's session.
     pub traces: TraceEvidenceV1,
+    /// Every controlled-function invocation payload the probe served, in
+    /// arrival order — WHOLE-RUN evidence. Session traces miss dispatches
+    /// that never touch the tracked session (a call-mode reaction); the
+    /// serving process sees them all.
+    pub target_calls: Vec<Value>,
 }
 
 /// Compact form published in `playground-result.json`.
@@ -149,6 +154,18 @@ impl RunEvidence {
         anyhow::ensure!(
             actual == expected,
             "message counts (user, assistant, function_result) {actual:?} != {expected:?}"
+        );
+        Ok(())
+    }
+
+    /// Exact probe-side (whole-run) invocation count of the controlled
+    /// function — use instead of [`expect_function_calls`](Self::expect_function_calls)
+    /// when dispatches bypass the tracked session entirely.
+    pub fn expect_target_calls(&self, count: usize) -> anyhow::Result<()> {
+        let actual = self.target_calls.len();
+        anyhow::ensure!(
+            actual == count,
+            "controlled function served {actual} call(s), expected {count}"
         );
         Ok(())
     }
@@ -301,6 +318,7 @@ mod tests {
             generations_consumed: 1,
             generations_total: 1,
             traces: TraceEvidenceV1::new(Vec::new()),
+            target_calls: Vec::new(),
         }
     }
 

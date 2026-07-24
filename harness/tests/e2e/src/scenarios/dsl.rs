@@ -55,6 +55,10 @@ pub(super) struct Scenario {
     generations: Vec<Generation>,
     expected_turn_statuses: Vec<String>,
     verify: Option<VerifyFn>,
+    probe_actions: Vec<crate::fixtures::ProbeAction>,
+    harness_env: Vec<(String, String)>,
+    await_target_calls: Option<usize>,
+    traces_override: Option<usize>,
 }
 
 impl Scenario {
@@ -76,6 +80,10 @@ impl Scenario {
             generations: Vec::new(),
             expected_turn_statuses: vec!["completed".to_string()],
             verify: None,
+            probe_actions: Vec::new(),
+            harness_env: Vec::new(),
+            await_target_calls: None,
+            traces_override: None,
         }
     }
 
@@ -91,6 +99,47 @@ impl Scenario {
 
     pub(super) fn generation(mut self, generation: Generation) -> Self {
         self.generations.push(generation);
+        self
+    }
+
+    /// Fire `function_id(payload)` from the probe once `after_turns` terminal
+    /// completions are observed — trips a reaction while the tracked session
+    /// is idle, so its turn runs alone and ordinal-clean.
+    pub(super) fn probe_after(
+        mut self,
+        after_turns: usize,
+        function_id: &str,
+        payload: serde_json::Value,
+    ) -> Self {
+        self.probe_actions.push(crate::fixtures::ProbeAction {
+            after_turns,
+            function_id: function_id.to_string(),
+            payload,
+        });
+        self
+    }
+
+    /// Extra environment for the harness process under test (integration
+    /// knobs like `III_HARNESS_FIRE_WINDOW_MS`).
+    pub(super) fn harness_env(mut self, key: &str, value: &str) -> Self {
+        self.harness_env.push((key.to_string(), value.to_string()));
+        self
+    }
+
+    /// After every terminal turn arrived, additionally await `count`
+    /// controlled-function invocations (probe-side, whole-run) before
+    /// collecting evidence. Required to observe call-mode reaction dispatches
+    /// — they seed no turn and no session trace.
+    pub(super) fn await_target_calls(mut self, count: usize) -> Self {
+        assert!(count > 0, "await_target_calls must be positive");
+        self.await_target_calls = Some(count);
+        self
+    }
+
+    /// Override the floor's session-trace count when the driver formula does
+    /// not apply (probe actions tripping call-mode reactions leave no trace).
+    pub(super) fn expect_traces(mut self, count: usize) -> Self {
+        self.traces_override = Some(count);
         self
     }
 
@@ -152,6 +201,10 @@ impl Scenario {
             },
             system_prompt_template: system_prompt(&allowed_functions),
             verify: self.verify.expect("scenario verification is required"),
+            probe_actions: self.probe_actions,
+            harness_env: self.harness_env,
+            await_target_calls: self.await_target_calls,
+            traces_override: self.traces_override,
         }
     }
 }

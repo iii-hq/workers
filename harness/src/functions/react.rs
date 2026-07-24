@@ -108,31 +108,131 @@ const JOIN_SCOPE: &str = "harness::react_join";
 pub const MAX_FIRES_PER_WINDOW: usize = 10;
 pub const FIRE_WINDOW_MS: i64 = 60_000;
 
+/// Effective gate limits. Overridable via `III_HARNESS_MAX_FIRES_PER_WINDOW`
+/// / `III_HARNESS_FIRE_WINDOW_MS` — production never sets them; the
+/// integration suite shrinks the window so a coalescing scenario observes the
+/// trailing fire in seconds instead of parking for a minute. Read once: the
+/// gate's sliding-window math must never see two different window sizes.
+fn max_fires_per_window() -> usize {
+    static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("III_HARNESS_MAX_FIRES_PER_WINDOW")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|v| *v >= 1)
+            .unwrap_or(MAX_FIRES_PER_WINDOW)
+    })
+}
+
+fn fire_window_ms() -> i64 {
+    static LIMIT: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("III_HARNESS_FIRE_WINDOW_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|v| *v >= 1)
+            .unwrap_or(FIRE_WINDOW_MS)
+    })
+}
+
+/// The latest fire dropped by a capped binding, held for the trailing
+/// coalesced fire. Only the newest event is kept: react patterns are
+/// recompute-style (aggregate from source of truth), so the last event
+/// subsumes the dropped ones; `dropped` carries how many were collapsed.
+pub struct PendingFire {
+    pub event: Value,
+    pub metadata: Value,
+    pub dropped: usize,
+}
+
+/// Outcome of deferring a capped fire: how many fires the pending slot has
+/// collapsed so far, and — on the FIRST deferral of a window — the delay
+/// after which the caller must run the trailing fire.
+pub struct Deferred {
+    pub dropped: usize,
+    pub schedule_delay_ms: Option<i64>,
+}
+
+#[derive(Default)]
+struct GateSlot {
+    fires: std::collections::VecDeque<i64>,
+    pending: Option<PendingFire>,
+    /// A trailing task is already scheduled for this key — deferrals only
+    /// update `pending` until it drains.
+    trailing_scheduled: bool,
+}
+
 /// Sliding-window fire counter per subscription (or per spec-hash for
 /// bindings that carry no `__subscription_id`, e.g. `state`-provider ones).
+///
+/// Capped fires COALESCE instead of dropping: the newest event parks in the
+/// slot and one trailing fire delivers it when the window frees. Bounded: at
+/// most one pending event and one trailing task per key, so a true runaway
+/// still costs at most `MAX_FIRES_PER_WINDOW + 1` reactions per window.
 #[derive(Default)]
 pub struct FireGate {
-    inner: std::sync::Mutex<std::collections::HashMap<String, std::collections::VecDeque<i64>>>,
+    inner: std::sync::Mutex<std::collections::HashMap<String, GateSlot>>,
 }
 
 impl FireGate {
     /// Record a fire attempt for `key` at `now_ms`; `false` when the key has
-    /// exhausted its window budget — the caller must refuse to react.
+    /// exhausted its window budget — the caller must defer instead of react.
     pub fn admit(&self, key: &str, now_ms: i64) -> bool {
+        let window = fire_window_ms();
         let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        // Opportunistic GC so dead keys can't grow the map unboundedly.
+        // Opportunistic GC so dead keys can't grow the map unboundedly. Keys
+        // with a parked pending fire stay: a trailing task will drain them.
         if map.len() > 1024 {
-            map.retain(|_, q| q.back().is_some_and(|t| now_ms - t < FIRE_WINDOW_MS));
+            map.retain(|_, s| {
+                s.pending.is_some() || s.fires.back().is_some_and(|t| now_ms - t < window)
+            });
         }
-        let q = map.entry(key.to_string()).or_default();
-        while q.front().is_some_and(|t| now_ms - t >= FIRE_WINDOW_MS) {
-            q.pop_front();
+        let s = map.entry(key.to_string()).or_default();
+        while s.fires.front().is_some_and(|t| now_ms - t >= window) {
+            s.fires.pop_front();
         }
-        if q.len() >= MAX_FIRES_PER_WINDOW {
+        if s.fires.len() >= max_fires_per_window() {
             return false;
         }
-        q.push_back(now_ms);
+        s.fires.push_back(now_ms);
         true
+    }
+
+    /// Park a capped fire as the key's pending trailing event (newest wins,
+    /// prior drops accumulate). Returns the trailing delay exactly once per
+    /// drain cycle — the caller that receives `Some` owns scheduling.
+    pub fn defer(&self, key: &str, event: Value, metadata: Value, now_ms: i64) -> Deferred {
+        let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let s = map.entry(key.to_string()).or_default();
+        let dropped = s.pending.as_ref().map_or(0, |p| p.dropped) + 1;
+        s.pending = Some(PendingFire {
+            event,
+            metadata,
+            dropped,
+        });
+        let schedule_delay_ms = if s.trailing_scheduled {
+            None
+        } else {
+            s.trailing_scheduled = true;
+            // Fire when the oldest window entry expires (budget frees). The
+            // floor guards clock skew; the ceiling guards a corrupt queue.
+            let window = fire_window_ms();
+            let delay = s.fires.front().map_or(window, |t| t + window - now_ms);
+            Some(delay.clamp(1_000.min(window), window))
+        };
+        Deferred {
+            dropped,
+            schedule_delay_ms,
+        }
+    }
+
+    /// Drain the key's pending fire for the trailing task. Clears the
+    /// scheduled flag: a later deferral starts a new drain cycle.
+    pub fn take_pending(&self, key: &str) -> Option<PendingFire> {
+        let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let s = map.get_mut(key)?;
+        s.trailing_scheduled = false;
+        s.pending.take()
     }
 }
 
@@ -193,7 +293,11 @@ pub struct ReactSpec {
     pub model: Option<String>,
     /// The sub-agent's opening task; the event (simple) or all predecessor
     /// results (join) are appended fenced so it sees its inputs. Mutually
-    /// exclusive with `call`.
+    /// exclusive with `call`. Under burst load an event may carry
+    /// `__coalesced_fires`/`__coalesced_note`: it stands in for N fires
+    /// collapsed by the rate cap (only the newest survives) — a task that
+    /// processes single events per key must recompute from the source of
+    /// truth on such a fire.
     #[serde(default)]
     pub task: Option<String>,
     /// Function-call reaction (no sub-agent, no model). Mutually exclusive
@@ -245,6 +349,13 @@ pub struct ReactSpec {
     /// carries no session id (state/cron/stream).
     #[serde(default, rename = "__owner_session_id")]
     pub owner_session_id: Option<String>,
+    /// Stamped by the interceptor at registration (never caller-supplied): the
+    /// registering turn's dispatch policy. A reaction with no
+    /// `options.functions` inherits it; explicit options are subset against
+    /// it (narrow, never escalate) — the in-turn child rule. Absent on raw
+    /// engine-side registrations, which keep the read-only-baseline fallback.
+    #[serde(default, rename = "__registrant_functions")]
+    pub registrant_functions: Option<crate::types::turn::FunctionPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -315,10 +426,14 @@ pub fn join_canon(metadata: Option<&Value>) -> Option<(String, Value)> {
     let mut canon = m.clone();
     if let Some(obj) = canon.as_object_mut() {
         // Stamps differ per registration by design; strip them defensively
-        // even though the interceptor fingerprints pre-stamp metadata.
+        // even though the interceptor fingerprints pre-stamp metadata. The
+        // registrant-functions stamp is session-derived like the owner stamp:
+        // keeping it would make identical specs registered from sessions with
+        // different dispatch policies falsely conflict.
         obj.remove("__subscription_id");
         obj.remove("__once");
         obj.remove(crate::subscriptions::OWNER_SESSION_KEY);
+        obj.remove(crate::functions::subscribe::REGISTRANT_FUNCTIONS_KEY);
         if let Some(j) = obj.get_mut("join").and_then(Value::as_object_mut) {
             j.remove("key");
         }
@@ -407,13 +522,53 @@ pub fn validate_spec(metadata: Option<&Value>) -> Result<(), String> {
     Ok(())
 }
 
+/// Mark a trailing coalesced event as standing in for a collapsed burst.
+/// Only the NEWEST event survives coalescing, so a reaction that processes
+/// per-key/per-entity state from single events would silently skip the
+/// collapsed ones — rctest-k7m2: a per-writer upsert reactor missed one
+/// writer entirely because its events were among the collapsed. The note
+/// spells out the recovery at the exact moment the reaction reads the event;
+/// the count is machine-readable. Non-object events can't carry the stamp
+/// and pass through unchanged.
+fn stamp_coalesced(mut event: Value, dropped: usize) -> Value {
+    if let Some(obj) = event.as_object_mut() {
+        obj.insert("__coalesced_fires".to_string(), json!(dropped));
+        obj.insert(
+            "__coalesced_note".to_string(),
+            json!(format!(
+                "This event stands in for {dropped} fires collapsed by the rate cap; the \
+                 earlier events were NOT delivered. Do not process it as a single change — \
+                 recompute from the source of truth so the collapsed events' effects are \
+                 covered."
+            )),
+        );
+    }
+    event
+}
+
+/// Type-erased re-entry for the trailing coalesced fire: `handle` recursing
+/// through `tokio::spawn` can't prove its own future `Send` (the bound is
+/// self-referential); the `dyn` boxing breaks the inference cycle.
+fn handle_boxed<'a>(
+    deps: &'a Deps,
+    event: Value,
+    metadata: Option<Value>,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<ReactResult, HarnessError>> + Send + 'a>,
+> {
+    Box::pin(handle(deps, event, metadata))
+}
+
 pub async fn handle(
     deps: &Deps,
     event: Value,
     metadata: Option<Value>,
 ) -> Result<ReactResult, HarnessError> {
     // A bad/absent spec must never error out: an erroring trigger target just
-    // spams the engine's dispatch log. Log and no-op instead.
+    // spams the engine's dispatch log. Log and no-op instead. The raw metadata
+    // is kept beside the parsed spec: a capped fire parks it for the trailing
+    // coalesced re-entry.
+    let raw_metadata = metadata.clone();
     let spec: ReactSpec = match metadata {
         Some(m) => match serde_json::from_value(m) {
             Ok(s) => s,
@@ -453,14 +608,59 @@ pub async fn handle(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     if !deps.react_gate.admit(&gate_key, now_ms) {
-        tracing::warn!(
-            subscription = %gate_key,
-            "harness::react: fire-rate breaker tripped ({MAX_FIRES_PER_WINDOW} fires/{FIRE_WINDOW_MS}ms); not reacting"
+        // Coalesce instead of dropping: react patterns are recompute-style,
+        // so the newest event subsumes the capped ones. Park it and let one
+        // trailing fire deliver it when the window frees — without this, a
+        // burst's TAIL is exactly what gets dropped and aggregates freeze
+        // one step behind the source of truth (rctest-k7m3 postmortem).
+        let deferred = deps.react_gate.defer(
+            &gate_key,
+            event.clone(),
+            raw_metadata.unwrap_or(Value::Null),
+            now_ms,
         );
+        let (max_fires, window_ms) = (max_fires_per_window(), fire_window_ms());
         let note = format!(
-            "fire-rate cap ({MAX_FIRES_PER_WINDOW} per {FIRE_WINDOW_MS}ms) reached for this subscription; not spawning"
+            "fire-rate cap ({max_fires} per {window_ms}ms) reached; coalescing — \
+             the latest event fires once the window frees ({} collapsed so far)",
+            deferred.dropped
         );
-        record_reaction_outcome(deps, &spec, &event, "failed", &note, None).await;
+        // A runaway burst can park hundreds of fires per window; per-fire
+        // records/warns would spam the session and the log with entries the
+        // trailing fire's own outcome already subsumes. Record the CYCLE
+        // (first deferral schedules the trailing task); mid-cycle overwrites
+        // only debug-log.
+        if let Some(delay_ms) = deferred.schedule_delay_ms {
+            tracing::warn!(
+                subscription = %gate_key,
+                dropped = deferred.dropped,
+                "harness::react: fire-rate breaker tripped ({max_fires} fires/{window_ms}ms); coalescing"
+            );
+            {
+                let deps = deps.clone();
+                let key = gate_key.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
+                    let Some(pending) = deps.react_gate.take_pending(&key) else {
+                        return;
+                    };
+                    let event = stamp_coalesced(pending.event, pending.dropped);
+                    // Re-enters the gate: if the window is still hot the fire
+                    // parks again and a fresh trailing task takes over.
+                    if let Err(e) = handle_boxed(&deps, event, Some(pending.metadata)).await {
+                        tracing::warn!(subscription = %key, error = %e,
+                            "harness::react: trailing coalesced fire failed");
+                    }
+                });
+            }
+            record_reaction_outcome(deps, &spec, &event, "waiting", &note, None).await;
+        } else {
+            tracing::debug!(
+                subscription = %gate_key,
+                dropped = deferred.dropped,
+                "harness::react: capped fire coalesced into the pending trailing event"
+            );
+        }
         return Ok(ReactResult::note(note));
     }
 
@@ -1506,6 +1706,29 @@ fn build_spawn_payload(task: String, spec: &ReactSpec, parent_session_id: Option
     if let Some(o) = &spec.options {
         payload["options"] = o.clone();
     }
+    // Interceptor-registered reactions inherit the REGISTRANT's dispatch
+    // policy, subset when the spec narrows it (the in-turn child rule).
+    // Without this the spawned turn is parentless and lands on the read-only
+    // baseline — a wrap-up reaction delivered into the registrant's own chat
+    // suddenly can't call what every earlier turn there could (rctest-k7m3:
+    // database::query / state::set / engine::unregister_trigger all denied).
+    // Raw engine-side registrations carry no stamp and keep the baseline.
+    if let Some(registrant) = &spec.registrant_functions {
+        let requested: Option<crate::types::turn::FunctionPolicy> = spec
+            .options
+            .as_ref()
+            .and_then(|o| o.get("functions"))
+            .and_then(|f| serde_json::from_value(f.clone()).ok());
+        if let Some(effective) = crate::policy::subset_policy(Some(registrant), requested.as_ref())
+        {
+            if let Ok(v) = serde_json::to_value(&effective) {
+                if !payload["options"].is_object() {
+                    payload["options"] = json!({});
+                }
+                payload["options"]["functions"] = v;
+            }
+        }
+    }
     if let Some(pp) = parent_session_id {
         payload["parent_session_id"] = json!(pp);
     }
@@ -1560,16 +1783,26 @@ mod tests {
 
     #[test]
     fn join_canon_strips_per_predecessor_fields_only() {
-        let md = |key: &str, sub: &str| {
+        let md = |key: &str, sub: &str, functions: serde_json::Value| {
             serde_json::json!({
                 "model": "m", "task": "the real task",
                 "join": {"id": "j1", "expect": ["a", "b"], "key": key},
                 "__subscription_id": sub, "__once": true,
                 "__owner_session_id": "s1",
+                "__registrant_functions": functions,
             })
         };
-        let (id_a, canon_a) = join_canon(Some(&md("a", "sub_1"))).unwrap();
-        let (id_b, canon_b) = join_canon(Some(&md("b", "sub_2"))).unwrap();
+        // Different keys, stamps, AND registrant policies (cross-session
+        // predecessors legitimately carry different inherited allow-lists) —
+        // the fingerprint must ignore all of them.
+        let (id_a, canon_a) = join_canon(Some(&md(
+            "a",
+            "sub_1",
+            serde_json::json!({"allow": ["state::get"]}),
+        )))
+        .unwrap();
+        let (id_b, canon_b) =
+            join_canon(Some(&md("b", "sub_2", serde_json::json!({"allow": ["*"]})))).unwrap();
         assert_eq!(id_a, "j1");
         assert_eq!(id_b, "j1");
         // Same reaction, different key/stamps → identical fingerprint.
@@ -1579,6 +1812,7 @@ mod tests {
         assert_eq!(canon_a["join"]["expect"], serde_json::json!(["a", "b"]));
         assert!(canon_a["join"].get("key").is_none());
         assert!(canon_a.get("__subscription_id").is_none());
+        assert!(canon_a.get("__registrant_functions").is_none());
     }
 
     /// The rctest-x7k2 failure shape: full task on one predecessor,
@@ -1614,6 +1848,98 @@ mod tests {
         assert!(gate.admit("sub-1", t0 + FIRE_WINDOW_MS + 1));
     }
 
+    /// The coalescing contract: capped fires park (newest event wins, drops
+    /// accumulate), exactly one caller per drain cycle owns scheduling, and
+    /// draining resets the cycle. Without this, a burst's TAIL is exactly
+    /// what gets dropped and recompute-style reactions freeze one step
+    /// behind the source of truth (rctest-k7m3 postmortem).
+    #[test]
+    fn fire_gate_coalesces_capped_fires_newest_wins() {
+        let gate = FireGate::default();
+        let t0 = 1_000_000;
+        for i in 0..MAX_FIRES_PER_WINDOW {
+            assert!(gate.admit("sub-1", t0 + i as i64));
+        }
+        assert!(!gate.admit("sub-1", t0 + 100));
+
+        // First deferral owns scheduling; the delay lands when the oldest
+        // window entry expires.
+        let d1 = gate.defer(
+            "sub-1",
+            serde_json::json!({"seq": 11}),
+            serde_json::json!({"task": "t"}),
+            t0 + 100,
+        );
+        assert_eq!(d1.dropped, 1);
+        let delay = d1.schedule_delay_ms.expect("first deferral schedules");
+        assert_eq!(delay, FIRE_WINDOW_MS - 100);
+
+        // Later deferrals only update the pending slot.
+        let d2 = gate.defer(
+            "sub-1",
+            serde_json::json!({"seq": 12}),
+            serde_json::json!({"task": "t"}),
+            t0 + 200,
+        );
+        assert_eq!(d2.dropped, 2);
+        assert!(
+            d2.schedule_delay_ms.is_none(),
+            "one trailing task per cycle"
+        );
+
+        // The trailing task drains the NEWEST event with the full drop count.
+        let pending = gate.take_pending("sub-1").expect("pending fire parked");
+        assert_eq!(pending.event["seq"], 12);
+        assert_eq!(pending.dropped, 2);
+
+        // Drained: nothing pending, and a new deferral starts a new cycle.
+        assert!(gate.take_pending("sub-1").is_none());
+        let d3 = gate.defer(
+            "sub-1",
+            serde_json::json!({"seq": 13}),
+            serde_json::Value::Null,
+            t0 + 300,
+        );
+        assert_eq!(d3.dropped, 1, "drop count resets after a drain");
+        assert!(d3.schedule_delay_ms.is_some(), "new cycle reschedules");
+    }
+
+    /// The rctest-k7m2 lesson: a per-key reactor missed a writer whose
+    /// events were all collapsed. The trailing event must say — in text the
+    /// reacting model reads — that it stands in for the collapsed fires.
+    #[test]
+    fn stamp_coalesced_marks_the_event_with_count_and_recovery_note() {
+        let stamped = stamp_coalesced(serde_json::json!({"seq": 15, "writer": "w3"}), 5);
+        assert_eq!(stamped["__coalesced_fires"], 5);
+        let note = stamped["__coalesced_note"].as_str().unwrap();
+        assert!(note.contains("stands in for 5 fires"));
+        assert!(note.contains("recompute from the source of truth"));
+        // Original payload survives beside the stamps.
+        assert_eq!(stamped["writer"], "w3");
+
+        // Non-object events cannot carry the stamp and pass through unchanged.
+        let passthrough = stamp_coalesced(serde_json::json!("bare"), 3);
+        assert_eq!(passthrough, serde_json::json!("bare"));
+    }
+
+    #[test]
+    fn fire_gate_gc_keeps_keys_with_parked_fires() {
+        let gate = FireGate::default();
+        let t0 = 1_000_000;
+        gate.admit("parked", t0);
+        gate.defer("parked", serde_json::json!({}), serde_json::Value::Null, t0);
+        // Blow past the GC threshold with dead keys, long after the window.
+        let later = t0 + 10 * FIRE_WINDOW_MS;
+        for i in 0..1030 {
+            gate.admit(&format!("dead-{i}"), later);
+        }
+        gate.admit("trigger-gc", later);
+        assert!(
+            gate.take_pending("parked").is_some(),
+            "GC must never drop a key holding a parked trailing fire"
+        );
+    }
+
     #[test]
     fn join_rearm_parses_and_defaults_off() {
         let j: JoinSpec = serde_json::from_value(json!({
@@ -1642,7 +1968,62 @@ mod tests {
             subscription_id: None,
             once: false,
             owner_session_id: None,
+            registrant_functions: None,
         }
+    }
+
+    /// The rctest-k7m3 wrap-up failure: a reaction registered with no
+    /// `options` used to spawn parentless onto the read-only baseline —
+    /// denied database::query / state::set / engine::unregister_trigger in
+    /// the very chat whose earlier turns could call all three. With the
+    /// registrant stamp, the reaction inherits that policy; explicit options
+    /// subset it and can never escalate past it.
+    #[test]
+    fn spawn_payload_inherits_registrant_policy_and_subsets_requests() {
+        let registrant = crate::types::turn::FunctionPolicy {
+            allow: vec!["database::query".into(), "state::set".into()],
+            deny: vec!["shell::run".into()],
+            expose: Default::default(),
+        };
+
+        // No options: full inheritance.
+        let mut s = spec();
+        s.registrant_functions = Some(registrant.clone());
+        let payload = build_spawn_payload("t".into(), &s, None);
+        assert_eq!(
+            payload["options"]["functions"]["allow"],
+            json!(["database::query", "state::set"])
+        );
+        assert_eq!(
+            payload["options"]["functions"]["deny"],
+            json!(["shell::run"])
+        );
+
+        // Requested subset survives; escalation beyond the registrant is
+        // filtered out.
+        let mut s = spec();
+        s.registrant_functions = Some(registrant);
+        s.options = Some(json!({
+            "functions": { "allow": ["state::set", "engine::unregister_trigger"] },
+            "max_turns": 3
+        }));
+        let payload = build_spawn_payload("t".into(), &s, None);
+        assert_eq!(
+            payload["options"]["functions"]["allow"],
+            json!(["state::set"]),
+            "an option the registrant never held must not survive"
+        );
+        assert_eq!(
+            payload["options"]["max_turns"],
+            json!(3),
+            "other options pass through"
+        );
+
+        // No stamp (raw engine-side registration): payload untouched, the
+        // read-only baseline fallback stays in force downstream.
+        let s = spec();
+        let payload = build_spawn_payload("t".into(), &s, None);
+        assert!(payload.get("options").is_none());
     }
 
     #[test]
