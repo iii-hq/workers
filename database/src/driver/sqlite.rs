@@ -21,7 +21,7 @@ pub async fn query(
 
     tokio::task::spawn_blocking(move || -> Result<QueryResult, DbError> {
         conn.with(|c| {
-            let mut stmt = c.prepare(&sql).map_err(map_err)?;
+            let mut stmt = c.prepare(&sql).map_err(|e| prepare_err(c, e))?;
             // `database::query` is the READ surface a narrowed agent policy
             // grants; enforcement must live here, not in the docs — live
             // testing showed agents running raw INSERTs through it.
@@ -109,6 +109,101 @@ pub(crate) fn map_err(e: rusqlite::Error) -> DbError {
         message: e.to_string(),
         failed_index: None,
     }
+}
+
+/// [`map_err`] for prepare-time failures, where the connection is still on
+/// hand: a `no such table: X` gets close-match suggestions from the live
+/// schema appended. rctest7 postmortem: a reactor agent silently dropped a
+/// prefix from its table names mid-task; the bare error gave it nothing to
+/// snap back to, so it invented replacement tables (`CREATE TABLE IF NOT
+/// EXISTS`) and the run's aggregates landed off to the side forever. Naming
+/// the near-miss turns that failure mode into a one-step correction.
+/// Fail-open: any suggestion-lookup problem returns the base error untouched.
+fn prepare_err(c: &rusqlite::Connection, e: rusqlite::Error) -> DbError {
+    let base = map_err(e);
+    let DbError::DriverError {
+        driver,
+        code,
+        mut message,
+        failed_index,
+    } = base
+    else {
+        return base;
+    };
+    if let Some(missing) = message.strip_prefix("no such table: ") {
+        let missing = missing.trim().to_string();
+        let suggestions = missing_table_suggestions(&missing, &table_names(c));
+        if !suggestions.is_empty() {
+            message.push_str(&format!(
+                " — did you mean {}? Use the exact existing name; do not create a \
+                 replacement table.",
+                suggestions.join(" or ")
+            ));
+        }
+    }
+    DbError::DriverError {
+        driver,
+        code,
+        message,
+        failed_index,
+    }
+}
+
+/// Table/view names of the live schema, for suggestion matching. Best-effort:
+/// errors yield an empty list (the caller falls back to the bare error).
+fn table_names(c: &rusqlite::Connection) -> Vec<String> {
+    let Ok(mut stmt) = c.prepare(
+        "SELECT name FROM sqlite_master WHERE type IN ('table','view') \
+         AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 500",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) else {
+        return Vec::new();
+    };
+    rows.flatten().collect()
+}
+
+/// Up to three existing names close enough to `missing` to be the intended
+/// table: containment (one name embedding the other — the dropped/added
+/// prefix shape) or a small edit distance relative to length. Ranked nearest
+/// first; ties break alphabetically for determinism.
+fn missing_table_suggestions(missing: &str, names: &[String]) -> Vec<String> {
+    let target = missing.to_ascii_lowercase();
+    let mut scored: Vec<(usize, &String)> = names
+        .iter()
+        .filter_map(|name| {
+            let candidate = name.to_ascii_lowercase();
+            if candidate == target {
+                return None;
+            }
+            let distance = levenshtein(&target, &candidate);
+            let tolerance = (target.len().max(candidate.len()) / 3).max(2);
+            let contained = candidate.contains(&target) || target.contains(&candidate);
+            (contained || distance <= tolerance).then_some((distance, name))
+        })
+        .collect();
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+    scored.into_iter().take(3).map(|(_, n)| n.clone()).collect()
+}
+
+/// Plain single-row-buffer Levenshtein — names are short and the candidate
+/// list is bounded, so O(m·n) per pair is fine.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut prev_diag = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            let val = (prev_diag + cost).min(row[j] + 1).min(row[j + 1] + 1);
+            prev_diag = row[j + 1];
+            row[j + 1] = val;
+        }
+    }
+    row[b.len()]
 }
 
 /// Stamp a transaction-step index onto an existing `DbError`. Used inside
@@ -203,7 +298,7 @@ pub async fn execute(
             // and DML-with-RETURNING split across lines, falling through to
             // `c.execute(...)` which errored with ExecuteReturnedResults.
             let (affected_rows, returned_rows, returned_columns) = {
-                let mut stmt = c.prepare(&sql).map_err(map_err)?;
+                let mut stmt = c.prepare(&sql).map_err(|e| prepare_err(c, e))?;
                 if statement_returns_rows(&stmt, &returning) {
                     let columns: Vec<ColumnMeta> = stmt
                         .columns()
@@ -367,7 +462,9 @@ fn run_tx_steps(
         // `is_select || is_returning` heuristic and fell through to
         // `c.execute(...)`, which errors with ExecuteReturnedResults and
         // aborts the entire transaction.
-        let mut prepared = c.prepare(&stmt.sql).map_err(|e| step_err(idx, e))?;
+        let mut prepared = c
+            .prepare(&stmt.sql)
+            .map_err(|e| with_failed_index(prepare_err(c, e), idx))?;
         if statement_returns_rows(&prepared, &[]) {
             let n = prepared.columns().len();
             let mut rows_out: Vec<Row> = Vec::new();
@@ -512,7 +609,7 @@ pub async fn tx_execute(
                     bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
 
                 let (affected_rows, returned_rows, returned_columns) = {
-                    let mut stmt = c.prepare(&sql).map_err(map_err)?;
+                    let mut stmt = c.prepare(&sql).map_err(|e| prepare_err(c, e))?;
                     if statement_returns_rows(&stmt, &returning) {
                         let columns: Vec<ColumnMeta> = stmt
                             .columns()
@@ -604,7 +701,7 @@ pub async fn run_prepared(
                 let bound: Vec<SqlValue> = params.iter().map(json_param_to_sql).collect();
                 let bound_refs: Vec<&dyn rusqlite::ToSql> =
                     bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-                let mut stmt = c.prepare(&sql).map_err(map_err)?;
+                let mut stmt = c.prepare(&sql).map_err(|e| prepare_err(c, e))?;
                 let columns: Vec<ColumnMeta> = stmt
                     .columns()
                     .into_iter()
@@ -651,6 +748,77 @@ mod tests {
 
     async fn pool() -> SqlitePool {
         SqlitePool::new("sqlite::memory:", &PoolConfig::default()).unwrap()
+    }
+
+    #[test]
+    fn missing_table_suggestions_rank_prefix_and_typo_neighbors() {
+        let names = vec![
+            "rctest_rctest7_k3m8_totals".to_string(),
+            "rctest_rctest7_k3m8_orders".to_string(),
+            "rctest_rctest7_k3m8_events".to_string(),
+            "unrelated".to_string(),
+        ];
+        // The rctest7 shape: the agent dropped the `rctest_` prefix.
+        let s = missing_table_suggestions("rctest7_k3m8_totals", &names);
+        assert_eq!(
+            s.first().map(String::as_str),
+            Some("rctest_rctest7_k3m8_totals")
+        );
+        assert!(!s.contains(&"unrelated".to_string()));
+        // A small typo is within edit-distance tolerance.
+        let s = missing_table_suggestions("rctest_rctest7_k3m8_totls", &names);
+        assert_eq!(
+            s.first().map(String::as_str),
+            Some("rctest_rctest7_k3m8_totals")
+        );
+        // Nothing similar: no suggestions, never noise.
+        assert!(missing_table_suggestions("users", &names).is_empty());
+        // At most three, nearest first, deterministic ties.
+        let s = missing_table_suggestions("rctest_rctest7_k3m8", &names);
+        assert!(s.len() <= 3);
+    }
+
+    #[test]
+    fn levenshtein_basics() {
+        assert_eq!(levenshtein("", "abc"), 3);
+        assert_eq!(levenshtein("abc", "abc"), 0);
+        assert_eq!(levenshtein("kitten", "sitting"), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_such_table_error_names_the_close_match() {
+        let p = pool().await;
+        let setup = p.acquire().await.unwrap();
+        tokio::task::spawn_blocking(move || {
+            setup.with(|c| {
+                c.execute_batch("CREATE TABLE rctest_run1_totals (writer TEXT PRIMARY KEY)")
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        let err = query(&p, "SELECT * FROM run1_totals", &[], 1000)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no such table: run1_totals"), "got: {msg}");
+        assert!(
+            msg.contains("did you mean rctest_run1_totals"),
+            "got: {msg}"
+        );
+        assert!(
+            msg.contains("do not create a replacement table"),
+            "got: {msg}"
+        );
+
+        // A miss with no near neighbor stays a bare error.
+        let err = query(&p, "SELECT * FROM completely_different", &[], 1000)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no such table"), "got: {msg}");
+        assert!(!msg.contains("did you mean"), "got: {msg}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
