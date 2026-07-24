@@ -110,9 +110,11 @@ The `skills_folder` is created on first download if it doesn't exist.
 ### Keeping skills current
 
 Without `auto_refresh`, a namespace is downloaded once (on worker add or the
-first boot reconcile) and then left alone: the completion marker makes every
-later boot reconcile skip it, so skills can drift behind the worker they
-describe as `iii worker update` moves the installed version forward.
+first boot reconcile) and never re-fetched at boot: the completion marker makes
+every later boot reconcile skip it. Worker update events still refresh that
+worker's skills immediately (below); `auto_refresh` covers the drift those
+events cannot see, such as updates applied while the directory was down or
+markers written before versions were recorded.
 
 Two mechanisms close that gap:
 
