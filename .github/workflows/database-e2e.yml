@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
@@ -38,10 +38,10 @@ jobs:
       # ci.yml rust job. Version comes from the repo-root package.json
       # `packageManager` field (the UI pnpm workspace root).
       - name: Setup pnpm (for build.rs UI build)
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           # 22, not 20: pnpm@11 requires the node:sqlite builtin (Node ≥22.5)
           # for its store, and ci.yml's pnpm jobs already standardize on 22.
@@ -70,7 +70,7 @@ jobs:
 
       - name: Upload report on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: database-e2e-report
           path: |

@@ -58,12 +58,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: inputs.skip_create_release != true && inputs.dry_run != true
 
       - name: Create GitHub Release
         if: inputs.skip_create_release != true && inputs.dry_run != true
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag_name }}
           name: ${{ inputs.bin_name }} ${{ inputs.tag_name }}
@@ -126,7 +126,7 @@ jobs:
     if: inputs.web_bundle
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve worker dir
         id: dirs
@@ -162,9 +162,9 @@ jobs:
       # `setup-node`'s `cache: 'pnpm'` finds the binary on PATH. The pnpm
       # version comes from the repo-root package.json `packageManager`
       # field (the UI pnpm workspace root).
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: 'pnpm'
@@ -203,7 +203,7 @@ jobs:
           done
 
       - name: Upload frontend bundles
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: frontend-bundles
           path: .release-frontend-bundle/${{ steps.dirs.outputs.worker }}/
@@ -228,7 +228,7 @@ jobs:
         include: ${{ fromJSON(needs.matrix.outputs.include) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
@@ -325,7 +325,7 @@ jobs:
 
       - name: Download frontend bundles
         if: inputs.web_bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: frontend-bundles
           path: ${{ steps.dirs.outputs.worker }}/

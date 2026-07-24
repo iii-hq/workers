@@ -88,7 +88,7 @@ jobs:
     outputs:
       rust: ${{ steps.bucket.outputs.rust }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -140,7 +140,7 @@ jobs:
       run:
         working-directory: ${{ matrix.worker }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
@@ -159,13 +159,13 @@ jobs:
 
       - name: Setup pnpm for bundled web
         if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
         with:
           version: 10
 
       - name: Setup Node for bundled web
         if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm

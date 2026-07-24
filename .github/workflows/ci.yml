@@ -16,8 +16,8 @@ jobs:
     name: .github/scripts tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       - run: pip install --quiet pytest pyyaml
@@ -41,7 +41,7 @@ jobs:
       vscode_changed: ${{ steps.bucket.outputs.vscode_changed }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -75,7 +75,7 @@ jobs:
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.all) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -113,7 +113,7 @@ jobs:
       run:
         working-directory: ${{ matrix.worker }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
@@ -136,13 +136,13 @@ jobs:
       # a `web/package.json` skip all three steps cleanly.
       - name: Setup pnpm (workers with bundled web/)
         if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
         # version comes from the repo-root package.json `packageManager`
         # field (the UI pnpm workspace root).
 
       - name: Setup Node (workers with bundled web/)
         if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: 'pnpm'
@@ -191,7 +191,7 @@ jobs:
       run:
         working-directory: crates/${{ matrix.crate }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
@@ -237,9 +237,9 @@ jobs:
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.rust) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -281,13 +281,13 @@ jobs:
       # short-circuits it — mirrors the `rust` job above.
       - name: Setup pnpm (workers with bundled web/)
         if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
         # version comes from the repo-root package.json `packageManager`
         # field (the UI pnpm workspace root).
 
       - name: Setup Node (workers with bundled web/)
         if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: 'pnpm'
@@ -471,10 +471,13 @@ jobs:
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.node) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
+          # setup-node v5 auto-caches when package.json declares packageManager.
+          # This step never cached; the repository is already over its cache budget.
+          package-manager-cache: false
           node-version: 22
 
       - name: Install dependencies
@@ -507,9 +510,9 @@ jobs:
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.python) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -543,10 +546,13 @@ jobs:
       run:
         working-directory: lsp-vscode
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
+          # setup-node v5 auto-caches when package.json declares packageManager.
+          # This step never cached; the repository is already over its cache budget.
+          package-manager-cache: false
           node-version: 20
 
       - name: Install dependencies
