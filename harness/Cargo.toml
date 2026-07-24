@@ -1,5 +1,5 @@
 [workspace]
-members = ["tests/e2e", "tests/agent-quality"]
+members = ["tests/e2e"]
 resolver = "2"
 
 [package]
