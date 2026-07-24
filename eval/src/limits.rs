@@ -12,7 +12,7 @@ pub const DEFAULT_MAX_TURNS: u32 = 1_000;
 pub const DEFAULT_MAX_OUTPUT_TOKENS_PER_CALL: u64 = 8_192;
 pub const AGENT_QUALITY_DEFAULT_MAX_TOTAL_TOKENS: u64 = 100_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EvalLimitsV1 {
     #[serde(default)]
@@ -38,22 +38,13 @@ pub struct ExecutionLimitsV1 {
     pub max_cost_usd: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EvaluationLimitsV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_function_call_errors: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_error_spans: Option<u64>,
-}
-
-impl Default for EvalLimitsV1 {
-    fn default() -> Self {
-        Self {
-            execution: ExecutionLimitsV1::default(),
-            evaluation: EvaluationLimitsV1::default(),
-        }
-    }
 }
 
 impl Default for ExecutionLimitsV1 {
@@ -65,15 +56,6 @@ impl Default for ExecutionLimitsV1 {
             max_output_tokens_per_call: default_max_output_tokens_per_call(),
             max_total_tokens: None,
             max_cost_usd: None,
-        }
-    }
-}
-
-impl Default for EvaluationLimitsV1 {
-    fn default() -> Self {
-        Self {
-            max_function_call_errors: None,
-            max_error_spans: None,
         }
     }
 }

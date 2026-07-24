@@ -44,7 +44,7 @@ impl ExecutionOrderV1 {
     pub fn roles(self, iteration: u32) -> [VariantRoleV1; 2] {
         let control_first = match self {
             Self::BalancedControlFirst => iteration % 2 == 1,
-            Self::BalancedTreatmentFirst => iteration % 2 == 0,
+            Self::BalancedTreatmentFirst => iteration.is_multiple_of(2),
         };
         if control_first {
             [VariantRoleV1::Control, VariantRoleV1::Treatment]

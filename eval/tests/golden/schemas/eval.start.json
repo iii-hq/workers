@@ -241,7 +241,7 @@
         "type": "object"
       },
       "Mode": {
-        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt. `ask` is also structural: the turn's dispatch policy is capped at the operator's read-only baseline, never widened.",
+        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt. `ask` is also structural: the turn's dispatch policy is capped at the configured default policy, never widened.",
         "enum": [
           "ask",
           "agent"
