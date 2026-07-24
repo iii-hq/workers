@@ -426,10 +426,14 @@ pub fn join_canon(metadata: Option<&Value>) -> Option<(String, Value)> {
     let mut canon = m.clone();
     if let Some(obj) = canon.as_object_mut() {
         // Stamps differ per registration by design; strip them defensively
-        // even though the interceptor fingerprints pre-stamp metadata.
+        // even though the interceptor fingerprints pre-stamp metadata. The
+        // registrant-functions stamp is session-derived like the owner stamp:
+        // keeping it would make identical specs registered from sessions with
+        // different dispatch policies falsely conflict.
         obj.remove("__subscription_id");
         obj.remove("__once");
         obj.remove(crate::subscriptions::OWNER_SESSION_KEY);
+        obj.remove(crate::functions::subscribe::REGISTRANT_FUNCTIONS_KEY);
         if let Some(j) = obj.get_mut("join").and_then(Value::as_object_mut) {
             j.remove("key");
         }
@@ -616,34 +620,47 @@ pub async fn handle(
             now_ms,
         );
         let (max_fires, window_ms) = (max_fires_per_window(), fire_window_ms());
-        tracing::warn!(
-            subscription = %gate_key,
-            dropped = deferred.dropped,
-            "harness::react: fire-rate breaker tripped ({max_fires} fires/{window_ms}ms); coalescing"
-        );
-        if let Some(delay_ms) = deferred.schedule_delay_ms {
-            let deps = deps.clone();
-            let key = gate_key.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
-                let Some(pending) = deps.react_gate.take_pending(&key) else {
-                    return;
-                };
-                let event = stamp_coalesced(pending.event, pending.dropped);
-                // Re-enters the gate: if the window is still hot the fire
-                // parks again and a fresh trailing task takes over.
-                if let Err(e) = handle_boxed(&deps, event, Some(pending.metadata)).await {
-                    tracing::warn!(subscription = %key, error = %e,
-                        "harness::react: trailing coalesced fire failed");
-                }
-            });
-        }
         let note = format!(
             "fire-rate cap ({max_fires} per {window_ms}ms) reached; coalescing — \
              the latest event fires once the window frees ({} collapsed so far)",
             deferred.dropped
         );
-        record_reaction_outcome(deps, &spec, &event, "waiting", &note, None).await;
+        // A runaway burst can park hundreds of fires per window; per-fire
+        // records/warns would spam the session and the log with entries the
+        // trailing fire's own outcome already subsumes. Record the CYCLE
+        // (first deferral schedules the trailing task); mid-cycle overwrites
+        // only debug-log.
+        if let Some(delay_ms) = deferred.schedule_delay_ms {
+            tracing::warn!(
+                subscription = %gate_key,
+                dropped = deferred.dropped,
+                "harness::react: fire-rate breaker tripped ({max_fires} fires/{window_ms}ms); coalescing"
+            );
+            {
+                let deps = deps.clone();
+                let key = gate_key.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
+                    let Some(pending) = deps.react_gate.take_pending(&key) else {
+                        return;
+                    };
+                    let event = stamp_coalesced(pending.event, pending.dropped);
+                    // Re-enters the gate: if the window is still hot the fire
+                    // parks again and a fresh trailing task takes over.
+                    if let Err(e) = handle_boxed(&deps, event, Some(pending.metadata)).await {
+                        tracing::warn!(subscription = %key, error = %e,
+                            "harness::react: trailing coalesced fire failed");
+                    }
+                });
+            }
+            record_reaction_outcome(deps, &spec, &event, "waiting", &note, None).await;
+        } else {
+            tracing::debug!(
+                subscription = %gate_key,
+                dropped = deferred.dropped,
+                "harness::react: capped fire coalesced into the pending trailing event"
+            );
+        }
         return Ok(ReactResult::note(note));
     }
 
@@ -1766,16 +1783,26 @@ mod tests {
 
     #[test]
     fn join_canon_strips_per_predecessor_fields_only() {
-        let md = |key: &str, sub: &str| {
+        let md = |key: &str, sub: &str, functions: serde_json::Value| {
             serde_json::json!({
                 "model": "m", "task": "the real task",
                 "join": {"id": "j1", "expect": ["a", "b"], "key": key},
                 "__subscription_id": sub, "__once": true,
                 "__owner_session_id": "s1",
+                "__registrant_functions": functions,
             })
         };
-        let (id_a, canon_a) = join_canon(Some(&md("a", "sub_1"))).unwrap();
-        let (id_b, canon_b) = join_canon(Some(&md("b", "sub_2"))).unwrap();
+        // Different keys, stamps, AND registrant policies (cross-session
+        // predecessors legitimately carry different inherited allow-lists) —
+        // the fingerprint must ignore all of them.
+        let (id_a, canon_a) = join_canon(Some(&md(
+            "a",
+            "sub_1",
+            serde_json::json!({"allow": ["state::get"]}),
+        )))
+        .unwrap();
+        let (id_b, canon_b) =
+            join_canon(Some(&md("b", "sub_2", serde_json::json!({"allow": ["*"]})))).unwrap();
         assert_eq!(id_a, "j1");
         assert_eq!(id_b, "j1");
         // Same reaction, different key/stamps → identical fingerprint.
@@ -1785,6 +1812,7 @@ mod tests {
         assert_eq!(canon_a["join"]["expect"], serde_json::json!(["a", "b"]));
         assert!(canon_a["join"].get("key").is_none());
         assert!(canon_a.get("__subscription_id").is_none());
+        assert!(canon_a.get("__registrant_functions").is_none());
     }
 
     /// The rctest-x7k2 failure shape: full task on one predecessor,

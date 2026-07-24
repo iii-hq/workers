@@ -94,6 +94,17 @@ impl ScenarioFixture {
                 "unknown terminal turn status {status:?}"
             );
         }
+        // Controlled-call waits depend on a controlled function existing:
+        // `Some(0)` would fail inside `wait_for_target_calls`, and a positive
+        // count with no `target` registered waits until the deadline burns.
+        // Both are authoring mistakes — fail them before the stack boots.
+        if let Some(calls) = self.await_target_calls {
+            anyhow::ensure!(calls > 0, "await_target_calls must be positive");
+            anyhow::ensure!(
+                self.scenario.target.is_some(),
+                "await_target_calls needs a controlled function (`.function(...)`) to count"
+            );
+        }
         anyhow::ensure!(
             self.expected_turn_statuses.last().map(String::as_str) == Some("completed"),
             "the last terminal turn must be completed"

@@ -173,10 +173,14 @@ pub(super) fn scenario() -> ScenarioFixture {
             );
             let trailing_seq = seq_of(trailing)
                 .ok_or_else(|| anyhow::anyhow!("trailing fire has no seq: {trailing}"))?;
+            // NEWEST wins, exactly: the probe issues the burst sequentially
+            // (each state::set awaited), so the last capped arrival is seq
+            // BURST — a first-parked implementation would surface an earlier
+            // capped seq here and must fail.
             anyhow::ensure!(
-                (1..=BURST as u64).contains(&trailing_seq) && !seen.contains(&trailing_seq),
-                "the trailing event must be one of the CAPPED fires (newest wins), got seq \
-                 {trailing_seq} vs delivered {seen:?}"
+                trailing_seq == BURST as u64,
+                "the trailing event must be the NEWEST capped fire (seq {BURST}), got seq \
+                 {trailing_seq}; delivered {seen:?}"
             );
             // 4 of 5 seqs observed: exactly one capped fire was collapsed
             // into its newer sibling — the coalescing contract.
