@@ -256,6 +256,7 @@ fn setup_auto_download(
                     "stages": ["done"]
                 }),
                 metadata: None,
+                namespace: iii_sub.namespace(),
             });
             match result {
                 Ok(_) => {
