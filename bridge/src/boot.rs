@@ -122,7 +122,7 @@ pub async fn start(iii: Arc<IIIClient>, config: BridgeConfig) -> anyhow::Result<
 /// `bridge.invoke` + `bridge.invoke_async` on the local engine — exact
 /// function ids and descriptions from the builtin (mod.rs:96-191).
 ///
-/// Both use `new_async_with_bad_request` with the typed [`functions::
+/// Both use `new_async` with the typed [`functions::
 /// InvokeInput`]: the SDK auto-extracts a real request schema instead of the
 /// permissive `AnyValue` a `Value` closure param would emit, while
 /// [`functions::invoke_bad_request`] keeps owning the `deserialization_error`
@@ -133,33 +133,27 @@ pub fn register_bridge_functions(iii: &Arc<IIIClient>, remote: RemoteCell) {
         let caller = caller.clone();
         iii.register_function(
             functions::INVOKE_FN,
-            RegisterFunction::new_async_with_bad_request(
-                move |req: functions::InvokeInput| {
-                    let caller = caller.clone();
-                    async move {
-                        functions::handle_invoke_typed(caller.as_ref(), req)
-                            .await
-                            .map_err(Error::from)
-                    }
-                },
-                functions::invoke_bad_request,
-            )
+            RegisterFunction::new_async(move |req: functions::InvokeInput| {
+                let caller = caller.clone();
+                async move {
+                    functions::handle_invoke_typed(caller.as_ref(), req)
+                        .await
+                        .map_err(Error::from)
+                }
+            })
             .description("Invoke a function on the remote III instance"),
         );
     }
     iii.register_function(
         functions::INVOKE_ASYNC_FN,
-        RegisterFunction::new_async_with_bad_request(
-            move |req: functions::InvokeInput| {
-                let caller = caller.clone();
-                async move {
-                    functions::handle_invoke_async_typed(caller.as_ref(), req)
-                        .await
-                        .map_err(Error::from)
-                }
-            },
-            functions::invoke_bad_request,
-        )
+        RegisterFunction::new_async(move |req: functions::InvokeInput| {
+            let caller = caller.clone();
+            async move {
+                functions::handle_invoke_async_typed(caller.as_ref(), req)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
         .description("Fire-and-forget invoke on the remote III instance"),
     );
 }
