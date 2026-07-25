@@ -171,6 +171,7 @@ pub fn register_config_trigger(
             "event_types": ["configuration:updated"],
         }),
         metadata: None,
+        namespace: iii.namespace(),
     })?;
     Ok(())
 }
@@ -248,6 +249,7 @@ pub fn bind_catalog_refresh(iii: &Arc<IIIClient>, catalog: Arc<CatalogCache>) {
         function_id: FUNCTIONS_AVAILABLE_FN_ID.to_string(),
         config: json!({}),
         metadata: None,
+        namespace: iii.namespace(),
     }) {
         Ok(_) => tracing::info!("bound catalog-refresh trigger (engine::functions-available)"),
         Err(e) => {
