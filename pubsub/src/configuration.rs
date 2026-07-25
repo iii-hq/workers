@@ -140,6 +140,7 @@ pub fn register_config_trigger(
             "event_types": ["configuration:updated"],
         }),
         metadata: None,
+        namespace: iii.namespace(),
     })?;
     Ok(())
 }
