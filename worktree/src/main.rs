@@ -148,6 +148,7 @@ async fn main() -> Result<()> {
             function_id: function_id.to_string(),
             config: serde_json::json!({ "api_path": api_path, "http_method": "POST" }),
             metadata: None,
+            namespace: iii.namespace(),
         }) {
             Ok(_) => tracing::info!(function_id, api_path, "http trigger registered"),
             Err(e) => {
