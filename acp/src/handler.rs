@@ -704,6 +704,9 @@ fn register_event_subscriber(
         function_id: fn_id,
         config: json!({ "stream_name": AGENT_EVENTS_STREAM }),
         metadata: None,
+        // Resolve the trigger's target in this worker's namespace so it matches
+        // where the function was registered (None => engine default).
+        namespace: iii.namespace(),
     }) {
         Ok(t) => Some(t),
         Err(e) => {
