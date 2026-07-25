@@ -32,7 +32,12 @@ const url = values.url
   : (process.env.III_URL ?? process.env.III_ENGINE_URL ?? seed.engine_url);
 const bootConfig: Config = { ...seed, engine_url: url };
 
-const iii = registerWorker(url, { workerName: 'pi' });
+// namespace: register under III_NAMESPACE when set (the SDK also reads it,
+// passed here for visibility). Absent, the engine's default namespace is used.
+const iii = registerWorker(url, {
+  workerName: 'pi',
+  namespace: process.env.III_NAMESPACE,
+});
 
 // Best-effort: a configuration-worker hiccup at boot must not stop the worker
 // from registering pi::*; it falls back to the seed via fetchRuntime.
