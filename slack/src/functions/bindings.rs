@@ -219,6 +219,7 @@ fn bind_best_effort(
         function_id: function_id.to_string(),
         config,
         metadata: None,
+        namespace: iii.namespace(),
     }) {
         Ok(_) => tracing::info!(trigger_type, function_id, "trigger bound"),
         Err(e) => {
