@@ -129,9 +129,15 @@ def _print_connected(state: str, url: str) -> None:
 def main() -> None:
     cfg = load_config()
     url = os.environ.get("III_URL") or cfg["engine_url"]
+    # namespace: register under III_NAMESPACE when set (the SDK also resolves the
+    # env; passed explicitly for visibility). Absent -> the engine's default.
     iii = register_worker(
         address=url,
-        options=InitOptions(worker_name="hermes", otel={"enabled": True, "service_name": "hermes"}),
+        options=InitOptions(
+            worker_name="hermes",
+            namespace=os.environ.get("III_NAMESPACE"),
+            otel={"enabled": True, "service_name": "hermes"},
+        ),
     )
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("hermes")
