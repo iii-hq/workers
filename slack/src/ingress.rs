@@ -112,5 +112,6 @@ fn register_route(iii: &IIIClient, function_id: &str, api_path: &str) -> Result<
         function_id: function_id.to_string(),
         config: json!({ "api_path": api_path, "http_method": "POST" }),
         metadata: None,
+        namespace: iii.namespace(),
     })
 }
