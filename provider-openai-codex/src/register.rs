@@ -4,7 +4,6 @@ use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
 use crate::discovery::{
     make_refresh_models, refresh_models, refresh_models_periodically, CatalogRefreshState,
 };
-use crate::errors::invalid_request_from_serde;
 use crate::stream_fn::make_stream;
 use crate::surface;
 use crate::{auth, router_client, state, PROVIDER_ID};
@@ -147,21 +146,20 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
 
     iii.register_function(
         surface::STREAM_ID,
-        RegisterFunction::new_async_with_bad_request(
-            make_stream(iii.clone(), http.clone(), cache.clone(), aborts.clone()),
-            invalid_request_from_serde,
-        )
+        RegisterFunction::new_async(make_stream(
+            iii.clone(),
+            http.clone(),
+            cache.clone(),
+            aborts.clone(),
+        ))
         .description(surface::STREAM_DESC)
         .metadata(json!({ "internal": true })),
     );
     iii.register_function(
         surface::ABORT_ID,
-        RegisterFunction::new_async_with_bad_request(
-            make_abort(aborts),
-            invalid_request_from_serde,
-        )
-        .description(surface::ABORT_DESC)
-        .metadata(json!({ "internal": true })),
+        RegisterFunction::new_async(make_abort(aborts))
+            .description(surface::ABORT_DESC)
+            .metadata(json!({ "internal": true })),
     );
     iii.register_function(
         surface::REFRESH_MODELS_ID,
@@ -202,6 +200,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         function_id: surface::ON_ROUTER_READY_ID.into(),
         config: json!({}),
         metadata: None,
+        namespace: iii.namespace(),
     });
 
     tokio::spawn(declare_and_refresh(
