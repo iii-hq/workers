@@ -113,6 +113,7 @@ pub fn bind_http_triggers(iii: &Arc<IIIClient>) {
             function_id: function_id.to_string(),
             config: json!({ "api_path": api_path, "http_method": http_method }),
             metadata: None,
+            namespace: iii.namespace(),
         }) {
             Ok(_) => tracing::info!(function_id, api_path, "http trigger registered"),
             Err(e) => tracing::warn!(error = %e, function_id, "failed to register http trigger"),
@@ -130,6 +131,7 @@ pub fn register_webhook_trigger(iii: &IIIClient) -> Result<Trigger, Error> {
         function_id: WEBHOOK_ID.to_string(),
         config: json!({ "api_path": crate::config::WEBHOOK_API_PATH, "http_method": "POST" }),
         metadata: None,
+        namespace: iii.namespace(),
     })
 }
 
@@ -144,6 +146,7 @@ fn bind_best_effort(
         function_id: function_id.to_string(),
         config,
         metadata: None,
+        namespace: iii.namespace(),
     }) {
         Ok(_) => tracing::info!(trigger_type, function_id, "trigger binding requested"),
         Err(e) => tracing::warn!(
