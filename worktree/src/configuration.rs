@@ -105,6 +105,7 @@ impl CronSlot {
             function_id: "worktree::prune".to_string(),
             config: json!({ "expression": schedule }),
             metadata: None,
+            namespace: iii.namespace(),
         }) {
             Ok(trigger) => {
                 tracing::info!(schedule, "prune cron binding registered");
@@ -180,6 +181,7 @@ pub fn register_config_trigger(
             "event_types": ["configuration:updated"],
         }),
         metadata: None,
+        namespace: iii.namespace(),
     })?;
     Ok(())
 }
