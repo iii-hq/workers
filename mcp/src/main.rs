@@ -87,6 +87,7 @@ async fn main() -> Result<()> {
             "http_method": "POST",
         }),
         metadata: None,
+        namespace: iii.namespace(),
     }) {
         Ok(_) => tracing::info!(
             function_id = functions::FUNCTION_ID,
