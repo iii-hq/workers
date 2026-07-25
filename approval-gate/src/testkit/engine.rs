@@ -459,6 +459,7 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
         function_id: "recorder::on_created".to_string(),
         config: json!({}),
         metadata: None,
+        namespace: iii.namespace(),
     })
     .expect("bind pending_created");
     iii.register_trigger(RegisterTriggerInput {
@@ -466,6 +467,7 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
         function_id: "recorder::on_resolved".to_string(),
         config: json!({}),
         metadata: None,
+        namespace: iii.namespace(),
     })
     .expect("bind pending_resolved");
 

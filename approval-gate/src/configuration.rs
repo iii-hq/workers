@@ -128,6 +128,7 @@ pub fn bind_hook(iii: &IIIClient) {
             "on_error": HOOK_ON_ERROR,
         }),
         metadata: None,
+        namespace: iii.namespace(),
     }) {
         Ok(_) => tracing::info!(
             trigger_type = "harness::hook::pre-trigger",
@@ -157,6 +158,7 @@ pub fn bind_filesystem_access_watch_hook(iii: &IIIClient) {
             "on_error": FILESYSTEM_ACCESS_WATCH_ON_ERROR,
         }),
         metadata: None,
+        namespace: iii.namespace(),
     }) {
         Ok(_) => tracing::info!(
             trigger_type = "harness::hook::post-trigger",
@@ -262,6 +264,7 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
             "event_types": ["configuration:updated"],
         }),
         metadata: None,
+        namespace: iii.namespace(),
     })?;
     Ok(())
 }
