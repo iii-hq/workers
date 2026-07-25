@@ -96,6 +96,7 @@ pub fn register_config_trigger(iii: &Arc<IIIClient>, parts: BootParts) -> Result
             "event_types": ["configuration:updated"],
         }),
         metadata: None,
+        namespace: iii.namespace(),
     })?;
     Ok(())
 }
