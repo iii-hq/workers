@@ -33,10 +33,32 @@ fn worker_manifest_declares_runtime_dependencies() {
     let dependencies = manifest["dependencies"]
         .as_mapping()
         .expect("dependencies map");
-    for dependency in ["harness", "state", "queue", "cron", "iii-observability"] {
+    for dependency in ["state", "queue", "cron", "iii-observability"] {
         assert!(
             dependencies.contains_key(serde_yaml::Value::String(dependency.into())),
             "missing {dependency}"
         );
     }
+}
+
+/// `harness` is deliberately NOT a declared dependency.
+///
+/// Declaring it made `eval`'s resolved install graph six levels deep
+/// (eval -> harness -> context-manager -> llm-router -> state ->
+/// configuration), which `iii worker add` rejects: its resolver caps a
+/// graph at five. eval still calls `harness::*` at run time, so the
+/// harness worker must be present in the engine — it is simply not pulled
+/// in by eval's own install.
+#[test]
+fn worker_manifest_omits_harness_to_stay_within_install_graph_depth() {
+    let source = std::fs::read_to_string(format!("{}/iii.worker.yaml", env!("CARGO_MANIFEST_DIR")))
+        .expect("read iii.worker.yaml");
+    let manifest: serde_yaml::Value = serde_yaml::from_str(&source).expect("parse worker manifest");
+    let dependencies = manifest["dependencies"]
+        .as_mapping()
+        .expect("dependencies map");
+    assert!(
+        !dependencies.contains_key(serde_yaml::Value::String("harness".into())),
+        "harness must stay out of the manifest: it pushes the install graph past the depth cap"
+    );
 }
