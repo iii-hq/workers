@@ -86,6 +86,7 @@ fn bind_best_effort(
         function_id: function_id.to_string(),
         config,
         metadata: None,
+        namespace: iii.namespace(),
     });
     match res {
         Ok(_) => tracing::info!(trigger_type, function_id, "trigger binding requested"),
