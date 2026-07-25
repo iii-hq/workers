@@ -35,7 +35,6 @@ use crate::registry::resolve::{make_provider_resolve, make_update_credential};
 use crate::registry::store::RegistryStore;
 use crate::surface;
 use crate::triggers::RouterEvents;
-use crate::types::errors::invalid_request_from_serde;
 use crate::types::router::ConfigChangedEvent;
 
 /// `metadata.internal = true` keeps a registration out of the default
@@ -93,30 +92,24 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         let (iii_for_chat, pipeline) = (iii.clone(), pipeline.clone());
         iii.register_function(
             surface::CHAT_ID,
-            RegisterFunction::new_async_with_bad_request(
-                move |input: ChatFnInput| {
-                    let (iii, pipeline) = (iii_for_chat.clone(), pipeline.clone());
-                    async move {
-                        let sink = open_sink(&iii, &input.writer_ref).await?;
-                        let result = pipeline.run(input.call, sink.clone()).await;
-                        sink.close(); // the handler owns closing the caller's channel
-                        result
-                    }
-                },
-                invalid_request_from_serde,
-            )
+            RegisterFunction::new_async(move |input: ChatFnInput| {
+                let (iii, pipeline) = (iii_for_chat.clone(), pipeline.clone());
+                async move {
+                    let sink = open_sink(&iii, &input.writer_ref).await?;
+                    let result = pipeline.run(input.call, sink.clone()).await;
+                    sink.close(); // the handler owns closing the caller's channel
+                    result
+                }
+            })
             .description(surface::CHAT_DESC)
             .metadata(internal_meta()),
         );
     }
     iii.register_function(
         surface::COMPLETE_ID,
-        RegisterFunction::new_async_with_bad_request(
-            make_complete(iii.clone(), pipeline.clone()),
-            invalid_request_from_serde,
-        )
-        .description(surface::COMPLETE_DESC)
-        .metadata(internal_meta()),
+        RegisterFunction::new_async(make_complete(iii.clone(), pipeline.clone()))
+            .description(surface::COMPLETE_DESC)
+            .metadata(internal_meta()),
     );
     iii.register_function(
         surface::ABORT_ID,
@@ -181,16 +174,13 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     );
     iii.register_function(
         surface::PROVIDER_REGISTER_ID,
-        RegisterFunction::new_async_with_bad_request(
-            make_provider_register(
-                iii.clone(),
-                registry.clone(),
-                catalog.clone(),
-                entry_lock.clone(),
-                events.clone(),
-            ),
-            invalid_request_from_serde,
-        )
+        RegisterFunction::new_async(make_provider_register(
+            iii.clone(),
+            registry.clone(),
+            catalog.clone(),
+            entry_lock.clone(),
+            events.clone(),
+        ))
         .description(surface::PROVIDER_REGISTER_DESC)
         .metadata(internal_meta()),
     );
@@ -213,10 +203,11 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     );
     iii.register_function(
         surface::MODELS_RECONCILE_ID,
-        RegisterFunction::new_async_with_bad_request(
-            make_models_reconcile(registry.clone(), catalog.clone(), events.clone()),
-            invalid_request_from_serde,
-        )
+        RegisterFunction::new_async(make_models_reconcile(
+            registry.clone(),
+            catalog.clone(),
+            events.clone(),
+        ))
         .description(surface::MODELS_RECONCILE_DESC)
         .metadata(internal_meta()),
     );
@@ -255,6 +246,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         function_id: surface::ON_CONFIG_CHANGED_ID.into(),
         config: json!({ "configuration_id": "llm-router", "event_types": ["configuration:updated"] }),
         metadata: None,
+    namespace: iii.namespace(),
     })?;
 
     // Close the boot race between the initial fetch and trigger binding by
