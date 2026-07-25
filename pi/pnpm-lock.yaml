@@ -12,8 +12,8 @@ importers:
         specifier: ^0.79.0
         version: 0.79.10(ws@8.21.0)(zod@4.4.3)
       iii-sdk:
-        specifier: ^0.21.6
-        version: 0.21.6
+        specifier: 0.22.0-alpha.2
+        version: 0.22.0-alpha.2
       yaml:
         specifier: ^2.6.0
         version: 2.9.0
@@ -704,8 +704,8 @@ packages:
       '@modelcontextprotocol/sdk':
         optional: true
 
-  '@iii-dev/helpers@0.21.6':
-    resolution: {integrity: sha512-UkiIqC5Ob41xc9uYx1SRt4LXLKrzAMzOCq6Kwo4hCak7Qj4Q1tP0GW0nYP7UpgYHsQnzf+2sspb2yD/DVa2ePA==}
+  '@iii-dev/helpers@0.22.0-alpha.2':
+    resolution: {integrity: sha512-NhmwybfpPmjlL4yKNxAVevkWIzu4SIhHFPh1bCMKEpy5oLTCSx/oHHF2ruUhQEyKwB79LqrrJ21SM93klujZJg==}
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
@@ -1301,8 +1301,8 @@ packages:
     resolution: {integrity: sha512-Hs59xBNfUIunMFgWAbGX5cq6893IbWg4KnrjbYwX3tx0ztorVgTDA6B2sxf8ejHJ4wz8BqGUMYlnzNBer5NvGg==}
     engines: {node: '>= 4'}
 
-  iii-sdk@0.21.6:
-    resolution: {integrity: sha512-D9NGtcGWdY8tqXRIjvRDqNqKRI2qJcQguSDWuUEPXaYyIHSn1jp3PIVF34cCY6C+f3Bby8fjptxpfzWYQUOg2A==}
+  iii-sdk@0.22.0-alpha.2:
+    resolution: {integrity: sha512-mdILi3R+MeTXpEmUPmqMyjGY35DWddia+7DoIDaXXm/xop4gAeSARqqpZggzcAzSMQek0XACTKKKypUm4uA8PA==}
 
   import-in-the-middle@1.15.0:
     resolution: {integrity: sha512-bpQy+CrsRmYmoPMAE/0G33iwRqwW4ouqdRg8jgbH3aKuCtOc8lxgmYXg2dMM92CRiGP660EtBcymH/eVUpCSaA==}
@@ -2246,7 +2246,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@iii-dev/helpers@0.21.6':
+  '@iii-dev/helpers@0.22.0-alpha.2':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.57.2
@@ -2865,9 +2865,9 @@ snapshots:
 
   ignore@7.0.5: {}
 
-  iii-sdk@0.21.6:
+  iii-sdk@0.22.0-alpha.2:
     dependencies:
-      '@iii-dev/helpers': 0.21.6
+      '@iii-dev/helpers': 0.22.0-alpha.2
       '@opentelemetry/api': 1.9.1
       ws: 8.21.0
     transitivePeerDependencies:
