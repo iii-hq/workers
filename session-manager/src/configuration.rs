@@ -363,6 +363,7 @@ pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), E
             "event_types": ["configuration:updated"],
         }),
         metadata: None,
+        namespace: iii.namespace(),
     })?;
     Ok(())
 }
