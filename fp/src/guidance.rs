@@ -150,6 +150,7 @@ fn bind(iii: &IIIClient, trigger_type: &str, function_id: &str, config: Value) -
         function_id: function_id.to_string(),
         config,
         metadata: None,
+        namespace: iii.namespace(),
     }) {
         Ok(handle) => {
             tracing::info!(trigger_type, function_id, "trigger binding requested");
