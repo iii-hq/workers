@@ -23,7 +23,7 @@ export function AttachmentChip({
   return (
     <div
       className={cn(
-        'inline-flex items-center gap-x-2 border border-rule bg-bg px-2 py-1 font-mono text-[12px] text-ink max-w-[260px]',
+        'inline-flex items-center gap-x-2 rounded-sm bg-surface px-2 py-1 font-mono text-[12px] text-ink max-w-[260px]',
         className,
       )}
     >

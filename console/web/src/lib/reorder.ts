@@ -1,7 +1,8 @@
 /**
- * Pure array reorder used by the drag-to-reorder affordance in
- * `ArrayField` and `DictionaryField`. Returns a new array (never mutates
- * the input) so it slots straight into React state updates.
+ * Pure array reorder shared by the drag-to-reorder affordances (the
+ * schema form's `ArrayField` / `DictionaryField` and the workspace tab
+ * strip). Returns a new array (never mutates the input) so it slots
+ * straight into React state updates.
  */
 export function moveItem<T>(list: readonly T[], from: number, to: number): T[] {
   const copy = list.slice()

@@ -33,12 +33,17 @@ export interface ComposerSubmitPayload {
 
 /** Round icon action button (send / queue / stop) at the composer's edge. */
 const actionButtonClass = cn(
-  'inline-flex size-9 items-center justify-center rounded-full bg-bg text-ink',
-  '[html[data-theme=dark]_&]:bg-white [html[data-theme=dark]_&]:text-[#0a0a0a]',
-  'hover:opacity-80 transition-opacity duration-150',
-  'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+  'inline-flex size-9 items-center justify-center rounded-full',
+  'transition-colors duration-150',
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
   'disabled:pointer-events-none disabled:opacity-40',
 )
+
+/** Send/stop is armed: inverted ink fill (light chip in dark mode). */
+const actionReadyClass = 'bg-ink text-bg hover:bg-ink/90'
+
+/** Composer is empty: the action recedes into the surface. */
+const actionIdleClass = 'bg-surface-active text-ink-ghost'
 
 interface ComposerProps {
   mode: Mode
@@ -293,7 +298,7 @@ export function Composer({
   }, [])
 
   return (
-    <div className="border border-rule bg-panel">
+    <div className="rounded-xl bg-panel-raised shadow-raised">
       {attachments.length > 0 ? (
         <div className="flex flex-wrap gap-2 p-3 border-b border-rule-2">
           {attachments.map((a) => (
@@ -332,7 +337,7 @@ export function Composer({
         />
       </div>
 
-      <div className="flex min-w-0 items-center gap-2 border-t border-rule-2 px-3 py-2">
+      <div className="flex min-w-0 items-center gap-2 px-3 py-2">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <ModePicker
             value={mode}
@@ -394,12 +399,12 @@ export function Composer({
               onClick={onStop}
               disabled={stopping}
               aria-label={stopping ? 'stopping' : 'stop generating'}
-              className={actionButtonClass}
+              className={cn(actionButtonClass, actionReadyClass)}
             >
               {stopping ? (
                 <Loader2 size={16} aria-hidden className="animate-spin" />
               ) : (
-                <Square size={16} aria-hidden className="fill-black/90" />
+                <Square size={16} aria-hidden className="fill-current" />
               )}
             </button>
           ) : (
@@ -408,7 +413,12 @@ export function Composer({
               onClick={handleSubmit}
               disabled={blocked}
               aria-label={isStreaming ? 'queue message' : 'send message'}
-              className={actionButtonClass}
+              className={cn(
+                actionButtonClass,
+                hasText || attachments.length > 0
+                  ? actionReadyClass
+                  : actionIdleClass,
+              )}
             >
               <ArrowUp size={20} aria-hidden />
             </button>

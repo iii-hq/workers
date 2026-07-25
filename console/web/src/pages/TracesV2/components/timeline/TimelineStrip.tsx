@@ -636,7 +636,7 @@ function Timeline({
             {ticks.map((t) => (
               <div
                 key={t}
-                className="absolute inset-y-0 w-px bg-rule-2"
+                className="absolute inset-y-0 w-px bg-ink/8"
                 style={{ left: x(t) }}
               />
             ))}
@@ -646,7 +646,7 @@ function Timeline({
               <div
                 key={rail.id}
                 aria-hidden
-                className="absolute w-px bg-rule"
+                className="absolute w-px bg-ink/15"
                 style={{
                   left: rail.left,
                   top: rail.top,
@@ -658,7 +658,7 @@ function Timeline({
               <div
                 key={stub.id}
                 aria-hidden
-                className="absolute h-px bg-rule"
+                className="absolute h-px bg-ink/15"
                 style={{
                   left: stub.left,
                   top: stub.top,
@@ -804,11 +804,11 @@ export function TimelineStrip({
   return (
     <div
       className={cn(
-        'flex h-36 flex-shrink-0 flex-col border-b border-rule overflow-hidden',
+        'flex h-36 flex-shrink-0 flex-col border-b border-rule-2 overflow-hidden',
         className,
       )}
     >
-      <div className="flex shrink-0 items-center justify-between border-b border-rule bg-bg">
+      <div className="flex shrink-0 items-center justify-between border-b border-rule-2 bg-bg">
         <div className="flex items-center gap-3 px-3 py-2">
           <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint">
             <span className="text-accent">$</span>

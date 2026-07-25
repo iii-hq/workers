@@ -155,20 +155,20 @@ export function FunctionTriggerGroup({
     if (concerning) setOpen(true)
   }, [concerning])
 
-  /* `bg-panel` (instead of `bg-bg`) gives the group its own surface tone so
-     it reads as one container distinct from the surrounding chat. The
-     embedded children inherit it; their internal label strips (`bg-paper-2`)
-     and code panes (`bg-bg`) sit one and two layers above, creating a clear
-     depth hierarchy in both light and dark themes. */
+  /* The group carries the same accent-tinted raised chrome as a standalone
+     call card, so a run of calls reads as one special container. Embedded
+     children inherit it; their internal label strips (`bg-paper-2`) and code
+     panes (`bg-bg`) sit one and two layers above, creating a clear depth
+     hierarchy in both light and dark themes. */
   return (
-    <div className="function-trigger-surface border border-rule bg-panel">
+    <div className="function-trigger-surface fcall-chrome rounded-md overflow-hidden">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         className={cn(
           'w-full flex items-center justify-between gap-3 px-3 py-2 cursor-pointer text-left',
-          'hover:bg-paper-2 transition-colors',
+          'hover:bg-surface-hover/50 transition-colors',
         )}
       >
         <span className="flex items-center gap-2 min-w-0">

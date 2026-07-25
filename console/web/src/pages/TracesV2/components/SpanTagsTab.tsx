@@ -127,7 +127,7 @@ export function SpanTagsTab({ span }: SpanTagsTabProps) {
           placeholder="filter attributes..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full pl-9 pr-4 py-2 bg-bg border border-rule font-mono text-[13px] text-ink placeholder-ink-ghost lowercase focus:outline-none focus:border-accent transition-colors"
+          className="w-full pl-9 pr-4 py-2 rounded-sm bg-surface border border-rule-2 font-mono text-[13px] text-ink placeholder-ink-ghost lowercase hover:border-rule focus:outline-none focus:border-rule-focus transition-colors"
         />
       </div>
 
@@ -136,11 +136,11 @@ export function SpanTagsTab({ span }: SpanTagsTabProps) {
           const isCollapsed = collapsedGroups.has(group.namespace)
 
           return (
-            <div key={group.namespace} className="border border-rule bg-bg">
+            <div key={group.namespace} className="rounded-md bg-surface">
               <button
                 type="button"
                 onClick={() => toggleGroup(group.namespace)}
-                className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-panel transition-colors text-left"
+                className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-surface-hover transition-colors text-left"
               >
                 <ChevronRight
                   className={`w-3 h-3 text-ink-faint transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
@@ -170,7 +170,7 @@ export function SpanTagsTab({ span }: SpanTagsTabProps) {
           )
         })
       ) : (
-        <div className="border border-rule bg-bg divide-y divide-rule">
+        <div className="rounded-md bg-surface divide-y divide-rule-2">
           {filteredEntries.map(([key, value]) => (
             <AttributeRow
               key={key}
@@ -219,7 +219,7 @@ function AttributeRow({
     <button
       type="button"
       onClick={() => onCopy(attrKey, value)}
-      className="w-full px-4 py-2 hover:bg-panel transition-colors text-left group"
+      className="w-full px-4 py-2 hover:bg-surface-hover transition-colors text-left group"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
@@ -227,7 +227,7 @@ function AttributeRow({
             {attrKey}
           </div>
           {isObject ? (
-            <pre className="border border-rule bg-bg px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink overflow-x-auto whitespace-pre">
+            <pre className="rounded-sm bg-bg px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink overflow-x-auto whitespace-pre">
               {formatted}
             </pre>
           ) : (

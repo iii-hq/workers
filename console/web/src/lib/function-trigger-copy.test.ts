@@ -145,10 +145,9 @@ describe('functionTriggersByAssistant', () => {
     const c1 = fcall({ id: 'c1' })
     const a1 = assistant({ id: 'a1' })
     const c2 = fcall({ id: 'c2' })
-    expect(functionTriggersByAssistant([user(), c1, a1, c2]).get('a1')).toEqual([
-      c1,
-      c2,
-    ])
+    expect(functionTriggersByAssistant([user(), c1, a1, c2]).get('a1')).toEqual(
+      [c1, c2],
+    )
   })
 
   it('prefers trailing attribution between two assistants', () => {

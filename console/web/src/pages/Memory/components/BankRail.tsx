@@ -52,7 +52,8 @@ export function BankRail({
           >
             <span className="block text-[13px] text-ink">{bank.name}</span>
             <span className="block text-[11px] text-ink-faint mt-0.5">
-              {bank.memories} memories · {bank.pinned} pinned · {bank.rules} rules
+              {bank.memories} memories · {bank.pinned} pinned · {bank.rules}{' '}
+              rules
             </span>
           </button>
         ))}

@@ -153,7 +153,11 @@ export function RegisterTriggerView({
       <div className="px-3 py-2 border-b border-rule-2 bg-bg flex flex-col gap-1.5">
         <div className="flex items-baseline gap-2 flex-wrap">
           <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-            {spawn ? 'spawn sub-agent' : call || req.function_id ? 'call' : 'notify'}
+            {spawn
+              ? 'spawn sub-agent'
+              : call || req.function_id
+                ? 'call'
+                : 'notify'}
           </span>
           {spawn ? (
             <span className="font-mono text-[12.5px] text-accent break-all">

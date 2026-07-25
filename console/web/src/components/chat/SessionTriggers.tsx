@@ -729,7 +729,7 @@ function DagLegend() {
         this chat
       </span>
       <span className="flex items-center gap-1.5">
-        <span className="inline-block h-px w-4 bg-rule" />
+        <span className="inline-block h-px w-4 bg-ink/15" />
         spawns / watches
       </span>
       <span className="flex items-center gap-1.5">

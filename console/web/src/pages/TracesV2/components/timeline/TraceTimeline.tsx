@@ -640,7 +640,7 @@ export function TraceTimeline({
           {/* proportional time ruler — sticky: pinned while panning down,
               gliding with the bars while panning right */}
           <div
-            className="sticky top-0 z-[6] bg-bg"
+            className="sticky top-0 z-[6] bg-panel-raised"
             style={{ height: RULER_H, width: contentWidth }}
           >
             {stage.width > 0 &&
@@ -668,7 +668,7 @@ export function TraceTimeline({
                 <div
                   key={f}
                   aria-hidden
-                  className="absolute inset-y-0 w-px bg-rule-2"
+                  className="absolute inset-y-0 w-px bg-ink/8"
                   style={{ left: x(total * f) }}
                 />
               ))}
@@ -680,7 +680,7 @@ export function TraceTimeline({
                   <div
                     key={rail.id}
                     aria-hidden
-                    className="absolute w-px bg-rule"
+                    className="absolute w-px bg-ink/15"
                     style={{
                       left: rail.left,
                       top: rail.top,
@@ -692,7 +692,7 @@ export function TraceTimeline({
                   <div
                     key={stub.id}
                     aria-hidden
-                    className="absolute h-px bg-rule"
+                    className="absolute h-px bg-ink/15"
                     style={{
                       left: stub.left,
                       top: stub.top,

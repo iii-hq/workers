@@ -220,7 +220,7 @@ export function ModelPicker({
             }
             aria-busy={loading || undefined}
             className={cn(
-              'flex h-9 min-w-0 flex-1 items-center justify-between gap-x-2 border border-rule bg-bg px-3 font-mono text-[13px] lowercase text-ink transition-colors focus:border-ink focus:outline-none data-[state=open]:border-ink',
+              'flex h-9 min-w-0 flex-1 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-transparent px-3 font-mono text-[13px] lowercase text-ink-faint hover:bg-surface-hover hover:text-ink transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface data-[state=open]:text-ink',
               pickerDisabled && 'pointer-events-none opacity-40',
             )}
           >

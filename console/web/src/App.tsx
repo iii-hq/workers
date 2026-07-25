@@ -1,16 +1,17 @@
 import { CircleQuestionMark, SettingsIcon } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChatDock } from '@/components/chat/ChatDock'
+import { ChatPanel } from '@/components/chat/ChatPanel'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/Dialog'
-import { ModeToggle } from '@/components/ui/ModeToggle'
 import { Sheet } from '@/components/ui/Sheet'
 import { Wordmark } from '@/components/ui/Wordmark'
-import { useChatDock } from '@/hooks/use-chat-dock'
+import { EmptyPane } from '@/components/workspace/EmptyPane'
+import { TabStrip } from '@/components/workspace/TabStrip'
+import { useScreenOptions } from '@/components/workspace/use-screen-options'
 import {
   hashForExtPage,
   useExtPageRoute,
@@ -18,14 +19,19 @@ import {
   type View,
 } from '@/hooks/use-hash-route'
 import { useTheme } from '@/hooks/use-theme'
-import { type DockSignal, getDockSignal } from '@/lib/chat-activity'
 import {
-  ConversationsProvider,
-  useConversationsCtx,
-} from '@/lib/conversations-context'
-import { buildViewOptions } from '@/lib/nav-options'
-import { type RegisteredPage, useExtPages } from '@/lib/ui-slots'
+  type UseWorkspaceTabsReturn,
+  useWorkspaceTabs,
+} from '@/hooks/use-workspace-tabs'
+import { ConversationsProvider } from '@/lib/conversations-context'
 import { cn } from '@/lib/utils'
+import {
+  CHAT_SCREEN,
+  extPageIdForScreen,
+  screenForView,
+  type TabScreen,
+  tabColumns,
+} from '@/lib/workspace-tabs'
 import { Browser } from '@/pages/Browser'
 import { Configuration } from '@/pages/Configuration'
 import { ExtPage } from '@/pages/Ext'
@@ -39,8 +45,9 @@ export function App() {
   const [theme, setTheme] = useTheme()
   const [view, setView] = useHashRoute()
   const extPageId = useExtPageRoute()
-  const dock = useChatDock()
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const workspace = useWorkspaceTabs()
+  const { activeTab, activeTabId } = workspace
 
   // An active extension page that disappears (hot-reload failure, worker
   // disconnect, unregister) falls back to the default view.
@@ -48,22 +55,54 @@ export function App() {
     setView('traces')
   }, [setView])
 
-  /* When the dock transitions from collapsed → expanded, focus the
-     composer so the user can start typing immediately. requestAnimationFrame
-     waits for the mount/paint cycle; if the editor isn't there (no active
-     conversation, etc.) the focus is a no-op. */
-  const wasCollapsedRef = useRef(dock.collapsed)
+  // ── Hash → tabs ──
+  // A hash navigation (deep link, in-app `window.location.hash = …`) must
+  // land on a tab showing that screen: the active tab if it already does,
+  // else an existing tab, else a freshly created one. Guarded by a ref so
+  // it only reacts to genuine HASH changes — tab activation must never
+  // bounce the hash back. On mount an explicit hash wins over the stored
+  // active tab; a bare `#/` defers to it.
+  const hashScreen = screenForView(view, extPageId)
+  const lastHashScreenRef = useRef<TabScreen | null>(
+    typeof window !== 'undefined' &&
+      window.location.hash &&
+      window.location.hash !== '#' &&
+      window.location.hash !== '#/'
+      ? null
+      : hashScreen,
+  )
+  const workspaceRef = useRef(workspace)
+  workspaceRef.current = workspace
   useEffect(() => {
-    const wasCollapsed = wasCollapsedRef.current
-    wasCollapsedRef.current = dock.collapsed
-    if (!wasCollapsed || dock.collapsed) return
-    if (typeof window === 'undefined') return
-    const frame = window.requestAnimationFrame(() => {
-      const editor = document.querySelector<HTMLElement>('.composer-editor')
-      editor?.focus()
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [dock.collapsed])
+    if (lastHashScreenRef.current === hashScreen) return
+    lastHashScreenRef.current = hashScreen
+    const ws = workspaceRef.current
+    if (ws.activeTab.screens.includes(hashScreen)) return
+    const existing = ws.tabs.find((t) => t.screens.includes(hashScreen))
+    if (existing) ws.activateTab(existing.id)
+    else ws.createTab({ columns: 1, screens: [hashScreen] })
+  }, [hashScreen])
+
+  // ── Tabs → hash ──
+  // Activating a tab whose screens don't cover the current hash points the
+  // hash at the tab's first routed screen, so page-internal sub-routes and
+  // deep links keep working. Chat-only and empty tabs leave the hash alone.
+  const prevActiveTabIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    const prev = prevActiveTabIdRef.current
+    prevActiveTabIdRef.current = activeTabId
+    if (prev === null || prev === activeTabId) return
+    if (activeTab.screens.includes(hashScreen)) return
+    const primary = activeTab.screens.find(
+      (s): s is TabScreen => s !== null && s !== CHAT_SCREEN,
+    )
+    if (!primary) return
+    // Pre-mark so the hash-inbound effect treats this as already handled.
+    lastHashScreenRef.current = primary
+    const extId = extPageIdForScreen(primary)
+    if (extId) window.location.hash = hashForExtPage(extId)
+    else setView(primary as View)
+  }, [activeTabId, activeTab, hashScreen, setView])
 
   /* `?` opens the shortcuts overlay. Ignored when the user is typing into
      editable elements so we don't fight the composer. */
@@ -83,136 +122,151 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  const collapseDock = useCallback(() => {
-    dock.setCollapsed(true)
-  }, [dock])
-
   return (
     <ConversationsProvider>
       <Sheet>
         <Header
-          view={view}
-          extPageId={extPageId}
+          workspace={workspace}
           onViewChange={setView}
-          dockCollapsed={dock.collapsed}
-          onToggleDock={dock.toggleCollapsed}
           onOpenShortcuts={() => setShortcutsOpen(true)}
         />
-        <div className="flex-1 flex min-h-0">
-          <ChatDock
-            width={dock.width}
-            onWidthChange={dock.setWidth}
-            collapsed={dock.collapsed}
-            onCollapse={collapseDock}
-          />
-          <div className="flex-1 flex flex-col min-w-0 min-h-0">
-            {view === 'configuration' ? (
-              <Configuration theme={theme} onThemeChange={setTheme} />
-            ) : view === 'workers' ? (
-              <Workers />
-            ) : view === 'worktrees' ? (
-              <Worktrees />
-            ) : view === 'browser' ? (
-              <Browser />
-            ) : view === 'memory' ? (
-              <Memory />
-            ) : view === 'github' ? (
-              <Github />
-            ) : view === 'ext' ? (
-              <ExtPage onMissing={onExtMissing} />
-            ) : (
-              <TracesV2 />
-            )}
-          </div>
-        </div>
+        <WorkspacePanes
+          workspace={workspace}
+          theme={theme}
+          onThemeChange={setTheme}
+          onExtMissing={onExtMissing}
+        />
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       </Sheet>
     </ConversationsProvider>
   )
 }
 
+interface WorkspacePanesProps {
+  workspace: UseWorkspaceTabsReturn
+  theme: ReturnType<typeof useTheme>[0]
+  onThemeChange: (next: ReturnType<typeof useTheme>[0]) => void
+  onExtMissing: () => void
+}
+
+/**
+ * The active tab's columns, each a floating panel over the canvas. An
+ * unattached column renders the attach affordance instead of a page.
+ * Rendered under `ConversationsProvider` (the screen options need it).
+ */
+function WorkspacePanes({
+  workspace,
+  theme,
+  onThemeChange,
+  onExtMissing,
+}: WorkspacePanesProps) {
+  const { screenOptions } = useScreenOptions()
+  const { activeTab } = workspace
+  const columns = tabColumns(activeTab)
+  return (
+    <div className="flex-1 flex min-h-0 gap-1.5 px-1.5 pb-1.5">
+      {Array.from({ length: columns }, (_, column) => {
+        const screen = activeTab.screens[column] ?? null
+        return (
+          <div
+            // biome-ignore lint/suspicious/noArrayIndexKey: the column POSITION is the identity — the composite key deliberately remounts a pane when its tab or attached screen changes
+            key={`${activeTab.id}:${column}:${screen ?? 'empty'}`}
+            className="flex-1 basis-0 flex flex-col min-w-0 min-h-0 rounded-sm border border-edge bg-panel overflow-hidden"
+          >
+            {screen === null ? (
+              <EmptyPane
+                screenOptions={screenOptions}
+                onAttach={(next) =>
+                  workspace.attachScreen(activeTab.id, column, next)
+                }
+              />
+            ) : (
+              <ScreenBody
+                screen={screen}
+                theme={theme}
+                onThemeChange={onThemeChange}
+                onExtMissing={onExtMissing}
+              />
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+interface ScreenBodyProps {
+  screen: TabScreen
+  theme: ReturnType<typeof useTheme>[0]
+  onThemeChange: (next: ReturnType<typeof useTheme>[0]) => void
+  onExtMissing: () => void
+}
+
+/** One workspace-tab column: the page (or chat view) the screen names. */
+function ScreenBody({
+  screen,
+  theme,
+  onThemeChange,
+  onExtMissing,
+}: ScreenBodyProps) {
+  const extId = extPageIdForScreen(screen)
+  if (extId !== null) {
+    return <ExtPage pageId={extId} onMissing={onExtMissing} />
+  }
+  switch (screen) {
+    case CHAT_SCREEN:
+      // The compact header variant — a tab column is width-constrained the
+      // same way the old side dock was, especially in two-column layouts.
+      return <ChatPanel density="dock" />
+    case 'configuration':
+      return <Configuration theme={theme} onThemeChange={onThemeChange} />
+    case 'workers':
+      return <Workers />
+    case 'worktrees':
+      return <Worktrees />
+    case 'browser':
+      return <Browser />
+    case 'memory':
+      return <Memory />
+    case 'github':
+      return <Github />
+    default:
+      return <TracesV2 />
+  }
+}
+
 interface HeaderProps {
-  view: View
-  extPageId: string | null
+  workspace: UseWorkspaceTabsReturn
   onViewChange: (next: View) => void
-  dockCollapsed: boolean
-  onToggleDock: () => void
   onOpenShortcuts: () => void
 }
 
-/** Nav value for an injected page — distinct from every first-party View. */
-const EXT_NAV_PREFIX = 'ext:'
-
-function extNavValue(page: RegisteredPage): string {
-  return `${EXT_NAV_PREFIX}${page.id}`
-}
-
-function Header({
-  view,
-  extPageId,
-  onViewChange,
-  dockCollapsed,
-  onToggleDock,
-  onOpenShortcuts,
-}: HeaderProps) {
-  // Optional-worker entries appear only while their worker is present; a
-  // direct #/worktrees or #/browser hit still lands on that page's install
-  // notice.
-  const {
-    worktreeAvailable,
-    browserAvailable,
-    memoryAvailable,
-    githubAvailable,
-  } = useConversationsCtx()
-  // Injected pages: the runtime analogue of worker-presence gating —
-  // presence is the script being loaded, which already tracks worker
-  // connectedness via trigger GC.
-  const extPages = useExtPages()
-  const viewOptions: { value: string; label: string }[] = [
-    ...buildViewOptions(
-      worktreeAvailable,
-      browserAvailable,
-      memoryAvailable,
-      githubAvailable,
-    ),
-    ...extPages.map((page) => ({
-      value: extNavValue(page),
-      label: page.title,
-    })),
-  ]
-  const navValue =
-    view === 'ext' && extPageId ? `${EXT_NAV_PREFIX}${extPageId}` : view
-  const onNavChange = (next: string) => {
-    if (next.startsWith(EXT_NAV_PREFIX)) {
-      window.location.hash = hashForExtPage(next.slice(EXT_NAV_PREFIX.length))
-    } else {
-      onViewChange(next as View)
-    }
-  }
-  const onConsoleSettings = view === 'configuration'
+function Header({ workspace, onViewChange, onOpenShortcuts }: HeaderProps) {
+  const { extPageTitles } = useScreenOptions()
+  const onConsoleSettings =
+    workspace.activeTab.screens.includes('configuration')
   return (
-    <header className="flex items-center justify-between pl-3 pr-6 h-12 border-b border-rule shrink-0">
-      <div className="flex items-center gap-3">
-        <DockToggle collapsed={dockCollapsed} onToggle={onToggleDock} />
+    <header className="flex items-center justify-between gap-3 pl-3 pr-6 h-12 shrink-0">
+      <div className="flex items-center gap-3 min-w-0 flex-1">
         <Wordmark />
-        <span className="font-mono text-[11px] mb-[-2px] leading-[14px] uppercase tracking-[0.16em] text-ink-faint font-semibold">
-          {view === 'ext'
-            ? (extPages.find((p) => p.id === extPageId)?.title ?? 'extension')
-            : view}
-        </span>
+        <TabStrip
+          tabs={workspace.tabs}
+          activeTabId={workspace.activeTabId}
+          extPageTitles={extPageTitles}
+          onActivate={workspace.activateTab}
+          onClose={workspace.closeTab}
+          onCreate={(columns) => workspace.createTab({ columns })}
+          onRename={workspace.renameTab}
+          onReorder={workspace.reorderTab}
+        />
       </div>
       <div className="flex items-center gap-3">
-        <ModeToggle<string>
-          value={navValue}
-          onChange={onNavChange}
-          options={viewOptions}
-        />
         <button
           type="button"
           onClick={onOpenShortcuts}
           aria-label="keyboard shortcuts (?)"
           title="keyboard shortcuts (?)"
-          className="font-mono text-[14px] leading-none w-8 h-8 flex items-center justify-center border bg-transparent text-ink-faint border-rule hover:text-ink hover:border-ink transition-colors focus-visible:border-accent focus-visible:outline-none"
+          className="font-mono text-[14px] leading-none w-8 h-8 flex items-center justify-center rounded-sm border border-transparent bg-transparent text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors focus-visible:border-accent focus-visible:outline-none"
         >
           <span aria-hidden>
             <CircleQuestionMark className="w-4 h-4" />
@@ -225,10 +279,10 @@ function Header({
           aria-label="console settings"
           title="console settings"
           className={cn(
-            'font-mono text-[14px] leading-none w-8 h-8 flex items-center justify-center border transition-colors',
+            'font-mono text-[14px] leading-none w-8 h-8 flex items-center justify-center rounded-sm border transition-colors',
             onConsoleSettings
-              ? 'bg-ink text-bg border-ink'
-              : 'bg-transparent text-ink-faint border-rule hover:text-ink hover:border-ink',
+              ? 'bg-ink text-bg border-transparent'
+              : 'bg-transparent text-ink-faint border-transparent hover:text-ink hover:bg-surface-hover',
           )}
         >
           <SettingsIcon className="w-4 h-4" />
@@ -238,120 +292,12 @@ function Header({
   )
 }
 
-interface DockToggleProps {
-  collapsed: boolean
-  onToggle: () => void
-}
-
-/**
- * Global chat-dock toggle, pinned to the leftmost slot of the app header.
- * One typographic glyph (`>_`), one place: the button state communicates
- * open/closed via the same pressed-vs-outlined vocabulary the configuration
- * gear uses on the opposite end of the header. The `?` button between them
- * documents this binding (and every other) — no inline kbd hint needed.
- *
- * The `_` of the `>_` glyph blinks at terminal cadence so the toggle reads
- * as an AI prompt waiting for input. Suppressed during `active` so the
- * button never carries two concurrent motion sources (the square accent
- * ring is the focal motion; a flickering cursor underneath would be noise).
- *
- * Collapsed state is dimensional, not binary: `getDockSignal()` resolves
- * the active conversation into one of four states. `active` (streaming,
- * pending approval, running tool call) pulses accent so blocking events
- * don't get buried. `attention` and `error` (system message tones) tint
- * the border statically — motion is the wrong gesture for "the engine
- * reported a problem." Clicking the toggle in any signal state expands
- * the dock, which auto-scrolls to the latest message; the user lands on
- * the warn / error content without hunting.
- */
-function DockToggle({ collapsed, onToggle }: DockToggleProps) {
-  const { active } = useConversationsCtx()
-  const signal = getDockSignal(active)
-  const expanded = !collapsed
-  const baseLabel = collapsed ? 'open chat dock' : 'collapse chat dock'
-  const signalPreview = useDockSignalPreview(signal, active)
-  /* When the toggle border carries a warn/error tint, surface the actual
-     system-message text in `title` + `aria-label` so the user can triage
-     without expanding the dock and hunting. Idle/active states get the
-     plain label. */
-  const fullLabel = signalPreview
-    ? `${baseLabel} (⌘\\) — ${signalPreview}`
-    : `${baseLabel} (⌘\\)`
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-label={fullLabel}
-      aria-expanded={expanded}
-      aria-controls="chat-dock"
-      title={fullLabel}
-      className={cn(
-        'font-mono text-[14px] leading-none w-7 h-7 flex items-center justify-center border transition-colors focus-visible:border-accent focus-visible:outline-none',
-        expanded ? 'bg-ink text-bg border-ink' : dockToggleSignalClass(signal),
-      )}
-    >
-      {/* Single optical mark: `>` plus a `_` cursor pulled snug underneath
-          via negative letter-spacing so the cluster sits in roughly the
-          same visual footprint as `⚙` and `?` next to it in the header. */}
-      <span
-        aria-hidden
-        className="inline-flex items-baseline"
-        style={{ letterSpacing: '-0.18em' }}
-      >
-        {'>'}
-        <span className={signal === 'active' ? undefined : 'blink'}>_</span>
-      </span>
-    </button>
-  )
-}
-
-const PREVIEW_MAX_LENGTH = 80
-
-/**
- * Returns a truncated preview of the latest warn/error system message in
- * the active conversation, or `null` when the dock signal doesn't warrant
- * one. Surfaced through the toggle's `title` and `aria-label` so the user
- * gets inline triage from the chrome itself.
- */
-function useDockSignalPreview(
-  signal: DockSignal,
-  active: ReturnType<typeof useConversationsCtx>['active'],
-): string | null {
-  if (signal !== 'error' && signal !== 'attention') return null
-  if (!active) return null
-  for (let i = active.messages.length - 1; i >= 0; i--) {
-    const m = active.messages[i]
-    if (m && m.role === 'system' && (m.tone === 'error' || m.tone === 'warn')) {
-      const flat = m.content.replace(/\s+/g, ' ').trim()
-      return flat.length > PREVIEW_MAX_LENGTH
-        ? `${flat.slice(0, PREVIEW_MAX_LENGTH - 1)}…`
-        : flat
-    }
-  }
-  return null
-}
-
-function dockToggleSignalClass(signal: DockSignal): string {
-  switch (signal) {
-    case 'active':
-      return 'bg-transparent text-accent border-accent pulse-square'
-    case 'attention':
-      return 'bg-transparent text-warn border-warn'
-    case 'error':
-      return 'bg-transparent text-alert border-alert'
-    default:
-      return 'bg-transparent text-ink-faint border-rule hover:text-ink hover:border-ink'
-  }
-}
-
 interface ShortcutsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
 const SHORTCUTS: { combo: string; description: string }[] = [
-  { combo: '⌘\\', description: 'toggle chat dock' },
-  { combo: 'Esc', description: 'collapse chat dock when focused inside' },
   { combo: '?', description: 'open this shortcut overlay' },
 ]
 

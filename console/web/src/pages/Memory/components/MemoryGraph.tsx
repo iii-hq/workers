@@ -229,7 +229,10 @@ export function MemoryGraph({
   onShowFacts,
   busy,
 }: MemoryGraphProps) {
-  const live = useMemo(() => memories.filter((f) => f.invalid_at == null), [memories])
+  const live = useMemo(
+    () => memories.filter((f) => f.invalid_at == null),
+    [memories],
+  )
   const [filter, setFilter] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [selectedId, setSelectedId] = useState<string | null>(null)

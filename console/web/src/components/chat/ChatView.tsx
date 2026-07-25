@@ -1586,7 +1586,7 @@ export function ChatView({
     >
       <header
         className={cn(
-          'flex items-center justify-between py-3 border-b border-rule gap-3 whitespace-nowrap',
+          'flex items-center justify-between py-3 gap-3 whitespace-nowrap',
           headerPad,
         )}
       >
@@ -1748,7 +1748,7 @@ export function ChatView({
           />
           {queuedStrip.length > 0 ? (
             <section
-              className="mb-1 border border-rule bg-bg"
+              className="mb-1 rounded-md bg-surface"
               aria-label="queued messages"
             >
               {/* The message being edited is pulled out of the queue and lives

@@ -67,7 +67,7 @@ export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
     >
       <span>ctx</span>
       <div
-        className="relative w-14 h-[6px] bg-rule-2 border border-rule overflow-hidden"
+        className="relative w-14 h-[6px] bg-surface overflow-hidden"
         role="progressbar"
         aria-label="context window usage"
         aria-valuenow={pct}

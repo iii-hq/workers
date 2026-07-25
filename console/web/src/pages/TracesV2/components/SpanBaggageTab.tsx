@@ -43,7 +43,7 @@ export function SpanBaggageTab({ span }: SpanBaggageTabProps) {
         </span>
       </div>
 
-      <div className="border border-rule bg-bg divide-y divide-rule">
+      <div className="rounded-md bg-surface divide-y divide-rule-2">
         {baggageEntries.map(([key, value]) => {
           const formatted =
             typeof value === 'object'
@@ -56,7 +56,7 @@ export function SpanBaggageTab({ span }: SpanBaggageTabProps) {
               type="button"
               onClick={() => copy(key, `${key}: ${formatted}`)}
               aria-label={`copy ${key} to clipboard`}
-              className="w-full px-4 py-2.5 hover:bg-panel transition-colors text-left group"
+              className="w-full px-4 py-2.5 hover:bg-surface-hover transition-colors text-left group"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0">

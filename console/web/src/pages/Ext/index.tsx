@@ -24,10 +24,17 @@ import { useExtPages } from '@/lib/ui-slots'
 
 interface ExtPageProps {
   onMissing: () => void
+  /**
+   * Render this specific page instead of the hash-derived one. Workspace
+   * tabs pin a screen to a page id, so a two-column tab can show an
+   * injected page regardless of what the hash currently names.
+   */
+  pageId?: string
 }
 
-export function ExtPage({ onMissing }: ExtPageProps) {
-  const pageId = useExtPageRoute()
+export function ExtPage({ onMissing, pageId: pageIdProp }: ExtPageProps) {
+  const routePageId = useExtPageRoute()
+  const pageId = pageIdProp ?? routePageId
   const pages = useExtPages()
   const page = pageId
     ? [...pages].reverse().find((p) => p.id === pageId)

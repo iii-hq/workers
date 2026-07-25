@@ -14,43 +14,95 @@
     "Geist", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
     "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   --font-mono:
-    "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
+    "Geist Mono", "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, "Liberation Mono", "Courier New", monospace;
   --font-geist-mono:
     "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
 
+  /* ── Surface ramp ─────────────────────────────────────────────────────
+     Layered surfaces communicate hierarchy before borders do:
+     bg (canvas) → sidebar → panel → panel-raised → surface →
+     surface-hover → surface-selected → surface-active.
+     `paper-2` is the legacy alias for panel-raised. */
   --color-bg: #f2f0ed;
+  --color-sidebar: #edeae5;
   --color-panel: lab(98.26% 0 0);
+  --color-panel-raised: #f7f5f2;
   --color-paper-2: #ebe8e3;
+  --color-surface: rgba(20, 16, 8, 0.055);
+  --color-surface-hover: rgba(20, 16, 8, 0.085);
+  --color-surface-selected: rgba(184, 66, 15, 0.12);
+  --color-surface-active: rgba(20, 16, 8, 0.12);
 
+  /* ── Ink ramp ──────────────────────────────────────────────────────── */
   --color-ink: #0a0a0a;
   --color-ink-faint: #6b6865;
   --color-ink-ghost: #a3a09c;
+  --color-ink-disabled: #b8b4ae;
 
-  --color-rule: #d8d5d0;
-  --color-rule-2: #e6e3df;
+  /* ── Border ramp ──────────────────────────────────────────────────────
+     The system draws no lines: rule/rule-2/rule-strong resolve to
+     transparent in both themes (legacy `border-rule*` utilities become
+     inert 1px transparent borders, so layout never shifts). Hierarchy is
+     carried by the surface fills above. The single exception is
+     rule-focus — the focus indicator on inputs and controls, which must
+     stay visible for accessibility. */
+  --color-rule: transparent;
+  --color-rule-2: transparent;
+  --color-rule-strong: transparent;
+  --color-rule-focus: rgba(184, 66, 15, 0.6);
+
+  /* The one structural stroke the system keeps: a VERY subtle edge on the
+     main workspace panels (the tab columns), so the floating panels
+     read against the canvas. Never used inside a panel. */
+  --color-edge: rgba(20, 16, 8, 0.08);
 
   /* Darker burnt orange so accent text on cream passes WCAG AA at 11px
      (≈4.83:1 vs. previous ≈2.74:1 for #ff5a1f). Visually still firmly in
-     the iii Schematic warm-fiery family; the dark-mode cyan accent below
-     is unchanged. */
+     the iii Schematic warm-fiery family; dark mode swaps to the blue
+     accent below. */
   --color-accent: #b8420f;
   --color-accent-fg: #f2f0ed;
+  --color-accent-hover: #a53a0c;
+  --color-accent-muted: rgba(184, 66, 15, 0.1);
+  --color-accent-border: rgba(184, 66, 15, 0.35);
 
-  /* The single error color — every error surface (text-alert, StatusDot,
+  /* The error color — every error surface (text-alert, StatusDot,
      SPAN_STATUS_COLORS in the trace charts) resolves through this token.
-     No dark-mode override: it applies to both themes. */
+     Dark mode overrides it with a softer coral tuned for dark surfaces. */
   --color-alert: #ff0026;
+  --color-alert-muted: rgba(255, 0, 38, 0.08);
   --color-warn: #a87a00;
+  --color-warn-muted: rgba(168, 122, 0, 0.12);
   /* Diff additions (coder update-file echoes) — the palette's only green.
      Desaturated to sit with alert/warn; 5.3:1 on cream at 12px (AA). */
   --color-ok: #356f3d;
+  --color-ok-muted: rgba(53, 111, 61, 0.12);
 
   --color-ring: color-mix(in oklab, var(--foreground) 5%, transparent);
 
+  /* ── Radii ────────────────────────────────────────────────────────────
+     One radius everywhere: every step of the Tailwind scale resolves to
+     6px, so badges, buttons, cards, panels, and modals share the same
+     corner. Only `none` (main columns' outer frame edge cases) and `full`
+     (dots, round action buttons) differ. */
   --radius-none: 0px;
+  --radius-xs: 6px;
+  --radius-sm: 6px;
+  --radius-md: 6px;
+  --radius-lg: 6px;
+  --radius-xl: 6px;
   --radius-full: 9999px;
+
+  /* ── Elevation ──────────────────────────────────────────────────────── */
+  --shadow-raised:
+    0 1px 0 rgba(255, 255, 255, 0.025) inset, 0 8px 24px rgba(0, 0, 0, 0.18);
+  --shadow-floating:
+    0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 12px 32px rgba(0, 0, 0, 0.28);
+
+  /* ── Motion ─────────────────────────────────────────────────────────── */
+  --ease-glide: cubic-bezier(0.2, 0.8, 0.2, 1);
 
   --spacing-gutter: 24px;
   --spacing-section-x: 36px;
@@ -60,17 +112,40 @@
 }
 
 [data-theme="dark"] {
-  --color-bg: #030303;
-  --color-panel: #0a0a0a;
-  --color-paper-2: #1f1e1c;
-  --color-ink: #f2f0ed;
-  --color-ink-faint: #a8a49e;
-  --color-ink-ghost: #8a8782;
-  --color-rule: #2a2926;
-  --color-rule-2: #1f1e1c;
-  --color-accent: #3ea8ff;
-  --color-accent-fg: #030303;
-  --color-ok: #5fae6a;
+  /* Neutral grays derived from black — no blue cast in the base ramp. The
+     component fills (surface*) are white-alpha so a step reads identically
+     over any base layer; the ONLY chromatic surface is surface-selected,
+     the blue selection tint. Borders are gone: rule/rule-2/rule-strong
+     resolve to transparent, and hierarchy is carried entirely by fills. */
+  --color-bg: #0a0a0a;
+  --color-sidebar: #0e0e0e;
+  --color-panel: #111111;
+  --color-panel-raised: #171717;
+  --color-paper-2: #171717;
+  --color-surface: rgba(255, 255, 255, 0.055);
+  --color-surface-hover: rgba(255, 255, 255, 0.085);
+  --color-surface-selected: rgba(40, 168, 247, 0.14);
+  --color-surface-active: rgba(255, 255, 255, 0.12);
+  --color-ink: #ededed;
+  --color-ink-faint: #a6a6a6;
+  --color-ink-ghost: #6f6f6f;
+  --color-ink-disabled: #4d4d4d;
+  --color-rule: transparent;
+  --color-rule-2: transparent;
+  --color-rule-strong: transparent;
+  --color-rule-focus: rgba(40, 168, 247, 0.7);
+  --color-edge: rgba(255, 255, 255, 0.07);
+  --color-accent: #28a8f7;
+  --color-accent-fg: #070909;
+  --color-accent-hover: #46b6fa;
+  --color-accent-muted: rgba(40, 168, 247, 0.12);
+  --color-accent-border: rgba(40, 168, 247, 0.35);
+  --color-alert: #f05d68;
+  --color-alert-muted: rgba(240, 93, 104, 0.12);
+  --color-warn: #f5a524;
+  --color-warn-muted: rgba(245, 165, 36, 0.12);
+  --color-ok: #36c98f;
+  --color-ok-muted: rgba(54, 201, 143, 0.12);
 }
 
 @layer base {
@@ -113,11 +188,13 @@
   ::-webkit-scrollbar-track {
     background: transparent;
   }
+  /* rule is transparent (no-lines system) — the thumb needs its own
+     visible alpha gray. */
   ::-webkit-scrollbar-thumb {
-    background: var(--color-rule);
+    background: color-mix(in oklab, var(--color-ink) 22%, transparent);
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: var(--color-ink-ghost);
+    background: color-mix(in oklab, var(--color-ink) 38%, transparent);
   }
 
   /* flatten the native optgroup label so it doesn't introduce bold/italic
@@ -352,6 +429,20 @@
 
 @utility trace-flash {
   animation: trace-flash 600ms ease-out forwards;
+}
+
+/* Function/tool-call card chrome — an accent-tinted raised surface (soft
+   gradient wash, no border) so calls read as special without any outline.
+   Derived from the accent token, so it tints blue in dark mode and burnt
+   orange in light mode. */
+@utility fcall-chrome {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--color-accent) 7%, transparent),
+      color-mix(in oklab, var(--color-accent) 3%, transparent)
+    ),
+    var(--color-panel-raised);
 }
 
 /* lexical editor surface — keep it boring so it inherits the rest of the system */

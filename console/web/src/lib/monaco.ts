@@ -27,7 +27,7 @@ export const CONSOLE_THEME = 'iii-console'
 
 /** Mirrors `--font-mono` in index.css — used only if the token is unreadable. */
 const FALLBACK_MONO =
-  '"Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+  '"Geist Mono", "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
 
 self.MonacoEnvironment = {
   getWorker(_workerId: string, label: string) {
@@ -51,13 +51,22 @@ self.MonacoEnvironment = {
   },
 }
 
-/** Normalize any CSS color (`lab()`, `color-mix()`, hex, …) to `#rrggbb`. */
-function toHex(css: string, fallback: string): string {
+/**
+ * Normalize any CSS color (`lab()`, `color-mix()`, hex, …) to `#rrggbb`.
+ * `base` is composited under translucent values (the border tokens are
+ * white-alpha in dark mode) so the readback is the color as actually seen,
+ * not the un-premultiplied channel values.
+ */
+function toHex(css: string, fallback: string, base?: string): string {
   const canvas = document.createElement('canvas')
   canvas.width = 1
   canvas.height = 1
   const ctx = canvas.getContext('2d', { willReadFrequently: true })
   if (!ctx) return fallback
+  if (base) {
+    ctx.fillStyle = base
+    ctx.fillRect(0, 0, 1, 1)
+  }
   ctx.fillStyle = fallback
   ctx.fillStyle = css // invalid values keep the fallback
   ctx.fillRect(0, 0, 1, 1)
@@ -81,17 +90,23 @@ export function monoFontFamily(): string {
 function syncTheme(): void {
   const root = document.documentElement
   const style = getComputedStyle(root)
-  const token = (name: string, fallback: string) =>
-    toHex(style.getPropertyValue(name).trim() || fallback, fallback)
-
   const dark = root.dataset.theme === 'dark'
-  const bg = token('--color-bg', dark ? '#030303' : '#f2f0ed')
-  const ink = token('--color-ink', dark ? '#f2f0ed' : '#0a0a0a')
-  const inkFaint = token('--color-ink-faint', dark ? '#a8a49e' : '#6b6865')
-  const inkGhost = token('--color-ink-ghost', dark ? '#8a8782' : '#a3a09c')
-  const accent = token('--color-accent', dark ? '#3ea8ff' : '#b8420f')
-  const panel = token('--color-panel', dark ? '#0a0a0a' : '#fafafa')
-  const rule = token('--color-rule', dark ? '#2a2926' : '#d8d5d0')
+  const bg = toHex(
+    style.getPropertyValue('--color-bg').trim() ||
+      (dark ? '#0a0a0a' : '#f2f0ed'),
+    dark ? '#0a0a0a' : '#f2f0ed',
+  )
+  const token = (name: string, fallback: string) =>
+    toHex(style.getPropertyValue(name).trim() || fallback, fallback, bg)
+
+  const ink = token('--color-ink', dark ? '#ededed' : '#0a0a0a')
+  const inkFaint = token('--color-ink-faint', dark ? '#a6a6a6' : '#6b6865')
+  const inkGhost = token('--color-ink-ghost', dark ? '#6f6f6f' : '#a3a09c')
+  const accent = token('--color-accent', dark ? '#28a8f7' : '#b8420f')
+  const panel = token('--color-panel', dark ? '#111111' : '#fafafa')
+  // rule is transparent in the no-lines system; composited over bg it
+  // resolves to the background, so Monaco widget "borders" disappear too.
+  const rule = token('--color-rule', dark ? '#0a0a0a' : '#f2f0ed')
 
   const t = (hex: string) => hex.slice(1)
   monaco.editor.defineTheme(CONSOLE_THEME, {

@@ -71,7 +71,7 @@ export function SpanLogsTab({ span }: SpanLogsTabProps) {
                     )}
                   </div>
                 </div>
-                <span className="font-mono text-[10px] text-ink-faint flex-shrink-0 px-1.5 py-0.5 border border-rule bg-panel tabular-nums">
+                <span className="font-mono text-[10px] text-ink-faint flex-shrink-0 px-1.5 py-0.5 rounded-xs bg-surface tabular-nums">
                   #{index + 1}
                 </span>
               </div>
@@ -123,7 +123,7 @@ function EventAttributeRow({
         <span className="font-mono text-ink-faint uppercase tracking-[0.06em] text-[10px]">
           {attrKey}
         </span>
-        <pre className="border border-rule bg-bg px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink overflow-x-auto whitespace-pre">
+        <pre className="rounded-sm bg-bg px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink overflow-x-auto whitespace-pre">
           {formatted}
         </pre>
       </div>

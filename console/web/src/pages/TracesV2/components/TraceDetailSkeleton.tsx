@@ -32,15 +32,15 @@ export function TraceDetailSkeleton({ onClose }: TraceDetailSkeletonProps) {
   return (
     <div className="flex flex-col overflow-hidden">
       {/* ── TraceHeader ── */}
-      <div className="bg-panel border-b border-rule-2 flex-shrink-0">
+      <div className="border-b border-rule-2 flex-shrink-0">
         <div className="flex items-center gap-2 px-4 pt-3 pb-1.5">
-          <span className="px-1.5 py-0.5 flex-shrink-0 border border-rule bg-bg">
+          <span className="px-1.5 py-0.5 flex-shrink-0 rounded-xs bg-surface">
             <Skeleton className="h-3 w-16" />
           </span>
           <span className="flex-1 min-w-0">
-            {/* bg-rule where the skeleton sits directly on the panel —
+            {/* bg-surface-active where the skeleton sits directly on the panel —
                 the default bg-panel tone vanishes there */}
-            <Skeleton className="h-3.5 w-44 max-w-full bg-rule" />
+            <Skeleton className="h-3.5 w-44 max-w-full bg-surface-active" />
           </span>
           <Button
             variant="icon"
@@ -54,35 +54,35 @@ export function TraceDetailSkeleton({ onClose }: TraceDetailSkeletonProps) {
         </div>
 
         <div className="flex items-center gap-2 px-4 pb-2.5 flex-wrap">
-          <Skeleton className="h-3 w-[72px] bg-rule" />
-          <span aria-hidden className="w-px h-3 bg-rule-2" />
-          <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-rule">
+          <Skeleton className="h-3 w-[72px] bg-surface-active" />
+          <span aria-hidden className="w-px h-3 bg-surface-active-2" />
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
             <Clock className="w-2.5 h-2.5 text-ink-faint" />
             <Skeleton className="h-3 w-12" />
           </span>
-          <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-rule">
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
             <Layers className="w-2.5 h-2.5 text-ink-faint" />
             <Skeleton className="h-3 w-14" />
           </span>
-          <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-rule">
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
             <Skeleton className="h-3 w-16" />
           </span>
         </div>
 
         {/* worker share bar + names */}
         <div className="px-4 pb-2.5">
-          <div className="flex h-1.5 bg-bg border border-rule overflow-hidden">
+          <div className="flex h-1.5 rounded-full bg-surface overflow-hidden">
             <Skeleton className="h-full w-[52%]" />
-            <span aria-hidden className="w-px h-full bg-rule-2" />
+            <span aria-hidden className="w-px h-full bg-surface-active-2" />
             <Skeleton className="h-full w-[31%]" />
-            <span aria-hidden className="w-px h-full bg-rule-2" />
+            <span aria-hidden className="w-px h-full bg-surface-active-2" />
             <Skeleton className="h-full flex-1" />
           </div>
           <div className="flex items-center gap-3 mt-1.5">
             {(['wk-0', 'wk-1', 'wk-2'] as const).map((k) => (
               <span key={k} className="flex items-center gap-1">
-                <Skeleton className="w-1.5 h-1.5 flex-shrink-0 bg-rule" />
-                <Skeleton className="h-2.5 w-16 bg-rule" />
+                <Skeleton className="w-1.5 h-1.5 flex-shrink-0 bg-surface-active" />
+                <Skeleton className="h-2.5 w-16 bg-surface-active" />
               </span>
             ))}
           </div>
@@ -96,7 +96,7 @@ export function TraceDetailSkeleton({ onClose }: TraceDetailSkeletonProps) {
                 <ChevronRight className="w-3 h-3 text-ink-ghost flex-shrink-0" />
               )}
               <span className="px-1 py-0.5">
-                <Skeleton className="h-3 w-20 bg-rule" />
+                <Skeleton className="h-3 w-20 bg-surface-active" />
               </span>
             </span>
           ))}
@@ -104,8 +104,8 @@ export function TraceDetailSkeleton({ onClose }: TraceDetailSkeletonProps) {
       </div>
 
       {/* ── view switcher ── */}
-      <div className="border-b border-rule px-4 py-2.5">
-        <span className="inline-flex border border-rule p-[2px]">
+      <div className="border-b border-rule-2 px-4 py-2.5">
+        <span className="inline-flex rounded-sm bg-surface p-[2px]">
           <span className="px-3 py-1 flex items-center">
             <Skeleton className="h-3.5 w-14" />
           </span>
@@ -147,7 +147,7 @@ export function TraceDetailSkeleton({ onClose }: TraceDetailSkeletonProps) {
       </div>
 
       {/* ── collapsed workers footer ── */}
-      <div className="border-t border-rule flex-shrink-0 bg-panel">
+      <div className="border-t border-rule-2 flex-shrink-0">
         <div className="flex items-center gap-2 px-4 py-2.5">
           <ChevronRight className="w-3 h-3 text-ink-faint" />
           <span className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">
@@ -156,7 +156,7 @@ export function TraceDetailSkeleton({ onClose }: TraceDetailSkeletonProps) {
           <span className="flex items-center gap-3 ml-auto font-mono text-[11px] text-ink-faint">
             {(['p50', 'p95', 'p99'] as const).map((p) => (
               <span key={p} className="flex items-center gap-1">
-                {p} <Skeleton className="h-3 w-12 bg-rule" />
+                {p} <Skeleton className="h-3 w-12 bg-surface-active" />
               </span>
             ))}
           </span>

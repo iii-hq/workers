@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useMemoryEvents } from '@/hooks/use-memory-events'
 import {
-  MEMORIES_PAGE_SIZE,
   listBanks,
-  listRules,
   listMemories,
+  listRules,
   listTags,
+  MEMORIES_PAGE_SIZE,
   type MemoryBank,
-  type MemoryRule,
   type MemoryItem,
+  type MemoryRule,
 } from '@/lib/memory'
 
 /**
@@ -102,7 +102,13 @@ export function useMemoryLive(enabled: boolean): MemoryLive {
         }
         if (bank) {
           const [memoryPage, nextRules, nextTags] = await Promise.all([
-            listMemories(bank, includeSuperseded, offset, MEMORIES_PAGE_SIZE, tag),
+            listMemories(
+              bank,
+              includeSuperseded,
+              offset,
+              MEMORIES_PAGE_SIZE,
+              tag,
+            ),
             listRules(bank),
             listTags(bank),
           ])

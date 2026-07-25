@@ -4,18 +4,20 @@ import * as React from 'react'
 import { cn } from '@/lib/utils'
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-x-2 whitespace-nowrap font-mono lowercase rounded-none transition-[background-color,color,border-color] duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40 select-none',
+  'inline-flex items-center justify-center gap-x-2 whitespace-nowrap font-mono lowercase rounded-sm transition-[background-color,color,border-color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40 select-none',
   {
     variants: {
       variant: {
-        primary: 'bg-ink text-bg border border-ink hover:bg-bg hover:text-ink',
+        primary:
+          'bg-ink text-bg border border-transparent hover:bg-ink/90 rounded-md',
         ghost:
-          'bg-transparent text-ink border border-transparent hover:bg-ink hover:text-bg',
-        pill: 'bg-bg text-ink border border-ink hover:bg-ink hover:text-bg',
-        icon: 'bg-bg text-ink-faint border border-rule hover:text-ink',
-        terminal: 'bg-bg text-ink border border-rule justify-start',
+          'bg-transparent text-ink-faint border border-transparent hover:bg-surface-hover hover:text-ink',
+        pill: 'bg-surface text-ink border border-transparent hover:bg-surface-hover',
+        icon: 'bg-transparent text-ink-faint border border-transparent hover:bg-surface-hover hover:text-ink',
+        terminal:
+          'bg-surface text-ink border border-transparent justify-start hover:bg-surface-hover',
         wiggle:
-          'wiggle bg-ink text-bg border border-ink hover:bg-bg hover:text-ink relative',
+          'wiggle bg-ink text-bg border border-transparent hover:bg-ink/90 rounded-md relative',
       },
       size: {
         sm: 'h-8 px-3 text-[13px]',

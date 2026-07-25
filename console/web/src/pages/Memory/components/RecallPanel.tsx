@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
-import { type MemoryItem, type TurnPreview, preview } from '@/lib/memory'
+import { type MemoryItem, preview, type TurnPreview } from '@/lib/memory'
 import { cn } from '@/lib/utils'
 
 /**
@@ -140,9 +140,15 @@ export function RecallPanel({ bank, memories, tags }: RecallPanelProps) {
               className="w-full flex items-center gap-2 px-3 py-2 text-left"
             >
               {showPrompt ? (
-                <ChevronDown className="w-3.5 h-3.5 text-ink-ghost" aria-hidden />
+                <ChevronDown
+                  className="w-3.5 h-3.5 text-ink-ghost"
+                  aria-hidden
+                />
               ) : (
-                <ChevronRight className="w-3.5 h-3.5 text-ink-ghost" aria-hidden />
+                <ChevronRight
+                  className="w-3.5 h-3.5 text-ink-ghost"
+                  aria-hidden
+                />
               )}
               <span className="font-mono text-[11px] lowercase text-ink">
                 system prompt gets: {result.rules} rule
@@ -177,7 +183,10 @@ export function RecallPanel({ bank, memories, tags }: RecallPanelProps) {
                   <li key={memory.id} className="px-3 py-2 flex flex-col gap-1">
                     <div className="flex items-center gap-2">
                       <span
-                        className={cn('h-1.5 shrink-0', score > 0 ? 'bg-accent' : 'bg-rule')}
+                        className={cn(
+                          'h-1.5 shrink-0',
+                          score > 0 ? 'bg-accent' : 'bg-surface-active',
+                        )}
                         style={{
                           width: `${Math.max(4, Math.round((score / maxScore) * 64))}px`,
                         }}

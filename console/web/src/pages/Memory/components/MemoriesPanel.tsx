@@ -262,7 +262,11 @@ export function MemoriesPanel({
   const pages = Math.max(1, Math.ceil(total / pageSize))
 
   const buckets = useMemo(
-    () => activityBuckets(memories.map((m) => m.created_at), 30),
+    () =>
+      activityBuckets(
+        memories.map((m) => m.created_at),
+        30,
+      ),
     [memories],
   )
   const capturedThisWeek = useMemo(
@@ -275,8 +279,8 @@ export function MemoriesPanel({
     <div className="flex flex-col gap-3">
       <p className="font-mono text-[11px] lowercase text-ink-faint">
         one line per durable thing said in chat — captured automatically after
-        each turn, each with the conversation it came from. a memory reaches
-        the agent only when it matches the question being asked; rules are the
+        each turn, each with the conversation it came from. a memory reaches the
+        agent only when it matches the question being asked; rules are the
         always-on half.
       </p>
 
@@ -287,7 +291,10 @@ export function MemoriesPanel({
               <span
                 // biome-ignore lint/suspicious/noArrayIndexKey: fixed-size day series
                 key={i}
-                className={cn('w-[5px]', count > 0 ? 'bg-accent' : 'bg-rule')}
+                className={cn(
+                  'w-[5px]',
+                  count > 0 ? 'bg-accent' : 'bg-surface-active',
+                )}
                 style={{
                   height: `${count > 0 ? Math.max(15, Math.round((count / maxBucket) * 100)) : 6}%`,
                 }}

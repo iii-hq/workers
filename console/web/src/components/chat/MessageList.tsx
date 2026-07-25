@@ -174,7 +174,7 @@ export function MessageList({
 
   return (
     <div ref={containerRef} className={cn('flex-1 overflow-y-auto', listPad)}>
-      <div className="mx-auto max-w-[760px] flex flex-col gap-y-8">
+      <div className="mx-auto max-w-[720px] flex flex-col gap-y-8">
         {items.map((item) => {
           if (item.kind === 'fcall-group') {
             return (

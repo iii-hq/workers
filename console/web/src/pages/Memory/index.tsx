@@ -18,10 +18,10 @@ import {
 } from '@/lib/memory'
 import { cn } from '@/lib/utils'
 import { BankRail } from './components/BankRail'
-import { RulesPanel } from './components/RulesPanel'
 import { MemoriesPanel } from './components/MemoriesPanel'
 import { MemoryGraph } from './components/MemoryGraph'
 import { RecallPanel } from './components/RecallPanel'
+import { RulesPanel } from './components/RulesPanel'
 import { useMemoryLive } from './hooks/useMemoryLive'
 
 /**
@@ -214,9 +214,13 @@ export function Memory() {
                     onTagChange={setTag}
                     tags={tags}
                     onOpenChat={conversations.select}
-                    onSave={(text) => act(() => saveMemory(selected, text, false))}
+                    onSave={(text) =>
+                      act(() => saveMemory(selected, text, false))
+                    }
                     onPin={(memory: MemoryItem) =>
-                      void act(() => pinMemory(selected, memory.id, !memory.pinned))
+                      void act(() =>
+                        pinMemory(selected, memory.id, !memory.pinned),
+                      )
                     }
                     onEdit={(memory, text) =>
                       act(() => updateMemory(selected, memory.id, text))
@@ -232,7 +236,9 @@ export function Memory() {
                     totalFacts={total}
                     onShowFacts={() => setPanel('memories')}
                     onPin={(memory: MemoryItem) =>
-                      void act(() => pinMemory(selected, memory.id, !memory.pinned))
+                      void act(() =>
+                        pinMemory(selected, memory.id, !memory.pinned),
+                      )
                     }
                     onDelete={(memory) =>
                       void act(() => deleteMemory(selected, memory.id))
