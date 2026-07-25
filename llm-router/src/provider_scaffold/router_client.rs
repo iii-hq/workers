@@ -9,13 +9,18 @@ use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 pub async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
-    iii.trigger(TriggerRequest {
+    let request = TriggerRequest {
         function_id: function_id.into(),
         payload,
         action: None,
         timeout_ms: Some(15_000),
-    })
-    .await
+    };
+    // Route the cross-worker call to this worker's namespace so it reaches the
+    // router registered in the same namespace (None => the engine's default).
+    match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await,
+        None => iii.trigger(request).await,
+    }
 }
 
 /// `router::provider::resolve` — credential + effective settings.
