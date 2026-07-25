@@ -138,6 +138,7 @@ pub fn register_models_changed_flush(iii: &IIIClient, cache: Arc<CachingModelRes
         function_id: MODELS_CHANGED_FN_ID.to_string(),
         config: json!({}),
         metadata: None,
+        namespace: iii.namespace(),
     }) {
         tracing::warn!(
             error = %e,
