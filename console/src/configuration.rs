@@ -222,6 +222,7 @@ pub async fn start_injectable_ui_sync(iii: &Arc<IIIClient>, control: UiControl) 
             "event_types": ["configuration:updated"],
         }),
         metadata: None,
+        namespace: iii.namespace(),
     }) {
         tracing::warn!(
             error = %e,

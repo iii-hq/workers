@@ -14,7 +14,7 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.21.6"
+iii-sdk = "=0.22.0-alpha.2"
 # Worker-side injectable console UI (content function + console:script/style
 # triggers + hot-reload watcher) — the console dogfoods its own protocol to
 # ship the injectable-UI toggle form. Direct link, never published.
