@@ -205,6 +205,7 @@ pub async fn register_config_trigger(iii: &Arc<IIIClient>, boot: &BootHandle) ->
             "event_types": ["configuration:updated"],
         }),
         metadata: None,
+        namespace: iii.namespace(),
     })?;
     Ok(())
 }
