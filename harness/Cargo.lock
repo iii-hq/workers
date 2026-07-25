@@ -508,8 +508,8 @@ dependencies = [
  "async-trait",
  "clap",
  "globset",
- "iii-helpers",
- "iii-sdk",
+ "iii-helpers 0.22.0-alpha.2",
+ "iii-sdk 0.22.0-alpha.2",
  "jsonschema",
  "schemars",
  "serde",
@@ -530,7 +530,7 @@ dependencies = [
  "anyhow",
  "clap",
  "harness",
- "iii-sdk",
+ "iii-sdk 0.21.8",
  "serde",
  "serde_json",
  "tokio",
@@ -545,7 +545,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "iii-sdk",
+ "iii-sdk 0.21.8",
  "jsonschema",
  "nix",
  "regex",
@@ -824,6 +824,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-helpers"
+version = "0.22.0-alpha.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a5559b662390e53fa7fcac83451ae1667306e94c44a97f6c617f1e3023f1dfd"
+dependencies = [
+ "futures-util",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry_sdk",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "iii-sdk"
 version = "0.21.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -832,7 +853,28 @@ dependencies = [
  "async-trait",
  "futures-util",
  "hostname",
- "iii-helpers",
+ "iii-helpers 0.21.8",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "iii-sdk"
+version = "0.22.0-alpha.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "743c738975e139d6c5ee0e0635699308e9f85969da11003bc123712f45b48def"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "hostname",
+ "iii-helpers 0.22.0-alpha.2",
  "reqwest",
  "schemars",
  "serde",
