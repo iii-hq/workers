@@ -181,7 +181,19 @@ export function ResultGrid({
                   </>
                 )
                 return (
-                  <th key={col.name} className={isNum ? 'num' : undefined}>
+                  <th
+                    key={col.name}
+                    className={isNum ? 'num' : undefined}
+                    aria-sort={
+                      onSort
+                        ? sorted === 'asc'
+                          ? 'ascending'
+                          : sorted === 'desc'
+                            ? 'descending'
+                            : 'none'
+                        : undefined
+                    }
+                  >
                     {onSort ? (
                       <button
                         type="button"

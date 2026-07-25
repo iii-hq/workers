@@ -23,8 +23,14 @@ function Svg({
   children,
   className,
   style,
+  'aria-hidden': ariaHidden,
+  'aria-label': ariaLabel,
   ...rest
 }: IconProps & { children: ReactNode }) {
+  // Decorative by default. A caller passing aria-label opts into a labeled,
+  // non-hidden icon (role=img so it reads as a graphic); an explicit
+  // aria-hidden always wins.
+  const labeled = ariaLabel != null
   return (
     <svg
       width={size}
@@ -37,8 +43,10 @@ function Svg({
       strokeLinejoin="round"
       className={className}
       style={{ flexShrink: 0, display: 'inline-block', ...style }}
+      role={labeled ? 'img' : undefined}
+      aria-label={ariaLabel}
+      aria-hidden={ariaHidden ?? (labeled ? undefined : true)}
       {...rest}
-      aria-hidden="true"
     >
       {children}
     </svg>

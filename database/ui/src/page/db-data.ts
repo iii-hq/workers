@@ -120,7 +120,9 @@ export async function listDbs(host: Host): Promise<DbInfo[]> {
   const res = listDatabasesResponseSchema.safeParse(
     await triggerRaw(host, DATABASE_LIST_FN, {}),
   )
-  if (!res.success) return []
+  if (!res.success) {
+    throw new Error('unexpected response shape from database::listDatabases')
+  }
   return res.data.databases.map((db) => ({
     name: db.name,
     driver: parseDriver(db.driver),
@@ -286,13 +288,16 @@ export async function tableIndexes(
 
 /* ---- ad-hoc read-only queries ---- */
 
-/** Leading keyword of a statement (comments stripped). */
-function leadingKeyword(sql: string): string {
-  const cleaned = sql
+/** Strip comments and quoted text (strings + delimited identifiers) so the
+    single-statement and write-form checks never trip on a `;`, `=`, or keyword
+    that lives inside a literal. */
+function stripSqlNoise(sql: string): string {
+  return sql
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
     .replace(/--[^\n]*/g, ' ')
-    .trim()
-  return cleaned.split(/[^a-zA-Z_]+/, 1)[0]?.toUpperCase() ?? ''
+    .replace(/'(?:''|[^'])*'/g, "''")
+    .replace(/"(?:""|[^"])*"/g, '""')
+    .replace(/`(?:``|[^`])*`/g, '``')
 }
 
 const READ_ONLY_KEYWORDS = new Set([
@@ -305,9 +310,28 @@ const READ_ONLY_KEYWORDS = new Set([
   'VALUES',
 ])
 
-/** Console-side gate: the page only issues read statements. */
+/** Write / DDL / maintenance keywords that must not appear anywhere in a
+    read-only statement — catches mutating CTEs (`WITH x AS (DELETE …)`) and
+    `EXPLAIN ANALYZE <write>`, which the leading keyword alone waves through. */
+const WRITE_KEYWORD =
+  /\b(INSERT|UPDATE|DELETE|REPLACE|MERGE|UPSERT|DROP|CREATE|ALTER|TRUNCATE|GRANT|REVOKE|ATTACH|DETACH|REINDEX|VACUUM|ANALYZE|COMMIT|ROLLBACK|BEGIN)\b/i
+
+/**
+ * Console-side gate: the page issues a SINGLE read statement. Defense in depth
+ * (the worker is the real boundary): rejects any statement after the first `;`,
+ * a non-read leading keyword, any write/DDL keyword anywhere (so mutating CTEs
+ * and `EXPLAIN ANALYZE` cannot slip through), and writable `PRAGMA foo = bar`
+ * forms while keeping read PRAGMAs (`PRAGMA table_info(x)`).
+ */
 export function isReadOnlySql(sql: string): boolean {
-  return READ_ONLY_KEYWORDS.has(leadingKeyword(sql))
+  const stripped = stripSqlNoise(sql).trim()
+  const semi = stripped.indexOf(';')
+  if (semi !== -1 && stripped.slice(semi + 1).trim() !== '') return false
+  const keyword = (stripped.split(/[^a-zA-Z_]+/, 1)[0] ?? '').toUpperCase()
+  if (!READ_ONLY_KEYWORDS.has(keyword)) return false
+  if (WRITE_KEYWORD.test(stripped)) return false
+  if (keyword === 'PRAGMA' && stripped.includes('=')) return false
+  return true
 }
 
 export interface AdhocResult {
@@ -522,6 +546,9 @@ export interface TablePage {
   result: QueryResponse
   page: number
   pageSize: number
+  /** True when a `pageSize + 1` sentinel row came back — a next page exists.
+      Lets pagination stay bounded when the total row count is unknown. */
+  hasMore: boolean
 }
 
 export async function fetchTablePage(
@@ -534,14 +561,27 @@ export async function fetchTablePage(
   sort?: TableSort | null,
 ): Promise<TablePage> {
   const ref = quoteTableRef(driver, table)
-  const offset = page * pageSize
+  // Normalize to non-negative integers before interpolating — a fractional or
+  // non-finite page/size would otherwise yield broken or unbounded SQL.
+  const size = Math.max(1, Math.trunc(pageSize) || PAGE_SIZE)
+  const safePage = Math.max(0, Math.trunc(page) || 0)
+  const offset = safePage * size
   const orderBy = sort
     ? ` ORDER BY ${quoteIdent(driver, sort.column)} ${sort.dir === 'desc' ? 'DESC' : 'ASC'}`
     : ''
+  // Fetch one extra sentinel row: its presence means a next page exists, so
+  // navigation stays bounded even when the total count is unknown.
   const result = await runQuery(
     host,
     db,
-    `SELECT * FROM ${ref}${orderBy} LIMIT ${pageSize} OFFSET ${offset}`,
+    `SELECT * FROM ${ref}${orderBy} LIMIT ${size + 1} OFFSET ${offset}`,
   )
-  return { result, page, pageSize }
+  const hasMore = result.rows.length > size
+  const rows = result.rows.slice(0, size)
+  return {
+    result: { ...result, rows, row_count: rows.length },
+    page: safePage,
+    pageSize: size,
+    hasMore,
+  }
 }

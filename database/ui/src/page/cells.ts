@@ -13,11 +13,9 @@ export function cellText(value: unknown): string {
   return String(value)
 }
 
-/** Best-effort clipboard write — the copy affordance is a convenience. */
+/** Best-effort clipboard write — the copy affordance is a convenience.
+ *  clipboard may be missing (non-secure context) and writeText may reject
+ *  (permission denied); the `?.catch` swallows both. */
 export function copyText(text: string): void {
-  try {
-    void navigator.clipboard?.writeText(text)
-  } catch {
-    // clipboard blocked/unavailable — nothing better to do here
-  }
+  void navigator.clipboard?.writeText(text)?.catch(() => {})
 }

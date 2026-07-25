@@ -75,10 +75,13 @@ export function TableDataPanel({
   )
 
   const total = countRead.data ?? null
+  const hasMore = pageRead.data?.hasMore ?? false
   const totalPages = useMemo(() => {
-    if (total === null) return page + 2
-    return Math.max(1, Math.ceil(total / pageSize))
-  }, [total, page, pageSize])
+    if (total !== null) return Math.max(1, Math.ceil(total / pageSize))
+    // Unknown count (or count query failed): allow one more page only when the
+    // sentinel row says a next page exists — bounds otherwise-unbounded "next".
+    return hasMore ? page + 2 : page + 1
+  }, [total, hasMore, page, pageSize])
 
   if (pageRead.error) {
     return (
