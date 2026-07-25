@@ -386,6 +386,7 @@ fn register_asset_trigger(
         function_id: function_id.to_string(),
         config: serde_json::json!({ "path": path }),
         metadata: None,
+        namespace: iii.namespace(),
     })
 }
 
