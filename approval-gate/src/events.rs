@@ -253,15 +253,16 @@ impl Emitter {
     ) {
         for binding in set.snapshot() {
             if binding_matches(&binding.filter, session_id, session_metadata) {
-                let res = self
-                    .iii
-                    .trigger(TriggerRequest {
-                        function_id: binding.function_id.clone(),
-                        payload: payload.clone(),
-                        action: Some(TriggerAction::Void),
-                        timeout_ms: None,
-                    })
-                    .await;
+                let request = TriggerRequest {
+                    function_id: binding.function_id.clone(),
+                    payload: payload.clone(),
+                    action: Some(TriggerAction::Void),
+                    timeout_ms: None,
+                };
+                let res = match self.iii.namespace() {
+                    Some(ns) => self.iii.trigger(request.namespace(ns)).await,
+                    None => self.iii.trigger(request).await,
+                };
                 if let Err(e) = res {
                     tracing::warn!(
                         function_id = %binding.function_id,
