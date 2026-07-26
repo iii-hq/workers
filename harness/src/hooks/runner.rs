@@ -272,14 +272,42 @@ impl HookRegistry {
             ("iii.tag.kind", "harness.hook"),
             ("iii.hook.point", point.as_str()),
         ];
+        let request = TriggerRequest {
+            function_id: binding.function_id.clone(),
+            payload: input,
+            action: None,
+            timeout_ms: Some(binding.timeout_ms),
+        };
+        // A hook's target function_id is a runtime value: an engine builtin
+        // (e.g. a hook wired to `state::set`) stays in the default namespace;
+        // a sibling worker's function routes to the worker's namespace.
+        let route_ns = self.iii.namespace().filter(|_| {
+            !matches!(
+                binding.function_id.split("::").next(),
+                Some(
+                    "state"
+                        | "stream"
+                        | "queue"
+                        | "pubsub"
+                        | "configuration"
+                        | "cron"
+                        | "http"
+                        | "engine"
+                        | "sandbox"
+                        | "log"
+                        | "secret"
+                        | "kv"
+                        | "iii"
+                )
+            )
+        });
+        let request: iii_sdk::protocol::TriggerRequestWithMetadata = match route_ns {
+            Some(ns) => request.namespace(ns),
+            None => request.into(),
+        };
         let fut = iii_helpers::observability::run_with_baggage(
             &baggage,
-            self.iii.trigger(TriggerRequest {
-                function_id: binding.function_id.clone(),
-                payload: input,
-                action: None,
-                timeout_ms: Some(binding.timeout_ms),
-            }),
+            self.iii.trigger(request),
         );
         let bounded = tokio::time::timeout(
             Duration::from_millis(binding.timeout_ms.saturating_add(1_000)),
