@@ -212,7 +212,27 @@ impl Emitter {
                 action: Some(TriggerAction::Void),
                 timeout_ms: None,
             };
-            let res = match self.iii.namespace() {
+            let route_ns = self.iii.namespace().filter(|_| {
+                !matches!(
+                    binding.function_id.split("::").next(),
+                    Some(
+                        "state"
+                            | "stream"
+                            | "queue"
+                            | "pubsub"
+                            | "configuration"
+                            | "cron"
+                            | "http"
+                            | "engine"
+                            | "sandbox"
+                            | "log"
+                            | "secret"
+                            | "kv"
+                            | "iii"
+                    )
+                )
+            });
+            let res = match route_ns {
                 Some(ns) => self.iii.trigger(request.namespace(ns)).await,
                 None => self.iii.trigger(request).await,
             };
