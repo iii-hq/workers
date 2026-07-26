@@ -986,16 +986,17 @@ async fn spawn_reaction(
 ) -> Result<ReactResult, HarnessError> {
     let mut payload = build_spawn_payload(task, spec, parent.as_deref());
     payload["reactive_depth"] = json!(reactive_depth);
-    match deps
-        .iii
-        .trigger(TriggerRequest {
-            function_id: super::SPAWN_ID.to_string(),
-            payload,
-            action: None,
-            timeout_ms: None,
-        })
-        .await
-    {
+    let request = TriggerRequest {
+        function_id: super::SPAWN_ID.to_string(),
+        payload,
+        action: None,
+        timeout_ms: None,
+    };
+    let res = match deps.iii.namespace() {
+        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
+        None => deps.iii.trigger(request).await,
+    };
+    match res {
         Ok(v) => {
             let child = v
                 .get("child_session_id")
@@ -1164,16 +1165,16 @@ fn parent_anchor(event: &Value, spec: &ReactSpec) -> Option<String> {
 async fn resolve_root(deps: &Deps, session_id: &str) -> String {
     let mut current = session_id.to_string();
     for _ in 0..32 {
-        let resp = match deps
-            .iii
-            .trigger(TriggerRequest {
-                function_id: "session::get".to_string(),
-                payload: json!({ "session_id": current }),
-                action: None,
-                timeout_ms: None,
-            })
-            .await
-        {
+        let request = TriggerRequest {
+            function_id: "session::get".to_string(),
+            payload: json!({ "session_id": current }),
+            action: None,
+            timeout_ms: None,
+        };
+        let resp = match match deps.iii.namespace() {
+            Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
+            None => deps.iii.trigger(request).await,
+        } {
             Ok(v) => v,
             Err(_) => break,
         };
@@ -1351,15 +1352,17 @@ pub const MAX_REACTIVE_DEPTH: u32 = 8;
 /// unreachable (callers fail OPEN on `None` — a router blip must not block
 /// registrations or reactions; a definitively unknown id must).
 async fn known_model_ids(iii: &iii_sdk::IIIClient) -> Option<Vec<String>> {
-    let resp = iii
-        .trigger(TriggerRequest {
-            function_id: "router::models::list".to_string(),
-            payload: json!({}),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await
-        .ok()?;
+    let request = TriggerRequest {
+        function_id: "router::models::list".to_string(),
+        payload: json!({}),
+        action: None,
+        timeout_ms: Some(5_000),
+    };
+    let resp = match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await,
+        None => iii.trigger(request).await,
+    }
+    .ok()?;
     Some(parse_model_ids(&resp))
 }
 

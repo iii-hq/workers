@@ -119,15 +119,18 @@ pub async fn enqueue_step(
     if let Some(preview) = message_preview {
         payload["message_preview"] = json!(preview);
     }
-    iii.trigger(TriggerRequest {
+    let request = TriggerRequest {
         function_id: "harness::turn".to_string(),
         payload,
         action: Some(TriggerAction::Enqueue {
             queue: TURN_QUEUE.to_string(),
         }),
         timeout_ms: None,
-    })
-    .await
+    };
+    match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await,
+        None => iii.trigger(request).await,
+    }
     .map(|_| ())
     .map_err(|e| HarnessError::Dependency(format!("enqueue harness::turn: {e}")))
 }
