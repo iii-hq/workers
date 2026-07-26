@@ -206,15 +206,16 @@ impl Emitter {
             if !matches {
                 continue;
             }
-            let res = self
-                .iii
-                .trigger(TriggerRequest {
-                    function_id: binding.function_id.clone(),
-                    payload: payload.clone(),
-                    action: Some(TriggerAction::Void),
-                    timeout_ms: None,
-                })
-                .await;
+            let request = TriggerRequest {
+                function_id: binding.function_id.clone(),
+                payload: payload.clone(),
+                action: Some(TriggerAction::Void),
+                timeout_ms: None,
+            };
+            let res = match self.iii.namespace() {
+                Some(ns) => self.iii.trigger(request.namespace(ns)).await,
+                None => self.iii.trigger(request).await,
+            };
             if let Err(e) = res {
                 tracing::warn!(function_id = %binding.function_id, error = %e, "void fan-out failed");
             }
