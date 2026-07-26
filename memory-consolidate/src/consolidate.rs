@@ -171,13 +171,16 @@ fn group_by(rows: &[MemoryRow], key: fn(&str) -> String, report_only: bool) -> V
 }
 
 async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, String> {
-    iii.trigger(TriggerRequest {
+    let request = TriggerRequest {
         function_id: function_id.to_string(),
         payload,
         action: None,
         timeout_ms: Some(CALL_TIMEOUT_MS),
-    })
-    .await
+    };
+    match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await,
+        None => iii.trigger(request).await,
+    }
     .map_err(|e| format!("{function_id}: {e}"))
 }
 
