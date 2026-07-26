@@ -192,20 +192,22 @@ async fn fetch_credential(account: &str) -> Result<Value, Error> {
             "internal: iii handle not initialized for credential fetch",
         )
     })?;
-    let cred = iii
-        .trigger(TriggerRequest {
-            function_id: "auth::get_token".to_string(),
-            payload: json!({ "provider": format!("email::{}", account) }),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await
-        .map_err(|e| {
-            handler_err(
-                "E606",
-                &format!("auth::get_token failed for `email::{account}`: {e}"),
-            )
-        })?;
+    let request = TriggerRequest {
+        function_id: "auth::get_token".to_string(),
+        payload: json!({ "provider": format!("email::{}", account) }),
+        action: None,
+        timeout_ms: Some(5_000),
+    };
+    let cred = match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await,
+        None => iii.trigger(request).await,
+    }
+    .map_err(|e| {
+        handler_err(
+            "E606",
+            &format!("auth::get_token failed for `email::{account}`: {e}"),
+        )
+    })?;
     if cred.is_null() {
         return Err(handler_err(
             "E607",
