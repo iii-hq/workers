@@ -16,15 +16,16 @@ pub async fn emit_run_completed(
     deps: &crate::functions::Deps,
     record: &crate::types::WorkflowRunRecord,
 ) {
-    let _ = deps
-        .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "workflow::run-completed".into(),
-            payload: completed_payload(record),
-            action: Some(iii_sdk::TriggerAction::Void),
-            timeout_ms: None,
-        })
-        .await; // best-effort fire-and-forget
+    let request = iii_sdk::protocol::TriggerRequest {
+        function_id: "workflow::run-completed".into(),
+        payload: completed_payload(record),
+        action: Some(iii_sdk::TriggerAction::Void),
+        timeout_ms: None,
+    };
+    let _ = match deps.iii.namespace() {
+        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
+        None => deps.iii.trigger(request).await,
+    }; // best-effort fire-and-forget
 }
 
 /// Fire the caller-supplied completion callback, if the run carries one. The
@@ -46,15 +47,16 @@ pub async fn emit_notify(deps: &crate::functions::Deps, record: &crate::types::W
         .queue
         .clone()
         .unwrap_or_else(|| "default".to_string());
-    let _ = deps
-        .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: notify.function_id.clone(),
-            payload: completed_payload(record),
-            action: Some(iii_sdk::TriggerAction::Enqueue { queue }),
-            timeout_ms: None,
-        })
-        .await; // best-effort; durable retry is the queue's job
+    let request = iii_sdk::protocol::TriggerRequest {
+        function_id: notify.function_id.clone(),
+        payload: completed_payload(record),
+        action: Some(iii_sdk::TriggerAction::Enqueue { queue }),
+        timeout_ms: None,
+    };
+    let _ = match deps.iii.namespace() {
+        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
+        None => deps.iii.trigger(request).await,
+    }; // best-effort; durable retry is the queue's job
 }
 
 /// Build the `harness::send` payload that posts the run outcome into the
@@ -132,15 +134,16 @@ pub async fn emit_reply(deps: &crate::functions::Deps, record: &crate::types::Wo
     if payload.is_null() {
         return;
     }
-    let _ = deps
-        .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "harness::send".into(),
-            payload,
-            action: None,
-            timeout_ms: None,
-        })
-        .await; // best-effort; deterministic idempotency_key makes re-fire safe
+    let request = iii_sdk::protocol::TriggerRequest {
+        function_id: "harness::send".into(),
+        payload,
+        action: None,
+        timeout_ms: None,
+    };
+    let _ = match deps.iii.namespace() {
+        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
+        None => deps.iii.trigger(request).await,
+    }; // best-effort; deterministic idempotency_key makes re-fire safe
 }
 
 #[cfg(test)]

@@ -107,16 +107,17 @@ pub async fn reconcile_run(
         // abort reconciliation of the rest of the run (which previously bubbled up,
         // failed the whole tick, and dead-lettered). Log and move on — the node
         // stays Running and is re-polled next tick; the timeout sweep is the backstop.
-        let resp = match deps
-            .iii
-            .trigger(iii_sdk::protocol::TriggerRequest {
-                function_id: "harness::status".into(),
-                payload: json!({ "session_id": session_id }),
-                action: None,
-                timeout_ms: Some(timeout_ms),
-            })
-            .await
-        {
+        let request = iii_sdk::protocol::TriggerRequest {
+            function_id: "harness::status".into(),
+            payload: json!({ "session_id": session_id }),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        };
+        let result = match deps.iii.namespace() {
+            Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
+            None => deps.iii.trigger(request).await,
+        };
+        let resp = match result {
             Ok(resp) => resp,
             Err(e) => {
                 tracing::warn!(

@@ -246,16 +246,17 @@ pub(crate) async fn fire_node(
     }
     send_payload["session"] = session_init;
 
-    let resp = deps
-        .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "harness::send".into(),
-            payload: send_payload,
-            action: None,
-            timeout_ms: Some(dispatch_timeout_ms),
-        })
-        .await
-        .map_err(|e| WorkflowError::Trigger(e.to_string()))?;
+    let request = iii_sdk::protocol::TriggerRequest {
+        function_id: "harness::send".into(),
+        payload: send_payload,
+        action: None,
+        timeout_ms: Some(dispatch_timeout_ms),
+    };
+    let resp = match deps.iii.namespace() {
+        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
+        None => deps.iii.trigger(request).await,
+    }
+    .map_err(|e| WorkflowError::Trigger(e.to_string()))?;
 
     let turn_id = resp
         .get("turn_id")
