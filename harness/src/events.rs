@@ -459,9 +459,34 @@ impl TurnEvents {
                 action: Some(TriggerAction::Void),
                 timeout_ms: None,
             };
-            let res = match metadata {
-                Some(m) => self.iii.trigger(request.metadata(m)).await,
-                None => self.iii.trigger(request).await,
+            // A dynamic target may be an engine builtin (a hook wired to
+            // `state::set`) or a sibling worker's function — route to the
+            // worker's namespace only when it is NOT a builtin.
+            let route_ns = self.iii.namespace().filter(|_| {
+                !matches!(
+                    binding.function_id.split("::").next(),
+                    Some(
+                        "state"
+                            | "stream"
+                            | "queue"
+                            | "pubsub"
+                            | "configuration"
+                            | "cron"
+                            | "http"
+                            | "engine"
+                            | "sandbox"
+                            | "log"
+                            | "secret"
+                            | "kv"
+                            | "iii"
+                    )
+                )
+            });
+            let res = match (metadata, route_ns) {
+                (Some(m), Some(ns)) => self.iii.trigger(request.metadata(m).namespace(ns)).await,
+                (Some(m), None) => self.iii.trigger(request.metadata(m)).await,
+                (None, Some(ns)) => self.iii.trigger(request.namespace(ns)).await,
+                (None, None) => self.iii.trigger(request).await,
             };
             if let Err(e) = res {
                 tracing::warn!(trigger_type, function_id = %binding.function_id, error = %e, "turn-event fan-out failed");
