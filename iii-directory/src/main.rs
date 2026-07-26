@@ -352,14 +352,16 @@ async fn reconcile_one(
 async fn fetch_worker_list_with_retry(iii: &IIIClient) -> Option<Vec<serde_json::Value>> {
     const MAX_ATTEMPTS: u32 = 6;
     for attempt in 1..=MAX_ATTEMPTS {
-        let result = iii
-            .trigger(TriggerRequest {
-                function_id: "worker::list".to_string(),
-                payload: json!({}),
-                action: None,
-                timeout_ms: Some(10_000),
-            })
-            .await;
+        let request = TriggerRequest {
+            function_id: "worker::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(10_000),
+        };
+        let result = match iii.namespace() {
+            Some(ns) => iii.trigger(request.namespace(ns)).await,
+            None => iii.trigger(request).await,
+        };
 
         match result {
             Ok(val) => {

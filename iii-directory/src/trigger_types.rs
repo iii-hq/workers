@@ -87,14 +87,16 @@ pub async fn dispatch(iii: &IIIClient, subscribers: &SubscriberSet, payload: Val
     for function_id in targets {
         let fid = function_id.clone();
         let payload_copy = payload.clone();
-        let res = iii
-            .trigger(TriggerRequest {
-                function_id: fid,
-                payload: payload_copy,
-                action: Some(TriggerAction::Void),
-                timeout_ms: None,
-            })
-            .await;
+        let request = TriggerRequest {
+            function_id: fid,
+            payload: payload_copy,
+            action: Some(TriggerAction::Void),
+            timeout_ms: None,
+        };
+        let res = match iii.namespace() {
+            Some(ns) => iii.trigger(request.namespace(ns)).await,
+            None => iii.trigger(request).await,
+        };
         if let Err(e) = res {
             tracing::warn!(
                 function_id = %function_id,
