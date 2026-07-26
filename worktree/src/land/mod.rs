@@ -54,18 +54,20 @@ impl IiiEnqueuer {
 #[async_trait]
 impl Enqueuer for IiiEnqueuer {
     async fn enqueue(&self, queue: &str, function_id: &str, payload: Value) -> Result<(), WError> {
-        self.iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: Some(TriggerAction::Enqueue {
-                    queue: queue.to_string(),
-                }),
-                timeout_ms: None,
-            })
-            .await
-            .map(|_| ())
-            .map_err(|e| WError::new(codes::ENQUEUE_FAILED, format!("enqueue to {queue:?}: {e}")))
+        let request = TriggerRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: Some(TriggerAction::Enqueue {
+                queue: queue.to_string(),
+            }),
+            timeout_ms: None,
+        };
+        match self.iii.namespace() {
+            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
+            None => self.iii.trigger(request).await,
+        }
+        .map(|_| ())
+        .map_err(|e| WError::new(codes::ENQUEUE_FAILED, format!("enqueue to {queue:?}: {e}")))
     }
 }
 
