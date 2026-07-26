@@ -1137,16 +1137,40 @@ async fn dispatch_call(
         &[],
         crate::filesystem_scope::FilesystemBoundary::ConfiguredRoots,
     );
-    match deps
-        .iii
-        .trigger(TriggerRequest {
-            function_id: call.function_id.clone(),
-            payload,
-            action: None,
-            timeout_ms: Some(CALL_TIMEOUT_MS),
-        })
-        .await
-    {
+    let request = TriggerRequest {
+        function_id: call.function_id.clone(),
+        payload,
+        action: None,
+        timeout_ms: Some(CALL_TIMEOUT_MS),
+    };
+    // The call target is a runtime function_id: an engine builtin (e.g.
+    // `state::set`) stays in the default namespace; a sibling worker's
+    // function routes to the worker's namespace.
+    let route_ns = deps.iii.namespace().filter(|_| {
+        !matches!(
+            call.function_id.split("::").next(),
+            Some(
+                "state"
+                    | "stream"
+                    | "queue"
+                    | "pubsub"
+                    | "configuration"
+                    | "cron"
+                    | "http"
+                    | "engine"
+                    | "sandbox"
+                    | "log"
+                    | "secret"
+                    | "kv"
+                    | "iii"
+            )
+        )
+    });
+    let res = match route_ns {
+        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
+        None => deps.iii.trigger(request).await,
+    };
+    match res {
         Ok(_) => {
             tracing::info!(
                 function_id = %call.function_id,
