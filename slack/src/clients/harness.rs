@@ -50,25 +50,30 @@ pub async fn send(
     req: SendRequest,
     timeout_ms: u64,
 ) -> Result<SendResponse, Error> {
-    let value = iii
-        .trigger(TriggerRequest {
-            function_id: "harness::send".into(),
-            payload: serde_json::to_value(&req).unwrap_or(Value::Null),
-            action: None,
-            timeout_ms: Some(timeout_ms),
-        })
-        .await?;
+    let request = TriggerRequest {
+        function_id: "harness::send".into(),
+        payload: serde_json::to_value(&req).unwrap_or(Value::Null),
+        action: None,
+        timeout_ms: Some(timeout_ms),
+    };
+    let value = match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await?,
+        None => iii.trigger(request).await?,
+    };
     serde_json::from_value(value).map_err(|e| Error::Handler(format!("harness::send: {e}")))
 }
 
 pub async fn stop(iii: &IIIClient, session_id: &str, timeout_ms: u64) -> Result<(), Error> {
-    iii.trigger(TriggerRequest {
+    let request = TriggerRequest {
         function_id: "harness::stop".into(),
         payload: json!({ "session_id": session_id }),
         action: None,
         timeout_ms: Some(timeout_ms),
-    })
-    .await?;
+    };
+    match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await?,
+        None => iii.trigger(request).await?,
+    };
     Ok(())
 }
 
