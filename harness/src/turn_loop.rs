@@ -142,17 +142,19 @@ pub async fn enqueue_step(
     }
     let mut last_error = String::new();
     for attempt in 1..=ENQUEUE_ATTEMPTS {
-        match iii
-            .trigger(TriggerRequest {
-                function_id: "harness::turn".to_string(),
-                payload: payload.clone(),
-                action: Some(TriggerAction::Enqueue {
-                    queue: TURN_QUEUE.to_string(),
-                }),
-                timeout_ms: None,
-            })
-            .await
-        {
+        let request = TriggerRequest {
+            function_id: "harness::turn".to_string(),
+            payload: payload.clone(),
+            action: Some(TriggerAction::Enqueue {
+                queue: TURN_QUEUE.to_string(),
+            }),
+            timeout_ms: None,
+        };
+        let res = match iii.namespace() {
+            Some(namespace) => iii.trigger(request.namespace(namespace)).await,
+            None => iii.trigger(request).await,
+        };
+        match res {
             Ok(_) => return Ok(()),
             Err(e) => {
                 last_error = e.to_string();

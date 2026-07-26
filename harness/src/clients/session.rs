@@ -71,15 +71,17 @@ impl SessionClient {
     }
 
     async fn call(&self, function_id: &str, payload: Value) -> Result<Value, HarnessError> {
-        self.iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(self.timeout_ms),
-            })
-            .await
-            .map_err(|e| HarnessError::Dependency(format!("{function_id}: {e}")))
+        let request = TriggerRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: None,
+            timeout_ms: Some(self.timeout_ms),
+        };
+        let res = match self.iii.namespace() {
+            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
+            None => self.iii.trigger(request).await,
+        };
+        res.map_err(|e| HarnessError::Dependency(format!("{function_id}: {e}")))
     }
 
     /// Best-effort session title from `session::get` — `None` when the
