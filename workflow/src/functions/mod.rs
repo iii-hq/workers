@@ -41,15 +41,16 @@ impl Deps {
 /// `harness::stop` is a no-op for a session with no live turn, so this is safe to
 /// call on an already-finished session.
 pub(crate) async fn harness_stop_session(deps: &Deps, session_id: &str, dispatch_timeout_ms: u64) {
-    let _ = deps
-        .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "harness::stop".into(),
-            payload: serde_json::json!({ "session_id": session_id }),
-            action: None,
-            timeout_ms: Some(dispatch_timeout_ms),
-        })
-        .await;
+    let request = iii_sdk::protocol::TriggerRequest {
+        function_id: "harness::stop".into(),
+        payload: serde_json::json!({ "session_id": session_id }),
+        action: None,
+        timeout_ms: Some(dispatch_timeout_ms),
+    };
+    let _ = match deps.iii.namespace() {
+        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
+        None => deps.iii.trigger(request).await,
+    };
 }
 
 /// Stop the live session of every node still `Running`. Workflow nodes are
