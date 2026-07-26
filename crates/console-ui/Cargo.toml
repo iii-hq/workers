@@ -15,7 +15,7 @@ publish = false
 [dependencies]
 # Same exact pin the workers carry — path-linking this crate must never be
 # what drags a worker onto a different SDK build.
-iii-sdk = "=0.22.0-alpha.2"
+iii-sdk = "=0.22.0-alpha.3"
 tokio = { version = "1", features = ["rt", "sync", "time", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
