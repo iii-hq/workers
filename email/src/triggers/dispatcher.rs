@@ -53,7 +53,11 @@ impl EventDispatcher for EngineDispatcher {
                 timeout_ms: Some(sub.handler_timeout_ms),
             };
             let bound = Duration::from_millis(sub.handler_timeout_ms.saturating_add(1_000));
-            match timeout(bound, self.iii.trigger(req)).await {
+            let result = match self.iii.namespace() {
+                Some(ns) => timeout(bound, self.iii.trigger(req.namespace(ns))).await,
+                None => timeout(bound, self.iii.trigger(req)).await,
+            };
+            match result {
                 Ok(Ok(_)) => {}
                 Ok(Err(e)) => {
                     tracing::warn!(
