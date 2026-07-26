@@ -373,7 +373,27 @@ impl EventDeliverer for IiiDeliverer {
                 action: Some(TriggerAction::Void),
                 timeout_ms: None,
             };
-            let res = match iii.namespace() {
+            let route_ns = iii.namespace().filter(|_| {
+                !matches!(
+                    function_id.split("::").next(),
+                    Some(
+                        "state"
+                            | "stream"
+                            | "queue"
+                            | "pubsub"
+                            | "configuration"
+                            | "cron"
+                            | "http"
+                            | "engine"
+                            | "sandbox"
+                            | "log"
+                            | "secret"
+                            | "kv"
+                            | "iii"
+                    )
+                )
+            });
+            let res = match route_ns {
                 Some(ns) => iii.trigger(request.namespace(ns)).await,
                 None => iii.trigger(request).await,
             };
