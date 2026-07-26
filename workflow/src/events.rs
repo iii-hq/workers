@@ -53,7 +53,27 @@ pub async fn emit_notify(deps: &crate::functions::Deps, record: &crate::types::W
         action: Some(iii_sdk::TriggerAction::Enqueue { queue }),
         timeout_ms: None,
     };
-    let _ = match deps.iii.namespace() {
+    let route_ns = deps.iii.namespace().filter(|_| {
+        !matches!(
+            notify.function_id.split("::").next(),
+            Some(
+                "state"
+                    | "stream"
+                    | "queue"
+                    | "pubsub"
+                    | "configuration"
+                    | "cron"
+                    | "http"
+                    | "engine"
+                    | "sandbox"
+                    | "log"
+                    | "secret"
+                    | "kv"
+                    | "iii"
+            )
+        )
+    });
+    let _ = match route_ns {
         Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
         None => deps.iii.trigger(request).await,
     }; // best-effort; durable retry is the queue's job
