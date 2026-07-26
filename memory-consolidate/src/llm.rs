@@ -146,15 +146,17 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
     if !configured.is_empty() {
         return Ok(configured.to_string());
     }
-    let reply = iii
-        .trigger(TriggerRequest {
-            function_id: "router::models::list".into(),
-            payload: json!({}),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await
-        .map_err(|e| format!("router::models::list: {e}"))?;
+    let request = TriggerRequest {
+        function_id: "router::models::list".into(),
+        payload: json!({}),
+        action: None,
+        timeout_ms: Some(5_000),
+    };
+    let reply = match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await,
+        None => iii.trigger(request).await,
+    }
+    .map_err(|e| format!("router::models::list: {e}"))?;
     reply
         .get("models")
         .and_then(Value::as_array)
@@ -172,24 +174,26 @@ pub async fn judge(
     prompt: String,
 ) -> Result<JudgeReply, String> {
     let model = resolve_model(iii, configured_model).await?;
-    let reply = iii
-        .trigger(TriggerRequest {
-            function_id: "router::complete".into(),
-            payload: json!({
-                "model": model,
-                "system_prompt": JUDGE_SYSTEM,
-                "messages": [{
-                    "role": "user",
-                    "content": [{ "type": "text", "text": prompt }],
-                    "timestamp": now_ms() as i64,
-                }],
-                "max_output_tokens": 1_024,
-            }),
-            action: None,
-            timeout_ms: Some(LLM_TIMEOUT_MS),
-        })
-        .await
-        .map_err(|e| format!("router::complete: {e}"))?;
+    let request = TriggerRequest {
+        function_id: "router::complete".into(),
+        payload: json!({
+            "model": model,
+            "system_prompt": JUDGE_SYSTEM,
+            "messages": [{
+                "role": "user",
+                "content": [{ "type": "text", "text": prompt }],
+                "timestamp": now_ms() as i64,
+            }],
+            "max_output_tokens": 1_024,
+        }),
+        action: None,
+        timeout_ms: Some(LLM_TIMEOUT_MS),
+    };
+    let reply = match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await,
+        None => iii.trigger(request).await,
+    }
+    .map_err(|e| format!("router::complete: {e}"))?;
     let text = reply
         .pointer("/message/content")
         .and_then(Value::as_array)
