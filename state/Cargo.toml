@@ -18,10 +18,10 @@ name = "state"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.22.0-alpha.2"
+iii-sdk = "=0.22.0-alpha.3"
 # UpdateOp / StreamSetResult / StreamUpdateResult / UpdateOpError / MergePath —
 # the exact types the builtin used; pinned to the version iii-sdk resolves.
-iii-helpers = "=0.22.0-alpha.2"
+iii-helpers = "=0.22.0-alpha.3"
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs"] }
 serde = { version = "1", features = ["derive"] }
