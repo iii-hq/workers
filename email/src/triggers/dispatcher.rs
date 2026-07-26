@@ -53,7 +53,27 @@ impl EventDispatcher for EngineDispatcher {
                 timeout_ms: Some(sub.handler_timeout_ms),
             };
             let bound = Duration::from_millis(sub.handler_timeout_ms.saturating_add(1_000));
-            let result = match self.iii.namespace() {
+            let route_ns = self.iii.namespace().filter(|_| {
+                !matches!(
+                    sub.function_id.split("::").next(),
+                    Some(
+                        "state"
+                            | "stream"
+                            | "queue"
+                            | "pubsub"
+                            | "configuration"
+                            | "cron"
+                            | "http"
+                            | "engine"
+                            | "sandbox"
+                            | "log"
+                            | "secret"
+                            | "kv"
+                            | "iii"
+                    )
+                )
+            });
+            let result = match route_ns {
                 Some(ns) => timeout(bound, self.iii.trigger(req.namespace(ns))).await,
                 None => timeout(bound, self.iii.trigger(req)).await,
             };
