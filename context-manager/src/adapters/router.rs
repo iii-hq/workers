@@ -53,32 +53,34 @@ impl ModelResolver for RouterModelResolver {
         if let Some(p) = provider {
             payload["provider"] = json!(p);
         }
-        let resp = match self
-            .iii
-            .trigger(TriggerRequest {
-                function_id: "router::models::budget".to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: Some(MODELS_GET_TIMEOUT_MS),
-            })
-            .await
-        {
+        let request = TriggerRequest {
+            function_id: "router::models::budget".to_string(),
+            payload: payload.clone(),
+            action: None,
+            timeout_ms: Some(MODELS_GET_TIMEOUT_MS),
+        };
+        let budget_result = match self.iii.namespace() {
+            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
+            None => self.iii.trigger(request).await,
+        };
+        let resp = match budget_result {
             Ok(resp) => resp,
             Err(err) if is_unroutable(&err) => {
                 // Rolling upgrades may briefly run a context-manager newer than
                 // the router. Preserve the former, conservative behavior until
                 // `models::budget` is registered instead of dropping all the way
                 // to the 8k fallback model.
-                let response = self
-                    .iii
-                    .trigger(TriggerRequest {
-                        function_id: "router::models::get".to_string(),
-                        payload,
-                        action: None,
-                        timeout_ms: Some(MODELS_GET_TIMEOUT_MS),
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let request = TriggerRequest {
+                    function_id: "router::models::get".to_string(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(MODELS_GET_TIMEOUT_MS),
+                };
+                let response = match self.iii.namespace() {
+                    Some(ns) => self.iii.trigger(request.namespace(ns)).await,
+                    None => self.iii.trigger(request).await,
+                }
+                .map_err(|e| e.to_string())?;
                 if response.is_null() {
                     return Ok(None);
                 }
@@ -188,15 +190,16 @@ impl Summarizer for RouterSummarizer {
         // Read the outer budget from the live snapshot so a
         // summarizer_timeout_ms change takes effect without a restart.
         let timeout_ms = self.config.read().await.summarizer_timeout_ms;
-        let trigger_result = self
-            .iii
-            .trigger(TriggerRequest {
-                function_id: "router::chat".to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(timeout_ms),
-            })
-            .await;
+        let request = TriggerRequest {
+            function_id: "router::chat".to_string(),
+            payload,
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        };
+        let trigger_result = match self.iii.namespace() {
+            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
+            None => self.iii.trigger(request).await,
+        };
 
         // The terminal event precedes the trigger response; give the
         // socket a short drain window, then stop reading either way.
