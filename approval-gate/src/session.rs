@@ -6,11 +6,14 @@ use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 pub async fn get(iii: &IIIClient, session_id: &str) -> Result<Value, Error> {
-    iii.trigger(TriggerRequest {
+    let request = TriggerRequest {
         function_id: "session::get".into(),
         payload: json!({ "session_id": session_id }),
         action: None,
         timeout_ms: None,
-    })
-    .await
+    };
+    match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await,
+        None => iii.trigger(request).await,
+    }
 }

@@ -10,13 +10,16 @@ use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 pub async fn function_resolve(iii: &IIIClient, payload: Value) -> Result<Value, Error> {
-    iii.trigger(TriggerRequest {
+    let request = TriggerRequest {
         function_id: "harness::function::resolve".into(),
         payload,
         action: None,
         timeout_ms: None,
-    })
-    .await
+    };
+    match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await,
+        None => iii.trigger(request).await,
+    }
 }
 
 fn parse_roots(reply: &Value) -> Vec<String> {
@@ -36,14 +39,16 @@ fn parse_roots(reply: &Value) -> Vec<String> {
 /// error on "no grants" — only on transport/RPC failure, e.g. an older
 /// harness that doesn't implement this control plane yet).
 pub async fn filesystem_grants(iii: &IIIClient, session_id: &str) -> Result<Vec<String>, Error> {
-    let reply = iii
-        .trigger(TriggerRequest {
-            function_id: "harness::filesystem::grants".into(),
-            payload: json!({ "session_id": session_id }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await?;
+    let request = TriggerRequest {
+        function_id: "harness::filesystem::grants".into(),
+        payload: json!({ "session_id": session_id }),
+        action: None,
+        timeout_ms: None,
+    };
+    let reply = match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await?,
+        None => iii.trigger(request).await?,
+    };
     Ok(parse_roots(&reply))
 }
 
@@ -55,13 +60,15 @@ pub async fn filesystem_grant(
     session_id: &str,
     root: &str,
 ) -> Result<Vec<String>, Error> {
-    let reply = iii
-        .trigger(TriggerRequest {
-            function_id: "harness::filesystem::grant".into(),
-            payload: json!({ "session_id": session_id, "root": root }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await?;
+    let request = TriggerRequest {
+        function_id: "harness::filesystem::grant".into(),
+        payload: json!({ "session_id": session_id, "root": root }),
+        action: None,
+        timeout_ms: None,
+    };
+    let reply = match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await?,
+        None => iii.trigger(request).await?,
+    };
     Ok(parse_roots(&reply))
 }
