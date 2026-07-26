@@ -107,14 +107,16 @@ fn merge_learned(existing: &str, additions: &[String]) -> (String, usize) {
 /// `None` — injecting or writing the default bank when the session's real
 /// bank is unknown would leak across contexts.
 pub async fn resolve_bank(iii: &IIIClient, session_id: &str, default_bank: &str) -> Option<String> {
-    let reply = iii
-        .trigger(TriggerRequest {
-            function_id: "session::get".into(),
-            payload: json!({ "session_id": session_id }),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await;
+    let request = TriggerRequest {
+        function_id: "session::get".into(),
+        payload: json!({ "session_id": session_id }),
+        action: None,
+        timeout_ms: Some(5_000),
+    };
+    let reply = match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await,
+        None => iii.trigger(request).await,
+    };
     match reply {
         Ok(v) => {
             let from_meta = v
@@ -163,25 +165,26 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
     }
 
     let model = resolve_model(&deps.iii, &cfg.extraction_model).await?;
-    let reply = deps
-        .iii
-        .trigger(TriggerRequest {
-            function_id: "router::complete".into(),
-            payload: json!({
-                "model": model,
-                "system_prompt": EXTRACT_SYSTEM,
-                "messages": [{
-                    "role": "user",
-                    "content": [{ "type": "text", "text": transcript }],
-                    "timestamp": now_ms() as i64,
-                }],
-                "max_output_tokens": 1024,
-            }),
-            action: None,
-            timeout_ms: Some(cfg.extraction_timeout_ms),
-        })
-        .await
-        .map_err(|e| format!("router::complete: {e}"))?;
+    let request = TriggerRequest {
+        function_id: "router::complete".into(),
+        payload: json!({
+            "model": model,
+            "system_prompt": EXTRACT_SYSTEM,
+            "messages": [{
+                "role": "user",
+                "content": [{ "type": "text", "text": transcript }],
+                "timestamp": now_ms() as i64,
+            }],
+            "max_output_tokens": 1024,
+        }),
+        action: None,
+        timeout_ms: Some(cfg.extraction_timeout_ms),
+    };
+    let reply = match deps.iii.namespace() {
+        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
+        None => deps.iii.trigger(request).await,
+    }
+    .map_err(|e| format!("router::complete: {e}"))?;
 
     let text = assistant_text(&reply);
     let items = parse_items(&text)?;
@@ -407,15 +410,17 @@ async fn fetch_transcript_since(
         if let Some(c) = &cursor {
             payload["cursor"] = json!(c);
         }
-        let reply = iii
-            .trigger(TriggerRequest {
-                function_id: "session::messages".into(),
-                payload,
-                action: None,
-                timeout_ms: Some(10_000),
-            })
-            .await
-            .map_err(|e| format!("session::messages: {e}"))?;
+        let request = TriggerRequest {
+            function_id: "session::messages".into(),
+            payload,
+            action: None,
+            timeout_ms: Some(10_000),
+        };
+        let reply = match iii.namespace() {
+            Some(ns) => iii.trigger(request.namespace(ns)).await,
+            None => iii.trigger(request).await,
+        }
+        .map_err(|e| format!("session::messages: {e}"))?;
         if let Some(items) = reply.get("messages").and_then(Value::as_array) {
             for item in items {
                 let entry_id = item
@@ -507,15 +512,17 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
     if !configured.is_empty() {
         return Ok(configured.to_string());
     }
-    let reply = iii
-        .trigger(TriggerRequest {
-            function_id: "router::models::list".into(),
-            payload: json!({}),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await
-        .map_err(|e| format!("router::models::list: {e}"))?;
+    let request = TriggerRequest {
+        function_id: "router::models::list".into(),
+        payload: json!({}),
+        action: None,
+        timeout_ms: Some(5_000),
+    };
+    let reply = match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await,
+        None => iii.trigger(request).await,
+    }
+    .map_err(|e| format!("router::models::list: {e}"))?;
     let first = reply
         .get("models")
         .and_then(Value::as_array)
