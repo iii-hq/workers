@@ -55,20 +55,21 @@ impl TestRunner for ShellExecRunner {
         worktree_path: &str,
         timeout_ms: u64,
     ) -> Result<TestOutcome, WError> {
-        let result = self
-            .iii
-            .trigger(TriggerRequest {
-                function_id: "shell::exec".into(),
-                payload: json!({
-                    "command": cmd,
-                    "cwd": worktree_path,
-                    "fs_scope": { "root": worktree_path, "grants": [] },
-                    "timeout_ms": timeout_ms,
-                }),
-                action: None,
-                timeout_ms: Some(timeout_ms.saturating_add(TRIGGER_MARGIN_MS)),
-            })
-            .await;
+        let request = TriggerRequest {
+            function_id: "shell::exec".into(),
+            payload: json!({
+                "command": cmd,
+                "cwd": worktree_path,
+                "fs_scope": { "root": worktree_path, "grants": [] },
+                "timeout_ms": timeout_ms,
+            }),
+            action: None,
+            timeout_ms: Some(timeout_ms.saturating_add(TRIGGER_MARGIN_MS)),
+        };
+        let result = match self.iii.namespace() {
+            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
+            None => self.iii.trigger(request).await,
+        };
         match result {
             Ok(v) => {
                 let timed_out = v["timed_out"].as_bool().unwrap_or(false);

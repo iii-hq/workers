@@ -367,14 +367,16 @@ impl EventDeliverer for IiiDeliverer {
         let trigger_type = trigger_type.to_string();
         let function_id = function_id.to_string();
         tokio::spawn(async move {
-            let res = iii
-                .trigger(TriggerRequest {
-                    function_id: function_id.clone(),
-                    payload,
-                    action: Some(TriggerAction::Void),
-                    timeout_ms: None,
-                })
-                .await;
+            let request = TriggerRequest {
+                function_id: function_id.clone(),
+                payload,
+                action: Some(TriggerAction::Void),
+                timeout_ms: None,
+            };
+            let res = match iii.namespace() {
+                Some(ns) => iii.trigger(request.namespace(ns)).await,
+                None => iii.trigger(request).await,
+            };
             if let Err(e) = res {
                 tracing::warn!(trigger_type, function_id, error = %e, "event fan-out failed");
             }
