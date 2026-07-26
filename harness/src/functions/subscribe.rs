@@ -184,17 +184,18 @@ fn parent_filter_join_advisory(req: &SubscribeRequest) -> Option<String> {
 /// 0/N forever. Fail-open: a lookup error produces no note.
 async fn session_filter_advisory(deps: &Deps, req: &SubscribeRequest) -> Option<String> {
     let sid = turn_event_session_filter(req)?;
-    let exists = deps
-        .iii
-        .trigger(TriggerRequest {
-            function_id: "session::get".to_string(),
-            payload: json!({ "session_id": sid }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await
-        .map(|v| v.get("meta").is_some())
-        .unwrap_or(true);
+    let request = TriggerRequest {
+        function_id: "session::get".to_string(),
+        payload: json!({ "session_id": sid }),
+        action: None,
+        timeout_ms: None,
+    };
+    let exists = match deps.iii.namespace() {
+        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
+        None => deps.iii.trigger(request).await,
+    }
+    .map(|v| v.get("meta").is_some())
+    .unwrap_or(true);
     if exists {
         return None;
     }
