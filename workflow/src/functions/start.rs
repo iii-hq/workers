@@ -761,16 +761,17 @@ pub fn unknown_models(def: &WorkflowDef, registered: &BTreeSet<(String, String)>
 /// `result_error` remains the backstop.
 async fn fetch_registered_models(deps: &Deps) -> Option<BTreeSet<(String, String)>> {
     let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
-    let resp = deps
-        .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "router::models::list".into(),
-            payload: json!({}),
-            action: None,
-            timeout_ms: Some(timeout_ms),
-        })
-        .await
-        .ok()?;
+    let request = iii_sdk::protocol::TriggerRequest {
+        function_id: "router::models::list".into(),
+        payload: json!({}),
+        action: None,
+        timeout_ms: Some(timeout_ms),
+    };
+    let resp = match deps.iii.namespace() {
+        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
+        None => deps.iii.trigger(request).await,
+    }
+    .ok()?;
 
     let set: BTreeSet<(String, String)> = resp
         .get("models")?
@@ -823,15 +824,18 @@ pub async fn enqueue_tick(
     run_id: &str,
     step: u64,
 ) -> Result<(), WorkflowError> {
-    iii.trigger(iii_sdk::protocol::TriggerRequest {
+    let request = iii_sdk::protocol::TriggerRequest {
         function_id: "workflow::tick".into(),
         payload: json!({"run_id": run_id, "step": step}),
         action: Some(iii_sdk::TriggerAction::Enqueue {
             queue: "default".into(),
         }),
         timeout_ms: None,
-    })
-    .await
+    };
+    match iii.namespace() {
+        Some(ns) => iii.trigger(request.namespace(ns)).await,
+        None => iii.trigger(request).await,
+    }
     .map_err(|e| WorkflowError::Trigger(e.to_string()))?;
     Ok(())
 }
