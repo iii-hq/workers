@@ -36,7 +36,6 @@ import {
   RefreshCw,
   Table2,
 } from './icons'
-import { PAGE_CSS } from './page-styles'
 import { SchemaTree } from './SchemaTree'
 import { SqlPanel } from './SqlPanel'
 import { TableDataPanel } from './TableDataPanel'
@@ -91,7 +90,6 @@ export function DatabasePage({ host }: { host: Host }) {
 
   return (
     <div className="db-page">
-      <style>{PAGE_CSS}</style>
       <div className="db-head">
         <div>
           <div className="db-title">database</div>
