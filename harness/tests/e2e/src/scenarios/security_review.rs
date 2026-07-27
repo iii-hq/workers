@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::common;
-use super::{CriterionSpec, ExecutionPolicy, ModelRequirements, ScenarioSpec};
+use super::{CriterionSpec, ExecutionPolicy, ScenarioSpec};
 
 pub const ID: &str = "security_review";
 
@@ -16,11 +16,6 @@ pub fn scenario(_run_id: &str) -> ScenarioSpec {
 
 For each snippet, identify the vulnerability, explain its impact, and recommend a practical remediation. Keep the review concise and do not perform any external action."#
             .into(),
-        requirements: ModelRequirements {
-            minimum_context_window: 16_384,
-            minimum_output_tokens: 2_048,
-            ..ModelRequirements::default()
-        },
         execution: ExecutionPolicy {
             max_turns: 2,
             max_output_tokens: 4_096,

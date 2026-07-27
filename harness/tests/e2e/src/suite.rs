@@ -67,7 +67,6 @@ pub async fn run_suite(config: SuiteRunConfig) -> Result<SuiteRunOutcome> {
 
     for scenario_id in &config.scenarios {
         let definition = scenario_id.spec("validation");
-        let unsupported_reasons = definition.requirements.unsupported_reasons(&subject_model);
         let mut runs = Vec::with_capacity(config.runs as usize);
         for repetition in 0..config.runs {
             tracing::info!(
@@ -82,7 +81,6 @@ pub async fn run_suite(config: SuiteRunConfig) -> Result<SuiteRunOutcome> {
                     *scenario_id,
                     &config.subject,
                     config.judge.as_ref(),
-                    &unsupported_reasons,
                 )
                 .await,
             );
@@ -90,7 +88,6 @@ pub async fn run_suite(config: SuiteRunConfig) -> Result<SuiteRunOutcome> {
         scenario_reports.push(E2eScenarioReport::aggregate(
             definition.id,
             definition.threshold,
-            definition.requirements,
             definition.execution,
             runs,
         ));
@@ -185,29 +182,12 @@ async fn run_once(
     scenario_id: ScenarioId,
     subject: &SubjectConfig,
     judge_config: Option<&JudgeConfig>,
-    unsupported_reasons: &[String],
 ) -> E2eRunReport {
     let started = Instant::now();
     let run_id = Uuid::new_v4().simple().to_string();
     let session_id = format!("e2e_{run_id}");
     let spec = scenario_id.spec(&run_id);
     let mut report = E2eRunReport::new(run_id.clone(), session_id.clone(), spec.prompt.clone());
-
-    if !unsupported_reasons.is_empty() {
-        report.push_failure(
-            RunStatus::Unsupported,
-            FailurePhase::Setup,
-            format!(
-                "{}/{} does not support scenario {}: {}",
-                subject.provider,
-                subject.model,
-                spec.id,
-                unsupported_reasons.join("; ")
-            ),
-        );
-        report.wall_time_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        return report;
-    }
 
     if let Err(error) = execute(
         context,
@@ -508,7 +488,7 @@ fn criterion_reports(spec: &ScenarioSpec, awards: Vec<CriterionAward>) -> Vec<Cr
 mod tests {
     use super::*;
     use crate::report::HardGateReport;
-    use crate::scenarios::{CriterionSpec, ExecutionPolicy, ModelRequirements, ScenarioEvaluator};
+    use crate::scenarios::{CriterionSpec, ExecutionPolicy, ScenarioEvaluator};
 
     fn evaluator<'a>(
         _context: &'a E2eContext,
@@ -522,7 +502,6 @@ mod tests {
         ScenarioSpec {
             id: "case",
             prompt: "prompt".into(),
-            requirements: ModelRequirements::default(),
             execution: ExecutionPolicy {
                 max_turns: 1,
                 max_output_tokens: 1,

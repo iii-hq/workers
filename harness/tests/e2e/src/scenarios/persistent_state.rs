@@ -4,8 +4,8 @@ use crate::context::E2eContext;
 
 use super::common;
 use super::{
-    CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ModelRequirements,
-    ObjectiveEvaluation, ScenarioObservation, ScenarioSpec,
+    CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
+    ScenarioObservation, ScenarioSpec,
 };
 
 pub const ID: &str = "persistent_state";
@@ -20,11 +20,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             "Store this JSON value for later use in scope `{scope}` under key `{KEY}`: {}. Confirm briefly after it has been stored.",
             serde_json::to_string(&expected).expect("serialize static scenario value")
         ),
-        requirements: ModelRequirements {
-            tools: true,
-            minimum_context_window: 32_768,
-            minimum_output_tokens: 2_048,
-        },
         execution: ExecutionPolicy {
             max_turns: 12,
             max_output_tokens: 8_192,

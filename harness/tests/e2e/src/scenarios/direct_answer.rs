@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::common;
-use super::{CriterionSpec, ExecutionPolicy, ModelRequirements, ScenarioSpec};
+use super::{CriterionSpec, ExecutionPolicy, ScenarioSpec};
 
 pub const ID: &str = "direct_answer";
 
@@ -9,11 +9,6 @@ pub fn scenario(_run_id: &str) -> ScenarioSpec {
     ScenarioSpec {
         id: ID,
         prompt: "Explain to a non-technical reader, in at most two sentences, the difference between authentication and authorization. Do not perform any external action.".into(),
-        requirements: ModelRequirements {
-            minimum_context_window: 8_192,
-            minimum_output_tokens: 1_024,
-            ..ModelRequirements::default()
-        },
         execution: ExecutionPolicy {
             max_turns: 2,
             max_output_tokens: 2_048,

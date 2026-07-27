@@ -7,7 +7,7 @@ use harness::types::model::Model;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::scenarios::{ExecutionPolicy, ModelRequirements};
+use crate::scenarios::ExecutionPolicy;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -46,7 +46,6 @@ pub enum RunStatus {
     Passed,
     QualityFailed,
     HardGateFailed,
-    Unsupported,
     SubjectError,
     JudgeError,
     ResourceLimit,
@@ -121,7 +120,6 @@ impl E2eRunReport {
 #[derive(Debug, Serialize)]
 pub struct ScenarioAggregate {
     pub runs: u32,
-    pub eligible_runs: u32,
     pub scored_runs: u32,
     pub passed_runs: u32,
     pub required_passes: u32,
@@ -134,7 +132,6 @@ pub struct ScenarioAggregate {
 pub struct E2eScenarioReport {
     pub scenario_id: String,
     pub threshold: u8,
-    pub requirements: ModelRequirements,
     pub execution_policy: ExecutionPolicy,
     pub aggregate: ScenarioAggregate,
     pub passed: bool,
@@ -145,15 +142,10 @@ impl E2eScenarioReport {
     pub fn aggregate(
         scenario_id: impl Into<String>,
         threshold: u8,
-        requirements: ModelRequirements,
         execution_policy: ExecutionPolicy,
         runs: Vec<E2eRunReport>,
     ) -> Self {
         let run_count = runs.len() as u32;
-        let eligible_runs = runs
-            .iter()
-            .filter(|run| run.status != RunStatus::Unsupported)
-            .count() as u32;
         let scored_runs = runs.iter().filter(|run| run.score.is_some()).count() as u32;
         let passed_runs = runs
             .iter()
@@ -163,27 +155,25 @@ impl E2eScenarioReport {
             .iter()
             .filter(|run| run.status.is_technical_failure())
             .count() as u32;
-        let required_passes = required_passes(eligible_runs);
+        let required_passes = required_passes(run_count);
         let median_score = median(runs.iter().filter_map(|run| run.score));
-        let passed = eligible_runs > 0
+        let passed = run_count > 0
             && technical_failures == 0
             && passed_runs >= required_passes
             && median_score.is_some_and(|score| score >= f64::from(threshold));
         Self {
             scenario_id: scenario_id.into(),
             threshold,
-            requirements,
             execution_policy,
             aggregate: ScenarioAggregate {
                 runs: run_count,
-                eligible_runs,
                 scored_runs,
                 passed_runs,
                 required_passes,
-                pass_rate: if eligible_runs == 0 {
+                pass_rate: if run_count == 0 {
                     0.0
                 } else {
-                    f64::from(passed_runs) / f64::from(eligible_runs)
+                    f64::from(passed_runs) / f64::from(run_count)
                 },
                 median_score,
                 technical_failures,
@@ -298,7 +288,6 @@ mod tests {
         E2eScenarioReport::aggregate(
             "case",
             80,
-            ModelRequirements::default(),
             ExecutionPolicy {
                 max_turns: 1,
                 max_output_tokens: 1,

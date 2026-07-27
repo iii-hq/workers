@@ -18,12 +18,12 @@ Hard gates and a score threshold both apply. A persuasive response cannot pass
 when the requested durable result was not produced.
 
 Before execution, the runner resolves the exact subject and judge records with
-`router::models::get`. Each scenario declares its required capabilities and its
-own turn, token, and timeout budget. Unsupported model/scenario pairs are
-reported explicitly instead of being mistaken for quality regressions.
-The timeout covers the complete root-and-descendant session tree. After the
-root turn finishes, the runner keeps polling `harness::metrics` until every
-descendant reaches a terminal state.
+`router::models::get`. Each scenario declares its own turn, token, and timeout
+budget. Model incompatibilities are test failures because every configured
+deployment is expected to execute every scenario. The timeout covers the
+complete root-and-descendant session tree. After the root turn finishes, the
+runner keeps polling `harness::metrics` until every descendant reaches a
+terminal state.
 
 ## Scenarios
 
@@ -82,8 +82,8 @@ attempts; a third invalid response is a `judge_error`, not a zero quality score.
 
 Criterion weights total 100. A run passes when every hard gate passes and its
 score reaches the scenario threshold. Aggregates require at least two thirds of
-the eligible runs to pass and the median score to reach the threshold. Technical
-failures always fail the aggregate, while ordinary quality failures retain the
+the runs to pass and the median score to reach the threshold. Technical failures
+always fail the aggregate, while ordinary quality failures retain the
 two-of-three tolerance used nightly.
 
 Scenarios with a judge reference delegate every criterion score to the judge.
@@ -93,7 +93,6 @@ effects remain hard gates in both cases.
 Every run has one explicit status:
 
 - `passed`, `quality_failed`, or `hard_gate_failed` for evaluated quality;
-- `unsupported` when the catalog capabilities do not satisfy the scenario;
 - `subject_error`, `judge_error`, `resource_limit`, or `infrastructure_error`
   for failures that must not be interpreted as a score.
 
@@ -102,7 +101,7 @@ Scores and criterion awards are `null` when evaluation did not complete.
 The runner writes `results.json` with:
 
 - exact catalog-resolved subject and judge model identity and capabilities;
-- scenario requirements and effective execution policy;
+- effective scenario execution policy;
 - judge protocol and pinned engine revision when CI supplies it;
 - prompt, transcript, and `harness::metrics` for every run;
 - hard-gate results and per-criterion points;
@@ -142,8 +141,7 @@ Add a module returning `ScenarioSpec` and register its `ScenarioId`. Keep these
 rules:
 
 - prompts describe user intent and never prescribe function ids;
-- declare model requirements and a scenario-sized execution policy;
-- declare tool support in the model requirements when the scenario needs it;
+- declare a scenario-sized execution policy;
 - objective effects are hard gates, not judge opinions;
 - criterion ids are unique, weights total 100, and awarded points are bounded;
 - use a hidden judge reference for qualitative scoring, otherwise award every

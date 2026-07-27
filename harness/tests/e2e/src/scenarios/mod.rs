@@ -5,7 +5,6 @@ use std::pin::Pin;
 use anyhow::{bail, Result};
 use clap::ValueEnum;
 use harness::functions::metrics::SessionMetricsResponseV1;
-use harness::types::model::Model;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -58,40 +57,10 @@ impl ExecutionPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-pub struct ModelRequirements {
-    pub tools: bool,
-    pub minimum_context_window: u64,
-    pub minimum_output_tokens: u64,
-}
-
-impl ModelRequirements {
-    pub fn unsupported_reasons(self, model: &Model) -> Vec<String> {
-        let mut reasons = Vec::new();
-        if self.tools && model.supports_tools != Some(true) {
-            reasons.push("tool use is required".to_string());
-        }
-        if model.context_window < self.minimum_context_window {
-            reasons.push(format!(
-                "context window {} is below the required {} tokens",
-                model.context_window, self.minimum_context_window
-            ));
-        }
-        if model.max_output_tokens < self.minimum_output_tokens {
-            reasons.push(format!(
-                "maximum output {} is below the required {} tokens",
-                model.max_output_tokens, self.minimum_output_tokens
-            ));
-        }
-        reasons
-    }
-}
-
 #[derive(Debug)]
 pub struct ScenarioSpec {
     pub id: &'static str,
     pub prompt: String,
-    pub requirements: ModelRequirements,
     pub execution: ExecutionPolicy,
     pub threshold: u8,
     pub criteria: Vec<CriterionSpec>,
@@ -208,8 +177,6 @@ pub fn selected(requested: &[ScenarioId]) -> Vec<ScenarioId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness::types::model::Model;
-
     #[test]
     fn registry_contains_four_unique_valid_scenarios() {
         let mut ids = HashSet::new();
@@ -230,33 +197,5 @@ mod tests {
             ]),
             vec![ScenarioId::ReactiveAutomation, ScenarioId::DirectAnswer]
         );
-    }
-
-    #[test]
-    fn model_requirements_explain_every_unsupported_capability() {
-        let model = Model {
-            id: "small".into(),
-            provider: "test".into(),
-            display_name: None,
-            context_window: 8_000,
-            max_output_tokens: 1_000,
-            input_limit: None,
-            supports_thinking: None,
-            supports_xhigh: None,
-            reasoning_efforts: None,
-            supports_tools: Some(false),
-            supports_vision: None,
-            supports_cache: None,
-            supports_structured_output: None,
-            thinking_budgets: None,
-            pricing: None,
-        };
-        let reasons = ModelRequirements {
-            tools: true,
-            minimum_context_window: 16_000,
-            minimum_output_tokens: 2_000,
-        }
-        .unsupported_reasons(&model);
-        assert_eq!(reasons.len(), 3);
     }
 }

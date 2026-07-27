@@ -6,8 +6,8 @@ use crate::context::E2eContext;
 
 use super::common;
 use super::{
-    CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ModelRequirements,
-    ObjectiveEvaluation, ScenarioObservation, ScenarioSpec,
+    CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
+    ScenarioObservation, ScenarioSpec,
 };
 
 pub const ID: &str = "reactive_automation";
@@ -23,11 +23,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             "Set up a one-time automation so that writing key `{SIGNAL_KEY}` in scope `{scope}` writes this exact JSON value to key `{RESULT_KEY}` in the same scope: {}. Activate the automation by writing this signal value to `{SIGNAL_KEY}`: true. Confirm briefly after the automation is configured and the signal has been sent.",
             serde_json::to_string(&expected).expect("serialize expected value"),
         ),
-        requirements: ModelRequirements {
-            tools: true,
-            minimum_context_window: 65_536,
-            minimum_output_tokens: 2_048,
-        },
         execution: ExecutionPolicy {
             max_turns: 24,
             max_output_tokens: 8_192,
