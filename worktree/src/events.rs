@@ -492,6 +492,7 @@ mod tests {
                 function_id: "ui::recv".into(),
                 config: json!({ "sesion_id": "typo" }),
                 metadata: None,
+                namespace: None,
             })
             .unwrap_err();
         assert!(err.contains("invalid worktree::created config"));
@@ -506,6 +507,7 @@ mod tests {
             function_id: "ui::recv".into(),
             config: Value::Null,
             metadata: None,
+            namespace: None,
         })
         .unwrap();
         set.add(TriggerConfig {
@@ -513,6 +515,7 @@ mod tests {
             function_id: "ui::recv".into(),
             config: json!({}),
             metadata: None,
+            namespace: None,
         })
         .unwrap();
         assert_eq!(set.snapshot().len(), 2);
@@ -544,6 +547,7 @@ mod tests {
                 function_id: "recv::all".into(),
                 config: json!({}),
                 metadata: None,
+                namespace: None,
             })
             .unwrap();
         sets.for_kind(EventKind::Landed)
@@ -552,6 +556,7 @@ mod tests {
                 function_id: "recv::other".into(),
                 config: json!({ "repo_path": "/other" }),
                 metadata: None,
+                namespace: None,
             })
             .unwrap();
         let deliverer = Arc::new(RecordingDeliverer {

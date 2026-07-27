@@ -377,6 +377,7 @@ async fn state_trigger_fires_with_event_payload() {
         function_id: "e2e::on_state".to_string(),
         config: json!({"scope": scope}),
         metadata: None,
+        namespace: iii.namespace(),
     })
     .expect("register state trigger");
     wait_for_trigger_count(&boot.triggers, 1).await;
@@ -488,6 +489,7 @@ async fn condition_false_blocks_null_passes() {
         function_id: "e2e::backend_false".to_string(),
         config: json!({"scope": scope, "condition_function_id": "e2e::cond_false"}),
         metadata: None,
+        namespace: iii.namespace(),
     })
     .expect("register false-condition trigger");
     iii.register_trigger(RegisterTriggerInput {
@@ -495,6 +497,7 @@ async fn condition_false_blocks_null_passes() {
         function_id: "e2e::backend_null".to_string(),
         config: json!({"scope": scope, "condition_function_id": "e2e::cond_null"}),
         metadata: None,
+        namespace: iii.namespace(),
     })
     .expect("register null-condition trigger");
     wait_for_trigger_count(&boot.triggers, 2).await;
@@ -555,6 +558,7 @@ async fn max_value_bytes_rejects_oversized_set() {
         function_id: "e2e::on_state_cfg".to_string(),
         config: json!({"scope": scope}),
         metadata: None,
+        namespace: iii.namespace(),
     })
     .expect("register state trigger");
     wait_for_trigger_count(&boot.triggers, 1).await;

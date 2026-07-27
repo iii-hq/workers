@@ -81,6 +81,7 @@ fn register_subscriber_with_config(
         function_id: function_id.to_string(),
         config,
         metadata: None,
+        namespace: iii.namespace(),
     })
     .expect("register durable subscriber trigger");
 }

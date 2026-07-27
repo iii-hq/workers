@@ -386,6 +386,7 @@ mod tests {
             function_id: function_id.to_string(),
             config,
             metadata: None,
+            namespace: None,
         }
     }
 

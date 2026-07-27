@@ -176,6 +176,7 @@ async fn engine_subscriber(
         function_id: function_id.clone(),
         config,
         metadata: None,
+        namespace: iii.namespace(),
     })
     .expect("register engine trigger");
     // And a beat for the registration to round-trip to our handler.
