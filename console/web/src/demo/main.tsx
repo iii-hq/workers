@@ -39,12 +39,18 @@ if (!root) throw new Error('missing #root container')
 function mount() {
   const reactRoot = createRoot(root as HTMLElement)
   let active = true
+  /* Bumped to replay: a fresh key remounts the player from the top. */
+  let runKey = 0
 
   const render = () =>
     reactRoot.render(
       <StrictMode>
         <TooltipProvider delayDuration={150}>
-          <LandingDemo active={active} loop={params.get('loop') !== '0'} />
+          <LandingDemo
+            key={runKey}
+            active={active}
+            loop={params.get('loop') === '1'}
+          />
         </TooltipProvider>
       </StrictMode>,
     )
@@ -56,6 +62,11 @@ function mount() {
       /* The host's theme button flipped while the overlay is open. */
       document.documentElement.dataset.theme =
         data.theme === 'dark' ? 'dark' : 'light'
+      return
+    }
+    if (data.type === 'iii-demo-replay') {
+      runKey += 1
+      render()
       return
     }
     if (data.type !== 'iii-demo') return

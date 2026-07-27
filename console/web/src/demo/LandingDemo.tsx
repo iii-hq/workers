@@ -10,7 +10,7 @@
  */
 
 import { ArrowUp, Paperclip } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 import { ContextUsage } from '@/components/chat/ContextUsage'
 import { MessageList } from '@/components/chat/MessageList'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
@@ -27,13 +27,73 @@ const CONTEXT_WINDOW = 1_000_000
 /** The sidebar's write actions are wired to nothing: this is a recording. */
 const noop = () => {}
 
+/** Back within this many px of the bottom counts as "following again". */
+const FOLLOW_SLACK_PX = 120
+
+/**
+ * Keep a pane's scroll on the newest row while the turn plays, and stop the
+ * moment the reader takes the scrollbar.
+ *
+ * The demo has to pin: `MessageList` only follows when the viewport is
+ * already near the bottom, and its scroll-the-approval-into-view pass parks
+ * it mid-transcript for the rest of the turn, while the waterfall never
+ * follows at all. But pinning must lose to a person — scrolling up to reread
+ * a card should not be yanked back by the next token.
+ *
+ * Following is released on real input (wheel, touch) rather than on any
+ * scroll, because the programmatic scrolls are indistinguishable from a
+ * user's by position alone. It re-arms when a scroll lands back at the
+ * bottom, so scrolling down to catch up resumes the follow.
+ */
+function useTailFollow(wrapRef: RefObject<HTMLElement | null>) {
+  const followRef = useRef(true)
+
+  useEffect(() => {
+    const wrap = wrapRef.current
+    if (!wrap) return
+    const release = () => {
+      followRef.current = false
+    }
+    const onScroll = (event: Event) => {
+      const el = event.target as HTMLElement | null
+      if (!el || typeof el.scrollHeight !== 'number') return
+      const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      if (fromBottom <= FOLLOW_SLACK_PX) followRef.current = true
+    }
+    wrap.addEventListener('wheel', release, { passive: true })
+    wrap.addEventListener('touchmove', release, { passive: true })
+    // Scroll does not bubble; capture catches whichever child is scrolling.
+    wrap.addEventListener('scroll', onScroll, { capture: true, passive: true })
+    return () => {
+      wrap.removeEventListener('wheel', release)
+      wrap.removeEventListener('touchmove', release)
+      wrap.removeEventListener('scroll', onScroll, { capture: true })
+    }
+  }, [wrapRef])
+
+  return useCallback(() => {
+    if (!followRef.current) return
+    const el = wrapRef.current?.querySelector<HTMLElement>('.overflow-y-auto')
+    if (!el) return
+    const id = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
+    return () => cancelAnimationFrame(id)
+  }, [wrapRef])
+}
+
 export interface LandingDemoProps {
   /** Pause the whole thing when the overlay is closed. */
   active?: boolean
+  /**
+   * Replay forever. Off by default: the turn ends holding a finished
+   * transcript, a full trace and three child sessions, and that is the state
+   * worth clicking around in. Restarting on top of someone reading it is not.
+   */
   loop?: boolean
 }
 
-export function LandingDemo({ active = true, loop = true }: LandingDemoProps) {
+export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
   const player = usePlayer(active, loop)
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null)
   const listWrapRef = useRef<HTMLDivElement>(null)
@@ -43,34 +103,13 @@ export function LandingDemo({ active = true, loop = true }: LandingDemoProps) {
     setSelectedSpanId((prev) => (prev === span.span_id ? null : span.span_id))
   }, [])
 
-  /**
-   * Nobody is driving the scrollbar here. `MessageList` only follows the tail
-   * when the reader is already near it, and its scroll-the-approval-into-view
-   * pass parks the viewport mid-transcript for the rest of the turn; the
-   * waterfall never follows at all (a reader inspecting a trace would hate
-   * that). Both panes are pinned to the tail so the demo keeps showing the
-   * thing that just happened.
-   */
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the transcript is the trigger, not a value read here.
-  useEffect(() => {
-    const el = listWrapRef.current?.firstElementChild as HTMLElement | null
-    if (!el) return
-    const id = requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight
-    })
-    return () => cancelAnimationFrame(id)
-  }, [player.messages, player.callout])
+  const pinTranscript = useTailFollow(listWrapRef)
+  const pinTrace = useTailFollow(traceWrapRef)
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the transcript is the trigger, not a value read here.
+  useEffect(pinTranscript, [pinTranscript, player.messages, player.callout])
   // biome-ignore lint/correctness/useExhaustiveDependencies: the span count is the trigger, not a value read here.
-  useEffect(() => {
-    const el =
-      traceWrapRef.current?.querySelector<HTMLElement>('.overflow-y-auto')
-    if (!el) return
-    const id = requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight
-    })
-    return () => cancelAnimationFrame(id)
-  }, [player.spanCount, player.callout])
+  useEffect(pinTrace, [pinTrace, player.spanCount, player.callout])
 
   const working = player.phase === 'streaming'
   /* The header follows whichever session the sidebar has selected. */
