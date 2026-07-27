@@ -596,6 +596,24 @@ impl ShellConfig {
     }
 }
 
+/// Outcome of loading the optional `--config` seed file at boot.
+#[derive(Debug)]
+pub enum SeedFile {
+    /// No file at the path — the zero-config path (stored value if present,
+    /// else the built-in seed default).
+    Missing,
+    /// The file exists and parses as a YAML mapping, but shares no top-level
+    /// key with the shell schema and carries no removed/renamed shell key: it
+    /// is some other tool's config (in managed installs, the engine's project
+    /// roster), not a shell seed. Treated exactly like [`SeedFile::Missing`];
+    /// `keys` is what was found, for the boot log.
+    Foreign { keys: Vec<String> },
+    /// A shell seed: at least one recognized top-level key. Parsed and
+    /// migration-checked (jail validation still runs in `build_runtime`).
+    /// Boxed: `ShellConfig` dwarfs the other variants.
+    Seed(Box<ShellConfig>),
+}
+
 impl ShellConfig {
     pub fn compile_denylist(&mut self) -> Result<()> {
         self.compiled_denylist = self
@@ -665,10 +683,55 @@ impl ShellConfig {
         serde_yaml::from_str(yaml).map_err(|e| format!("yaml parse: {e}"))
     }
 
-    /// Load a YAML seed file. Used only for the optional `--config` seed.
-    pub fn from_file(path: &str) -> Result<Self, String> {
-        let raw = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
-        Self::from_yaml(&raw)
+    /// Load and classify the optional `--config` seed file. Boot uses this
+    /// instead of a plain parse so a config file that belongs to some
+    /// OTHER tool is not misread as a shell policy: managed installs run the
+    /// worker with cwd = the engine's project directory, where the default
+    /// `./config.yaml` is the engine's own worker roster (`workers: [...]`).
+    /// Serde tolerates unknown top-level fields, so that roster used to parse
+    /// as an all-defaults ShellConfig, fail the fail-closed jail validation,
+    /// and leave the worker in a permanent boot loop with no functions
+    /// registered (MOT-4252).
+    pub fn load_seed_file(path: &str) -> Result<SeedFile, String> {
+        let raw = match std::fs::read_to_string(path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(SeedFile::Missing),
+            Err(e) => return Err(format!("read {path}: {e}")),
+        };
+        Self::seed_from_yaml(&raw)
+    }
+
+    /// Classification core of [`Self::load_seed_file`], split from the file
+    /// read so it is testable on plain strings.
+    fn seed_from_yaml(yaml: &str) -> Result<SeedFile, String> {
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(yaml).map_err(|e| format!("yaml parse: {e}"))?;
+        let bridged =
+            serde_json::to_value(&parsed).map_err(|e| format!("yaml->json bridge: {e}"))?;
+        // Removed-key hints BEFORE the foreign check: an un-migrated shell
+        // config whose keys have all since been renamed must keep failing
+        // loudly with the migration hint — never be classified as foreign and
+        // silently replaced by the permissive built-in default.
+        check_removed_keys(&bridged)?;
+        if let Some(obj) = bridged.as_object() {
+            let known = Self::schema_property_names();
+            if !obj.keys().any(|k| known.contains(k)) {
+                return Ok(SeedFile::Foreign {
+                    keys: obj.keys().cloned().collect(),
+                });
+            }
+        }
+        Self::from_yaml(yaml).map(|cfg| SeedFile::Seed(Box::new(cfg)))
+    }
+
+    /// Top-level field names of the registered schema — the recognizer for
+    /// "is this file a shell config at all". Derived from the JSON Schema so
+    /// a new config field automatically counts.
+    fn schema_property_names() -> std::collections::BTreeSet<String> {
+        Self::json_schema()["properties"]
+            .as_object()
+            .map(|props| props.keys().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Deserialize the live value fetched from the configuration worker.
@@ -1268,6 +1331,66 @@ sandbox:
     fn from_yaml_parses_seed() {
         let c = ShellConfig::from_yaml("fs:\n  host_roots: [/tmp/x]\n").expect("seed yaml parses");
         assert_eq!(c.fs.host_roots, vec![std::path::PathBuf::from("/tmp/x")]);
+    }
+
+    /// The engine's project roster (`workers: [...]`) — what the default
+    /// `./config.yaml` resolves to in a managed install — must classify as
+    /// foreign, not parse as an all-defaults (and unbootable) shell config.
+    #[test]
+    fn seed_from_yaml_classifies_engine_roster_as_foreign() {
+        let out = ShellConfig::seed_from_yaml("workers:\n  - name: shell\n  - name: harness\n")
+            .expect("roster classifies");
+        match out {
+            SeedFile::Foreign { keys } => assert_eq!(keys, vec!["workers".to_string()]),
+            other => panic!("expected Foreign, got {other:?}"),
+        }
+    }
+
+    /// One recognized top-level key is enough to be a shell seed — even
+    /// alongside unknown keys, which serde tolerates.
+    #[test]
+    fn seed_from_yaml_accepts_shell_shaped_file() {
+        let out = ShellConfig::seed_from_yaml("fs:\n  allow_unjailed: true\n")
+            .expect("shell seed classifies");
+        match out {
+            SeedFile::Seed(cfg) => assert!(cfg.fs.allow_unjailed),
+            other => panic!("expected Seed, got {other:?}"),
+        }
+    }
+
+    /// An empty mapping expresses no policy — same as no file at all.
+    #[test]
+    fn seed_from_yaml_classifies_empty_mapping_as_foreign() {
+        let out = ShellConfig::seed_from_yaml("{}\n").expect("empty mapping classifies");
+        assert!(
+            matches!(out, SeedFile::Foreign { ref keys } if keys.is_empty()),
+            "got {out:?}"
+        );
+    }
+
+    /// Removed/renamed shell keys win over the foreign check: an un-migrated
+    /// config whose every key was since renamed must keep the loud migration
+    /// error, never be silently replaced by the permissive default.
+    #[test]
+    fn seed_from_yaml_prefers_removed_key_hint_over_foreign() {
+        let err =
+            ShellConfig::seed_from_yaml("allowlist: [ls]\n").expect_err("removed key must error");
+        assert!(err.contains("removed config keys"), "got: {err}");
+    }
+
+    /// Non-mapping YAML is neither a shell seed nor a recognizable foreign
+    /// config — keep the fail-closed parse error.
+    #[test]
+    fn seed_from_yaml_rejects_non_mapping() {
+        ShellConfig::seed_from_yaml("- just\n- a\n- list\n").expect_err("non-mapping must error");
+    }
+
+    #[test]
+    fn load_seed_file_missing_path_is_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("does-not-exist.yaml");
+        let out = ShellConfig::load_seed_file(path.to_str().unwrap()).expect("missing classifies");
+        assert!(matches!(out, SeedFile::Missing), "got {out:?}");
     }
 
     /// A 0.6.x seed still carrying the removed single-root alias must be

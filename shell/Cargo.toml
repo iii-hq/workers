@@ -2,7 +2,7 @@
 
 [package]
 name = "shell"
-version = "0.10.2"
+version = "0.10.3"
 edition = "2021"
 publish = false
 
