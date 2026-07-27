@@ -18,7 +18,7 @@ path = "src/lib.rs"
 [dependencies]
 llm-router = { path = "../llm-router" }
 # Must match llm-router's pin so the provider and router share one IIIClient type.
-iii-sdk = "=0.22.0-alpha.2"
+iii-sdk = "=0.22.0-alpha.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Must stay on the same schemars major as iii-sdk so the derived
