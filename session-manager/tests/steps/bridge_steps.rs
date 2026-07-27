@@ -72,6 +72,7 @@ async fn bridge_local_binding(
             function_id,
             config,
             metadata: None,
+            namespace: None,
         })
         .expect("bridge-local binding config must be valid");
 }

@@ -50,6 +50,7 @@ async fn register_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http_meth
         function_id,
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
+        namespace: iii.namespace(),
     })
     .expect("register http trigger for stream backend");
 }
@@ -94,6 +95,7 @@ async fn register_late_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http
         function_id,
         config: json!({ "api_path": api_path, "http_method": http_method }),
         metadata: None,
+        namespace: iii.namespace(),
     })
     .expect("register http trigger for late stream backend");
 }

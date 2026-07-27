@@ -84,6 +84,7 @@ mod tests {
             function_id: "test::listener".to_string(),
             config: cfg,
             metadata: None,
+            namespace: None,
         }
     }
 
