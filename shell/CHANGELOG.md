@@ -29,7 +29,9 @@
   sent `initial_value`, and `configuration::register` replaces the stored
   value when it is present — so a reboot with a seed file silently clobbered
   runtime `configuration::set` changes. The stored value now takes
-  precedence once it exists, matching the documented contract.
+  precedence once it exists, matching the documented contract. If a
+  deployment relied on file-wins-on-restart, apply file edits with
+  `configuration::set` (or clear the stored value) instead.
 
 ## 0.10.0
 

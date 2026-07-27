@@ -13,8 +13,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # --config <temp.yaml> derived from the `shell` config block in config-jailed.yaml.
 # The shell worker registers that as the SEED with the built-in `configuration`
 # worker (configuration::register) and then reads it back (configuration::get).
-# The configuration worker is fresh per engine process, so the config-jailed.yaml
-# block is authoritative each run — no separate seed step is needed.
+# The configuration worker persists registered configs in ./config (relative to
+# the engine cwd) and a stored value takes precedence over the boot seed, so a
+# permissive value left behind by a prior run-tests.sh engine in this same
+# directory would override the jailed seed and defeat the S-C1 repro. Clear the
+# generated state dir before each run, exactly like run-tests.sh does.
 
 WORKER_SRC="${WORKER_SRC:-$(cd "$ROOT_DIR/../.." && pwd)}"
 III_BIN="${III_BIN:-$(command -v iii 2>/dev/null || echo "$HOME/.local/bin/iii")}"
@@ -97,6 +100,11 @@ export HARNESS_TEST_VAR="harness-allowed-value"
 echo "[run-tests-jailed] starting iii engine (jailed config: host_roots=[$JAIL_ROOT])"
 : > "$ENGINE_LOG"
 : > "$HARNESS_LOG"
+
+# The persisted configuration store: stale values (e.g. the permissive shell
+# config from a run-tests.sh engine in this directory) take precedence over
+# the jailed seed and would silently un-jail this suite.
+rm -rf "$ROOT_DIR/config"
 
 ( cd "$ROOT_DIR" && "$III_BIN" --no-update-check -c ./config-jailed.yaml ) > "$ENGINE_LOG" 2>&1 &
 ENGINE_PID=$!
