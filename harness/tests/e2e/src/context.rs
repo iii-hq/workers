@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -15,14 +14,13 @@ use serde_json::{json, Value};
 pub const INVOCATION_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-#[derive(Clone)]
 pub struct E2eContext {
-    client: Arc<IIIClient>,
+    client: IIIClient,
 }
 
 impl E2eContext {
     pub async fn connect(url: &str) -> Result<Self> {
-        let client = Arc::new(register_worker(
+        let client = register_worker(
             url,
             InitOptions {
                 metadata: Some(WorkerMetadata {
@@ -35,7 +33,7 @@ impl E2eContext {
                 }),
                 ..InitOptions::default()
             },
-        ));
+        );
         let context = Self { client };
         context.wait_until_ready().await?;
         Ok(context)

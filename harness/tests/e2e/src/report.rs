@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -33,17 +32,9 @@ pub struct HardGateReport {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CriterionSource {
-    Objective,
-    Judge,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct CriterionReport {
     pub id: String,
-    pub source: CriterionSource,
     pub possible: u8,
     pub awarded: Option<u8>,
     pub reason: String,
@@ -79,18 +70,12 @@ pub struct E2eRunReport {
     pub wall_time_ms: u64,
     pub score: Option<u8>,
     pub status: RunStatus,
-    pub passed: bool,
     pub hard_gates: Vec<HardGateReport>,
     pub criteria: Vec<CriterionReport>,
-    pub output: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metrics: Option<SessionMetricsResponseV1>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub evidence: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub judge_usage: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub judge_attempts: Option<u8>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -106,14 +91,10 @@ impl E2eRunReport {
             wall_time_ms: 0,
             score: None,
             status: RunStatus::InfrastructureError,
-            passed: false,
             hard_gates: Vec::new(),
             criteria: Vec::new(),
-            output: Vec::new(),
             transcript: None,
             metrics: None,
-            evidence: None,
-            judge_usage: None,
             judge_attempts: None,
             failures: Vec::new(),
         }
@@ -130,12 +111,10 @@ impl E2eRunReport {
             message: message.into(),
         });
         self.status = status;
-        self.passed = false;
     }
 
     pub fn finish(&mut self, status: RunStatus) {
         self.status = status;
-        self.passed = status == RunStatus::Passed;
     }
 }
 
@@ -149,7 +128,6 @@ pub struct ScenarioAggregate {
     pub pass_rate: f64,
     pub median_score: Option<f64>,
     pub technical_failures: u32,
-    pub status_counts: BTreeMap<RunStatus, u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -187,10 +165,6 @@ impl E2eScenarioReport {
             .count() as u32;
         let required_passes = required_passes(eligible_runs);
         let median_score = median(runs.iter().filter_map(|run| run.score));
-        let mut status_counts = BTreeMap::new();
-        for run in &runs {
-            *status_counts.entry(run.status).or_insert(0) += 1;
-        }
         let passed = eligible_runs > 0
             && technical_failures == 0
             && passed_runs >= required_passes
@@ -213,7 +187,6 @@ impl E2eScenarioReport {
                 },
                 median_score,
                 technical_failures,
-                status_counts,
             },
             passed,
             runs,
@@ -229,7 +202,6 @@ pub struct ModelArtifact {
     pub max_output_tokens: u64,
     pub supports_tools: Option<bool>,
     pub supports_vision: Option<bool>,
-    pub supports_structured_output: Option<bool>,
 }
 
 impl From<Model> for ModelArtifact {
@@ -241,7 +213,6 @@ impl From<Model> for ModelArtifact {
             max_output_tokens: model.max_output_tokens,
             supports_tools: model.supports_tools,
             supports_vision: model.supports_vision,
-            supports_structured_output: model.supports_structured_output,
         }
     }
 }
@@ -320,7 +291,6 @@ mod tests {
         } else {
             RunStatus::QualityFailed
         };
-        report.passed = passed;
         report
     }
 
@@ -334,7 +304,6 @@ mod tests {
                 max_output_tokens: 1,
                 max_total_tokens: 1,
                 timeout_seconds: 1,
-                thinking_level: None,
             },
             runs,
         )
@@ -383,7 +352,6 @@ mod tests {
                 max_output_tokens: 2_000,
                 supports_tools: Some(true),
                 supports_vision: Some(false),
-                supports_structured_output: Some(false),
             },
             None,
             None,

@@ -5,12 +5,11 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::context::E2eContext;
-use crate::report::CriterionSource;
-use crate::scenarios::{CriterionSpec, ScenarioObservation, ScenarioSpec};
+use crate::scenarios::{CriterionAward, CriterionSpec, ScenarioSpec};
 
 const JUDGE_SYSTEM_PROMPT: &str = "You are an impartial software-agent quality evaluator. \
-Score only the supplied answer and evidence against the supplied rubric and reference. \
-Do not reward claims that are not supported by the evidence. Return exactly one JSON object, \
+Score only the supplied answer against the supplied rubric and reference. \
+Do not reward claims that are not supported by the answer. Return exactly one JSON object, \
 without Markdown or explanatory text.";
 pub const JUDGE_PROTOCOL: &str = "plain-json";
 const MAX_JUDGE_ATTEMPTS: u8 = 3;
@@ -21,16 +20,8 @@ pub struct JudgeConfig {
     pub provider: String,
 }
 
-#[derive(Debug)]
-pub struct JudgeAward {
-    pub id: String,
-    pub awarded: u8,
-    pub reason: String,
-}
-
 pub struct JudgeOutcome {
-    pub awards: Vec<JudgeAward>,
-    pub usage: Option<Value>,
+    pub awards: Vec<CriterionAward>,
     pub attempts: u8,
 }
 
@@ -38,7 +29,6 @@ pub struct JudgeOutcome {
 #[serde(deny_unknown_fields)]
 struct JudgeResponse {
     criteria: Vec<JudgeCriterion>,
-    summary: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,22 +43,17 @@ pub async fn evaluate(
     context: &E2eContext,
     config: &JudgeConfig,
     spec: &ScenarioSpec,
-    observation: &ScenarioObservation,
-    objective_evidence: &Value,
+    answer: &str,
 ) -> Result<JudgeOutcome> {
-    let criteria: Vec<_> = spec
-        .criteria
-        .iter()
-        .filter(|criterion| criterion.source == CriterionSource::Judge)
-        .collect();
-    if criteria.is_empty() {
+    if spec.criteria.is_empty() {
         bail!("scenario {} has no judge criteria", spec.id);
     }
     let reference = spec
         .judge_reference
         .as_ref()
         .ok_or_else(|| anyhow!("scenario {} has no judge reference", spec.id))?;
-    let rubric: Vec<_> = criteria
+    let rubric: Vec<_> = spec
+        .criteria
         .iter()
         .map(|criterion| {
             json!({
@@ -80,21 +65,18 @@ pub async fn evaluate(
         .collect();
     let input = json!({
         "task_prompt": spec.prompt,
-        "assistant_answer": crate::scenarios::common::final_response(&observation.output),
-        "transcript": observation.transcript,
-        "objective_evidence": objective_evidence,
+        "assistant_answer": answer,
         "reference": reference,
         "rubric": rubric,
     });
     let response_template = json!({
-        "criteria": criteria.iter().map(|criterion| {
+        "criteria": spec.criteria.iter().map(|criterion| {
             json!({
                 "id": criterion.id,
                 "awarded": 0,
                 "reason": "brief evidence-based justification",
             })
         }).collect::<Vec<_>>(),
-        "summary": "brief overall assessment",
     });
     let prompt = format!(
         "Evaluate this case:\n{}\n\n\
@@ -107,21 +89,19 @@ Use this exact object shape and replace only the scores and explanatory text:\n{
         serde_json::to_string(&response_template).context("serialize judge response template")?,
     );
     let mut attempt_prompt = prompt.clone();
-    let mut usages = Vec::with_capacity(MAX_JUDGE_ATTEMPTS as usize);
 
     for attempt in 1..=MAX_JUDGE_ATTEMPTS {
         let response = invoke(context, config, &attempt_prompt)
             .await
             .with_context(|| format!("invoke E2E judge attempt {attempt}"))?;
-        usages.push(response.get("usage").cloned());
         let response_text = assistant_text(&response);
 
-        match parse_response(&response_text).and_then(|parsed| validate_response(&criteria, parsed))
+        match parse_response(&response_text)
+            .and_then(|parsed| validate_response(&spec.criteria, parsed))
         {
             Ok(awards) => {
                 return Ok(JudgeOutcome {
                     awards,
-                    usage: combined_usage(&usages),
                     attempts: attempt,
                 });
             }
@@ -172,16 +152,6 @@ Previous response:\n{response}\n\nReturn a corrected JSON object only."
     )
 }
 
-fn combined_usage(attempts: &[Option<Value>]) -> Option<Value> {
-    if attempts.iter().all(Option::is_none) {
-        return None;
-    }
-    if attempts.len() == 1 {
-        return attempts[0].clone();
-    }
-    Some(json!({ "attempts": attempts }))
-}
-
 fn parse_response(text: &str) -> Result<JudgeResponse> {
     let start = text
         .find('{')
@@ -194,12 +164,9 @@ fn parse_response(text: &str) -> Result<JudgeResponse> {
 }
 
 fn validate_response(
-    criteria: &[&CriterionSpec],
+    criteria: &[CriterionSpec],
     response: JudgeResponse,
-) -> Result<Vec<JudgeAward>> {
-    if response.summary.trim().is_empty() {
-        bail!("judge summary cannot be empty");
-    }
+) -> Result<Vec<CriterionAward>> {
     let expected: HashMap<_, _> = criteria
         .iter()
         .map(|criterion| (criterion.id, criterion.weight))
@@ -224,7 +191,7 @@ fn validate_response(
         if result.reason.trim().is_empty() {
             bail!("judge returned no reason for {}", result.id);
         }
-        awards.push(JudgeAward {
+        awards.push(CriterionAward {
             id: result.id,
             awarded: result.awarded,
             reason: result.reason,
@@ -263,7 +230,7 @@ fn response_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["criteria", "summary"],
+        "required": ["criteria"],
         "properties": {
             "criteria": {
                 "type": "array",
@@ -277,8 +244,7 @@ fn response_schema() -> Value {
                         "reason": { "type": "string" }
                     }
                 }
-            },
-            "summary": { "type": "string" }
+            }
         }
     })
 }
@@ -298,13 +264,11 @@ mod tests {
         vec![
             CriterionSpec {
                 id: "correctness",
-                source: CriterionSource::Judge,
                 weight: 70,
                 description: "correct",
             },
             CriterionSpec {
                 id: "clarity",
-                source: CriterionSource::Judge,
                 weight: 30,
                 description: "clear",
             },
@@ -314,9 +278,8 @@ mod tests {
     #[test]
     fn accepts_exact_bounded_criterion_set() {
         let specs = criteria();
-        let refs: Vec<_> = specs.iter().collect();
         let awards = validate_response(
-            &refs,
+            &specs,
             JudgeResponse {
                 criteria: vec![
                     JudgeCriterion {
@@ -330,7 +293,6 @@ mod tests {
                         reason: "clear".into(),
                     },
                 ],
-                summary: "good".into(),
             },
         )
         .unwrap();
@@ -339,10 +301,8 @@ mod tests {
 
     #[test]
     fn parses_a_json_object_even_when_the_provider_ignores_response_format() {
-        let response =
-            parse_response("```json\n{\"criteria\":[],\"summary\":\"provider fallback\"}\n```")
-                .unwrap();
-        assert_eq!(response.summary, "provider fallback");
+        let response = parse_response("```json\n{\"criteria\":[]}\n```").unwrap();
+        assert!(response.criteria.is_empty());
     }
 
     #[test]
@@ -361,7 +321,6 @@ mod tests {
     #[test]
     fn rejects_missing_unknown_duplicate_and_excessive_scores() {
         let specs = criteria();
-        let refs: Vec<_> = specs.iter().collect();
         for criteria in [
             vec![JudgeCriterion {
                 id: "correctness".into(),
@@ -405,14 +364,7 @@ mod tests {
                 },
             ],
         ] {
-            assert!(validate_response(
-                &refs,
-                JudgeResponse {
-                    criteria,
-                    summary: "summary".into(),
-                },
-            )
-            .is_err());
+            assert!(validate_response(&specs, JudgeResponse { criteria },).is_err());
         }
     }
 }

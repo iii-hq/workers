@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use harness::functions::send::{MessageInput, SendOptions, SendRequest, SendResponse, SessionInit};
-use harness::prompt::SystemPromptStrategy;
 use harness::types::model::Model;
 use harness::types::turn::FunctionPolicy;
 use serde_json::json;
@@ -13,13 +12,11 @@ use uuid::Uuid;
 use crate::context::E2eContext;
 use crate::judge::{self, JudgeConfig};
 use crate::report::{
-    CriterionReport, CriterionSource, E2eReport, E2eRunReport, E2eScenarioReport, FailurePhase,
-    ModelArtifact, RunStatus,
+    CriterionReport, E2eReport, E2eRunReport, E2eScenarioReport, FailurePhase, ModelArtifact,
+    RunStatus,
 };
 use crate::scenarios::common;
-use crate::scenarios::{
-    CriterionAward, ObjectiveEvaluation, ScenarioId, ScenarioObservation, ScenarioSpec,
-};
+use crate::scenarios::{CriterionAward, ScenarioId, ScenarioObservation, ScenarioSpec};
 
 const MAX_RUNS: u32 = 20;
 
@@ -192,7 +189,7 @@ async fn run_once(
 ) -> E2eRunReport {
     let started = Instant::now();
     let run_id = Uuid::new_v4().simple().to_string();
-    let session_id = format!("e2e_{}", Uuid::new_v4().simple());
+    let session_id = format!("e2e_{run_id}");
     let spec = scenario_id.spec(&run_id);
     let mut report = E2eRunReport::new(run_id.clone(), session_id.clone(), spec.prompt.clone());
 
@@ -307,12 +304,9 @@ async fn execute(
                     })),
                 }),
                 options: Some(SendOptions {
-                    system_prompt: None,
-                    system_prompt_strategy: SystemPromptStrategy::Enrich,
                     max_turns: Some(spec.execution.max_turns),
                     max_output_tokens: Some(spec.execution.max_output_tokens),
                     max_total_tokens: Some(spec.execution.max_total_tokens),
-                    thinking_level: spec.execution.thinking_level,
                     functions: Some(e2e_function_policy()),
                     ..SendOptions::default()
                 }),
@@ -347,13 +341,12 @@ async fn execute(
             error.to_string(),
         )
     })?;
-    let output = common::assistant_texts(&transcript);
+    let response = common::final_response(&transcript);
     let observation = ScenarioObservation {
         metrics,
         transcript,
-        output,
+        response,
     };
-    report.output.clone_from(&observation.output);
     report.transcript = Some(observation.transcript.clone());
     report.metrics = Some(observation.metrics.clone());
     let objective = (spec.evaluate)(context, &observation, run_id)
@@ -365,15 +358,15 @@ async fn execute(
                 error.to_string(),
             )
         })?;
-
-    apply_objective(spec, objective, report).map_err(|error| {
+    validate_objective_awards(spec, &objective.awards).map_err(|error| {
         RunFailure::new(
             RunStatus::InfrastructureError,
             FailurePhase::Evaluate,
             error.to_string(),
         )
     })?;
-    update_score(report);
+    report.hard_gates = objective.hard_gates;
+    let mut awards = objective.awards;
 
     if spec.needs_judge() && report.hard_gates.iter().all(|gate| gate.passed) {
         let judge_config = judge_config.ok_or_else(|| {
@@ -383,26 +376,10 @@ async fn execute(
                 "scenario requires a judge configuration",
             )
         })?;
-        match judge::evaluate(
-            context,
-            judge_config,
-            spec,
-            &observation,
-            report.evidence.as_ref().unwrap_or(&serde_json::Value::Null),
-        )
-        .await
-        {
+        match judge::evaluate(context, judge_config, spec, &observation.response).await {
             Ok(outcome) => {
-                apply_judge_awards(spec, outcome.awards, report).map_err(|error| {
-                    RunFailure::new(
-                        RunStatus::JudgeError,
-                        FailurePhase::Evaluate,
-                        error.to_string(),
-                    )
-                })?;
-                report.judge_usage = outcome.usage;
+                awards = outcome.awards;
                 report.judge_attempts = Some(outcome.attempts);
-                update_score(report);
             }
             Err(error) => {
                 return Err(RunFailure::new(
@@ -414,6 +391,8 @@ async fn execute(
         }
     }
 
+    report.criteria = criterion_reports(spec, awards);
+    update_score(report);
     Ok(())
 }
 
@@ -464,50 +443,26 @@ fn update_score(report: &mut E2eRunReport) {
     });
 }
 
-fn apply_objective(
-    spec: &ScenarioSpec,
-    objective: ObjectiveEvaluation,
-    report: &mut E2eRunReport,
-) -> Result<()> {
-    let awards = validate_objective_awards(spec, objective.awards)?;
-    report.hard_gates = objective.hard_gates;
-    report.evidence = Some(objective.evidence);
-    report.criteria = spec
-        .criteria
-        .iter()
-        .map(|criterion| {
-            let award = awards.get(criterion.id);
-            CriterionReport {
-                id: criterion.id.to_string(),
-                source: criterion.source,
-                possible: criterion.weight,
-                awarded: award.map(|award| award.awarded),
-                reason: award
-                    .map(|award| award.reason.clone())
-                    .unwrap_or_else(|| "not evaluated".into()),
-            }
-        })
-        .collect();
-    Ok(())
-}
-
-fn validate_objective_awards(
-    spec: &ScenarioSpec,
-    awards: Vec<CriterionAward>,
-) -> Result<HashMap<&'static str, CriterionAward>> {
+fn validate_objective_awards(spec: &ScenarioSpec, awards: &[CriterionAward]) -> Result<()> {
+    if spec.needs_judge() {
+        if awards.is_empty() {
+            return Ok(());
+        }
+        bail!(
+            "scenario {} delegates all criterion scores to the judge",
+            spec.id
+        );
+    }
     let criteria: HashMap<_, _> = spec
         .criteria
         .iter()
         .map(|criterion| (criterion.id, criterion))
         .collect();
-    let mut result = HashMap::new();
+    let mut seen = HashSet::new();
     for award in awards {
         let criterion = criteria
-            .get(award.id)
+            .get(award.id.as_str())
             .with_context(|| format!("unknown objective criterion {}", award.id))?;
-        if criterion.source != CriterionSource::Objective {
-            bail!("criterion {} belongs to the judge", award.id);
-        }
         if award.awarded > criterion.weight {
             bail!(
                 "criterion {} awarded {} of {} points",
@@ -516,49 +471,37 @@ fn validate_objective_awards(
                 criterion.weight
             );
         }
-        if result.insert(award.id, award).is_some() {
+        if !seen.insert(award.id.as_str()) {
             bail!("objective evaluator repeated criterion {}", criterion.id);
         }
     }
-    for criterion in spec
-        .criteria
-        .iter()
-        .filter(|criterion| criterion.source == CriterionSource::Objective)
-    {
-        if !result.contains_key(criterion.id) {
+    for criterion in &spec.criteria {
+        if !seen.contains(criterion.id) {
             bail!("objective evaluator omitted criterion {}", criterion.id);
         }
     }
-    Ok(result)
+    Ok(())
 }
 
-fn apply_judge_awards(
-    spec: &ScenarioSpec,
-    awards: Vec<judge::JudgeAward>,
-    report: &mut E2eRunReport,
-) -> Result<()> {
-    let mut seen = HashSet::new();
-    for award in awards {
-        if !seen.insert(award.id.clone()) {
-            bail!("judge repeated criterion {}", award.id);
-        }
-        let criterion = spec
-            .criteria
-            .iter()
-            .find(|criterion| criterion.id == award.id)
-            .with_context(|| format!("judge returned unknown criterion {}", award.id))?;
-        if criterion.source != CriterionSource::Judge || award.awarded > criterion.weight {
-            bail!("judge returned invalid score for {}", award.id);
-        }
-        let report_criterion = report
-            .criteria
-            .iter_mut()
-            .find(|candidate| candidate.id == award.id)
-            .with_context(|| format!("report is missing criterion {}", award.id))?;
-        report_criterion.awarded = Some(award.awarded);
-        report_criterion.reason = award.reason;
-    }
-    Ok(())
+fn criterion_reports(spec: &ScenarioSpec, awards: Vec<CriterionAward>) -> Vec<CriterionReport> {
+    let mut awards: HashMap<_, _> = awards
+        .into_iter()
+        .map(|award| (award.id, (award.awarded, award.reason)))
+        .collect();
+    spec.criteria
+        .iter()
+        .map(|criterion| {
+            let award = awards.remove(criterion.id);
+            CriterionReport {
+                id: criterion.id.to_string(),
+                possible: criterion.weight,
+                awarded: award.as_ref().map(|(awarded, _)| *awarded),
+                reason: award
+                    .map(|(_, reason)| reason)
+                    .unwrap_or_else(|| "not evaluated".into()),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -566,7 +509,6 @@ mod tests {
     use super::*;
     use crate::report::HardGateReport;
     use crate::scenarios::{CriterionSpec, ExecutionPolicy, ModelRequirements, ScenarioEvaluator};
-    use serde_json::Value;
 
     fn evaluator<'a>(
         _context: &'a E2eContext,
@@ -586,24 +528,14 @@ mod tests {
                 max_output_tokens: 1,
                 max_total_tokens: 1,
                 timeout_seconds: 1,
-                thinking_level: None,
             },
             threshold: 80,
-            criteria: vec![
-                CriterionSpec {
-                    id: "objective",
-                    source: CriterionSource::Objective,
-                    weight: 60,
-                    description: "objective",
-                },
-                CriterionSpec {
-                    id: "judge",
-                    source: CriterionSource::Judge,
-                    weight: 40,
-                    description: "judge",
-                },
-            ],
-            judge_reference: Some(json!({"answer": true})),
+            criteria: vec![CriterionSpec {
+                id: "objective",
+                weight: 100,
+                description: "objective",
+            }],
+            judge_reference: None,
             evaluate: evaluator as ScenarioEvaluator,
             cleanup: None,
         }
@@ -622,19 +554,19 @@ mod tests {
         let spec = spec();
         assert!(validate_objective_awards(
             &spec,
-            vec![CriterionAward {
-                id: "objective",
-                awarded: 60,
+            &[CriterionAward {
+                id: "objective".into(),
+                awarded: 100,
                 reason: "ok".into(),
             }]
         )
         .is_ok());
-        assert!(validate_objective_awards(&spec, Vec::new()).is_err());
+        assert!(validate_objective_awards(&spec, &[]).is_err());
         assert!(validate_objective_awards(
             &spec,
-            vec![CriterionAward {
-                id: "objective",
-                awarded: 61,
+            &[CriterionAward {
+                id: "objective".into(),
+                awarded: 101,
                 reason: "too high".into(),
             }]
         )
@@ -644,24 +576,19 @@ mod tests {
     #[test]
     fn hard_gate_failure_prevents_a_passing_run() {
         let mut report = E2eRunReport::new("run".into(), "session".into(), "prompt".into());
-        apply_objective(
+        report.hard_gates = vec![HardGateReport {
+            id: "gate".into(),
+            passed: false,
+            reason: "failed".into(),
+        }];
+        report.criteria = criterion_reports(
             &spec(),
-            ObjectiveEvaluation {
-                hard_gates: vec![HardGateReport {
-                    id: "gate".into(),
-                    passed: false,
-                    reason: "failed".into(),
-                }],
-                awards: vec![CriterionAward {
-                    id: "objective",
-                    awarded: 60,
-                    reason: "ok".into(),
-                }],
-                evidence: Value::Null,
-            },
-            &mut report,
-        )
-        .unwrap();
+            vec![CriterionAward {
+                id: "objective".into(),
+                awarded: 100,
+                reason: "ok".into(),
+            }],
+        );
         update_score(&mut report);
         report.finish(
             if report.hard_gates.iter().all(|gate| gate.passed)
@@ -672,7 +599,6 @@ mod tests {
                 RunStatus::HardGateFailed
             },
         );
-        assert!(!report.passed);
         assert_eq!(report.status, RunStatus::HardGateFailed);
     }
 

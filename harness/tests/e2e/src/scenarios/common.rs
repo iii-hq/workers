@@ -1,8 +1,9 @@
 use serde_json::{json, Value};
 
+use crate::context::E2eContext;
 use crate::report::HardGateReport;
 
-use super::CriterionAward;
+use super::{CriterionAward, EvaluationFuture, ObjectiveEvaluation, ScenarioObservation};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObservedFunctionCall {
@@ -10,25 +11,27 @@ pub struct ObservedFunctionCall {
     pub arguments: Value,
 }
 
-pub fn assistant_texts(transcript: &Value) -> Vec<String> {
+pub fn final_response(transcript: &Value) -> String {
     transcript
         .get("messages")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
+        .rev()
         .filter_map(|entry| entry.get("message"))
         .filter(|message| message.get("role").and_then(Value::as_str) == Some("assistant"))
-        .flat_map(|message| {
+        .map(|message| {
             message
                 .get("content")
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
+                .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                .collect::<String>()
         })
-        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-        .filter_map(|block| block.get("text").and_then(Value::as_str))
-        .map(str::to_string)
-        .collect()
+        .find(|response| !response.trim().is_empty())
+        .unwrap_or_default()
 }
 
 pub fn function_calls(transcript: &Value) -> Vec<ObservedFunctionCall> {
@@ -79,7 +82,7 @@ pub fn gate(id: &str, passed: bool, reason: impl Into<String>) -> HardGateReport
 
 pub fn award(id: &'static str, awarded: u8, reason: impl Into<String>) -> CriterionAward {
     CriterionAward {
-        id,
+        id: id.to_string(),
         awarded,
         reason: reason.into(),
     }
@@ -97,13 +100,42 @@ pub fn state_value(response: Value) -> Value {
     }
 }
 
-pub fn final_response(output: &[String]) -> &str {
-    output
-        .iter()
-        .rev()
-        .find(|text| !text.trim().is_empty())
-        .map(String::as_str)
-        .unwrap_or("")
+pub fn evaluate_text_response<'a>(
+    _context: &'a E2eContext,
+    observation: &'a ScenarioObservation,
+    _run_id: &'a str,
+) -> EvaluationFuture<'a> {
+    Box::pin(async move {
+        let calls = function_calls(&observation.transcript);
+        let response = observation.response.as_str();
+        Ok(ObjectiveEvaluation {
+            hard_gates: vec![
+                gate(
+                    "response_present",
+                    !response.trim().is_empty(),
+                    if response.trim().is_empty() {
+                        "the assistant returned no text"
+                    } else {
+                        "the assistant returned a textual response"
+                    },
+                ),
+                gate(
+                    "no_function_calls",
+                    calls.is_empty() && observation.metrics.totals.function_calls == 0,
+                    format!("observed {} function call(s)", calls.len()),
+                ),
+                gate(
+                    "single_turn",
+                    observation.metrics.totals.turns == 1,
+                    format!(
+                        "observed {} turn(s), expected exactly one",
+                        observation.metrics.totals.turns
+                    ),
+                ),
+            ],
+            awards: Vec::new(),
+        })
+    })
 }
 
 #[cfg(test)]
@@ -141,16 +173,20 @@ mod tests {
     }
 
     #[test]
-    fn extracts_only_assistant_text_blocks() {
+    fn extracts_the_last_nonempty_assistant_response() {
         let transcript = json!({
             "messages": [
                 {"message": {"role": "user", "content": [{"type": "text", "text": "no"}]}},
                 {"message": {"role": "assistant", "content": [
-                    {"type": "text", "text": "yes"},
+                    {"type": "text", "text": "yes "},
+                    {"type": "text", "text": "indeed"},
                     {"type": "function_call", "function_id": "x", "arguments": {}}
-                ]}}
+                ]}},
+                {"message": {"role": "assistant", "content": [
+                    {"type": "function_call", "function_id": "x", "arguments": {}}
+                ]}},
             ]
         });
-        assert_eq!(assistant_texts(&transcript), ["yes"]);
+        assert_eq!(final_response(&transcript), "yes indeed");
     }
 }

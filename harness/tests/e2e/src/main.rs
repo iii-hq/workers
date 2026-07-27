@@ -2,9 +2,16 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
-use harness_e2e::history;
-use harness_e2e::scenarios::{self, ScenarioId};
-use harness_e2e::{run_suite, JudgeConfig, SubjectConfig, SuiteRunConfig};
+
+use crate::judge::JudgeConfig;
+use crate::scenarios::ScenarioId;
+use crate::suite::{run_suite, SubjectConfig, SuiteRunConfig};
+
+mod context;
+mod judge;
+mod report;
+mod scenarios;
+mod suite;
 
 #[derive(Debug, Parser)]
 #[command(name = "harness-e2e", about = "Run real-stack quality scenarios")]
@@ -19,8 +26,6 @@ enum Command {
     List,
     /// Execute one or more quality scenarios against a running stack.
     Run(RunArgs),
-    /// Compare scores only when two reports describe the same experiment.
-    Compare(CompareArgs),
 }
 
 #[derive(Debug, Args)]
@@ -51,18 +56,6 @@ struct RunArgs {
     scenario: Vec<ScenarioId>,
 }
 
-#[derive(Debug, Args)]
-struct CompareArgs {
-    #[arg(long)]
-    baseline: PathBuf,
-
-    #[arg(long)]
-    candidate: PathBuf,
-
-    #[arg(long, default_value_t = 0.0)]
-    max_score_drop: f64,
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -81,18 +74,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Run(args) => run(args).await,
-        Command::Compare(args) => compare(args),
     }
-}
-
-fn compare(args: CompareArgs) -> Result<()> {
-    let outcome = history::compare_files(&args.baseline, &args.candidate, args.max_score_drop)
-        .context("compare E2E quality history")?;
-    println!("{}", serde_json::to_string_pretty(&outcome)?);
-    if !outcome.passed {
-        bail!("historical E2E comparison failed");
-    }
-    Ok(())
 }
 
 async fn run(args: RunArgs) -> Result<()> {
@@ -158,24 +140,5 @@ mod tests {
             panic!("expected run command");
         };
         assert_eq!(args.scenario, [ScenarioId::PersistentState]);
-    }
-
-    #[test]
-    fn compare_accepts_explicit_reports_and_tolerance() {
-        let cli = Cli::try_parse_from([
-            "harness-e2e",
-            "compare",
-            "--baseline",
-            "old.json",
-            "--candidate",
-            "new.json",
-            "--max-score-drop",
-            "3",
-        ])
-        .unwrap();
-        let Command::Compare(args) = cli.command else {
-            panic!("expected compare command");
-        };
-        assert_eq!(args.max_score_drop, 3.0);
     }
 }

@@ -1,13 +1,7 @@
 use serde_json::json;
 
-use crate::context::E2eContext;
-use crate::report::CriterionSource;
-
 use super::common;
-use super::{
-    CriterionSpec, EvaluationFuture, ExecutionPolicy, ModelRequirements, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
-};
+use super::{CriterionSpec, ExecutionPolicy, ModelRequirements, ScenarioSpec};
 
 pub const ID: &str = "security_review";
 
@@ -32,31 +26,26 @@ For each snippet, identify the vulnerability, explain its impact, and recommend 
             max_output_tokens: 4_096,
             max_total_tokens: 49_152,
             timeout_seconds: 120,
-            thinking_level: None,
         },
         threshold: 80,
         criteria: vec![
             CriterionSpec {
                 id: "coverage",
-                source: CriterionSource::Judge,
                 weight: 40,
                 description: "Identifies the relevant vulnerability in all three snippets.",
             },
             CriterionSpec {
                 id: "accuracy",
-                source: CriterionSource::Judge,
                 weight: 30,
                 description: "Explains each risk accurately without invented findings.",
             },
             CriterionSpec {
                 id: "remediation",
-                source: CriterionSource::Judge,
                 weight: 20,
                 description: "Provides a practical mitigation for every finding.",
             },
             CriterionSpec {
                 id: "clarity",
-                source: CriterionSource::Judge,
                 weight: 10,
                 description: "Presents a concise, easy-to-map review.",
             },
@@ -78,46 +67,7 @@ For each snippet, identify the vulnerability, explain its impact, and recommend 
                 "remediation": "allowlist destinations or accept only validated relative paths"
             }
         })),
-        evaluate,
+        evaluate: common::evaluate_text_response,
         cleanup: None,
     }
-}
-
-fn evaluate<'a>(
-    _context: &'a E2eContext,
-    observation: &'a ScenarioObservation,
-    _run_id: &'a str,
-) -> EvaluationFuture<'a> {
-    Box::pin(async move {
-        let calls = common::function_calls(&observation.transcript);
-        let response = common::final_response(&observation.output);
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "response_present",
-                    !response.trim().is_empty(),
-                    if response.trim().is_empty() {
-                        "the assistant returned no review"
-                    } else {
-                        "the assistant returned a review"
-                    },
-                ),
-                common::gate(
-                    "no_function_calls",
-                    calls.is_empty() && observation.metrics.totals.function_calls == 0,
-                    format!("observed {} function call(s)", calls.len()),
-                ),
-                common::gate(
-                    "single_turn",
-                    observation.metrics.totals.turns == 1,
-                    format!(
-                        "observed {} turn(s), expected exactly one",
-                        observation.metrics.totals.turns
-                    ),
-                ),
-            ],
-            awards: Vec::new(),
-            evidence: json!({ "final_response": response }),
-        })
-    })
 }

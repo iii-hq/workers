@@ -1,7 +1,6 @@
 use serde_json::{json, Value};
 
 use crate::context::E2eContext;
-use crate::report::CriterionSource;
 
 use super::common;
 use super::{
@@ -25,32 +24,27 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             tools: true,
             minimum_context_window: 32_768,
             minimum_output_tokens: 2_048,
-            ..ModelRequirements::default()
         },
         execution: ExecutionPolicy {
             max_turns: 12,
             max_output_tokens: 8_192,
             max_total_tokens: 122_880,
             timeout_seconds: 240,
-            thinking_level: None,
         },
         threshold: 90,
         criteria: vec![
             CriterionSpec {
                 id: "durable_result",
-                source: CriterionSource::Objective,
                 weight: 60,
                 description: "The exact requested JSON is present at the requested state key.",
             },
             CriterionSpec {
                 id: "function_discipline",
-                source: CriterionSource::Objective,
                 weight: 30,
                 description: "Exactly one successful write targets the requested scope and key.",
             },
             CriterionSpec {
                 id: "confirmation",
-                source: CriterionSource::Objective,
                 weight: 10,
                 description: "The final response briefly confirms completion.",
             },
@@ -83,7 +77,7 @@ fn evaluate<'a>(
             && writes[0].arguments == json!({ "scope": scope, "key": KEY, "value": expected });
         let state_matches = observed == expected;
         let no_errors = observation.metrics.totals.function_call_errors == 0;
-        let response = common::final_response(&observation.output);
+        let response = observation.response.as_str();
         let concise_confirmation = !response.trim().is_empty() && response.chars().count() <= 240;
 
         Ok(ObjectiveEvaluation {
@@ -124,12 +118,6 @@ fn evaluate<'a>(
                     "awarded for a non-empty confirmation under 240 characters",
                 ),
             ],
-            evidence: json!({
-                "expected": expected,
-                "actual": observed,
-                "state_writes": writes.iter().map(|call| &call.arguments).collect::<Vec<_>>(),
-                "final_response": response,
-            }),
         })
     })
 }

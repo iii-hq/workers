@@ -9,7 +9,7 @@ Each scenario:
 1. Builds a natural user prompt with a unique run scope.
 2. Calls `harness::send` once.
 3. Waits for terminal state through `harness::status`.
-4. Collects the transcript, durable metrics, and scenario-specific evidence.
+4. Collects the transcript and durable metrics.
 5. Applies objective hard gates and weighted criteria.
 6. Optionally asks a fixed judge model to score qualitative criteria.
 7. Calls `harness::teardown` and removes scenario-owned state.
@@ -86,6 +86,10 @@ the eligible runs to pass and the median score to reach the threshold. Technical
 failures always fail the aggregate, while ordinary quality failures retain the
 two-of-three tolerance used nightly.
 
+Scenarios with a judge reference delegate every criterion score to the judge.
+Scenarios without one award every criterion objectively in code. Mechanical
+effects remain hard gates in both cases.
+
 Every run has one explicit status:
 
 - `passed`, `quality_failed`, or `hard_gate_failed` for evaluated quality;
@@ -100,28 +104,10 @@ The runner writes `results.json` with:
 - exact catalog-resolved subject and judge model identity and capabilities;
 - scenario requirements and effective execution policy;
 - judge protocol and pinned engine revision when CI supplies it;
-- prompt and final output for every run;
+- prompt, transcript, and `harness::metrics` for every run;
 - hard-gate results and per-criterion points;
-- objective evidence, transcript, and `harness::metrics`;
-- judge usage and failures grouped by phase;
+- judge attempts and failures grouped by phase;
 - median score, pass rate, and aggregate status.
-
-## Historical comparison
-
-Compare a candidate only with a report from the same experiment:
-
-```bash
-cargo run -p harness-e2e -- compare \
-  --baseline target/e2e-baseline/results.json \
-  --candidate target/e2e-candidate/results.json \
-  --max-score-drop 3
-```
-
-The comparison fails closed unless subject, judge, judge protocol, pinned
-engine revision, scenario set, requirements, thresholds, and execution policies
-match. Missing scores and drops above the configured tolerance fail the
-comparison. Results from different models are therefore separate series rather
-than control/treatment samples.
 
 ## CI
 
@@ -160,7 +146,8 @@ rules:
 - declare tool support in the model requirements when the scenario needs it;
 - objective effects are hard gates, not judge opinions;
 - criterion ids are unique, weights total 100, and awarded points are bounded;
-- qualitative criteria include a hidden reference for the fixed judge;
+- use a hidden judge reference for qualitative scoring, otherwise award every
+  criterion in the code evaluator;
 - every durable resource has unconditional cleanup.
 
 Unit tests validate the registry, rubric weights, objective awards, judge

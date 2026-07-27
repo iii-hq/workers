@@ -5,12 +5,12 @@ use std::pin::Pin;
 use anyhow::{bail, Result};
 use clap::ValueEnum;
 use harness::functions::metrics::SessionMetricsResponseV1;
-use harness::types::model::{Model, ThinkingLevel};
+use harness::types::model::Model;
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::context::E2eContext;
-use crate::report::{CriterionSource, HardGateReport};
+use crate::report::HardGateReport;
 
 pub mod common;
 pub mod direct_answer;
@@ -28,7 +28,6 @@ pub type ScenarioCleanup = for<'a> fn(&'a E2eContext, &'a str) -> CleanupFuture<
 #[derive(Debug, Clone)]
 pub struct CriterionSpec {
     pub id: &'static str,
-    pub source: CriterionSource,
     pub weight: u8,
     pub description: &'static str,
 }
@@ -39,8 +38,6 @@ pub struct ExecutionPolicy {
     pub max_output_tokens: u64,
     pub max_total_tokens: u64,
     pub timeout_seconds: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking_level: Option<ThinkingLevel>,
 }
 
 impl ExecutionPolicy {
@@ -64,7 +61,6 @@ impl ExecutionPolicy {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct ModelRequirements {
     pub tools: bool,
-    pub vision: bool,
     pub minimum_context_window: u64,
     pub minimum_output_tokens: u64,
 }
@@ -74,9 +70,6 @@ impl ModelRequirements {
         let mut reasons = Vec::new();
         if self.tools && model.supports_tools != Some(true) {
             reasons.push("tool use is required".to_string());
-        }
-        if self.vision && model.supports_vision != Some(true) {
-            reasons.push("vision input is required".to_string());
         }
         if model.context_window < self.minimum_context_window {
             reasons.push(format!(
@@ -136,16 +129,6 @@ impl ScenarioSpec {
                 bail!("scenario {} repeats criterion {}", self.id, criterion.id);
             }
         }
-        let needs_judge = self
-            .criteria
-            .iter()
-            .any(|criterion| criterion.source == CriterionSource::Judge);
-        if needs_judge != self.judge_reference.is_some() {
-            bail!(
-                "scenario {} judge criteria and reference must be configured together",
-                self.id
-            );
-        }
         Ok(())
     }
 
@@ -157,17 +140,16 @@ impl ScenarioSpec {
 pub struct ScenarioObservation {
     pub metrics: SessionMetricsResponseV1,
     pub transcript: Value,
-    pub output: Vec<String>,
+    pub response: String,
 }
 
 pub struct ObjectiveEvaluation {
     pub hard_gates: Vec<HardGateReport>,
     pub awards: Vec<CriterionAward>,
-    pub evidence: Value,
 }
 
 pub struct CriterionAward {
-    pub id: &'static str,
+    pub id: String,
     pub awarded: u8,
     pub reason: String,
 }
@@ -271,11 +253,10 @@ mod tests {
         };
         let reasons = ModelRequirements {
             tools: true,
-            vision: true,
             minimum_context_window: 16_000,
             minimum_output_tokens: 2_000,
         }
         .unsupported_reasons(&model);
-        assert_eq!(reasons.len(), 4);
+        assert_eq!(reasons.len(), 3);
     }
 }

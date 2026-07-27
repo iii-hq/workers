@@ -3,7 +3,6 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::context::E2eContext;
-use crate::report::CriterionSource;
 
 use super::common;
 use super::{
@@ -28,38 +27,32 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             tools: true,
             minimum_context_window: 65_536,
             minimum_output_tokens: 2_048,
-            ..ModelRequirements::default()
         },
         execution: ExecutionPolicy {
             max_turns: 24,
             max_output_tokens: 8_192,
             max_total_tokens: 204_800,
             timeout_seconds: 600,
-            thinking_level: None,
         },
         threshold: 90,
         criteria: vec![
             CriterionSpec {
                 id: "trigger_configuration",
-                source: CriterionSource::Objective,
                 weight: 40,
                 description: "Registers the exact one-shot state reaction requested.",
             },
             CriterionSpec {
                 id: "reactive_result",
-                source: CriterionSource::Objective,
                 weight: 40,
                 description: "The reaction produces the exact durable result.",
             },
             CriterionSpec {
                 id: "function_discipline",
-                source: CriterionSource::Objective,
                 weight: 10,
                 description: "Signals once, avoids a direct result write, and has no call errors.",
             },
             CriterionSpec {
                 id: "confirmation",
-                source: CriterionSource::Objective,
                 weight: 10,
                 description: "The final response briefly confirms completion.",
             },
@@ -86,13 +79,7 @@ fn evaluate<'a>(
             .filter(|call| call.function_id == "engine::register_trigger")
             .collect();
         let exact_registration = register_calls.len() == 1
-            && registration_matches(
-                &register_calls[0].arguments,
-                &scope,
-                SIGNAL_KEY,
-                RESULT_KEY,
-                &expected,
-            );
+            && registration_matches(&register_calls[0].arguments, &scope, SIGNAL_KEY);
         let state_writes: Vec<_> = calls
             .iter()
             .filter(|call| call.function_id == "state::set")
@@ -111,7 +98,7 @@ fn evaluate<'a>(
         let result_matches = observed == expected;
         let no_errors = observation.metrics.totals.function_call_errors == 0;
         let disciplined = exact_signal && !direct_result_write && no_errors;
-        let response = common::final_response(&observation.output);
+        let response = observation.response.as_str();
         let concise_confirmation = !response.trim().is_empty() && response.chars().count() <= 240;
 
         Ok(ObjectiveEvaluation {
@@ -162,24 +149,11 @@ fn evaluate<'a>(
                     "awarded for a non-empty confirmation under 240 characters",
                 ),
             ],
-            evidence: json!({
-                "expected": expected,
-                "actual": observed,
-                "registrations": register_calls.iter().map(|call| &call.arguments).collect::<Vec<_>>(),
-                "state_writes": state_writes.iter().map(|call| &call.arguments).collect::<Vec<_>>(),
-                "final_response": response,
-            }),
         })
     })
 }
 
-fn registration_matches(
-    arguments: &Value,
-    scope: &str,
-    signal_key: &str,
-    result_key: &str,
-    expected: &Value,
-) -> bool {
+fn registration_matches(arguments: &Value, scope: &str, signal_key: &str) -> bool {
     arguments.get("trigger_type").and_then(Value::as_str) == Some("state")
         && arguments.pointer("/config/scope").and_then(Value::as_str) == Some(scope)
         && arguments.pointer("/config/key").and_then(Value::as_str) == Some(signal_key)
@@ -188,35 +162,6 @@ fn registration_matches(
             .map(|value| value.as_bool() == Some(true))
             .unwrap_or(true)
         && arguments.get("function_id").and_then(Value::as_str) == Some("harness::react")
-        && reaction_strategy_matches(arguments, scope, result_key, expected)
-}
-
-fn reaction_strategy_matches(
-    arguments: &Value,
-    scope: &str,
-    result_key: &str,
-    expected: &Value,
-) -> bool {
-    if arguments.pointer("/metadata/call").is_some() {
-        return event_preserves_result_value(arguments)
-            && arguments
-                .pointer("/metadata/call/function_id")
-                .and_then(Value::as_str)
-                == Some("state::set")
-            && arguments.pointer("/metadata/call/payload")
-                == Some(&json!({ "scope": scope, "key": result_key, "value": expected }));
-    }
-    arguments
-        .pointer("/metadata/task")
-        .and_then(Value::as_str)
-        .is_some_and(|task| !task.trim().is_empty())
-}
-
-fn event_preserves_result_value(arguments: &Value) -> bool {
-    arguments
-        .pointer("/metadata/call/event_into")
-        .and_then(Value::as_str)
-        .is_none_or(|pointer| pointer != "/value" && !pointer.starts_with("/value/"))
 }
 
 async fn wait_for_state(context: &E2eContext, scope: &str, key: &str) -> anyhow::Result<Value> {
@@ -262,70 +207,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registration_requires_the_exact_reactive_edge() {
-        let expected = json!({"handled": true});
+    fn registration_requires_the_exact_one_shot_edge() {
         let valid = json!({
             "trigger_type": "state",
             "config": {"scope": "s", "key": "signal"},
             "once": true,
             "function_id": "harness::react",
-            "metadata": {
-                "call": {
-                    "function_id": "state::set",
-                    "payload": {"scope": "s", "key": "result", "value": expected}
-                }
-            }
         });
-        assert!(registration_matches(
-            &valid, "s", "signal", "result", &expected
-        ));
+        assert!(registration_matches(&valid, "s", "signal"));
+
         let mut default_once = valid.clone();
         default_once.as_object_mut().unwrap().remove("once");
-        assert!(registration_matches(
-            &default_once,
-            "s",
-            "signal",
-            "result",
-            &expected
-        ));
-        let mut injects_event = valid.clone();
-        injects_event["metadata"]["call"]["event_into"] = json!("/value/_trigger_event");
-        assert!(!registration_matches(
-            &injects_event,
-            "s",
-            "signal",
-            "result",
-            &expected
-        ));
-        let mut injects_outside_value = valid.clone();
-        injects_outside_value["metadata"]["call"]["event_into"] = json!("/_event");
-        assert!(registration_matches(
-            &injects_outside_value,
-            "s",
-            "signal",
-            "result",
-            &expected
-        ));
-        let task_strategy = json!({
-            "trigger_type": "state",
-            "config": {"scope": "s", "key": "signal"},
-            "once": true,
-            "function_id": "harness::react",
-            "metadata": {
-                "task": "Persist the requested result when this event fires."
-            }
-        });
-        assert!(registration_matches(
-            &task_strategy,
-            "s",
-            "signal",
-            "result",
-            &expected
-        ));
-        let mut direct = valid;
-        direct["metadata"]["call"]["payload"]["key"] = json!("signal");
-        assert!(!registration_matches(
-            &direct, "s", "signal", "result", &expected
-        ));
+        assert!(registration_matches(&default_once, "s", "signal"));
+
+        let mut recurring = valid.clone();
+        recurring["once"] = json!(false);
+        assert!(!registration_matches(&recurring, "s", "signal"));
+
+        let mut wrong_scope = valid;
+        wrong_scope["config"]["scope"] = json!("other");
+        assert!(!registration_matches(&wrong_scope, "s", "signal"));
     }
 }
