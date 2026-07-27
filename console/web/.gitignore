@@ -6,3 +6,4 @@ storybook-static
 *.log
 .vite
 *.tsbuildinfo
+dist-demo

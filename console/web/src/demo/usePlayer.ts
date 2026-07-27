@@ -1,0 +1,429 @@
+/**
+ * Drives the landing demo: walks `runScenario()` and folds its events into
+ * the three pieces of state the surface renders.
+ *
+ * The `StreamEvent` half of the switch below is the reducer from
+ * `ChatView`'s stream loop (`components/chat/ChatView.tsx`), trimmed to the
+ * cases a scripted turn can produce. Keeping the same reducer is the point:
+ * the transcript is built the way the real console builds it, so
+ * `MessageList` renders exactly what it renders in the product.
+ *
+ * Lifecycle: idle → typing the prompt → streaming → done → (hold) → reset.
+ */
+
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { StoredSpan } from '@/pages/TracesV2/api/traces'
+import {
+  toWaterfallData,
+  type WaterfallData,
+} from '@/pages/TracesV2/lib/traceTransform'
+import type {
+  AssistantMessage,
+  FunctionTriggerMessage,
+  Message,
+  MessagePatch,
+  ThoughtMessage,
+  UserMessage,
+} from '@/types/chat'
+import {
+  type Callout,
+  type DemoEvent,
+  MODEL_ID,
+  PROMPT,
+  runScenario,
+  SESSION_ID,
+  TRACE_ID,
+} from './scenario'
+
+export type Phase = 'idle' | 'typing' | 'streaming' | 'done'
+
+/** How long the finished turn stays up before the loop restarts. */
+const HOLD_MS = 9000
+const TYPE_MS_PER_CHAR = 42
+/** Repaint cadence while a span is still open, so its bar grows. */
+const PENDING_TICK_MS = 120
+/** The gate releases itself if nobody clicks approve. */
+const GATE_TIMEOUT_MS = 5200
+/** A callout clears itself so a stale one never annotates the wrong beat. */
+const CALLOUT_MS = 11000
+
+let seq = 0
+function uid(): string {
+  seq += 1
+  return `demo-${seq}`
+}
+
+export interface PlayerState {
+  phase: Phase
+  messages: Message[]
+  /** Characters of the prompt typed so far, for the composer. */
+  typed: string
+  waterfall: WaterfallData | null
+  spanCount: number
+  callout: Callout | null
+  /** The turn is between visible outputs — drives the thinking shimmer. */
+  isThinking: boolean
+  thinkingDetail?: string
+  /** Set while a call sits in the approval gate. */
+  resolveApproval: (
+    sessionId: string,
+    functionTriggerId: string,
+    decision: 'allow' | 'deny',
+  ) => Promise<void>
+}
+
+export function usePlayer(active: boolean, loop = true): PlayerState {
+  const [phase, setPhase] = useState<Phase>('idle')
+  const [messages, setMessages] = useState<Message[]>([])
+  const [typed, setTyped] = useState('')
+  const [callout, setCallout] = useState<Callout | null>(null)
+  const [turnPhase, setTurnPhase] = useState<string | null>(null)
+  const [isStreaming, setIsStreaming] = useState(false)
+
+  // Spans live in a ref: the scenario mutates them far more often than the
+  // waterfall needs to repaint, and the pending tick owns the cadence.
+  const spansRef = useRef<StoredSpan[]>([])
+  const [waterfall, setWaterfall] = useState<WaterfallData | null>(null)
+  const [spanCount, setSpanCount] = useState(0)
+
+  const gateResolveRef = useRef<(() => void) | null>(null)
+  const calloutTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  )
+  const runIdRef = useRef(0)
+
+  /** Show a callout, and retire it on its own so it never outlives its beat. */
+  const showCallout = useCallback((next: Callout | null) => {
+    clearTimeout(calloutTimerRef.current)
+    setCallout(next)
+    if (next) {
+      calloutTimerRef.current = setTimeout(() => setCallout(null), CALLOUT_MS)
+    }
+  }, [])
+
+  const append = useCallback((message: Message) => {
+    setMessages((prev) => [...prev, message])
+  }, [])
+
+  const patch = useCallback((id: string, p: MessagePatch) => {
+    setMessages((prev) =>
+      prev.map((m) => (m.id === id ? ({ ...m, ...p } as Message) : m)),
+    )
+  }, [])
+
+  const repaintSpans = useCallback(() => {
+    const spans = spansRef.current
+    setSpanCount(spans.length)
+    setWaterfall(spans.length ? toWaterfallData(spans, TRACE_ID) : null)
+  }, [])
+
+  const resolveApproval = useCallback(async () => {
+    gateResolveRef.current?.()
+    gateResolveRef.current = null
+  }, [])
+
+  /* Repaint while anything is still open so pending bars grow. */
+  useEffect(() => {
+    if (phase !== 'streaming') return
+    const t = setInterval(() => {
+      if (spansRef.current.some((s) => s.pending)) repaintSpans()
+    }, PENDING_TICK_MS)
+    return () => clearInterval(t)
+  }, [phase, repaintSpans])
+
+  useEffect(() => {
+    if (!active) return
+    runIdRef.current += 1
+    const runId = runIdRef.current
+    const controller = new AbortController()
+    const { signal } = controller
+    let holdTimer: ReturnType<typeof setTimeout> | undefined
+
+    const stale = () => signal.aborted || runIdRef.current !== runId
+
+    const wait = (ms: number) =>
+      new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, ms)
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(t)
+            resolve()
+          },
+          { once: true },
+        )
+      })
+
+    const gate = (_functionTriggerId: string) =>
+      new Promise<void>((resolve) => {
+        let done = false
+        const finish = () => {
+          if (done) return
+          done = true
+          gateResolveRef.current = null
+          clearTimeout(timer)
+          resolve()
+        }
+        const timer = setTimeout(finish, GATE_TIMEOUT_MS)
+        gateResolveRef.current = finish
+        signal.addEventListener('abort', finish, { once: true })
+      })
+
+    async function play() {
+      /* reset */
+      spansRef.current = []
+      setMessages([])
+      setTyped('')
+      showCallout(null)
+      setWaterfall(null)
+      setSpanCount(0)
+      setIsStreaming(false)
+      setTurnPhase(null)
+      setPhase('typing')
+
+      /* type the prompt into the composer */
+      await wait(700)
+      for (let i = 1; i <= PROMPT.length; i++) {
+        if (stale()) return
+        setTyped(PROMPT.slice(0, i))
+        await wait(TYPE_MS_PER_CHAR * (0.55 + Math.random() * 0.9))
+      }
+      if (stale()) return
+      await wait(520)
+
+      /* submit */
+      const userMsg: UserMessage = {
+        id: uid(),
+        role: 'user',
+        content: PROMPT,
+        createdAt: Date.now(),
+      }
+      setTyped('')
+      append(userMsg)
+      setPhase('streaming')
+      setIsStreaming(true)
+
+      /* ── the ChatView stream reducer ─────────────────────────────── */
+      let thoughtId: string | null = null
+      let thoughtBuffer = ''
+      let fcallId: string | null = null
+      const fcallMap = new Map<string, string>()
+      let assistantId: string | null = null
+      let assistantBuffer = ''
+
+      for await (const event of runScenario({ signal, gate })) {
+        if (stale()) return
+        const ev = event as DemoEvent
+        switch (ev.kind) {
+          case 'thought-start': {
+            const msg: ThoughtMessage = {
+              id: uid(),
+              role: 'thought',
+              content: '',
+              durationMs: 0,
+              streaming: true,
+              createdAt: Date.now(),
+            }
+            thoughtId = msg.id
+            thoughtBuffer = ''
+            append(msg)
+            break
+          }
+          case 'thought-token': {
+            if (!thoughtId) break
+            thoughtBuffer += ev.token
+            patch(thoughtId, { content: thoughtBuffer })
+            break
+          }
+          case 'thought-end': {
+            if (!thoughtId) break
+            patch(thoughtId, { streaming: false, durationMs: ev.durationMs })
+            thoughtId = null
+            break
+          }
+          case 'fcall-start': {
+            if (assistantId) {
+              patch(assistantId, { streaming: false })
+              assistantId = null
+              assistantBuffer = ''
+            }
+            const msg: FunctionTriggerMessage = {
+              id: uid(),
+              role: 'function-trigger',
+              functionId: ev.functionId,
+              input: ev.input,
+              running: !ev.pendingApproval,
+              pendingApproval: ev.pendingApproval,
+              functionTriggerId: ev.functionTriggerId,
+              sessionId: ev.sessionId,
+              createdAt: Date.now(),
+            }
+            fcallId = msg.id
+            if (ev.functionTriggerId) fcallMap.set(msg.id, ev.functionTriggerId)
+            append(msg)
+            break
+          }
+          case 'fcall-approval-cleared': {
+            const clearedId = [...fcallMap.entries()].find(
+              ([, fcid]) => fcid === ev.functionTriggerId,
+            )?.[0]
+            if (clearedId) {
+              patch(clearedId, {
+                pendingApproval: false,
+                ...(ev.running ? { running: true } : {}),
+              })
+            }
+            break
+          }
+          case 'fcall-end': {
+            const targetId: string | null = ev.functionTriggerId
+              ? ([...fcallMap.entries()].find(
+                  ([, fcid]) => fcid === ev.functionTriggerId,
+                )?.[0] ?? fcallId)
+              : fcallId
+            if (!targetId) break
+            patch(targetId, {
+              output: ev.output,
+              durationMs: ev.durationMs,
+              running: false,
+              pendingApproval: false,
+            })
+            fcallMap.delete(targetId)
+            if (targetId === fcallId) fcallId = null
+            break
+          }
+          case 'assistant-token': {
+            if (!assistantId) {
+              const msg: AssistantMessage = {
+                id: uid(),
+                role: 'assistant',
+                content: '',
+                model: MODEL_ID,
+                mode: 'agent',
+                streaming: true,
+                createdAt: Date.now(),
+              }
+              assistantId = msg.id
+              assistantBuffer = ''
+              append(msg)
+            }
+            assistantBuffer += ev.token
+            patch(assistantId, { content: assistantBuffer })
+            break
+          }
+          case 'assistant-end': {
+            if (assistantId) patch(assistantId, { streaming: false })
+            assistantId = null
+            assistantBuffer = ''
+            break
+          }
+          case 'turn-status': {
+            setTurnPhase(ev.phase)
+            break
+          }
+
+          /* ── demo-only markers ─────────────────────────────────── */
+          case 'demo-span-open': {
+            const now = Date.now()
+            spansRef.current = [
+              ...spansRef.current,
+              {
+                trace_id: TRACE_ID,
+                span_id: ev.span.id,
+                parent_span_id: ev.span.parent,
+                name: ev.span.name,
+                kind: ev.span.kind,
+                service_name: ev.span.service,
+                start_time_unix_nano: now,
+                end_time_unix_nano: 0,
+                status: 'UNSET',
+                attributes: ev.span.attributes ?? [],
+                events: [],
+                links: [],
+                pending: true,
+              },
+            ]
+            repaintSpans()
+            break
+          }
+          case 'demo-span-close': {
+            const now = Date.now()
+            spansRef.current = spansRef.current.map((s) =>
+              s.span_id === ev.id
+                ? {
+                    ...s,
+                    end_time_unix_nano: now,
+                    status: ev.status ?? 'OK',
+                    pending: false,
+                  }
+                : s,
+            )
+            repaintSpans()
+            break
+          }
+          case 'demo-callout': {
+            showCallout(ev.callout)
+            break
+          }
+        }
+
+        if (
+          ev.kind === 'fcall-start' ||
+          ev.kind === 'assistant-token' ||
+          ev.kind === 'thought-start'
+        ) {
+          setTurnPhase(null)
+        }
+      }
+
+      if (stale()) return
+      setIsStreaming(false)
+      setPhase('done')
+
+      if (loop) {
+        holdTimer = setTimeout(() => {
+          if (!stale()) play()
+        }, HOLD_MS)
+      }
+    }
+
+    play()
+
+    return () => {
+      controller.abort()
+      clearTimeout(holdTimer)
+      clearTimeout(calloutTimerRef.current)
+      gateResolveRef.current = null
+    }
+  }, [active, loop, append, patch, repaintSpans, showCallout])
+
+  const lastRole = messages.length
+    ? messages[messages.length - 1].role
+    : undefined
+  const isThinking =
+    isStreaming &&
+    (lastRole === 'user' ||
+      (lastRole === 'function-trigger' &&
+        !(messages[messages.length - 1] as FunctionTriggerMessage).running &&
+        !(messages[messages.length - 1] as FunctionTriggerMessage)
+          .pendingApproval))
+
+  return {
+    phase,
+    messages,
+    typed,
+    waterfall,
+    spanCount,
+    callout,
+    isThinking,
+    thinkingDetail:
+      turnPhase === 'accepted'
+        ? 'turn accepted, step queued…'
+        : turnPhase === 'started'
+          ? 'harness::turn started…'
+          : undefined,
+    resolveApproval,
+  }
+}
+
+export { SESSION_ID }
