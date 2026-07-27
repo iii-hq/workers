@@ -11,8 +11,8 @@ name = "shell"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.22.0-alpha.2"
-iii-helpers = "=0.22.0-alpha.2"
+iii-sdk = "=0.22.0-alpha.3"
+iii-helpers = "=0.22.0-alpha.3"
 schemars = { version = "0.8", features = ["uuid1"] }
 libc = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "process", "time", "io-util", "fs"] }

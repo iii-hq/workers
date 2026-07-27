@@ -15,8 +15,8 @@ name = "grok"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.22.0-alpha.2"
-iii-helpers = "=0.22.0-alpha.2"
+iii-sdk = "=0.22.0-alpha.3"
+iii-helpers = "=0.22.0-alpha.3"
 schemars = { version = "0.8", features = ["uuid1"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "process", "time", "io-util"] }
 serde = { version = "1", features = ["derive"] }
