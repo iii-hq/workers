@@ -51,7 +51,14 @@ function mount() {
 
   window.addEventListener('message', (event: MessageEvent) => {
     const data = event.data
-    if (!data || typeof data !== 'object' || data.type !== 'iii-demo') return
+    if (!data || typeof data !== 'object') return
+    if (data.type === 'iii-demo-theme') {
+      /* The host's theme button flipped while the overlay is open. */
+      document.documentElement.dataset.theme =
+        data.theme === 'dark' ? 'dark' : 'light'
+      return
+    }
+    if (data.type !== 'iii-demo') return
     const next = !!data.active
     if (next === active) return
     active = next

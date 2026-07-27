@@ -64,7 +64,13 @@ export interface DemoSession {
 export type DemoEvent =
   | StreamEvent
   | { kind: 'demo-span-open'; span: DemoSpanInit }
-  | { kind: 'demo-span-close'; id: string; status?: 'OK' | 'ERROR' }
+  | {
+      kind: 'demo-span-close'
+      id: string
+      status?: 'OK' | 'ERROR'
+      /** Close the span this long after it opened, rather than now. */
+      durationMs?: number
+    }
   | { kind: 'demo-callout'; callout: Callout }
   | { kind: 'demo-session-open'; session: DemoSession }
   | { kind: 'demo-session-done'; id: string; result: string }
@@ -97,10 +103,20 @@ const TURN_TAGS: Array<[string, unknown]> = [
 
 /* ── stream fragments ─────────────────────────────────────────────────── */
 
+/**
+ * Time to leave a finished block of prose on screen before the next thing
+ * lands on top of it. Scaled by length and capped: the point is that the
+ * reader gets to finish the sentence, not that the demo waits out a full
+ * read of the closing answer.
+ */
+function readingDwellMs(body: string): number {
+  return Math.min(2800, Math.max(600, tokenize(body).length * 10))
+}
+
 async function* thought(
   body: string,
   signal?: AbortSignal,
-  meanDelayMs = 26,
+  meanDelayMs = 38,
 ): AsyncGenerator<DemoEvent> {
   const startedAt = Date.now()
   yield { kind: 'thought-start' }
@@ -110,12 +126,13 @@ async function* thought(
     await nap(meanDelayMs * (0.6 + Math.random() * 0.8), signal)
   }
   yield { kind: 'thought-end', durationMs: Date.now() - startedAt }
+  await nap(readingDwellMs(body), signal)
 }
 
 async function* assistant(
   body: string,
   signal?: AbortSignal,
-  meanDelayMs = 26,
+  meanDelayMs = 38,
 ): AsyncGenerator<DemoEvent> {
   for (const token of tokenize(body)) {
     if (signal?.aborted) return
@@ -123,6 +140,7 @@ async function* assistant(
     await nap(meanDelayMs * (0.5 + Math.random()), signal)
   }
   yield { kind: 'assistant-end' }
+  await nap(readingDwellMs(body), signal)
 }
 
 interface CallOptions {
@@ -131,7 +149,15 @@ interface CallOptions {
   worker: string
   input: unknown
   output: unknown
+  /** How long the demo lingers on the call, so a viewer can see it happen. */
   runMs: number
+  /**
+   * What the card and the span report, when that differs from how long the
+   * demo dwells. An engine-local call really does finish in microseconds;
+   * animating it that fast would make it invisible, and reporting the dwell
+   * instead would claim a trigger registration costs a third of a second.
+   */
+  reportedMs?: number
   parentSpan: string
   signal?: AbortSignal
   /** Nested spans opened inside the call, as [name, service, share-of-runMs]. */
@@ -149,6 +175,7 @@ async function* call(opts: CallOptions): AsyncGenerator<DemoEvent> {
     input,
     output,
     runMs,
+    reportedMs,
     parentSpan,
     signal,
     inner,
@@ -210,7 +237,13 @@ async function* call(opts: CallOptions): AsyncGenerator<DemoEvent> {
       await nap(slice, signal)
       elapsed += slice
       if (signal?.aborted) return
-      yield { kind: 'demo-span-close', id: childSpan }
+      yield {
+        kind: 'demo-span-close',
+        id: childSpan,
+        /* Inner work takes its share of the REPORTED time, so a child can
+           never outlast the call it happened inside. */
+        ...(reportedMs === undefined ? {} : { durationMs: reportedMs * share }),
+      }
     }
     await nap(Math.max(0, runMs - elapsed), signal)
   } else {
@@ -218,11 +251,15 @@ async function* call(opts: CallOptions): AsyncGenerator<DemoEvent> {
   }
   if (signal?.aborted) return
 
-  yield { kind: 'demo-span-close', id: execSpan }
+  yield {
+    kind: 'demo-span-close',
+    id: execSpan,
+    ...(reportedMs === undefined ? {} : { durationMs: reportedMs }),
+  }
   yield {
     kind: 'fcall-end',
     output,
-    durationMs: Date.now() - startedAt,
+    durationMs: reportedMs ?? Date.now() - startedAt,
     ...(functionTriggerId ? { functionTriggerId } : {}),
   }
 }
@@ -713,6 +750,7 @@ export async function* runScenario(
         input: { status: 'connected' },
         output: WORKERS_LIST(),
         runMs: 900,
+        reportedMs: 2.1,
         parentSpan: stepSpan,
         signal,
         callout: {
@@ -739,6 +777,7 @@ export async function* runScenario(
         input: { name: 'database' },
         output: DATABASE_INFO(),
         runMs: 700,
+        reportedMs: 1.4,
         parentSpan: stepSpan,
         signal,
         callout: {
@@ -817,6 +856,7 @@ export async function* runScenario(
             registered: true,
           },
           runMs: 320,
+          reportedMs: 0.31,
           parentSpan: stepSpan,
           signal,
         })
@@ -853,6 +893,7 @@ export async function* runScenario(
           stderr_truncated: false,
         },
         runMs: 2600,
+        reportedMs: 6041,
         parentSpan: stepSpan,
         signal,
       }),
@@ -887,6 +928,7 @@ export async function* runScenario(
           idempotent_replay: false,
         },
         runMs: 900,
+        reportedMs: 12.4,
         parentSpan: stepSpan,
         signal,
         inner: [['execute database::transaction', 'database', 0.6]],
@@ -902,7 +944,7 @@ export async function* runScenario(
   /* step 8 — the answer, and a tour of the pane on the right */
   yield* step(
     8,
-    assistant(FINAL_ANSWER, signal, 17),
+    assistant(FINAL_ANSWER, signal, 22),
     signal,
     async function* () {
       yield {

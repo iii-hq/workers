@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/Button'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { copyTextToClipboard } from '@/lib/clipboard'
+import { formatCallDuration } from '@/lib/format-call-duration'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import type { FunctionTriggerMessage as FunctionTriggerMessageType } from '@/types/chat'
@@ -365,8 +366,10 @@ export function FunctionTriggerCard({
               typeof message.durationMs === 'number' ? (
                 <span className="text-ink-faint">
                   {' '}
-                  for <span className="tabular-nums">{message.durationMs}</span>
-                  ms
+                  for{' '}
+                  <span className="tabular-nums">
+                    {formatCallDuration(message.durationMs)}
+                  </span>
                 </span>
               ) : null}
             </span>

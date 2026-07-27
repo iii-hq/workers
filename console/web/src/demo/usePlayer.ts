@@ -39,7 +39,7 @@ import {
 export type Phase = 'idle' | 'typing' | 'streaming' | 'done'
 
 /** How long the finished turn stays up before the loop restarts. */
-const HOLD_MS = 9000
+const HOLD_MS = 14000
 const TYPE_MS_PER_CHAR = 42
 /** Repaint cadence while a span is still open, so its bar grows. */
 const PENDING_TICK_MS = 120
@@ -441,7 +441,12 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
               s.span_id === ev.id
                 ? {
                     ...s,
-                    end_time_unix_nano: now,
+                    /* An explicit duration is what the call really costs;
+                       the demo dwelt longer only so it could be seen. */
+                    end_time_unix_nano:
+                      ev.durationMs === undefined
+                        ? now
+                        : s.start_time_unix_nano + ev.durationMs,
                     status: ev.status ?? 'OK',
                     pending: false,
                   }
