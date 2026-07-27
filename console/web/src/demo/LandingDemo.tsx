@@ -236,6 +236,7 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
                 data={player.waterfall}
                 onSpanClick={handleSpanClick}
                 selectedSpanId={selectedSpanId}
+                showExpandControls={false}
               />
             ) : (
               <div className="flex h-full items-center justify-center px-6 text-center font-mono text-[12px] text-ink-ghost">

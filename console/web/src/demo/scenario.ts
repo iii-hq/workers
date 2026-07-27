@@ -143,6 +143,28 @@ async function* assistant(
   await nap(readingDwellMs(body), signal)
 }
 
+/**
+ * A held beat after a result worth reading: the worker catalogue, a worker's
+ * contract, a test run's output. Rendered as a thought so the pause is a
+ * visible line in the transcript rather than the demo appearing to stall,
+ * and placed BETWEEN durable steps so it never inflates a step's span.
+ */
+async function* readPause(
+  signal: AbortSignal | undefined,
+  holdMs = 2800,
+): AsyncGenerator<DemoEvent> {
+  const startedAt = Date.now()
+  yield { kind: 'thought-start' }
+  for (const token of tokenize('letting the user read…')) {
+    if (signal?.aborted) return
+    if (token) yield { kind: 'thought-token', token }
+    await nap(55, signal)
+  }
+  await nap(holdMs, signal)
+  if (signal?.aborted) return
+  yield { kind: 'thought-end', durationMs: Date.now() - startedAt }
+}
+
 interface CallOptions {
   fn: string
   /** Worker that runs it — the `execute` span's service name. */
@@ -761,6 +783,7 @@ export async function* runScenario(
       }),
   )
   if (signal?.aborted) return
+  yield* readPause(signal)
 
   /* step 2 — read the database worker's contract */
   yield* step(
@@ -788,6 +811,7 @@ export async function* runScenario(
       }),
   )
   if (signal?.aborted) return
+  yield* readPause(signal)
 
   /* step 3 — fan out to three sub-agents; one of them stops at the gate */
   yield* step(
@@ -800,6 +824,7 @@ export async function* runScenario(
     (stepSpan) => spawnFanOut(stepSpan, gate, signal),
   )
   if (signal?.aborted) return
+  yield* readPause(signal)
 
   /* step 4 — install the worker the children wrote */
   yield* step(
@@ -899,6 +924,7 @@ export async function* runScenario(
       }),
   )
   if (signal?.aborted) return
+  yield* readPause(signal)
 
   /* step 7 — call the thing it just built */
   yield* step(
@@ -940,6 +966,7 @@ export async function* runScenario(
       }),
   )
   if (signal?.aborted) return
+  yield* readPause(signal)
 
   /* step 8 — the answer, and a tour of the pane on the right */
   yield* step(
