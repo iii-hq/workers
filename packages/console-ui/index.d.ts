@@ -373,6 +373,10 @@ export interface CodeEditorProps {
   /** Observes keys bubbling out of the editor (shortcuts like ⌘S) — keys
       the editor consumes for editing never reach it. */
   onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>
+  /** Domain identifiers to autocomplete (e.g. SQL table/column names +
+      keywords). Non-empty turns on the as-you-type suggest popup and
+      registers a completion provider for the current `language`. */
+  completions?: readonly string[]
 }
 /** The console's Monaco-backed code editor — the one editor for every code
     or long-text editing surface, themed by the console's design tokens in
