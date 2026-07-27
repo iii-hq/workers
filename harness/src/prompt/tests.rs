@@ -7,6 +7,13 @@ use super::{
 /// identity prompt.
 const IDENTITY: &str = "You are an iii agent worker. TEST-VOICE identity.";
 
+/// The on-demand playbooks shipped in `harness/skills/` and served to agents
+/// by the directory worker. Content moved out of the identity prompt lives
+/// here; these constants keep it pinned by the same invariants.
+const ORCHESTRATION: &str = include_str!("../../skills/orchestration.md");
+const FINISHING: &str = include_str!("../../skills/finishing.md");
+const BUILDING: &str = include_str!("../../skills/building.md");
+
 fn default_prompt() -> String {
     build_system_prompt(SystemPromptOpts {
         mode: None,
@@ -124,7 +131,9 @@ fn mesh_model() {
 
 #[test]
 fn delegation_carries_resolved_resource_selectors() {
-    let out = default_prompt().replace('\n', " ");
+    // Dispatch doctrine moved into the orchestration playbook; the rule is the
+    // same one the identity prompt used to carry.
+    let out = ORCHESTRATION.replace('\n', " ");
     assert!(out.contains("every resolved resource selector the child must pass"));
     assert!(out.contains("`db: \"primary\"`"));
     assert!(out.contains("Use database db: \"<resolved name>\""));
@@ -134,7 +143,7 @@ fn delegation_carries_resolved_resource_selectors() {
 
 #[test]
 fn reaction_defaults_match_runtime() {
-    let out = default_prompt().replace('\n', " ");
+    let out = ORCHESTRATION.replace('\n', " ");
     assert!(out.contains("every event creates a fresh distinct child"));
     assert!(out.contains("you MUST omit `metadata.session_id`"));
     assert!(out.contains("edges are standing by default"));
@@ -145,24 +154,40 @@ fn reaction_defaults_match_runtime() {
 
 #[test]
 fn fresh_namespaces_are_derived_and_checked() {
-    let out = default_prompt().replace('\n', " ");
+    let out = ORCHESTRATION.replace('\n', " ");
     assert!(out.contains("derive its variable suffix from the unique session id"));
     assert!(out.contains("confirm the namespace is absent"));
 }
 
 #[test]
-fn registry_allowlist_invariant() {
+fn directory_allowlist_invariant() {
+    // The prompt points agents at exactly one directory function: the skill
+    // reader. The registry surface lives in the `harness/building` playbook.
     let out = default_prompt();
-    assert!(out.contains("directory::registry::workers::list"));
-    assert!(out.contains("directory::registry::workers::info"));
+    assert!(out.contains("directory::skills::get"));
     for id in extract_directory_ids(&out) {
         assert!(
-            id.starts_with("directory::registry::workers::"),
+            id == "directory::skills::get",
             "unexpected directory id: {id}"
         );
     }
     assert!(!out.contains("iii://"));
-    assert!(!out.to_lowercase().contains("skill"));
+}
+
+#[test]
+fn skills_pointer_invariants() {
+    // The identity prompt stays small; the playbooks are pulled on demand,
+    // once per session, BEFORE the first action of their kind.
+    let out = default_prompt();
+    for skill in [
+        "harness/orchestration",
+        "harness/finishing",
+        "harness/building",
+    ] {
+        assert!(out.contains(skill), "missing skill pointer {skill}");
+    }
+    assert!(out.contains("at most once per session"));
+    assert!(out.contains("BEFORE your first action"));
 }
 
 #[test]
@@ -209,14 +234,14 @@ fn error_driven_correction() {
 
 #[test]
 fn registry_flow() {
-    let out = default_prompt();
-    assert!(out.contains("directory::registry::workers::list { search: \"<capability>\" }"));
-    assert!(out.contains("directory::registry::workers::info { name: \"<name>\" }"));
-    assert!(out.contains("{ source: { kind: \"registry\", name: \"<name>\" } }"));
-    assert!(out.contains("say what you are about to install and why"));
-    assert!(out.contains("confirm the new function ids appear"));
-    assert!(out.contains("engine::functions::list { prefix: \"<worker>::\" }"));
-    assert!(out.contains("a preview, not the contract"));
+    // Moved verbatim from the identity prompt into the building playbook.
+    assert!(BUILDING.contains("directory::registry::workers::list { search: \"<capability>\" }"));
+    assert!(BUILDING.contains("directory::registry::workers::info { name: \"<name>\" }"));
+    assert!(BUILDING.contains("{ source: { kind: \"registry\", name: \"<name>\" } }"));
+    assert!(BUILDING.contains("say what you are about to install and why"));
+    assert!(BUILDING.contains("confirm the new function ids appear"));
+    assert!(BUILDING.contains("engine::functions::list { prefix: \"<worker>::\" }"));
+    assert!(BUILDING.contains("a preview, not the contract"));
 }
 
 #[test]
@@ -228,12 +253,12 @@ fn directory_bootstrap_degrade() {
 
 #[test]
 fn coder_routing() {
-    let out = default_prompt();
-    assert!(out.contains("engine::functions::list { prefix: \"coder::\" }"));
-    // The code surface is served by the shell worker now — the prompt must NOT
-    // tell agents to install a separate `coder` registry worker.
-    assert!(!out.contains("registry\", name: \"coder\""));
-    assert!(out.contains("served by the shell worker"));
+    // Moved verbatim from the identity prompt into the building playbook.
+    assert!(BUILDING.contains("engine::functions::list { prefix: \"coder::\" }"));
+    // The code surface is served by the shell worker now — the playbook must
+    // NOT tell agents to install a separate `coder` registry worker.
+    assert!(!BUILDING.contains("registry\", name: \"coder\""));
+    assert!(BUILDING.contains("served by the shell worker"));
     for id in [
         "coder::read-file",
         "coder::search",
@@ -244,29 +269,59 @@ fn coder_routing() {
         "coder::move",
         "coder::delete-file",
     ] {
-        assert!(out.contains(id), "missing {id}");
+        assert!(BUILDING.contains(id), "missing {id}");
     }
-    assert!(out.contains("the full inventory"));
-    assert!(out.contains("never delete-then-recreate"));
+    assert!(BUILDING.contains("the full inventory"));
+    assert!(BUILDING.contains("never delete-then-recreate"));
 }
 
 #[test]
 fn sdk_doc_gate() {
-    let out = default_prompt();
-    assert!(out.contains("the FIRST line of worker code"));
+    // Moved verbatim from the identity prompt into the building playbook.
+    assert!(BUILDING.contains("the FIRST line of worker code"));
     for url in [
-        "https://iii.dev/docs/api-reference/sdk-node",
-        "https://iii.dev/docs/api-reference/sdk-python",
-        "https://iii.dev/docs/api-reference/sdk-rust",
-        "https://iii.dev/docs/api-reference/sdk-browser",
-        "https://iii.dev/docs/sdk-reference/engine-sdk",
+        "https://iii.dev/docs/reference/sdk-node",
+        "https://iii.dev/docs/reference/sdk-python",
+        "https://iii.dev/docs/reference/sdk-rust",
+        "https://iii.dev/docs/reference/sdk-browser",
+        "https://iii.dev/docs/reference/engine-protocol",
     ] {
-        assert!(out.contains(url), "missing {url}");
+        assert!(BUILDING.contains(url), "missing {url}");
     }
-    assert!(out.contains("https://iii.dev/docs/llms.txt"));
-    assert!(out.contains("`.md`"));
-    assert!(out.contains("docs for an ordinary call"));
-    assert!(out.contains("say so and proceed with extra care"));
+    assert!(BUILDING.contains("https://iii.dev/docs/llms.txt"));
+    assert!(BUILDING.contains("`.md`"));
+    assert!(BUILDING.contains("docs for an ordinary call"));
+    assert!(BUILDING.contains("say so and proceed with extra care"));
+}
+
+#[test]
+fn orchestration_playbook_invariants() {
+    for s in [
+        "harness::spawn",
+        "harness::react",
+        "engine::register_trigger",
+        "wire, spawn, stop",
+        "join",
+        "you MUST omit `metadata.session_id`",
+    ] {
+        assert!(
+            ORCHESTRATION.contains(s),
+            "orchestration playbook missing {s}"
+        );
+    }
+}
+
+#[test]
+fn finishing_playbook_invariants() {
+    for s in [
+        "turn_complete",
+        "fp::when",
+        "cron",
+        "armed wake",
+        "state::set",
+    ] {
+        assert!(FINISHING.contains(s), "finishing playbook missing {s}");
+    }
 }
 
 // The web::fetch mandate is no longer hardcoded in the prompt — it is injected by
@@ -339,18 +394,16 @@ fn default_variant_invariants() {
     let out = variants::DEFAULT;
     assert!(out.starts_with("You are an iii agent worker."));
     assert!(out.contains("agent_trigger"));
-    assert!(out.contains("directory::registry::workers::list"));
-    assert!(out.contains("coder::move"));
-    assert!(out.contains("the FIRST line of worker code"));
-    assert!(out.contains("email::send"));
-    assert!(out.contains("I am installing the \"email\" worker"));
+    assert!(out.contains("directory::skills::get"));
     assert!(out.contains("<example>"));
     for id in extract_directory_ids(out) {
-        assert!(
-            id.starts_with("directory::registry::workers::"),
-            "bad directory id {id}"
-        );
+        assert!(id == "directory::skills::get", "bad directory id {id}");
     }
+    // The install walkthrough moved verbatim into the building playbook.
+    assert!(BUILDING.contains("email::send"));
+    assert!(BUILDING.contains("I am installing the \"email\" worker"));
+    assert!(BUILDING.contains("coder::move"));
+    assert!(BUILDING.contains("the FIRST line of worker code"));
 }
 
 /// The sub-agent identity is dumb by design: task mechanics, the state
@@ -388,19 +441,10 @@ fn subagent_variant_invariants() {
 
 #[test]
 fn capability_ladder_ordering() {
-    let out = variants::DEFAULT;
-    assert!(out.find("directory::registry::workers::list") < out.find("registerWorker"));
-    assert!(out.find("coder::") < out.find("registerWorker"));
-}
-
-#[test]
-fn default_variant_routes_coder_surface_through_shell() {
-    // Semantic guard for the coder→shell merge. A byte-length snapshot is
-    // brittle; what matters is that the default prompt does not regress back
-    // to installing a standalone coder registry worker.
-    assert!(variants::DEFAULT.contains("engine::functions::list { prefix: \"coder::\" }"));
-    assert!(variants::DEFAULT.contains("served by the shell worker"));
-    assert!(!variants::DEFAULT.contains("registry\", name: \"coder\""));
+    // Registry install and code editing come before authoring a new worker,
+    // in the building playbook where the ladder now lives.
+    assert!(BUILDING.find("directory::registry::workers::list") < BUILDING.find("registerWorker"));
+    assert!(BUILDING.find("coder::") < BUILDING.find("registerWorker"));
 }
 
 fn extract_directory_ids(text: &str) -> Vec<String> {
