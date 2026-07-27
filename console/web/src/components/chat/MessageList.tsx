@@ -5,6 +5,7 @@ import {
   assistantCopyText,
   functionTriggersByAssistant,
 } from '@/lib/function-trigger-copy'
+import { turnUsageByAnchor } from '@/lib/session-usage'
 import { cn } from '@/lib/utils'
 import type {
   FunctionTriggerMessage as FunctionTriggerMessageType,
@@ -42,6 +43,8 @@ interface MessageListProps {
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
   workingDir?: string | null
+  /** Per-turn usage chips in the transcript (user preference, default on). */
+  showTurnMetrics?: boolean
 }
 
 type RenderItem =
@@ -99,6 +102,7 @@ export function MessageList({
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
   workingDir,
+  showTurnMetrics = true,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -108,6 +112,13 @@ export function MessageList({
   const fcallsByAssistant = useMemo(
     () => functionTriggersByAssistant(messages),
     [messages],
+  )
+  // Turn rollup keyed by the message the chip hangs on. Grouping cannot live
+  // in the entry mapper — that sees one entry at a time, while a turn spans
+  // several — so it happens here, once per transcript change.
+  const turnUsage = useMemo(
+    () => (showTurnMetrics ? turnUsageByAnchor(messages) : null),
+    [messages, showTurnMetrics],
   )
 
   // Read optionally so isolated renders (Storybook) still work without the
@@ -205,6 +216,8 @@ export function MessageList({
               key={item.key}
               message={m}
               copyText={copyText}
+              turnUsage={turnUsage?.get(m.id)}
+              compactTurnUsage={density === 'dock'}
               onResolveApproval={onResolveApproval}
               onAlwaysAllow={onAlwaysAllow}
               onResolveFilesystemAccess={onResolveFilesystemAccess}

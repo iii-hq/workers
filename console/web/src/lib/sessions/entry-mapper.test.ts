@@ -537,6 +537,92 @@ describe('entrySegments', () => {
   })
 })
 
+describe('entrySegments — usage and turn identity', () => {
+  function usageItem(
+    entryId: string,
+    content: Extract<AgentMessage, { role: 'assistant' }>['content'],
+    usage?: Record<string, number>,
+    origin?: TranscriptItem['origin'],
+  ): TranscriptItem {
+    return {
+      entry_id: entryId,
+      ...(origin ? { origin } : {}),
+      message: {
+        role: 'assistant',
+        content,
+        stop_reason: 'end',
+        model: 'm',
+        provider: 'p',
+        timestamp: 2,
+        ...(usage ? { usage } : {}),
+      },
+    }
+  }
+
+  it('attaches usage and turn id to the first segment', () => {
+    const segments = entrySegments(
+      usageItem('e_t_1_0_assistant', [{ type: 'text', text: 'hi' }], {
+        input: 10,
+        output: 2,
+      }),
+    )
+    expect(segments[0]).toMatchObject({
+      usage: { input: 10, output: 2 },
+      turnId: 't_1',
+    })
+  })
+
+  it('prefers origin.turn_id over the id parse', () => {
+    const segments = entrySegments(
+      usageItem(
+        'e_t_parsed_0_assistant',
+        [{ type: 'text', text: 'hi' }],
+        undefined,
+        { turn_id: 't_from_origin' },
+      ),
+    )
+    expect(segments[0]?.turnId).toBe('t_from_origin')
+  })
+
+  it('attaches usage to a tool-only entry, which has no assistant segment', () => {
+    // The step emitted only function calls but still cost a request; if usage
+    // rode the first *assistant* segment it would be dropped here.
+    const segments = entrySegments(
+      usageItem(
+        'e_t_4_0_assistant',
+        [
+          {
+            type: 'function_call',
+            id: 'fc1',
+            function_id: 'shell::exec',
+            arguments: {},
+          },
+        ],
+        { input: 500, output: 25 },
+      ),
+    )
+    expect(segments.some((s) => s.role === 'assistant')).toBe(false)
+    expect(segments[0]).toMatchObject({
+      role: 'function-trigger',
+      usage: { input: 500, output: 25 },
+    })
+  })
+
+  it('sets nothing when the entry reports no usage', () => {
+    const segments = entrySegments(
+      usageItem('e_t_1_0_assistant', [{ type: 'text', text: 'hi' }]),
+    )
+    expect(segments[0]?.usage).toBeUndefined()
+  })
+
+  it('drops a usage object that carries no numbers', () => {
+    const segments = entrySegments(
+      usageItem('e_t_1_0_assistant', [{ type: 'text', text: 'hi' }], {}),
+    )
+    expect(segments[0]?.usage).toBeUndefined()
+  })
+})
+
 describe('applyEntryUpsert', () => {
   it('replaces the optimistic user message in place (predicted entry id)', () => {
     const optimistic: Message = {

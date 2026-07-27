@@ -3,6 +3,7 @@ import type { FilesystemAccessAction } from '@/components/permissions/Filesystem
 import { Caret } from '@/components/ui/Caret'
 import { Prompt } from '@/components/ui/Prompt'
 import { Markdown } from '@/lib/markdown'
+import type { TurnUsage } from '@/lib/session-usage'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import type {
@@ -15,6 +16,7 @@ import { AttachmentChip } from './AttachmentChip'
 import { CopyMessageButton } from './CopyMessageButton'
 import { MemoryChip } from './MemoryChip'
 import { ThoughtMessage } from './ThoughtMessage'
+import { TurnUsageChip } from './TurnUsageChip'
 
 interface MessageProps {
   message: MessageType
@@ -38,6 +40,9 @@ interface MessageProps {
   /** Copy payload for an assistant turn (prose + its function calls). Lazy so
       the string is built on click, not on every streaming re-render. */
   copyText?: string | (() => string)
+  /** Rollup for the turn this message closes; absent unless it is the anchor. */
+  turnUsage?: TurnUsage
+  compactTurnUsage?: boolean
 }
 
 export function Message({
@@ -48,6 +53,8 @@ export function Message({
   onManageFilesystemAccess,
   workingDir,
   copyText,
+  turnUsage,
+  compactTurnUsage,
 }: MessageProps) {
   switch (message.role) {
     case 'user':
@@ -61,7 +68,14 @@ export function Message({
         <UserMessage message={message} />
       )
     case 'assistant':
-      return <AssistantMessage message={message} copyText={copyText} />
+      return (
+        <AssistantMessage
+          message={message}
+          copyText={copyText}
+          turnUsage={turnUsage}
+          compactTurnUsage={compactTurnUsage}
+        />
+      )
     case 'thought':
       return <ThoughtMessage message={message} />
     case 'function-trigger': {
@@ -307,9 +321,13 @@ function UserMessage({ message }: { message: UserMessageType }) {
 function AssistantMessage({
   message,
   copyText,
+  turnUsage,
+  compactTurnUsage,
 }: {
   message: AssistantMessageType
   copyText?: string | (() => string)
+  turnUsage?: TurnUsage
+  compactTurnUsage?: boolean
 }) {
   const showCaret = !!message.streaming
   // A tool-only turn has no prose but still carries a copy payload (its
@@ -330,6 +348,9 @@ function AssistantMessage({
           <span className="text-ink-ghost">· {message.mode}</span>
         ) : null}
         {message.memory ? <MemoryChip memory={message.memory} /> : null}
+        {turnUsage ? (
+          <TurnUsageChip turn={turnUsage} compact={compactTurnUsage} />
+        ) : null}
         {copySource !== undefined && !message.streaming ? (
           <CopyMessageButton
             text={copySource}

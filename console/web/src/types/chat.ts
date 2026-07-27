@@ -51,9 +51,25 @@ export interface Attachment {
   dataUrl?: string
 }
 
+/** Re-exported so `types/chat.ts` stays the single UI-facing type surface. */
+export type { Usage as TokenUsage } from '@/lib/sessions/types'
+
 interface BaseMessage {
   id: string
   createdAt: number
+  /**
+   * Provider usage for the transcript ENTRY this segment came from, and the
+   * turn that entry belongs to.
+   *
+   * Both live on `BaseMessage` rather than `AssistantMessage` because the
+   * entry mapper attaches them to the entry's FIRST segment whatever its role
+   * — a tool-only step emits no assistant segment at all yet still burns real
+   * tokens. The carrier segment is incidental: only `lib/session-usage.ts`
+   * reads these, and nothing should render them off the segment they happen
+   * to sit on.
+   */
+  usage?: import('@/lib/sessions/types').Usage
+  turnId?: string
 }
 
 export interface UserMessage extends BaseMessage {

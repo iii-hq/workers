@@ -22,6 +22,29 @@ export type ContentBlock =
       is_error?: boolean
     }
 
+/**
+ * Token / cost accounting reported by the provider (session-manager `Usage`).
+ *
+ * Every field is optional and providers report disjoint subsets: codex never
+ * reports `cache_write`, anthropic never reports `reasoning`. Absent means
+ * "not reported", which is NOT the same as zero — see `lib/session-usage.ts`.
+ *
+ * The fields are also not portably additive. Anthropic's `input` EXCLUDES
+ * cached tokens (they arrive as separate `cache_read` / `cache_write`), while
+ * OpenAI's `input` INCLUDES `cache_read` and its `output` includes
+ * `reasoning`. So the only cross-provider total is `input + output`; cache and
+ * reasoning are descriptive only. (provider-anthropic/src/sse.rs:180,
+ * provider-openai/src/sse.rs:156; matches eval/src/report.rs:59-63.)
+ */
+export type Usage = {
+  input?: number
+  output?: number
+  cache_read?: number
+  cache_write?: number
+  reasoning?: number
+  cost_usd?: number
+}
+
 export type AgentMessage =
   | { role: 'user'; content: ContentBlock[]; timestamp: number }
   | {
@@ -30,6 +53,9 @@ export type AgentMessage =
       stop_reason: 'end' | 'length' | 'function_call' | 'aborted' | 'error'
       native_stop_reason?: string
       error_message?: string
+      error_kind?: string
+      warnings?: string[]
+      usage?: Usage
       model: string
       provider: string
       timestamp: number

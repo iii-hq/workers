@@ -38,6 +38,8 @@ import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { newMessageId } from '@/lib/session-id'
+import { sessionUsage } from '@/lib/session-usage'
+import { loadShowTurnMetrics } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
 import {
@@ -74,6 +76,7 @@ import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
 import { ExportSessionButton } from './ExportSessionButton'
 import { MessageList } from './MessageList'
+import { SessionMetricsButton } from './SessionMetricsButton'
 import { SessionTriggers } from './SessionTriggers'
 import { WorktreeBadge } from './WorktreeBadge'
 
@@ -762,6 +765,16 @@ export function ChatView({
 
   const filesystemGrants = useFilesystemGrants(sessionId)
   const [filesystemDialogOpen, setFilesystemDialogOpen] = useState(false)
+  const [metricsOpen, setMetricsOpen] = useState(false)
+  const [showTurnMetrics, setShowTurnMetrics] = useState(loadShowTurnMetrics)
+  // Computed once here and shared: the dialog needs the whole rollup, and the
+  // ctx widget needs `lastCall` to cross-check its chars/4 estimate against a
+  // number the provider actually reported.
+  const usageRollup = useMemo(
+    () => sessionUsage(conversation.messages),
+    [conversation.messages],
+  )
+  const lastModelCall = usageRollup.lastCall
   const handleManageFilesystemAccess = useCallback(() => {
     setFilesystemDialogOpen(true)
   }, [])
@@ -1630,6 +1643,17 @@ export function ChatView({
           <ContextUsage
             messages={conversation.messages}
             contextWindow={contextWindow}
+            lastCall={lastModelCall}
+            onClick={() => setMetricsOpen(true)}
+          />
+          <SessionMetricsButton
+            conversation={conversation}
+            usage={usageRollup}
+            contextWindow={contextWindow}
+            compact={isDock}
+            open={metricsOpen}
+            onOpenChange={setMetricsOpen}
+            onShowTurnMetricsChange={setShowTurnMetrics}
           />
           <ExportSessionButton
             conversation={conversation}
@@ -1687,6 +1711,7 @@ export function ChatView({
         onResolveFilesystemAccess={handleFilesystemResolve}
         onManageFilesystemAccess={handleManageFilesystemAccess}
         workingDir={conversation.workingDir ?? null}
+        showTurnMetrics={showTurnMetrics}
       />
       <LiveRegion announcement={announcer.announcement} />
 

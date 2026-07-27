@@ -37,6 +37,29 @@ export function saveDefaultPermissionMode(mode: PermissionMode): void {
   }
 }
 
+const TURN_METRICS_KEY = 'iii-chat-turn-metrics'
+
+/**
+ * Whether the transcript shows a per-turn usage chip on each reply. Default
+ * on — a chip nobody can find is a feature nobody uses — with an opt-out in
+ * the session metrics dialog for readers who want a quiet transcript.
+ */
+export function loadShowTurnMetrics(): boolean {
+  try {
+    return localStorage.getItem(TURN_METRICS_KEY) !== 'off'
+  } catch {
+    return true
+  }
+}
+
+export function saveShowTurnMetrics(show: boolean): void {
+  try {
+    localStorage.setItem(TURN_METRICS_KEY, show ? 'on' : 'off')
+  } catch {
+    /* best-effort */
+  }
+}
+
 const DEFAULT_ALLOWLIST_KEY = 'iii-default-allowlist'
 
 /** User-level allowlist used to seed new conversations' backend state. */

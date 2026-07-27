@@ -25,6 +25,7 @@
  */
 
 import { parseAttachedFileHeader } from '@/lib/file-mentions'
+import { normalizeUsage, parseTurnId } from '@/lib/session-usage'
 import type {
   Attachment,
   FunctionTriggerMessage,
@@ -406,8 +407,9 @@ export function entrySegments(
         | undefined
       const isNotif =
         origin?.notification === true || item.entry_id.startsWith('e_notify_')
-      // A react-fired task delivered into this session (origin on events,
-      // `e_react_` prefix on reads — session::messages carries no origin).
+      // A react-fired task delivered into this session. `session::messages`
+      // does return `origin`, but only for message entries written with one —
+      // the `e_react_` prefix stays as the fallback for entries that lack it.
       const isReaction =
         origin?.reaction === true || item.entry_id.startsWith('e_react_')
       // A direct `harness::spawn` seed task — same pattern, `e_spawn_` prefix.
@@ -462,6 +464,22 @@ export function entrySegments(
               : {}),
           }
         }
+      }
+      // Provider usage and turn identity for the metrics rollup. Unlike
+      // `memory` this rides `segments[0]` whatever its role: a step that only
+      // produced function calls emits no assistant segment at all, yet it
+      // cost a real request whose tokens must still be counted. The carrier
+      // is incidental — only `lib/session-usage.ts` reads these back.
+      const carrier = segments[0]
+      if (carrier) {
+        const turnId =
+          typeof (item.origin as { turn_id?: unknown } | undefined)?.turn_id ===
+          'string'
+            ? (item.origin as { turn_id: string }).turn_id
+            : parseTurnId(item.entry_id)
+        if (turnId) carrier.turnId = turnId
+        const usage = normalizeUsage(message.usage)
+        if (usage) carrier.usage = usage
       }
       return segments
     }
