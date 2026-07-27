@@ -704,9 +704,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.22.0-alpha.2"
+version = "0.22.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "743c738975e139d6c5ee0e0635699308e9f85969da11003bc123712f45b48def"
+checksum = "89e2b076a2227fea8175522eb184c3623af102841a641ec2ff90a8936215d982"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -776,9 +776,9 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libredox"
-version = "0.1.18"
+version = "0.1.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c943259e342f1e06ff2da7a83eabdfe7f92ce10262688dbf1895ff0b3e6e4652"
+checksum = "f02ab6bace2054fb888a3c16f990117b579d14a3088e472d63c6011fa185c9d3"
 dependencies = [
  "libc",
 ]

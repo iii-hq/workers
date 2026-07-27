@@ -10,8 +10,8 @@ authors = [{ name = "iii" }]
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-    "iii-sdk==0.22.0a2",
-    "iii-helpers==0.22.0a2",
+    "iii-sdk==0.22.0a3",
+    "iii-helpers==0.22.0a3",
     "opentelemetry-api",
     "opentelemetry-sdk",
     "pyyaml",

@@ -12,8 +12,8 @@ importers:
         specifier: ^0.3.173
         version: 0.3.173(@anthropic-ai/sdk@0.104.1(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(zod@4.4.3)
       iii-sdk:
-        specifier: 0.22.0-alpha.2
-        version: 0.22.0-alpha.2
+        specifier: 0.22.0-alpha.3
+        version: 0.22.0-alpha.3
       yaml:
         specifier: ^2.6.0
         version: 2.9.0
@@ -630,8 +630,8 @@ packages:
     peerDependencies:
       hono: ^4
 
-  '@iii-dev/helpers@0.22.0-alpha.2':
-    resolution: {integrity: sha512-NhmwybfpPmjlL4yKNxAVevkWIzu4SIhHFPh1bCMKEpy5oLTCSx/oHHF2ruUhQEyKwB79LqrrJ21SM93klujZJg==}
+  '@iii-dev/helpers@0.22.0-alpha.3':
+    resolution: {integrity: sha512-zwilMTMq2MgVFu/aOEbtrPDpB+AVcdcqKBVAGc4vXv4XT2sK5eAXpdyzPcNgf8bGRKcRGZJ0ZJ8dA8WDVlSlaw==}
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
@@ -1178,8 +1178,8 @@ packages:
     resolution: {integrity: sha512-im9DjEDQ55s9fL4EYzOAv0yMqmMBSZp6G0VvFyTMPKWxiSBHUj9NW/qqLmXUwXrrM7AvqSlTCfvqRb0cM8yYqw==}
     engines: {node: '>=0.10.0'}
 
-  iii-sdk@0.22.0-alpha.2:
-    resolution: {integrity: sha512-mdILi3R+MeTXpEmUPmqMyjGY35DWddia+7DoIDaXXm/xop4gAeSARqqpZggzcAzSMQek0XACTKKKypUm4uA8PA==}
+  iii-sdk@0.22.0-alpha.3:
+    resolution: {integrity: sha512-S6dH8ssbZsuuh8m6k0gG//D5K11w/wTkUviRMQ0sP3NNQh4ZhxZz0TbGlhROpwCYdJb1Rgl8dAHgeXbhyoIUXg==}
 
   import-in-the-middle@1.15.0:
     resolution: {integrity: sha512-bpQy+CrsRmYmoPMAE/0G33iwRqwW4ouqdRg8jgbH3aKuCtOc8lxgmYXg2dMM92CRiGP660EtBcymH/eVUpCSaA==}
@@ -1919,7 +1919,7 @@ snapshots:
     dependencies:
       hono: 4.12.25
 
-  '@iii-dev/helpers@0.22.0-alpha.2':
+  '@iii-dev/helpers@0.22.0-alpha.3':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.57.2
@@ -2530,9 +2530,9 @@ snapshots:
     dependencies:
       safer-buffer: 2.1.2
 
-  iii-sdk@0.22.0-alpha.2:
+  iii-sdk@0.22.0-alpha.3:
     dependencies:
-      '@iii-dev/helpers': 0.22.0-alpha.2
+      '@iii-dev/helpers': 0.22.0-alpha.3
       '@opentelemetry/api': 1.9.1
       ws: 8.21.0
     transitivePeerDependencies:
