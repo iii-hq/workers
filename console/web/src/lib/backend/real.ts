@@ -188,6 +188,12 @@ async function buildSendRequest(
     options: {
       mode,
       functions: functionPolicy,
+      ...(opts?.systemPrompt
+        ? {
+            system_prompt: opts.systemPrompt,
+            system_prompt_strategy: 'override' as const,
+          }
+        : {}),
       ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
       ...(providerOptions ? { provider_options: providerOptions } : {}),
       metadata: buildTurnMetadata(sessionId, messageId, opts?.workingDir),

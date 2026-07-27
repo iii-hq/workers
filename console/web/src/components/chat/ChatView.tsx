@@ -74,6 +74,7 @@ import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
 import { ExportSessionButton } from './ExportSessionButton'
 import { MessageList } from './MessageList'
+import type { SessionPrompt } from './PromptPicker'
 import { SessionTriggers } from './SessionTriggers'
 import { WorktreeBadge } from './WorktreeBadge'
 
@@ -157,6 +158,9 @@ export function ChatView({
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(
     DEFAULT_THINKING_LEVEL,
   )
+  // System prompt override for this conversation (prompt store, kind:
+  // system). Applied to every send until switched back to default.
+  const [sessionPrompt, setSessionPrompt] = useState<SessionPrompt | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const [copied, setCopied] = useState(false)
   const { functionEntries } = useFunctionsCatalog(backend.id)
@@ -1010,6 +1014,7 @@ export function ChatView({
               sessionId,
               messageId,
               thinkingLevel,
+              ...(sessionPrompt ? { systemPrompt: sessionPrompt.body } : {}),
               workingDir: conversation.workingDir,
               approvalGateAvailable: approvalEnabled,
               ...(attachedBlocks && attachedBlocks.length > 0
@@ -1055,6 +1060,7 @@ export function ChatView({
             sessionId,
             messageId,
             thinkingLevel,
+            ...(sessionPrompt ? { systemPrompt: sessionPrompt.body } : {}),
             workingDir: conversation.workingDir,
             approvalGateAvailable: approvalEnabled,
             approvalSessionMatcher,
@@ -1334,6 +1340,7 @@ export function ChatView({
       conversation.workingDir,
       effectiveModel,
       thinkingLevel,
+      sessionPrompt,
       sessionId,
       contextWindow,
       backend,
@@ -1799,6 +1806,12 @@ export function ChatView({
               backend.id === 'real' &&
               (conversationsCtx?.memoryAvailable ?? false)
             }
+            showPromptPicker={
+              backend.id === 'real' &&
+              (conversationsCtx?.promptsAvailable ?? false)
+            }
+            sessionPrompt={sessionPrompt}
+            onSessionPromptChange={setSessionPrompt}
             memoryBank={conversation.memoryBank ?? null}
             onMemoryBankChange={(next) =>
               conversationsCtx?.setMemoryBank(conversation.id, next)
