@@ -28,6 +28,7 @@ import type {
 } from '@/types/chat'
 import {
   type Callout,
+  type ChildEntry,
   type DemoEvent,
   MODEL_ID,
   PROMPT,
@@ -56,6 +57,47 @@ function uid(): string {
 
 /** Root chat title, shown in the sidebar. */
 const ROOT_TITLE = 'payments ledger'
+
+/** One replayed child entry, as the `Message` the transcript renders. */
+function childMessage(
+  sessionId: string,
+  index: number,
+  entry: ChildEntry,
+  now: number,
+): Message {
+  const id = `${sessionId}-${index}`
+  switch (entry.role) {
+    case 'thought':
+      return {
+        id,
+        role: 'thought',
+        content: entry.content,
+        durationMs: entry.durationMs,
+        createdAt: now,
+      }
+    case 'assistant':
+      return {
+        id,
+        role: 'assistant',
+        content: entry.content,
+        model: MODEL_ID,
+        mode: 'agent',
+        createdAt: now,
+      }
+    case 'function-trigger':
+      return {
+        id,
+        role: 'function-trigger',
+        functionId: entry.functionId,
+        input: entry.input,
+        output: entry.output,
+        durationMs: entry.durationMs,
+        running: false,
+        sessionId,
+        createdAt: now,
+      }
+  }
+}
 
 function rootConversation(status: Conversation['status']): Conversation {
   const now = Date.now()
@@ -159,6 +201,24 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
               updatedAt: now,
             },
           ],
+    )
+  }, [])
+
+  const appendChild = useCallback((id: string, entry: ChildEntry) => {
+    const now = Date.now()
+    setChildren((prev) =>
+      prev.map((c) =>
+        c.id === id
+          ? {
+              ...c,
+              updatedAt: now,
+              messages: [
+                ...c.messages,
+                childMessage(id, c.messages.length, entry, now),
+              ],
+            }
+          : c,
+      ),
     )
   }, [])
 
@@ -463,6 +523,10 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
             openChild(ev.session.id, ev.session.title, ev.session.task)
             break
           }
+          case 'demo-session-msg': {
+            appendChild(ev.id, ev.entry)
+            break
+          }
           case 'demo-session-done': {
             finishChild(ev.id, ev.result)
             break
@@ -505,6 +569,7 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
     repaintSpans,
     showCallout,
     openChild,
+    appendChild,
     finishChild,
   ])
 

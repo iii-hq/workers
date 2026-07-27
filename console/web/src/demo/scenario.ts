@@ -61,6 +61,24 @@ export interface DemoSession {
   task: string
 }
 
+/**
+ * A line a child wrote in its own transcript. Children are replayed a whole
+ * entry at a time rather than token by token: only one session is on screen,
+ * and the three off-screen ones would be animating at nobody.
+ */
+export type ChildEntry =
+  | { role: 'thought'; content: string; durationMs: number }
+  | { role: 'assistant'; content: string }
+  | {
+      role: 'function-trigger'
+      functionId: string
+      /** Worker that runs it — the child's `execute` span's service name. */
+      worker: string
+      input: unknown
+      output: unknown
+      durationMs: number
+    }
+
 export type DemoEvent =
   | StreamEvent
   | { kind: 'demo-span-open'; span: DemoSpanInit }
@@ -73,6 +91,7 @@ export type DemoEvent =
     }
   | { kind: 'demo-callout'; callout: Callout }
   | { kind: 'demo-session-open'; session: DemoSession }
+  | { kind: 'demo-session-msg'; id: string; entry: ChildEntry }
   | { kind: 'demo-session-done'; id: string; result: string }
 
 export interface ScenarioOptions {
@@ -355,6 +374,11 @@ async function* step(
  * own `execute harness::spawn` span with the child's own `harness::turn step`
  * nested inside, so the fan-out shows up as three branches of one trace, and
  * its own session, so it shows up as three rows in the sidebar.
+ *
+ * Each child then works out loud: its `work` beats append to its own
+ * transcript and open their own `execute` spans under its turn step, so a
+ * viewer who clicks a sidebar row watches that child reason and call, and
+ * sees those calls in the same trace as the parent's.
  */
 async function* spawnFanOut(
   stepSpan: string,
@@ -400,6 +424,41 @@ async function* spawnFanOut(
       kind: 'demo-session-open',
       session: { id: child.sessionId, title: child.title, task: child.task },
     }
+    /* Whatever the child has to say the moment it wakes up. */
+    for (const beat of child.work) {
+      if (beat.at === 0) yield* childBeat(child, beat.entry)
+    }
+  }
+
+  /** One line of a child's own work: its transcript entry, and its span. */
+  function* childBeat(
+    child: ChildSpec,
+    entry: ChildEntry,
+  ): Generator<DemoEvent> {
+    yield { kind: 'demo-session-msg', id: child.sessionId, entry }
+    if (entry.role !== 'function-trigger') return
+    const callSpan = spanId('childcall')
+    yield {
+      kind: 'demo-span-open',
+      span: {
+        id: callSpan,
+        parent: spans.get(`${child.callId}:step`),
+        name: `execute ${entry.functionId}`,
+        service: entry.worker,
+        kind: 'internal',
+        attributes: [
+          ['iii.session.id', child.sessionId],
+          ['iii.function.id', entry.functionId],
+        ],
+      },
+    }
+    /* Closed at what the call really costs, like every other call here: the
+       child's turn span is the wide one, its dispatches are hairlines. */
+    yield {
+      kind: 'demo-span-close',
+      id: callSpan,
+      durationMs: entry.durationMs,
+    }
   }
 
   /* Every card at once — a parallel tool-call batch is one assistant turn. */
@@ -438,15 +497,42 @@ async function* spawnFanOut(
     yield* launch(child)
   }
 
-  /* Children report as they finish, not in dispatch order. */
-  const finishing = [...CHILDREN].sort(
-    (a, b) => a.finishAfterMs - b.finishAfterMs,
-  )
+  yield {
+    kind: 'demo-callout',
+    callout: {
+      anchor: 'transcript',
+      title: 'three sessions, running at once',
+      text: 'Every child is a session of its own, listed in the sidebar. Click one to watch it think and call while the others keep going; whatever it dispatches lands in this same trace, under its own `harness::turn step`.',
+    },
+  }
+
+  /* One clock over all three: the children interleave, and each reports when
+     it is done rather than in dispatch order. */
+  const beats = [
+    ...CHILDREN.flatMap((child) =>
+      child.work
+        .filter((beat) => beat.at > 0)
+        .map((beat) => ({ at: beat.at, child, entry: beat.entry })),
+    ),
+    ...CHILDREN.map((child) => ({
+      at: child.finishAfterMs,
+      child,
+      entry: undefined,
+    })),
+  ].sort((a, b) => a.at - b.at)
+
   let waited = 0
-  for (const child of finishing) {
-    await nap(child.finishAfterMs - waited, signal)
+  for (const beat of beats) {
+    await nap(beat.at - waited, signal)
     if (signal?.aborted) return
-    waited = child.finishAfterMs
+    waited = beat.at
+
+    if (beat.entry) {
+      yield* childBeat(beat.child, beat.entry)
+      continue
+    }
+
+    const child = beat.child
     const childStep = spans.get(`${child.callId}:step`)
     const execSpan = spans.get(child.callId)
     if (childStep) yield { kind: 'demo-span-close', id: childStep }
@@ -609,10 +695,219 @@ interface ChildSpec {
   allow: string[]
   /** Held at the gate before it may run. */
   gated?: boolean
+  /** The child's own transcript, played out while the parent waits. */
+  work: ChildBeat[]
   resultText: string
   resultDetails: Record<string, unknown>
   /** Delay after the gate clears before this child reports, in ms. */
   finishAfterMs: number
+}
+
+interface ChildBeat {
+  /** ms after the gate clears; 0 lands the moment the child starts. */
+  at: number
+  entry: ChildEntry
+}
+
+/* The source the children write, shown by the coder card as they write it. */
+
+const CHARGE_RECORD_RS = `use crate::types::{Charge, Entry};
+use iii_sdk::{Error, IIIClient, RegisterFunction, TriggerRequest};
+use serde_json::json;
+
+/// A charge is two rows: debit the customer, credit the house account.
+/// Both land in one \`database::transaction\`, or neither does.
+pub fn register(iii: &IIIClient) {
+    let db = iii.clone();
+    iii.register_function(
+        "payments::charge::record",
+        RegisterFunction::new_async(move |charge: Charge| {
+            let db = db.clone();
+            async move {
+                if let Some(posted) = replay_of(&db, &charge.provider_event_id).await? {
+                    return Ok::<Entry, Error>(posted);
+                }
+                let rows = db
+                    .trigger(TriggerRequest {
+                        function_id: "database::transaction".into(),
+                        payload: json!({ "statements": double_entry(&charge) }),
+                        action: None,
+                        timeout_ms: Some(5_000),
+                    })
+                    .await?;
+                Ok(Entry::from_rows(&charge, rows)?)
+            }
+        })
+        .description("Post a charge to the ledger as a balanced double entry."),
+    );
+}`
+
+const CHARGE_REFUND_RS = `use crate::types::{Entry, Refund};
+use iii_sdk::{Error, IIIClient, RegisterFunction, TriggerRequest};
+use serde_json::json;
+
+/// A refund reverses a posted entry and can never exceed what is left of it.
+pub fn register(iii: &IIIClient) {
+    let db = iii.clone();
+    iii.register_function(
+        "payments::charge::refund",
+        RegisterFunction::new_async(move |refund: Refund| {
+            let db = db.clone();
+            async move {
+                let original = fetch_entry(&db, &refund.entry_id).await?;
+                guard_refundable(&original, &refund)?;
+                let rows = db
+                    .trigger(TriggerRequest {
+                        function_id: "database::transaction".into(),
+                        payload: json!({ "statements": reversal(&original, &refund) }),
+                        action: None,
+                        timeout_ms: Some(5_000),
+                    })
+                    .await?;
+                Ok::<Entry, Error>(Entry::from_reversal(&original, rows)?)
+            }
+        })
+        .description("Reverse a posted charge, in part or in full."),
+    );
+}`
+
+const WEBHOOK_STRIPE_RS = `use crate::types::{StripeEvent, WebhookAck};
+use iii_sdk::{Error, IIIClient, RegisterFunction, TriggerRequest};
+use serde_json::json;
+
+/// Stripe retries. \`charge::record\` already dedupes on the provider event
+/// id, so a replayed delivery posts nothing and returns the first entry.
+pub fn register(iii: &IIIClient) {
+    let engine = iii.clone();
+    iii.register_function(
+        "payments::webhook::stripe",
+        RegisterFunction::new_async(move |event: StripeEvent| {
+            let engine = engine.clone();
+            async move {
+                let Some(charge) = charge_from(&event) else {
+                    return Ok::<WebhookAck, Error>(WebhookAck::ignored(&event.kind));
+                };
+                let entry = engine
+                    .trigger(TriggerRequest {
+                        function_id: "payments::charge::record".into(),
+                        payload: json!(charge),
+                        action: None,
+                        timeout_ms: Some(10_000),
+                    })
+                    .await?;
+                Ok(WebhookAck::posted(entry))
+            }
+        })
+        .description("Post a Stripe charge event to the ledger, exactly once."),
+    );
+}`
+
+const RECONCILE_RS = `use crate::types::{ReconcileReport, Window};
+use iii_sdk::{Error, IIIClient, RegisterFunction, TriggerRequest};
+use serde_json::json;
+
+/// Every account's entries must sum to its balance and every entry must have
+/// a counterpart. Anything else is reported, never silently repaired.
+pub fn register(iii: &IIIClient) {
+    let db = iii.clone();
+    iii.register_function(
+        "payments::ledger::reconcile",
+        RegisterFunction::new_async(move |window: Window| {
+            let db = db.clone();
+            async move {
+                let rows = db
+                    .trigger(TriggerRequest {
+                        function_id: "database::query".into(),
+                        payload: json!({ "sql": UNBALANCED, "params": [window.since] }),
+                        action: None,
+                        timeout_ms: Some(30_000),
+                    })
+                    .await?;
+                Ok::<ReconcileReport, Error>(ReconcileReport::from_rows(rows)?)
+            }
+        })
+        .description("Check the ledger balances and flag orphaned entries."),
+    );
+}`
+
+const TESTS_RS = `use crate::support::{ledger, TestEngine};
+
+// The suite runs through the engine, against the contract, so it passes and
+// fails the same way a caller does.
+
+#[tokio::test]
+async fn charge_record_writes_double_entry() {
+    let engine = TestEngine::start().await;
+    let entry = ledger::record(&engine, 4_200, "cus_8Kd2Qw", "evt_3PfL2m").await;
+
+    assert_eq!(entry.balance, 4_200);
+    assert_eq!(ledger::rows_for(&engine, &entry.entry_id).await.len(), 2);
+    assert_eq!(ledger::sum_of(&engine, &entry.account).await, 0);
+}
+
+#[tokio::test]
+async fn stripe_webhook_dedupes_by_event_id() {
+    let engine = TestEngine::start().await;
+    let first = ledger::webhook(&engine, "evt_3PfL2m").await;
+    let replay = ledger::webhook(&engine, "evt_3PfL2m").await;
+
+    assert_eq!(first.entry_id, replay.entry_id);
+    assert!(replay.idempotent_replay);
+}
+
+#[tokio::test]
+async fn refund_rejects_over_refund() {
+    let engine = TestEngine::start().await;
+    let entry = ledger::record(&engine, 4_200, "cus_8Kd2Qw", "evt_9Qm1Zx").await;
+    let err = ledger::try_refund(&engine, &entry.entry_id, 5_000).await.unwrap_err();
+
+    assert!(err.to_string().contains("exceeds"));
+}
+
+// 8 more: reversal maths, unknown event kinds, orphaned entries, reads of
+// uncommitted rows, concurrent charges on one account, schema drift.`
+
+/** A `coder::create-file` exchange, as the batch card renders it. */
+function writeFiles(
+  files: Array<[path: string, content: string]>,
+  durationMs: number,
+): ChildEntry {
+  return {
+    role: 'function-trigger',
+    functionId: 'coder::create-file',
+    worker: 'coder',
+    input: {
+      files: files.map(([path, content]) => ({ path, content, parents: true })),
+    },
+    output: {
+      results: files.map(([path, content]) => ({
+        path: `/workspace/payments-ledger/${path}`,
+        success: true,
+        bytes_written: content.length,
+      })),
+    },
+    durationMs,
+  }
+}
+
+/** A `database::create_table` exchange. */
+function createTable(
+  table: string,
+  columns: Array<[name: string, type: string]>,
+  durationMs: number,
+): ChildEntry {
+  return {
+    role: 'function-trigger',
+    functionId: 'database::create_table',
+    worker: 'database',
+    input: {
+      table,
+      if_not_exists: true,
+      columns: columns.map(([name, type]) => ({ name, type })),
+    },
+    output: { table, created: true, columns: columns.length },
+    durationMs,
+  }
 }
 
 const CHILDREN: ChildSpec[] = [
@@ -627,6 +922,62 @@ const CHILDREN: ChildSpec[] = [
 \`ledger_entries\` and \`ledger_accounts\` tables.`,
     allow: ['coder::*', 'database::*'],
     gated: true,
+    work: [
+      {
+        at: 0,
+        entry: {
+          role: 'assistant',
+          content:
+            'Double-entry, so a charge is never one row: debit the customer account, credit the house account, both inside one `database::transaction` or neither. That also gives the tests their invariant, every account summing to zero across its entries. Tables first, then the two writers.',
+        },
+      },
+      {
+        at: 1300,
+        entry: createTable(
+          'ledger_accounts',
+          [
+            ['id', 'text primary key'],
+            ['owner', 'text not null'],
+            ['currency', 'text not null'],
+            ['balance_minor', 'bigint not null default 0'],
+          ],
+          18.7,
+        ),
+      },
+      {
+        at: 2500,
+        entry: createTable(
+          'ledger_entries',
+          [
+            ['id', 'text primary key'],
+            ['account_id', 'text not null references ledger_accounts(id)'],
+            ['amount_minor', 'bigint not null'],
+            ['provider_event_id', 'text unique'],
+            ['posted_at', 'timestamptz not null default now()'],
+          ],
+          22.4,
+        ),
+      },
+      {
+        at: 3500,
+        entry: {
+          role: 'thought',
+          content:
+            'Both tables are up, and the foreign key ties every entry to an account. Now the writers. Refund is the one with a rule attached: it reverses a posted entry and can never take out more than is left in it.',
+          durationMs: 2400,
+        },
+      },
+      {
+        at: 4400,
+        entry: writeFiles(
+          [
+            ['src/functions/charge_record.rs', CHARGE_RECORD_RS],
+            ['src/functions/charge_refund.rs', CHARGE_REFUND_RS],
+          ],
+          61.5,
+        ),
+      },
+    ],
     resultText:
       'ledger core done: charge::record + charge::refund over a double-entry schema, 2 tables created.',
     resultDetails: {
@@ -634,7 +985,7 @@ const CHILDREN: ChildSpec[] = [
       tables: ['ledger_entries', 'ledger_accounts'],
       turns_used: 7,
     },
-    finishAfterMs: 3400,
+    finishAfterMs: 7400,
   },
   {
     callId: 'fc_spawn_ledger_webhook',
@@ -644,6 +995,36 @@ const CHILDREN: ChildSpec[] = [
 payments-ledger worker. Idempotent on the provider event id: a replayed event
 must post nothing and return the original entry.`,
     allow: ['coder::*', 'web::search'],
+    work: [
+      {
+        at: 0,
+        entry: {
+          role: 'assistant',
+          content:
+            'Stripe retries on any non-2xx, so this has to be idempotent at the ledger rather than at the HTTP layer. The provider event id is the natural key and `charge::record` is already unique on it, so the webhook stays thin: map the event, hand it over, return whatever comes back.',
+        },
+      },
+      {
+        at: 1500,
+        entry: writeFiles(
+          [['src/functions/webhook_stripe.rs', WEBHOOK_STRIPE_RS]],
+          44.6,
+        ),
+      },
+      {
+        at: 2500,
+        entry: {
+          role: 'thought',
+          content:
+            'Reconcile is the other half of trusting the ledger: read-only, so it can run on a cron without taking a lock, and it reports drift rather than repairing it. Silently fixing a payments discrepancy is how you lose the audit trail that made it findable.',
+          durationMs: 1900,
+        },
+      },
+      {
+        at: 3300,
+        entry: writeFiles([['src/functions/reconcile.rs', RECONCILE_RS]], 31.9),
+      },
+    ],
     resultText:
       'webhook + reconcile done: dedupe keyed on provider_event_id, replays return the original entry.',
     resultDetails: {
@@ -651,7 +1032,7 @@ must post nothing and return the original entry.`,
       idempotency_key: 'provider_event_id',
       turns_used: 5,
     },
-    finishAfterMs: 1100,
+    finishAfterMs: 4600,
   },
   {
     callId: 'fc_spawn_ledger_tests',
@@ -661,10 +1042,21 @@ must post nothing and return the original entry.`,
 over the original amount, webhook replay, concurrent charges on one account,
 and that the schema matches the migration.`,
     allow: ['coder::*', 'shell::exec'],
+    work: [
+      {
+        at: 0,
+        entry: {
+          role: 'assistant',
+          content:
+            'The other two are still writing, so I will test the contract rather than their implementation: call every function through the engine the way a caller would. The suite is then ready the moment the worker installs, and it fails for the same reasons production would.',
+        },
+      },
+      { at: 1100, entry: writeFiles([['tests/ledger.rs', TESTS_RS]], 38.2) },
+    ],
     resultText:
       'test suite done: 11 tests over the ledger, webhook and schema.',
     resultDetails: { tests: 11, files: ['tests/ledger.rs'], turns_used: 4 },
-    finishAfterMs: 400,
+    finishAfterMs: 2600,
   },
 ]
 

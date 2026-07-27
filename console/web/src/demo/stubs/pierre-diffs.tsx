@@ -3,11 +3,9 @@
  * `vite.demo.config.ts`.
  *
  * The package pulls all of shiki's grammars, which lands ~13MB of language
- * chunks in the output directory. The landing demo's scenario dispatches no
- * `coder::*` calls, so the diff views are unreachable — but the renderer
- * registry imports the family statically, so the specifier still has to
- * resolve. This keeps the graph honest and degrades to a plain notice if a
- * future scenario ever does render one.
+ * chunks in the output directory. The demo's sub-agents do write files, so
+ * the coder card is reachable — it just renders the body unhighlighted here.
+ * Everything around it (batch chips, paths, byte counts) is the real view.
  */
 
 export const DEFAULT_THEMES = { light: 'github-light', dark: 'github-dark' }
@@ -17,15 +15,22 @@ export interface FileContents {
   contents: string
 }
 
-function DiffUnavailable() {
+/** The body, monospaced and scrollable, with no tokenizer behind it. */
+function PlainFile({ contents }: { contents: string }) {
   return (
-    <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost">
-      · diff rendering is not bundled in this demo
-    </div>
+    <pre className="max-h-[280px] overflow-auto whitespace-pre px-3 py-2 font-mono text-[12px] leading-[1.55] text-ink">
+      {contents}
+    </pre>
   )
 }
 
-export const File = DiffUnavailable
-export const MultiFileDiff = DiffUnavailable
+export function File({ file }: { file: FileContents }) {
+  return <PlainFile contents={file.contents} />
+}
+
+/** New-file diffs are all the demo produces: show the new side. */
+export function MultiFileDiff({ newFile }: { newFile: FileContents }) {
+  return <PlainFile contents={newFile.contents} />
+}
 
 export default { DEFAULT_THEMES, File, MultiFileDiff }
