@@ -29,7 +29,7 @@ const sysMsg = (content: string): Message => ({
 
 const fcallMsg = (input: unknown, output: unknown): Message => ({
   id: 'f',
-  role: 'function-call',
+  role: 'function-trigger',
   functionId: 'shell::run',
   input,
   output,
@@ -77,7 +77,7 @@ describe('estimateMessageTokens', () => {
     expect(estimateMessageTokens(marker)).toBe(0)
   })
 
-  it('counts function-call input AND output JSON', () => {
+  it('counts function-trigger input AND output JSON', () => {
     const fc = fcallMsg({ command: 'ls' }, { stdout: 'a\nb\nc' })
     // input ≈ 18 chars, output ≈ 18 chars → ~9 tokens
     expect(estimateMessageTokens(fc)).toBeGreaterThan(5)

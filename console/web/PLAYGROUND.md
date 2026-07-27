@@ -174,7 +174,6 @@ scenario shows up as its own story in the Storybook sidebar.
 
 | id                  | group         | what it asserts                                                              |
 |---------------------|---------------|------------------------------------------------------------------------------|
-| `happy-plan`        | happy paths   | thought + assistant body, no function calls.                                 |
 | `happy-ask`         | happy paths   | assistant body only, no thought, no function calls.                          |
 | `happy-agent`       | happy paths   | thought + one function call + assistant body.                                |
 | `multi-function-agent`  | agent         | three sequential `fcall-*` pairs — exercises pointer reset in `ChatView`.    |
@@ -448,7 +447,7 @@ production.
 pnpm build
 # the scenario ids live in Storybook only, so none should appear in the app
 # bundle:
-grep -E '"happy-(plan|ask|agent)"|"abort-mid-thought"|"long-markdown"' dist/assets/*.js && echo "LEAK" || echo "clean"
+grep -E '"happy-(ask|agent)"|"abort-mid-thought"|"long-markdown"' dist/assets/*.js && echo "LEAK" || echo "clean"
 ```
 
 Storybook builds separately: `pnpm build-storybook` emits `storybook-static/`,

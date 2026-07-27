@@ -77,6 +77,17 @@ describe('spawnRequestSchema', () => {
     expect(r?.options?.functions?.allow).toEqual(['web::fetch'])
   })
 
+  it('degrades an unrecognized mode instead of dropping the card', () => {
+    // session history may carry modes this console build doesn't know
+    const r = safeParseRequest(spawnRequestSchema, {
+      task: 'audit the CI runs',
+      options: { mode: 'unknown', max_turns: 8 },
+    })
+    expect(r).not.toBeNull()
+    expect(r?.options?.mode).toBeUndefined()
+    expect(r?.options?.max_turns).toBe(8)
+  })
+
   it('accepts a task in AgentMessage form', () => {
     const r = safeParseRequest(spawnRequestSchema, {
       task: { role: 'user', content: [{ type: 'text', text: 'hi' }] },

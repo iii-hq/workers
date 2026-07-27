@@ -95,8 +95,15 @@ fp::pipe { through: [
   surface (an approver sees the full step list). For that reason the pipe is
   not agent-callable without approval by default; the pure transforms are.
   See `iii-permissions.yaml`.
-- Statically refused as steps: `shell::*`/`coder::*` (need the harness
-  fs_scope stamp), `engine::register_trigger`/`engine::unregister_trigger`
+- `shell::*`/`coder::*` steps run under the harness-forwarded filesystem
+  scope: the harness stamps the trusted `fs_scope` onto the `fp::pipe` call
+  itself (`harness/src/filesystem_scope.rs`) and fp re-stamps it onto each
+  scoped step as the last write before dispatch, overwriting anything
+  authored or threaded at `/fs_scope`. Without a stamp (no session working
+  directory, or a non-harness caller — cron, worker-to-worker) scoped steps
+  are refused, fail-closed. A path-access rejection inside a pipe just fails
+  the step; only a direct call offers the access-grant ladder.
+- Statically refused as steps: `engine::register_trigger`/`engine::unregister_trigger`
   (need the harness trusted-session stamp), nested pipes, and every class the
   agent policy hard-denies — `session::*`/`approval::*`,
   `configuration::*`/`oauth::*` (credentials), `router::*`/`provider::*`

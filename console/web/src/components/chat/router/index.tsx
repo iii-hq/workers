@@ -1,6 +1,6 @@
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
-import type { FunctionCallMessage } from '@/types/chat'
+import type { FunctionTriggerMessage } from '@/types/chat'
 import { ModelsListView } from './ModelsListView'
 import { isRouterFunction, unwrapEnvelope } from './parsers'
 
@@ -22,7 +22,7 @@ export function RouterFunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-function tryRender(message: FunctionCallMessage): React.ReactNode | null {
+function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
   if (!isRouterFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -52,7 +52,7 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
  * there's nothing meaningful to preview.
  */
 function tryRenderPreview(
-  _message: FunctionCallMessage,
+  _message: FunctionTriggerMessage,
 ): React.ReactNode | null {
   return null
 }

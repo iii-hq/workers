@@ -21,6 +21,7 @@ pub mod error;
 pub mod prompts;
 pub mod registry;
 pub mod skills;
+pub mod update;
 
 use std::sync::Arc;
 
@@ -52,16 +53,21 @@ pub fn register_all(
     cfg: &SharedConfig,
     trigger_types: &RegisteredTriggerTypes,
 ) {
-    skills::register(iii, cfg);
+    let cache = std::sync::Arc::new(skills::RegisteredWorkersCache::new(
+        cfg.load().registry_cache_ttl_ms,
+    ));
+    skills::register_with_cache(iii, cfg, &cache);
     prompts::register(iii, cfg);
     let subs = Subscribers::from(trigger_types);
     download::register(iii, cfg, &subs);
+    update::register(iii, cfg, &subs, &cache);
     registry::register(iii, cfg);
     engine_fn::register(iii);
     tracing::info!(
-        "iii-directory registered 3 directory::skills::* (list + get + index), \
-         2 directory::prompts::* (list + get), 1 directory::skills::download, \
-         2 directory::registry::workers::*, and 1 directory::engine::functions::info"
+        "iii-directory registered 3 directory::skills::* reads (list + get + index), \
+         2 directory::prompts::* reads (list + get), 2 updates (skills + prompts), \
+         3 downloads, 2 directory::registry::workers::*, \
+         and 1 directory::engine::functions::info"
     );
 }
 
@@ -76,12 +82,14 @@ pub fn register_all_with_cache(
     prompts::register(iii, cfg);
     let subs = Subscribers::from(trigger_types);
     download::register(iii, cfg, &subs);
+    update::register(iii, cfg, &subs, cache);
     registry::register_with_cache(iii, cfg, registry_cache);
     engine_fn::register(iii);
     tracing::info!(
-        "iii-directory registered 3 directory::skills::* (list + get + index), \
-         2 directory::prompts::* (list + get), 1 directory::skills::download, \
-         2 directory::registry::workers::*, and 1 directory::engine::functions::info"
+        "iii-directory registered 3 directory::skills::* reads (list + get + index), \
+         2 directory::prompts::* reads (list + get), 2 updates (skills + prompts), \
+         3 downloads, 2 directory::registry::workers::*, \
+         and 1 directory::engine::functions::info"
     );
 }
 

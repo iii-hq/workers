@@ -20,20 +20,27 @@ pub struct SpawnOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     /// How `system_prompt` combines with the built-in prompt: `override`
-    /// replaces it; `enrich` (default) appends to it.
+    /// replaces it; `enrich` (default) appends to it; `disabled` omits it.
     #[serde(default)]
     pub system_prompt_strategy: SystemPromptStrategy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
-    /// Capped at the parent's remaining turn budget.
+    /// Capped at the parent's remaining turn budget. Omit unless a strict
+    /// child-specific cap is required. It must cover discovery/contract calls
+    /// plus every work call; very small values (for example 2-3) commonly
+    /// strand the child before it can produce its deliverable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
+    /// Inherits the parent's ceiling unless explicitly narrowed/overridden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
     /// The child's deliverable: text / json / json+schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputContract>,
-    /// Intersected with the parent policy — narrow, never escalate.
+    /// Intersected with the parent policy — narrow, never escalate. An
+    /// `ask`-mode child is further capped at the configured default policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
     /// Fan-out guard for the child's own spawns.
@@ -50,7 +57,9 @@ pub struct SpawnOptions {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SpawnRequest {
-    /// The child's goal — its opening user message.
+    /// The child's self-contained goal — its opening user message. Include
+    /// every resolved required selector literally (for example `Use database
+    /// db: "primary"`); the child cannot infer resources from the parent.
     pub task: MessageInput,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,

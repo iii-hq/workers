@@ -9,7 +9,7 @@ use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::types::turn::TurnStatus;
 
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct StatusRequest {
     pub session_id: String,
 }

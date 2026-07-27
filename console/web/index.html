@@ -17,6 +17,24 @@
   </head>
   <body class="bg-bg text-ink font-sans">
     <div id="root"></div>
+    <!-- Injectable-UI boot contract: a STATIC single import map, parsed
+         before any module loading starts (a map parsed later is rejected
+         wholesale under classic import-map semantics). The console's own
+         bundle has no bare imports at runtime, so this affects only
+         injected worker scripts, which bundle with these five specifiers
+         external. Relative URLs on purpose — the build uses base './' for
+         arbitrary subpath mounting. -->
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "./vendor/react.js",
+          "react-dom": "./vendor/react-dom.js",
+          "react-dom/client": "./vendor/react-dom-client.js",
+          "react/jsx-runtime": "./vendor/jsx-runtime.js",
+          "@iii-dev/console-ui": "./vendor/console-ui.js"
+        }
+      }
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

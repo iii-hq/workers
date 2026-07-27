@@ -16,8 +16,8 @@ jobs:
     name: .github/scripts tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       - run: pip install --quiet pytest pyyaml
@@ -34,12 +34,14 @@ jobs:
       rust: ${{ steps.bucket.outputs.rust }}
       node: ${{ steps.bucket.outputs.node }}
       python: ${{ steps.bucket.outputs.python }}
+      crates: ${{ steps.bucket.outputs.crates }}
       all: ${{ steps.bucket.outputs.all }}
       source_changed: ${{ steps.bucket.outputs.source_changed }}
+      integration_changed: ${{ steps.bucket.outputs.integration_changed }}
       vscode_changed: ${{ steps.bucket.outputs.vscode_changed }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -57,7 +59,6 @@ jobs:
           BASE: ${{ steps.base.outputs.ref }}
         run: |
           set -euo pipefail
-          pip install --quiet pyyaml
           python3 .github/scripts/discover_changed_workers.py --base "$BASE"
 
   # ──────────────────────────────────────────────────────────────
@@ -74,7 +75,7 @@ jobs:
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.all) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -112,7 +113,7 @@ jobs:
       run:
         working-directory: ${{ matrix.worker }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
@@ -123,6 +124,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: worker-${{ matrix.worker }}
+          save-if: false
           workspaces: ${{ matrix.worker }} -> target
 
       # Workers that ship a Vite SPA embedded into the binary (e.g.
@@ -132,25 +135,74 @@ jobs:
       # the pnpm step. Detection is filesystem-based: workers without
       # a `web/package.json` skip all three steps cleanly.
       - name: Setup pnpm (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+        uses: pnpm/action-setup@v5
+        # version comes from the repo-root package.json `packageManager`
+        # field (the UI pnpm workspace root).
 
       - name: Setup Node (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
-        uses: actions/setup-node@v4
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: 'pnpm'
-          cache-dependency-path: ${{ matrix.worker }}/web/pnpm-lock.yaml
+          # console/web is a member of the repo-root pnpm workspace (root
+          # pnpm-lock.yaml); the glob also covers standalone web/ locks.
+          cache-dependency-path: '**/pnpm-lock.yaml'
 
-      - name: Pre-build SPA bundle
-        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
-        working-directory: ${{ matrix.worker }}/web
+      - name: Pre-build frontend bundle (web/ and/or ui/)
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+        # Paths are relative to the job's working-directory (the worker dir),
+        # unlike the interface-smoke job below, which runs this from the
+        # repo root and prefixes the worker.
         run: |
-          pnpm install --frozen-lockfile
-          pnpm build
+          set -euo pipefail
+          for d in web ui; do
+            if [[ -f "$d/package.json" ]]; then
+              (cd "$d" && pnpm install --frozen-lockfile && pnpm build)
+            fi
+          done
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-features
+
+  # ──────────────────────────────────────────────────────────────
+  # Shared Rust crates (crates/*): lint + test. Workers link these by
+  # path; discover also fans a changed crate's dependents into the rust
+  # matrix above, so dependents rebuild against the change while this
+  # job runs the crate's own suite.
+  # ──────────────────────────────────────────────────────────────
+  crates:
+    name: "crates/${{ matrix.crate }}: rust lint + test"
+    needs: discover
+    if: needs.discover.outputs.crates != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: ${{ fromJSON(needs.discover.outputs.crates) }}
+    defaults:
+      run:
+        working-directory: crates/${{ matrix.crate }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/${{ matrix.crate }} -> target
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -185,9 +237,9 @@ jobs:
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.rust) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -220,31 +272,38 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: steps.optout.outputs.skip != 'true'
         with:
+          shared-key: worker-${{ matrix.worker }}
+          save-if: false
           workspaces: ${{ matrix.worker }} -> target
 
       # Workers that embed a Vite SPA into the binary (e.g. console) have a
       # build.rs that shells out to pnpm. Pre-build the dist so `cargo build`
       # short-circuits it — mirrors the `rust` job above.
       - name: Setup pnpm (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+        uses: pnpm/action-setup@v5
+        # version comes from the repo-root package.json `packageManager`
+        # field (the UI pnpm workspace root).
 
       - name: Setup Node (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
-        uses: actions/setup-node@v4
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: 'pnpm'
-          cache-dependency-path: ${{ matrix.worker }}/web/pnpm-lock.yaml
+          # console/web is a member of the repo-root pnpm workspace (root
+          # pnpm-lock.yaml); the glob also covers standalone web/ locks.
+          cache-dependency-path: '**/pnpm-lock.yaml'
 
-      - name: Pre-build SPA bundle
-        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
-        working-directory: ${{ matrix.worker }}/web
+      - name: Pre-build frontend bundle (web/ and/or ui/)
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
         run: |
-          pnpm install --frozen-lockfile
-          pnpm build
+          set -euo pipefail
+          for d in "${{ matrix.worker }}/web" "${{ matrix.worker }}/ui"; do
+            if [[ -f "$d/package.json" ]]; then
+              (cd "$d" && pnpm install --frozen-lockfile && pnpm build)
+            fi
+          done
 
       # Build with default features so we boot the same artifact that ships
       # in the GitHub Release (`_rust-binary.yml` builds default features).
@@ -385,6 +444,21 @@ jobs:
           fi
 
   # ──────────────────────────────────────────────────────────────
+  # Harness integration E2E (non-required). Pull requests only run
+  # the complete live stack when an integration input changed. The
+  # default branch and daily cache warmer run it unconditionally.
+  # ──────────────────────────────────────────────────────────────
+  harness-integration:
+    needs: discover
+    if: needs.discover.outputs.integration_changed == 'true'
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/_harness-integration.yml
+    with:
+      save-cache: false
+
+  # ──────────────────────────────────────────────────────────────
   # Node per-worker lint (biome) + test
   # ──────────────────────────────────────────────────────────────
   node:
@@ -397,10 +471,13 @@ jobs:
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.node) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
+          # setup-node v5 auto-caches when package.json declares packageManager.
+          # This step never cached; the repository is already over its cache budget.
+          package-manager-cache: false
           node-version: 22
 
       - name: Install dependencies
@@ -433,9 +510,9 @@ jobs:
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.python) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -469,10 +546,13 @@ jobs:
       run:
         working-directory: lsp-vscode
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
+          # setup-node v5 auto-caches when package.json declares packageManager.
+          # This step never cached; the repository is already over its cache budget.
+          package-manager-cache: false
           node-version: 20
 
       - name: Install dependencies

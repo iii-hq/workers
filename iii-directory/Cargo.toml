@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-directory"
-version = "1.0.5"
+version = "1.1.0"
 edition = "2021"
 publish = false
 
@@ -34,6 +34,10 @@ glob = "0.3"
 tempfile = "3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 dirs = "5"
+# Injectable console UI registration (content function + console:script /
+# console:style triggers + dev watcher). Path-linked, never published —
+# versions with the console worker in this repo.
+iii-console-ui = { path = "../crates/console-ui" }
 
 [dev-dependencies]
 serde_json = "1"

@@ -42,7 +42,7 @@ function assistantItem(
 
 function resultItem(
   entryId: string,
-  functionCallId: string,
+  functionTriggerId: string,
   text: string,
   isError = false,
 ): TranscriptItem {
@@ -50,7 +50,7 @@ function resultItem(
     entry_id: entryId,
     message: {
       role: 'function_result',
-      function_call_id: functionCallId,
+      function_call_id: functionTriggerId,
       function_id: 'shell::run',
       content: [{ type: 'text', text }],
       details: {},
@@ -201,7 +201,7 @@ describe('entrySegments', () => {
     ).toEqual([])
   })
 
-  it('splits an assistant entry into thought/text/function-call segments by block', () => {
+  it('splits an assistant entry into thought/text/function-trigger segments by block', () => {
     const segments = entrySegments(
       assistantItem('e-a', [
         { type: 'thinking', text: 'pondering' },
@@ -218,12 +218,12 @@ describe('entrySegments', () => {
     expect(segments.map((s) => [s.id, s.role])).toEqual([
       ['e-a:0', 'thought'],
       ['e-a:1', 'assistant'],
-      ['e-a:2', 'function-call'],
+      ['e-a:2', 'function-trigger'],
     ])
     expect(segments[2]).toMatchObject({
       functionId: 'shell::run',
       input: { command: 'ls' },
-      functionCallId: 'fc-1',
+      functionTriggerId: 'fc-1',
       sessionId: 'sess-1',
     })
   })
@@ -515,7 +515,7 @@ describe('entrySegments', () => {
       ]),
     )
     expect(seg).toMatchObject({
-      role: 'function-call',
+      role: 'function-trigger',
       functionId: 'agent_trigger',
       unresolvedTarget: true,
     })
@@ -582,7 +582,7 @@ describe('applyEntryUpsert', () => {
     expect(messages[1]).toMatchObject({ content: 'two' })
   })
 
-  it('pairs a function_result entry into the matching function-call row', () => {
+  it('pairs a function_result entry into the matching function-trigger row', () => {
     let messages = transcriptToMessages([
       assistantItem('e-a', [
         {
@@ -596,7 +596,7 @@ describe('applyEntryUpsert', () => {
     messages = applyEntryUpsert(messages, resultItem('fr-fc-1', 'fc-1', 'ok'))
     expect(messages).toHaveLength(1)
     expect(messages[0]).toMatchObject({
-      role: 'function-call',
+      role: 'function-trigger',
       running: false,
       output: { content: [{ type: 'text', text: 'ok' }], details: {} },
     })
@@ -624,12 +624,12 @@ describe('applyEntryUpsert', () => {
   it('absorbs a locally-created fcall row (pending approval) into the entry segment', () => {
     const local: Message = {
       id: 'local-1',
-      role: 'function-call',
+      role: 'function-trigger',
       functionId: 'shell::run',
       input: {},
       running: true,
       pendingApproval: true,
-      functionCallId: 'fc-1',
+      functionTriggerId: 'fc-1',
       createdAt: 0,
     }
     const next = applyEntryUpsert(
@@ -648,19 +648,19 @@ describe('applyEntryUpsert', () => {
       id: 'e-a:0',
       running: true,
       pendingApproval: true,
-      functionCallId: 'fc-1',
+      functionTriggerId: 'fc-1',
     })
   })
 
   it('carries filesystemAccess through a snapshot re-derivation while pending', () => {
     const local: Message = {
       id: 'local-1',
-      role: 'function-call',
+      role: 'function-trigger',
       functionId: 'shell::fs::read',
       input: {},
       running: false,
       pendingApproval: true,
-      functionCallId: 'fc-1',
+      functionTriggerId: 'fc-1',
       sessionId: 'sess-a',
       filesystemAccess: {
         requestedRoot: '/abs/existing/dir',
@@ -683,7 +683,7 @@ describe('applyEntryUpsert', () => {
     expect(next[0]).toMatchObject({
       id: 'e-a:0',
       pendingApproval: true,
-      functionCallId: 'fc-1',
+      functionTriggerId: 'fc-1',
       filesystemAccess: {
         requestedRoot: '/abs/existing/dir',
         errorCode: 'S215',
@@ -705,7 +705,7 @@ describe('applyEntryUpsert', () => {
       { working: true },
     )
     expect(messages[0]).toMatchObject({
-      role: 'function-call',
+      role: 'function-trigger',
       running: true,
     })
   })
@@ -762,11 +762,11 @@ describe('applyEntryUpsert', () => {
   it('never marks a pending-approval call as running', () => {
     const local: Message = {
       id: 'local-1',
-      role: 'function-call',
+      role: 'function-trigger',
       functionId: 'shell::run',
       input: {},
       pendingApproval: true,
-      functionCallId: 'fc-1',
+      functionTriggerId: 'fc-1',
       createdAt: 0,
     }
     const next = applyEntryUpsert(
@@ -806,9 +806,9 @@ describe('transcriptToMessages — running inference on hydration', () => {
       'sess-1',
       { working: true },
     )
-    const rows = messages.filter((m) => m.role === 'function-call')
-    expect(rows[0]).toMatchObject({ functionCallId: 'fc-1', running: false })
-    expect(rows[1]).toMatchObject({ functionCallId: 'fc-2', running: true })
+    const rows = messages.filter((m) => m.role === 'function-trigger')
+    expect(rows[0]).toMatchObject({ functionTriggerId: 'fc-1', running: false })
+    expect(rows[1]).toMatchObject({ functionTriggerId: 'fc-2', running: true })
   })
 
   it('does not pulse historical unpaired calls (earlier entries or idle sessions)', () => {
@@ -822,7 +822,7 @@ describe('transcriptToMessages — running inference on hydration', () => {
       'sess-1',
       { working: true },
     )
-    const row = working.find((m) => m.role === 'function-call')
+    const row = working.find((m) => m.role === 'function-trigger')
     expect((row as { running?: boolean }).running).toBeFalsy()
 
     // Idle session: nothing pulses.
@@ -835,7 +835,7 @@ describe('transcriptToMessages — running inference on hydration', () => {
 })
 
 describe('applyFcallPatch / clearTransientFlags', () => {
-  it('patches the row matching functionCallId and reports found', () => {
+  it('patches the row matching functionTriggerId and reports found', () => {
     const messages = transcriptToMessages([
       assistantItem('e-a', [
         {
@@ -875,7 +875,7 @@ describe('applyFcallPatch / clearTransientFlags', () => {
       },
       {
         id: 'f',
-        role: 'function-call',
+        role: 'function-trigger',
         functionId: 'shell::run',
         input: {},
         running: true,

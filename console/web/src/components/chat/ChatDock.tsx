@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  computeDockDefaultWidth,
   computeDockMaxWidth,
-  DOCK_DEFAULT_WIDTH,
   DOCK_MIN_WIDTH,
 } from '@/hooks/use-chat-dock'
 import { cn } from '@/lib/utils'
@@ -101,7 +101,7 @@ export function ChatDock({
   }, [isResizing, onWidthChange])
 
   const handleReset = useCallback(() => {
-    onWidthChange(DOCK_DEFAULT_WIDTH)
+    onWidthChange(computeDockDefaultWidth())
   }, [onWidthChange])
 
   if (collapsed) return null

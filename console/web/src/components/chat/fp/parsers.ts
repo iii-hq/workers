@@ -68,9 +68,21 @@ export const pipeStepSchema = z.object({
 })
 export type PipeStep = z.infer<typeof pipeStepSchema>
 
+/** The harness-stamped trusted filesystem scope riding on a pipe call
+    (harness/src/filesystem_scope.rs). Rendered so an approver reviewing
+    relative shell/coder steps can see where they will run — the pipe call
+    is the approval surface. */
+export const pipeFsScopeSchema = z.object({
+  root: z.string().nullish(),
+  grants: z.array(z.string()).nullish(),
+  boundary: z.string().nullish(),
+})
+export type PipeFsScope = z.infer<typeof pipeFsScopeSchema>
+
 export const pipeRequestSchema = z.object({
   through: z.array(pipeStepSchema).nullish(),
   preview_chars: z.number().nullish(),
+  fs_scope: pipeFsScopeSchema.nullish(),
 })
 export type PipeRequest = z.infer<typeof pipeRequestSchema>
 

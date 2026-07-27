@@ -1,4 +1,4 @@
-import { FunctionCallCard } from '@/components/function-call/FunctionCallCard'
+import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { Caret } from '@/components/ui/Caret'
 import { Prompt } from '@/components/ui/Prompt'
@@ -12,6 +12,7 @@ import type {
   UserMessage as UserMessageType,
 } from '@/types/chat'
 import { AttachmentChip } from './AttachmentChip'
+import { CopyMessageButton } from './CopyMessageButton'
 import { MemoryChip } from './MemoryChip'
 import { ThoughtMessage } from './ThoughtMessage'
 
@@ -19,21 +20,24 @@ interface MessageProps {
   message: MessageType
   onResolveApproval?: (
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     decision: 'allow' | 'deny',
   ) => Promise<void>
   onAlwaysAllow?: (
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     functionId: string,
   ) => Promise<void>
   onResolveFilesystemAccess?: (
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     action: FilesystemAccessAction,
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
   workingDir?: string | null
+  /** Copy payload for an assistant turn (prose + its function calls). Lazy so
+      the string is built on click, not on every streaming re-render. */
+  copyText?: string | (() => string)
 }
 
 export function Message({
@@ -43,6 +47,7 @@ export function Message({
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
   workingDir,
+  copyText,
 }: MessageProps) {
   switch (message.role) {
     case 'user':
@@ -56,32 +61,33 @@ export function Message({
         <UserMessage message={message} />
       )
     case 'assistant':
-      return <AssistantMessage message={message} />
+      return <AssistantMessage message={message} copyText={copyText} />
     case 'thought':
       return <ThoughtMessage message={message} />
-    case 'function-call': {
+    case 'function-trigger': {
       const sessionId = message.sessionId
-      const functionCallId = message.functionCallId
+      const functionTriggerId = message.functionTriggerId
       let onApprove: (() => Promise<void>) | undefined
       let onDeny: (() => Promise<void>) | undefined
       let onAlwaysAllowHandler: (() => Promise<void>) | undefined
       let onResolveFilesystemAccessHandler:
         | ((action: FilesystemAccessAction) => Promise<void>)
         | undefined
-      if (onResolveApproval && sessionId && functionCallId) {
-        onApprove = () => onResolveApproval(sessionId, functionCallId, 'allow')
-        onDeny = () => onResolveApproval(sessionId, functionCallId, 'deny')
+      if (onResolveApproval && sessionId && functionTriggerId) {
+        onApprove = () =>
+          onResolveApproval(sessionId, functionTriggerId, 'allow')
+        onDeny = () => onResolveApproval(sessionId, functionTriggerId, 'deny')
       }
-      if (onAlwaysAllow && sessionId && functionCallId) {
+      if (onAlwaysAllow && sessionId && functionTriggerId) {
         onAlwaysAllowHandler = () =>
-          onAlwaysAllow(sessionId, functionCallId, message.functionId)
+          onAlwaysAllow(sessionId, functionTriggerId, message.functionId)
       }
-      if (onResolveFilesystemAccess && sessionId && functionCallId) {
+      if (onResolveFilesystemAccess && sessionId && functionTriggerId) {
         onResolveFilesystemAccessHandler = (action) =>
-          onResolveFilesystemAccess(sessionId, functionCallId, action)
+          onResolveFilesystemAccess(sessionId, functionTriggerId, action)
       }
       return (
-        <FunctionCallCard
+        <FunctionTriggerCard
           message={message}
           onApprove={onApprove}
           onDeny={onDeny}
@@ -266,8 +272,17 @@ function SpawnTaskMessage({ message }: { message: UserMessageType }) {
 
 function UserMessage({ message }: { message: UserMessageType }) {
   return (
-    <article className="flex flex-col items-end gap-2">
-      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
+    <article
+      className="group flex flex-col items-end gap-2"
+      data-message-role="user"
+    >
+      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2">
+        {message.content ? (
+          <CopyMessageButton
+            text={message.content}
+            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-[opacity,color]"
+          />
+        ) : null}
         <Prompt symbol="$">you</Prompt>
       </header>
       <div
@@ -289,10 +304,23 @@ function UserMessage({ message }: { message: UserMessageType }) {
   )
 }
 
-function AssistantMessage({ message }: { message: AssistantMessageType }) {
+function AssistantMessage({
+  message,
+  copyText,
+}: {
+  message: AssistantMessageType
+  copyText?: string | (() => string)
+}) {
   const showCaret = !!message.streaming
+  // A tool-only turn has no prose but still carries a copy payload (its
+  // function calls) via copyText; direct renders without a list-provided
+  // payload fall back to the prose gate.
+  const copySource = copyText ?? (message.content || undefined)
   return (
-    <article className="flex flex-col gap-2">
+    <article
+      className="group flex flex-col gap-2"
+      data-message-role="assistant"
+    >
       <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2 flex-wrap">
         <Prompt symbol=">">assistant</Prompt>
         {message.model ? (
@@ -302,6 +330,12 @@ function AssistantMessage({ message }: { message: AssistantMessageType }) {
           <span className="text-ink-ghost">· {message.mode}</span>
         ) : null}
         {message.memory ? <MemoryChip memory={message.memory} /> : null}
+        {copySource !== undefined && !message.streaming ? (
+          <CopyMessageButton
+            text={copySource}
+            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-[opacity,color]"
+          />
+        ) : null}
       </header>
       <div className="pr-1">
         {message.content ? (

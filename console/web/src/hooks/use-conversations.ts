@@ -27,6 +27,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getIiiClient } from '@/lib/iii-client'
+import { newSessionId } from '@/lib/session-id'
 import {
   deleteSession,
   ensureSession as ensureSessionApi,
@@ -71,17 +72,6 @@ function uid(): string {
  *  only costs are the RPC and one JSONL append per flush). */
 const DRAFT_SAVE_DEBOUNCE_MS = 500
 
-/** Draft ids double as engine session ids — minted with the console prefix. */
-function newConversationId(): string {
-  if (
-    typeof crypto !== 'undefined' &&
-    typeof crypto.randomUUID === 'function'
-  ) {
-    return `console-${crypto.randomUUID()}`
-  }
-  return `console-${uid()}`
-}
-
 function deriveTitle(text: string): string {
   const clean = text.replace(/\s+/g, ' ').trim().toLowerCase()
   if (!clean) return 'new chat'
@@ -91,7 +81,7 @@ function deriveTitle(text: string): string {
 function emptyConversation(defaultModel: ModelId | null): Conversation {
   const now = Date.now()
   return {
-    id: newConversationId(),
+    id: newSessionId(),
     title: 'new chat',
     model: defaultModel,
     mode: DEFAULT_MODE,
@@ -111,7 +101,7 @@ function emptyConversation(defaultModel: ModelId | null): Conversation {
 }
 
 function isMode(v: unknown): v is Mode {
-  return v === 'plan' || v === 'ask' || v === 'agent'
+  return v === 'ask' || v === 'agent'
 }
 
 /** The console's session metadata convention (replaces wholesale on writes). */
@@ -196,7 +186,7 @@ export function applyCatalogModelFallback(
  * Mark every backgrounded server-backed conversation stale so the next
  * activation re-hydrates it. A transcript subscription exists only for the
  * ACTIVE session, so entry events emitted while a session is backgrounded
- * are lost — a function call caught mid-snapshot freezes as `ƒ …` with an
+ * are lost — a function trigger caught mid-snapshot freezes as `ƒ …` with an
  * empty request/response until durable truth is re-fetched. Returns the
  * same array when nothing changed.
  */
@@ -224,6 +214,32 @@ export function mergeConversationMeta(
     messages: existing.messages,
     hydrated: existing.hydrated,
   }
+}
+
+/** Merge the boot-time session list without dropping sessions discovered by
+ * a concurrent `session::created` event. The list RPC may have been captured
+ * before that event, so treating it as a replacement can invalidate the
+ * active conversation and send the user back to the local draft. */
+export function mergeSessionListSnapshot(
+  previous: Conversation[],
+  metas: SessionMeta[],
+): Conversation[] {
+  const drafts = previous.filter((conversation) => conversation.draft)
+  const byId = new Map(
+    previous.map((conversation) => [conversation.id, conversation]),
+  )
+  const listed = metas.map((meta) =>
+    mergeConversationMeta(byId.get(meta.session_id), meta),
+  )
+  const listedIds = new Set(listed.map((conversation) => conversation.id))
+  const concurrent = previous.filter(
+    (conversation) => !conversation.draft && !listedIds.has(conversation.id),
+  )
+  return [
+    ...drafts.filter((conversation) => !listedIds.has(conversation.id)),
+    ...concurrent,
+    ...listed,
+  ]
 }
 
 export function appendMessageToConversation(
@@ -395,15 +411,7 @@ export function useConversations(
     void listSessions()
       .then((metas) => {
         if (cancelled) return
-        setConversations((prev) => {
-          const drafts = prev.filter((c) => c.draft)
-          const byId = new Map(prev.map((c) => [c.id, c]))
-          const listed = metas.map((meta) =>
-            mergeConversationMeta(byId.get(meta.session_id), meta),
-          )
-          const listedIds = new Set(listed.map((c) => c.id))
-          return [...drafts.filter((c) => !listedIds.has(c.id)), ...listed]
-        })
+        setConversations((prev) => mergeSessionListSnapshot(prev, metas))
       })
       .catch((err) => {
         if (import.meta.env.DEV) {

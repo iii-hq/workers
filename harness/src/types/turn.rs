@@ -75,6 +75,20 @@ pub struct TurnOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
     pub max_turns: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    /// Hard input-plus-output token budget shared by this root turn and every
+    /// in-turn sub-agent it spawns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_tokens: Option<u64>,
+    /// Hard USD budget shared by this root turn and every in-turn sub-agent it
+    /// spawns. Requires catalog pricing for every model used by the tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_usd: Option<f64>,
+    /// Root session whose durable budget ledger this turn charges. Internal
+    /// bookkeeping populated by `harness::send` and inherited by sub-agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_root_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -175,6 +189,12 @@ pub struct CallCheckpoint {
     pub child_turn_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub held_by: Option<String>,
+    /// The call's arguments as mutated by the hook chain up to the hold, so a
+    /// release executes the mutated call — not the model's original arguments
+    /// re-read from the transcript. Absent on records written before this
+    /// field existed; release falls back to transcript recovery then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_arguments: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_timeout_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -306,6 +326,10 @@ mod tests {
                 system_prompt: None,
                 mode: None,
                 max_turns: 16,
+                max_output_tokens: None,
+                max_total_tokens: None,
+                max_cost_usd: None,
+                budget_root_session_id: None,
                 thinking_level: None,
                 provider_options: None,
                 output: OutputContract::Text,
@@ -337,6 +361,7 @@ mod tests {
             child_session_id: child.map(|s| s.to_string()),
             child_turn_id: child.map(|_| "t_child".to_string()),
             held_by: None,
+            held_arguments: None,
             pending_timeout_ms: None,
             pending_at: None,
         }

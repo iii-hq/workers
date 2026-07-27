@@ -1,6 +1,6 @@
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
-import type { FunctionCallMessage } from '@/types/chat'
+import type { FunctionTriggerMessage } from '@/types/chat'
 import { CreateFilePreview, CreateFileView } from './CreateFileView'
 import { DeleteFilePreview, DeleteFileView } from './DeleteFileView'
 import { InfoView } from './InfoView'
@@ -29,7 +29,7 @@ export function CoderFunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-function tryRender(message: FunctionCallMessage): React.ReactNode | null {
+function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
   if (!isCoderFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -72,7 +72,7 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
  *  read-side functions never reach the pending state, so they have no
  *  Preview components to dispatch to. */
 function tryRenderPreview(
-  message: FunctionCallMessage,
+  message: FunctionTriggerMessage,
 ): React.ReactNode | null {
   if (!isCoderMutateFunction(message.functionId)) return null
   const input = unwrapEnvelope(message.input)

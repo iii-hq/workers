@@ -4,7 +4,9 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use crate::color::ColorMode;
-use crate::discover::{discover_repo_workers, harness_stack_names, order_worker_names, WorkerSpec};
+use crate::discover::{
+    assign_groups, discover_repo_workers, harness_stack_names, order_worker_names, WorkerSpec,
+};
 
 pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 pub const DEFAULT_POLL_INTERVAL_MS: u64 = 2000;
@@ -28,6 +30,11 @@ pub struct Config {
     pub worker_specs: Vec<WorkerSpec>,
     pub stop_on_exit: bool,
     pub color_mode: ColorMode,
+    /// Start injectable-UI workers in the SOP's watcher mode by default:
+    /// spawn `pnpm watch` in `<worker>/ui` and set `III_<WORKER>_UI_WATCH=1`
+    /// so console tabs hot-reload the worker's UI on rebuild. Per-worker
+    /// override at runtime via the TUI's `w` key.
+    pub ui_watch: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -41,9 +48,11 @@ struct FileConfig {
     harness_stack: Option<Vec<String>>,
     stop_on_exit: Option<bool>,
     color: Option<String>,
+    ui_watch: Option<bool>,
 }
 
 impl Config {
+    #[allow(clippy::too_many_arguments)]
     pub fn load(
         repo: Option<PathBuf>,
         engine_url: Option<String>,
@@ -52,6 +61,7 @@ impl Config {
         config_path: Option<PathBuf>,
         stop_on_exit: bool,
         color: Option<String>,
+        ui_watch: bool,
     ) -> Result<Self> {
         let file_cfg = if let Some(path) = config_path {
             let raw = std::fs::read_to_string(&path)
@@ -63,10 +73,23 @@ impl Config {
         };
 
         let repo_root = resolve_repo_root(repo.or(file_cfg.repo))?;
-        let worker_specs = discover_repo_workers(&repo_root)?;
+        let mut worker_specs = discover_repo_workers(&repo_root)?;
         if worker_specs.is_empty() {
             bail!("no workers discovered under {}", repo_root.display());
         }
+
+        // Resolve the stack roots before deriving worker order: an overridden
+        // `harness_stack:` changes the roots, and the dashboard's stack group
+        // (roots + transitive deps) must be regrouped before the display order
+        // is captured below. Filtered against the managed `workers` list further
+        // down — a root outside it would make `up`/`Ctrl+u` bail at start.
+        let stack_roots = match file_cfg.harness_stack {
+            Some(roots) => {
+                assign_groups(&mut worker_specs, &roots);
+                roots
+            }
+            None => harness_stack_names(&worker_specs),
+        };
 
         let raw_engine_url = engine_url
             .or(file_cfg.engine_url)
@@ -107,9 +130,24 @@ impl Config {
             }
             None => discovered_names,
         };
-        let harness_stack = file_cfg
-            .harness_stack
-            .unwrap_or_else(|| harness_stack_names(&worker_specs));
+
+        // Keep only stack roots that survived into the managed `workers` set:
+        // the WorkerGraph is built over `workers`, so a root outside it makes
+        // `workers-dev up` / `Ctrl+u` bail with "unknown worker" before the TUI
+        // even opens. Drop with a warning, mirroring the `workers:` handling.
+        let managed: std::collections::HashSet<&str> = workers.iter().map(String::as_str).collect();
+        let harness_stack: Vec<String> = stack_roots
+            .into_iter()
+            .filter(|w| {
+                let ok = managed.contains(w.as_str());
+                if !ok {
+                    eprintln!(
+                        "warning: skipping harness_stack worker {w}: not in the managed workers list"
+                    );
+                }
+                ok
+            })
+            .collect();
 
         let color_mode = color
             .or(file_cfg.color)
@@ -139,6 +177,7 @@ impl Config {
             worker_specs,
             stop_on_exit: stop_on_exit || file_cfg.stop_on_exit.unwrap_or(false),
             color_mode,
+            ui_watch: ui_watch || file_cfg.ui_watch.unwrap_or(false),
         })
     }
 

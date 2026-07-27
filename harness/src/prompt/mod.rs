@@ -24,6 +24,8 @@ pub enum SystemPromptStrategy {
     /// Caller prompt is appended to the built-in identity prompt.
     #[default]
     Enrich,
+    /// No system prompt is sent to the model.
+    Disabled,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -45,8 +47,8 @@ pub fn build_system_prompt(opts: SystemPromptOpts<'_>) -> String {
 
 /// Resolve the system prompt for a turn. With `Override`, a non-empty caller
 /// prompt wins verbatim; with `Enrich`, it is appended to the built-in prompt.
-/// An absent or empty caller prompt yields the built-in prompt under either
-/// strategy.
+/// An absent or empty caller prompt yields the built-in prompt under
+/// `Override` and `Enrich`. `Disabled` always yields no system prompt.
 pub fn resolve_system_prompt(
     override_prompt: Option<String>,
     strategy: SystemPromptStrategy,
@@ -56,6 +58,7 @@ pub fn resolve_system_prompt(
     let built_in = || build_system_prompt(SystemPromptOpts { mode, identity });
     let custom = override_prompt.as_deref().filter(|s| !s.is_empty());
     match (strategy, custom) {
+        (SystemPromptStrategy::Disabled, _) => None,
         (SystemPromptStrategy::Override, Some(s)) => Some(s.to_string()),
         (SystemPromptStrategy::Enrich, Some(s)) => Some(format!("{}\n\n{}", built_in(), s)),
         (_, None) => Some(built_in()),

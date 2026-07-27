@@ -1,6 +1,7 @@
 //! `session-manager` client: ensure/create a session, append and update
 //! messages, set status, and load the active path. Required dependency.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use iii_sdk::protocol::TriggerRequest;
@@ -27,6 +28,35 @@ pub struct LoadedCustom {
     pub custom_type: String,
     #[serde(default)]
     pub data: Value,
+}
+
+/// The durable parent linkage stored in `SessionMeta.metadata` when the
+/// harness creates a child session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionLink {
+    pub session_id: String,
+    pub parent_session_id: String,
+    pub parent_turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LoadedSessionMeta {
+    session_id: String,
+    #[serde(default)]
+    metadata: Option<serde_json::Map<String, Value>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GetSessionResponse {
+    #[serde(rename = "meta")]
+    _meta: LoadedSessionMeta,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ListSessionsResponse {
+    sessions: Vec<LoadedSessionMeta>,
+    #[serde(default)]
+    next_cursor: Option<String>,
 }
 
 #[derive(Clone)]
@@ -62,6 +92,84 @@ impl SessionClient {
             .ok()?;
         let title = resp.get("meta")?.get("title")?.as_str()?.trim().to_string();
         (!title.is_empty()).then_some(title)
+    }
+
+    /// Whether a durable session metadata record exists.
+    pub async fn exists(&self, session_id: &str) -> Result<bool, HarnessError> {
+        let response = self
+            .call("session::get", json!({ "session_id": session_id }))
+            .await?;
+        if response.is_null() {
+            return Ok(false);
+        }
+        serde_json::from_value::<GetSessionResponse>(response)
+            .map(|_| true)
+            .map_err(|error| {
+                HarnessError::Dependency(format!(
+                    "session::get returned malformed metadata for {session_id}: {error}"
+                ))
+            })
+    }
+
+    /// Load every durable session whose metadata points at `parent_session_id`.
+    /// Pagination is strict: a repeated cursor is treated as incomplete
+    /// evidence instead of looping or silently truncating the tree.
+    pub async fn children(
+        &self,
+        parent_session_id: &str,
+    ) -> Result<Vec<SessionLink>, HarnessError> {
+        const PAGE_LIMIT: u64 = 500;
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut seen_cursors = BTreeSet::new();
+
+        loop {
+            let mut payload = json!({
+                "limit": PAGE_LIMIT,
+                "order": "created_asc",
+                "metadata": { "parent_session_id": parent_session_id },
+            });
+            if let Some(value) = &cursor {
+                payload["cursor"] = json!(value);
+            }
+            let response = self.call("session::list", payload).await?;
+            let page: ListSessionsResponse = serde_json::from_value(response).map_err(|error| {
+                HarnessError::Dependency(format!(
+                    "session::list returned malformed child metadata for {parent_session_id}: {error}"
+                ))
+            })?;
+            for meta in page.sessions {
+                let Some(metadata) = meta.metadata else {
+                    continue;
+                };
+                let Some(parent) = metadata.get("parent_session_id").and_then(Value::as_str) else {
+                    continue;
+                };
+                out.push(SessionLink {
+                    session_id: meta.session_id,
+                    parent_session_id: parent.to_string(),
+                    parent_turn_id: metadata
+                        .get("parent_turn_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                });
+            }
+
+            match page.next_cursor.filter(|value| !value.is_empty()) {
+                Some(next) => {
+                    if !seen_cursors.insert(next.clone()) {
+                        return Err(HarnessError::Dependency(format!(
+                            "session::list repeated cursor while loading children of {parent_session_id}"
+                        )));
+                    }
+                    cursor = Some(next);
+                }
+                None => break,
+            }
+        }
+
+        out.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        Ok(out)
     }
 
     /// Idempotently ensure a session exists, applying `metadata` on creation.
@@ -176,6 +284,7 @@ impl SessionClient {
         session_id: &str,
         entry_id: &str,
         content: &[ContentBlock],
+        usage: Option<&crate::types::event::Usage>,
         details: Option<&Value>,
         origin: Option<&Value>,
     ) -> Result<u64, HarnessError> {
@@ -186,6 +295,11 @@ impl SessionClient {
         });
         if let Some(d) = details {
             payload["details"] = d.clone();
+        }
+        if let Some(u) = usage {
+            payload["usage"] = serde_json::to_value(u).map_err(|error| {
+                HarnessError::Internal(format!("serialize assistant usage: {error}"))
+            })?;
         }
         if let Some(o) = origin {
             payload["origin"] = o.clone();
@@ -244,6 +358,65 @@ impl SessionClient {
                 _ => break,
             }
         }
+        Ok(out)
+    }
+
+    /// Strict evidence reader for evaluation metrics. Unlike [`Self::messages`],
+    /// malformed entries fail the read instead of being skipped.
+    pub async fn messages_strict(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<LoadedEntry>, HarnessError> {
+        const PAGE_LIMIT: u64 = 500;
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut seen_cursors = BTreeSet::new();
+
+        loop {
+            let mut payload = json!({
+                "session_id": session_id,
+                "include_custom": false,
+                "limit": PAGE_LIMIT,
+            });
+            if let Some(value) = &cursor {
+                payload["cursor"] = json!(value);
+            }
+            let response = self.call("session::messages", payload).await?;
+            let messages = response
+                .get("messages")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    HarnessError::Dependency(format!(
+                        "session::messages returned no messages array for {session_id}"
+                    ))
+                })?;
+            for item in messages {
+                out.push(serde_json::from_value::<LoadedEntry>(item.clone()).map_err(
+                    |error| {
+                        HarnessError::Dependency(format!(
+                            "session::messages returned malformed evidence for {session_id}: {error}"
+                        ))
+                    },
+                )?);
+            }
+
+            match response
+                .get("next_cursor")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                Some(next) => {
+                    if !seen_cursors.insert(next.to_string()) {
+                        return Err(HarnessError::Dependency(format!(
+                            "session::messages repeated cursor while loading {session_id}"
+                        )));
+                    }
+                    cursor = Some(next.to_string());
+                }
+                None => break,
+            }
+        }
+
         Ok(out)
     }
 

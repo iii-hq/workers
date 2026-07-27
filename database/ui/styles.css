@@ -1,0 +1,451 @@
+/*
+ * Styles for the database worker's injected console UI. Shipped as its own
+ * `console:style` asset (database/styles.css) — the console mounts it as a
+ * <link> and link-swaps it on change.
+ *
+ * EVERY rule is scoped under [data-iii-ui="database"] — the wrapper the
+ * console mounts around every injected render. Unscoped rules would beat
+ * the console's layered CSS document-wide (injected sheets are unlayered).
+ * Keyframe names are global: keep the db-ui- prefix. Colors come from the
+ * console's design tokens so light/dark theming is free.
+ */
+
+/* --- function-trigger message (chat / traces card) ------------------- */
+[data-iii-ui="database"] .db-ui-msg {
+  border-top: 1px solid var(--color-rule-2);
+  background: var(--color-bg);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+[data-iii-ui="database"] .db-ui-msg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="database"] .db-ui-pill {
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 1px 8px;
+}
+[data-iii-ui="database"] .db-ui-pill.quiet {
+  border-color: var(--color-rule);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-ui-chip {
+  border: 1px solid var(--color-rule);
+  color: var(--color-ink);
+  font-size: 11.5px;
+  padding: 1px 8px;
+}
+[data-iii-ui="database"] .db-ui-chip .k { color: var(--color-ink-ghost); }
+[data-iii-ui="database"] .db-ui-chip.ok { border-color: var(--color-ok); color: var(--color-ok); }
+[data-iii-ui="database"] .db-ui-chip.alert { border-color: var(--color-alert); color: var(--color-alert); }
+[data-iii-ui="database"] .db-ui-msg-tag {
+  margin-left: auto;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="database"] .db-ui-msg-note {
+  padding: 0 12px 10px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-ui-msg-note.pulse { animation: db-ui-pulse 1.6s ease-in-out infinite; }
+@keyframes db-ui-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* --- SQL block -------------------------------------------------------- */
+[data-iii-ui="database"] .db-ui-sql {
+  padding: 0 12px 8px;
+  font-size: 12px;
+  overflow-x: auto;
+}
+[data-iii-ui="database"] .db-ui-params {
+  padding: 0 12px 8px;
+  font-size: 11.5px;
+  color: var(--color-ink-faint);
+  overflow-x: auto;
+}
+[data-iii-ui="database"] .db-ui-params .k { color: var(--color-ink-ghost); }
+
+/* --- result rows table ------------------------------------------------ */
+[data-iii-ui="database"] .db-ui-table-wrap {
+  padding: 0 12px 10px;
+  overflow-x: auto;
+}
+[data-iii-ui="database"] .db-ui-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  width: 100%;
+}
+[data-iii-ui="database"] .db-ui-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+  border-bottom: 1px solid var(--color-rule);
+  padding: 3px 10px 3px 0;
+  white-space: nowrap;
+}
+[data-iii-ui="database"] .db-ui-table td {
+  color: var(--color-ink);
+  border-bottom: 1px solid var(--color-rule-2);
+  padding: 3px 10px 3px 0;
+  vertical-align: top;
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="database"] .db-ui-table td.null { color: var(--color-ink-ghost); font-style: italic; }
+
+/* --- batch / transaction step list ------------------------------------ */
+[data-iii-ui="database"] .db-ui-steps {
+  padding: 0 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="database"] .db-ui-step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+[data-iii-ui="database"] .db-ui-step .idx {
+  color: var(--color-ink-ghost);
+  min-width: 1.5em;
+  text-align: right;
+}
+[data-iii-ui="database"] .db-ui-step .sql {
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="database"] .db-ui-step .meta { color: var(--color-ink-faint); white-space: nowrap; }
+[data-iii-ui="database"] .db-ui-step.failed .idx,
+[data-iii-ui="database"] .db-ui-step.failed .sql { color: var(--color-alert); }
+
+/* --- #/ext/database page ---------------------------------------------- *
+ * The page's own rules. Injected UI can't lean on the console's Tailwind
+ * utility output, so the source's utility classes live here as real rules,
+ * coloured from the design tokens so light/dark theming is free.
+ * ---------------------------------------------------------------------- */
+
+
+[data-iii-ui="database"] .db-page {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink);
+  padding: 20px 24px;
+  box-sizing: border-box;
+}
+[data-iii-ui="database"] .db-page *,
+[data-iii-ui="database"] .db-page *::before,
+[data-iii-ui="database"] .db-page *::after { box-sizing: border-box; }
+
+[data-iii-ui="database"] .db-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="database"] .db-title {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-transform: lowercase;
+  color: var(--color-ink);
+}
+[data-iii-ui="database"] .db-sub {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  margin-top: 2px;
+  text-transform: lowercase;
+  word-break: break-all;
+}
+[data-iii-ui="database"] .db-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+[data-iii-ui="database"] .db-modes {
+  display: inline-flex;
+  border: 1px solid var(--color-rule);
+}
+[data-iii-ui="database"] .db-mode {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--color-ink-faint);
+  font: inherit;
+  font-size: 12px;
+  text-transform: lowercase;
+  padding: 3px 12px;
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-mode + .db-mode { border-left: 1px solid var(--color-rule); }
+[data-iii-ui="database"] .db-mode:hover { color: var(--color-ink); }
+[data-iii-ui="database"] .db-mode.active { background: var(--color-accent); color: var(--color-accent-fg); }
+
+[data-iii-ui="database"] .db-driver-badge {
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 8px;
+}
+
+[data-iii-ui="database"] .db-body {
+  display: grid;
+  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  margin-top: 16px;
+}
+
+[data-iii-ui="database"] .db-aside {
+  border: 1px solid var(--color-rule);
+  background: var(--color-bg);
+  max-height: 74vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="database"] .db-aside-head {
+  position: sticky;
+  top: 0;
+  background: var(--color-bg);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-rule-2);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="database"] .db-aside-body { flex: 1; padding: 4px 0; }
+
+[data-iii-ui="database"] .db-panel {
+  border: 1px solid var(--color-rule);
+  background: var(--color-bg);
+  min-height: 360px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+[data-iii-ui="database"] .db-msg {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--color-ink-ghost);
+  text-transform: lowercase;
+}
+[data-iii-ui="database"] .db-msg.alert { color: var(--color-alert); text-transform: none; word-break: break-all; }
+[data-iii-ui="database"] .db-pulse { animation: db-page-pulse 1.6s ease-in-out infinite; }
+@keyframes db-page-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+[data-iii-ui="database"] .db-pad { padding: 16px; }
+[data-iii-ui="database"] .db-skel { display: flex; flex-direction: column; gap: 8px; padding: 12px; }
+
+/* ---- schema tree ---- */
+[data-iii-ui="database"] .db-tree-grouphead {
+  padding: 12px 12px 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="database"] .db-tree ul { list-style: none; margin: 0; padding: 0; }
+[data-iii-ui="database"] .db-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 8px;
+  border-left: 2px solid transparent;
+}
+[data-iii-ui="database"] .db-tree-row:hover { background: color-mix(in oklab, var(--color-paper-2) 60%, transparent); }
+[data-iii-ui="database"] .db-tree-row.active { background: var(--color-paper-2); border-left-color: var(--color-accent); }
+[data-iii-ui="database"] .db-tree-toggle {
+  appearance: none; background: transparent; border: 0; cursor: pointer;
+  padding: 6px 0 6px 8px; color: var(--color-ink-ghost); display: inline-flex;
+}
+[data-iii-ui="database"] .db-tree-toggle:hover { color: var(--color-ink); }
+[data-iii-ui="database"] .db-tree-name {
+  appearance: none; background: transparent; border: 0; cursor: pointer;
+  display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0;
+  padding: 6px 0; font: inherit; font-size: 12.5px; text-align: left;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-tree-name:hover { color: var(--color-ink); }
+[data-iii-ui="database"] .db-tree-row.active .db-tree-name { color: var(--color-ink); }
+[data-iii-ui="database"] .db-trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+[data-iii-ui="database"] .db-cols { padding-bottom: 4px; }
+[data-iii-ui="database"] .db-col {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 12px 3px 36px; font-size: 11.5px;
+}
+[data-iii-ui="database"] .db-col-name { color: var(--color-ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-iii-ui="database"] .db-col-type { color: var(--color-ink-ghost); text-transform: lowercase; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-iii-ui="database"] .db-idx-head {
+  padding: 6px 12px 2px 36px; font-size: 9.5px;
+  text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-ink-ghost);
+}
+[data-iii-ui="database"] .db-idx { display: flex; align-items: center; gap: 6px; padding: 3px 12px 3px 36px; font-size: 11px; }
+[data-iii-ui="database"] .db-idx-name { color: var(--color-ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-iii-ui="database"] .db-idx-unique { color: var(--color-accent); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+[data-iii-ui="database"] .db-tree-msg { padding: 4px 12px 4px 36px; font-size: 11px; color: var(--color-ink-ghost); }
+[data-iii-ui="database"] .db-tree-msg.alert { color: var(--color-alert); }
+
+/* ---- result grid ---- */
+[data-iii-ui="database"] .db-grid-wrap { overflow-x: auto; }
+[data-iii-ui="database"] .db-grid { width: 100%; border-collapse: collapse; }
+[data-iii-ui="database"] .db-grid thead.sticky th { position: sticky; top: 0; z-index: 10; }
+[data-iii-ui="database"] .db-grid th {
+  padding: 8px 12px; font-size: 11px; white-space: nowrap;
+  background: var(--color-paper-2); border-bottom: 1px solid var(--color-rule);
+  text-align: left; font-weight: 500;
+}
+[data-iii-ui="database"] .db-grid th.num { text-align: right; }
+[data-iii-ui="database"] .db-grid th .colname { color: var(--color-ink-faint); font-weight: 500; }
+[data-iii-ui="database"] .db-grid th .coltype { color: var(--color-ink-ghost); font-weight: 400; text-transform: lowercase; }
+[data-iii-ui="database"] .db-grid th .sorter {
+  appearance: none; background: transparent; border: 0; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px; font: inherit; color: inherit;
+}
+[data-iii-ui="database"] .db-grid th.num .sorter { flex-direction: row-reverse; }
+[data-iii-ui="database"] .db-grid th .sorter:hover .colname { color: var(--color-ink); }
+[data-iii-ui="database"] .db-grid th .static { display: inline-flex; align-items: center; gap: 6px; }
+[data-iii-ui="database"] .db-grid td {
+  padding: 6px 12px; font-size: 12.5px; vertical-align: top; white-space: nowrap;
+  max-width: 28rem; overflow: hidden; text-overflow: ellipsis;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="database"] .db-grid td.num { text-align: right; }
+[data-iii-ui="database"] .db-grid tbody tr:last-child td { border-bottom: 0; }
+[data-iii-ui="database"] .db-grid tbody tr.clickable { cursor: pointer; }
+[data-iii-ui="database"] .db-grid tbody tr:hover { background: color-mix(in oklab, var(--color-paper-2) 60%, transparent); }
+[data-iii-ui="database"] .db-grid tbody tr.selected { background: var(--color-paper-2); }
+[data-iii-ui="database"] .db-grid td .copycell {
+  appearance: none; background: transparent; border: 0; padding: 0; margin: 0;
+  font: inherit; color: inherit; cursor: copy; text-align: left;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+}
+[data-iii-ui="database"] .db-cell-null { color: var(--color-ink-ghost); font-style: italic; }
+[data-iii-ui="database"] .db-cell-bool-true { color: var(--color-accent); }
+[data-iii-ui="database"] .db-cell-bool-false { color: var(--color-warn); }
+[data-iii-ui="database"] .db-cell-num { color: var(--color-ink); font-variant-numeric: tabular-nums; }
+[data-iii-ui="database"] .db-cell-json { color: var(--color-ink-faint); }
+[data-iii-ui="database"] .db-cell-str { color: var(--color-ink); }
+[data-iii-ui="database"] .db-cell-date { color: var(--color-ink-faint); }
+[data-iii-ui="database"] .db-copied { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--color-accent); }
+
+[data-iii-ui="database"] .db-grid-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; border-top: 1px solid var(--color-rule-2);
+  font-size: 11px; color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-linkish {
+  appearance: none; background: transparent; border: 0; padding: 0; cursor: pointer;
+  font: inherit; color: var(--color-accent);
+}
+[data-iii-ui="database"] .db-linkish:hover { text-decoration: underline; }
+[data-iii-ui="database"] .db-grid-empty { padding: 12px; font-size: 12.5px; color: var(--color-ink-ghost); }
+
+/* ---- table data panel ---- */
+[data-iii-ui="database"] .db-data { display: flex; min-height: 0; min-width: 0; width: 100%; }
+[data-iii-ui="database"] .db-data-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+[data-iii-ui="database"] .db-data-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  padding: 8px 16px; border-bottom: 1px solid var(--color-rule);
+  font-size: 11px; color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-data-bar .name { color: var(--color-ink); font-weight: 500; }
+[data-iii-ui="database"] .db-data-bar .spacer { margin-left: auto; }
+[data-iii-ui="database"] .db-data-scroll { overflow: auto; max-height: 60vh; }
+[data-iii-ui="database"] .db-data-foot { border-top: 1px solid var(--color-rule); padding: 8px 16px; }
+
+/* ---- pagination ---- */
+[data-iii-ui="database"] .db-pager {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  font-size: 12px; color: var(--color-ink-faint); text-transform: lowercase;
+}
+[data-iii-ui="database"] .db-pager-group { display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
+[data-iii-ui="database"] .db-pager-cap { text-transform: uppercase; letter-spacing: 0.06em; font-size: 11px; }
+[data-iii-ui="database"] .db-pager select {
+  border: 1px solid var(--color-rule); background: var(--color-bg); color: var(--color-ink);
+  font: inherit; font-size: 12px; padding: 2px 6px; border-radius: 0;
+}
+[data-iii-ui="database"] .db-pager select:focus { outline: none; border-color: var(--color-accent); }
+
+/* ---- row inspector ---- */
+[data-iii-ui="database"] .db-rowdetail {
+  width: 320px; flex-shrink: 0; border-left: 1px solid var(--color-rule);
+  overflow-y: auto; max-height: 60vh;
+}
+[data-iii-ui="database"] .db-rowdetail-head {
+  position: sticky; top: 0; background: var(--color-paper-2);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="database"] .db-rowdetail-head .cap { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-ink-faint); }
+[data-iii-ui="database"] .db-field { padding: 8px 12px; border-bottom: 1px solid var(--color-rule-2); }
+[data-iii-ui="database"] .db-field-head { display: flex; align-items: center; gap: 6px; }
+[data-iii-ui="database"] .db-field-name { font-size: 11px; font-weight: 500; color: var(--color-ink-faint); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-iii-ui="database"] .db-field-type { font-size: 10px; color: var(--color-ink-ghost); text-transform: lowercase; }
+[data-iii-ui="database"] .db-field-copy { appearance: none; background: transparent; border: 0; padding: 0; cursor: pointer; color: var(--color-ink-ghost); display: inline-flex; }
+[data-iii-ui="database"] .db-field-copy:hover { color: var(--color-ink); }
+[data-iii-ui="database"] .db-field-copy.copied { color: var(--color-accent); }
+[data-iii-ui="database"] .db-field-value { margin-top: 4px; font-size: 12px; word-break: break-all; }
+[data-iii-ui="database"] .db-field-value .null { color: var(--color-ink-ghost); font-style: italic; }
+[data-iii-ui="database"] .db-field-value .bool-true { color: var(--color-accent); }
+[data-iii-ui="database"] .db-field-value .bool-false { color: var(--color-warn); }
+[data-iii-ui="database"] .db-field-value .plain { color: var(--color-ink); white-space: pre-wrap; }
+[data-iii-ui="database"] .db-field-fk { margin-top: 4px; font-size: 10px; color: var(--color-ink-ghost); }
+[data-iii-ui="database"] .db-icon-btn {
+  appearance: none; background: transparent; border: 0; cursor: pointer;
+  color: var(--color-ink-ghost); display: inline-flex; padding: 2px;
+}
+[data-iii-ui="database"] .db-icon-btn:hover { color: var(--color-ink); }
+[data-iii-ui="database"] .db-icon-btn:disabled { opacity: 0.4; cursor: default; }
+
+/* ---- sql panel ---- */
+[data-iii-ui="database"] .db-sql { display: flex; flex-direction: column; min-height: 0; min-width: 0; width: 100%; }
+[data-iii-ui="database"] .db-sql-top { border-bottom: 1px solid var(--color-rule); }
+[data-iii-ui="database"] .db-sql-editor-wrap { max-height: 240px; overflow: auto; background: var(--color-bg); }
+[data-iii-ui="database"] .db-sql-code { min-height: 104px; }
+[data-iii-ui="database"] .db-sql-actions {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 8px 16px; border-top: 1px solid var(--color-rule-2); background: var(--color-paper-2);
+}
+[data-iii-ui="database"] .db-sql-warn { font-size: 11px; color: var(--color-warn); }
+[data-iii-ui="database"] .db-sql-meta { margin-left: auto; font-size: 11px; color: var(--color-ink-faint); font-variant-numeric: tabular-nums; }
+[data-iii-ui="database"] .db-sql-history { border-top: 1px solid var(--color-rule-2); max-height: 160px; overflow-y: auto; }
+[data-iii-ui="database"] .db-sql-history-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 16px;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="database"] .db-sql-history-row:last-child { border-bottom: 0; }
+[data-iii-ui="database"] .db-sql-history-row:hover { background: color-mix(in oklab, var(--color-paper-2) 60%, transparent); }
+[data-iii-ui="database"] .db-sql-history-pick {
+  appearance: none; background: transparent; border: 0; cursor: pointer; flex: 1; min-width: 0;
+  text-align: left; font: inherit; font-size: 11.5px; color: var(--color-ink-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+[data-iii-ui="database"] .db-sql-history-pick:hover { color: var(--color-ink); }
+[data-iii-ui="database"] .db-sql-results { flex: 1; overflow: auto; max-height: 55vh; min-height: 0; }
+[data-iii-ui="database"] .db-sql-placeholder { padding: 16px; font-size: 12px; color: var(--color-ink-ghost); text-transform: lowercase; }
+
+@media (max-width: 720px) {
+  [data-iii-ui="database"] .db-body { grid-template-columns: minmax(0, 1fr); }
+  [data-iii-ui="database"] .db-data { flex-direction: column; }
+  [data-iii-ui="database"] .db-rowdetail { width: auto; border-left: 0; border-top: 1px solid var(--color-rule); }
+}

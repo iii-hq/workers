@@ -385,9 +385,8 @@
         "description": "`message` is either a plain string (sugar for a user text message) or a full `AgentMessage`."
       },
       "Mode": {
-        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt.",
+        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt. `ask` is also structural: the turn's dispatch policy is capped at the configured default policy, never widened.",
         "enum": [
-          "plan",
           "ask",
           "agent"
         ],
@@ -445,7 +444,7 @@
                 "type": "null"
               }
             ],
-            "description": "Intersected with the parent policy — narrow, never escalate."
+            "description": "Intersected with the parent policy — narrow, never escalate. An `ask`-mode child is further capped at the configured default policy."
           },
           "max_children": {
             "description": "Fan-out guard for the child's own spawns.",
@@ -456,8 +455,17 @@
               "null"
             ]
           },
+          "max_output_tokens": {
+            "description": "Inherits the parent's ceiling unless explicitly narrowed/overridden.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "max_turns": {
-            "description": "Capped at the parent's remaining turn budget.",
+            "description": "Capped at the parent's remaining turn budget. Omit unless a strict child-specific cap is required. It must cover discovery/contract calls plus every work call; very small values (for example 2-3) commonly strand the child before it can produce its deliverable.",
             "format": "uint32",
             "minimum": 0.0,
             "type": [
@@ -499,7 +507,7 @@
               }
             ],
             "default": "enrich",
-            "description": "How `system_prompt` combines with the built-in prompt: `override` replaces it; `enrich` (default) appends to it."
+            "description": "How `system_prompt` combines with the built-in prompt: `override` replaces it; `enrich` (default) appends to it; `disabled` omits it."
           },
           "thinking_level": {
             "anyOf": [
@@ -538,6 +546,13 @@
             "description": "Caller prompt is appended to the built-in identity prompt.",
             "enum": [
               "enrich"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No system prompt is sent to the model.",
+            "enum": [
+              "disabled"
             ],
             "type": "string"
           }
@@ -694,7 +709,7 @@
             "$ref": "#/definitions/MessageInput"
           }
         ],
-        "description": "The child's goal — its opening user message."
+        "description": "The child's self-contained goal — its opening user message. Include every resolved required selector literally (for example `Use database db: \"primary\"`); the child cannot infer resources from the parent."
       }
     },
     "required": [

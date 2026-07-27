@@ -48,6 +48,12 @@ in the next step's payload at `into` (default "/value"). Pure transforms run inl
 getOr, flatten, sortBy, reverse, when}` with lodash
 semantics — their input arrives at `value`, and what they thread onward is the transformed
 value itself (the `{value}` wrapper appears only on direct calls, never between steps).
+Transform args beyond `value` (no schema lookup needed): get{path} getOr{path,default}
+pick/omit{paths} take/drop{n} nth{n, -1=last} map{path} filter{matches: partial object}
+split/join{separator} sortBy{path} when{path?,op,to?} — the rest take only `value`.
+Producer responses are OBJECTS (search: {content_matches,path_matches}, grep: {matches},
+exec: {stdout,…}, fetch: {content,…}) — `fp::get` the array/string field out before
+reshaping it.
 Producer steps too: `state::get` in a pipe hands the stored value onward BARE — never follow
 it with `fp::get { path: "/value" }`; state::get's response IS the stored value (the `{value}`
 wrapper is the transforms' direct-call shape, never a producer's).
@@ -76,7 +82,12 @@ fails cheaply, naming the keys that WERE available). Plan ONE pipe per outcome: 
 fields in the final step's payload plus `into` compose the stored shape in place — ending in
 { function: "state::set", payload: { scope, key, value: { url } }, into: "/value/content" }
 stores { url, content } in one step; don't store, inspect, re-store.
-`shell::*`/`coder::*`, trigger-control, session/approval, credential/config, LLM-routing, and
+`shell::*`/`coder::*` steps work in a pipe and run under the session's filesystem scope —
+the pattern for bulk code results: `coder::search` → `fp::get {path:"/content_matches"}` →
+`fp::map {path:"/path"}` → `fp::uniq` → `state::set`, one call, nothing through the chat.
+Caveat: a path-access rejection inside a pipe just fails
+the step — only a DIRECT call offers the access-grant prompt.
+Trigger-control, session/approval, credential/config, LLM-routing, and
 turn-control steps are excluded — call those directly."#;
 
 /// The slice of the `pre_generate` hook envelope we read (lenient: ignores
@@ -256,7 +267,11 @@ mod tests {
             "engine::functions::info",
             "ONE pipe per outcome",
             "into: \"/value/content\"",
-            "`shell::*`/`coder::*`",
+            "`shell::*`/`coder::*` steps work in a pipe",
+            "only a DIRECT call offers the access-grant prompt",
+            "no schema lookup needed",
+            "Producer responses are OBJECTS",
+            "fp::get {path:\"/content_matches\"}",
         ] {
             assert!(GUIDANCE.contains(needle), "missing: {needle}");
         }

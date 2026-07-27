@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-state"
-version = "0.21.2"
+version = "0.21.3"
 edition = "2024"
 description = "State worker for iii — key-value state with reactive change triggers (state trigger type, state::* functions)"
 license = "Apache-2.0"
@@ -22,6 +22,9 @@ iii-sdk = "=0.21.6"
 # UpdateOp / StreamSetResult / StreamUpdateResult / UpdateOpError / MergePath —
 # the exact types the builtin used; pinned to the version iii-sdk resolves.
 iii-helpers = "=0.21.6"
+# Worker-side injectable console UI (content function + console:script/style
+# triggers + hot-reload watcher) — direct link, never published.
+iii-console-ui = { path = "../crates/console-ui" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs"] }
 serde = { version = "1", features = ["derive"] }

@@ -40,7 +40,7 @@ if (!prism.languages.json) {
    strongest ink, structural punctuation fades to `ink-ghost`, and the single
    tonal hit is the hot orange `accent` reserved for literals (numbers,
    booleans, null) so the eye lands on the values that actually matter. */
-const jsonTheme: PrismTheme = {
+export const syntaxTheme: PrismTheme = {
   plain: { color: 'var(--color-ink)' },
   styles: [
     { types: ['property'], style: { color: 'var(--color-ink)' } },
@@ -64,7 +64,7 @@ const jsonTheme: PrismTheme = {
    Registered alongside JSON above so `CodeHighlight` can highlight
    `sandbox::run` / `fs::read` payloads without pulling in `prismjs`.
    Grammars taken verbatim from prismjs/components, trimmed to the
-   tokens our `jsonTheme` actually styles (the unstyled tokens render
+   tokens our `syntaxTheme` actually styles (the unstyled tokens render
    as plain `var(--color-ink)`). */
 if (!prism.languages.python) {
   prism.languages.python = {
@@ -152,7 +152,7 @@ interface CodeHighlightProps {
 
 /**
  * Generic Prism-driven highlight sibling to `JsonHighlight`. Same
- * `bg-bg / font-mono / text-[12.5px]` chrome, same `jsonTheme` token
+ * `bg-bg / font-mono / text-[12.5px]` chrome, same `syntaxTheme` token
  * palette (so multi-language blocks visually compose with JSON blocks
  * in the same surface). Unknown languages render as plain text without
  * crashing; the language id passes straight to Prism.
@@ -164,7 +164,12 @@ export function CodeHighlight({
   wrap,
 }: CodeHighlightProps) {
   return (
-    <Highlight prism={Prism} theme={jsonTheme} language={language} code={code}>
+    <Highlight
+      prism={Prism}
+      theme={syntaxTheme}
+      language={language}
+      code={code}
+    >
       {({ tokens, getLineProps, getTokenProps, className: hlClass, style }) => (
         <pre
           className={cn(
@@ -199,7 +204,7 @@ export function CodeHighlight({
 
 export function JsonHighlight({ code, className, wrap }: JsonHighlightProps) {
   return (
-    <Highlight prism={Prism} theme={jsonTheme} language="json" code={code}>
+    <Highlight prism={Prism} theme={syntaxTheme} language="json" code={code}>
       {({ tokens, getLineProps, getTokenProps, className: hlClass, style }) => (
         <pre
           className={cn(

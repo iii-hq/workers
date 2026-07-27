@@ -1,5 +1,6 @@
 //! `database::transaction` — atomic sequence of statements.
 
+use super::tx_sql_guard::is_transaction_control_sql;
 use super::AppState;
 use crate::driver::{self, Isolation, TxStatement};
 use crate::handlers::query::err_to_str;
@@ -11,7 +12,10 @@ use serde_json::{json, Value};
 
 #[derive(Deserialize, JsonSchema)]
 pub struct TxReq {
-    pub db: String,
+    /// Logical database name. Optional — omitting it targets the sole
+    /// configured database, or `primary` when several are configured.
+    #[serde(default)]
+    pub db: Option<String>,
     pub statements: Vec<TxStmtReq>,
     #[serde(default)]
     pub isolation: Option<String>,
@@ -25,13 +29,13 @@ pub struct TxStmtReq {
     pub params: Vec<Value>,
 }
 
-#[derive(Serialize, JsonSchema)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct TxStepResp {
     pub affected_rows: u64,
     pub rows: Vec<Vec<Value>>,
 }
 
-#[derive(Serialize, JsonSchema)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct TxResp {
     pub committed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,7 +59,8 @@ fn failed_index_of(e: &crate::error::DbError) -> Option<usize> {
 }
 
 pub async fn handle(state: &AppState, req: TxReq) -> Result<TxResp, String> {
-    let pool = state.pool(&req.db).await.map_err(err_to_str)?;
+    let db = state.resolve_db(req.db).await.map_err(err_to_str)?;
+    let pool = state.pool(&db).await.map_err(err_to_str)?;
 
     let isolation = match req.isolation.as_deref() {
         Some("read_committed") => Some(Isolation::ReadCommitted),
@@ -71,7 +76,28 @@ pub async fn handle(state: &AppState, req: TxReq) -> Result<TxResp, String> {
     };
 
     let mut stmts: Vec<TxStatement> = Vec::with_capacity(req.statements.len());
-    for s in req.statements {
+    for (i, s) in req.statements.into_iter().enumerate() {
+        // Same handler-boundary guards as the interactive surface
+        // (transaction_execute.rs): drivers diverge on empty SQL (postgres
+        // no-ops, sqlite/mysql error), and embedded transaction-control SQL
+        // would finalize the worker-managed transaction mid-batch, silently
+        // breaking the atomicity contract while reporting committed:false.
+        if s.sql.trim().is_empty() {
+            return Err(err_to_str(crate::error::DbError::InvalidParam {
+                index: i,
+                reason: "empty SQL statement".into(),
+            }));
+        }
+        if is_transaction_control_sql(&s.sql) {
+            return Err(err_to_str(crate::error::DbError::InvalidParam {
+                index: i,
+                reason: "transaction-control SQL (BEGIN/START TRANSACTION/COMMIT/ROLLBACK/\
+                        SAVEPOINT/RELEASE/END/SET TRANSACTION, including comment-prefixed \
+                        forms) is not allowed inside an atomic batch; the worker issues \
+                        BEGIN/COMMIT/ROLLBACK itself"
+                    .into(),
+            }));
+        }
         let params = JsonParam::from_json_slice(&s.params).map_err(err_to_str)?;
         stmts.push(TxStatement { sql: s.sql, params });
     }
@@ -184,7 +210,10 @@ mod tests {
 
         // Non-DriverError variants → None
         assert_eq!(
-            failed_index_of(&crate::error::DbError::UnknownDb { db: "x".into() }),
+            failed_index_of(&crate::error::DbError::UnknownDb {
+                db: "x".into(),
+                available: vec![]
+            }),
             None
         );
         assert_eq!(
@@ -297,5 +326,41 @@ mod tests {
         assert!(v.get("results").is_none());
         assert!(v.get("failed_index").is_some());
         assert!(v.get("error").is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tx_rejects_transaction_control_sql_with_statement_index() {
+        let st = state();
+        let err = handle(
+            &st,
+            tx_req(json!({
+                "db": "primary",
+                "statements": [
+                    {"sql": "INSERT INTO t VALUES (1)"},
+                    {"sql": "COMMIT"},
+                ]
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("INVALID_PARAM"), "got: {err}");
+        assert!(err.contains("transaction-control"), "got: {err}");
+        assert!(err.contains("\"index\":1"), "got: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tx_rejects_empty_statement() {
+        let st = state();
+        let err = handle(
+            &st,
+            tx_req(json!({
+                "db": "primary",
+                "statements": [{"sql": "   "}]
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("INVALID_PARAM"), "got: {err}");
+        assert!(err.contains("empty SQL"), "got: {err}");
     }
 }

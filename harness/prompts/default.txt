@@ -111,7 +111,6 @@ you to run without an explicit agent_trigger from this session's caller.
   policy denies, the task has FAILED — make the FIRST line of your final reply
   `FAILED: <function> is denied by policy; needed to <purpose>`, partial results after
   it.
-- Never use `curl` for HTTP calls, even localhost.
 
 # Final checklist
 

@@ -36,12 +36,15 @@ pub const PIPE_DESC: &str =
      {function:'fp::get', payload:{path:'/content'}}, \
      {function:'fp::take', payload:{n:20000}}, \
      {function:'state::set', payload:{scope,key}}]. Returns per-step sizes and a preview, not \
-     the value.";
+     the value. shell::*/coder::* steps run under the session's harness-stamped filesystem \
+     scope; without one (no working directory, or a non-harness caller) they are refused — \
+     call them directly instead.";
 
-/// ponytail: v1 ceilings — no shell/coder steps (they need the harness
-/// fs_scope stamp), no nested pipes, no trigger-control or session/approval
-/// steps, and a held (approval) release re-runs steps from scratch is
-/// unsupported: the pipe call itself is what approvers review.
+/// ponytail: remaining ceilings — no nested pipes, no trigger-control or
+/// session/approval steps, 120s per bus step, and a held (approval) release
+/// re-runs steps from scratch is unsupported: the pipe call itself is what
+/// approvers review. shell::*/coder::* steps ride the harness-forwarded
+/// fs_scope stamp (see `bus_step_args`) and are refused without one.
 const MAX_STEPS: usize = 12;
 const DEFAULT_PREVIEW_CHARS: usize = 400;
 /// Hard cap on `preview_chars`: the receipt is a glimpse (or a slice to
@@ -68,6 +71,14 @@ pub struct PipeRequest {
     /// 8000).
     #[serde(default)]
     pub preview_chars: Option<u32>,
+    // Trusted filesystem scope stamped by the harness onto the pipe call
+    // (harness/src/filesystem_scope.rs); forwarded opaquely onto each scoped
+    // step by `bus_step_args`. Never model-supplied: the harness overwrites or
+    // strips it before dispatch. (`//` on purpose — a `///` doc comment would
+    // publish this plumbing field in the fp::pipe schema.)
+    #[serde(default)]
+    #[schemars(skip)]
+    pub fs_scope: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -109,17 +120,36 @@ pub struct PipeResponse {
     pub short_circuited: bool,
 }
 
+/// Mirror of harness `filesystem_scope::is_scoped_function` — keep
+/// byte-identical, or a function the harness stamps but fp doesn't (or vice
+/// versa) becomes a scope gap. `shell::filesystem::*` is the unscoped
+/// control plane on both sides.
+fn is_scoped_step(function_id: &str) -> bool {
+    (function_id.starts_with("shell::") && !function_id.starts_with("shell::filesystem::"))
+        || function_id.starts_with("coder::")
+}
+
 /// Step functions a pipe refuses. Steps run with THIS worker's authority, so
 /// every class the agent policy hard-denies (iii-permissions.yaml) must be
 /// refused here too — an allowlisted or approve-always `fp::pipe` would
 /// otherwise be a standing policy bypass. `state::*` is the deliberate
 /// exception: persisting the threaded value is the pipe's purpose, and the
-/// pipe call itself is the approval surface an approver reviews.
+/// pipe call itself is the approval surface an approver reviews. Note that
+/// the same reasoning makes allowlisting `fp::pipe` grant un-approved
+/// shell::*/coder::* execution (scoped steps, gated in `validate`) — the
+/// pipe must stay needs_approval. Residual, accepted: an rbac boundary that
+/// exposes fp::pipe while denying shell::* could launder a scope through a
+/// non-harness call; shell-side caller verification is tracked follow-up.
 fn forbidden_step(function_id: &str) -> Option<&'static str> {
-    if (function_id.starts_with("shell::") && !function_id.starts_with("shell::filesystem::"))
-        || function_id.starts_with("coder::")
-    {
-        return Some("filesystem-scoped functions (shell::*/coder::*) are not supported in a pipe — call them directly");
+    // Shell control-plane ids sit inside the scoped shell::* prefix but are
+    // NOT session tools: config-status is agent-policy hard-denied (it can
+    // surface operator paths) and workspace::* is console picker plumbing —
+    // both ignore fs_scope, so the stamp gate below would admit them.
+    if function_id == "shell::config-status" || function_id.starts_with("shell::workspace::") {
+        return Some(
+            "shell control-plane functions are not supported in a pipe — steps run with \
+             worker authority, which would bypass the agent-level deny on them",
+        );
     }
     if function_id == PIPE_ID {
         return Some(
@@ -187,6 +217,33 @@ pub fn validate(req: &PipeRequest) -> Result<(), String> {
         if let Some(reason) = forbidden_step(&step.function) {
             return Err(format!("step {} ({}): {reason}", i + 1, step.function));
         }
+        if is_scoped_step(&step.function) {
+            if req.fs_scope.is_none() {
+                return Err(format!(
+                    "step {} ({}): filesystem-scoped steps (shell::*/coder::*) run only under a \
+                     harness-stamped filesystem scope, and this call carries none (no session \
+                     working directory, or a non-harness caller) — call the function directly",
+                    i + 1,
+                    step.function
+                ));
+            }
+            // Loud static refusal beats a silent overwrite by the stamp in
+            // `bus_step_args` — the pointer can only be a mistake or an attack.
+            let first_token = step
+                .into
+                .as_deref()
+                .and_then(|p| p.strip_prefix('/'))
+                .and_then(|p| p.split('/').next())
+                .map(|t| t.replace("~1", "/").replace("~0", "~"));
+            if first_token.as_deref() == Some("fs_scope") {
+                return Err(format!(
+                    "step {} ({}): `into` must not target `fs_scope` — that field is \
+                     harness-stamped, never threaded",
+                    i + 1,
+                    step.function
+                ));
+            }
+        }
     }
     // Fail fast on an unseeded leading transform (live-tested trap: serde's
     // bare "missing field `value`" taught nothing). Only our own transforms
@@ -250,6 +307,30 @@ fn inject(payload: Value, pointer: &str, value: Value) -> Result<Value, String> 
     let map = cursor.as_object_mut().expect("object cursor");
     map.insert(parts[parts.len() - 1].clone(), value);
     Ok(root)
+}
+
+/// Dispatch-ready args for a bus step. The trusted scope stamps LAST — after
+/// `into` threading — so nothing authored or threaded survives at `/fs_scope`
+/// on a scoped step (full key replace: subkeys can't survive either).
+/// Non-scoped steps pass through untouched — the scope must not leak to
+/// arbitrary workers.
+fn bus_step_args(
+    function_id: &str,
+    args: Value,
+    fs_scope: Option<&Value>,
+) -> Result<Value, String> {
+    if !is_scoped_step(function_id) {
+        return Ok(args);
+    }
+    // unreachable after validate(); fail closed anyway
+    let Some(scope) = fs_scope else {
+        return Err("filesystem-scoped step without a harness fs_scope stamp".into());
+    };
+    let Value::Object(mut map) = args else {
+        return Err("a filesystem-scoped step's payload must be an object".into());
+    };
+    map.insert("fs_scope".into(), scope.clone());
+    Ok(Value::Object(map))
 }
 
 /// Requested preview length, clamped to [0, MAX_PREVIEW_CHARS].
@@ -355,15 +436,21 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
 
         let value = match util::apply(&step.function, &args) {
             Some(result) => result.map_err(|msg| step_error(i, &step.function, &msg, &receipts))?,
-            None => iii
-                .trigger(TriggerRequest {
+            None => {
+                // SECURITY: the stamp must be the LAST write to args before
+                // dispatch — after `into` threading above — or a threaded
+                // value at /fs_scope would reach the shell worker as trusted.
+                let args = bus_step_args(&step.function, args, req.fs_scope.as_ref())
+                    .map_err(|msg| step_error(i, &step.function, &msg, &receipts))?;
+                iii.trigger(TriggerRequest {
                     function_id: step.function.clone(),
                     payload: args,
                     action: None,
                     timeout_ms: Some(STEP_TIMEOUT_MS),
                 })
                 .await
-                .map_err(|e| step_error(i, &step.function, &e.to_string(), &receipts))?,
+                .map_err(|e| step_error(i, &step.function, &e.to_string(), &receipts))?
+            }
         };
 
         receipts.push(StepReceipt {
@@ -483,11 +570,12 @@ mod tests {
         .unwrap_err()
         .contains("pick"));
 
-        // scoped / control / nested / worker-authority steps are refused with
-        // a reason — mirroring every agent-policy hard-denied class
+        // control / nested / worker-authority steps are refused with a
+        // reason — mirroring every agent-policy hard-denied class
         // (iii-permissions.yaml), state::* excepted on purpose
         for (function, needle) in [
-            ("shell::exec", "filesystem-scoped"),
+            ("shell::config-status", "control-plane"),
+            ("shell::workspace::roots", "control-plane"),
             ("fp::pipe", "nest"),
             ("engine::register_trigger", "trigger control"),
             ("session::append", "worker"),
@@ -520,6 +608,112 @@ mod tests {
 
         let empty = parse(json!({ "through": [] })).unwrap();
         assert!(validate(&empty).is_err());
+    }
+
+    fn scope() -> Value {
+        json!({ "root": "/work/session-7", "grants": [], "boundary": "workspace" })
+    }
+
+    #[test]
+    fn scoped_steps_require_the_harness_stamp() {
+        // no stamp (cron / worker-to-worker / no working directory) → refused,
+        // teachably: names the stamp and points at direct calls
+        for function in ["shell::exec", "coder::search", "shell::fs::grep"] {
+            let req = parse(json!({ "through": [{ "function": function }] })).unwrap();
+            let err = validate(&req).unwrap_err();
+            assert!(err.contains("harness-stamped"), "{function}: {err}");
+            assert!(err.contains("call the function directly"), "{function}");
+        }
+
+        // with the stamp, the motivating pipeline is accepted
+        let req = parse(json!({
+            "fs_scope": scope(),
+            "through": [
+                { "function": "coder::search", "payload": { "query": "TODO" } },
+                { "function": "fp::map", "payload": { "path": "/path" } },
+                { "function": "state::set", "payload": { "scope": "s", "key": "k" } },
+            ],
+        }))
+        .unwrap();
+        assert!(validate(&req).is_ok());
+
+        // the shell::filesystem::* control plane stays unscoped on both sides
+        // (harness is_scoped_function parity) — allowed with no stamp
+        let req = parse(json!({ "through": [
+            { "function": "shell::filesystem::validate", "payload": { "path": "/p" } },
+        ]}))
+        .unwrap();
+        assert!(validate(&req).is_ok());
+
+        // `into` aimed at /fs_scope (or below) is an attack or a mistake —
+        // statically refused, never silently overwritten
+        for into in ["/fs_scope", "/fs_scope/root"] {
+            let req = parse(json!({
+                "fs_scope": scope(),
+                "through": [
+                    { "function": "state::get", "payload": { "scope": "s", "key": "k" } },
+                    { "function": "shell::exec", "into": into,
+                      "payload": { "command": "ls" } },
+                ],
+            }))
+            .unwrap();
+            assert!(validate(&req).unwrap_err().contains("fs_scope"), "{into}");
+        }
+    }
+
+    #[test]
+    fn bus_step_args_stamps_last_and_overwrites_forgeries() {
+        let trusted = scope();
+
+        // scoped step gets the trusted scope
+        let out = bus_step_args("shell::exec", json!({ "command": "ls" }), Some(&trusted)).unwrap();
+        assert_eq!(out, json!({ "command": "ls", "fs_scope": trusted }));
+
+        // a forged literal fs_scope in the authored payload is REPLACED whole
+        let out = bus_step_args(
+            "coder::search",
+            json!({ "query": "q", "fs_scope": { "root": "/", "grants": ["/"] } }),
+            Some(&trusted),
+        )
+        .unwrap();
+        assert_eq!(out, json!({ "query": "q", "fs_scope": trusted }));
+
+        // ordering proof: even a value threaded to /fs_scope by inject() (the
+        // vector validate() also refuses) loses to the stamp, because the
+        // stamp runs after threading
+        let threaded = inject(
+            json!({ "command": "ls" }),
+            "/fs_scope",
+            json!({ "root": "/", "boundary": "configured_roots" }),
+        )
+        .unwrap();
+        let out = bus_step_args("shell::exec", threaded, Some(&trusted)).unwrap();
+        assert_eq!(out, json!({ "command": "ls", "fs_scope": trusted }));
+
+        // fail closed: no stamp, or a non-object payload
+        assert!(bus_step_args("shell::exec", json!({}), None)
+            .unwrap_err()
+            .contains("without a harness fs_scope stamp"));
+        assert!(bus_step_args("shell::exec", json!("ls"), Some(&trusted))
+            .unwrap_err()
+            .contains("must be an object"));
+
+        // non-scoped steps pass through untouched — the scope must not leak
+        let args = json!({ "scope": "s", "key": "k" });
+        assert_eq!(
+            bus_step_args("state::set", args.clone(), Some(&trusted)).unwrap(),
+            args
+        );
+        assert_eq!(
+            bus_step_args("state::set", args.clone(), None).unwrap(),
+            args
+        );
+
+        // predicate mirror spot-checks (harness is_scoped_function parity)
+        assert!(is_scoped_step("shell::exec"));
+        assert!(is_scoped_step("coder::fs::read"));
+        assert!(!is_scoped_step("shell::filesystem::validate"));
+        assert!(!is_scoped_step("state::set"));
     }
 
     #[test]

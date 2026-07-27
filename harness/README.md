@@ -169,8 +169,14 @@ embedded minimal sub-agent identity
 named state destination, stop — with spawn `options.system_prompt` as the
 escape hatch.
 
-An optional `mode` (`plan` | `ask` | `agent`) prepends a short operating-mode
-paragraph. A non-empty `options.system_prompt` is combined with the built-in
+An optional `mode` (`ask` | `agent`) prepends a short operating-mode
+paragraph; `ask` is also enforced structurally — the dispatch policy of an
+ask-mode send (a steer's inherited one, and an ask-mode spawned child's
+resolved one) is capped at the configured default policy (`default_functions`).
+The cap applies to a NEW turn; a steer folded into an already-running turn
+keeps that turn's frozen policy until it finalises.
+
+A non-empty `options.system_prompt` is combined with the built-in
 prompt per `options.system_prompt_strategy`: `enrich` (default) appends it to
 the built-in prompt, while `override` uses it verbatim. Assembly is tested in
 [`src/prompt/tests.rs`](src/prompt/tests.rs); provider-specific prompt bodies

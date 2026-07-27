@@ -26,7 +26,7 @@ export function getDockSignal(
   if (!active || active.messages.length === 0) return null
 
   for (const m of active.messages) {
-    if (m.role === 'function-call' && m.pendingApproval) return 'active'
+    if (m.role === 'function-trigger' && m.pendingApproval) return 'active'
   }
 
   const last = active.messages[active.messages.length - 1]
@@ -34,7 +34,7 @@ export function getDockSignal(
 
   if (last.role === 'assistant' && last.streaming) return 'active'
   if (last.role === 'thought' && last.streaming) return 'active'
-  if (last.role === 'function-call' && last.running) return 'active'
+  if (last.role === 'function-trigger' && last.running) return 'active'
   if (last.role === 'system') {
     if (last.tone === 'error') return 'error'
     if (last.tone === 'warn') return 'attention'

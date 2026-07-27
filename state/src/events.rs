@@ -13,9 +13,20 @@ use crate::structs::StateEventData;
 use crate::trigger::{TriggerTable, matches};
 
 /// Abstracts `iii.trigger` so fan-out is unit-testable without an engine.
+///
+/// `metadata` is the binding's registration metadata, delivered as the
+/// fire-time sidecar (engine `fire_triggers` parity: `call_with_metadata`).
+/// Handlers like `harness::react` / `harness::notify_agent` resolve which
+/// reaction or subscription fired from it and no-op without it, so a plain
+/// call here silently kills every state-triggered reaction.
 #[async_trait::async_trait]
 pub trait Invoker: Send + Sync + 'static {
-    async fn call(&self, function_id: &str, payload: Value) -> Result<Value, String>;
+    async fn call(
+        &self,
+        function_id: &str,
+        payload: Value,
+        metadata: Option<Value>,
+    ) -> Result<Value, String>;
 }
 
 pub struct SdkInvoker {
@@ -24,16 +35,23 @@ pub struct SdkInvoker {
 
 #[async_trait::async_trait]
 impl Invoker for SdkInvoker {
-    async fn call(&self, function_id: &str, payload: Value) -> Result<Value, String> {
-        self.iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: None,
-                timeout_ms: None,
-            })
-            .await
-            .map_err(|e| e.to_string())
+    async fn call(
+        &self,
+        function_id: &str,
+        payload: Value,
+        metadata: Option<Value>,
+    ) -> Result<Value, String> {
+        let request = TriggerRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: None,
+            timeout_ms: None,
+        };
+        match metadata {
+            Some(m) => self.iii.trigger(request.metadata(m)).await,
+            None => self.iii.trigger(request).await,
+        }
+        .map_err(|e| e.to_string())
     }
 }
 
@@ -50,7 +68,7 @@ pub async fn fan_out(
     }
 
     // Collect matching bindings, releasing the lock before spawning.
-    let matched: Vec<(String, Option<String>)> = {
+    let matched: Vec<(String, Option<String>, Option<Value>)> = {
         let guard = triggers.read().await;
         guard
             .values()
@@ -59,6 +77,7 @@ pub async fn fan_out(
                 (
                     t.function_id.clone(),
                     t.config.condition_function_id.clone(),
+                    t.metadata.clone(),
                 )
             })
             .collect()
@@ -73,11 +92,13 @@ pub async fn fan_out(
     };
 
     tokio::spawn(async move {
-        for (function_id, condition_id) in matched {
+        for (function_id, condition_id, metadata) in matched {
             if let Some(cond) = &condition_id {
                 // condition::check maps: null/no-result -> true, only `false`
                 // blocks; Err -> skip this binding and log (builtin parity).
-                match invoker.call(cond, event_json.clone()).await {
+                // Conditions are plain function calls, not trigger fires — no
+                // sidecar.
+                match invoker.call(cond, event_json.clone(), None).await {
                     Ok(v) if !v.is_null() && v.as_bool() == Some(false) => continue,
                     Ok(_) => {}
                     Err(e) => {
@@ -87,7 +108,10 @@ pub async fn fan_out(
                     }
                 }
             }
-            if let Err(e) = invoker.call(&function_id, event_json.clone()).await {
+            if let Err(e) = invoker
+                .call(&function_id, event_json.clone(), metadata)
+                .await
+            {
                 tracing::error!(function_id = %function_id, error = %e,
                     "Error invoking trigger handler");
             }
@@ -107,7 +131,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingInvoker {
         calls: AtomicUsize,
-        last: tokio::sync::Mutex<Option<(String, serde_json::Value)>>,
+        last: tokio::sync::Mutex<Option<(String, serde_json::Value, Option<serde_json::Value>)>>,
         condition_result: Option<serde_json::Value>,
     }
 
@@ -117,6 +141,7 @@ mod tests {
             &self,
             function_id: &str,
             payload: serde_json::Value,
+            metadata: Option<serde_json::Value>,
         ) -> Result<serde_json::Value, String> {
             if function_id.starts_with("cond::") {
                 return Ok(self
@@ -125,7 +150,7 @@ mod tests {
                     .unwrap_or(serde_json::Value::Null));
             }
             self.calls.fetch_add(1, Ordering::SeqCst);
-            *self.last.lock().await = Some((function_id.to_string(), payload));
+            *self.last.lock().await = Some((function_id.to_string(), payload, metadata));
             Ok(serde_json::Value::Null)
         }
     }
@@ -158,6 +183,7 @@ mod tests {
                 condition_function_id: cond.map(String::from),
             },
             function_id: "backend::on_change".to_string(),
+            metadata: None,
         }
     }
 
@@ -172,12 +198,32 @@ mod tests {
         fan_out(inv.clone(), &t, true, event("orders", "o1")).await;
         settle().await;
         assert_eq!(inv.calls.load(Ordering::SeqCst), 1);
-        let (fid, payload) = inv.last.lock().await.clone().unwrap();
+        let (fid, payload, metadata) = inv.last.lock().await.clone().unwrap();
         assert_eq!(fid, "backend::on_change");
         assert_eq!(payload["type"], "state");
         assert_eq!(payload["event_type"], "state:created");
         assert_eq!(payload["scope"], "orders");
         assert_eq!(payload["key"], "o1");
+        assert!(metadata.is_none(), "binding without metadata fires plain");
+    }
+
+    /// Registration metadata must reach the handler as the fire-time sidecar.
+    /// `harness::react` / `harness::notify_agent` resolve the reaction or
+    /// subscription from it and silently no-op without it — dropping it here
+    /// killed every state-triggered reaction (rctest-x7k2 postmortem).
+    #[tokio::test]
+    async fn fires_with_registration_metadata_sidecar() {
+        let inv = Arc::new(RecordingInvoker::default());
+        let mut e = entry(Some("orders"), Some("change"), None);
+        e.metadata = Some(serde_json::json!({"task": "spawn a reactor", "session_id": "r1"}));
+        let t = table(vec![("t1", e)]);
+        fan_out(inv.clone(), &t, true, event("orders", "change")).await;
+        settle().await;
+        assert_eq!(inv.calls.load(Ordering::SeqCst), 1);
+        let (_, _, metadata) = inv.last.lock().await.clone().unwrap();
+        let m = metadata.expect("registration metadata must be delivered at fire time");
+        assert_eq!(m["task"], "spawn a reactor");
+        assert_eq!(m["session_id"], "r1");
     }
 
     #[tokio::test]

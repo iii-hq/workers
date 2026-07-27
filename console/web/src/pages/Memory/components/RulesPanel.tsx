@@ -1,6 +1,7 @@
 import { Plus, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/Button'
+import { CodeEditor } from '@/components/ui/CodeEditor'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
 import type { MemoryRule } from '@/lib/memory'
@@ -107,18 +108,19 @@ function RuleEditor({
           )}
         </div>
       </div>
-      <textarea
-        value={content}
-        onChange={(e) => {
-          setContent(e.target.value)
-          setTouched(true)
-        }}
-        rows={Math.min(24, Math.max(4, content.split('\n').length + 1))}
-        spellCheck={false}
-        aria-label={`rule ${name}`}
-        className="w-full bg-bg text-ink font-mono text-[13px] leading-relaxed p-3 outline-none resize-y placeholder:text-ink-ghost"
-        placeholder="empty the content and save to remove this rule (asks to confirm)"
-      />
+      <div className="max-h-[480px] overflow-auto">
+        <CodeEditor
+          value={content}
+          onChange={(next) => {
+            setContent(next)
+            setTouched(true)
+          }}
+          language="markdown"
+          aria-label={`rule ${name}`}
+          className="min-h-24"
+          placeholder="empty the content and save to remove this rule (asks to confirm)"
+        />
+      </div>
     </div>
   )
 }

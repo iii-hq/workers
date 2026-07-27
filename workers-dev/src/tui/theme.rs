@@ -12,6 +12,12 @@ pub fn engine_url_style() -> Style {
     muted_cell_style()
 }
 
+/// Branch badge in the header. Magenta so the one identifying detail that
+/// differs between instances doesn't blend into the cyan title or dim URL.
+pub fn branch_style() -> Style {
+    Style::default().fg(Color::Magenta)
+}
+
 pub fn footer_style() -> Style {
     muted_cell_style()
 }

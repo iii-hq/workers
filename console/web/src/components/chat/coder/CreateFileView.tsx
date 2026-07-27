@@ -16,6 +16,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/Tooltip'
 import { CoderNewFilePreview, CoderOverwritePreview } from './CoderDiff'
+import { OpenInEditorButton } from './OpenInEditorButton'
 import {
   createFileRequestSchema,
   createFileResponseSchema,
@@ -99,6 +100,7 @@ export function CreateFileView({
                 <span className="font-mono text-[12px] text-ink">
                   {file.path}
                 </span>
+                <OpenInEditorButton path={result.path} />
               </div>
               {file.overwrite ? (
                 <CoderOverwritePreview

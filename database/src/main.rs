@@ -7,6 +7,7 @@ use database::handlers::{
     begin_transaction::{self, BeginTxReq},
     commit_transaction::{self, CommitTxReq},
     execute::{self, ExecuteReq},
+    execute_batch::{self, ExecuteBatchReq},
     list_databases::{self, ListDatabasesReq},
     prepare::{self, PrepareReq},
     query::{self, QueryReq},
@@ -56,13 +57,15 @@ async fn main() -> Result<()> {
         "starting"
     );
 
-    let iii = register_worker(
+    // Arc-wrapped for `ui::register` (the console-ui crate clones the client
+    // into its hot-reload watcher task); everything else auto-derefs.
+    let iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {
             otel: Some(OtelConfig::default()),
             ..Default::default()
         },
-    );
+    ));
 
     let seed = match &cli.config {
         Some(path) => match WorkerConfig::from_file(path) {
@@ -139,6 +142,24 @@ async fn main() -> Result<()> {
                 }
             })
             .description("Run a write statement (INSERT/UPDATE/DELETE/DDL)."),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::executeBatch",
+            RegisterFunction::new_async(move |req: ExecuteBatchReq| {
+                let st = st.clone();
+                async move {
+                    execute_batch::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            })
+            .description(
+                "Run an ordered batch of SQL statements atomically (bare strings or \
+                 {sql, params} objects); rolls back on first failure.",
+            ),
         );
     }
     {
@@ -296,8 +317,12 @@ async fn main() -> Result<()> {
     configuration::register_config_trigger(&iii, state.clone())
         .context("registering configuration change trigger")?;
 
+    // Injectable console UI (function-trigger renderer) — after the
+    // database::* functions so the console can attribute the assets.
+    database::ui::register(&iii);
+
     tracing::info!(
-        "database worker registered 12 functions and 1 trigger type, waiting for invocations"
+        "database worker registered 13 functions and 1 trigger type, waiting for invocations"
     );
     wait_for_shutdown_signal().await?;
     tracing::info!("database worker shutting down");

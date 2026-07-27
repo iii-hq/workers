@@ -5,6 +5,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 // component spec sheet + streaming playground moved to Storybook, so the
 // routed views are `traces`, `workers`, `worktrees`, `browser`, and
 // `configuration`.
+// `ext` is the injectable-UI prefix: worker-contributed pages route at
+// `#/ext/<page-id>` — deliberately outside the first-party names so an
+// injected page can never collide with or shadow `#/traces`, `#/workers`, ….
 export type View =
   | 'configuration'
   | 'traces'
@@ -13,6 +16,7 @@ export type View =
   | 'browser'
   | 'memory'
   | 'github'
+  | 'ext'
 
 export interface WorkersConfigurationRoute {
   configurationId: string | null
@@ -104,6 +108,9 @@ function routeFromHash(hash: string): View | null {
   if (hash === '#/browser' || hash.startsWith('#/browser/')) {
     return 'browser'
   }
+  if (hash.startsWith('#/ext/')) {
+    return 'ext'
+  }
   if (hash === '#/configuration/workers') {
     return 'workers'
   }
@@ -138,6 +145,11 @@ function hashFor(view: View): string {
       return '#/github'
     case 'configuration':
       return '#/configuration'
+    // `ext` needs a page id; navigation to a specific extension page goes
+    // through `hashForExtPage`. A bare `#/ext/` resolves to no page and the
+    // Ext view falls back to the default view.
+    case 'ext':
+      return '#/ext/'
   }
 }
 
@@ -176,6 +188,48 @@ function replaceHash(targetHash: string) {
     '',
     `${window.location.pathname}${window.location.search}${targetHash}`,
   )
+}
+
+const EXT_HASH_PREFIX = '#/ext/'
+
+/** `#/ext/<page-id>` -> the page id, or null for anything else. */
+export function extPageFromHash(hash: string): string | null {
+  if (!hash.startsWith(EXT_HASH_PREFIX)) return null
+  const segment = hash
+    .slice(EXT_HASH_PREFIX.length)
+    .split('/')
+    .filter(Boolean)[0]
+  if (!segment) return null
+  return decodeSegment(segment)
+}
+
+export function hashForExtPage(pageId: string): string {
+  return `${EXT_HASH_PREFIX}${encodeURIComponent(pageId)}`
+}
+
+/**
+ * Selected extension page as a hash sub-route, so injected pages deep-link
+ * (`#/ext/<page-id>`) and survive reloads.
+ */
+export function useExtPageRoute(): string | null {
+  const [selected, setSelected] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null
+    return extPageFromHash(window.location.hash)
+  })
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+
+  useEffect(() => {
+    const sync = () => {
+      const next = extPageFromHash(window.location.hash)
+      if (next !== selectedRef.current) setSelected(next)
+    }
+    sync()
+    window.addEventListener('hashchange', sync)
+    return () => window.removeEventListener('hashchange', sync)
+  }, [])
+
+  return selected
 }
 
 const BROWSER_HASH = '#/browser'

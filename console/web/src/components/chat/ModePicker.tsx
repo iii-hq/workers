@@ -1,11 +1,5 @@
 import * as SelectPrimitive from '@radix-ui/react-select'
-import {
-  Check,
-  ChevronDown,
-  ListTodo,
-  MessageSquare,
-  Repeat,
-} from 'lucide-react'
+import { Check, ChevronDown, MessageSquare, Repeat } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { MODES, type Mode } from '@/types/chat'
 
@@ -20,7 +14,6 @@ const MODE_META: Record<
   { icon: typeof Repeat; iconClassName: string; label: string }
 > = {
   agent: { icon: Repeat, iconClassName: 'text-ink-faint', label: 'agent' },
-  plan: { icon: ListTodo, iconClassName: 'text-warn', label: 'plan' },
   ask: { icon: MessageSquare, iconClassName: 'text-ok', label: 'ask' },
 }
 

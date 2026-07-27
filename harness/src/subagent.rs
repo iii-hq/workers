@@ -16,10 +16,13 @@ use crate::functions::spawn::SpawnRequest;
 use crate::ids;
 use crate::policy;
 use crate::prompt;
+use crate::prompt::Mode;
 use crate::trigger::ResultData;
 use crate::types::content::ContentBlock;
 use crate::types::message::AgentMessage;
-use crate::types::turn::{fs_scope_metadata, ParentLink, TurnOptions, TurnRecord, TurnStatus};
+use crate::types::turn::{
+    fs_scope_metadata, FunctionPolicy, ParentLink, TurnOptions, TurnRecord, TurnStatus,
+};
 
 /// The ids of a freshly-seeded child turn.
 pub struct ChildIds {
@@ -124,6 +127,27 @@ pub async fn spawn_child(
     seed_child(deps, &cfg, req, parent, None).await
 }
 
+/// Resolve a child's dispatch policy. An in-turn child inherits the PARENT'S
+/// full policy by default (same permissions as its main agent);
+/// `subset_policy` still forbids escalation and honours an explicit narrower
+/// request. Dumbness is a prompt/data-flow property, not a capability wall — a
+/// child CAN spawn/register, it just shouldn't (subagent.txt). A parentless
+/// (direct/CLI/trigger-fired) spawn has no parent to mirror: explicit options
+/// win, else the configured default policy. Whatever was resolved, an ask-mode
+/// child is then capped at that policy.
+fn child_functions(
+    cfg: &WorkerConfig,
+    parent_record: Option<&TurnRecord>,
+    requested: Option<&FunctionPolicy>,
+    mode: Option<Mode>,
+) -> Option<FunctionPolicy> {
+    let functions = match parent_record {
+        Some(p) => policy::subset_policy(p.options.functions.as_ref(), requested),
+        None => requested.cloned().or_else(|| cfg.default_functions.clone()),
+    };
+    crate::functions::send::clamp_for_mode(cfg, mode, functions)
+}
+
 /// Seed a child session + turn and enqueue its first step. When
 /// `parent_record` is set the policy is subset against it, `max_turns` is
 /// capped at the parent's remaining budget, and linkage metadata is recorded.
@@ -156,20 +180,12 @@ async fn seed_child(
     // escape hatch for a child that genuinely needs a different identity.
     let identity = prompt::SUBAGENT;
 
-    let requested_policy = req.options.as_ref().and_then(|o| o.functions.as_ref());
-    // An in-turn child inherits the PARENT'S full policy by default (same
-    // permissions as its main agent); `subset_policy` still forbids escalation
-    // and honours an explicit narrower request. Dumbness is a prompt/data-flow
-    // property, not a capability wall — a child CAN spawn/register, it just
-    // shouldn't (subagent.txt). A parentless (direct/CLI/trigger-fired) spawn
-    // has no parent to mirror: explicit options win, else the read-only
-    // baseline.
-    let functions = match parent_record {
-        Some(p) => policy::subset_policy(p.options.functions.as_ref(), requested_policy),
-        None => requested_policy
-            .cloned()
-            .or_else(|| cfg.default_functions.clone()),
-    };
+    let functions = child_functions(
+        cfg,
+        parent_record,
+        req.options.as_ref().and_then(|o| o.functions.as_ref()),
+        req.options.as_ref().and_then(|o| o.mode),
+    );
 
     let depth = parent_record.map(|p| p.depth + 1).unwrap_or(0);
     let requested_turns = req
@@ -285,6 +301,17 @@ async fn seed_child(
             ),
             mode: req.options.as_ref().and_then(|o| o.mode),
             max_turns,
+            max_output_tokens: req
+                .options
+                .as_ref()
+                .and_then(|o| o.max_output_tokens)
+                .or_else(|| parent_record.and_then(|p| p.options.max_output_tokens)),
+            // Children cannot widen or replace their root turn's execution
+            // budget; every generation charges the same durable ledger.
+            max_total_tokens: parent_record.and_then(|p| p.options.max_total_tokens),
+            max_cost_usd: parent_record.and_then(|p| p.options.max_cost_usd),
+            budget_root_session_id: parent_record
+                .and_then(|p| p.options.budget_root_session_id.clone()),
             thinking_level: req.options.as_ref().and_then(|o| o.thinking_level),
             provider_options: None,
             output: req
@@ -419,6 +446,10 @@ mod tests {
                 system_prompt: None,
                 mode: None,
                 max_turns: 16,
+                max_output_tokens: None,
+                max_total_tokens: None,
+                max_cost_usd: None,
+                budget_root_session_id: None,
                 thinking_level: None,
                 provider_options: None,
                 output: OutputContract::Text,
@@ -550,5 +581,84 @@ mod tests {
         let err = child_filesystem_scope(Some("relative/dir"), None).unwrap_err();
         assert_eq!(err.code(), "harness/invalid_request");
         assert!(err.to_string().contains("absolute path"));
+    }
+
+    fn broad_policy() -> FunctionPolicy {
+        FunctionPolicy {
+            allow: vec!["*".into()],
+            deny: vec![],
+            expose: Default::default(),
+        }
+    }
+
+    #[test]
+    fn ask_mode_child_is_capped_at_the_default_policy() {
+        let cfg = WorkerConfig::default();
+        let mut parent = parent_record(None);
+        parent.options.functions = Some(broad_policy());
+
+        // Outside ask mode the child inherits the parent's FULL policy.
+        let inherited = child_functions(&cfg, Some(&parent), None, Some(Mode::Agent));
+        assert!(policy::CompiledPolicy::from(inherited.as_ref()).allows("state::set"));
+
+        // An ask-mode child is capped at the wildcard default, whatever it inherited.
+        let asked = child_functions(&cfg, Some(&parent), None, Some(Mode::Ask));
+        let compiled = policy::CompiledPolicy::from(asked.as_ref());
+        assert!(compiled.allows("state::get"));
+        assert!(compiled.allows("state::set"));
+        assert!(compiled.allows("harness::spawn"));
+    }
+
+    #[test]
+    fn ask_mode_keeps_the_narrower_of_parent_and_baseline() {
+        let cfg = WorkerConfig::default();
+        let mut parent = parent_record(None);
+        parent.options.functions = Some(FunctionPolicy {
+            allow: vec!["state::get".into()],
+            deny: vec![],
+            expose: Default::default(),
+        });
+        let asked = child_functions(&cfg, Some(&parent), None, Some(Mode::Ask));
+        let compiled = policy::CompiledPolicy::from(asked.as_ref());
+        assert!(compiled.allows("state::get"));
+        // In the baseline but outside the inherited policy — still denied.
+        assert!(!compiled.allows("state::list"));
+    }
+
+    #[test]
+    fn parentless_ask_child_keeps_the_default_policy() {
+        let cfg = WorkerConfig::default();
+        let f = child_functions(&cfg, None, None, Some(Mode::Ask));
+        let compiled = policy::CompiledPolicy::from(f.as_ref());
+        assert!(compiled.allows("state::get"));
+        assert!(compiled.allows("state::set"));
+    }
+
+    #[test]
+    fn ask_mode_child_clamps_an_explicit_broad_request() {
+        // A wildcard request remains unrestricted under the wildcard default.
+        let cfg = WorkerConfig::default();
+        let mut parent = parent_record(None);
+        parent.options.functions = Some(broad_policy());
+        for parent_rec in [Some(&parent), None] {
+            let f = child_functions(&cfg, parent_rec, Some(&broad_policy()), Some(Mode::Ask));
+            let compiled = policy::CompiledPolicy::from(f.as_ref());
+            assert!(compiled.allows("state::get"));
+            assert!(compiled.allows("state::set"));
+            assert!(compiled.allows("harness::spawn"));
+        }
+    }
+
+    #[test]
+    fn parentless_child_defaults_are_unclamped_outside_ask() {
+        // The pre-existing parentless arms child_functions now owns: an explicit
+        // request applies as-is, and no request falls back to the baseline.
+        let cfg = WorkerConfig::default();
+        let explicit = child_functions(&cfg, None, Some(&broad_policy()), Some(Mode::Agent));
+        assert!(policy::CompiledPolicy::from(explicit.as_ref()).allows("state::set"));
+        let defaulted = child_functions(&cfg, None, None, None);
+        let compiled = policy::CompiledPolicy::from(defaulted.as_ref());
+        assert!(compiled.allows("state::get"));
+        assert!(compiled.allows("state::set"));
     }
 }

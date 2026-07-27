@@ -34,6 +34,10 @@ pub trait StateAdapter: Send + Sync + 'static {
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<StreamUpdateResult>;
     async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>>;
+    /// Keys within a scope, in the adapter's natural order (kv: insertion
+    /// order; redis: hash-field order). Added for the console state UI —
+    /// `list` returns values only, which cannot drive per-item navigation.
+    async fn list_keys(&self, scope: &str) -> anyhow::Result<Vec<String>>;
     async fn list_groups(&self) -> anyhow::Result<Vec<String>>;
     /// Only `save_interval_ms` is hot-tunable (kv file_based); default no-op.
     async fn reconfigure(&self, _config: &Value) -> anyhow::Result<()> {
@@ -84,6 +88,9 @@ impl StateAdapter for KvStoreAdapter {
     }
     async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>> {
         Ok(self.storage.list(scope.to_string()).await)
+    }
+    async fn list_keys(&self, scope: &str) -> anyhow::Result<Vec<String>> {
+        Ok(self.storage.list_keys(scope.to_string()).await)
     }
     async fn list_groups(&self) -> anyhow::Result<Vec<String>> {
         Ok(self.storage.list_groups().await)
@@ -753,6 +760,15 @@ impl StateAdapter for RedisAdapter {
             );
         }
         Ok(result)
+    }
+
+    async fn list_keys(&self, scope: &str) -> anyhow::Result<Vec<String>> {
+        let scope_key = format!("state:{}", scope);
+        let mut conn = self.publisher.lock().await;
+
+        conn.hkeys::<_, Vec<String>>(&scope_key)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list keys from Redis: {}", e))
     }
 
     async fn list_groups(&self) -> anyhow::Result<Vec<String>> {

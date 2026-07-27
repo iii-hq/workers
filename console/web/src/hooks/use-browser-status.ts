@@ -7,7 +7,7 @@ import {
 /**
  * Presence probe for the `browser` worker. Browser owns interactive
  * Chromium sessions: the Browser page (viewport, console feed, pick-to-chat)
- * and the chat's browser function-call views. It is OPTIONAL, so the console
+ * and the chat's browser function-trigger views. It is OPTIONAL, so the console
  * gates that whole surface on its presence rather than rendering controls
  * that would call functions that don't exist. Thin wrapper over the generic
  * worker-presence probe.

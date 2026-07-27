@@ -6,14 +6,17 @@
 pub mod filesystem;
 pub mod function_resolve;
 pub mod function_trigger;
+pub mod metrics;
 pub mod on_session_deleted;
 pub mod react;
 pub mod send;
+pub mod session_tree;
 pub mod spawn;
 pub mod status;
 pub mod stop;
 pub mod subscribe;
 pub mod sweep_pending;
+pub mod teardown;
 pub mod turn;
 
 use std::future::Future;
@@ -39,7 +42,9 @@ pub const SPAWN_DESC: &str =
     "Spawn a sub-agent fire-and-forget: seeds a child session/turn and returns \
      {child_session_id, child_turn_id} immediately. The child's result is NEVER delivered back \
      to the caller — register consumers (state triggers, or harness::turn-completed -> \
-     harness::react) BEFORE spawning.";
+     harness::react) BEFORE spawning. The task must include literal values for every required \
+     resource selector (for example `db: \"primary\"`). Omit child `max_turns` unless its budget \
+     covers discovery, contract lookup, work, and the deliverable.";
 
 pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =
@@ -60,6 +65,19 @@ pub const STOP_DESC: &str =
 
 pub const STATUS_ID: &str = "harness::status";
 pub const STATUS_DESC: &str = "Read the current turn status for a session.";
+
+pub const SESSION_TREE_ID: &str = "harness::session-tree";
+pub const SESSION_TREE_DESC: &str =
+    "Read the durable root-and-descendant session tree for one harness run.";
+
+pub const METRICS_ID: &str = "harness::metrics";
+pub const METRICS_DESC: &str =
+    "Aggregate durable model usage, function outcomes, and available trace/span observability. \
+     `complete` is true only after every session in the durable tree has reached a terminal turn.";
+
+pub const TEARDOWN_ID: &str = "harness::teardown";
+pub const TEARDOWN_DESC: &str =
+    "Internal control-plane: remove trigger bindings owned by a root harness session tree.";
 
 pub const UNQUEUE_ID: &str = "harness::unqueue";
 pub const UNQUEUE_DESC: &str =
@@ -236,7 +254,19 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, STATUS_ID, STATUS_DESC, |d, r| async move {
         status::handle(&d, r).await
     });
-
+    register(
+        iii,
+        deps,
+        SESSION_TREE_ID,
+        SESSION_TREE_DESC,
+        |d, r| async move { session_tree::handle(&d, r).await },
+    );
+    register(iii, deps, METRICS_ID, METRICS_DESC, |d, r| async move {
+        metrics::handle(&d, r).await
+    });
+    register_internal(iii, deps, TEARDOWN_ID, TEARDOWN_DESC, |d, r| async move {
+        teardown::handle(&d, r).await
+    });
     // Trusted control-plane (console) — registered, kept off the agent catalog.
     register_internal(iii, deps, UNQUEUE_ID, UNQUEUE_DESC, |d, r| async move {
         send::unqueue(&d, r).await

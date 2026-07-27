@@ -7,17 +7,18 @@
 //!   2. Connect to the local iii engine over WebSocket.
 //!   3. Register the config schema (+ seed) and fetch the authoritative,
 //!      env-expanded value (a required boot dependency).
-//!   4. Register the trigger types the harness emits/owns (turn events + the
-//!      five hook points) BEFORE functions so handlers capture subscriber sets.
+//!   4. Register the trigger types the harness emits/owns (readiness + turn
+//!      events + the five hook points) BEFORE functions so handlers capture
+//!      subscriber sets.
 //!   5. Seed the function-registry cache and bind `engine::functions-available`.
-//!   6. Register the `harness::*` functions. Registering `harness::turn` is
-//!      the readiness signal that allows restored queue deliveries to run.
+//!   6. Register the `harness::*` functions. Registering `harness::turn`
+//!      allows restored queue deliveries to run, but is not external readiness.
 //!   7. Ensure the dedicated `harness-turn` queue exists (required; bounded
 //!      retries cover queue-worker registration during stack startup).
 //!   8. Bind the cron pending-sweep (retain its handle for live re-bind).
 //!   9. LAST: bind the configuration-change trigger so its handler closes over
 //!      the fully-built snapshot cell + the cron handle.
-//!  10. Sleep on Ctrl+C, then `shutdown_async` cleanly.
+//!  10. Emit `harness::ready`, then sleep on Ctrl+C and shut down cleanly.
 
 use std::sync::Arc;
 
@@ -152,6 +153,7 @@ async fn main() -> Result<()> {
     configuration::register_config_trigger(&iii, cell, handles)
         .context("registering the configuration change trigger")?;
 
+    deps.events.emit_ready().await;
     tracing::info!(
         "harness ready: harness::* functions + subscriptions + turn events + hook points + reactive function-registry cache"
     );

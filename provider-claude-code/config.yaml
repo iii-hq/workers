@@ -1,0 +1,10 @@
+# provider-claude-code has no file-based configuration.
+#
+# OAuth credentials come from the auth-credentials vault (or a local
+# ~/.claude/.credentials.json dev fallback); `api_url` and `max_tokens` arrive
+# per request from llm-router's resolve step. The provider block lives in the
+# engine's `llm-router` configuration entry (README § Configuration). The only
+# worker-side knob is the `PROVIDER_CLAUDE_CODE_CACHE` environment variable.
+#
+# This file exists to satisfy the standard worker layout
+# (docs/sops/new-worker.md §2). Keys placed here are ignored with a warning.

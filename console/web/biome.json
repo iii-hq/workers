@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!!**/dist", "!!**/storybook-static"]
+    "includes": ["**", "!!**/dist", "!!**/storybook-static", "!!public/vendor"]
   },
   "formatter": {
     "enabled": true,

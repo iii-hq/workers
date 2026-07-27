@@ -5,8 +5,10 @@
 # agent to call without approval. `fp::pipe` is deliberately NOT listed:
 # its steps run with this worker's (worker-to-worker) authority, outside the
 # calling agent's per-step dispatch policy, so it stays at the needs_approval
-# default — an approver sees the full step list in the pipe call. Flip it to
-# allow here if your deployment wants agents to pipe freely.
+# default — an approver sees the full step list in the pipe call (including
+# the harness-stamped filesystem scope for shell::*/coder::* steps). Flip it
+# to allow here if your deployment wants agents to pipe freely — knowing that
+# also grants un-approved shell::*/coder::* execution via pipe steps.
 #
 # NOTE: the policy the checked-in harness actually loads is the repo-root
 # iii-permissions.yaml (harness/iii-permissions.yaml symlinks to it), which
