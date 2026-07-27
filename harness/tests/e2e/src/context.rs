@@ -1,37 +1,27 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::errors::Error as SdkError;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use anyhow::{anyhow, bail, Context, Result};
+use harness::functions::metrics::SessionMetricsResponseV1;
+use harness::functions::status::StatusReport;
+use harness::types::turn::TurnStatus;
+use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::completion::{validate_success, CompletionBinding, CompletionEventV1, CompletionInbox};
-use crate::error::{EvalError, Phase};
-use crate::subject::ResolvedE2eSubjectV1;
+pub const INVOCATION_TIMEOUT: Duration = Duration::from_secs(120);
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-const TURN_COMPLETED: &str = "harness::turn-completed";
-
-pub struct ScenarioContext {
+#[derive(Clone)]
+pub struct E2eContext {
     client: Arc<IIIClient>,
-    subject: Arc<ResolvedE2eSubjectV1>,
-    inbox: CompletionInbox,
-    invocation_timeout: Duration,
-    completion_timeout: Duration,
-    callback_id: String,
 }
 
-impl ScenarioContext {
-    pub async fn connect(
-        url: &str,
-        run_id: &str,
-        subject: ResolvedE2eSubjectV1,
-        invocation_timeout: Duration,
-        completion_timeout: Duration,
-    ) -> Result<Self, EvalError> {
+impl E2eContext {
+    pub async fn connect(url: &str) -> Result<Self> {
         let client = Arc::new(register_worker(
             url,
             InitOptions {
@@ -46,136 +36,116 @@ impl ScenarioContext {
                 ..InitOptions::default()
             },
         ));
-        let callback_id = format!("harness-e2e::{run_id}::on-turn-completed");
-        let inbox = CompletionInbox::default();
-        let callback_inbox = inbox.clone();
-        client.register_function(
-            &callback_id,
-            RegisterFunction::new_async(move |event: CompletionEventV1| {
-                let inbox = callback_inbox.clone();
-                async move {
-                    inbox.push(event);
-                    Ok::<Value, SdkError>(json!({ "accepted": true }))
-                }
-            })
-            .description("E2E runner sink for terminal harness turn events")
-            .metadata(json!({ "internal": true })),
-        );
-
-        let context = Self {
-            client,
-            subject: Arc::new(subject),
-            inbox,
-            invocation_timeout,
-            completion_timeout,
-            callback_id,
-        };
-        context.wait_for_callback_registration().await?;
+        let context = Self { client };
+        context.wait_until_ready().await?;
         Ok(context)
     }
 
-    pub fn subject(&self) -> &ResolvedE2eSubjectV1 {
-        &self.subject
-    }
-
-    pub async fn trigger<I, O>(&self, function_id: &str, payload: I) -> Result<O, EvalError>
+    pub async fn trigger<I, O>(&self, function_id: &str, payload: I) -> Result<O>
     where
         I: Serialize + Send,
         O: DeserializeOwned,
     {
-        self.trigger_phase(Phase::Assert, function_id, payload)
+        let payload = serde_json::to_value(payload)
+            .with_context(|| format!("serialize request for {function_id}"))?;
+        let value = self
+            .trigger_value_with_timeout(function_id, payload, INVOCATION_TIMEOUT)
+            .await?;
+        serde_json::from_value(value).with_context(|| format!("decode response from {function_id}"))
+    }
+
+    pub async fn trigger_value(&self, function_id: &str, payload: Value) -> Result<Value> {
+        self.trigger_value_with_timeout(function_id, payload, INVOCATION_TIMEOUT)
             .await
     }
 
-    pub(crate) async fn trigger_phase<I, O>(
-        &self,
-        phase: Phase,
-        function_id: &str,
-        payload: I,
-    ) -> Result<O, EvalError>
-    where
-        I: Serialize + Send,
-        O: DeserializeOwned,
-    {
-        let payload = serde_json::to_value(payload).map_err(|error| {
-            EvalError::serialization(phase, function_id, format!("serialize request: {error}"))
-        })?;
-        let request = TriggerRequest {
-            function_id: function_id.to_string(),
-            payload,
-            action: None,
-            timeout_ms: Some(self.invocation_timeout.as_millis().min(u64::MAX as u128) as u64),
-        };
-        let value =
-            match tokio::time::timeout(self.invocation_timeout, self.client.trigger(request)).await
-            {
-                Err(_) => {
-                    return Err(EvalError::timeout(
-                        phase,
-                        format!("local deadline invoking {function_id}"),
-                    ));
-                }
-                Ok(Err(error)) => return Err(EvalError::from_sdk(phase, function_id, error)),
-                Ok(Ok(value)) => value,
-            };
-        serde_json::from_value(value).map_err(|error| {
-            EvalError::serialization(phase, function_id, format!("decode response: {error}"))
-        })
-    }
-
-    pub async fn bind_completion(&self, session_id: &str) -> Result<CompletionBinding, EvalError> {
-        let config = json!({ "session_id": session_id });
-        let trigger = self
-            .client
-            .register_trigger(RegisterTriggerInput {
-                trigger_type: TURN_COMPLETED.to_string(),
-                function_id: self.callback_id.clone(),
-                config: config.clone(),
-                metadata: None,
-            })
-            .map_err(|error| {
-                EvalError::from_sdk(Phase::Setup, "engine::register_trigger", error)
-            })?;
-        let binding = CompletionBinding::new(trigger);
-        if let Err(error) = self.wait_for_completion_binding(&config).await {
-            binding.unregister();
-            return Err(error);
-        }
-        Ok(binding)
-    }
-
-    pub async fn await_completion(
+    pub async fn wait_for_turn(
         &self,
         session_id: &str,
         turn_id: &str,
-    ) -> Result<CompletionEventV1, EvalError> {
-        let event = self
-            .inbox
-            .wait_terminal(session_id, turn_id, self.completion_timeout)
-            .await?;
-        validate_success(&event)?;
-        Ok(event)
+        timeout: Duration,
+    ) -> Result<StatusReport> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let status: Option<StatusReport> = self
+                .trigger("harness::status", json!({ "session_id": session_id }))
+                .await?;
+            if let Some(status) = status {
+                if status.turn_id.as_deref().is_some_and(|id| id != turn_id) {
+                    bail!(
+                        "harness::status returned turn {:?} instead of {turn_id}",
+                        status.turn_id
+                    );
+                }
+                match status.status {
+                    TurnStatus::Completed if !status.expects_wake => return Ok(status),
+                    TurnStatus::Failed | TurnStatus::Cancelled => {
+                        bail!(
+                            "turn ended as {:?}: {}",
+                            status.status,
+                            status
+                                .result_error
+                                .as_deref()
+                                .unwrap_or("no error was reported")
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let _ = self.stop_session(session_id, Some(turn_id)).await;
+                bail!(
+                    "scenario exceeded {}s while waiting for session {session_id}",
+                    timeout.as_secs()
+                );
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
     }
 
-    pub async fn metrics(
+    pub async fn metrics(&self, session_id: &str) -> Result<SessionMetricsResponseV1> {
+        self.trigger("harness::metrics", json!({ "root_session_id": session_id }))
+            .await
+    }
+
+    pub async fn wait_for_complete_metrics(
         &self,
-        root_session_id: &str,
-    ) -> Result<harness::functions::metrics::SessionMetricsResponseV1, EvalError> {
-        self.trigger_phase(
-            Phase::Collect,
-            "harness::metrics",
-            json!({ "root_session_id": root_session_id }),
-        )
-        .await
+        session_id: &str,
+        timeout: Duration,
+    ) -> Result<SessionMetricsResponseV1> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                self.stop_session_tree(session_id).await;
+                bail!(
+                    "scenario exceeded {}s while waiting for the complete session tree {session_id}",
+                    timeout.as_secs()
+                );
+            }
+            let metrics = match tokio::time::timeout(remaining, self.metrics(session_id)).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    self.stop_session_tree(session_id).await;
+                    bail!(
+                        "scenario exceeded {}s while waiting for the complete session tree {session_id}",
+                        timeout.as_secs()
+                    );
+                }
+            };
+            if metrics.complete {
+                return Ok(metrics);
+            }
+            tokio::time::sleep(POLL_INTERVAL.min(remaining)).await;
+        }
     }
 
-    pub async fn transcript(&self, session_id: &str) -> Result<Value, EvalError> {
+    pub async fn transcript(&self, session_id: &str) -> Result<Value> {
         let mut cursor: Option<String> = None;
         let mut messages = Vec::new();
         loop {
             let response: Value = self
-                .trigger_phase(
-                    Phase::Collect,
+                .trigger(
                     "session::messages",
                     json!({
                         "session_id": session_id,
@@ -188,12 +158,7 @@ impl ScenarioContext {
             let page = response
                 .get("messages")
                 .and_then(Value::as_array)
-                .ok_or_else(|| {
-                    EvalError::evidence(
-                        "session::messages",
-                        format!("malformed transcript page for {session_id}"),
-                    )
-                })?;
+                .ok_or_else(|| anyhow!("session::messages returned a malformed page"))?;
             messages.extend(page.iter().cloned());
             let next = response
                 .get("next_cursor")
@@ -203,24 +168,16 @@ impl ScenarioContext {
                 break;
             }
             if next == cursor {
-                return Err(EvalError::evidence(
-                    "session::messages",
-                    format!("repeated transcript cursor for {session_id}"),
-                ));
+                bail!("session::messages repeated transcript cursor for {session_id}");
             }
             cursor = next;
         }
         Ok(json!({ "messages": messages }))
     }
 
-    pub async fn stop_session(
-        &self,
-        session_id: &str,
-        turn_id: Option<&str>,
-    ) -> Result<(), EvalError> {
+    pub async fn stop_session(&self, session_id: &str, turn_id: Option<&str>) -> Result<()> {
         let _: harness::functions::stop::StopResponse = self
-            .trigger_phase(
-                Phase::Cleanup,
+            .trigger(
                 "harness::stop",
                 json!({ "session_id": session_id, "turn_id": turn_id }),
             )
@@ -228,81 +185,69 @@ impl ScenarioContext {
         Ok(())
     }
 
+    async fn stop_session_tree(&self, root_session_id: &str) {
+        let tree = tokio::time::timeout(
+            Duration::from_secs(5),
+            self.trigger::<_, harness::functions::session_tree::SessionTreeResponseV1>(
+                "harness::session-tree",
+                json!({ "root_session_id": root_session_id }),
+            ),
+        )
+        .await;
+        if let Ok(Ok(tree)) = tree {
+            for session in tree.sessions.iter().rev() {
+                let _ = self.stop_session(&session.session_id, None).await;
+            }
+        } else {
+            let _ = self.stop_session(root_session_id, None).await;
+        }
+    }
+
+    pub async fn teardown(&self, root_session_id: &str) -> Result<u64> {
+        let response: harness::functions::teardown::TeardownResponseV1 = self
+            .trigger(
+                "harness::teardown",
+                json!({ "root_session_id": root_session_id }),
+            )
+            .await?;
+        Ok(response.removed)
+    }
+
     pub async fn shutdown(&self) {
         self.client.shutdown_async().await;
     }
 
-    async fn wait_for_callback_registration(&self) -> Result<(), EvalError> {
-        self.wait_until("runner function registration", || async {
-            let response = self
-                .raw_trigger(
-                    "engine::functions::list",
-                    json!({ "include_internal": true }),
-                )
-                .await
-                .ok()?;
-            response
-                .get("functions")?
-                .as_array()?
-                .iter()
-                .any(|item| {
-                    item.get("function_id").and_then(Value::as_str)
-                        == Some(self.callback_id.as_str())
-                })
-                .then_some(())
-        })
-        .await
-    }
-
-    async fn wait_for_completion_binding(&self, config: &Value) -> Result<(), EvalError> {
-        self.wait_until("completion trigger registration", || async {
-            let response = self
-                .raw_trigger(
-                    "engine::registered-triggers::list",
-                    json!({
-                        "include_internal": true,
-                        "function_id": self.callback_id,
-                        "trigger_type": TURN_COMPLETED,
-                    }),
-                )
-                .await
-                .ok()?;
-            response
-                .get("registered_triggers")?
-                .as_array()?
-                .iter()
-                .any(|item| {
-                    item.get("trigger_type").and_then(Value::as_str) == Some(TURN_COMPLETED)
-                        && item.get("function_id").and_then(Value::as_str)
-                            == Some(self.callback_id.as_str())
-                        && item.get("config") == Some(config)
-                })
-                .then_some(())
-        })
-        .await
-    }
-
-    async fn wait_until<F, Fut>(&self, label: &str, mut check: F) -> Result<(), EvalError>
-    where
-        F: FnMut() -> Fut,
-        Fut: std::future::Future<Output = Option<()>>,
-    {
+    async fn wait_until_ready(&self) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         loop {
-            if check().await.is_some() {
+            if self
+                .trigger_value_with_timeout(
+                    "engine::functions::list",
+                    json!({ "include_internal": true }),
+                    Duration::from_secs(1),
+                )
+                .await
+                .is_ok()
+            {
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
-                return Err(EvalError::setup(format!("timed out waiting for {label}")));
+                bail!("timed out connecting the E2E runner to the iii engine");
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
-    async fn raw_trigger(&self, function_id: &str, payload: Value) -> Result<Value, SdkError> {
-        let timeout_ms = self.invocation_timeout.as_millis().min(u64::MAX as u128) as u64;
-        tokio::time::timeout(
-            self.invocation_timeout,
+    async fn trigger_value_with_timeout(
+        &self,
+        function_id: &str,
+        payload: Value,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let timeout_ms = timeout.as_millis().min(u64::MAX as u128) as u64;
+        let outer = timeout + Duration::from_secs(5);
+        match tokio::time::timeout(
+            outer,
             self.client.trigger(TriggerRequest {
                 function_id: function_id.to_string(),
                 payload,
@@ -311,6 +256,10 @@ impl ScenarioContext {
             }),
         )
         .await
-        .map_err(|_| SdkError::Timeout)?
+        {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(error)) => Err(anyhow!("{function_id}: {error}")),
+            Err(_) => bail!("{function_id}: no response within {}ms", outer.as_millis()),
+        }
     }
 }

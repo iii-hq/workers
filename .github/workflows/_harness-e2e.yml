@@ -2,17 +2,68 @@ name: Harness E2E
 
 on:
   workflow_call:
+    inputs:
+      runs:
+        description: Number of executions per scenario
+        required: false
+        type: number
+        default: 1
+      max_parallel:
+        description: Maximum number of live model scenarios
+        required: false
+        type: number
+        default: 2
+      subjects:
+        description: JSON array of subject entries with id, model, and provider
+        required: false
+        type: string
+        default: '[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]'
+      judge_model:
+        description: Fixed judge model id
+        required: false
+        type: string
+        default: claude-sonnet-4-6
+      judge_provider:
+        description: Fixed judge provider id
+        required: false
+        type: string
+        default: anthropic
     secrets:
       anthropic_api_key:
-        required: true
+        required: false
+      openai_api_key:
+        required: false
 
 jobs:
-  e2e:
-    name: harness e2e
+  build:
+    name: harness e2e build
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      scenarios: ${{ steps.scenarios.outputs.json }}
+      engine_binary: ${{ steps.lock.outputs.binary }}
+      engine_revision: ${{ steps.lock.outputs.revision }}
     steps:
       - uses: actions/checkout@v5
+
+      - name: Validate subject matrix
+        env:
+          SUBJECTS: ${{ inputs.subjects }}
+          JUDGE_MODEL: ${{ inputs.judge_model }}
+          JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+        run: |
+          set -euo pipefail
+          jq -e '
+            type == "array" and length > 0 and
+            all(.[];
+              (.id | type == "string" and test("^[A-Za-z0-9_.-]+$")) and
+              (.model | type == "string" and length > 0) and
+              (.provider | type == "string" and test("^[A-Za-z0-9_-]+$"))
+            ) and
+            ([.[].id] | unique | length) == length
+          ' <<<"$SUBJECTS" >/dev/null
+          [[ -n "$JUDGE_MODEL" ]]
+          [[ "$JUDGE_PROVIDER" =~ ^[A-Za-z0-9_-]+$ ]]
 
       - name: Read and validate engine.lock
         id: lock
@@ -77,7 +128,6 @@ jobs:
           components: clippy
 
       - name: Restore engine build
-        id: engine-cache
         uses: actions/cache/restore@v4
         with:
           path: target/integration-engine-src/target
@@ -99,21 +149,37 @@ jobs:
             session-manager -> target
             llm-router -> target
             provider-anthropic -> target
+            provider-openai -> target
+            provider-openai-codex -> target
+            provider-claude-code -> target
             context-manager -> target
             iii-directory -> target
             cron -> target
-            eval -> target
 
-      - name: E2E crate tests
+      - name: Test E2E crate
         run: cargo test --locked --manifest-path harness/Cargo.toml -p harness-e2e
 
-      - name: E2E crate lint
+      - name: Lint E2E crate
         run: cargo clippy --locked --manifest-path harness/Cargo.toml -p harness-e2e --all-targets -- -D warnings
 
       - name: Build E2E stack
+        env:
+          SUBJECTS: ${{ inputs.subjects }}
+          JUDGE_PROVIDER: ${{ inputs.judge_provider }}
         run: |
           set -euo pipefail
-          for worker in state queue session-manager llm-router provider-anthropic context-manager iii-directory cron; do
+          for worker in state queue session-manager llm-router context-manager iii-directory cron; do
+            cargo build --locked --release --manifest-path "$worker/Cargo.toml"
+          done
+          mapfile -t providers < <(
+            {
+              jq -r '.[].provider' <<<"$SUBJECTS"
+              printf '%s\n' "$JUDGE_PROVIDER"
+            } | sort -u
+          )
+          for provider in "${providers[@]}"; do
+            worker="provider-$provider"
+            test -f "$worker/Cargo.toml"
             cargo build --locked --release --manifest-path "$worker/Cargo.toml"
           done
           cargo build --locked --release \
@@ -121,25 +187,115 @@ jobs:
             -p harness \
             -p harness-e2e
 
-      - name: Run real-model E2E scenarios
+      - name: Read code-defined scenarios
+        id: scenarios
+        run: |
+          set -euo pipefail
+          scenarios=$(harness/target/release/harness-e2e list)
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' \
+            <<<"$scenarios" >/dev/null
+          echo "json=$scenarios" >> "$GITHUB_OUTPUT"
+
+      - name: Package E2E binaries
+        env:
+          SUBJECTS: ${{ inputs.subjects }}
+          JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+        run: |
+          set -euo pipefail
+          paths=(
+            "target/integration-engine-src/${{ steps.lock.outputs.binary }}"
+            state/target/release/state
+            queue/target/release/queue
+            session-manager/target/release/session-manager
+            llm-router/target/release/llm-router
+            context-manager/target/release/context-manager
+            iii-directory/target/release/iii-directory
+            cron/target/release/cron
+            harness/target/release/harness
+            harness/target/release/harness-e2e
+          )
+          mapfile -t providers < <(
+            {
+              jq -r '.[].provider' <<<"$SUBJECTS"
+              printf '%s\n' "$JUDGE_PROVIDER"
+            } | sort -u
+          )
+          for provider in "${providers[@]}"; do
+            paths+=("provider-$provider/target/release/provider-$provider")
+          done
+          for path in "${paths[@]}"; do
+            test -x "$path"
+          done
+          tar -czf target/harness-e2e-stack.tar.gz "${paths[@]}"
+
+      - name: Upload E2E binaries
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-stack
+          path: target/harness-e2e-stack.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+
+  e2e:
+    name: harness e2e / ${{ matrix.subject.id }} / ${{ matrix.scenario }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ inputs.max_parallel }}
+      matrix:
+        scenario: ${{ fromJSON(needs.build.outputs.scenarios) }}
+        subject: ${{ fromJSON(inputs.subjects) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download E2E binaries
+        uses: actions/download-artifact@v7
+        with:
+          name: harness-e2e-stack
+          path: target
+
+      - name: Extract E2E binaries
+        run: tar -xzf target/harness-e2e-stack.tar.gz
+
+      - name: Run real-stack quality scenario
         env:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
-          III_BIN: ${{ github.workspace }}/target/integration-engine-src/${{ steps.lock.outputs.binary }}
+          OPENAI_API_KEY: ${{ secrets.openai_api_key }}
+          III_BIN: ${{ github.workspace }}/target/integration-engine-src/${{ needs.build.outputs.engine_binary }}
+          HARNESS_E2E_BIN: ${{ github.workspace }}/harness/target/release/harness-e2e
           HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
+          HARNESS_E2E_SCENARIO: ${{ matrix.scenario }}
+          HARNESS_E2E_RUNS: ${{ inputs.runs }}
+          HARNESS_E2E_MODEL: ${{ matrix.subject.model }}
+          HARNESS_E2E_PROVIDER: ${{ matrix.subject.provider }}
+          HARNESS_E2E_JUDGE_MODEL: ${{ inputs.judge_model }}
+          HARNESS_E2E_JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+          HARNESS_E2E_ENGINE_REVISION: ${{ needs.build.outputs.engine_revision }}
         run: harness/tests/e2e/run-ci.sh
 
       - name: Write E2E summary
         if: always()
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+          SUBJECT: ${{ matrix.subject.id }}
         run: |
           {
-            echo "### Harness E2E"
+            echo "### Harness E2E · $SUBJECT · $SCENARIO"
             echo
-            results=$(find target/harness-e2e/results -name results.json -type f 2>/dev/null | head -n 1)
-            if [[ -n "$results" ]]; then
+            results=target/harness-e2e/results/results.json
+            if [[ -f "$results" ]]; then
               jq -r '
-                "| Scenario | Status |",
-                "| --- | --- |",
-                (.scenarios[] | "| \(.scenario_id) | \(if .passed // (.status == \"pass\") then \"pass\" else \"fail\" end) |")
+                .scenarios[0] |
+                "| Score median | Threshold | Pass rate | Technical failures | Status |",
+                "| ---: | ---: | ---: | ---: | --- |",
+                "| \(.aggregate.median_score // "n/a") | \(.threshold) | \((.aggregate.pass_rate * 100) | round)% | \(.aggregate.technical_failures) | \(if .passed then "pass" else "fail" end) |",
+                "",
+                "| Run | Score | Status |",
+                "| --- | ---: | --- |",
+                (.runs | to_entries[] |
+                  "| \(.key + 1) | \(.value.score // "n/a") | \(.value.status) |")
               ' "$results"
             else
               echo "No E2E result report was produced."
@@ -150,7 +306,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: harness-e2e-results
+          name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.scenario }}-results
           path: target/harness-e2e/results/
           retention-days: 14
           if-no-files-found: ignore
@@ -159,7 +315,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: harness-e2e-diagnostics
+          name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.scenario }}-diagnostics
           path: |
             target/harness-e2e/logs/
             target/harness-e2e/stack/

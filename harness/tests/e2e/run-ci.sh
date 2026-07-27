@@ -2,20 +2,27 @@
 set -Eeuo pipefail
 
 : "${III_BIN:?III_BIN must point to the pinned iii engine binary}"
-: "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}"
+: "${HARNESS_E2E_SCENARIO:?HARNESS_E2E_SCENARIO is required}"
+: "${HARNESS_E2E_MODEL:?HARNESS_E2E_MODEL is required}"
+: "${HARNESS_E2E_PROVIDER:?HARNESS_E2E_PROVIDER is required}"
+: "${HARNESS_E2E_JUDGE_MODEL:?HARNESS_E2E_JUDGE_MODEL is required}"
+: "${HARNESS_E2E_JUDGE_PROVIDER:?HARNESS_E2E_JUDGE_PROVIDER is required}"
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 harness_root=$(cd -- "$script_dir/../.." && pwd)
 repo_root=$(cd -- "$harness_root/.." && pwd)
 artifacts_dir=${HARNESS_E2E_ARTIFACTS_DIR:-"$repo_root/target/harness-e2e"}
+e2e_bin=${HARNESS_E2E_BIN:-"$harness_root/target/release/harness-e2e"}
+runs=${HARNESS_E2E_RUNS:-1}
 run_dir="$artifacts_dir/stack"
 logs_dir="$artifacts_dir/logs"
 iii_port=${HARNESS_E2E_PORT:-49134}
 iii_url="ws://127.0.0.1:$iii_port"
-subject=${HARNESS_E2E_SUBJECT:-"$script_dir/subjects/ci.json"}
+engine_config=${HARNESS_E2E_ENGINE_CONFIG:-"$script_dir/stack-config/engine.yaml"}
 
 mkdir -p "$run_dir" "$logs_dir"
 export HARNESS_E2E_RUN_DIR="$run_dir"
+export HARNESS_E2E_PORT="$iii_port"
 
 pids=()
 
@@ -83,24 +90,45 @@ wait_for_trigger_type() {
 }
 
 wait_for_model() {
+  local provider=$1
+  local model=$2
   local attempts=240
   local response
+  local request
+  request=$(jq -cn --arg provider "$provider" --arg id "$model" \
+    '{provider:$provider,id:$id}')
   for ((attempt = 1; attempt <= attempts; attempt++)); do
     response=$(
       "$III_BIN" trigger router::models::get \
         --port "$iii_port" \
-        --json '{"provider":"anthropic","id":"claude-sonnet-4-6"}' 2>/dev/null || true
+        --json "$request" 2>/dev/null || true
     )
-    if jq -e '.model.id == "claude-sonnet-4-6"' <<<"$response" >/dev/null; then
+    if jq -e --arg id "$model" '.model.id == $id' <<<"$response" >/dev/null; then
       return 0
     fi
     sleep 0.5
   done
-  echo "timed out waiting for the Anthropic E2E model" >&2
+  echo "timed out waiting for E2E model $provider/$model" >&2
   return 1
 }
 
-start_process engine "$III_BIN" -c "$harness_root/engine.config.yaml"
+start_provider() {
+  local provider=$1
+  [[ "$provider" =~ ^[A-Za-z0-9_-]+$ ]] || {
+    echo "unsupported provider id: $provider" >&2
+    return 1
+  }
+  local worker="provider-$provider"
+  local binary="$repo_root/$worker/target/release/$worker"
+  [[ -x "$binary" ]] || {
+    echo "provider binary is not executable: $binary" >&2
+    return 1
+  }
+  start_process "$worker" "$binary" --url "$iii_url"
+  wait_for_function "provider::$provider::stream"
+}
+
+start_process engine "$III_BIN" -c "$engine_config"
 wait_for_function engine::workers::list
 
 start_process state \
@@ -126,17 +154,21 @@ start_process llm-router \
   --url "$iii_url"
 wait_for_function router::models::get
 
-start_process provider-anthropic \
-  "$repo_root/provider-anthropic/target/release/provider-anthropic" \
-  --url "$iii_url"
-wait_for_function provider::anthropic::stream
-wait_for_model
+declare -A started_providers=()
+for provider in "$HARNESS_E2E_PROVIDER" "$HARNESS_E2E_JUDGE_PROVIDER"; do
+  if [[ -z "${started_providers[$provider]:-}" ]]; then
+    start_provider "$provider"
+    started_providers[$provider]=1
+  fi
+done
+wait_for_model "$HARNESS_E2E_PROVIDER" "$HARNESS_E2E_MODEL"
+wait_for_model "$HARNESS_E2E_JUDGE_PROVIDER" "$HARNESS_E2E_JUDGE_MODEL"
 
 start_process context-manager \
   "$repo_root/context-manager/target/release/context-manager" \
   --url "$iii_url" \
   --config "$script_dir/stack-config/context-manager.yaml"
-wait_for_function context::build
+wait_for_function context::assemble
 
 start_process iii-directory \
   "$repo_root/iii-directory/target/release/iii-directory" \
@@ -153,7 +185,12 @@ start_process harness \
   --url "$iii_url"
 wait_for_function harness::send
 
-"$harness_root/target/release/harness-e2e" \
+"$e2e_bin" run \
   --url "$iii_url" \
-  --subject "$subject" \
-  --output "$artifacts_dir/results"
+  --model "$HARNESS_E2E_MODEL" \
+  --provider "$HARNESS_E2E_PROVIDER" \
+  --judge-model "$HARNESS_E2E_JUDGE_MODEL" \
+  --judge-provider "$HARNESS_E2E_JUDGE_PROVIDER" \
+  --output "$artifacts_dir/results" \
+  --scenario "$HARNESS_E2E_SCENARIO" \
+  --runs "$runs"

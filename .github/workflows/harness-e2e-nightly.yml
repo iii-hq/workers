@@ -1,0 +1,40 @@
+name: Harness E2E Nightly
+
+on:
+  schedule:
+    - cron: "37 4 * * *"
+  workflow_dispatch:
+    inputs:
+      subjects:
+        description: Optional JSON subject matrix; defaults to repository configuration
+        required: false
+        type: string
+      judge_model:
+        description: Optional judge model id
+        required: false
+        type: string
+      judge_provider:
+        description: Optional judge provider id
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: harness-e2e-nightly
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    uses: ./.github/workflows/_harness-e2e.yml
+    with:
+      runs: 3
+      max_parallel: 2
+      subjects: ${{ inputs.subjects || vars.HARNESS_E2E_SUBJECTS || '[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]' }}
+      judge_model: ${{ inputs.judge_model || vars.HARNESS_E2E_JUDGE_MODEL || 'claude-sonnet-4-6' }}
+      judge_provider: ${{ inputs.judge_provider || vars.HARNESS_E2E_JUDGE_PROVIDER || 'anthropic' }}
+    secrets:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      openai_api_key: ${{ secrets.OPENAI_API_KEY }}

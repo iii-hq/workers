@@ -60,7 +60,6 @@ E2E_WORKERS = {
     "cron",
     "llm-router",
     "provider-anthropic",
-    "eval",
 }
 INTEGRATION_DOC_GLOBS = (
     "README.md",
@@ -80,6 +79,7 @@ E2E_INFRA_PATHS = {
     ".github/scripts/discover_changed_workers.py",
     ".github/workflows/ci.yml",
     ".github/workflows/_harness-e2e.yml",
+    ".github/workflows/harness-e2e-nightly.yml",
 }
 INTEGRATION_EXCLUDED_PREFIXES = ("harness/tests/e2e/",)
 E2E_EXCLUDED_PREFIXES = ("harness/tests/integration/",)

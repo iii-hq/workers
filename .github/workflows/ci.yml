@@ -475,6 +475,9 @@ jobs:
       actions: read
       contents: read
     uses: ./.github/workflows/_harness-e2e.yml
+    with:
+      runs: 1
+      max_parallel: 2
     secrets:
       anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 

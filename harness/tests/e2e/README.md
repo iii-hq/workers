@@ -1,152 +1,166 @@
-# Harness E2E tests
+# Harness E2E quality tests
 
-This package runs the harness against real models. Its primary binary executes
-the E2E scenarios for one subject; the comparison binary supports exactly two
-experiments:
+This package runs code-defined user scenarios against a real iii stack and a
+real model. It uses the provider's production system prompt: the runner never
+injects a test-only system prompt.
 
-- Same system prompt with two different models.
-- Same model with two different system prompts.
+Each scenario:
 
-Every scenario follows one execution path:
+1. Builds a natural user prompt with a unique run scope.
+2. Calls `harness::send` once.
+3. Waits for terminal state through `harness::status`.
+4. Collects the transcript, durable metrics, and scenario-specific evidence.
+5. Applies objective hard gates and weighted criteria.
+6. Optionally asks a fixed judge model to score qualitative criteria.
+7. Calls `harness::teardown` and removes scenario-owned state.
 
-1. Build the scenario prompt.
-2. Call `harness::send` once.
-3. Wait for `harness::turn-completed`.
-4. Read `harness::metrics` and the root transcript.
-5. Evaluate whether the requested result works.
+Hard gates and a score threshold both apply. A persuasive response cannot pass
+when the requested durable result was not produced.
 
-The common runner owns steps 2–4. A scenario defines only its prompt and its
-result evaluation. Evaluations may inspect the transcript or call existing iii
-functions to test durable output.
-
-## Compare subjects
-
-```bash
-cargo run -p harness-e2e --bin harness-prompt-eval -- \
-  --control tests/e2e/subjects/luna.json \
-  --treatment tests/e2e/subjects/sol.json \
-  --runs 3 \
-  --output target/prompt-eval \
-  --max-total-tokens 100000
-```
-
-The comparison type is inferred from the subject files. Every setting other
-than the model or system-prompt contents must remain equal. Ambiguous,
-identical, or multi-variable comparisons fail before a model call.
-
-Use repeatable `--scenario` arguments for a focused comparison:
-
-```bash
-cargo run -p harness-e2e --bin harness-prompt-eval -- \
-  --control path/to/control.json \
-  --treatment path/to/treatment.json \
-  --runs 3 \
-  --output target/prompt-eval \
-  --scenario plain_response \
-  --scenario security_review
-```
-
-The output contains `comparison.json` and one self-contained `results.json`
-for every control and treatment run. The comparison reports pass counts and
-median execution, token, function-call, error, cost, trace, span, and trace
-duration metrics per scenario when the engine's in-memory observability
-exporter is available.
-The treatment passes the correctness gate only when every treatment run passes
-and no scenario regresses relative to the control.
-
-## Limits
-
-Every control and treatment run uses one shared limit policy. Limits are not
-part of a subject, so a comparison still changes only the model or system
-prompt.
-
-Execution limits constrain the run while it is active:
-
-- `--scenario-timeout-seconds` defaults to `300`; expiry calls `harness::stop`.
-- `--invocation-timeout-seconds` defaults to `120` for each iii invocation.
-- `--max-turns` defaults to `20`.
-- `--max-output-tokens-per-call` defaults to `8192`.
-- `--max-total-tokens` defaults to `100000` and means input plus output tokens
-  over the complete root-and-descendant session tree. The harness reserves
-  each call before dispatch and stops the turn before this budget can be
-  exceeded.
-- `--max-cost-usd` is optional. The harness reserves cost before dispatch and
-  fails closed when any selected model lacks catalog pricing.
-
-Evaluation limits use `harness::metrics` after the requested result has been
-evaluated:
-
-- `--max-function-call-errors` defaults to `0`.
-- `--max-error-spans` is optional because it requires the engine's in-memory
-  observability exporter.
-
-Token and cost limits are also checked against `harness::metrics` after the
-run, while the remaining evaluation limits fail the completed scenario.
-Configuring an optional gate without its required metric fails closed as an
-evidence error. Every `results.json` and `comparison.json` records the
-effective limit policy.
+Before execution, the runner resolves the exact subject and judge records with
+`router::models::get`. Each scenario declares its required capabilities and its
+own turn, token, and timeout budget. Unsupported model/scenario pairs are
+reported explicitly instead of being mistaken for quality regressions.
+The timeout covers the complete root-and-descendant session tree. After the
+root turn finishes, the runner keeps polling `harness::metrics` until every
+descendant reaches a terminal state.
 
 ## Scenarios
 
-The current scenarios are:
+Scenario definitions, prompts, function policies, rubrics, and evaluators live
+under `src/scenarios/`:
 
-- `plain_response`: checks an exact text response without tools.
-- `single_function`: checks one durable state mutation.
-- `security_review`: checks structured reasoning from the final response.
-- `triggered_work`: checks the durable result of reactive work.
+- `direct_answer`: explains authentication versus authorization without tools.
+- `persistent_state`: discovers and performs one exact durable state write.
+- `security_review`: reviews three vulnerable snippets with a qualitative judge.
+- `reactive_automation`: creates and fires a one-shot state reaction.
 
-`single_function` and `triggered_work` exercise multiple internal model turns,
-but each scenario still starts with exactly one runner call to `harness::send`.
-
-To add a scenario, add a module that returns a `ScenarioSpec` containing:
-
-- the prompt;
-- private data needed by the evaluation;
-- an async evaluation function.
-
-Do not reproduce send, completion, metrics, transcript, timeout, or report
-handling in scenario modules.
-
-## Subjects
-
-Subject files resolve `system_prompt_path` relative to the subject file:
-
-```json
-{
-  "schema_version": "1",
-  "subject_id": "baseline",
-  "model": "resolved-model-id",
-  "provider": "provider-route",
-  "system_prompt_path": "system-prompt.md",
-  "system_prompt_strategy": "override",
-  "thinking_level": "low"
-}
-```
-
-For a model comparison, both subjects use the same provider and exact prompt
-contents but different `model` values. For a system-prompt comparison, they use
-the same model and provider but different prompt contents.
-
-## Run one subject
-
-Run the complete E2E suite against an already-running local stack:
+List the code-defined ids used by CI:
 
 ```bash
-cargo run -p harness-e2e -- \
-  --subject tests/e2e/subjects/luna.json \
+cargo run -p harness-e2e -- list
+```
+
+## Run against a local stack
+
+Run all scenarios against an already-running stack:
+
+```bash
+cargo run -p harness-e2e -- run \
+  --model claude-sonnet-4-6 \
+  --provider anthropic \
+  --judge-model claude-sonnet-4-6 \
+  --judge-provider anthropic \
   --output target/e2e
 ```
 
-Select one or more scenarios while developing or diagnosing a failure:
+Select one scenario and repeat it three times:
 
 ```bash
-cargo run -p harness-e2e -- \
-  --subject tests/e2e/subjects/luna.json \
+cargo run -p harness-e2e -- run \
+  --model claude-sonnet-4-6 \
+  --provider anthropic \
+  --judge-model claude-sonnet-4-6 \
+  --judge-provider anthropic \
   --output target/e2e \
-  --scenario single_function
+  --scenario security_review \
+  --runs 3
 ```
 
-CI uses `subjects/ci.json` with the repository's Anthropic credential. The
-checked-in stack launcher is CI-specific: it boots the pinned engine and the
-minimal worker set in isolated directories, then writes results and process
-logs below `target/harness-e2e`.
+`III_URL`, `HARNESS_E2E_MODEL`, `HARNESS_E2E_PROVIDER`,
+`HARNESS_E2E_JUDGE_MODEL`, and `HARNESS_E2E_JUDGE_PROVIDER` are accepted as
+environment variables. Judge configuration is required only when a selected
+scenario has qualitative criteria.
+
+The judge protocol deliberately uses plain text JSON, which works across
+providers without native structured-output support. The response is parsed and
+validated strictly against the rubric. Invalid output gets up to two repair
+attempts; a third invalid response is a `judge_error`, not a zero quality score.
+
+## Scores and reports
+
+Criterion weights total 100. A run passes when every hard gate passes and its
+score reaches the scenario threshold. Aggregates require at least two thirds of
+the eligible runs to pass and the median score to reach the threshold. Technical
+failures always fail the aggregate, while ordinary quality failures retain the
+two-of-three tolerance used nightly.
+
+Every run has one explicit status:
+
+- `passed`, `quality_failed`, or `hard_gate_failed` for evaluated quality;
+- `unsupported` when the catalog capabilities do not satisfy the scenario;
+- `subject_error`, `judge_error`, `resource_limit`, or `infrastructure_error`
+  for failures that must not be interpreted as a score.
+
+Scores and criterion awards are `null` when evaluation did not complete.
+
+The runner writes `results.json` with:
+
+- exact catalog-resolved subject and judge model identity and capabilities;
+- scenario requirements and effective execution policy;
+- judge protocol and pinned engine revision when CI supplies it;
+- prompt and final output for every run;
+- hard-gate results and per-criterion points;
+- objective evidence, transcript, and `harness::metrics`;
+- judge usage and failures grouped by phase;
+- median score, pass rate, and aggregate status.
+
+## Historical comparison
+
+Compare a candidate only with a report from the same experiment:
+
+```bash
+cargo run -p harness-e2e -- compare \
+  --baseline target/e2e-baseline/results.json \
+  --candidate target/e2e-candidate/results.json \
+  --max-score-drop 3
+```
+
+The comparison fails closed unless subject, judge, judge protocol, pinned
+engine revision, scenario set, requirements, thresholds, and execution policies
+match. Missing scores and drops above the configured tolerance fail the
+comparison. Results from different models are therefore separate series rather
+than control/treatment samples.
+
+## CI
+
+The reusable workflow builds the pinned engine and only the provider workers
+needed by its subject matrix and fixed judge. It reads the scenario matrix from
+`harness-e2e list` and starts one isolated stack per subject/scenario pair. At
+most two live-model jobs run concurrently by default.
+
+Trusted pull requests run every affected scenario once. The scheduled and
+manual nightly workflow runs every scenario three times. The nightly subject
+matrix can be supplied manually or through the `HARNESS_E2E_SUBJECTS`
+repository variable:
+
+```json
+[
+  {"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"},
+  {"id":"openai-gpt","model":"gpt-5.4","provider":"openai"}
+]
+```
+
+The selected providers still need their corresponding CI credentials. Fork
+pull requests and Dependabot do not receive provider credentials.
+
+The launcher performs a clean first boot with isolated configuration, session,
+queue, state, and log directories. It starts the provider workers named by the
+subject and judge configuration. It executes repository binaries directly; it
+does not test registry installation or `iii worker add`.
+
+## Adding a scenario
+
+Add a module returning `ScenarioSpec` and register its `ScenarioId`. Keep these
+rules:
+
+- prompts describe user intent and never prescribe function ids;
+- declare model requirements and a scenario-sized execution policy;
+- required capabilities are explicit in the scenario's function policy;
+- objective effects are hard gates, not judge opinions;
+- criterion ids are unique, weights total 100, and awarded points are bounded;
+- qualitative criteria include a hidden reference for the fixed judge;
+- every durable resource has unconditional cleanup.
+
+Unit tests validate the registry, rubric weights, objective awards, judge
+responses, transcript call normalization, aggregation, and report schema.

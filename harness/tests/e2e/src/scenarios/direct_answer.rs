@@ -10,76 +10,51 @@ use super::{
     ScenarioObservation, ScenarioSpec,
 };
 
-pub const ID: &str = "security_review";
+pub const ID: &str = "direct_answer";
 
 pub fn scenario(_run_id: &str) -> ScenarioSpec {
     ScenarioSpec {
         id: ID,
-        prompt: r#"Review these independent snippets for security vulnerabilities:
-
-1. `const API_KEY = "sk-live-example";`
-2. `db.execute("SELECT * FROM users WHERE id = " + request.id);`
-3. `response.redirect(request.query.next);`
-
-For each snippet, identify the vulnerability, explain its impact, and recommend a practical remediation. Keep the review concise and do not perform any external action."#
-            .into(),
+        prompt: "Explain to a non-technical reader, in at most two sentences, the difference between authentication and authorization. Do not perform any external action.".into(),
         evaluation_context: Value::Null,
         functions: FunctionPolicy::default(),
         requirements: ModelRequirements {
-            minimum_context_window: 16_384,
-            minimum_output_tokens: 2_048,
+            minimum_context_window: 8_192,
+            minimum_output_tokens: 1_024,
             ..ModelRequirements::default()
         },
         execution: ExecutionPolicy {
             max_turns: 2,
-            max_output_tokens: 4_096,
-            max_total_tokens: 49_152,
+            max_output_tokens: 2_048,
+            max_total_tokens: 32_768,
             timeout_seconds: 120,
             thinking_level: None,
         },
         threshold: 80,
         criteria: vec![
             CriterionSpec {
-                id: "coverage",
+                id: "correctness",
                 source: CriterionSource::Judge,
-                weight: 40,
-                description: "Identifies the relevant vulnerability in all three snippets.",
-            },
-            CriterionSpec {
-                id: "accuracy",
-                source: CriterionSource::Judge,
-                weight: 30,
-                description: "Explains each risk accurately without invented findings.",
-            },
-            CriterionSpec {
-                id: "remediation",
-                source: CriterionSource::Judge,
-                weight: 20,
-                description: "Provides a practical mitigation for every finding.",
+                weight: 50,
+                description: "Correctly distinguishes proving identity from deciding permissions.",
             },
             CriterionSpec {
                 id: "clarity",
                 source: CriterionSource::Judge,
-                weight: 10,
-                description: "Presents a concise, easy-to-map review.",
+                weight: 30,
+                description: "Uses language a non-technical reader can understand.",
+            },
+            CriterionSpec {
+                id: "instruction_adherence",
+                source: CriterionSource::Judge,
+                weight: 20,
+                description: "Answers directly in no more than two sentences.",
             },
         ],
         judge_reference: Some(json!({
-            "snippet_1": {
-                "finding": "hardcoded credential or secret exposure",
-                "impact": "credential leakage and unauthorized API access",
-                "remediation": "remove and rotate the secret; load it from a secret manager or environment"
-            },
-            "snippet_2": {
-                "finding": "SQL injection",
-                "impact": "attacker-controlled query execution or data access",
-                "remediation": "use parameterized queries or prepared statements"
-            },
-            "snippet_3": {
-                "finding": "open redirect",
-                "impact": "phishing or redirecting users to attacker-controlled destinations",
-                "remediation": "allowlist destinations or accept only validated relative paths"
-            }
+            "authentication": "verifies who a user or system is",
+            "authorization": "decides what an authenticated identity may access or do",
+            "format": "at most two sentences for a non-technical reader"
         })),
         evaluate,
         cleanup: common::no_cleanup,
@@ -100,9 +75,9 @@ fn evaluate<'a>(
                     "response_present",
                     !response.trim().is_empty(),
                     if response.trim().is_empty() {
-                        "the assistant returned no review"
+                        "the assistant returned no text"
                     } else {
-                        "the assistant returned a review"
+                        "the assistant returned a textual answer"
                     },
                 ),
                 common::gate(

@@ -1,166 +1,397 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result};
 use harness::functions::metrics::SessionMetricsResponseV1;
+use harness::types::model::Model;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::error::{EvalError, FailureRecord};
-use crate::limits::E2eLimitsV1;
-use crate::subject::SubjectArtifactV1;
+use crate::scenarios::{ExecutionPolicy, ModelRequirements};
 
-pub use eval::report::EvalBenchmarkV1 as E2eBenchmarkV1;
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailurePhase {
+    Setup,
+    Execute,
+    Collect,
+    Evaluate,
+    Cleanup,
+}
 
-#[derive(Debug, Serialize)]
-pub struct ScenarioObservationV1 {
-    pub metrics: SessionMetricsResponseV1,
-    pub transcript: Value,
+#[derive(Debug, Clone, Serialize)]
+pub struct FailureRecord {
+    pub phase: FailurePhase,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HardGateReport {
+    pub id: String,
+    pub passed: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CriterionSource {
+    Objective,
+    Judge,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CriterionReport {
+    pub id: String,
+    pub source: CriterionSource,
+    pub possible: u8,
+    pub awarded: Option<u8>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    Passed,
+    QualityFailed,
+    HardGateFailed,
+    Unsupported,
+    SubjectError,
+    JudgeError,
+    ResourceLimit,
+    InfrastructureError,
+}
+
+impl RunStatus {
+    pub fn is_technical_failure(self) -> bool {
+        matches!(
+            self,
+            Self::SubjectError | Self::JudgeError | Self::ResourceLimit | Self::InfrastructureError
+        )
+    }
 }
 
 #[derive(Debug, Serialize)]
-pub struct E2eScenarioReportV1 {
-    pub scenario_id: &'static str,
-    pub prompt: String,
+pub struct E2eRunReport {
+    pub run_id: String,
     pub session_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
+    pub prompt: String,
     pub wall_time_ms: u64,
+    pub score: Option<u8>,
+    pub status: RunStatus,
     pub passed: bool,
+    pub hard_gates: Vec<HardGateReport>,
+    pub criteria: Vec<CriterionReport>,
+    pub output: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub observation: Option<ScenarioObservationV1>,
+    pub transcript: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub evaluation: Option<Value>,
+    pub metrics: Option<SessionMetricsResponseV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judge_usage: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judge_attempts: Option<u8>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub failures: Vec<FailureRecord>,
 }
 
-impl E2eScenarioReportV1 {
-    pub fn new(scenario_id: &'static str, session_id: String, prompt: String) -> Self {
+impl E2eRunReport {
+    pub fn new(run_id: String, session_id: String, prompt: String) -> Self {
         Self {
-            scenario_id,
-            prompt,
+            run_id,
             session_id,
-            turn_id: None,
+            prompt,
             wall_time_ms: 0,
+            score: None,
+            status: RunStatus::InfrastructureError,
             passed: false,
-            observation: None,
-            evaluation: None,
+            hard_gates: Vec::new(),
+            criteria: Vec::new(),
+            output: Vec::new(),
+            transcript: None,
+            metrics: None,
+            evidence: None,
+            judge_usage: None,
+            judge_attempts: None,
             failures: Vec::new(),
         }
     }
 
-    pub fn push_failure(&mut self, error: EvalError) {
-        self.failures.push(error.record);
+    pub fn push_failure(
+        &mut self,
+        status: RunStatus,
+        phase: FailurePhase,
+        message: impl Into<String>,
+    ) {
+        self.failures.push(FailureRecord {
+            phase,
+            message: message.into(),
+        });
+        self.status = status;
         self.passed = false;
     }
 
-    pub fn finish(&mut self, wall_time_ms: u64) {
-        self.wall_time_ms = wall_time_ms;
-        self.passed = self.failures.is_empty() && self.evaluation.is_some();
-    }
-
-    pub fn benchmark(&self) -> Option<E2eBenchmarkV1> {
-        let metrics = &self.observation.as_ref()?.metrics;
-        E2eBenchmarkV1::from_metrics(metrics, self.wall_time_ms)
+    pub fn finish(&mut self, status: RunStatus) {
+        self.status = status;
+        self.passed = status == RunStatus::Passed;
     }
 }
 
 #[derive(Debug, Serialize)]
-pub struct E2eRunReportV1 {
-    pub schema_version: &'static str,
-    pub run_id: String,
-    pub subject: SubjectArtifactV1,
-    pub limits: E2eLimitsV1,
-    pub scenarios: Vec<E2eScenarioReportV1>,
-    pub passed: bool,
+pub struct ScenarioAggregate {
+    pub runs: u32,
+    pub eligible_runs: u32,
+    pub scored_runs: u32,
+    pub passed_runs: u32,
+    pub required_passes: u32,
+    pub pass_rate: f64,
+    pub median_score: Option<f64>,
+    pub technical_failures: u32,
+    pub status_counts: BTreeMap<RunStatus, u32>,
 }
 
-impl E2eRunReportV1 {
-    pub fn new(
-        run_id: String,
-        subject: SubjectArtifactV1,
-        limits: E2eLimitsV1,
-        scenarios: Vec<E2eScenarioReportV1>,
+#[derive(Debug, Serialize)]
+pub struct E2eScenarioReport {
+    pub scenario_id: String,
+    pub threshold: u8,
+    pub requirements: ModelRequirements,
+    pub execution_policy: ExecutionPolicy,
+    pub aggregate: ScenarioAggregate,
+    pub passed: bool,
+    pub runs: Vec<E2eRunReport>,
+}
+
+impl E2eScenarioReport {
+    pub fn aggregate(
+        scenario_id: impl Into<String>,
+        threshold: u8,
+        requirements: ModelRequirements,
+        execution_policy: ExecutionPolicy,
+        runs: Vec<E2eRunReport>,
     ) -> Self {
-        let passed = scenarios.iter().all(|scenario| scenario.passed);
+        let run_count = runs.len() as u32;
+        let eligible_runs = runs
+            .iter()
+            .filter(|run| run.status != RunStatus::Unsupported)
+            .count() as u32;
+        let scored_runs = runs.iter().filter(|run| run.score.is_some()).count() as u32;
+        let passed_runs = runs
+            .iter()
+            .filter(|run| run.status == RunStatus::Passed)
+            .count() as u32;
+        let technical_failures = runs
+            .iter()
+            .filter(|run| run.status.is_technical_failure())
+            .count() as u32;
+        let required_passes = required_passes(eligible_runs);
+        let median_score = median(runs.iter().filter_map(|run| run.score));
+        let mut status_counts = BTreeMap::new();
+        for run in &runs {
+            *status_counts.entry(run.status).or_insert(0) += 1;
+        }
+        let passed = eligible_runs > 0
+            && technical_failures == 0
+            && passed_runs >= required_passes
+            && median_score.is_some_and(|score| score >= f64::from(threshold));
         Self {
-            schema_version: "1",
-            run_id,
-            subject,
-            limits,
-            scenarios,
+            scenario_id: scenario_id.into(),
+            threshold,
+            requirements,
+            execution_policy,
+            aggregate: ScenarioAggregate {
+                runs: run_count,
+                eligible_runs,
+                scored_runs,
+                passed_runs,
+                required_passes,
+                pass_rate: if eligible_runs == 0 {
+                    0.0
+                } else {
+                    f64::from(passed_runs) / f64::from(eligible_runs)
+                },
+                median_score,
+                technical_failures,
+                status_counts,
+            },
             passed,
+            runs,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelArtifact {
+    pub model: String,
+    pub provider: String,
+    pub context_window: u64,
+    pub max_output_tokens: u64,
+    pub supports_tools: Option<bool>,
+    pub supports_vision: Option<bool>,
+    pub supports_structured_output: Option<bool>,
+}
+
+impl From<Model> for ModelArtifact {
+    fn from(model: Model) -> Self {
+        Self {
+            model: model.id,
+            provider: model.provider,
+            context_window: model.context_window,
+            max_output_tokens: model.max_output_tokens,
+            supports_tools: model.supports_tools,
+            supports_vision: model.supports_vision,
+            supports_structured_output: model.supports_structured_output,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct E2eReport {
+    pub subject: ModelArtifact,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judge: Option<ModelArtifact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judge_protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine_revision: Option<String>,
+    pub passed: bool,
+    pub scenarios: Vec<E2eScenarioReport>,
+}
+
+impl E2eReport {
+    pub fn new(
+        subject: ModelArtifact,
+        judge: Option<ModelArtifact>,
+        judge_protocol: Option<String>,
+        engine_revision: Option<String>,
+        scenarios: Vec<E2eScenarioReport>,
+    ) -> Self {
+        let passed = !scenarios.is_empty() && scenarios.iter().all(|scenario| scenario.passed);
+        Self {
+            subject,
+            judge,
+            judge_protocol,
+            engine_revision,
+            passed,
+            scenarios,
         }
     }
 
-    pub fn write_to(&self, output_root: &Path) -> Result<PathBuf, EvalError> {
-        let run_dir = output_root.join(&self.run_id);
-        fs::create_dir_all(&run_dir).map_err(|error| {
-            EvalError::setup(format!(
-                "create report directory {}: {error}",
-                run_dir.display()
-            ))
-        })?;
-        let path = run_dir.join("results.json");
+    pub fn write_to(&self, output: &Path) -> Result<PathBuf> {
+        fs::create_dir_all(output)
+            .with_context(|| format!("create report directory {}", output.display()))?;
+        let path = output.join("results.json");
         let mut bytes = serde_json::to_vec_pretty(self)
-            .map_err(|error| EvalError::setup(format!("serialize {}: {error}", path.display())))?;
+            .with_context(|| format!("serialize {}", path.display()))?;
         bytes.push(b'\n');
-        fs::write(&path, bytes)
-            .map_err(|error| EvalError::setup(format!("write {}: {error}", path.display())))?;
-        Ok(run_dir)
+        fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
+        Ok(path)
+    }
+}
+
+fn required_passes(runs: u32) -> u32 {
+    runs.saturating_mul(2).saturating_add(2) / 3
+}
+
+fn median(values: impl IntoIterator<Item = u8>) -> Option<f64> {
+    let mut values: Vec<_> = values.into_iter().collect();
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable();
+    let middle = values.len() / 2;
+    if values.len() % 2 == 1 {
+        Some(f64::from(values[middle]))
+    } else {
+        Some((f64::from(values[middle - 1]) + f64::from(values[middle])) / 2.0)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use harness::prompt::SystemPromptStrategy;
-    use serde_json::json;
-    use tempfile::tempdir;
-
     use super::*;
 
-    fn subject() -> SubjectArtifactV1 {
-        SubjectArtifactV1 {
-            schema_version: "1",
-            subject_id: "subject".into(),
-            subject_sha256: "a".repeat(64),
-            system_prompt_sha256: "b".repeat(64),
-            model: "model".into(),
-            provider: "provider".into(),
-            system_prompt_strategy: SystemPromptStrategy::Override,
-            thinking_level: None,
-            provider_options: None,
-        }
+    fn run(score: u8, passed: bool) -> E2eRunReport {
+        let mut report = E2eRunReport::new("run".into(), "session".into(), "prompt".into());
+        report.score = Some(score);
+        report.status = if passed {
+            RunStatus::Passed
+        } else {
+            RunStatus::QualityFailed
+        };
+        report.passed = passed;
+        report
+    }
+
+    fn aggregate(runs: Vec<E2eRunReport>) -> E2eScenarioReport {
+        E2eScenarioReport::aggregate(
+            "case",
+            80,
+            ModelRequirements::default(),
+            ExecutionPolicy {
+                max_turns: 1,
+                max_output_tokens: 1,
+                max_total_tokens: 1,
+                timeout_seconds: 1,
+                thinking_level: None,
+            },
+            runs,
+        )
     }
 
     #[test]
-    fn writes_one_self_contained_run_report() {
-        let mut scenario = E2eScenarioReportV1::new("example", "session-1".into(), "prompt".into());
-        scenario.push_failure(EvalError::assertion("wrong result"));
-        scenario.finish(12);
-        let limits = E2eLimitsV1 {
-            execution: crate::limits::ExecutionLimitsV1 {
-                max_turns: 20,
-                ..Default::default()
-            },
-            evaluation: crate::limits::EvaluationLimitsV1 {
-                max_function_call_errors: Some(0),
-                ..Default::default()
-            },
-        };
-        let report = E2eRunReportV1::new("run-1".into(), subject(), limits, vec![scenario]);
-        let dir = tempdir().unwrap();
-        let run = report.write_to(dir.path()).unwrap();
-        let results: Value =
-            serde_json::from_slice(&fs::read(run.join("results.json")).unwrap()).unwrap();
-        assert_eq!(results["schema_version"], "1");
-        assert_eq!(results["passed"], false);
-        assert_eq!(results["limits"]["execution"]["max_turns"], 20);
-        assert_eq!(results["scenarios"][0]["prompt"], "prompt");
-        assert_eq!(
-            results["scenarios"][0]["failures"][0]["message"],
-            json!("wrong result")
+    fn one_run_requires_that_run_to_pass() {
+        assert!(aggregate(vec![run(80, true)]).passed);
+        assert!(!aggregate(vec![run(100, false)]).passed);
+    }
+
+    #[test]
+    fn three_runs_require_two_passes_and_threshold_median() {
+        let report = aggregate(vec![run(79, false), run(80, true), run(90, true)]);
+        assert!(report.passed);
+        assert_eq!(report.aggregate.required_passes, 2);
+        assert_eq!(report.aggregate.pass_rate, 2.0 / 3.0);
+        assert_eq!(report.aggregate.median_score, Some(80.0));
+
+        let low = aggregate(vec![run(70, true), run(79, true), run(100, false)]);
+        assert!(!low.passed);
+    }
+
+    #[test]
+    fn technical_errors_are_not_quality_scores_and_fail_the_aggregate() {
+        let mut error = E2eRunReport::new("run".into(), "session".into(), "prompt".into());
+        error.push_failure(
+            RunStatus::JudgeError,
+            FailurePhase::Evaluate,
+            "judge unavailable",
         );
-        assert_eq!(fs::read_dir(run).unwrap().count(), 1);
+        let report = aggregate(vec![run(90, true), run(90, true), error]);
+        assert!(!report.passed);
+        assert_eq!(report.aggregate.scored_runs, 2);
+        assert_eq!(report.aggregate.technical_failures, 1);
+        assert_eq!(report.aggregate.median_score, Some(90.0));
+    }
+
+    #[test]
+    fn report_contains_current_execution_shape() {
+        let report = E2eReport::new(
+            ModelArtifact {
+                model: "model".into(),
+                provider: "provider".into(),
+                context_window: 10_000,
+                max_output_tokens: 2_000,
+                supports_tools: Some(true),
+                supports_vision: Some(false),
+                supports_structured_output: Some(false),
+            },
+            None,
+            None,
+            None,
+            vec![aggregate(vec![run(90, true)])],
+        );
+        let value = serde_json::to_value(report).unwrap();
+        assert_eq!(value["scenarios"][0]["aggregate"]["median_score"], 90.0);
+        assert_eq!(value["scenarios"][0]["runs"][0]["status"], "passed");
     }
 }

@@ -1,73 +1,216 @@
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 
+use anyhow::{bail, Result};
 use clap::ValueEnum;
+use harness::functions::metrics::SessionMetricsResponseV1;
+use harness::types::model::{Model, ThinkingLevel};
+use harness::types::turn::FunctionPolicy;
+use serde::Serialize;
 use serde_json::Value;
 
-use crate::context::ScenarioContext;
-use crate::error::EvalError;
-use crate::limits::E2eLimitsV1;
-use crate::report::{E2eScenarioReportV1, ScenarioObservationV1};
+use crate::context::E2eContext;
+use crate::report::{CriterionSource, HardGateReport};
 
 pub mod common;
-pub mod plain_response;
+pub mod direct_answer;
+pub mod persistent_state;
+pub mod reactive_automation;
 pub mod security_review;
-pub mod single_function;
-pub mod triggered_work;
 
-pub type EvaluationFuture<'a> = Pin<Box<dyn Future<Output = Result<Value, EvalError>> + Send + 'a>>;
+pub type EvaluationFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<ObjectiveEvaluation>> + Send + 'a>>;
+pub type CleanupFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
 pub type ScenarioEvaluator =
-    for<'a> fn(&'a ScenarioContext, &'a ScenarioObservationV1, &'a Value) -> EvaluationFuture<'a>;
+    for<'a> fn(&'a E2eContext, &'a ScenarioObservation, &'a Value) -> EvaluationFuture<'a>;
+pub type ScenarioCleanup = for<'a> fn(&'a E2eContext, &'a Value) -> CleanupFuture<'a>;
 
+#[derive(Debug, Clone)]
+pub struct CriterionSpec {
+    pub id: &'static str,
+    pub source: CriterionSource,
+    pub weight: u8,
+    pub description: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ExecutionPolicy {
+    pub max_turns: u32,
+    pub max_output_tokens: u64,
+    pub max_total_tokens: u64,
+    pub timeout_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<ThinkingLevel>,
+}
+
+impl ExecutionPolicy {
+    fn validate(self, scenario_id: &str) -> Result<()> {
+        if self.max_turns == 0
+            || self.max_output_tokens == 0
+            || self.max_total_tokens == 0
+            || self.timeout_seconds == 0
+        {
+            bail!("scenario {scenario_id} has an invalid execution policy");
+        }
+        if self.max_total_tokens < self.max_output_tokens {
+            bail!(
+                "scenario {scenario_id} total-token budget is smaller than its per-call output budget"
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct ModelRequirements {
+    pub tools: bool,
+    pub vision: bool,
+    pub minimum_context_window: u64,
+    pub minimum_output_tokens: u64,
+}
+
+impl ModelRequirements {
+    pub fn unsupported_reasons(self, model: &Model) -> Vec<String> {
+        let mut reasons = Vec::new();
+        if self.tools && model.supports_tools != Some(true) {
+            reasons.push("tool use is required".to_string());
+        }
+        if self.vision && model.supports_vision != Some(true) {
+            reasons.push("vision input is required".to_string());
+        }
+        if model.context_window < self.minimum_context_window {
+            reasons.push(format!(
+                "context window {} is below the required {} tokens",
+                model.context_window, self.minimum_context_window
+            ));
+        }
+        if model.max_output_tokens < self.minimum_output_tokens {
+            reasons.push(format!(
+                "maximum output {} is below the required {} tokens",
+                model.max_output_tokens, self.minimum_output_tokens
+            ));
+        }
+        reasons
+    }
+}
+
+#[derive(Debug)]
 pub struct ScenarioSpec {
     pub id: &'static str,
     pub prompt: String,
     pub evaluation_context: Value,
+    pub functions: FunctionPolicy,
+    pub requirements: ModelRequirements,
+    pub execution: ExecutionPolicy,
+    pub threshold: u8,
+    pub criteria: Vec<CriterionSpec>,
+    pub judge_reference: Option<Value>,
     pub evaluate: ScenarioEvaluator,
+    pub cleanup: ScenarioCleanup,
+}
+
+impl ScenarioSpec {
+    pub fn validate(&self) -> Result<()> {
+        if self.prompt.trim().is_empty() {
+            bail!("scenario {} has an empty prompt", self.id);
+        }
+        self.execution.validate(self.id)?;
+        if !(1..=100).contains(&self.threshold) {
+            bail!("scenario {} threshold must be between 1 and 100", self.id);
+        }
+        let total: u16 = self
+            .criteria
+            .iter()
+            .map(|criterion| u16::from(criterion.weight))
+            .sum();
+        if total != 100 {
+            bail!(
+                "scenario {} criterion weights total {total}, expected 100",
+                self.id
+            );
+        }
+        let mut ids = HashSet::new();
+        for criterion in &self.criteria {
+            if criterion.id.trim().is_empty() || criterion.weight == 0 {
+                bail!("scenario {} has an invalid criterion", self.id);
+            }
+            if !ids.insert(criterion.id) {
+                bail!("scenario {} repeats criterion {}", self.id, criterion.id);
+            }
+        }
+        let needs_judge = self
+            .criteria
+            .iter()
+            .any(|criterion| criterion.source == CriterionSource::Judge);
+        if needs_judge != self.judge_reference.is_some() {
+            bail!(
+                "scenario {} judge criteria and reference must be configured together",
+                self.id
+            );
+        }
+        Ok(())
+    }
+
+    pub fn needs_judge(&self) -> bool {
+        self.judge_reference.is_some()
+    }
+}
+
+pub struct ScenarioObservation {
+    pub metrics: SessionMetricsResponseV1,
+    pub transcript: Value,
+    pub output: Vec<String>,
+}
+
+pub struct ObjectiveEvaluation {
+    pub hard_gates: Vec<HardGateReport>,
+    pub awards: Vec<CriterionAward>,
+    pub evidence: Value,
+}
+
+pub struct CriterionAward {
+    pub id: &'static str,
+    pub awarded: u8,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ScenarioId {
-    #[value(name = "plain_response")]
-    PlainResponse,
-    #[value(name = "single_function")]
-    SingleFunction,
+    #[value(name = "direct_answer")]
+    DirectAnswer,
+    #[value(name = "persistent_state")]
+    PersistentState,
     #[value(name = "security_review")]
     SecurityReview,
-    #[value(name = "triggered_work")]
-    TriggeredWork,
+    #[value(name = "reactive_automation")]
+    ReactiveAutomation,
 }
 
 impl ScenarioId {
     pub const ALL: [Self; 4] = [
-        Self::PlainResponse,
-        Self::SingleFunction,
+        Self::DirectAnswer,
+        Self::PersistentState,
         Self::SecurityReview,
-        Self::TriggeredWork,
+        Self::ReactiveAutomation,
     ];
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::PlainResponse => plain_response::ID,
-            Self::SingleFunction => single_function::ID,
+            Self::DirectAnswer => direct_answer::ID,
+            Self::PersistentState => persistent_state::ID,
             Self::SecurityReview => security_review::ID,
-            Self::TriggeredWork => triggered_work::ID,
+            Self::ReactiveAutomation => reactive_automation::ID,
         }
     }
 
-    pub async fn run(
-        self,
-        context: &ScenarioContext,
-        run_id: &str,
-        limits: &E2eLimitsV1,
-    ) -> E2eScenarioReportV1 {
-        let spec = match self {
-            Self::PlainResponse => plain_response::scenario(run_id),
-            Self::SingleFunction => single_function::scenario(run_id),
+    pub fn spec(self, run_id: &str) -> ScenarioSpec {
+        match self {
+            Self::DirectAnswer => direct_answer::scenario(run_id),
+            Self::PersistentState => persistent_state::scenario(run_id),
             Self::SecurityReview => security_review::scenario(run_id),
-            Self::TriggeredWork => triggered_work::scenario(run_id),
-        };
-        common::run(context, run_id, limits, spec).await
+            Self::ReactiveAutomation => reactive_automation::scenario(run_id),
+        }
     }
 }
 
@@ -86,22 +229,56 @@ pub fn selected(requested: &[ScenarioId]) -> Vec<ScenarioId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use harness::types::model::Model;
 
     #[test]
-    fn defaults_to_the_prompt_evaluation_scenarios() {
-        assert_eq!(selected(&[]), ScenarioId::ALL);
-        assert_eq!(ScenarioId::ALL.len(), 4);
+    fn registry_contains_four_unique_valid_scenarios() {
+        let mut ids = HashSet::new();
+        for scenario in ScenarioId::ALL {
+            assert!(ids.insert(scenario.as_str()));
+            scenario.spec("run").validate().unwrap();
+        }
+        assert_eq!(ids.len(), 4);
     }
 
     #[test]
     fn explicit_selection_preserves_order_and_deduplicates() {
         assert_eq!(
             selected(&[
-                ScenarioId::TriggeredWork,
-                ScenarioId::PlainResponse,
-                ScenarioId::TriggeredWork,
+                ScenarioId::ReactiveAutomation,
+                ScenarioId::DirectAnswer,
+                ScenarioId::ReactiveAutomation,
             ]),
-            vec![ScenarioId::TriggeredWork, ScenarioId::PlainResponse]
+            vec![ScenarioId::ReactiveAutomation, ScenarioId::DirectAnswer]
         );
+    }
+
+    #[test]
+    fn model_requirements_explain_every_unsupported_capability() {
+        let model = Model {
+            id: "small".into(),
+            provider: "test".into(),
+            display_name: None,
+            context_window: 8_000,
+            max_output_tokens: 1_000,
+            input_limit: None,
+            supports_thinking: None,
+            supports_xhigh: None,
+            reasoning_efforts: None,
+            supports_tools: Some(false),
+            supports_vision: None,
+            supports_cache: None,
+            supports_structured_output: None,
+            thinking_budgets: None,
+            pricing: None,
+        };
+        let reasons = ModelRequirements {
+            tools: true,
+            vision: true,
+            minimum_context_window: 16_000,
+            minimum_output_tokens: 2_000,
+        }
+        .unsupported_reasons(&model);
+        assert_eq!(reasons.len(), 4);
     }
 }
