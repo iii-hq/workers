@@ -1,0 +1,167 @@
+name: Harness E2E
+
+on:
+  workflow_call:
+    secrets:
+      anthropic_api_key:
+        required: true
+
+jobs:
+  e2e:
+    name: harness e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read and validate engine.lock
+        id: lock
+        run: |
+          set -euo pipefail
+          lock=harness/tests/integration/engine.lock
+          read_field() {
+            local field=$1 values
+            values=$(sed -n "s/^${field} = \"\\([^\"]*\\)\"$/\\1/p" "$lock")
+            [[ $(printf '%s\n' "$values" | sed '/^$/d' | wc -l) -eq 1 ]] || {
+              echo "engine.lock: $field must appear exactly once"
+              exit 3
+            }
+            printf '%s' "$values"
+          }
+          invalid=$(sed \
+            -e '/^[[:space:]]*$/d' \
+            -e '/^[[:space:]]*#/d' \
+            -e '/^\(repository\|revision\|package\|binary\) = "[^"]*"$/d' \
+            "$lock")
+          [[ -z "$invalid" ]] || {
+            echo "engine.lock: unsupported or malformed entry"
+            printf '%s\n' "$invalid"
+            exit 3
+          }
+          repository=$(read_field repository)
+          revision=$(read_field revision)
+          package=$(read_field package)
+          binary=$(read_field binary)
+          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+            echo "engine.lock: repository must be an owner/name slug"
+            exit 3
+          }
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "engine.lock: revision must be 40-hex"
+            exit 3
+          }
+          [[ "$package" =~ ^[A-Za-z0-9_-]+$ ]] || {
+            echo "engine.lock: package contains unsupported characters"
+            exit 3
+          }
+          [[ "$binary" =~ ^target/(debug|release)/[A-Za-z0-9_.-]+$ ]] || {
+            echo "engine.lock: binary must be a target profile path"
+            exit 3
+          }
+          {
+            echo "repository=$repository"
+            echo "revision=$revision"
+            echo "package=$package"
+            echo "binary=$binary"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout pinned engine source
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ steps.lock.outputs.repository }}
+          ref: ${{ steps.lock.outputs.revision }}
+          path: target/integration-engine-src
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Restore engine build
+        id: engine-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: target/integration-engine-src/target
+          key: integration-engine-${{ runner.os }}-${{ runner.arch }}-${{ steps.lock.outputs.revision }}-${{ hashFiles('target/integration-engine-src/Cargo.lock') }}
+
+      - name: Build pinned engine
+        working-directory: target/integration-engine-src
+        run: cargo build --locked --release -p ${{ steps.lock.outputs.package }}
+
+      - name: Restore E2E Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harness-e2e
+          save-if: false
+          workspaces: |
+            harness -> target
+            state -> target
+            queue -> target
+            session-manager -> target
+            llm-router -> target
+            provider-anthropic -> target
+            context-manager -> target
+            iii-directory -> target
+            cron -> target
+            eval -> target
+
+      - name: E2E crate tests
+        run: cargo test --locked --manifest-path harness/Cargo.toml -p harness-e2e
+
+      - name: E2E crate lint
+        run: cargo clippy --locked --manifest-path harness/Cargo.toml -p harness-e2e --all-targets -- -D warnings
+
+      - name: Build E2E stack
+        run: |
+          set -euo pipefail
+          for worker in state queue session-manager llm-router provider-anthropic context-manager iii-directory cron; do
+            cargo build --locked --release --manifest-path "$worker/Cargo.toml"
+          done
+          cargo build --locked --release \
+            --manifest-path harness/Cargo.toml \
+            -p harness \
+            -p harness-e2e
+
+      - name: Run real-model E2E scenarios
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
+          III_BIN: ${{ github.workspace }}/target/integration-engine-src/${{ steps.lock.outputs.binary }}
+          HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
+        run: harness/tests/e2e/run-ci.sh
+
+      - name: Write E2E summary
+        if: always()
+        run: |
+          {
+            echo "### Harness E2E"
+            echo
+            results=$(find target/harness-e2e/results -name results.json -type f 2>/dev/null | head -n 1)
+            if [[ -n "$results" ]]; then
+              jq -r '
+                "| Scenario | Status |",
+                "| --- | --- |",
+                (.scenarios[] | "| \(.scenario_id) | \(if .passed // (.status == \"pass\") then \"pass\" else \"fail\" end) |")
+              ' "$results"
+            else
+              echo "No E2E result report was produced."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload E2E results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-results
+          path: target/harness-e2e/results/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload E2E diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-diagnostics
+          path: |
+            target/harness-e2e/logs/
+            target/harness-e2e/stack/
+          retention-days: 14
+          if-no-files-found: ignore

@@ -1,151 +1,152 @@
-# Harness integration E2E
+# Harness E2E tests
 
-Deterministic public-path regression tests for the harness. Each scenario
-boots a fresh isolated stack with the pinned engine and the real queue,
-session-manager, context-manager, iii-directory, and harness workers. Only
-the `router::*` model boundary is replaced by a strict scripted worker.
+This package runs the harness against real models. Its primary binary executes
+the E2E scenarios for one subject; the comparison binary supports exactly two
+experiments:
 
-No provider key or network access is required.
+- Same system prompt with two different models.
+- Same model with two different system prompts.
+
+Every scenario follows one execution path:
+
+1. Build the scenario prompt.
+2. Call `harness::send` once.
+3. Wait for `harness::turn-completed`.
+4. Read `harness::metrics` and the root transcript.
+5. Evaluate whether the requested result works.
+
+The common runner owns steps 2–4. A scenario defines only its prompt and its
+result evaluation. Evaluations may inspect the transcript or call existing iii
+functions to test durable output.
+
+## Compare subjects
+
+```bash
+cargo run -p harness-e2e --bin harness-prompt-eval -- \
+  --control tests/e2e/subjects/luna.json \
+  --treatment tests/e2e/subjects/sol.json \
+  --runs 3 \
+  --output target/prompt-eval \
+  --max-total-tokens 100000
+```
+
+The comparison type is inferred from the subject files. Every setting other
+than the model or system-prompt contents must remain equal. Ambiguous,
+identical, or multi-variable comparisons fail before a model call.
+
+Use repeatable `--scenario` arguments for a focused comparison:
+
+```bash
+cargo run -p harness-e2e --bin harness-prompt-eval -- \
+  --control path/to/control.json \
+  --treatment path/to/treatment.json \
+  --runs 3 \
+  --output target/prompt-eval \
+  --scenario plain_response \
+  --scenario security_review
+```
+
+The output contains `comparison.json` and one self-contained `results.json`
+for every control and treatment run. The comparison reports pass counts and
+median execution, token, function-call, error, cost, trace, span, and trace
+duration metrics per scenario when the engine's in-memory observability
+exporter is available.
+The treatment passes the correctness gate only when every treatment run passes
+and no scenario regresses relative to the control.
+
+## Limits
+
+Every control and treatment run uses one shared limit policy. Limits are not
+part of a subject, so a comparison still changes only the model or system
+prompt.
+
+Execution limits constrain the run while it is active:
+
+- `--scenario-timeout-seconds` defaults to `300`; expiry calls `harness::stop`.
+- `--invocation-timeout-seconds` defaults to `120` for each iii invocation.
+- `--max-turns` defaults to `20`.
+- `--max-output-tokens-per-call` defaults to `8192`.
+- `--max-total-tokens` defaults to `100000` and means input plus output tokens
+  over the complete root-and-descendant session tree. The harness reserves
+  each call before dispatch and stops the turn before this budget can be
+  exceeded.
+- `--max-cost-usd` is optional. The harness reserves cost before dispatch and
+  fails closed when any selected model lacks catalog pricing.
+
+Evaluation limits use `harness::metrics` after the requested result has been
+evaluated:
+
+- `--max-function-call-errors` defaults to `0`.
+- `--max-error-spans` is optional because it requires the engine's in-memory
+  observability exporter.
+
+Token and cost limits are also checked against `harness::metrics` after the
+run, while the remaining evaluation limits fail the completed scenario.
+Configuring an optional gate without its required metric fails closed as an
+evidence error. Every `results.json` and `comparison.json` records the
+effective limit policy.
 
 ## Scenarios
 
-| id | slug | driver | coverage |
-|---|---|---|---|
-| E2E-001 | `streamed-text` | direct | streamed text reaches durable completion |
-| E2E-002 | `exactly-once-function` | direct | a native function executes exactly once |
-| E2E-003 | `reseed-parked-message` | direct | a message parked during a turn's failing final step is delivered by a harness-reseeded turn |
-| E2E-004 | `join-spec-mismatch` | direct | a join predecessor registered with a divergent reaction spec is rejected at registration |
-| E2E-005 | `reaction-policy-inheritance` | direct | a reaction with no options inherits the registering turn's dispatch policy |
-| E2E-006 | `state-worker-sidecar` | direct | a state-key reaction fires through the standalone state worker with its metadata sidecar (probe-hook driven) |
-| E2E-007 | `coalesced-fire` | direct | a burst past the fire-rate cap coalesces: cap + 1 dispatches, the trailing one stamped `__coalesced_fires` (shrunken gate via harness env; probe-side whole-run call evidence) |
-| E2E-008 | `reaction-unregisters-run` | direct | a reaction session in the registrant's lineage unregisters the registrant's subscription (serve-time capture of the runtime sub id; probe-side call await) |
-| E2E-009 | `late-join-predecessor-replay` | direct | a join predecessor registered after its watched session completed receives a catch-up completion fire (level-triggered join barrier; `probe_after_calls` gating) |
-| UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
-| UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
+The current scenarios are:
 
-Each fixture is defined end to end in its own `src/scenarios/*.rs` file with a
-small typed DSL. The scenario keeps its send policy, router request matchers,
-response behavior, controlled function, function history, and verification
-visible at the call site. Builders compile directly to the runtime types; there
-is no YAML, macro layer, inferred history, or generic authored-scenario
-compiler.
+- `plain_response`: checks an exact text response without tools.
+- `single_function`: checks one durable state mutation.
+- `security_review`: checks structured reasoning from the final response.
+- `triggered_work`: checks the durable result of reactive work.
 
-## Run the direct scenarios
+`single_function` and `triggered_work` exercise multiple internal model turns,
+but each scenario still starts with exactly one runner call to `harness::send`.
 
-```bash
-make -C harness integration-e2e III_BIN=<path-to-pinned-iii>
+To add a scenario, add a module that returns a `ScenarioSpec` containing:
 
-# Select one direct scenario by id or slug.
-make -C harness integration-e2e \
-  III_BIN=<path-to-pinned-iii> \
-  INTEGRATION_SCENARIO=E2E-001
+- the prompt;
+- private data needed by the evaluation;
+- an async evaluation function.
+
+Do not reproduce send, completion, metrics, transcript, timeout, or report
+handling in scenario modules.
+
+## Subjects
+
+Subject files resolve `system_prompt_path` relative to the subject file:
+
+```json
+{
+  "schema_version": "1",
+  "subject_id": "baseline",
+  "model": "resolved-model-id",
+  "provider": "provider-route",
+  "system_prompt_path": "system-prompt.md",
+  "system_prompt_strategy": "override",
+  "thinking_level": "low"
+}
 ```
 
-The engine is never downloaded by the runner. CI builds the source revision
-in `engine.lock`; local runs receive the corresponding binary through
-`III_BIN` or `--engine-bin`.
+For a model comparison, both subjects use the same provider and exact prompt
+contents but different `model` values. For a system-prompt comparison, they use
+the same model and provider but different prompt contents.
 
-Exit codes are:
+## Run one subject
 
-- `0`: every selected scenario passed;
-- `2`: contract failure or scenario timeout;
-- `3`: setup, process, or runner error.
-
-## Open an isolated Console playground
+Run the complete E2E suite against an already-running local stack:
 
 ```bash
-make -C harness integration-playground III_BIN=<path-to-pinned-iii>
+cargo run -p harness-e2e -- \
+  --subject tests/e2e/subjects/luna.json \
+  --output target/e2e
 ```
 
-The command builds and starts the production Console together with the
-isolated integration stack. It creates the scenario session and prints its
-Console URL. For the default UI-001 scenario:
-
-1. Open the printed URL.
-2. Select the pre-created integration session.
-3. Send `Return the console fixture phrase.` through the message composer.
-4. Wait for `console fixture complete`.
-5. Stop the command with Ctrl-C.
-
-After a completed turn, shutdown collects evidence, grades the scenario, and
-writes `playground-result.json`. Stopping before a turn completes is a
-contract failure.
-
-The underlying command accepts one scenario only:
+Select one or more scenarios while developing or diagnosing a failure:
 
 ```bash
-harness-integration playground \
-  --engine-bin <iii> \
-  --harness-bin <harness> \
-  --console-bin <console> \
-  --worker-bin queue=<queue> \
-  --worker-bin session-manager=<session-manager> \
-  --worker-bin context-manager=<context-manager> \
-  --worker-bin iii-directory=<iii-directory> \
-  --scenario console-streamed-text
+cargo run -p harness-e2e -- \
+  --subject tests/e2e/subjects/luna.json \
+  --output target/e2e \
+  --scenario single_function
 ```
 
-`--ready-file <path>` optionally publishes an atomic JSON manifest for
-Playwright. The manifest includes the engine and Console URLs, session,
-scenario, model, message, controlled function ids, compiled direct send, and
-result path. There is no separate start signal: Playwright either invokes the
-compiled send through the SDK or submits through the Console UI.
-
-## Validate fixtures
-
-```bash
-make -C harness integration-validate
-cargo test --manifest-path harness/Cargo.toml -p harness-integration
-cargo clippy --manifest-path harness/Cargo.toml \
-  -p harness-integration --all-targets -- -D warnings
-```
-
-`validate --scenario all` checks every fixture. `run --scenario all` executes
-the direct scenarios (E2E-001, E2E-002, E2E-003); UI-001 and UI-002 must use
-`playground`. E2E-003 produces two terminal turns from one send: generation 1
-steers a message into the running session (it parks durably) and then fails,
-so the harness's failed finalize drains the parked row and reseeds a turn to
-react to it. The failed route is deliberate — a park during a *completing*
-terminal generation is always delivered earlier by the loop's steering check,
-so only the failed finalize (which has no steering check) reaches the drain
-deterministically from the public boundary; both finalize paths share the
-drain-and-reseed under test. The fixture declares the per-turn statuses
-(`failed`, then `completed`) and the floor enforces them positionally, along
-with a single trace covering both turns (harness-seeded turns chain into the
-originating send's trace).
-
-The fixture tests pin:
-
-- the streamed frame sequence and terminal response agreement;
-- function-call and function-result history for E2E-002;
-- the Console-specific system-prompt and `agent_trigger` tool matchers;
-- serialization round trips and the authoritative `harness::send` schema.
-
-## Runtime and evidence
-
-The direct lifecycle is allocate → boot → arm → send → await → collect →
-grade → teardown → report. Playground replaces send with an externally
-initiated Console or SDK turn and waits for shutdown after completion.
-
-- Harness readiness, completion, and trace stabilization are awakened by iii
-  triggers. A bounded boot-only discovery barrier verifies the authoritative
-  function surface because the pinned engine does not replay its current
-  registry to late subscribers.
-- All RPCs and event waits use bounded monotonic deadlines.
-- The observability worker captures every session trace with 100% sampling.
-- Child processes run in dedicated process groups and teardown uses SIGTERM
-  followed by SIGKILL within one hard cleanup budget.
-- Router matching is explicit for all request fields.
-
-Direct runs write `result.json`, `execution.json`, `teardown.json`, and
-`stack.json` below `target/integration/<run-id>/`. Scenario evidence includes
-the transcript, status, router calls, and complete session trace trees.
-`traces.json` is the execution oracle for controlled functions and lifecycle
-delivery. `result.json` is stable across runs because concrete run, session,
-and turn ids are scrubbed from failure text; `execution.json` records the
-SHA-256 of those exact result bytes.
-
-Playground runs use `target/console-e2e/<run-id>/` and additionally write
-`playground-ready.json` and `playground-result.json`. The result contains only
-a compact trace summary; full spans remain in the scenario artifact. Passing
-runs keep compact reports and remove heavyweight stack state.
+CI uses `subjects/ci.json` with the repository's Anthropic credential. The
+checked-in stack launcher is CI-specific: it boots the pinned engine and the
+minimal worker set in isolated directories, then writes results and process
+logs below `target/harness-e2e`.

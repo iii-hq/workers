@@ -30,7 +30,7 @@ RUST_WORKERS   := $(filter-out $(PYTHON_WORKERS),$(STACK))
 
 GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-run dev-up dev-down dev-restart \
                     engine wait-engine wait-base wait-stack restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
-                    ensure-session prepare-scrapling require-engine where integration-e2e integration-playground integration-validate,$(MAKECMDGOALS))
+                    ensure-session prepare-scrapling require-engine where integration-test integration-playground integration-validate,$(MAKECMDGOALS))
 SELECTED_WORKERS := $(strip $(GOAL_ARGS))
 ACTIVE_WORKERS   := $(if $(SELECTED_WORKERS),$(SELECTED_WORKERS),$(STACK))
 UNKNOWN_WORKERS  := $(filter-out $(STACK),$(SELECTED_WORKERS))
@@ -42,7 +42,7 @@ RUN_FLAG   := $(if $(filter release,$(RUN_PROFILE)),--release,)
 
 .PHONY: help install-iii-next build install-local clean cargo-clean dev-run dev-up dev-down dev-restart engine wait-engine wait-base wait-stack \
         restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach ensure-session prepare-scrapling \
-        require-engine where integration-e2e integration-playground integration-validate $(STACK)
+        require-engine where integration-test integration-playground integration-validate $(STACK)
 
 help:
 	@printf '%s\n' \
@@ -64,7 +64,7 @@ help:
 	  '  make build [workers...]             cargo build stack or selected workers' \
 	  '  make cargo-clean [workers...]       cargo clean stack or selected workers' \
 	  '  make install-local [workers...]     build and symlink into ~/.iii/workers' \
-	  '  make integration-e2e III_BIN=<iii>  run the harness integration scenarios (tests/e2e)' \
+	  '  make integration-test III_BIN=<iii>  run the harness integration scenarios (tests/integration)' \
 	  '  make integration-playground III_BIN=<iii>  open the Console against an isolated integration stack' \
 	  '  make integration-validate           validate every integration scenario'
 
@@ -361,12 +361,12 @@ where:
 	  echo "  no tmux session named $(TMUX_SESSION)"
 
 # ---------------------------------------------------------------------------
-# Harness integration E2E (see harness/tests/e2e/README.md)
+# Harness integration tests (see harness/tests/integration/README.md)
 #
-# Builds the subject stack + the harness workspace's E2E runner and runs every
+# Builds the subject stack + the harness workspace's integration runner and runs every
 # scenario against the pinned engine binary. The
 # engine is never downloaded here: pass III_BIN (CI builds it from
-# tests/e2e/engine.lock; locally see that file for the pinned source).
+# tests/integration/engine.lock; locally see that file for the pinned source).
 INTEGRATION_WORKERS := queue iii-directory session-manager context-manager state
 INTEGRATION_PROFILE ?= release
 INTEGRATION_FLAG    := $(if $(filter release,$(INTEGRATION_PROFILE)),--release,)
@@ -375,10 +375,10 @@ INTEGRATION_ARTIFACTS ?= $(REPO_ROOT)/target/integration
 INTEGRATION_PLAYGROUND_SCENARIO ?= console-streamed-text
 INTEGRATION_PLAYGROUND_ARTIFACTS ?= $(REPO_ROOT)/target/console-e2e
 
-integration-e2e:
+integration-test:
 	@if [ -z "$(III_BIN)" ]; then \
 	  echo "III_BIN is required: path to the pinned iii engine binary."; \
-	  echo "Pinned source: harness/tests/e2e/engine.lock"; \
+	  echo "Pinned source: harness/tests/integration/engine.lock"; \
 	  exit 3; \
 	fi
 	@for w in $(INTEGRATION_WORKERS) harness; do \
@@ -402,7 +402,7 @@ integration-e2e:
 integration-playground:
 	@if [ -z "$(III_BIN)" ]; then \
 	  echo "III_BIN is required: path to the pinned iii engine binary."; \
-	  echo "Pinned source: harness/tests/e2e/engine.lock"; \
+	  echo "Pinned source: harness/tests/integration/engine.lock"; \
 	  exit 3; \
 	fi
 	@for w in $(INTEGRATION_WORKERS) harness console; do \

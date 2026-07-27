@@ -1,5 +1,5 @@
 [workspace]
-members = ["tests/e2e"]
+members = ["tests/e2e", "tests/integration"]
 resolver = "2"
 
 [package]
@@ -47,7 +47,7 @@ serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 
-# The E2E runner digests every spawned binary before boot. Optimizing sha2 in
+# The integration runner digests every spawned binary before boot. Optimizing sha2 in
 # development avoids a long stall when hashing large debug worker binaries.
 [profile.dev.package.sha2]
 opt-level = 3
