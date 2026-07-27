@@ -1050,6 +1050,7 @@ async fn models_changed_event_reaches_a_trigger_subscriber() {
             function_id: "probe::on_models_changed".into(),
             config: json!({}),
             metadata: None,
+            namespace: probe.namespace(),
         })
         .expect("router::models::changed trigger registered");
 

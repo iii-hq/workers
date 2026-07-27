@@ -335,6 +335,7 @@ mod tests {
             function_id: function_id.into(),
             config,
             metadata: None,
+            namespace: None,
         }
     }
 

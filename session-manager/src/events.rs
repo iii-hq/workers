@@ -1285,6 +1285,7 @@ mod tests {
                 function_id: "ui::recv".into(),
                 config: json!({}),
                 metadata: None,
+                namespace: None,
             })
             .unwrap();
 
@@ -1313,6 +1314,7 @@ mod tests {
             function_id: "ui::recv".into(),
             config: json!({ "session_id": "s_1", "roles": ["assistant"] }),
             metadata: None,
+            namespace: None,
         })
         .unwrap();
         assert_eq!(set.len(), 1);
@@ -1322,6 +1324,7 @@ mod tests {
             function_id: "ui::recv".into(),
             config: json!({ "bogus": true }),
             metadata: None,
+            namespace: None,
         });
         assert!(err.is_err());
         assert_eq!(set.len(), 1);

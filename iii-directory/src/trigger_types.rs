@@ -202,6 +202,7 @@ mod tests {
             function_id: function_id.to_string(),
             config: json!({}),
             metadata: None,
+            namespace: None,
         }
     }
 
