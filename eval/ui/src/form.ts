@@ -41,7 +41,9 @@ export interface EvalFormState {
 }
 
 export const DEFAULT_FORM: EvalFormState = {
-  dimension: 'prompt',
+  // Matches the first tab in NewEvaluationForm — the leading option is the
+  // one that opens selected.
+  dimension: 'system_prompt',
   model: '',
   provider: '',
   runs: '1',

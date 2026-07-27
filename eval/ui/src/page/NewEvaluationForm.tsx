@@ -203,8 +203,8 @@ export function NewEvaluationForm({
           }}
         >
           <TabsList>
-            <TabsTrigger value="prompt">prompt text</TabsTrigger>
             <TabsTrigger value="system_prompt">system prompt</TabsTrigger>
+            <TabsTrigger value="prompt">prompt text</TabsTrigger>
           </TabsList>
         </Tabs>
         <div className="eval-ui-comparison-rule">
