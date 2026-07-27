@@ -13,6 +13,7 @@ import { ArrowUp, Paperclip } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ContextUsage } from '@/components/chat/ContextUsage'
 import { MessageList } from '@/components/chat/MessageList'
+import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import { WaterfallChart } from '@/pages/TracesV2/components/WaterfallChart'
@@ -22,6 +23,9 @@ import { usePlayer } from './usePlayer'
 
 const MODEL_LABEL = 'claude opus 4.7'
 const CONTEXT_WINDOW = 1_000_000
+
+/** The sidebar's write actions are wired to nothing: this is a recording. */
+const noop = () => {}
 
 export interface LandingDemoProps {
   /** Pause the whole thing when the overlay is closed. */
@@ -69,20 +73,37 @@ export function LandingDemo({ active = true, loop = true }: LandingDemoProps) {
   }, [player.spanCount, player.callout])
 
   const working = player.phase === 'streaming'
+  /* The header follows whichever session the sidebar has selected. */
+  const paneWorking = player.activeChild
+    ? player.activeChild.status === 'working'
+    : working
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg text-ink">
       <DemoChrome working={working} />
 
       {/*
-        Two panes side by side once there is room for both. Narrower than
-        that they stack, each with a height of its own and the pair
-        scrolling: a 58/42 split of a phone screen leaves the transcript
-        with no room to be a transcript.
+        Sidebar, transcript, traces — the console's own three columns, once
+        there is room for them. Narrower than that the sidebar drops (a
+        session tree is not worth a phone's width) and the two panes stack,
+        each with a height of its own and the pair scrolling: a 58/42 split
+        of a phone screen leaves the transcript with no room to be one.
       */}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
+        <div className="hidden lg:flex">
+          <ConversationSidebar
+            conversations={player.conversations}
+            activeId={player.activeId}
+            width={260}
+            onSelect={player.select}
+            onCreate={noop}
+            onRename={noop}
+            onRemove={noop}
+          />
+        </div>
+
         {/* ── transcript ─────────────────────────────────────────────── */}
-        <section className="relative flex h-[72vh] shrink-0 flex-col lg:h-auto lg:min-h-0 lg:w-[58%]">
+        <section className="relative flex h-[72vh] shrink-0 flex-col lg:h-auto lg:min-h-0 lg:w-[46%]">
           <header className="flex items-center justify-between gap-3 whitespace-nowrap border-b border-rule px-5 py-3 lg:px-9">
             <div className="flex min-w-0 flex-1 items-center gap-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
               <span className="flex-shrink-0 text-accent" aria-hidden>
@@ -95,11 +116,19 @@ export function LandingDemo({ active = true, loop = true }: LandingDemoProps) {
                 ·
               </span>
               <span className="flex-shrink-0 text-ink-faint">agent</span>
+              {player.activeChild ? (
+                <>
+                  <span className="flex-shrink-0 text-ink-ghost">·</span>
+                  <span className="flex-shrink-0 text-accent">
+                    sub-agent · depth 1
+                  </span>
+                </>
+              ) : null}
               <span className="hidden flex-shrink-0 text-ink-ghost md:inline">
                 ·
               </span>
               <span className="hidden min-w-0 truncate font-mono text-[11px] normal-case tracking-normal tabular-nums text-ink-faint md:inline">
-                {SESSION_ID}
+                {player.activeChild ? player.activeChild.id : SESSION_ID}
               </span>
             </div>
             <div className="flex flex-shrink-0 items-center gap-3 font-mono text-[11px] uppercase tracking-[0.06em]">
@@ -110,9 +139,12 @@ export function LandingDemo({ active = true, loop = true }: LandingDemoProps) {
                 />
               </span>
               <div className="flex items-center gap-2">
-                <StatusDot tone={working ? 'accent' : 'ink'} pulse={working} />
+                <StatusDot
+                  tone={paneWorking ? 'accent' : 'ink'}
+                  pulse={paneWorking}
+                />
                 <span className="text-ink-faint">
-                  {working ? 'working' : 'ready'}
+                  {paneWorking ? 'working' : 'ready'}
                 </span>
               </div>
             </div>

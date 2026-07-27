@@ -11,7 +11,7 @@
  * Lifecycle: idle → typing the prompt → streaming → done → (hold) → reset.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { StoredSpan } from '@/pages/TracesV2/api/traces'
 import {
   toWaterfallData,
@@ -19,6 +19,7 @@ import {
 } from '@/pages/TracesV2/lib/traceTransform'
 import type {
   AssistantMessage,
+  Conversation,
   FunctionTriggerMessage,
   Message,
   MessagePatch,
@@ -53,8 +54,27 @@ function uid(): string {
   return `demo-${seq}`
 }
 
+/** Root chat title, shown in the sidebar. */
+const ROOT_TITLE = 'payments ledger'
+
+function rootConversation(status: Conversation['status']): Conversation {
+  const now = Date.now()
+  return {
+    id: SESSION_ID,
+    title: ROOT_TITLE,
+    model: MODEL_ID,
+    mode: 'agent',
+    messages: [],
+    depth: 0,
+    status,
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
 export interface PlayerState {
   phase: Phase
+  /** The selected session's transcript: the root turn, or a child's. */
   messages: Message[]
   /** Characters of the prompt typed so far, for the composer. */
   typed: string
@@ -70,6 +90,12 @@ export interface PlayerState {
     functionTriggerId: string,
     decision: 'allow' | 'deny',
   ) => Promise<void>
+  /** Root chat plus every session `harness::spawn` created, for the sidebar. */
+  conversations: Conversation[]
+  activeId: string
+  select: (id: string) => void
+  /** The selected session, when it is one of the children. */
+  activeChild: Conversation | null
 }
 
 export function usePlayer(active: boolean, loop = true): PlayerState {
@@ -79,6 +105,9 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
   const [callout, setCallout] = useState<Callout | null>(null)
   const [turnPhase, setTurnPhase] = useState<string | null>(null)
   const [isStreaming, setIsStreaming] = useState(false)
+  /* Child sessions, in spawn order, each carrying its own little transcript. */
+  const [children, setChildren] = useState<Conversation[]>([])
+  const [activeId, setActiveId] = useState<string>(SESSION_ID)
 
   // Spans live in a ref: the scenario mutates them far more often than the
   // waterfall needs to repaint, and the pending tick owns the cadence.
@@ -99,6 +128,64 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
     if (next) {
       calloutTimerRef.current = setTimeout(() => setCallout(null), CALLOUT_MS)
     }
+  }, [])
+
+  const openChild = useCallback((id: string, title: string, task: string) => {
+    const now = Date.now()
+    setChildren((prev) =>
+      prev.some((c) => c.id === id)
+        ? prev
+        : [
+            ...prev,
+            {
+              id,
+              title,
+              model: MODEL_ID,
+              mode: 'agent',
+              parentId: SESSION_ID,
+              depth: 1,
+              spawnedBy: 'agent',
+              status: 'working',
+              messages: [
+                {
+                  id: `${id}-task`,
+                  role: 'user',
+                  content: task,
+                  spawn: true,
+                  createdAt: now,
+                },
+              ],
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+    )
+  }, [])
+
+  const finishChild = useCallback((id: string, result: string) => {
+    const now = Date.now()
+    setChildren((prev) =>
+      prev.map((c) =>
+        c.id === id
+          ? {
+              ...c,
+              status: 'done',
+              updatedAt: now,
+              messages: [
+                ...c.messages,
+                {
+                  id: `${id}-result`,
+                  role: 'assistant',
+                  content: result,
+                  model: MODEL_ID,
+                  mode: 'agent',
+                  createdAt: now,
+                },
+              ],
+            }
+          : c,
+      ),
+    )
   }, [])
 
   const append = useCallback((message: Message) => {
@@ -173,6 +260,8 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
       /* reset */
       spansRef.current = []
       setMessages([])
+      setChildren([])
+      setActiveId(SESSION_ID)
       setTyped('')
       showCallout(null)
       setWaterfall(null)
@@ -365,6 +454,14 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
             showCallout(ev.callout)
             break
           }
+          case 'demo-session-open': {
+            openChild(ev.session.id, ev.session.title, ev.session.task)
+            break
+          }
+          case 'demo-session-done': {
+            finishChild(ev.id, ev.result)
+            break
+          }
         }
 
         if (
@@ -395,12 +492,21 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
       clearTimeout(calloutTimerRef.current)
       gateResolveRef.current = null
     }
-  }, [active, loop, append, patch, repaintSpans, showCallout])
+  }, [
+    active,
+    loop,
+    append,
+    patch,
+    repaintSpans,
+    showCallout,
+    openChild,
+    finishChild,
+  ])
 
   const lastRole = messages.length
     ? messages[messages.length - 1].role
     : undefined
-  const isThinking =
+  const rootThinking =
     isStreaming &&
     (lastRole === 'user' ||
       (lastRole === 'function-trigger' &&
@@ -408,21 +514,43 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
         !(messages[messages.length - 1] as FunctionTriggerMessage)
           .pendingApproval))
 
+  /* Rebuilt only when a child or the root's status changes — not per token,
+     which is what the transcript re-renders on. */
+  const conversations = useMemo(
+    () => [
+      rootConversation(
+        phase === 'streaming' ? 'working' : phase === 'done' ? 'done' : 'idle',
+      ),
+      ...children,
+    ],
+    [children, phase],
+  )
+
+  const activeChild =
+    activeId === SESSION_ID
+      ? null
+      : (children.find((c) => c.id === activeId) ?? null)
+
   return {
     phase,
-    messages,
+    messages: activeChild ? activeChild.messages : messages,
     typed,
     waterfall,
     spanCount,
     callout,
-    isThinking,
-    thinkingDetail:
-      turnPhase === 'accepted'
+    isThinking: activeChild ? activeChild.status === 'working' : rootThinking,
+    thinkingDetail: activeChild
+      ? 'sub-agent working…'
+      : turnPhase === 'accepted'
         ? 'turn accepted, step queued…'
         : turnPhase === 'started'
           ? 'harness::turn started…'
           : undefined,
     resolveApproval,
+    conversations,
+    activeId,
+    select: setActiveId,
+    activeChild,
   }
 }
 

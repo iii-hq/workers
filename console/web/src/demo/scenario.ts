@@ -53,11 +53,21 @@ export interface DemoSpanInit {
   attributes?: Array<[string, unknown]>
 }
 
+/** A child session `harness::spawn` created, as the sidebar shows it. */
+export interface DemoSession {
+  id: string
+  title: string
+  /** The task the parent handed down: the child's seeding user message. */
+  task: string
+}
+
 export type DemoEvent =
   | StreamEvent
   | { kind: 'demo-span-open'; span: DemoSpanInit }
   | { kind: 'demo-span-close'; id: string; status?: 'OK' | 'ERROR' }
   | { kind: 'demo-callout'; callout: Callout }
+  | { kind: 'demo-session-open'; session: DemoSession }
+  | { kind: 'demo-session-done'; id: string; result: string }
 
 export interface ScenarioOptions {
   signal?: AbortSignal
@@ -277,6 +287,125 @@ async function* step(
   yield { kind: 'demo-span-close', id: stepSpan }
 }
 
+/**
+ * One step that dispatches every child in `CHILDREN` as a parallel batch.
+ *
+ * All three cards land together; the gated one holds while the other two are
+ * already running, which is what the batch actually looks like when a
+ * deny-by-default policy only objects to one call in it. Each child opens its
+ * own `execute harness::spawn` span with the child's own `harness::turn step`
+ * nested inside, so the fan-out shows up as three branches of one trace, and
+ * its own session, so it shows up as three rows in the sidebar.
+ */
+async function* spawnFanOut(
+  stepSpan: string,
+  gate: ScenarioOptions['gate'],
+  signal: AbortSignal | undefined,
+): AsyncGenerator<DemoEvent> {
+  const startedAt = Date.now()
+  const spans = new Map<string, string>()
+
+  /** Open the child's span pair and its session — it is running now. */
+  function* launch(child: ChildSpec): Generator<DemoEvent> {
+    const execSpan = spanId('exec')
+    const childStep = spanId('child')
+    spans.set(child.callId, execSpan)
+    yield {
+      kind: 'demo-span-open',
+      span: {
+        id: execSpan,
+        parent: stepSpan,
+        name: 'execute harness::spawn',
+        service: 'harness',
+        kind: 'internal',
+        attributes: [...TURN_TAGS, ['iii.child.session_id', child.sessionId]],
+      },
+    }
+    yield {
+      kind: 'demo-span-open',
+      span: {
+        id: childStep,
+        parent: execSpan,
+        name: 'harness::turn step',
+        service: 'harness',
+        kind: 'internal',
+        attributes: [
+          ['iii.session.id', child.sessionId],
+          ['iii.tag.kind', 'harness.subagent'],
+          ['iii.tag.display_name', `Sub-agent · ${child.title}`],
+        ],
+      },
+    }
+    spans.set(`${child.callId}:step`, childStep)
+    yield {
+      kind: 'demo-session-open',
+      session: { id: child.sessionId, title: child.title, task: child.task },
+    }
+  }
+
+  /* Every card at once — a parallel tool-call batch is one assistant turn. */
+  for (const child of CHILDREN) {
+    yield {
+      kind: 'fcall-start',
+      functionId: 'harness::spawn',
+      input: spawnInput(child),
+      functionTriggerId: child.callId,
+      sessionId: SESSION_ID,
+      ...(child.gated ? { pendingApproval: true } : {}),
+    }
+  }
+  for (const child of CHILDREN) {
+    if (!child.gated) yield* launch(child)
+  }
+
+  yield {
+    kind: 'demo-callout',
+    callout: {
+      anchor: 'transcript',
+      title: 'three sub-agents, one held at the gate',
+      text: 'Each child is its own session with its own budget and its own function policy, listed under this chat as it starts and readable on its own. Only `ledger core` asked for `database::*`, a write scope this session does not hold, so only that one waits for a human. Click approve to release it.',
+    },
+  }
+
+  for (const child of CHILDREN) {
+    if (!child.gated) continue
+    await gate(child.callId)
+    if (signal?.aborted) return
+    yield {
+      kind: 'fcall-approval-cleared',
+      functionTriggerId: child.callId,
+      running: true,
+    }
+    yield* launch(child)
+  }
+
+  /* Children report as they finish, not in dispatch order. */
+  const finishing = [...CHILDREN].sort(
+    (a, b) => a.finishAfterMs - b.finishAfterMs,
+  )
+  let waited = 0
+  for (const child of finishing) {
+    await nap(child.finishAfterMs - waited, signal)
+    if (signal?.aborted) return
+    waited = child.finishAfterMs
+    const childStep = spans.get(`${child.callId}:step`)
+    const execSpan = spans.get(child.callId)
+    if (childStep) yield { kind: 'demo-span-close', id: childStep }
+    if (execSpan) yield { kind: 'demo-span-close', id: execSpan }
+    yield {
+      kind: 'demo-session-done',
+      id: child.sessionId,
+      result: child.resultText,
+    }
+    yield {
+      kind: 'fcall-end',
+      output: spawnResult(child),
+      durationMs: Date.now() - startedAt,
+      functionTriggerId: child.callId,
+    }
+  }
+}
+
 /* ── outputs ──────────────────────────────────────────────────────────── */
 
 const CONNECTED_AT = () => Date.now() - 4 * 60 * 60 * 1000
@@ -406,31 +535,100 @@ const DATABASE_INFO = () => ({
   registered_triggers: [],
 })
 
-const SPAWN_TASK = `Write a payments-ledger worker against the existing \`database\` worker.
+/**
+ * The fan-out. Three children, dispatched in one step, each its own session
+ * with its own budget and its own function policy. Only the first asks for
+ * `database::*` — the write scope this session does not hold — so only the
+ * first stops at the approval gate; the other two dispatch immediately.
+ */
+interface ChildSpec {
+  /** iii function_call_id, and the key the approval resolves against. */
+  callId: string
+  sessionId: string
+  title: string
+  task: string
+  allow: string[]
+  /** Held at the gate before it may run. */
+  gated?: boolean
+  resultText: string
+  resultDetails: Record<string, unknown>
+  /** Delay after the gate clears before this child reports, in ms. */
+  finishAfterMs: number
+}
 
-Four functions: charge::record, charge::refund, webhook::stripe, ledger::reconcile.
-Double-entry rows, idempotent on the provider event id. Use database::transaction
-for anything that writes two rows. Ship tests.`
+const CHILDREN: ChildSpec[] = [
+  {
+    callId: 'fc_spawn_ledger_core',
+    sessionId: 'console-sub-ledger-core',
+    title: 'ledger core',
+    task: `Write the payments-ledger worker's core against the existing \`database\` worker.
 
-const SPAWN_RESULT = {
-  content: [
-    {
-      type: 'text' as const,
-      text: 'payments-ledger scaffolded: 4 functions, 11 tests, ledger schema applied.',
+\`payments::charge::record\` and \`payments::charge::refund\`, double-entry rows,
+\`database::transaction\` for anything that writes two rows. Create the
+\`ledger_entries\` and \`ledger_accounts\` tables.`,
+    allow: ['coder::*', 'database::*'],
+    gated: true,
+    resultText:
+      'ledger core done: charge::record + charge::refund over a double-entry schema, 2 tables created.',
+    resultDetails: {
+      functions: ['payments::charge::record', 'payments::charge::refund'],
+      tables: ['ledger_entries', 'ledger_accounts'],
+      turns_used: 7,
     },
-  ],
-  details: {
-    worker: 'payments-ledger',
-    functions: [
-      'payments::charge::record',
-      'payments::charge::refund',
-      'payments::webhook::stripe',
-      'payments::ledger::reconcile',
-    ],
-    tables: ['ledger_entries', 'ledger_accounts'],
-    tests: 11,
-    turns_used: 6,
+    finishAfterMs: 3400,
   },
+  {
+    callId: 'fc_spawn_ledger_webhook',
+    sessionId: 'console-sub-ledger-webhook',
+    title: 'stripe webhook',
+    task: `Write \`payments::webhook::stripe\` and \`payments::ledger::reconcile\` for the
+payments-ledger worker. Idempotent on the provider event id: a replayed event
+must post nothing and return the original entry.`,
+    allow: ['coder::*', 'web::search'],
+    resultText:
+      'webhook + reconcile done: dedupe keyed on provider_event_id, replays return the original entry.',
+    resultDetails: {
+      functions: ['payments::webhook::stripe', 'payments::ledger::reconcile'],
+      idempotency_key: 'provider_event_id',
+      turns_used: 5,
+    },
+    finishAfterMs: 1100,
+  },
+  {
+    callId: 'fc_spawn_ledger_tests',
+    sessionId: 'console-sub-ledger-tests',
+    title: 'test suite',
+    task: `Write the payments-ledger test suite. Cover double-entry balance, refunds
+over the original amount, webhook replay, concurrent charges on one account,
+and that the schema matches the migration.`,
+    allow: ['coder::*', 'shell::exec'],
+    resultText:
+      'test suite done: 11 tests over the ledger, webhook and schema.',
+    resultDetails: { tests: 11, files: ['tests/ledger.rs'], turns_used: 4 },
+    finishAfterMs: 400,
+  },
+]
+
+function spawnInput(child: ChildSpec) {
+  return {
+    task: child.task,
+    model: 'claude-opus-4-7',
+    session_id: child.sessionId,
+    parent_session_id: SESSION_ID,
+    options: {
+      mode: 'agent',
+      max_turns: 12,
+      output: { type: 'text' },
+      functions: { allow: child.allow, deny: ['compose::*', 'worker::remove'] },
+    },
+  }
+}
+
+function spawnResult(child: ChildSpec) {
+  return {
+    content: [{ type: 'text' as const, text: child.resultText }],
+    details: { session_id: child.sessionId, ...child.resultDetails },
+  }
 }
 
 const TEST_STDOUT = `   Compiling payments-ledger v0.1.0
@@ -471,14 +669,21 @@ Nothing here was scaffolded from a template. The \`database\` worker was already
 connected, so the ledger tables went straight onto it and the new worker joined
 the same engine the rest of your workers are on.
 
+**About those three children.** \`ledger core\`, \`stripe webhook\` and
+\`test suite\` are still listed under this chat. They are real sessions, not log
+lines: each one had its own transcript, its own turn budget and its own
+function policy, and you can open any of them to read what it did. Only
+\`ledger core\` needed a scope this session lacks, so only that one waited on
+you.
+
 **About the pane on the right.** That is not a replay of this chat, it is the
 trace the engine recorded while it happened. Every row above opened a span:
 each \`harness::turn step\` is one durable step of my loop off the queue, the
-\`router::chat\` spans are the model calls, and \`execute payments::charge::record\`
-at the bottom is the function I just built answering a live request. In the
-console you would click any bar for its arguments, its result, and its logs.
-If this turn had crashed halfway, the loop would have resumed from the last
-completed step, into the same trace.`
+three \`harness::spawn\` branches are the children running at the same time, and
+\`execute payments::charge::record\` near the bottom is the function they built
+answering a live request. In the console you would click any bar for its
+arguments, its result, and its logs. If this turn had crashed halfway, the loop
+would have resumed from the last completed step, into the same trace.`
 
 /* ── the script ───────────────────────────────────────────────────────── */
 
@@ -545,52 +750,23 @@ export async function* runScenario(
   )
   if (signal?.aborted) return
 
-  /* step 3 — hand the writing to a sub-agent, behind the approval gate */
+  /* step 3 — fan out to three sub-agents; one of them stops at the gate */
   yield* step(
     3,
     assistant(
-      '`database` gives me durable postgres with transactions, so the ledger can be double-entry without a second datastore. I’ll hand the code to a sub-agent while I stay on the wiring.',
+      '`database` gives me durable postgres with transactions, so the ledger can be double-entry without a second datastore. Three pieces here are independent, so I’ll run them as three sub-agents and stay on the wiring myself.',
       signal,
     ),
     signal,
-    (stepSpan) =>
-      call({
-        fn: 'harness::spawn',
-        worker: 'harness',
-        input: {
-          task: SPAWN_TASK,
-          model: 'claude-opus-4-7',
-          options: {
-            mode: 'agent',
-            max_turns: 12,
-            output: { type: 'text' },
-            functions: {
-              allow: ['coder::*', 'shell::exec', 'database::*'],
-              deny: ['compose::*', 'worker::remove'],
-            },
-          },
-        },
-        output: SPAWN_RESULT,
-        runMs: 4200,
-        parentSpan: stepSpan,
-        signal,
-        gate,
-        functionTriggerId: 'fc_spawn_payments_ledger',
-        inner: [['harness::turn step', 'harness', 0.8]],
-        callout: {
-          anchor: 'transcript',
-          title: 'held at the gate',
-          text: 'Dispatch is deny-by-default. A call outside the allowed set stops here until a human approves it, or a policy does. Click approve to release it.',
-        },
-      }),
+    (stepSpan) => spawnFanOut(stepSpan, gate, signal),
   )
   if (signal?.aborted) return
 
-  /* step 4 — install the worker the child wrote */
+  /* step 4 — install the worker the children wrote */
   yield* step(
     4,
     thought(
-      'Child is done: four functions, eleven tests, schema applied. Install the worker so the engine can route to it.',
+      'All three children are back: core, webhook and tests. Install the worker so the engine can route to it.',
       signal,
     ),
     signal,
