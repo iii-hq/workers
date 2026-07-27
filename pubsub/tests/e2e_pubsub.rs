@@ -47,6 +47,7 @@ async fn publish_fans_out_raw_data_to_subscribe_triggers() {
             function_id: fn_id.to_string(),
             config: json!({"topic": "e2e.orders"}),
             metadata: None,
+            namespace: iii.namespace(),
         })
         .expect("trigger registration");
     }

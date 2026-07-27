@@ -241,6 +241,7 @@ pub fn recording_emitter() -> (Arc<Emitter>, Arc<RecordingDeliverer>) {
                 function_id: "test::recv".into(),
                 config: json!({}),
                 metadata: None,
+                namespace: None,
             })
             .unwrap();
     }

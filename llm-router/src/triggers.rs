@@ -224,12 +224,14 @@ mod tests {
             function_id: "probe::on_ready".into(),
             config: Value::Object(serde_json::Map::new()),
             metadata: None,
+            namespace: None,
         });
         set.insert(TriggerConfig {
             id: "sub-2".into(),
             function_id: "other::recv".into(),
             config: Value::Object(serde_json::Map::new()),
             metadata: None,
+            namespace: None,
         });
         let mut fns = set.function_ids();
         fns.sort();

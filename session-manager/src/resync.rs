@@ -200,6 +200,7 @@ mod tests {
                     function_id: "test::recv".to_string(),
                     config: json!({}),
                     metadata: None,
+                    namespace: None,
                 })
                 .unwrap();
         }
