@@ -161,7 +161,7 @@ export function quoteIdent(driver: DbDriver, ident: string): string {
 }
 
 /** Quote a possibly schema-qualified table reference (`schema.table`). */
-function quoteTableRef(driver: DbDriver, table: string): string {
+export function quoteTableRef(driver: DbDriver, table: string): string {
   if (driver === 'postgres' && table.includes('.')) {
     const [schema, ...rest] = table.split('.')
     return `${quoteIdent(driver, schema)}.${quoteIdent(driver, rest.join('.'))}`

@@ -27,7 +27,7 @@ import {
   listDbs,
   listTables,
   PAGE_SIZE,
-  quoteIdent,
+  quoteTableRef,
 } from './db-data'
 import {
   AlertCircle,
@@ -80,18 +80,22 @@ export function DatabasePage({ host }: { host: Host }) {
     setBump((b) => b + 1)
   }
 
+  // A configured database without a `url` (redacted in the worker's config
+  // response) still counts as configured — fall back to its name, not to the
+  // "nothing here" copy.
+  const subtitle = activeDb
+    ? (activeDb.url ?? activeDb.name)
+    : dbsRead.error
+      ? 'worker not connected'
+      : 'no database configured'
+
   return (
     <div className="db-page">
       <style>{PAGE_CSS}</style>
       <div className="db-head">
         <div>
           <div className="db-title">database</div>
-          <div className="db-sub">
-            {activeDb?.url ??
-              (dbsRead.error
-                ? 'worker not connected'
-                : 'no database configured')}
-          </div>
+          <div className="db-sub">{subtitle}</div>
         </div>
         <div className="db-controls">
           {activeDb ? (
@@ -203,8 +207,10 @@ export function DatabasePage({ host }: { host: Host }) {
           <div className="db-panel">
             {activeDb ? (
               mode === 'sql' ? (
+                // Keyed by db only: a refresh reloads metadata, it must not
+                // wipe an in-progress statement or its results.
                 <SqlPanel
-                  key={`${activeDb.name}:${bump}`}
+                  key={activeDb.name}
                   host={host}
                   db={activeDb.name}
                   driver={activeDb.driver}
@@ -234,7 +240,7 @@ export function DatabasePage({ host }: { host: Host }) {
                   enabled
                   onOpenInSql={(table) => {
                     setSeedSql(
-                      `SELECT * FROM ${quoteIdent(activeDb.driver, table)} LIMIT ${PAGE_SIZE}`,
+                      `SELECT * FROM ${quoteTableRef(activeDb.driver, table)} LIMIT ${PAGE_SIZE}`,
                     )
                     setMode('sql')
                   }}

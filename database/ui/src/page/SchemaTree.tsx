@@ -62,7 +62,9 @@ export function SchemaTree({
       }
       return next
     })
-    if (schemaByTable[table.name] === undefined) {
+    // Retry on re-expand after a failure; a cached schema stays cached.
+    const cached = schemaByTable[table.name]
+    if (cached === undefined || cached === 'error') {
       setSchemaByTable((cur) => ({ ...cur, [table.name]: 'loading' }))
       void Promise.all([
         tableColumns(host, db, driver, table.name),

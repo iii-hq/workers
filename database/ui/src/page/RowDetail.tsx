@@ -5,8 +5,7 @@
  */
 
 import { Button, JsonHighlight } from '@iii-dev/console-ui'
-import { useState } from 'react'
-import { cellText, copyText } from './cells'
+import { useCopyFeedback } from './cells'
 import type { ColumnInfo } from './db-data'
 import { Check, Copy, KeyRound, X } from './icons'
 
@@ -18,18 +17,10 @@ interface RowDetailProps {
 }
 
 export function RowDetail({ table, row, columns, onClose }: RowDetailProps) {
-  const [copied, setCopied] = useState<string | null>(null)
+  const { copied, copy } = useCopyFeedback()
   const names =
     columns.length > 0 ? columns.map((c) => c.name) : Object.keys(row)
   const byName = new Map(columns.map((c) => [c.name, c]))
-
-  const copyValue = (name: string) => {
-    copyText(cellText(row[name]))
-    setCopied(name)
-    window.setTimeout(() => {
-      setCopied((cur) => (cur === name ? null : cur))
-    }, 1200)
-  }
 
   return (
     <aside className="db-rowdetail">
@@ -62,7 +53,7 @@ export function RowDetail({ table, row, columns, onClose }: RowDetailProps) {
               <button
                 type="button"
                 className={`db-field-copy${copied === name ? ' copied' : ''}`}
-                onClick={() => copyValue(name)}
+                onClick={() => copy(name, value)}
                 aria-label={`copy ${name}`}
               >
                 {copied === name ? <Check size={12} /> : <Copy size={12} />}

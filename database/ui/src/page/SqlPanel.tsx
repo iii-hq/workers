@@ -124,7 +124,10 @@ export function SqlPanel({ host, db, driver, seedSql, tables }: SqlPanelProps) {
         const next = await runReadOnlySql(host, db, trimmed)
         setOutcome(next)
         setHistory((cur) => {
-          const updated = [trimmed, ...cur.filter((s) => s !== trimmed)]
+          const updated = [trimmed, ...cur.filter((s) => s !== trimmed)].slice(
+            0,
+            HISTORY_LIMIT,
+          )
           saveHistory(db, updated)
           return updated
         })

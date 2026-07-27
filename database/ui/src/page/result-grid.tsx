@@ -3,7 +3,9 @@
  * (`{ rows, row_count, columns }`). Cells render by value type: NULL is a
  * ghost literal, booleans and numbers are monospace (numbers right-aligned),
  * JSON values collapse to a compact preview, long strings truncate with the
- * full value on hover. Every cell copies its value on click.
+ * full value on hover. Two interaction modes: without `onRowClick` every cell
+ * copies its value on click; with it, the click (or Enter/Space on the focused
+ * row) selects the row and the inspector carries the per-field copy.
  *
  * Ported from the console's chat `ResultGrid` for the injected page: the
  * source already rendered a real `<table>`, so the port keeps the markup and
@@ -11,7 +13,7 @@
  */
 
 import { useState } from 'react'
-import { cellText, copyText } from './cells'
+import { useCopyFeedback } from './cells'
 import { type ColumnMeta, type TableSort, typeCategory } from './db-data'
 import { ArrowDown, ArrowUp, Check, KeyRound } from './icons'
 
@@ -125,7 +127,7 @@ export function ResultGrid({
   hideFooter,
 }: ResultGridProps) {
   const [expanded, setExpanded] = useState(false)
-  const [copied, setCopied] = useState<string | null>(null)
+  const { copied, copy } = useCopyFeedback()
   const cols = resolveColumns(columns, rows)
   const total = rowCount ?? rows.length
   const clamped = !stickyHeader && !expanded && rows.length > CLAMP_ROWS
@@ -134,14 +136,6 @@ export function ResultGrid({
 
   if (total === 0 || cols.length === 0) {
     return <div className="db-grid-empty">· 0 rows</div>
-  }
-
-  const copyCell = (key: string, value: unknown) => {
-    copyText(cellText(value))
-    setCopied(key)
-    window.setTimeout(() => {
-      setCopied((cur) => (cur === key ? null : cur))
-    }, 1200)
   }
 
   return (
@@ -223,6 +217,19 @@ export function ResultGrid({
                 <tr
                   key={i}
                   onClick={onRowClick ? () => onRowClick(i) : undefined}
+                  // Selectable rows are their own control: reachable by tab,
+                  // activated by Enter/Space like the click path.
+                  onKeyDown={
+                    onRowClick
+                      ? (e) => {
+                          if (e.key !== 'Enter' && e.key !== ' ') return
+                          e.preventDefault()
+                          onRowClick(i)
+                        }
+                      : undefined
+                  }
+                  tabIndex={onRowClick ? 0 : undefined}
+                  aria-selected={onRowClick ? selectedRow === i : undefined}
                   className={rowClass || undefined}
                 >
                   {cols.map((col) => {
@@ -245,7 +252,7 @@ export function ResultGrid({
                           <button
                             type="button"
                             className="copycell"
-                            onClick={() => copyCell(key, row[col.name])}
+                            onClick={() => copy(key, row[col.name])}
                             title="click to copy"
                           >
                             {content}
