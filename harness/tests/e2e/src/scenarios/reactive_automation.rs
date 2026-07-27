@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use harness::types::turn::{ExposeMode, FunctionPolicy};
 use serde_json::{json, Value};
 
 use crate::context::E2eContext;
@@ -13,43 +12,18 @@ use super::{
 };
 
 pub const ID: &str = "reactive_automation";
+const SIGNAL_KEY: &str = "reactive_automation:signal";
+const RESULT_KEY: &str = "reactive_automation:result";
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
-    let scope = format!("e2e:{run_id}");
-    let signal_key = "reactive_automation:signal";
-    let result_key = "reactive_automation:result";
-    let signal = json!(true);
-    let expected = json!({ "handled": true, "run_id": run_id });
+    let scope = scope(run_id);
+    let expected = expected(run_id);
     ScenarioSpec {
         id: ID,
         prompt: format!(
-            "Set up a one-time automation so that writing key `{signal_key}` in scope `{scope}` writes this exact JSON value to key `{result_key}` in the same scope: {}. Activate the automation by writing this signal value to `{signal_key}`: {}. Confirm briefly after the automation is configured and the signal has been sent.",
+            "Set up a one-time automation so that writing key `{SIGNAL_KEY}` in scope `{scope}` writes this exact JSON value to key `{RESULT_KEY}` in the same scope: {}. Activate the automation by writing this signal value to `{SIGNAL_KEY}`: true. Confirm briefly after the automation is configured and the signal has been sent.",
             serde_json::to_string(&expected).expect("serialize expected value"),
-            serde_json::to_string(&signal).expect("serialize signal value"),
         ),
-        evaluation_context: json!({
-            "scope": scope,
-            "signal_key": signal_key,
-            "result_key": result_key,
-            "signal": signal,
-            "expected": expected,
-        }),
-        functions: FunctionPolicy {
-            allow: vec![
-                "engine::functions::list".into(),
-                "engine::functions::info".into(),
-                "engine::triggers::list".into(),
-                "engine::triggers::info".into(),
-                "engine::registered-triggers::list".into(),
-                "engine::registered-triggers::info".into(),
-                "engine::register_trigger".into(),
-                "engine::unregister_trigger".into(),
-                "state::get".into(),
-                "state::set".into(),
-            ],
-            expose: ExposeMode::Native,
-            ..FunctionPolicy::default()
-        },
         requirements: ModelRequirements {
             tools: true,
             minimum_context_window: 65_536,
@@ -92,22 +66,19 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
         ],
         judge_reference: None,
         evaluate,
-        cleanup,
+        cleanup: Some(cleanup),
     }
 }
 
 fn evaluate<'a>(
     context: &'a E2eContext,
     observation: &'a ScenarioObservation,
-    evaluation_context: &'a Value,
+    run_id: &'a str,
 ) -> EvaluationFuture<'a> {
     Box::pin(async move {
-        let scope = string_field(evaluation_context, "scope")?;
-        let signal_key = string_field(evaluation_context, "signal_key")?;
-        let result_key = string_field(evaluation_context, "result_key")?;
-        let signal = &evaluation_context["signal"];
-        let expected = &evaluation_context["expected"];
-        let observed = wait_for_state(context, scope, result_key).await?;
+        let scope = scope(run_id);
+        let expected = expected(run_id);
+        let observed = wait_for_state(context, &scope, RESULT_KEY).await?;
         let calls = common::function_calls(&observation.transcript);
 
         let register_calls: Vec<_> = calls
@@ -117,10 +88,10 @@ fn evaluate<'a>(
         let exact_registration = register_calls.len() == 1
             && registration_matches(
                 &register_calls[0].arguments,
-                scope,
-                signal_key,
-                result_key,
-                expected,
+                &scope,
+                SIGNAL_KEY,
+                RESULT_KEY,
+                &expected,
             );
         let state_writes: Vec<_> = calls
             .iter()
@@ -129,15 +100,15 @@ fn evaluate<'a>(
         let exact_signal = state_writes
             .iter()
             .filter(|call| {
-                call.arguments == json!({ "scope": scope, "key": signal_key, "value": signal })
+                call.arguments == json!({ "scope": scope, "key": SIGNAL_KEY, "value": true })
             })
             .count()
             == 1;
         let direct_result_write = state_writes.iter().any(|call| {
-            call.arguments.get("scope").and_then(Value::as_str) == Some(scope)
-                && call.arguments.get("key").and_then(Value::as_str) == Some(result_key)
+            call.arguments.get("scope").and_then(Value::as_str) == Some(scope.as_str())
+                && call.arguments.get("key").and_then(Value::as_str) == Some(RESULT_KEY)
         });
-        let result_matches = observed == *expected;
+        let result_matches = observed == expected;
         let no_errors = observation.metrics.totals.function_call_errors == 0;
         let disciplined = exact_signal && !direct_result_write && no_errors;
         let response = common::final_response(&observation.output);
@@ -266,11 +237,10 @@ async fn wait_for_state(context: &E2eContext, scope: &str, key: &str) -> anyhow:
     }
 }
 
-fn cleanup<'a>(context: &'a E2eContext, evaluation_context: &'a Value) -> CleanupFuture<'a> {
+fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
-        let scope = string_field(evaluation_context, "scope")?;
-        for field in ["signal_key", "result_key"] {
-            let key = string_field(evaluation_context, field)?;
+        let scope = scope(run_id);
+        for key in [SIGNAL_KEY, RESULT_KEY] {
             let _: Value = context
                 .trigger("state::delete", json!({ "scope": scope, "key": key }))
                 .await?;
@@ -279,10 +249,12 @@ fn cleanup<'a>(context: &'a E2eContext, evaluation_context: &'a Value) -> Cleanu
     })
 }
 
-fn string_field<'a>(value: &'a Value, field: &str) -> anyhow::Result<&'a str> {
-    value[field]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("missing evaluation field {field}"))
+fn scope(run_id: &str) -> String {
+    format!("e2e:{run_id}")
+}
+
+fn expected(run_id: &str) -> Value {
+    json!({ "handled": true, "run_id": run_id })
 }
 
 #[cfg(test)]

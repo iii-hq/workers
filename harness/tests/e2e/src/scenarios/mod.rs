@@ -6,7 +6,6 @@ use anyhow::{bail, Result};
 use clap::ValueEnum;
 use harness::functions::metrics::SessionMetricsResponseV1;
 use harness::types::model::{Model, ThinkingLevel};
-use harness::types::turn::FunctionPolicy;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -23,8 +22,8 @@ pub type EvaluationFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ObjectiveEvaluation>> + Send + 'a>>;
 pub type CleanupFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
 pub type ScenarioEvaluator =
-    for<'a> fn(&'a E2eContext, &'a ScenarioObservation, &'a Value) -> EvaluationFuture<'a>;
-pub type ScenarioCleanup = for<'a> fn(&'a E2eContext, &'a Value) -> CleanupFuture<'a>;
+    for<'a> fn(&'a E2eContext, &'a ScenarioObservation, &'a str) -> EvaluationFuture<'a>;
+pub type ScenarioCleanup = for<'a> fn(&'a E2eContext, &'a str) -> CleanupFuture<'a>;
 
 #[derive(Debug, Clone)]
 pub struct CriterionSpec {
@@ -99,15 +98,13 @@ impl ModelRequirements {
 pub struct ScenarioSpec {
     pub id: &'static str,
     pub prompt: String,
-    pub evaluation_context: Value,
-    pub functions: FunctionPolicy,
     pub requirements: ModelRequirements,
     pub execution: ExecutionPolicy,
     pub threshold: u8,
     pub criteria: Vec<CriterionSpec>,
     pub judge_reference: Option<Value>,
     pub evaluate: ScenarioEvaluator,
-    pub cleanup: ScenarioCleanup,
+    pub cleanup: Option<ScenarioCleanup>,
 }
 
 impl ScenarioSpec {

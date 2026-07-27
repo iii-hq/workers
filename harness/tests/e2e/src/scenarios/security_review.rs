@@ -1,5 +1,4 @@
-use harness::types::turn::FunctionPolicy;
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::context::E2eContext;
 use crate::report::CriterionSource;
@@ -23,8 +22,6 @@ pub fn scenario(_run_id: &str) -> ScenarioSpec {
 
 For each snippet, identify the vulnerability, explain its impact, and recommend a practical remediation. Keep the review concise and do not perform any external action."#
             .into(),
-        evaluation_context: Value::Null,
-        functions: FunctionPolicy::default(),
         requirements: ModelRequirements {
             minimum_context_window: 16_384,
             minimum_output_tokens: 2_048,
@@ -82,14 +79,14 @@ For each snippet, identify the vulnerability, explain its impact, and recommend 
             }
         })),
         evaluate,
-        cleanup: common::no_cleanup,
+        cleanup: None,
     }
 }
 
 fn evaluate<'a>(
     _context: &'a E2eContext,
     observation: &'a ScenarioObservation,
-    _evaluation_context: &'a Value,
+    _run_id: &'a str,
 ) -> EvaluationFuture<'a> {
     Box::pin(async move {
         let calls = common::function_calls(&observation.transcript);

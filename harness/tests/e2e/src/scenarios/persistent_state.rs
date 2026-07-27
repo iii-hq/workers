@@ -1,4 +1,3 @@
-use harness::types::turn::FunctionPolicy;
 use serde_json::{json, Value};
 
 use crate::context::E2eContext;
@@ -11,35 +10,17 @@ use super::{
 };
 
 pub const ID: &str = "persistent_state";
+const KEY: &str = "persistent_state";
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
-    let scope = format!("e2e:{run_id}");
-    let key = "persistent_state";
-    let expected = json!({
-        "owner": "quality-suite",
-        "run_id": run_id,
-        "status": "stored"
-    });
+    let scope = scope(run_id);
+    let expected = expected(run_id);
     ScenarioSpec {
         id: ID,
         prompt: format!(
-            "Store this JSON value for later use in scope `{scope}` under key `{key}`: {}. Confirm briefly after it has been stored.",
+            "Store this JSON value for later use in scope `{scope}` under key `{KEY}`: {}. Confirm briefly after it has been stored.",
             serde_json::to_string(&expected).expect("serialize static scenario value")
         ),
-        evaluation_context: json!({
-            "scope": scope,
-            "key": key,
-            "expected": expected,
-        }),
-        functions: FunctionPolicy {
-            allow: vec![
-                "engine::functions::list".into(),
-                "engine::functions::info".into(),
-                "state::get".into(),
-                "state::set".into(),
-            ],
-            ..FunctionPolicy::default()
-        },
         requirements: ModelRequirements {
             tools: true,
             minimum_context_window: 32_768,
@@ -76,22 +57,21 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
         ],
         judge_reference: None,
         evaluate,
-        cleanup,
+        cleanup: Some(cleanup),
     }
 }
 
 fn evaluate<'a>(
     context: &'a E2eContext,
     observation: &'a ScenarioObservation,
-    evaluation_context: &'a Value,
+    run_id: &'a str,
 ) -> EvaluationFuture<'a> {
     Box::pin(async move {
-        let scope = string_field(evaluation_context, "scope")?;
-        let key = string_field(evaluation_context, "key")?;
-        let expected = &evaluation_context["expected"];
+        let scope = scope(run_id);
+        let expected = expected(run_id);
         let observed = common::state_value(
             context
-                .trigger("state::get", json!({ "scope": scope, "key": key }))
+                .trigger("state::get", json!({ "scope": scope, "key": KEY }))
                 .await?,
         );
         let calls = common::function_calls(&observation.transcript);
@@ -100,8 +80,8 @@ fn evaluate<'a>(
             .filter(|call| call.function_id == "state::set")
             .collect();
         let exact_write = writes.len() == 1
-            && writes[0].arguments == json!({ "scope": scope, "key": key, "value": expected });
-        let state_matches = observed == *expected;
+            && writes[0].arguments == json!({ "scope": scope, "key": KEY, "value": expected });
+        let state_matches = observed == expected;
         let no_errors = observation.metrics.totals.function_call_errors == 0;
         let response = common::final_response(&observation.output);
         let concise_confirmation = !response.trim().is_empty() && response.chars().count() <= 240;
@@ -154,19 +134,24 @@ fn evaluate<'a>(
     })
 }
 
-fn cleanup<'a>(context: &'a E2eContext, evaluation_context: &'a Value) -> CleanupFuture<'a> {
+fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
-        let scope = string_field(evaluation_context, "scope")?;
-        let key = string_field(evaluation_context, "key")?;
+        let scope = scope(run_id);
         let _: Value = context
-            .trigger("state::delete", json!({ "scope": scope, "key": key }))
+            .trigger("state::delete", json!({ "scope": scope, "key": KEY }))
             .await?;
         Ok(())
     })
 }
 
-fn string_field<'a>(value: &'a Value, field: &str) -> anyhow::Result<&'a str> {
-    value[field]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("missing evaluation field {field}"))
+fn scope(run_id: &str) -> String {
+    format!("e2e:{run_id}")
+}
+
+fn expected(run_id: &str) -> Value {
+    json!({
+        "owner": "quality-suite",
+        "run_id": run_id,
+        "status": "stored"
+    })
 }

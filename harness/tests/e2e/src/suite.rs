@@ -6,6 +6,7 @@ use anyhow::{bail, Context, Result};
 use harness::functions::send::{MessageInput, SendOptions, SendRequest, SendResponse, SessionInit};
 use harness::prompt::SystemPromptStrategy;
 use harness::types::model::Model;
+use harness::types::turn::FunctionPolicy;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -21,6 +22,13 @@ use crate::scenarios::{
 };
 
 const MAX_RUNS: u32 = 20;
+
+fn e2e_function_policy() -> FunctionPolicy {
+    FunctionPolicy {
+        allow: vec!["*".into()],
+        ..FunctionPolicy::default()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SubjectConfig {
@@ -225,12 +233,14 @@ async fn run_once(
             format!("harness::teardown: {error}"),
         );
     }
-    if let Err(error) = (spec.cleanup)(context, &spec.evaluation_context).await {
-        report.push_failure(
-            RunStatus::InfrastructureError,
-            FailurePhase::Cleanup,
-            error.to_string(),
-        );
+    if let Some(cleanup) = spec.cleanup {
+        if let Err(error) = cleanup(context, &run_id).await {
+            report.push_failure(
+                RunStatus::InfrastructureError,
+                FailurePhase::Cleanup,
+                error.to_string(),
+            );
+        }
     }
     report.wall_time_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
     if report.failures.is_empty() {
@@ -303,7 +313,7 @@ async fn execute(
                     max_output_tokens: Some(spec.execution.max_output_tokens),
                     max_total_tokens: Some(spec.execution.max_total_tokens),
                     thinking_level: spec.execution.thinking_level,
-                    functions: Some(spec.functions.clone()),
+                    functions: Some(e2e_function_policy()),
                     ..SendOptions::default()
                 }),
             },
@@ -346,7 +356,7 @@ async fn execute(
     report.output.clone_from(&observation.output);
     report.transcript = Some(observation.transcript.clone());
     report.metrics = Some(observation.metrics.clone());
-    let objective = (spec.evaluate)(context, &observation, &spec.evaluation_context)
+    let objective = (spec.evaluate)(context, &observation, run_id)
         .await
         .map_err(|error| {
             RunFailure::new(
@@ -555,24 +565,14 @@ fn apply_judge_awards(
 mod tests {
     use super::*;
     use crate::report::HardGateReport;
-    use crate::scenarios::{
-        CriterionSpec, ExecutionPolicy, ModelRequirements, ScenarioCleanup, ScenarioEvaluator,
-    };
-    use harness::types::turn::FunctionPolicy;
+    use crate::scenarios::{CriterionSpec, ExecutionPolicy, ModelRequirements, ScenarioEvaluator};
     use serde_json::Value;
 
     fn evaluator<'a>(
         _context: &'a E2eContext,
         _observation: &'a ScenarioObservation,
-        _evaluation_context: &'a Value,
+        _run_id: &'a str,
     ) -> crate::scenarios::EvaluationFuture<'a> {
-        unreachable!()
-    }
-
-    fn cleanup<'a>(
-        _context: &'a E2eContext,
-        _evaluation_context: &'a Value,
-    ) -> crate::scenarios::CleanupFuture<'a> {
         unreachable!()
     }
 
@@ -580,8 +580,6 @@ mod tests {
         ScenarioSpec {
             id: "case",
             prompt: "prompt".into(),
-            evaluation_context: Value::Null,
-            functions: FunctionPolicy::default(),
             requirements: ModelRequirements::default(),
             execution: ExecutionPolicy {
                 max_turns: 1,
@@ -607,8 +605,16 @@ mod tests {
             ],
             judge_reference: Some(json!({"answer": true})),
             evaluate: evaluator as ScenarioEvaluator,
-            cleanup: cleanup as ScenarioCleanup,
+            cleanup: None,
         }
+    }
+
+    #[test]
+    fn e2e_policy_allows_every_function_without_overrides() {
+        let policy = e2e_function_policy();
+        assert_eq!(policy.allow, ["*"]);
+        assert!(policy.deny.is_empty());
+        assert_eq!(policy.expose, Default::default());
     }
 
     #[test]

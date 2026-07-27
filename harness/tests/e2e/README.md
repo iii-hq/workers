@@ -27,8 +27,9 @@ descendant reaches a terminal state.
 
 ## Scenarios
 
-Scenario definitions, prompts, function policies, rubrics, and evaluators live
-under `src/scenarios/`:
+Scenario definitions, prompts, rubrics, and evaluators live under
+`src/scenarios/`. The runner exposes every registered function to every
+scenario through one global `allow: ["*"]` policy:
 
 - `direct_answer`: explains authentication versus authorization without tools.
 - `persistent_state`: discovers and performs one exact durable state write.
@@ -156,7 +157,7 @@ rules:
 
 - prompts describe user intent and never prescribe function ids;
 - declare model requirements and a scenario-sized execution policy;
-- required capabilities are explicit in the scenario's function policy;
+- declare tool support in the model requirements when the scenario needs it;
 - objective effects are hard gates, not judge opinions;
 - criterion ids are unique, weights total 100, and awarded points are bounded;
 - qualitative criteria include a hidden reference for the fixed judge;

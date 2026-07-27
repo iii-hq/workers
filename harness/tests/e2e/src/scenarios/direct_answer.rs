@@ -1,5 +1,4 @@
-use harness::types::turn::FunctionPolicy;
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::context::E2eContext;
 use crate::report::CriterionSource;
@@ -16,8 +15,6 @@ pub fn scenario(_run_id: &str) -> ScenarioSpec {
     ScenarioSpec {
         id: ID,
         prompt: "Explain to a non-technical reader, in at most two sentences, the difference between authentication and authorization. Do not perform any external action.".into(),
-        evaluation_context: Value::Null,
-        functions: FunctionPolicy::default(),
         requirements: ModelRequirements {
             minimum_context_window: 8_192,
             minimum_output_tokens: 1_024,
@@ -57,14 +54,14 @@ pub fn scenario(_run_id: &str) -> ScenarioSpec {
             "format": "at most two sentences for a non-technical reader"
         })),
         evaluate,
-        cleanup: common::no_cleanup,
+        cleanup: None,
     }
 }
 
 fn evaluate<'a>(
     _context: &'a E2eContext,
     observation: &'a ScenarioObservation,
-    _evaluation_context: &'a Value,
+    _run_id: &'a str,
 ) -> EvaluationFuture<'a> {
     Box::pin(async move {
         let calls = common::function_calls(&observation.transcript);

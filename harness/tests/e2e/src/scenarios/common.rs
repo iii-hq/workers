@@ -1,9 +1,8 @@
 use serde_json::{json, Value};
 
-use crate::context::E2eContext;
 use crate::report::HardGateReport;
 
-use super::{CleanupFuture, CriterionAward};
+use super::CriterionAward;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObservedFunctionCall {
@@ -105,13 +104,6 @@ pub fn final_response(output: &[String]) -> &str {
         .find(|text| !text.trim().is_empty())
         .map(String::as_str)
         .unwrap_or("")
-}
-
-pub fn no_cleanup<'a>(
-    _context: &'a E2eContext,
-    _evaluation_context: &'a Value,
-) -> CleanupFuture<'a> {
-    Box::pin(async { Ok(()) })
 }
 
 #[cfg(test)]
