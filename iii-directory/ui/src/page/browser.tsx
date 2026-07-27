@@ -92,7 +92,11 @@ function useContainerNarrow(
  * types. The handler id carries the `iii::` prefix so per-event
  * invocations stay span-suppressed and out of the trace feed; the
  * binding is GC'd with the tab and unregistered on unmount. */
-function useOnChange(host: Host, triggerType: string, onEvent: () => void) {
+export function useOnChange(
+  host: Host,
+  triggerType: string,
+  onEvent: () => void,
+) {
   const onEventRef = useRef(onEvent)
   onEventRef.current = onEvent
   useEffect(() => {

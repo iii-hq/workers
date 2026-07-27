@@ -43,13 +43,15 @@ pub struct FsSkill {
     pub abs_path: PathBuf,
 }
 
-/// One filesystem-backed prompt entry. `description` is parsed from
-/// frontmatter at scan time so [`crate::functions::prompts::mcp_list`]
-/// can render the slash-command picker without re-reading every file.
+/// One filesystem-backed prompt entry. `description` and `kind` are
+/// parsed from frontmatter at scan time so `directory::prompts::list`
+/// can render its rows without re-reading every file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FsPrompt {
     pub name: String,
     pub description: String,
+    /// Frontmatter `kind:`; `None` means the default `command`.
+    pub kind: Option<String>,
     pub abs_path: PathBuf,
 }
 
@@ -74,12 +76,17 @@ pub struct PromptFrontmatter {
     pub name: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    /// Free-form classifier; the library uses `command` (slash-style
+    /// message injection, the default) vs `system` (a full system prompt).
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 /// Parse the REQUIRED prompt frontmatter block out of raw file content.
-/// Shared by [`scan_prompts`] (scan-time) and `directory::prompts::update`
-/// (write-time) so the two validations can't drift: a write that this
-/// function rejects is exactly a file the next scan would skip.
+/// Shared by [`scan_prompts`] / [`scan_user_prompts`] (scan-time) and
+/// `directory::prompts::update` (write-time) so the two validations can't
+/// drift: a write that this function rejects is exactly a file the next
+/// scan would skip.
 pub fn parse_prompt_frontmatter(content: &str) -> Result<PromptFrontmatter, String> {
     let (fm_text, _) = split_frontmatter(content);
     let Some(fm_text) = fm_text else {
@@ -292,6 +299,63 @@ pub fn scan_skills(skills_folder: &Path) -> (Vec<FsSkill>, Vec<SkipReason>) {
 /// Rejection reasons mirror [`scan_skills`]: missing frontmatter,
 /// invalid YAML, missing `description`, invalid prompt name, or a name
 /// collision with another prompt.
+/// Parse one on-disk prompt file: read, split frontmatter, YAML-parse,
+/// derive the name (frontmatter `name:` falling back to the file stem),
+/// validate it, and require a non-empty `description`. Shared by
+/// [`scan_prompts`] and [`scan_user_prompts`] so the frontmatter contract
+/// lives in exactly one place.
+fn parse_prompt_file(abs: PathBuf) -> Result<FsPrompt, SkipReason> {
+    fn skip(path: PathBuf, reason: String) -> SkipReason {
+        SkipReason {
+            kind: SourceKind::Prompt,
+            path,
+            reason,
+        }
+    }
+    let content = match std::fs::read_to_string(&abs) {
+        Ok(c) => c,
+        Err(e) => return Err(skip(abs, format!("read: {e}"))),
+    };
+    let fm = match parse_prompt_frontmatter(&content) {
+        Ok(f) => f,
+        Err(reason) => return Err(skip(abs, reason)),
+    };
+    // Prompt names are flat — fall back to the file stem when frontmatter
+    // doesn't declare one.
+    let derived = abs
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    let name = fm
+        .name
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(derived);
+    if let Err(e) = validate_name(&name) {
+        return Err(skip(abs, format!("invalid prompt name {name:?}: {e}")));
+    }
+    let description = match fm.description {
+        Some(d) if !d.trim().is_empty() => d.trim().to_string(),
+        _ => {
+            return Err(skip(
+                abs,
+                "frontmatter missing non-empty `description`".into(),
+            ))
+        }
+    };
+    Ok(FsPrompt {
+        name,
+        description,
+        kind: fm
+            .kind
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty()),
+        abs_path: abs,
+    })
+}
+
 pub fn scan_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
     let mut prompts: Vec<FsPrompt> = Vec::new();
     let mut skipped: Vec<SkipReason> = Vec::new();
@@ -312,83 +376,72 @@ pub fn scan_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
         if !has_prompts_segment(&rel) {
             continue;
         }
-        let content = match std::fs::read_to_string(&abs) {
-            Ok(c) => c,
-            Err(e) => {
-                skipped.push(SkipReason {
-                    kind: SourceKind::Prompt,
-                    path: abs,
-                    reason: format!("read: {e}"),
-                });
+        let p = match parse_prompt_file(abs) {
+            Ok(p) => p,
+            Err(s) => {
+                skipped.push(s);
                 continue;
             }
         };
-        let fm = match parse_prompt_frontmatter(&content) {
-            Ok(f) => f,
-            Err(reason) => {
+        if let Some(existing) = prompts.iter().find(|q| q.name == p.name) {
+            if existing.abs_path != p.abs_path {
                 skipped.push(SkipReason {
                     kind: SourceKind::Prompt,
-                    path: abs,
-                    reason,
-                });
-                continue;
-            }
-        };
-
-        // Prompt names are flat — fall back to the file stem when
-        // frontmatter doesn't declare one.
-        let derived = abs
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        let name = fm
-            .name
-            .as_deref()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or(derived);
-
-        if let Err(e) = validate_name(&name) {
-            skipped.push(SkipReason {
-                kind: SourceKind::Prompt,
-                path: abs,
-                reason: format!("invalid prompt name {name:?}: {e}"),
-            });
-            continue;
-        }
-
-        let description = match fm.description {
-            Some(d) if !d.trim().is_empty() => d.trim().to_string(),
-            _ => {
-                skipped.push(SkipReason {
-                    kind: SourceKind::Prompt,
-                    path: abs,
-                    reason: "frontmatter missing non-empty `description`".into(),
-                });
-                continue;
-            }
-        };
-
-        if let Some(existing) = prompts.iter().find(|p| p.name == name) {
-            if existing.abs_path != abs {
-                skipped.push(SkipReason {
-                    kind: SourceKind::Prompt,
-                    path: abs,
+                    path: p.abs_path,
                     reason: format!(
-                        "duplicate name {name:?} also produced by {}",
+                        "duplicate name {:?} also produced by {}",
+                        p.name,
                         existing.abs_path.display()
                     ),
                 });
             }
             continue;
         }
+        prompts.push(p);
+    }
 
-        prompts.push(FsPrompt {
-            name,
-            description,
-            abs_path: abs,
-        });
+    prompts.sort_by(|a, b| a.name.cmp(&b.name));
+    (prompts, skipped)
+}
+
+/// Scan a user prompt-library root: every `*.md` under it (flat by
+/// convention, nested tolerated), same frontmatter rules as worker-shipped
+/// prompts (`description` required, `name` falls back to the file stem,
+/// optional `kind`), but with NO `<ns>/prompts/` path requirement — the
+/// library is not namespaced by worker.
+pub fn scan_user_prompts(root: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
+    let mut prompts: Vec<FsPrompt> = Vec::new();
+    let mut skipped: Vec<SkipReason> = Vec::new();
+
+    let entries = match walk_markdown(root) {
+        Ok(v) => v,
+        Err(e) => {
+            skipped.push(SkipReason {
+                kind: SourceKind::Prompt,
+                path: root.to_path_buf(),
+                reason: e,
+            });
+            return (prompts, skipped);
+        }
+    };
+
+    for (abs, _rel) in entries {
+        let p = match parse_prompt_file(abs) {
+            Ok(p) => p,
+            Err(s) => {
+                skipped.push(s);
+                continue;
+            }
+        };
+        if prompts.iter().any(|q| q.name == p.name) {
+            skipped.push(SkipReason {
+                kind: SourceKind::Prompt,
+                path: p.abs_path,
+                reason: format!("duplicate prompt name {:?} in the library root", p.name),
+            });
+            continue;
+        }
+        prompts.push(p);
     }
 
     prompts.sort_by(|a, b| a.name.cmp(&b.name));
