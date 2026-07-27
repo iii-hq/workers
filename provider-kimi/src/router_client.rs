@@ -33,11 +33,17 @@ pub async fn resolve(
         payload["token"] = json!(t);
     }
     let raw = call(iii, "router::provider::resolve", payload).await?;
-    serde_json::from_value(raw).map_err(|e| Error::Remote {
+    let resp: ProviderResolveResponse = serde_json::from_value(raw).map_err(|e| Error::Remote {
         code: "provider/bad_resolve_response".into(),
         message: e.to_string(),
         stacktrace: None,
-    })
+    })?;
+    Ok(
+        llm_router::provider_scaffold::router_client::apply_credential_env_fallback(
+            resp,
+            Some(crate::register::CREDENTIAL_ENV_VAR),
+        ),
+    )
 }
 
 /// `router::models::reconcile` — replace this provider's catalog slice.

@@ -58,12 +58,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: inputs.skip_create_release != true && inputs.dry_run != true
 
       - name: Create GitHub Release
         if: inputs.skip_create_release != true && inputs.dry_run != true
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag_name }}
           name: ${{ inputs.bin_name }} ${{ inputs.tag_name }}
@@ -115,23 +115,18 @@ jobs:
           print(f"::notice::building {len(include)} target(s): {[t['target'] for t in include]}")
           PY
 
-  # Workers like `console` embed a Vite-built SPA into the binary via
-  # `rust-embed` (see `console/build.rs`). The matrix runners only carry
-  # the Rust toolchain — running pnpm there would either fail outright
-  # (Windows / cross-compile shards lack Node) or rebuild the same
-  # platform-independent bundle nine times. Instead we build the SPA
-  # once on a Linux runner, upload `<worker>/web/dist/` as an artifact,
-  # and have every matrix shard download it before `cargo build`. The
-  # crate's `build.rs` short-circuits when `web/dist/index.html` exists,
-  # so the embed-time check is satisfied without ever touching pnpm
-  # inside the cross-compile shards.
+  # Some workers embed more than one frontend bundle. `console`, for
+  # example, ships its SPA from `web/dist/` and its own injectable UI from
+  # `ui/dist/`. Build every present frontend once on Linux, then make those
+  # immutable outputs available to every cross-compile shard. The matrix
+  # runners only need Rust; they must never need a Node/pnpm toolchain.
   web-build:
     name: Pre-build SPA bundle
     needs: [matrix]
     if: inputs.web_bundle
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve worker dir
         id: dirs
@@ -144,38 +139,74 @@ jobs:
             echo "::error::could not derive worker dir from manifest_path=$MANIFEST"
             exit 1
           fi
-          if [[ ! -f "$worker/web/package.json" ]]; then
-            echo "::error::$worker/web/package.json not found; web_bundle=true requires a vite project under <worker>/web/"
+          # A worker can have a web/ embedded SPA, a ui/ injected bundle, or
+          # both. Keep the relative paths so the download step can restore
+          # them exactly where each build.rs expects them.
+          frontends=()
+          if [[ -f "$worker/web/package.json" ]]; then
+            frontends+=(web)
+          fi
+          if [[ -f "$worker/ui/package.json" ]]; then
+            frontends+=(ui)
+          fi
+          if [[ ${#frontends[@]} -eq 0 ]]; then
+            echo "::error::$worker has neither web/package.json nor ui/package.json; web_bundle=true requires one"
             exit 1
           fi
+          frontend_csv=$(IFS=,; echo "${frontends[*]}")
           echo "worker=$worker" >> "$GITHUB_OUTPUT"
-          echo "::notice::pre-building SPA bundle in $worker/web/"
+          echo "frontends=$frontend_csv" >> "$GITHUB_OUTPUT"
+          echo "::notice::pre-building frontend bundle(s) in $worker/$frontend_csv"
 
       # `pnpm/action-setup` must run before `setup-node` so that
-      # `setup-node`'s `cache: 'pnpm'` finds the binary on PATH.
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
+      # `setup-node`'s `cache: 'pnpm'` finds the binary on PATH. The pnpm
+      # version comes from the repo-root package.json `packageManager`
+      # field (the UI pnpm workspace root).
+      - uses: pnpm/action-setup@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: 'pnpm'
-          cache-dependency-path: ${{ steps.dirs.outputs.worker }}/web/pnpm-lock.yaml
+          # The console SPA is a member of the repo-root pnpm workspace, so
+          # its lockfile is the root pnpm-lock.yaml; the glob also covers
+          # any standalone <worker>/web lockfile.
+          cache-dependency-path: '**/pnpm-lock.yaml'
 
-      - name: pnpm install
-        working-directory: ${{ steps.dirs.outputs.worker }}/web
-        run: pnpm install --frozen-lockfile
+      - name: Build frontend bundles
+        env:
+          WORKER: ${{ steps.dirs.outputs.worker }}
+          FRONTENDS: ${{ steps.dirs.outputs.frontends }}
+        run: |
+          set -euo pipefail
+          IFS=, read -ra frontends <<< "$FRONTENDS"
+          for frontend in "${frontends[@]}"; do
+            (
+              cd "$WORKER/$frontend"
+              pnpm install --frozen-lockfile
+              pnpm build
+            )
+          done
 
-      - name: pnpm build
-        working-directory: ${{ steps.dirs.outputs.worker }}/web
-        run: pnpm build
+      - name: Stage frontend bundles
+        env:
+          WORKER: ${{ steps.dirs.outputs.worker }}
+          FRONTENDS: ${{ steps.dirs.outputs.frontends }}
+        run: |
+          set -euo pipefail
+          IFS=, read -ra frontends <<< "$FRONTENDS"
+          stage=".release-frontend-bundle/$WORKER"
+          for frontend in "${frontends[@]}"; do
+            test -d "$WORKER/$frontend/dist"
+            mkdir -p "$stage/$frontend"
+            cp -a "$WORKER/$frontend/dist" "$stage/$frontend/"
+          done
 
-      - name: Upload web bundle
-        uses: actions/upload-artifact@v4
+      - name: Upload frontend bundles
+        uses: actions/upload-artifact@v6
         with:
-          name: web-bundle
-          path: ${{ steps.dirs.outputs.worker }}/web/dist/
+          name: frontend-bundles
+          path: .release-frontend-bundle/${{ steps.dirs.outputs.worker }}/
           if-no-files-found: error
           retention-days: 1
 
@@ -197,7 +228,7 @@ jobs:
         include: ${{ fromJSON(needs.matrix.outputs.include) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
@@ -278,11 +309,9 @@ jobs:
           print(f"::notice::set [package].version to {version} in {path}")
           PY
 
-      # When `web_bundle: true`, the SPA was built by the `web-build` job
-      # above. Download the artifact, drop it at `<worker>/web/dist/`, and
-      # signal `build.rs` to skip its own pnpm invocation. Without this
-      # the cross-compile shards would either fail (no Node/pnpm) or
-      # rebuild the same platform-independent bundle nine times.
+      # When `web_bundle: true`, every frontend bundle was built by the
+      # `web-build` job. Restore their original web/dist and ui/dist paths,
+      # then signal build.rs to skip its own pnpm invocation.
       - name: Resolve worker dir
         if: inputs.web_bundle
         id: dirs
@@ -294,21 +323,24 @@ jobs:
           worker=$(dirname "$MANIFEST")
           echo "worker=$worker" >> "$GITHUB_OUTPUT"
 
-      - name: Download web bundle
+      - name: Download frontend bundles
         if: inputs.web_bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
-          name: web-bundle
-          path: ${{ steps.dirs.outputs.worker }}/web/dist/
+          name: frontend-bundles
+          path: ${{ steps.dirs.outputs.worker }}/
 
       - name: Build and upload binary
         uses: taiki-e/upload-rust-binary-action@v1
         env:
-          # Honored by `console/build.rs` (and any future build.rs that
-          # wraps a pnpm SPA): when set, the script trusts the `web/dist/`
-          # already on disk and never invokes pnpm. The dist comes from
-          # the `web-build` job's artifact above.
+          # Honored by the worker's build.rs: when set, the script trusts
+          # the dist/ already on disk and never invokes pnpm. The dist comes
+          # from the `web-build` job's artifact above. `SKIP_WEB_BUILD` is
+          # console/build.rs (embedded SPA under web/); `SKIP_UI_BUILD` is
+          # state/build.rs (injected console UI under ui/) — setting both is
+          # harmless, each build.rs reads only its own.
           SKIP_WEB_BUILD: ${{ inputs.web_bundle && '1' || '' }}
+          SKIP_UI_BUILD: ${{ inputs.web_bundle && '1' || '' }}
         with:
           bin: ${{ inputs.bin_name }}
           target: ${{ matrix.target }}

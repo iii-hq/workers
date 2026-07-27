@@ -47,7 +47,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install pyyaml
         run: pip install --quiet pyyaml
@@ -57,8 +57,11 @@ jobs:
       # bundle. No-op for the binary / image paths.
       - name: Install Node (bundle deploy)
         if: inputs.deploy == 'bundle'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
+          # setup-node v5 auto-caches when package.json declares packageManager.
+          # This step never cached; the repository is already over its cache budget.
+          package-manager-cache: false
           node-version: 22
 
       - name: Install iii CLI

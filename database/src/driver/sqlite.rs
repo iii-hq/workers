@@ -179,7 +179,7 @@ pub async fn execute(
             driver: "sqlite".into(),
             code: Some("MULTI_STATEMENT".into()),
             message: "rusqlite execute() supports only a single statement; \
-                      use multiple execute() calls or execute_batch via DDL"
+                      use multiple execute() calls or database::executeBatch"
                 .into(),
             failed_index: None,
         });
@@ -890,6 +890,7 @@ mod tests {
         // different variant.
         let e = DbError::UnknownDb {
             db: "primary".into(),
+            available: vec![],
         };
         assert!(matches!(with_failed_index(e, 3), DbError::UnknownDb { .. }));
     }

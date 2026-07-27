@@ -257,6 +257,16 @@ impl HookRegistry {
         &self,
         target_function_id: &str,
     ) -> crate::filesystem_scope::FilesystemBoundary {
+        // fp::pipe is stamped on behalf of its scoped steps: give it the
+        // boundary a direct scoped call would get, or a pipe step would run
+        // under a WIDER jail than the same call made directly. shell::exec
+        // represents the watch's fixed shell::*/coder::* binding set.
+        let target_function_id = if target_function_id == crate::filesystem_scope::PIPE_FUNCTION_ID
+        {
+            "shell::exec"
+        } else {
+            target_function_id
+        };
         if self.post_trigger.has_function_binding(
             crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
             target_function_id,
@@ -281,6 +291,7 @@ mod tests {
             function_id: function_id.into(),
             config: body,
             metadata: None,
+            namespace: None,
         }
     }
 
@@ -335,6 +346,50 @@ mod tests {
             crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
             "shell::fs::ls"
         ));
+    }
+
+    #[test]
+    fn pipe_boundary_matches_a_direct_scoped_call() {
+        let registry = HookRegistry {
+            iii: Arc::new(IIIClient::new("ws://127.0.0.1:0")),
+            pre_turn: HookSet::default(),
+            pre_generate: HookSet::default(),
+            post_generate: HookSet::default(),
+            pre_trigger: HookSet::default(),
+            post_trigger: HookSet::default(),
+        };
+        use crate::filesystem_scope::FilesystemBoundary;
+        // no access watch bound: both direct scoped calls and the pipe run at
+        // the default boundary
+        assert_eq!(
+            registry.filesystem_boundary("fp::pipe"),
+            FilesystemBoundary::ConfiguredRoots
+        );
+        registry
+            .post_trigger
+            .add(
+                HookPoint::PostTrigger,
+                cfg(
+                    "access-watch",
+                    crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
+                    json!({ "functions": ["shell::*", "coder::*"] }),
+                ),
+            )
+            .unwrap();
+        // watch bound to shell::*/coder::* only — the pipe must still pick up
+        // Workspace, or its steps would run under a wider jail than direct calls
+        assert_eq!(
+            registry.filesystem_boundary("shell::exec"),
+            FilesystemBoundary::Workspace
+        );
+        assert_eq!(
+            registry.filesystem_boundary("fp::pipe"),
+            FilesystemBoundary::Workspace
+        );
+        assert_eq!(
+            registry.filesystem_boundary("web::fetch"),
+            FilesystemBoundary::ConfiguredRoots
+        );
     }
 
     #[test]

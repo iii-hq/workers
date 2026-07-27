@@ -1,0 +1,4 @@
+repository = "iii-hq/iii"
+revision = "15dc993ebfdbfcabe5d299cf4cae4dd676db4c06"
+package = "iii"
+binary = "target/release/iii"

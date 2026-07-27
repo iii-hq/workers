@@ -34,7 +34,7 @@ export function isHarnessFunction(id: string): id is HarnessFunctionId {
 
 /* ---------------- request ---------------- */
 
-export const spawnModeSchema = z.enum(['plan', 'ask', 'agent'])
+export const spawnModeSchema = z.enum(['ask', 'agent'])
 export type SpawnMode = z.infer<typeof spawnModeSchema>
 
 export const thinkingLevelSchema = z.enum([
@@ -63,7 +63,9 @@ export type FunctionPolicy = z.infer<typeof functionPolicySchema>
 export const spawnOptionsSchema = z.object({
   system_prompt: z.string().nullish(),
   system_prompt_strategy: systemPromptStrategySchema.nullish(),
-  mode: spawnModeSchema.nullish(),
+  // A mode this console build doesn't know (older or newer harness) degrades
+  // the field, not the whole spawn card.
+  mode: spawnModeSchema.nullish().catch(undefined),
   max_turns: z.number().nullish(),
   thinking_level: thinkingLevelSchema.nullish(),
   output: outputContractSchema.nullish(),

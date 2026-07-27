@@ -5,7 +5,7 @@
  * the harness, which assembles the provider-specific identity prompt when
  * `system_prompt` is omitted.
  *
- * Transcript content (tokens, message snapshots, function-call cards, results)
+ * Transcript content (tokens, message snapshots, function-trigger cards, results)
  * renders from session-manager events reconciled by the conversations layer
  * (lib/sessions/*). This stream carries only the ephemeral turn surface from
  * the harness/approval triggers: pending approvals (approval::pending-*),
@@ -14,7 +14,7 @@
 
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
 import { getIiiClient } from '@/lib/iii-client'
-import { newMessageId } from '@/lib/session-id'
+import { newMessageId, newSessionId } from '@/lib/session-id'
 import { appendCustomEntry, fetchTranscript } from '@/lib/sessions/api'
 import { COMPACTION_CUSTOM_TYPE } from '@/lib/sessions/entry-mapper'
 import type { AgentMessage } from '@/lib/sessions/types'
@@ -208,7 +208,7 @@ async function realQueueMessage(
   opts?: ChatStreamOptions,
 ): Promise<void> {
   const client = await getIiiClient()
-  const sessionId = opts?.sessionId ?? `console-${crypto.randomUUID()}`
+  const sessionId = opts?.sessionId ?? newSessionId()
   const messageId = opts?.messageId ?? newMessageId()
   const req = await buildSendRequest(
     prompt,
@@ -301,7 +301,7 @@ async function* realStream(
 ): AsyncGenerator<StreamEvent> {
   const signal = opts?.signal
   const client = await getIiiClient()
-  const sessionId = opts?.sessionId ?? `console-${crypto.randomUUID()}`
+  const sessionId = opts?.sessionId ?? newSessionId()
   const messageId = opts?.messageId ?? newMessageId()
   // The `approval::*` functions live on the optional standalone approval-gate
   // worker. When it's absent, skip every approval subscription / read so we
@@ -330,10 +330,10 @@ async function* realStream(
   const seenPending = new Set<string>()
   const pushPending = (
     approvalSessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     event: TurnSourceEvent,
   ) => {
-    const key = `${approvalSessionId}:${functionCallId}`
+    const key = `${approvalSessionId}:${functionTriggerId}`
     if (seenPending.has(key)) return
     seenPending.add(key)
     push(event)
@@ -545,14 +545,14 @@ async function realStateKeyExists(
 
 async function realResolveApproval(
   sessionId: string,
-  functionCallId: string,
+  functionTriggerId: string,
   decision: 'allow' | 'deny',
   opts?: { accessDuration?: 'once' | 'session' | 'always' },
 ): Promise<void> {
   const client = await getIiiClient()
   await client.trigger('approval::resolve', {
     session_id: sessionId,
-    function_call_id: functionCallId,
+    function_call_id: functionTriggerId,
     decision,
     // Only ride `access_duration` on filesystem_access resolutions.
     ...(opts?.accessDuration ? { access_duration: opts.accessDuration } : {}),

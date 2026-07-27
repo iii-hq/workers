@@ -175,18 +175,18 @@
   font-family: var(--font-mono);
 }
 
-/* Function-call cards use Geist Mono throughout (overrides chat-surface sans remap). */
-.function-call-surface,
-.function-call-surface .font-mono,
-.function-call-surface pre,
-.function-call-surface code,
-.chat-surface .function-call-surface,
-.chat-surface .function-call-surface .font-mono,
-.chat-surface .function-call-surface pre,
-.chat-surface .function-call-surface pre.font-mono,
-.chat-surface .function-call-surface code,
-.chat-surface .function-call-surface [data-keep-mono],
-.chat-surface .function-call-surface [data-keep-mono] .font-mono {
+/* Function-trigger cards use Geist Mono throughout (overrides chat-surface sans remap). */
+.function-trigger-surface,
+.function-trigger-surface .font-mono,
+.function-trigger-surface pre,
+.function-trigger-surface code,
+.chat-surface .function-trigger-surface,
+.chat-surface .function-trigger-surface .font-mono,
+.chat-surface .function-trigger-surface pre,
+.chat-surface .function-trigger-surface pre.font-mono,
+.chat-surface .function-trigger-surface code,
+.chat-surface .function-trigger-surface [data-keep-mono],
+.chat-surface .function-trigger-surface [data-keep-mono] .font-mono {
   font-family: var(--font-geist-mono);
 }
 

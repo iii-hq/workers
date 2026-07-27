@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useRef } from 'react'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
+import {
+  assistantCopyText,
+  functionTriggersByAssistant,
+} from '@/lib/function-trigger-copy'
 import { cn } from '@/lib/utils'
 import type {
-  FunctionCallMessage as FunctionCallMessageType,
+  FunctionTriggerMessage as FunctionTriggerMessageType,
   Message as MessageType,
 } from '@/types/chat'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
-import { FunctionCallGroup } from './FunctionCallGroup'
+import { FunctionTriggerGroup } from './FunctionTriggerGroup'
 import { Message } from './Message'
 
 interface MessageListProps {
@@ -23,17 +27,17 @@ interface MessageListProps {
   density?: 'route' | 'dock'
   onResolveApproval?: (
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     decision: 'allow' | 'deny',
   ) => Promise<void>
   onAlwaysAllow?: (
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     functionId: string,
   ) => Promise<void>
   onResolveFilesystemAccess?: (
     sessionId: string,
-    functionCallId: string,
+    functionTriggerId: string,
     action: FilesystemAccessAction,
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
@@ -42,10 +46,10 @@ interface MessageListProps {
 
 type RenderItem =
   | { kind: 'message'; key: string; message: MessageType }
-  | { kind: 'fcall-group'; key: string; messages: FunctionCallMessageType[] }
+  | { kind: 'fcall-group'; key: string; messages: FunctionTriggerMessageType[] }
 
 /**
- * Collapse runs of consecutive `function-call` messages into a single
+ * Collapse runs of consecutive `function-trigger` messages into a single
  * `fcall-group` item. Single-call runs stay rendered as a standalone
  * `Message` so happy-agent, pending-approval, and error-on-fcall look
  * identical to today. Only runs of 2+ get the group accordion.
@@ -55,7 +59,7 @@ type RenderItem =
  */
 function groupConsecutiveFcalls(messages: MessageType[]): RenderItem[] {
   const out: RenderItem[] = []
-  let buffer: FunctionCallMessageType[] = []
+  let buffer: FunctionTriggerMessageType[] = []
 
   const flush = () => {
     if (buffer.length === 0) return
@@ -73,7 +77,7 @@ function groupConsecutiveFcalls(messages: MessageType[]): RenderItem[] {
   }
 
   for (const m of messages) {
-    if (m.role === 'function-call') {
+    if (m.role === 'function-trigger') {
       buffer.push(m)
     } else {
       flush()
@@ -101,6 +105,10 @@ export function MessageList({
   const lastPendingIdRef = useRef<string | null>(null)
 
   const items = useMemo(() => groupConsecutiveFcalls(messages), [messages])
+  const fcallsByAssistant = useMemo(
+    () => functionTriggersByAssistant(messages),
+    [messages],
+  )
 
   // Read optionally so isolated renders (Storybook) still work without the
   // ConversationsProvider; the empty state falls back to `ready` there.
@@ -131,7 +139,7 @@ export function MessageList({
     let newestPending: (typeof messages)[number] | null = null
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
-      if (m.role === 'function-call' && m.pendingApproval === true) {
+      if (m.role === 'function-trigger' && m.pendingApproval === true) {
         newestPending = m
         break
       }
@@ -167,29 +175,44 @@ export function MessageList({
   return (
     <div ref={containerRef} className={cn('flex-1 overflow-y-auto', listPad)}>
       <div className="mx-auto max-w-[760px] flex flex-col gap-y-8">
-        {items.map((item) =>
-          item.kind === 'message' ? (
+        {items.map((item) => {
+          if (item.kind === 'fcall-group') {
+            return (
+              <FunctionTriggerGroup
+                key={item.key}
+                messages={item.messages}
+                onResolveApproval={onResolveApproval}
+                onAlwaysAllow={onAlwaysAllow}
+                onResolveFilesystemAccess={onResolveFilesystemAccess}
+                onManageFilesystemAccess={onManageFilesystemAccess}
+                workingDir={workingDir}
+              />
+            )
+          }
+          const m = item.message
+          // Assistant turns copy their prose plus the calls that follow them;
+          // the thunk defers building that string until the copy click. Left
+          // undefined when the turn has nothing to copy (no prose, no calls)
+          // so the header shows no copy affordance.
+          const calls =
+            m.role === 'assistant' ? fcallsByAssistant.get(m.id) : undefined
+          const copyText =
+            m.role === 'assistant' && (m.content || calls?.length)
+              ? () => assistantCopyText(m.content, calls ?? [])
+              : undefined
+          return (
             <Message
               key={item.key}
-              message={item.message}
+              message={m}
+              copyText={copyText}
               onResolveApproval={onResolveApproval}
               onAlwaysAllow={onAlwaysAllow}
               onResolveFilesystemAccess={onResolveFilesystemAccess}
               onManageFilesystemAccess={onManageFilesystemAccess}
               workingDir={workingDir}
             />
-          ) : (
-            <FunctionCallGroup
-              key={item.key}
-              messages={item.messages}
-              onResolveApproval={onResolveApproval}
-              onAlwaysAllow={onAlwaysAllow}
-              onResolveFilesystemAccess={onResolveFilesystemAccess}
-              onManageFilesystemAccess={onManageFilesystemAccess}
-              workingDir={workingDir}
-            />
-          ),
-        )}
+          )
+        })}
         {isThinking ? (
           <div className="font-mono text-[13px] italic thinking-shimmer text-ink-faint">
             {thinkingDetail ?? 'thinking…'}

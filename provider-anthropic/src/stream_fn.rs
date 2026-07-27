@@ -74,7 +74,12 @@ async fn run_stream_call(
     // stays the router's job.
     let token = cache.load_token(iii, state::STATE_SCOPE).await;
     let resolved = match cache
-        .resolve(iii, crate::PROVIDER_ID, token.as_deref())
+        .resolve(
+            iii,
+            crate::PROVIDER_ID,
+            token.as_deref(),
+            Some(crate::register::CREDENTIAL_ENV_VAR),
+        )
         .await
     {
         Ok(r) => r,

@@ -28,7 +28,7 @@ type Story = StoryObj<typeof meta>
 
 /**
  * FN_SPAN is a function invocation (`faas.invoked_name` + `iii.payload.json`
- * events), so the info tab leads with the shared FunctionCallCard — the same
+ * events), so the info tab leads with the shared FunctionTriggerCard — the same
  * card chat renders — showing the request/response payloads.
  */
 export const Info: Story = {

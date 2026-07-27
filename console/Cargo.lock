@@ -251,13 +251,14 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "console"
-version = "1.7.1"
+version = "1.8.1"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum",
  "clap",
  "futures-util",
+ "iii-console-ui",
  "iii-sdk",
  "mime_guess",
  "reqwest",
@@ -266,6 +267,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite 0.24.0",
@@ -763,6 +765,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-console-ui"
+version = "0.1.0"
+dependencies = [
+ "iii-sdk",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "iii-helpers"
 version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -785,9 +799,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.22.0-alpha.2"
+version = "0.22.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "743c738975e139d6c5ee0e0635699308e9f85969da11003bc123712f45b48def"
+checksum = "89e2b076a2227fea8175522eb184c3623af102841a641ec2ff90a8936215d982"
 dependencies = [
  "async-trait",
  "futures-util",

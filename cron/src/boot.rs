@@ -61,17 +61,20 @@ impl Invoker for SdkInvoker {
         &self,
         function_id: &str,
         payload: serde_json::Value,
+        metadata: Option<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, String> {
-        self.iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: None,
-                timeout_ms: None,
-            })
-            .await
-            .map(Some)
-            .map_err(|e| e.to_string())
+        let request = TriggerRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: None,
+            timeout_ms: None,
+        };
+        match metadata {
+            Some(m) => self.iii.trigger(request.metadata(m)).await,
+            None => self.iii.trigger(request).await,
+        }
+        .map(Some)
+        .map_err(|e| e.to_string())
     }
 }
 

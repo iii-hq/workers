@@ -20,6 +20,7 @@ use crate::policy::CompiledPolicy;
 use crate::subscriptions::{self, NOTIFY_AGENT_ID};
 use crate::trigger::{self, ResultData};
 use crate::types::content::ContentBlock;
+use crate::types::model::AgentFunction;
 
 /// The engine function the agent calls to subscribe. The harness intercepts it
 /// (the agent never reaches the raw engine registrar) so it can stamp the
@@ -65,13 +66,17 @@ pub struct SubscribeRequest {
     /// parent_session_id?, options?, join? }`. Required (with `task`) when
     /// `function_id` is `harness::react`; forwarded verbatim, with `model`
     /// (and `provider`, when unset) defaulted to the registering turn's
-    /// when omitted. A
-    /// trigger-fired sub-agent starts with only the read-only default policy —
-    /// grant what the reaction needs via `options` (same shape as
-    /// `harness::spawn` options, e.g. `{ "functions": { "allow":
-    /// ["state::get"] } }`). Join predecessors auto-unregister after the join
-    /// fires unless `join.rearm: true` keeps them registered for the next
-    /// complete set.
+    /// when omitted. The reaction INHERITS the registering turn's dispatch
+    /// policy; `options.functions` narrows it and can never escalate (same
+    /// shape as `harness::spawn` options, e.g. `{ "functions": { "allow":
+    /// ["state::get"] } }`). Only raw engine-side registrations fall back to
+    /// the read-only default policy. Join predecessors auto-unregister after
+    /// the join fires unless `join.rearm: true` keeps them registered for the
+    /// next complete set. Under burst load fires past the per-subscription
+    /// rate cap COALESCE: only the newest event is delivered (stamped
+    /// `__coalesced_fires`/`__coalesced_note`), so a reaction task must
+    /// recompute from the source of truth on such a fire rather than treat
+    /// it as one change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }
@@ -86,6 +91,48 @@ pub struct SubscribeResponse {
     /// exist). Read it and fix the wiring if it applies.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+}
+
+/// Agent-facing unsubscribe contract. The id is the harness subscription id
+/// returned by [`SubscribeResponse`], not the underlying engine binding id.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[schemars(rename = "UnsubscribeArgs")]
+pub struct UnsubscribeRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct UnsubscribeResponse {
+    pub removed: bool,
+}
+
+/// Subscription controls are intercepted by the harness and therefore do not
+/// appear in the engine's public function registry. Native exposure still has
+/// to publish their real contracts when the turn policy allows them.
+pub fn native_control_tools(policy: &CompiledPolicy) -> Vec<AgentFunction> {
+    [
+        (
+            REGISTER_TRIGGER_ID,
+            "Subscribe the current harness session to a iii trigger. Omit function_id to wake \
+             this session, or use harness::react with a reaction spec in metadata.",
+            crate::surface::schema_value::<SubscribeRequest>(),
+        ),
+        (
+            UNREGISTER_TRIGGER_ID,
+            "Remove a trigger subscription owned by the current harness session.",
+            crate::surface::schema_value::<UnsubscribeRequest>(),
+        ),
+    ]
+    .into_iter()
+    .filter(|(function_id, _, _)| policy.allows(function_id))
+    .map(|(function_id, description, parameters)| AgentFunction {
+        name: function_id.to_string(),
+        description: description.to_string(),
+        parameters,
+        label: None,
+        execution_mode: Some("sequential".to_string()),
+    })
+    .collect()
 }
 
 /// The `session_id` a turn-event registration filters on, if any — the only
@@ -159,12 +206,14 @@ async fn session_filter_advisory(deps: &Deps, req: &SubscribeRequest) -> Option<
     ))
 }
 
-/// The registering turn's model identity, threaded from the dispatch
-/// chokepoints so a model-less react spec can inherit it (see [`inherit_model`]).
+/// The registering turn's model identity and dispatch policy, threaded from
+/// the dispatch chokepoints so a react spec can inherit them (see
+/// [`inherit_model`] and [`stamp_registrant_functions`]).
 #[derive(Clone, Copy)]
 pub struct CallerModel<'a> {
     pub model: &'a str,
     pub provider: Option<&'a str>,
+    pub functions: Option<&'a crate::types::turn::FunctionPolicy>,
 }
 
 impl<'a> CallerModel<'a> {
@@ -172,6 +221,7 @@ impl<'a> CallerModel<'a> {
         Self {
             model: &options.model,
             provider: options.provider.as_deref(),
+            functions: options.functions.as_ref(),
         }
     }
 }
@@ -230,6 +280,27 @@ fn standing_binding_advisory(req: &SubscribeRequest, once: bool) -> Option<Strin
     )
 }
 
+/// Advisory for a `state` binding with no `key` filter: it fires for EVERY
+/// key written in the scope (or every write anywhere, with no scope either) —
+/// order signals, done markers, completion keys, all of it. Registered beside
+/// a keyed binding it double-fires every event and burns the fire-rate budget
+/// twice (rctest-k7m3 postmortem). Purely informative — a deliberate
+/// catch-all watcher ignores it.
+fn state_catchall_advisory(req: &SubscribeRequest) -> Option<String> {
+    if req.trigger_type != "state" || req.config.get("key").is_some() {
+        return None;
+    }
+    let breadth = match req.config.get("scope").and_then(Value::as_str) {
+        Some(scope) => format!("EVERY key written in scope \"{scope}\""),
+        None => "EVERY state write in EVERY scope".to_string(),
+    };
+    Some(format!(
+        "warning: this state binding has no `key` filter — it fires for {breadth} (done \
+         markers, completion signals, everything), each fire spending this subscription's \
+         fire-rate budget. Add a `key` to the config unless you deliberately want a catch-all."
+    ))
+}
+
 /// `once` on a react binding: simple non-cron edges default to one-shot, while
 /// cron remains standing. Callers that truly want a standing state/turn watcher
 /// opt out with `once: false`. Join predecessors ignore this field because the
@@ -265,6 +336,31 @@ async fn intercept_register(
 /// (ambiguous ids resolve per-provider). Only a truly absent or empty-string
 /// `model` inherits: present-but-mistyped values (`null`, `false`, `0`) still
 /// fail spec validation loudly rather than silently running on another model.
+/// Metadata key carrying the registering turn's dispatch policy on a react
+/// binding. At fire time a reaction with no `options.functions` inherits it,
+/// and explicit options are subset against it (narrow, never escalate) —
+/// matching the in-turn child rule instead of dropping a reaction delivered
+/// into the registrant's own chat to the read-only baseline (the rctest-k7m3
+/// wrap-up turn was denied database::query / state::set /
+/// engine::unregister_trigger for exactly that reason).
+pub const REGISTRANT_FUNCTIONS_KEY: &str = "__registrant_functions";
+
+/// Stamp the registering turn's dispatch policy onto a react binding's
+/// metadata. Harness stamp, never caller-supplied: any smuggled value is
+/// dropped even when there is no caller policy to stamp.
+fn stamp_registrant_functions(metadata: &mut Option<Value>, caller: Option<CallerModel<'_>>) {
+    let Some(Value::Object(m)) = metadata.as_mut() else {
+        return;
+    };
+    m.remove(REGISTRANT_FUNCTIONS_KEY);
+    let Some(functions) = caller.and_then(|c| c.functions) else {
+        return;
+    };
+    if let Ok(v) = serde_json::to_value(functions) {
+        m.insert(REGISTRANT_FUNCTIONS_KEY.to_string(), v);
+    }
+}
+
 fn inherit_model(metadata: &mut Option<Value>, caller: Option<CallerModel<'_>>) {
     let (Some(Value::Object(m)), Some(caller)) = (metadata.as_mut(), caller) else {
         return;
@@ -286,13 +382,21 @@ fn inherit_model(metadata: &mut Option<Value>, caller: Option<CallerModel<'_>>) 
 }
 
 async fn intercept_unregister(deps: &Deps, args: &Value, session_id: &str) -> ResultData {
-    let id = match unregister_subscription_id(args) {
-        Ok(id) => id,
-        Err(e) => return error_result(e),
+    let req: UnsubscribeRequest = match serde_json::from_value(args.clone()) {
+        Ok(req) => req,
+        Err(error) => {
+            return error_result(format!(
+                "{UNREGISTER_TRIGGER_ID} requires a string `id`: {error}"
+            ))
+        }
     };
+    let id = req.id.as_str();
 
     if let Some(owner) = deps.subscriptions.session_of(id) {
-        if owner != session_id {
+        // The registrant itself, or any session in its reaction lineage: a
+        // reaction cleaning up its run is the legitimate teardown path when
+        // the registrant is parked on a wake its children must satisfy.
+        if owner != session_id && !deps.subscriptions.in_lineage_of(session_id, &owner) {
             return error_result("subscription belongs to a different session".to_string());
         }
     }
@@ -306,13 +410,7 @@ async fn intercept_unregister(deps: &Deps, args: &Value, session_id: &str) -> Re
         }
         None => false,
     };
-    ok_result(&json!({ "removed": removed }))
-}
-
-fn unregister_subscription_id(args: &Value) -> Result<&str, String> {
-    args.get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "engine::unregister_trigger requires an `id`".to_string())
+    ok_result(&UnsubscribeResponse { removed })
 }
 
 async fn handle(
@@ -410,11 +508,45 @@ async fn handle(
         }
     }
 
+    let notes: Vec<String> = [
+        session_filter_advisory(deps, &req).await,
+        // A key-less state notify wakes the owning session on every write in
+        // the scope — same catch-all hazard as a react binding.
+        state_catchall_advisory(&req),
+        armed_wake_advisory(&req, once),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     Ok(SubscribeResponse {
         subscription_id: sub_id,
         once,
-        note: session_filter_advisory(deps, &req).await,
+        note: (!notes.is_empty()).then(|| notes.join(" ")),
     })
+}
+
+/// Advisory for a one-shot state-key WAKE: the registering session parks
+/// until someone writes that exact scope/key, and the harness cannot verify
+/// any task is wired to do so. rctest postmortem: an orchestrator armed
+/// `report_ready` while its finalizer's task never mentioned the key — every
+/// row landed correctly and the orchestrator still slept forever, leaving
+/// the run's teardown permanently pending. Purely informative.
+fn armed_wake_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
+    if !once || req.trigger_type != "state" {
+        return None;
+    }
+    let scope = req
+        .config
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or("*");
+    let key = req.config.get("key").and_then(Value::as_str).unwrap_or("*");
+    Some(format!(
+        "note: one-shot WAKE — this session stays parked until state {scope}/{key} is \
+         written, and nothing fires it automatically. Double-check that a task you \
+         registered (reactor/finalizer) EXPLICITLY sets that exact scope/key when its \
+         condition is met, or this session sleeps forever and its cleanup never runs."
+    ))
 }
 
 /// True when an existing react binding (its `::info` JSON) is a sibling
@@ -606,12 +738,33 @@ async fn handle_react(
     } else {
         inherit_model(&mut req.metadata, caller);
     }
+    // Both modes: strips any smuggled registrant-policy stamp; inert for call
+    // reactions (they dispatch with worker authority, no spawned turn).
+    stamp_registrant_functions(&mut req.metadata, caller);
     crate::functions::react::validate_spec(req.metadata.as_ref())
         .map_err(HarnessError::InvalidRequest)?;
     if !call_mode {
         crate::functions::react::validate_model(&deps.iii, req.metadata.as_ref())
             .await
             .map_err(HarnessError::InvalidRequest)?;
+    }
+    // Join predecessors must agree on the reaction spec: the join fires with
+    // the COMPLETING predecessor's spec, so a divergent spec on any
+    // predecessor (e.g. a `task: "placeholder"` shorthand on later ones)
+    // would silently replace the real reaction at fire time. Fingerprinted
+    // post-`inherit_model` so same-session registrations compare stamped
+    // metadata consistently.
+    let join_probe = crate::functions::react::join_canon(req.metadata.as_ref());
+    if let Some((join_id, canon)) = &join_probe {
+        if let Some(conflict) = deps.subscriptions.conflicting_join_spec(join_id, canon) {
+            return Err(HarnessError::InvalidRequest(format!(
+                "join `{join_id}`: this predecessor's reaction spec differs from live \
+                 predecessor {conflict}'s. Every predecessor of a join must carry the \
+                 IDENTICAL spec (task/call, model, session_id, options, expect) — only \
+                 `join.key` may differ. Repeat the full spec on every registration; the \
+                 join fires with the completing predecessor's spec."
+            )));
+        }
     }
     if let Some(existing) = deps.subscriptions.find_duplicate(session_id, &dedup) {
         return Ok(SubscribeResponse {
@@ -638,6 +791,13 @@ async fn handle_react(
                 subscriptions::MAX_SUBSCRIPTIONS_PER_SESSION
             ))
         })?;
+
+    if let Some((join_id, canon)) = join_probe {
+        deps.subscriptions.set_join_probe(
+            &sub_id,
+            crate::subscriptions::registry::JoinProbe { id: join_id, canon },
+        );
+    }
 
     // Stamp the owning session into the metadata so startup reconciliation can
     // GC this binding if the session is deleted while the harness is down.
@@ -707,11 +867,50 @@ async fn handle_react(
         }
     }
 
+    // Level-triggered join predecessors: a turn-completed predecessor whose
+    // filtered session ALREADY finished would otherwise never fire — the
+    // exact registration-vs-completion race that starves a join when a
+    // rejected sibling forces a re-registration round while the watched
+    // workers finish (rctest5 attempt 4). If the session's durable status is
+    // already terminally completed, deliver a catch-up fire shaped like the
+    // real completion event. Joins only: the per-key accumulator makes a
+    // rare double-delivery idempotent, and a completion BARRIER is only
+    // correct level-triggered.
+    let mut replay_note = None;
+    if req
+        .metadata
+        .as_ref()
+        .is_some_and(|m| m.get("join").is_some())
+    {
+        if let Some(event) = late_join_replay_event(deps, &req).await {
+            replay_note = Some(format!(
+                "note: session {} had already completed when this join predecessor was \
+                 registered — a catch-up completion fire was delivered so the join cannot \
+                 starve waiting for an event that already happened.",
+                event
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+            ));
+            let deps = deps.clone();
+            let metadata = metadata.clone();
+            tokio::spawn(async move {
+                if let Err(e) =
+                    crate::functions::react::handle_boxed(&deps, event, Some(metadata)).await
+                {
+                    tracing::warn!(error = %e, "late join predecessor catch-up fire failed");
+                }
+            });
+        }
+    }
+
     let notes: Vec<String> = [
         parent_filter_join_advisory(&req),
         session_filter_advisory(deps, &req).await,
         join_wiring_advisory(deps, &req).await,
         standing_binding_advisory(&req, once),
+        state_catchall_advisory(&req),
+        replay_note,
     ]
     .into_iter()
     .flatten()
@@ -722,6 +921,61 @@ async fn handle_react(
         once,
         note,
     })
+}
+
+/// The synthetic completion event for a join predecessor registered AFTER its
+/// watched session finished; `None` when there is no session filter, the
+/// session is still live (or non-terminally parked on a wake — more turns are
+/// coming), or the status lookup fails (fail-open: no replay, edge semantics).
+async fn late_join_replay_event(deps: &Deps, req: &SubscribeRequest) -> Option<Value> {
+    if req.trigger_type != crate::events::TURN_COMPLETED {
+        return None;
+    }
+    let sid = req.config.get("session_id").and_then(Value::as_str)?;
+    let status = deps
+        .iii
+        .trigger(TriggerRequest {
+            function_id: "harness::status".to_string(),
+            payload: json!({ "session_id": sid }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await
+        .ok()?;
+    build_replay_event(sid, &status)
+}
+
+/// Pure shaping half of the late-join catch-up: `Some(event)` iff the durable
+/// status says the session's last turn completed TERMINALLY (an armed wake
+/// means more turns are coming and replay would be premature).
+fn build_replay_event(session_id: &str, status: &Value) -> Option<Value> {
+    if status.get("status").and_then(Value::as_str) != Some("completed") {
+        return None;
+    }
+    if status
+        .get("expects_wake")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let turn_id = status.get("turn_id").and_then(Value::as_str)?;
+    if turn_id.is_empty() {
+        return None;
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    Some(json!({
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "status": "completed",
+        "terminal": true,
+        "timestamp": now_ms,
+        "result": status.get("result").cloned().unwrap_or(Value::Null),
+        "__late_subscription_replay": true,
+    }))
 }
 
 /// Best-effort engine-side teardown; `true` when the engine accepted it, so
@@ -779,6 +1033,7 @@ mod tests {
             Some(CallerModel {
                 model: "claude-opus-4-8",
                 provider: None,
+                functions: None,
             }),
         );
         assert_eq!(md.as_ref().unwrap()["model"], json!("claude-opus-4-8"));
@@ -791,6 +1046,7 @@ mod tests {
             Some(CallerModel {
                 model: "claude-opus-4-8",
                 provider: None,
+                functions: None,
             }),
         );
         assert_eq!(explicit.as_ref().unwrap()["model"], json!("kimi-k2"));
@@ -801,6 +1057,7 @@ mod tests {
             Some(CallerModel {
                 model: "claude-opus-4-8",
                 provider: None,
+                functions: None,
             }),
         );
         assert_eq!(empty.as_ref().unwrap()["model"], json!("claude-opus-4-8"));
@@ -816,6 +1073,7 @@ mod tests {
             Some(CallerModel {
                 model: "m",
                 provider: Some("anthropic"),
+                functions: None,
             }),
         );
         assert_eq!(md.as_ref().unwrap()["model"], json!("m"));
@@ -828,6 +1086,7 @@ mod tests {
             Some(CallerModel {
                 model: "m",
                 provider: Some("anthropic"),
+                functions: None,
             }),
         );
         assert_eq!(pinned.as_ref().unwrap()["provider"], json!("openai"));
@@ -839,6 +1098,7 @@ mod tests {
             Some(CallerModel {
                 model: "m",
                 provider: Some("anthropic"),
+                functions: None,
             }),
         );
         assert!(explicit.as_ref().unwrap().get("provider").is_none());
@@ -855,6 +1115,7 @@ mod tests {
                 Some(CallerModel {
                     model: "m",
                     provider: None,
+                    functions: None,
                 }),
             );
             assert_eq!(md.as_ref().unwrap()["model"], json!(bad), "{bad}");
@@ -882,6 +1143,7 @@ mod tests {
             Some(CallerModel {
                 model: "claude-opus-4-8",
                 provider: Some("anthropic"),
+                functions: None,
             }),
         );
         let key_stamped_input = registration_dedup_key(&stamped, react_once(&stamped));
@@ -1014,6 +1276,130 @@ mod tests {
         assert!(parent_filter_join_advisory(&state_req).is_none());
     }
 
+    /// The rctest-k7m3 miswire: a key-less state binding beside a keyed one
+    /// fires for every key in the scope and burns the fire-rate budget twice.
+    /// The registrant-policy stamp: written from the trusted caller, never
+    /// from the agent's own metadata (a smuggled value is dropped even when
+    /// there is nothing to stamp).
+    #[test]
+    fn stamp_registrant_functions_writes_trusted_policy_and_strips_smuggled() {
+        let policy = crate::types::turn::FunctionPolicy {
+            allow: vec!["database::query".into()],
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let caller = CallerModel {
+            model: "m",
+            provider: None,
+            functions: Some(&policy),
+        };
+
+        // Genuine stamp from the caller.
+        let mut md = Some(json!({ "model": "m", "task": "t" }));
+        stamp_registrant_functions(&mut md, Some(caller));
+        assert_eq!(
+            md.as_ref().unwrap()[REGISTRANT_FUNCTIONS_KEY]["allow"],
+            json!(["database::query"])
+        );
+
+        // A smuggled stamp is replaced by the trusted one...
+        let mut md = Some(json!({
+            "model": "m", "task": "t",
+            REGISTRANT_FUNCTIONS_KEY: { "allow": ["*"] }
+        }));
+        stamp_registrant_functions(&mut md, Some(caller));
+        assert_eq!(
+            md.as_ref().unwrap()[REGISTRANT_FUNCTIONS_KEY]["allow"],
+            json!(["database::query"])
+        );
+
+        // ...and dropped outright when there is no caller policy.
+        let mut md = Some(json!({
+            "model": "m", "task": "t",
+            REGISTRANT_FUNCTIONS_KEY: { "allow": ["*"] }
+        }));
+        stamp_registrant_functions(&mut md, None);
+        assert!(md.as_ref().unwrap().get(REGISTRANT_FUNCTIONS_KEY).is_none());
+    }
+
+    #[test]
+    fn state_catchall_advisory_flags_keyless_state_bindings() {
+        let mk = |ty: &str, config: serde_json::Value| -> SubscribeRequest {
+            serde_json::from_value(json!({
+                "trigger_type": ty,
+                "config": config,
+                "function_id": "harness::react",
+                "metadata": { "model": "m", "task": "t" },
+            }))
+            .unwrap()
+        };
+        // Scope without key: warned, naming the scope.
+        let note = state_catchall_advisory(&mk("state", json!({ "scope": "run-1" })));
+        assert!(note.as_deref().unwrap_or("").contains("run-1"));
+        assert!(note.as_deref().unwrap_or("").contains("no `key` filter"));
+        // No scope AND no key: the global catch-all, warned harder.
+        let note = state_catchall_advisory(&mk("state", json!({})));
+        assert!(note.as_deref().unwrap_or("").contains("EVERY scope"));
+        // A key filter silences it, with or without scope.
+        assert!(state_catchall_advisory(&mk(
+            "state",
+            json!({ "scope": "run-1", "key": "change" })
+        ))
+        .is_none());
+        assert!(state_catchall_advisory(&mk("state", json!({ "key": "change" }))).is_none());
+        // Non-state trigger types are not advised on.
+        assert!(state_catchall_advisory(&mk("cron", json!({}))).is_none());
+    }
+
+    #[test]
+    fn build_replay_event_fires_only_for_terminally_completed_sessions() {
+        // A finished child: replay carries the completion shape + marker.
+        let done = json!({
+            "status": "completed",
+            "turn_id": "t_1",
+            "expects_wake": false,
+            "result": "wrote 5 orders"
+        });
+        let event = build_replay_event("s_child", &done).unwrap();
+        assert_eq!(event["session_id"], "s_child");
+        assert_eq!(event["turn_id"], "t_1");
+        assert_eq!(event["status"], "completed");
+        assert_eq!(event["terminal"], true);
+        assert_eq!(event["result"], "wrote 5 orders");
+        assert_eq!(event["__late_subscription_replay"], true);
+
+        // Still running: no replay.
+        assert!(build_replay_event("s", &json!({"status":"running","turn_id":"t_1"})).is_none());
+        // Completed but parked on an armed wake: more turns are coming.
+        assert!(build_replay_event(
+            "s",
+            &json!({"status":"completed","turn_id":"t_1","expects_wake":true})
+        )
+        .is_none());
+        // No turn ever ran.
+        assert!(build_replay_event("s", &json!({"status":"completed","turn_id":""})).is_none());
+        assert!(build_replay_event("s", &json!({"status":"completed"})).is_none());
+    }
+
+    #[test]
+    fn armed_wake_advisory_names_the_exact_key_for_one_shot_state_wakes() {
+        let mk = |ty: &str, config: serde_json::Value| -> SubscribeRequest {
+            serde_json::from_value(json!({ "trigger_type": ty, "config": config })).unwrap()
+        };
+        // A one-shot state wake: warned, naming scope/key, with the
+        // sleeps-forever consequence spelled out.
+        let note = armed_wake_advisory(
+            &mk("state", json!({ "scope": "run-1", "key": "report_ready" })),
+            true,
+        );
+        let note = note.as_deref().unwrap_or("");
+        assert!(note.contains("run-1/report_ready"), "got: {note}");
+        assert!(note.contains("sleeps forever"), "got: {note}");
+        // Standing notifies and non-state types are not wakes.
+        assert!(armed_wake_advisory(&mk("state", json!({ "key": "k" })), false).is_none());
+        assert!(armed_wake_advisory(&mk("cron", json!({})), true).is_none());
+    }
+
     #[test]
     fn standing_binding_advisory_notes_non_once_non_join_only() {
         let mk = |ty: &str, join: bool| -> SubscribeRequest {
@@ -1122,17 +1508,29 @@ mod tests {
     }
 
     #[test]
-    fn unregister_requires_string_subscription_id() {
+    fn native_subscription_controls_follow_dispatch_policy() {
+        let policy = crate::types::turn::FunctionPolicy {
+            allow: vec![REGISTER_TRIGGER_ID.into(), UNREGISTER_TRIGGER_ID.into()],
+            deny: vec![UNREGISTER_TRIGGER_ID.into()],
+            expose: crate::types::turn::ExposeMode::Native,
+        };
+        let tools = native_control_tools(&CompiledPolicy::from(Some(&policy)));
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, REGISTER_TRIGGER_ID);
+        assert_eq!(tools[0].parameters["required"], json!(["trigger_type"]));
+        assert!(tools[0].parameters["properties"]
+            .get("session_id")
+            .is_none());
+    }
+
+    #[test]
+    fn unregister_contract_requires_string_subscription_id() {
+        assert!(serde_json::from_value::<UnsubscribeRequest>(json!({})).is_err());
+        assert!(serde_json::from_value::<UnsubscribeRequest>(json!({ "id": 42 })).is_err());
         assert_eq!(
-            unregister_subscription_id(&json!({})).unwrap_err(),
-            "engine::unregister_trigger requires an `id`"
-        );
-        assert_eq!(
-            unregister_subscription_id(&json!({ "id": 42 })).unwrap_err(),
-            "engine::unregister_trigger requires an `id`"
-        );
-        assert_eq!(
-            unregister_subscription_id(&json!({ "id": "sub_1" })).unwrap(),
+            serde_json::from_value::<UnsubscribeRequest>(json!({ "id": "sub_1" }))
+                .unwrap()
+                .id,
             "sub_1"
         );
     }

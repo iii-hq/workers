@@ -70,7 +70,7 @@ fn worker_manifest_uses_the_standalone_state_worker() {
 
     assert_eq!(
         dependencies.get(serde_yaml::Value::String("state".into())),
-        Some(&serde_yaml::Value::String("^0.21.0".into()))
+        Some(&serde_yaml::Value::String("^0.21.3".into()))
     );
     assert!(!dependencies.contains_key(serde_yaml::Value::String("iii-state".into())));
 }

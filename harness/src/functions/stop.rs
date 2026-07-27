@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::deps::Deps;
 use crate::error::HarnessError;
 
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct StopRequest {
     pub session_id: String,
     /// Omit to stop the current turn.

@@ -41,6 +41,7 @@ pub struct ChatParams {
     pub messages: Vec<Value>,
     pub tools: Vec<AgentFunction>,
     pub response_format: Option<Value>,
+    pub max_output_tokens: Option<u64>,
     pub thinking_level: Option<ThinkingLevel>,
     pub provider_options: Option<Value>,
 }
@@ -136,6 +137,9 @@ impl RouterClient {
         }
         if let Some(rf) = &params.response_format {
             payload["response_format"] = rf.clone();
+        }
+        if let Some(max_output_tokens) = params.max_output_tokens {
+            payload["max_output_tokens"] = json!(max_output_tokens);
         }
         if let Some(tl) = &params.thinking_level {
             payload["thinking_level"] = serde_json::to_value(tl).unwrap_or(Value::Null);

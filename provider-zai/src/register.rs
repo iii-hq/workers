@@ -17,11 +17,14 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+/// Env var the router (and, as a fallback, this provider) reads for the key.
+pub const CREDENTIAL_ENV_VAR: &str = "ZAI_API_KEY";
+
 pub fn declaration() -> ProviderDeclaration {
     ProviderDeclaration {
         id: PROVIDER_ID.into(),
         display_name: Some("Z.AI".into()),
-        credential_env_var: Some("ZAI_API_KEY".into()),
+        credential_env_var: Some(CREDENTIAL_ENV_VAR.into()),
         defaults: Some(ProviderDefaults {
             api_url: Some(DEFAULT_API_URL.into()),
             max_tokens: Some(DEFAULT_MAX_TOKENS),
@@ -208,5 +211,14 @@ mod tests {
         assert!(prompt.starts_with("You are an iii agent worker."));
         assert!(prompt.contains("agent_trigger"));
         assert!(prompt.contains("IMPORTANT: NEVER invent function ids"));
+    }
+
+    #[test]
+    fn declaration_uses_credential_env_var_const() {
+        assert_eq!(super::CREDENTIAL_ENV_VAR, "ZAI_API_KEY");
+        assert_eq!(
+            declaration().credential_env_var.as_deref(),
+            Some(super::CREDENTIAL_ENV_VAR)
+        );
     }
 }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -14,6 +14,11 @@ use crate::graph::WorkerGraph;
 use crate::logs;
 use crate::runtime::{ProcState, SharedRuntimes, WorkerRuntime};
 use crate::status::{self, EngineWorker, WorkerView};
+
+/// Engine config path, relative to the repo root. `ensure_engine` launches
+/// `iii -c <this>`; the TUI's engine-down banner names it so the remedy shown
+/// matches what `e` actually runs.
+pub const ENGINE_CONFIG_REL: &str = "harness/engine.config.yaml";
 
 pub struct Orchestrator {
     pub config: Config,
@@ -32,7 +37,9 @@ pub struct Orchestrator {
 impl Orchestrator {
     pub fn new(config: Config, progress: bool) -> Result<Self> {
         let graph = WorkerGraph::load(&config.repo_root, &config.workers)?;
-        let runtimes = crate::runtime::new_runtimes(&config.workers);
+        let runtimes = crate::runtime::new_runtimes(&config.workers, |name| {
+            config.ui_watch && config.worker_spec(name).is_some_and(|s| s.ui_dir.is_some())
+        });
         Ok(Self {
             config,
             graph,
@@ -106,13 +113,26 @@ impl Orchestrator {
     /// Ensure the engine is running, starting `iii -c harness/engine.config.yaml`
     /// if it isn't. The engine is detached (own process group, no kill-on-drop)
     /// so it outlives the dashboard, like the workers it hosts; then we wait for
-    /// it to accept connections.
+    /// it to accept connections. Streams progress to stderr — call only before
+    /// the TUI takes the screen.
     pub async fn ensure_engine(&self) -> Result<()> {
+        self.ensure_engine_inner(true, self.config.connect_timeout_ms)
+            .await
+    }
+
+    /// `ensure_engine` for the TUI's `e` key: silent (stderr would corrupt the
+    /// alt-screen) and with a short reachability wait — once the spawn worked,
+    /// the dashboard poller shows the engine coming up on its own.
+    pub async fn start_engine_quiet(&self, wait_ms: u64) -> Result<()> {
+        self.ensure_engine_inner(false, wait_ms).await
+    }
+
+    async fn ensure_engine_inner(&self, verbose: bool, wait_ms: u64) -> Result<()> {
         if self.engine_reachable().await {
             return Ok(());
         }
 
-        let config_rel = "harness/engine.config.yaml";
+        let config_rel = ENGINE_CONFIG_REL;
         let config_path = self.config.repo_root.join(config_rel);
         if !config_path.is_file() {
             bail!(
@@ -122,10 +142,12 @@ impl Orchestrator {
             );
         }
 
-        eprintln!(
-            "engine not reachable at {} — starting `iii -c {config_rel}`…",
-            self.config.engine_url
-        );
+        if verbose {
+            eprintln!(
+                "engine not reachable at {} — starting `iii -c {config_rel}`…",
+                self.config.engine_url
+            );
+        }
 
         let mut cmd = Command::new("iii");
         cmd.arg("-c").arg(config_rel);
@@ -138,30 +160,59 @@ impl Orchestrator {
         cmd.stderr(Stdio::null());
         #[cfg(unix)]
         cmd.process_group(0);
-        cmd.spawn().context("spawn iii engine")?;
+        let mut child = cmd.spawn().context("spawn iii engine")?;
 
-        let deadline = Instant::now() + Duration::from_millis(self.config.connect_timeout_ms);
+        let deadline = Instant::now() + Duration::from_millis(wait_ms);
         while Instant::now() < deadline {
             time::sleep(Duration::from_millis(200)).await;
+            // `iii` dying (e.g. a config error) with its stderr nulled would
+            // otherwise mean spinning out the whole wait to report a vague
+            // timeout — surface the exit immediately instead.
+            if let Ok(Some(status)) = child.try_wait() {
+                bail!(
+                    "iii exited immediately ({status}) — run `iii -c {config_rel}` manually to see its output"
+                );
+            }
             if self.engine_reachable().await {
-                eprintln!("engine is up at {}", self.config.engine_url);
+                if verbose {
+                    eprintln!("engine is up at {}", self.config.engine_url);
+                }
                 return Ok(());
             }
         }
-        bail!(
-            "started the engine but it did not become reachable within {}ms",
-            self.config.connect_timeout_ms
-        );
+        // Dropping `child` leaves the engine running (no kill-on-drop): it may
+        // still come up late; under the TUI the poller will show it if so.
+        let hint = if verbose {
+            ""
+        } else {
+            " (it keeps trying in the background — watch the header)"
+        };
+        bail!("started the engine but it was not reachable within {wait_ms}ms{hint}");
     }
 
-    pub async fn engine_preflight(&self) -> Result<()> {
-        self.engine_workers().await.with_context(|| {
+    /// Engine preflight that also returns which workers the engine currently
+    /// reports as connected, so start paths can leave healthy dependencies
+    /// alone. Errors carry the start-the-engine remedy.
+    async fn connected_worker_names(&self) -> Result<HashSet<String>> {
+        let workers = self.engine_workers().await.with_context(|| {
             format!(
-                "engine not reachable at {} (start with: iii -c harness/engine.config.yaml)",
+                "engine not reachable at {} (start with: iii -c {ENGINE_CONFIG_REL})",
                 self.config.engine_url
             )
         })?;
-        Ok(())
+        Ok(workers
+            .into_iter()
+            .filter(|w| w.status == "connected")
+            .filter_map(|w| w.name)
+            .collect())
+    }
+
+    /// True when `worker` is only in the start set as a pulled-in dependency
+    /// (not asked for by name) and the engine already has it connected.
+    /// Recompiling and restarting such a worker would only disrupt a healthy
+    /// process — or spawn a duplicate of one started outside workers-dev.
+    fn skip_connected_dep(names: &[String], worker: &str, connected: &HashSet<String>) -> bool {
+        !names.iter().any(|n| n == worker) && connected.contains(worker)
     }
 
     pub async fn start_harness_stack(&self, wait_connected: bool) -> Result<()> {
@@ -191,7 +242,8 @@ impl Orchestrator {
     }
 
     pub async fn start_workers(&self, names: &[String], wait_connected: bool) -> Result<()> {
-        self.engine_preflight().await?;
+        // Doubles as the engine preflight; bails with the remedy when down.
+        let connected = self.connected_worker_names().await?;
         let order = if names.is_empty() {
             self.graph.topo_start_order(self.graph.workers())?
         } else {
@@ -199,6 +251,15 @@ impl Orchestrator {
         };
 
         for worker in order {
+            // A dependency that's already connected to the engine is doing its
+            // job — don't recompile/restart it. Only workers asked for by name
+            // always (re)start.
+            if Self::skip_connected_dep(names, &worker, &connected) {
+                if self.progress {
+                    eprintln!("↷ {worker}: already connected to the engine, left running");
+                }
+                continue;
+            }
             // Non-spawnable workers pulled in as dependencies run externally
             // (`iii worker add`); skip them. Bail only when the user asked for
             // that worker by name.
@@ -266,6 +327,16 @@ impl Orchestrator {
             bail!("worker directory not found: {}", worker_dir.display());
         }
 
+        // Injectable-UI dev loop (docs/sops/injectable-console-ui.md): arm the
+        // worker's iii-console-ui watcher via its env var and run the esbuild
+        // rebuild (`pnpm watch`) alongside. Effective only when the worker
+        // ships a ui/ project and its runtime flag is on.
+        let ui_dir = spec.ui_dir.clone();
+        let ui_watch = ui_dir.is_some() && {
+            let runtimes = self.runtimes.read().await;
+            runtimes.get(name).is_some_and(|rt| rt.ui_watch)
+        };
+
         let mut cmd = Command::new("cargo");
         cmd.arg("run");
         if self.config.release {
@@ -279,6 +350,10 @@ impl Orchestrator {
         cmd.env("CARGO_TERM_COLOR", "never");
         cmd.env("CARGO_TERM_PROGRESS", "never");
         cmd.env("CLICOLOR_FORCE", "0");
+        if ui_watch {
+            // `1` = the crate's default ui/dist, relative to the worker cwd.
+            cmd.env(ui_watch_env(name), "1");
+        }
         // Run the worker in its own process group so stopping it can signal the
         // whole group. `cargo run` forks the worker binary as a child; killing
         // only cargo orphans the worker (it keeps running, still connected to
@@ -325,6 +400,12 @@ impl Orchestrator {
             wait_for_exit(&name_wait, expected_pid, runtimes_wait).await;
         });
 
+        if ui_watch {
+            if let Some(ui_dir) = &ui_dir {
+                self.spawn_ui_watcher(name, ui_dir).await;
+            }
+        }
+
         if wait_connected {
             self.wait_connected(name).await?;
         }
@@ -332,14 +413,112 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Spawn the `pnpm watch` companion for a worker's ui/ project (the SOP
+    /// dev loop's build half; the worker's own `III_<WORKER>_UI_WATCH` poller
+    /// is the re-register half). Output streams into the worker's log ring
+    /// tagged `[ui]`. Spawn failure is a warn line, not a start failure —
+    /// the worker itself is unaffected.
+    async fn spawn_ui_watcher(&self, name: &str, ui_dir: &std::path::Path) {
+        let mut cmd = Command::new("pnpm");
+        cmd.args(["run", "watch"]);
+        cmd.current_dir(ui_dir);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        cmd.kill_on_drop(true);
+        cmd.env("NO_COLOR", "1");
+        // Own process group, same as the worker: `pnpm run` forks node, and
+        // stopping must take the whole tree down (see terminate_process_group).
+        #[cfg(unix)]
+        cmd.process_group(0);
+
+        match cmd.spawn() {
+            Ok(mut child) => {
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
+                {
+                    let mut runtimes = self.runtimes.write().await;
+                    if let Some(rt) = runtimes.get_mut(name) {
+                        push_log(
+                            rt,
+                            format!(
+                                "[ui] watch: pnpm watch in {} · {}=1 (console tabs hot-reload on rebuild)",
+                                ui_dir.display(),
+                                ui_watch_env(name)
+                            ),
+                        );
+                        rt.set_ui_child(child);
+                    }
+                }
+                if let Some(stdout) = stdout {
+                    let worker = name.to_string();
+                    let runtimes = self.runtimes.clone();
+                    tokio::spawn(async move {
+                        read_stream_tagged(worker, stdout, runtimes, UI_LOG_TAG, false).await;
+                    });
+                }
+                if let Some(stderr) = stderr {
+                    let worker = name.to_string();
+                    let runtimes = self.runtimes.clone();
+                    tokio::spawn(async move {
+                        read_stream_tagged(worker, stderr, runtimes, UI_LOG_TAG, false).await;
+                    });
+                }
+            }
+            Err(err) => {
+                let mut runtimes = self.runtimes.write().await;
+                if let Some(rt) = runtimes.get_mut(name) {
+                    push_log(
+                        rt,
+                        format!(
+                            "[ui] failed to spawn `pnpm watch` in {}: {err} — UI hot reload \
+                             inactive (is pnpm on PATH?)",
+                            ui_dir.display()
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Flip the injectable-UI watcher flag for one worker (TUI `w` key).
+    /// Errors when the worker ships no ui/ project. A running worker is
+    /// restarted so the `III_<WORKER>_UI_WATCH` env var takes effect; a
+    /// stopped one just starts with the new flag next time. Returns the new
+    /// state.
+    pub async fn toggle_ui_watch(&self, name: &str) -> Result<bool> {
+        let spec = self
+            .config
+            .worker_spec(name)
+            .with_context(|| format!("unknown worker {name}"))?;
+        if spec.ui_dir.is_none() {
+            bail!("worker {name} ships no ui/ project — nothing to watch");
+        }
+        let (next, running) = {
+            let mut runtimes = self.runtimes.write().await;
+            let rt = runtimes.get_mut(name).context("unknown worker runtime")?;
+            rt.ui_watch = !rt.ui_watch;
+            (rt.ui_watch, rt.pid().is_some())
+        };
+        if running {
+            self.start_one(name, false).await?;
+        }
+        Ok(next)
+    }
+
     async fn stop_one(&self, name: &str) {
-        let child = {
+        let (child, ui_child) = {
             let mut runtimes = self.runtimes.write().await;
             let Some(rt) = runtimes.get_mut(name) else {
                 return;
             };
-            rt.take_child()
+            (rt.take_child(), rt.take_ui_child())
         };
+
+        if let Some(mut child) = ui_child {
+            terminate_process_group(&mut child).await;
+            let _ = child.wait().await;
+        }
 
         if let Some(mut child) = child {
             terminate_process_group(&mut child).await;
@@ -470,6 +649,35 @@ impl Orchestrator {
     }
 }
 
+/// Log-line prefix for the `pnpm watch` companion's output, so esbuild
+/// chatter is tellable apart from the worker's own logs in the shared ring.
+const UI_LOG_TAG: &str = "[ui] ";
+
+/// The worker's hot-reload env var, derived exactly like the
+/// `iii-console-ui` crate does in `ConsoleUi::new` (non-alphanumerics → `_`,
+/// uppercased): `III_<WORKER>_UI_WATCH`. Workers that override
+/// `.watch_env(…)` in their builder won't match — none in this repo do.
+fn ui_watch_env(worker: &str) -> String {
+    let stem: String = worker
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("III_{stem}_UI_WATCH")
+}
+
+/// Push a line into a worker's ring buffer AND its live-follow channel —
+/// the same pair every streamed log line goes through.
+fn push_log(rt: &mut WorkerRuntime, line: String) {
+    rt.logs.push(line.clone());
+    let _ = rt.log_tx.send(line);
+}
+
 fn build_view(
     spec: &crate::discover::WorkerSpec,
     rt: &WorkerRuntime,
@@ -504,6 +712,7 @@ fn build_view(
         local_pid: rt.pid(),
         uptime,
         exit_code: rt.exit_code,
+        ui_watch: spec.ui_dir.is_some().then_some(rt.ui_watch),
     }
 }
 
@@ -530,6 +739,20 @@ async fn read_stream(
     stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
     runtimes: SharedRuntimes,
 ) {
+    read_stream_tagged(worker, stream, runtimes, "", true).await;
+}
+
+/// Stream lines into a worker's log ring. `tag` prefixes every line (the ui
+/// watcher's `[ui] `); `track_state` gates the cargo-output → ProcState
+/// heuristics, which must never run on watcher output (an esbuild "error"
+/// line is not the WORKER compiling or crashing).
+async fn read_stream_tagged(
+    worker: String,
+    stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
+    runtimes: SharedRuntimes,
+    tag: &'static str,
+    track_state: bool,
+) {
     let mut lines = BufReader::new(stream).lines();
     loop {
         match lines.next_line().await {
@@ -538,20 +761,20 @@ async fn read_stream(
                 if normalized.is_empty() {
                     continue;
                 }
+                let tagged = format!("{tag}{normalized}");
                 let mut runtimes = runtimes.write().await;
                 if let Some(rt) = runtimes.get_mut(&worker) {
-                    rt.logs.push(normalized.clone());
-                    update_proc_state_from_line(rt, &normalized);
-                    let _ = rt.log_tx.send(normalized);
+                    if track_state {
+                        update_proc_state_from_line(rt, &normalized);
+                    }
+                    push_log(rt, tagged);
                 }
             }
             Ok(None) => break,
             Err(err) => {
                 let mut runtimes = runtimes.write().await;
                 if let Some(rt) = runtimes.get_mut(&worker) {
-                    let msg = format!("log read error: {err}");
-                    rt.logs.push(msg.clone());
-                    let _ = rt.log_tx.send(msg);
+                    push_log(rt, format!("{tag}log read error: {err}"));
                 }
                 break;
             }
@@ -705,6 +928,7 @@ mod tests {
             worker_specs,
             stop_on_exit: false,
             color_mode: Default::default(),
+            ui_watch: false,
         };
         let orch = Orchestrator::new(config, false).unwrap();
 
@@ -717,6 +941,43 @@ mod tests {
             .closure_with_deps(&["harness".to_string()])
             .unwrap();
         assert!(order.contains(&"scrapling".to_string()));
+    }
+
+    /// The env var must match what `iii-console-ui`'s `ConsoleUi::new`
+    /// derives, or the worker's poller never arms. Locks the two known
+    /// shapes: plain names and hyphenated ones.
+    #[test]
+    fn ui_watch_env_matches_console_ui_crate_derivation() {
+        assert_eq!(ui_watch_env("state"), "III_STATE_UI_WATCH");
+        assert_eq!(ui_watch_env("iii-directory"), "III_III_DIRECTORY_UI_WATCH");
+        assert_eq!(ui_watch_env("console"), "III_CONSOLE_UI_WATCH");
+    }
+
+    /// Dependencies already connected to the engine are left alone; only
+    /// workers asked for by name always (re)start.
+    #[test]
+    fn skip_connected_dep_spares_healthy_deps_only() {
+        let names = vec!["harness".to_string()];
+        let connected: HashSet<String> = ["session-manager", "harness"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        // Pulled-in dep, already connected → skipped.
+        assert!(Orchestrator::skip_connected_dep(
+            &names,
+            "session-manager",
+            &connected
+        ));
+        // Asked for by name → restarted even though connected.
+        assert!(!Orchestrator::skip_connected_dep(
+            &names, "harness", &connected
+        ));
+        // Dep not connected → started.
+        assert!(!Orchestrator::skip_connected_dep(
+            &names,
+            "approval-gate",
+            &connected
+        ));
     }
 
     /// A worker started via `cargo run` forks the real worker binary as a

@@ -1,6 +1,6 @@
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
-import type { FunctionCallMessage } from '@/types/chat'
+import type { FunctionTriggerMessage } from '@/types/chat'
 import { CrawlPreview, CrawlView } from './CrawlView'
 import { FetchPreview, FetchView } from './FetchView'
 import { MarkdownView } from './MarkdownView'
@@ -44,7 +44,7 @@ export function ScraplingFunctionIdLabel({
   )
 }
 
-function tryRender(message: FunctionCallMessage): React.ReactNode | null {
+function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
   if (!isScraplingFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -126,7 +126,7 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
 /** Approval previews for the gated network calls; parse-only ops are
  *  auto-allowed and never sit in the gate. */
 function tryRenderPreview(
-  message: FunctionCallMessage,
+  message: FunctionTriggerMessage,
 ): React.ReactNode | null {
   if (!isScraplingFunction(message.functionId)) return null
   const input = unwrapEnvelope(message.input)

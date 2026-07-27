@@ -17,6 +17,7 @@ on:
       - 'cron/v*'
       - 'database/v*'
       - 'email/v*'
+      - 'eval/v*'
       - 'harness/v*'
       - 'hermes/v*'
       - 'http/v*'
@@ -32,6 +33,7 @@ on:
       - 'opencode/v*'
       - 'pi/v*'
       - 'provider-anthropic/v*'
+      - 'provider-claude-code/v*'
       - 'provider-kimi/v*'
       - 'provider-llamacpp/v*'
       - 'provider-openai/v*'
@@ -87,7 +89,7 @@ jobs:
       web_bundle: ${{ steps.web.outputs.needed }}
       interface_smoke: ${{ steps.smoke.outputs.interface_smoke }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -120,9 +122,9 @@ jobs:
         env:
           WORKER: ${{ steps.meta.outputs.worker }}
         run: |
-          if [[ -f "$WORKER/web/package.json" ]]; then
+          if [[ -f "$WORKER/web/package.json" || -f "$WORKER/ui/package.json" ]]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::$WORKER has web/package.json; will pre-build SPA bundle"
+            echo "::notice::$WORKER has a web/ or ui/ frontend; will pre-build its bundle"
           else
             echo "needed=false" >> "$GITHUB_OUTPUT"
           fi
@@ -156,8 +158,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/checkout@v5
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.setup.outputs.tag }}
           name: ${{ needs.setup.outputs.worker }} ${{ needs.setup.outputs.version }}

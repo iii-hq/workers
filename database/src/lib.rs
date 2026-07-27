@@ -9,6 +9,7 @@ pub mod handlers;
 pub mod pool;
 pub mod transaction;
 pub mod triggers;
+pub mod ui;
 pub mod value;
 
 pub fn worker_name() -> &'static str {

@@ -52,6 +52,13 @@ struct ListPromptsOutput {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PromptGetInput {
     pub name: String,
+    /// When `true`, the response includes the FULL on-disk file content
+    /// (frontmatter block included) as `raw`. For editors that need to
+    /// round-trip the exact file (`directory::prompts::update` takes the
+    /// same full-file form); agent readers should leave this unset and
+    /// use `body`.
+    #[serde(default)]
+    pub raw: Option<bool>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -60,6 +67,11 @@ pub struct PromptGetOutput {
     pub description: String,
     /// Raw markdown body (post-frontmatter) from disk.
     pub body: String,
+    /// FULL on-disk file content (frontmatter included). Present only
+    /// when the request set `raw: true` — the exact string to hand back
+    /// to `directory::prompts::update`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
     /// File mtime as RFC 3339.
     pub modified_at: String,
 }
@@ -137,11 +149,17 @@ pub async fn get_prompt(
         ));
     };
     let body = fs_source::read_body(&fs.abs_path)?;
+    let raw = if req.raw.unwrap_or(false) {
+        Some(fs_source::read_raw(&fs.abs_path)?)
+    } else {
+        None
+    };
     let modified_at = fs_modified_at(&fs.abs_path);
     Ok(PromptGetOutput {
         name: fs.name,
         description: fs.description,
         body,
+        raw,
         modified_at,
     })
 }

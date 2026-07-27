@@ -8,5 +8,5 @@ tags: [llm, xai, grok, chat-completions, provider]
 description: xAI Chat Completions provider worker; implements provider::xai::stream and provider::xai::refresh_models behind llm-router.
 
 dependencies:
-  state: "^0.21.0"
+  state: "^0.21.2"
   llm-router: "^1.0.0"

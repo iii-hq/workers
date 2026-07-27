@@ -1,0 +1,73 @@
+{
+  "function_id": "harness::session-tree",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "root_session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "root_session_id"
+    ],
+    "title": "SessionTreeRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "SessionTreeNodeV1": {
+        "additionalProperties": false,
+        "properties": {
+          "depth": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "parent_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parent_turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "depth",
+          "session_id"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "complete": {
+        "type": "boolean"
+      },
+      "root_session_id": {
+        "type": "string"
+      },
+      "sessions": {
+        "items": {
+          "$ref": "#/definitions/SessionTreeNodeV1"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "complete",
+      "root_session_id",
+      "sessions"
+    ],
+    "title": "SessionTreeResponseV1",
+    "type": "object"
+  }
+}

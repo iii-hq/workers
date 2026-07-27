@@ -1,8 +1,8 @@
 //! The async orchestration trigger types the harness emits —
-//! `harness::turn-started` / `harness::turn-completed` at turn boundaries,
-//! and `harness::message-queued` when a message parks in the mid-turn queue
-//! (harness.md § Trigger types emitted). Consumers and siblings bind these to
-//! react to outcomes without polling `harness::status`.
+//! `harness::ready` after boot, `harness::turn-started` /
+//! `harness::turn-completed` at turn boundaries, and `harness::message-queued`
+//! when a message parks in the mid-turn queue (harness.md § Trigger types
+//! emitted). Consumers and siblings bind these to react without polling.
 //!
 //! Delivery is fire-and-forget (`TriggerAction::Void`), at-least-once, and
 //! unordered. Per-binding `config` filters (`session_id`, `parent_session_id`)
@@ -10,6 +10,7 @@
 //! registrations after a restart, so the subscriber sets rebuild themselves.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -26,6 +27,11 @@ use crate::types::turn::ParentLink;
 pub const TURN_STARTED: &str = "harness::turn-started";
 pub const TURN_COMPLETED: &str = "harness::turn-completed";
 pub const MESSAGE_QUEUED: &str = "harness::message-queued";
+pub const READY: &str = "harness::ready";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadyBindingConfig {}
 
 /// Binding config shared by both turn-event types.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -119,12 +125,52 @@ impl SubscriberSet {
         self.lock().remove(id);
     }
 
+    fn add_unfiltered(&self, config: TriggerConfig) -> Binding {
+        let binding = Binding {
+            id: config.id.clone(),
+            function_id: config.function_id,
+            filter: BindingFilter::default(),
+            metadata: config.metadata,
+        };
+        self.lock().insert(config.id, binding.clone());
+        binding
+    }
+
     fn snapshot(&self) -> Vec<Binding> {
         self.lock().values().cloned().collect()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Binding>> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+struct ReadyTriggerHandler {
+    set: SubscriberSet,
+    ready: Arc<AtomicBool>,
+    iii: Arc<IIIClient>,
+}
+
+#[async_trait]
+impl TriggerHandler for ReadyTriggerHandler {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        let raw = if config.config.is_null() {
+            serde_json::json!({})
+        } else {
+            config.config.clone()
+        };
+        serde_json::from_value::<ReadyBindingConfig>(raw)
+            .map_err(|error| Error::Handler(format!("invalid ready-event config: {error}")))?;
+        let binding = self.set.add_unfiltered(config);
+        if self.ready.load(Ordering::Acquire) {
+            deliver_ready(&self.iii, &binding).await;
+        }
+        Ok(())
+    }
+
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        self.set.remove(&config.id);
+        Ok(())
     }
 }
 
@@ -223,6 +269,8 @@ impl ReactiveMeta<'_> {
 #[derive(Clone)]
 pub struct TurnEvents {
     iii: Arc<IIIClient>,
+    ready: SubscriberSet,
+    ready_emitted: Arc<AtomicBool>,
     started: SubscriberSet,
     completed: SubscriberSet,
     queued: SubscriberSet,
@@ -232,10 +280,24 @@ impl TurnEvents {
     /// Register the trigger types and return the emitter. Must run before
     /// function registration so the handlers capture the subscriber sets.
     pub fn register(iii: &Arc<IIIClient>) -> Self {
+        let ready = SubscriberSet::default();
+        let ready_emitted = Arc::new(AtomicBool::new(false));
         let started = SubscriberSet::default();
         let completed = SubscriberSet::default();
         let queued = SubscriberSet::default();
 
+        let _ = iii.register_trigger_type(
+            RegisterTriggerType::new(
+                READY,
+                "The harness completed boot and can accept turns.",
+                ReadyTriggerHandler {
+                    set: ready.clone(),
+                    ready: ready_emitted.clone(),
+                    iii: iii.clone(),
+                },
+            )
+            .trigger_request_format::<ReadyBindingConfig>(),
+        );
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
                 TURN_STARTED,
@@ -273,14 +335,26 @@ impl TurnEvents {
             .trigger_request_format::<TurnEventBindingConfig>(),
         );
         tracing::info!(
-            "registered harness::turn-started / harness::turn-completed / harness::message-queued trigger types"
+            "registered harness::ready / harness::turn-started / harness::turn-completed / harness::message-queued trigger types"
         );
 
         Self {
             iii: iii.clone(),
+            ready,
+            ready_emitted,
             started,
             completed,
             queued,
+        }
+    }
+
+    /// Announce readiness after all turn dependencies and lifecycle bindings
+    /// have been installed. Subscribers that bind later receive the current
+    /// ready state from [`ReadyTriggerHandler`].
+    pub async fn emit_ready(&self) {
+        self.ready_emitted.store(true, Ordering::Release);
+        for binding in self.ready.snapshot() {
+            deliver_ready(&self.iii, &binding).await;
         }
     }
 
@@ -492,6 +566,30 @@ impl TurnEvents {
                 tracing::warn!(trigger_type, function_id = %binding.function_id, error = %e, "turn-event fan-out failed");
             }
         }
+    }
+}
+
+async fn deliver_ready(iii: &IIIClient, binding: &Binding) {
+    let request = TriggerRequest {
+        function_id: binding.function_id.clone(),
+        payload: serde_json::json!({
+            "status": "ready",
+            "timestamp": now_ms(),
+        }),
+        action: Some(TriggerAction::Void),
+        timeout_ms: None,
+    };
+    let result = match &binding.metadata {
+        Some(metadata) => iii.trigger(request.metadata(metadata.clone())).await,
+        None => iii.trigger(request).await,
+    };
+    if let Err(error) = result {
+        tracing::warn!(
+            trigger_type = READY,
+            function_id = %binding.function_id,
+            %error,
+            "ready-event fan-out failed"
+        );
     }
 }
 

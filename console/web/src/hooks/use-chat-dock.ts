@@ -8,7 +8,6 @@ const COLLAPSED_KEY = 'iii-chat-dock-collapsed'
 // users' localStorage forever.
 const LEGACY_OPEN_KEY = 'iii-chat-dock-open'
 
-export const DOCK_DEFAULT_WIDTH = 440
 export const DOCK_MIN_WIDTH = 320
 /**
  * Reserve for the route content that sits next to the dock. The dock can
@@ -30,24 +29,31 @@ export function computeDockMaxWidth(
   return Math.max(DOCK_MIN_WIDTH, viewportWidth - DOCK_NEIGHBOR_MIN_WIDTH)
 }
 
+/** Start with an even split between the chat dock and the active route. */
+export function computeDockDefaultWidth(
+  viewportWidth: number = getViewportWidth(),
+): number {
+  return clampWidth(viewportWidth / 2, viewportWidth)
+}
+
 function clampWidth(w: number, viewportWidth?: number): number {
   const max = computeDockMaxWidth(viewportWidth)
   return Math.max(DOCK_MIN_WIDTH, Math.min(max, w))
 }
 
 function loadWidth(): number {
-  if (typeof window === 'undefined') return DOCK_DEFAULT_WIDTH
+  if (typeof window === 'undefined') return computeDockDefaultWidth()
   try {
     const raw = window.localStorage.getItem(WIDTH_KEY)
-    if (!raw) return DOCK_DEFAULT_WIDTH
+    if (!raw) return computeDockDefaultWidth()
     const n = Number.parseInt(raw, 10)
-    if (!Number.isFinite(n)) return DOCK_DEFAULT_WIDTH
+    if (!Number.isFinite(n)) return computeDockDefaultWidth()
     /* Only clamp by min here; the viewport-aware upper bound is enforced by
        the mount-time effect in useChatDock since window dims may differ
        between persisted-at and rehydrate-at. */
     return Math.max(DOCK_MIN_WIDTH, n)
   } catch {
-    return DOCK_DEFAULT_WIDTH
+    return computeDockDefaultWidth()
   }
 }
 

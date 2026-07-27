@@ -20,7 +20,7 @@ fn resolve_non_empty_override_returns_verbatim() {
         resolve_system_prompt(
             Some("custom".into()),
             SystemPromptStrategy::Override,
-            Some(Mode::Plan),
+            Some(Mode::Ask),
             Some(IDENTITY)
         ),
         Some("custom".into())
@@ -85,6 +85,19 @@ fn resolve_enrich_with_empty_custom_falls_through_to_builtin() {
 }
 
 #[test]
+fn resolve_disabled_omits_system_prompt() {
+    assert_eq!(
+        resolve_system_prompt(
+            Some("ignored".into()),
+            SystemPromptStrategy::Disabled,
+            Some(Mode::Agent),
+            Some(IDENTITY),
+        ),
+        None
+    );
+}
+
+#[test]
 fn identity_line_and_agent_trigger_preserved() {
     let out = default_prompt();
     assert!(out.contains("You are an iii agent worker"));
@@ -107,6 +120,34 @@ fn mesh_model() {
     assert!(out.contains("The function id is the only contract"));
     assert!(out.contains("workers registering the same id load-balance"));
     assert!(out.contains("register a trigger; do not poll"));
+}
+
+#[test]
+fn delegation_carries_resolved_resource_selectors() {
+    let out = default_prompt().replace('\n', " ");
+    assert!(out.contains("every resolved resource selector the child must pass"));
+    assert!(out.contains("`db: \"primary\"`"));
+    assert!(out.contains("Use database db: \"<resolved name>\""));
+    assert!(out.contains("Do not dispatch a task until this audit passes."));
+    assert!(out.contains("ends a child immediately after discovery"));
+}
+
+#[test]
+fn reaction_defaults_match_runtime() {
+    let out = default_prompt().replace('\n', " ");
+    assert!(out.contains("every event creates a fresh distinct child"));
+    assert!(out.contains("you MUST omit `metadata.session_id`"));
+    assert!(out.contains("edges are standing by default"));
+    assert!(out.contains("Set `once: true` only for a deliberate one-shot reaction"));
+    assert!(out.contains("`once` is a TOP-LEVEL"));
+    assert!(out.contains("putting it inside `metadata` does nothing"));
+}
+
+#[test]
+fn fresh_namespaces_are_derived_and_checked() {
+    let out = default_prompt().replace('\n', " ");
+    assert!(out.contains("derive its variable suffix from the unique session id"));
+    assert!(out.contains("confirm the namespace is absent"));
 }
 
 #[test]
@@ -239,16 +280,6 @@ fn prompt_injection_defense() {
 }
 
 #[test]
-fn mode_plan_prepends_before_identity() {
-    let out = build_system_prompt(SystemPromptOpts {
-        mode: Some(Mode::Plan),
-        identity: None,
-    });
-    assert!(out.contains("operating in plan mode"));
-    assert!(out.find("operating in plan mode") < out.find("You are an iii agent worker"));
-}
-
-#[test]
 fn mode_ask_prepends_before_identity() {
     let out = build_system_prompt(SystemPromptOpts {
         mode: Some(Mode::Ask),
@@ -271,10 +302,10 @@ fn mode_agent_prepends_before_identity() {
 #[test]
 fn mode_prepends_before_a_fetched_identity_too() {
     let out = build_system_prompt(SystemPromptOpts {
-        mode: Some(Mode::Plan),
+        mode: Some(Mode::Ask),
         identity: Some(IDENTITY),
     });
-    assert!(out.starts_with("You are operating in plan mode"));
+    assert!(out.starts_with("You are operating in ask mode"));
     assert!(out.ends_with(IDENTITY));
 }
 
@@ -282,9 +313,16 @@ fn mode_prepends_before_a_fetched_identity_too() {
 fn omitting_mode_starts_with_identity() {
     let out = default_prompt();
     assert!(out.starts_with("You are an iii agent worker"));
-    assert!(!out.contains("operating in plan mode"));
     assert!(!out.contains("operating in ask mode"));
     assert!(!out.contains("operating in agent mode"));
+}
+
+#[test]
+fn removed_plan_mode_is_rejected_not_silently_accepted() {
+    // Hard removal (intentional, no compat shim): `"plan"` is not a valid mode.
+    // Pinned so a future refactor doesn't silently make `Mode` lenient again —
+    // a stale client or pre-upgrade record carrying `"plan"` fails loudly.
+    assert!(serde_json::from_value::<Mode>(serde_json::json!("plan")).is_err());
 }
 
 #[test]

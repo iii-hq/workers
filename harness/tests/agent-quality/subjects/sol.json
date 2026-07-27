@@ -1,0 +1,9 @@
+{
+  "schema_version": "1",
+  "subject_id": "codex-sol-baseline",
+  "model": "codex/gpt-5.6-sol",
+  "provider": "openai-codex",
+  "system_prompt_path": "evaluation.md",
+  "system_prompt_strategy": "enrich",
+  "thinking_level": "low"
+}

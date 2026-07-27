@@ -337,9 +337,25 @@ export const joinSpecSchema = z.object({
 })
 export type JoinSpec = z.infer<typeof joinSpecSchema>
 
+/** Call-mode reaction target (`harness/src/functions/react.rs` `CallSpec`):
+ * the event dispatches a plain function call instead of spawning a
+ * sub-agent. `event_into` is the JSON pointer where the event lands in the
+ * payload (default `/event`). */
+export const callSpecSchema = z.object({
+  function_id: z.string(),
+  payload: z.unknown().optional(),
+  event_into: z.string().optional(),
+})
+export type CallSpec = z.infer<typeof callSpecSchema>
+
+/** `model`/`task` are optional on the wire: call-mode reactions carry `call`
+ * instead, and agent-mode registrations may omit `model` (inherited from the
+ * registering turn). The VIEW decides the mode: `call` present → call mode;
+ * `task` present → spawn mode; neither → not a react spec at all. */
 export const reactSpecSchema = z.object({
-  model: z.string(),
-  task: z.string(),
+  model: z.string().optional(),
+  task: z.string().optional(),
+  call: callSpecSchema.optional(),
   session_id: z.string().optional(),
   provider: z.string().optional(),
   options: z.unknown().optional(),
@@ -381,6 +397,106 @@ export function configFilters(
     pick('condition_function_id', 'if'),
   ].filter((x): x is { label: string; value: string } => x !== null)
   return chips.length ? chips : null
+}
+
+const MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+]
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+/**
+ * Humanize the COMMON cron shapes — fixed time, minute steps, single
+ * day-of-month/month, weekday lists — and return `null` for anything
+ * fancier (ranges, multi-field lists, `L`/`#` extensions), where the raw
+ * expression is less misleading than a wrong translation. Accepts 5-field
+ * classic and the 6/7-field seconds-first form the Rust `cron` crate uses
+ * (`"0 0 17 21 7 *"` → "at 17:00 on Jul 21").
+ */
+export function describeCron(expression: string): string | null {
+  const f = expression.trim().split(/\s+/)
+  if (f.length < 5 || f.length > 7) return null
+  const withSeconds = f.length >= 6
+  const [min, hour, dom, mon, dow] = withSeconds ? f.slice(1) : f
+  const sec = withSeconds ? f[0] : '0'
+  const year = f.length === 7 ? f[6] : '*'
+  if (year !== '*') return null
+
+  const num = (s: string, max: number): number | null =>
+    /^\d+$/.test(s) && Number(s) <= max ? Number(s) : null
+  const secondsWild = sec === '*'
+  const secNum = num(sec, 59)
+  if (!secondsWild && secNum == null) return null
+  const step = (s: string): number | null => {
+    const m = /^\*\/(\d+)$/.exec(s)
+    return m ? Number(m[1]) : null
+  }
+  const pad = (n: number) => String(n).padStart(2, '0')
+
+  const h = num(hour, 23)
+  const m = num(min, 59)
+  let time: string | null = null
+  let daily = false
+  if (h != null && m != null) {
+    time = `at ${pad(h)}:${pad(m)}`
+    daily = true
+  } else if (hour === '*') {
+    const minStep = step(min)
+    if (minStep != null) time = `every ${minStep} min`
+    else if (min === '*') time = sec === '*' ? 'every second' : 'every minute'
+    else if (m != null) time = `at :${pad(m)} every hour`
+    else return null
+  } else {
+    const hourStep = step(hour)
+    if (hourStep != null && m != null) time = `every ${hourStep}h at :${pad(m)}`
+    else return null
+  }
+  // Every description except "every second" speaks at minute granularity, so
+  // it is only honest when the schedule fires once per matching minute
+  // (seconds pinned to 0). `* 0 17 * * *` fires every second DURING 17:00 —
+  // saying "at 17:00" would hide sixty firings; a nonzero pin drops detail.
+  if (time !== 'every second' && (secondsWild || secNum !== 0)) return null
+
+  const dn = num(dom, 31)
+  const mn = num(mon, 12)
+  if (dom !== '*' && (dn == null || dn < 1)) return null
+  if (mon !== '*' && (mn == null || mn < 1)) return null
+  let date: string | null = null
+  if (dn != null && mn != null) date = `on ${MONTHS[mn - 1]} ${dn}`
+  else if (dn != null) date = `on day ${dn} of every month`
+  else if (mn != null) date = `in ${MONTHS[mn - 1]}`
+
+  let week: string | null = null
+  if (dow !== '*' && dow !== '?') {
+    const names = dow.split(',').map((d) => {
+      const n = num(d, 7)
+      if (n == null) return null
+      // Numeric weekday numbering differs by dialect: the seconds-first form
+      // is the Rust `cron` crate's (Quartz-style, 1=Sun..7=Sat); classic
+      // five-field cron is 0=Sun..6=Sat with 7 also Sunday.
+      if (withSeconds) return n >= 1 ? WEEKDAYS[n - 1] : null
+      return WEEKDAYS[n % 7]
+    })
+    if (names.some((n) => n == null)) return null
+    week = `every ${names.join(', ')}`
+  }
+
+  // Both a day-of-month AND a weekday restriction is OR semantics in cron —
+  // subtle enough that the raw expression is the honest rendering.
+  if (date && week) return null
+  if (week) return daily ? `${week} ${time}` : `${time} ${week}`
+  if (date) return `${time} ${date}`
+  return daily ? `every day ${time}` : (time as string)
 }
 
 /** Engine returns `{ id }`; the harness-intercepted path returns

@@ -56,6 +56,12 @@ pub struct StateListGroupsResult {
     pub groups: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StateListKeysResult {
+    /// Keys stored in the scope, in the adapter's natural order.
+    pub keys: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StateEventType {
     #[serde(rename = "state:created")]

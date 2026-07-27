@@ -14,11 +14,12 @@
 //!      worker add events and run a boot reconcile for missing skills.
 //!   6. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 //!
-//! `directory::skills::download` is the only write path. Read-side
-//! surfaces (`directory::skills::list`, `directory::skills::get`,
-//! `directory::prompts::*`, `directory::registry::*`) source from the
-//! configured `skills_folder` on disk or proxy to the public registry
-//! over HTTP. Engine introspection is handled by the engine natively —
+//! Write paths are `directory::skills::download*` (bulk materialization)
+//! and `directory::skills::update` / `directory::prompts::update`
+//! (single-file edits). Read-side surfaces (`directory::skills::list`,
+//! `directory::skills::get`, `directory::prompts::*`,
+//! `directory::registry::*`) source from the configured `skills_folder`
+//! on disk or proxy to the public registry over HTTP. Engine introspection is handled by the engine natively —
 //! call `engine::functions::list`, `engine::triggers::list`, etc.,
 //! directly.
 
@@ -160,6 +161,10 @@ async fn main() -> Result<()> {
     );
     functions::log_fs_health(&cfg_handle.load_full());
 
+    // Injectable console UI: the skills & prompts editor page, the
+    // directory::* function-trigger renderer, and the configuration form.
+    iii_directory::ui::register(&iii);
+
     // Auto-download: subscribe to worker add events + boot reconcile. Wired
     // from the boot value of `auto_download` (a topology field — changing it
     // requires a restart).
@@ -185,7 +190,7 @@ async fn main() -> Result<()> {
     configuration::register_config_trigger(&iii, state)
         .context("registering configuration change trigger")?;
 
-    let fn_count = if auto_download { 10 } else { 9 };
+    let fn_count = if auto_download { 14 } else { 13 };
     tracing::info!(
         "iii-directory ready: {} directory::* functions + 2 custom trigger types + \
          configuration hot-reload",

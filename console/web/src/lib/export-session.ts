@@ -5,10 +5,11 @@
  * as fenced JSON, attachments listed by metadata only (no base64 payload).
  */
 
+import { getIiiClient } from '@/lib/iii-client'
 import type {
   Attachment,
   Conversation,
-  FunctionCallMessage,
+  FunctionTriggerMessage,
   Message,
 } from '@/types/chat'
 
@@ -19,7 +20,7 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function formatTimestamp(ms: number): string {
+export function formatTimestamp(ms: number): string {
   try {
     return new Date(ms).toISOString()
   } catch {
@@ -65,8 +66,8 @@ function renderMessage(message: Message): string {
     case 'thought': {
       return `## Thought\n${message.content || '_(empty)_'}`
     }
-    case 'function-call': {
-      return renderFunctionCall(message)
+    case 'function-trigger': {
+      return renderFunctionTrigger(message)
     }
     case 'system': {
       const tone = message.tone ? ` — ${message.tone}` : ''
@@ -76,7 +77,7 @@ function renderMessage(message: Message): string {
   }
 }
 
-function renderFunctionCall(message: FunctionCallMessage): string {
+function renderFunctionTrigger(message: FunctionTriggerMessage): string {
   const status = message.pendingApproval
     ? ' (pending approval)'
     : message.running
@@ -94,8 +95,80 @@ function renderFunctionCall(message: FunctionCallMessage): string {
   }
   return parts.join('\n')
 }
+/** Transcript body shared by the single-session and sub-agent exporters. */
+export function messagesToMarkdown(messages: Message[]): string {
+  return messages.map(renderMessage).join('\n\n')
+}
 
-export function conversationToMarkdown(conversation: Conversation): string {
+/** One connected worker as reported by `engine::workers::list`. */
+export interface WorkerVersion {
+  name: string
+  version?: string
+}
+
+const WORKERS_LIST_RPC = 'engine::workers::list'
+const WORKERS_LIST_TIMEOUT_MS = 2000
+
+/**
+ * Best-effort snapshot of connected workers for the export header.
+ * Lenient by design: `null` on any failure (offline engine, timeout,
+ * malformed payload) — the caller renders `_(unavailable)_` and the
+ * export proceeds. Deliberately does not reuse the zod schema in
+ * `components/chat/engine/parsers.ts` (lib must not import components).
+ */
+export async function fetchWorkerVersions(): Promise<WorkerVersion[] | null> {
+  try {
+    const client = await getIiiClient()
+    const res = await client.trigger<unknown>(
+      WORKERS_LIST_RPC,
+      {},
+      { timeoutMs: WORKERS_LIST_TIMEOUT_MS },
+    )
+    const workers = (res as { workers?: unknown } | null)?.workers
+    if (!Array.isArray(workers)) return null
+    const out: WorkerVersion[] = []
+    for (const entry of workers) {
+      if (typeof entry !== 'object' || entry === null) continue
+      const rec = entry as { id?: unknown; name?: unknown; version?: unknown }
+      const name =
+        typeof rec.name === 'string' && rec.name !== ''
+          ? rec.name
+          : typeof rec.id === 'string' && rec.id !== ''
+            ? rec.id
+            : null
+      if (name === null) continue
+      out.push({
+        name,
+        version:
+          typeof rec.version === 'string' && rec.version !== ''
+            ? rec.version
+            : undefined,
+      })
+    }
+    return out
+  } catch {
+    return null
+  }
+}
+
+/**
+ * `- Workers:` metadata bullet. `null` means the fetch failed (best-effort
+ * export still proceeds); `[]` means the engine answered with no workers.
+ */
+function renderWorkersBlock(workers: WorkerVersion[] | null): string[] {
+  if (workers === null) return ['- Workers: _(unavailable)_']
+  if (workers.length === 0) return ['- Workers: _(none connected)_']
+  const lines = workers.map(
+    (w) => `  - ${w.name}: ${w.version ?? '(no version)'}`,
+  )
+  return ['- Workers:', ...Array.from(new Set(lines)).sort()]
+}
+
+export function conversationToMarkdown(
+  conversation: Conversation,
+  workers?: WorkerVersion[] | null,
+  subagentCount?: number | null,
+): string {
   const header: string[] = [
     `# Session: ${conversation.title}`,
     '',
@@ -105,6 +178,14 @@ export function conversationToMarkdown(conversation: Conversation): string {
     `- Model: \`${conversation.model}\``,
     `- Mode: \`${conversation.mode}\``,
     `- Message count: ${conversation.messages.length}`,
+    ...(workers !== undefined ? renderWorkersBlock(workers) : []),
+    ...(subagentCount !== undefined
+      ? [
+          subagentCount === null
+            ? '- Sub-agents: _(unavailable)_'
+            : `- Sub-agents: ${subagentCount}`,
+        ]
+      : []),
     '',
     '---',
     '',
@@ -114,7 +195,7 @@ export function conversationToMarkdown(conversation: Conversation): string {
     return `${header.join('\n')}_(no messages)_\n`
   }
 
-  const body = conversation.messages.map(renderMessage).join('\n\n')
+  const body = messagesToMarkdown(conversation.messages)
   return `${header.join('\n')}${body}\n`
 }
 
@@ -131,20 +212,26 @@ function timestampSlug(now: Date = new Date()): string {
   return `${y}${m}${d}-${hh}${mm}`
 }
 
-export function buildExportFilename(conversation: Conversation): string {
+export function buildExportFilename(
+  conversation: Conversation,
+  suffix?: string,
+): string {
   const shortId = conversation.id.slice(0, 8) || 'session'
-  return `iii-session-${shortId}-${timestampSlug()}.md`
+  const tag = suffix ? `-${suffix}` : ''
+  return `iii-session-${shortId}${tag}-${timestampSlug()}.md`
 }
 
 /**
- * Triggers a browser download of the rendered markdown.
+ * Triggers a browser download of the rendered markdown. Fetches connected
+ * worker versions first (best-effort, ≤2 s) so the header records the stack.
  * Returns the filename so callers can announce it (e.g. via a live region).
  */
-export function downloadConversationAsMarkdown(
-  conversation: Conversation,
-): string {
-  const markdown = conversationToMarkdown(conversation)
-  const filename = buildExportFilename(conversation)
+
+/** Blob + anchor download shared by both export entry points. */
+export function triggerMarkdownDownload(
+  markdown: string,
+  filename: string,
+): void {
   const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -156,5 +243,14 @@ export function downloadConversationAsMarkdown(
   document.body.removeChild(a)
   // Revoke on the next tick so Safari has time to honour the click.
   window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
+export async function downloadConversationAsMarkdown(
+  conversation: Conversation,
+): Promise<string> {
+  const workers = await fetchWorkerVersions()
+  const markdown = conversationToMarkdown(conversation, workers)
+  const filename = buildExportFilename(conversation)
+  triggerMarkdownDownload(markdown, filename)
   return filename
 }

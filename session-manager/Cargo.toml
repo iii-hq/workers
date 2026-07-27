@@ -2,7 +2,7 @@
 
 [package]
 name = "session-manager"
-version = "1.0.9"
+version = "1.0.10"
 edition = "2021"
 publish = false
 

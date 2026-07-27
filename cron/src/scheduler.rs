@@ -14,12 +14,18 @@ use tokio::task::JoinHandle;
 
 use crate::locks::CronLock;
 
+/// `metadata` is the binding's registration metadata, delivered as the
+/// fire-time sidecar (engine `fire_triggers` parity). Handlers like
+/// `harness::react` / `harness::notify_agent` resolve which reaction or
+/// subscription fired from it and silently no-op without it — a plain call
+/// here kills every cron-triggered harness reaction and wake-up.
 #[async_trait]
 pub trait Invoker: Send + Sync + 'static {
     async fn call(
         &self,
         function_id: &str,
         payload: serde_json::Value,
+        metadata: Option<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, String>;
 }
 
@@ -29,6 +35,8 @@ pub struct JobSpec {
     pub expression: String,
     pub function_id: String,
     pub condition_function_id: Option<String>,
+    /// Registration metadata, replayed as the fire-time sidecar.
+    pub metadata: Option<serde_json::Value>,
 }
 
 struct JobEntry {
@@ -131,7 +139,9 @@ fn spawn_job(
             });
 
             if let Some(cond) = &spec.condition_function_id {
-                match invoker.call(cond, payload.clone()).await {
+                // Conditions are plain function calls, not trigger fires — no
+                // sidecar.
+                match invoker.call(cond, payload.clone(), None).await {
                     Ok(Some(v)) if v.as_bool() == Some(false) => {
                         lock.release(&spec.trigger_id).await;
                         continue;
@@ -145,7 +155,10 @@ fn spawn_job(
                 }
             }
 
-            if let Err(e) = invoker.call(&spec.function_id, payload).await {
+            if let Err(e) = invoker
+                .call(&spec.function_id, payload, spec.metadata.clone())
+                .await
+            {
                 tracing::error!(trigger_id = %spec.trigger_id, function_id = %spec.function_id, error = %e, "cron fire failed");
             }
             lock.release(&spec.trigger_id).await;
@@ -158,9 +171,11 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[derive(Default)]
     struct CountingInvoker {
         calls: AtomicUsize,
         last_payload: Mutex<Option<serde_json::Value>>,
+        last_metadata: Mutex<Option<serde_json::Value>>,
         condition_result: Option<serde_json::Value>,
     }
 
@@ -170,12 +185,14 @@ mod tests {
             &self,
             function_id: &str,
             payload: serde_json::Value,
+            metadata: Option<serde_json::Value>,
         ) -> Result<Option<serde_json::Value>, String> {
             if function_id.starts_with("cond::") {
                 return Ok(self.condition_result.clone());
             }
             self.calls.fetch_add(1, Ordering::SeqCst);
             *self.last_payload.lock().await = Some(payload);
+            *self.last_metadata.lock().await = metadata;
             Ok(None)
         }
     }
@@ -193,6 +210,7 @@ mod tests {
         let inv = Arc::new(CountingInvoker {
             calls: AtomicUsize::new(0),
             last_payload: Mutex::new(None),
+            last_metadata: Mutex::new(None),
             condition_result: None,
         });
         let s = scheduler_with(inv);
@@ -202,6 +220,7 @@ mod tests {
                 expression: "".into(),
                 function_id: "f".into(),
                 condition_function_id: None,
+                metadata: None,
             })
             .await
             .unwrap_err();
@@ -213,6 +232,7 @@ mod tests {
         let inv = Arc::new(CountingInvoker {
             calls: AtomicUsize::new(0),
             last_payload: Mutex::new(None),
+            last_metadata: Mutex::new(None),
             condition_result: None,
         });
         let s = scheduler_with(inv);
@@ -221,6 +241,7 @@ mod tests {
             expression: every_second().into(),
             function_id: "f".into(),
             condition_function_id: None,
+            metadata: None,
         })
         .await
         .unwrap();
@@ -230,6 +251,7 @@ mod tests {
                 expression: every_second().into(),
                 function_id: "f".into(),
                 condition_function_id: None,
+                metadata: None,
             })
             .await
             .unwrap_err();
@@ -242,6 +264,7 @@ mod tests {
         let inv = Arc::new(CountingInvoker {
             calls: AtomicUsize::new(0),
             last_payload: Mutex::new(None),
+            last_metadata: Mutex::new(None),
             condition_result: None,
         });
         let s = scheduler_with(inv.clone());
@@ -250,6 +273,7 @@ mod tests {
             expression: every_second().into(),
             function_id: "backend".into(),
             condition_function_id: None,
+            metadata: None,
         })
         .await
         .unwrap();
@@ -268,11 +292,41 @@ mod tests {
         s.shutdown().await;
     }
 
+    /// The rctest-k7m3 run-4 failure: the deadline cron fired but the plain
+    /// invocation dropped the registration metadata, so harness::notify_agent
+    /// could not resolve the subscription and the waiting session never woke.
+    #[tokio::test]
+    async fn fire_delivers_registration_metadata_sidecar() {
+        let inv = Arc::new(CountingInvoker::default());
+        let s = scheduler_with(inv.clone());
+        s.register(JobSpec {
+            trigger_id: "t1".into(),
+            expression: every_second().into(),
+            function_id: "backend".into(),
+            condition_function_id: None,
+            metadata: Some(serde_json::json!({"subscription_id": "sub_1", "once": true})),
+        })
+        .await
+        .unwrap();
+        for _ in 0..25 {
+            if inv.calls.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(inv.calls.load(Ordering::SeqCst) >= 1, "job never fired");
+        let metadata = inv.last_metadata.lock().await.clone();
+        let m = metadata.expect("registration metadata must be delivered at fire time");
+        assert_eq!(m["subscription_id"], "sub_1");
+        s.shutdown().await;
+    }
+
     #[tokio::test]
     async fn condition_false_blocks_fire() {
         let inv = Arc::new(CountingInvoker {
             calls: AtomicUsize::new(0),
             last_payload: Mutex::new(None),
+            last_metadata: Mutex::new(None),
             condition_result: Some(serde_json::json!(false)),
         });
         let s = scheduler_with(inv.clone());
@@ -281,6 +335,7 @@ mod tests {
             expression: every_second().into(),
             function_id: "backend".into(),
             condition_function_id: Some("cond::c".into()),
+            metadata: None,
         })
         .await
         .unwrap();
@@ -298,6 +353,7 @@ mod tests {
         let inv = Arc::new(CountingInvoker {
             calls: AtomicUsize::new(0),
             last_payload: Mutex::new(None),
+            last_metadata: Mutex::new(None),
             condition_result: None,
         });
         let s = scheduler_with(inv.clone());
@@ -306,6 +362,7 @@ mod tests {
             expression: every_second().into(),
             function_id: "backend".into(),
             condition_function_id: None,
+            metadata: None,
         })
         .await
         .unwrap();

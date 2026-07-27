@@ -6,19 +6,31 @@ ENGINE_URL   ?= ws://127.0.0.1:49134
 ENGINE_PORT  ?= 49134
 CONSOLE_PORT ?= 3113
 RUST_LOG     ?= info
+PYTHON       ?= python3
 
 MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 REPO_ROOT    := $(abspath $(MAKEFILE_DIR)/..)
 WORKTREE_ROOT ?= $(REPO_ROOT)
 WORKTREE_ROOT_ABS := $(abspath $(if $(filter /%,$(WORKTREE_ROOT)),$(WORKTREE_ROOT),$(REPO_ROOT)/$(WORKTREE_ROOT)))
 ENGINE_CONFIG ?= $(MAKEFILE_DIR)engine.config.yaml
+SCRAPLING_ROOT := $(WORKTREE_ROOT_ABS)/scrapling
+SCRAPLING_VENV := $(SCRAPLING_ROOT)/.venv
+SCRAPLING_STAMP := $(SCRAPLING_VENV)/.installed
 
-STACK := iii-directory llm-router session-manager context-manager \
-         provider-anthropic provider-openai provider-openai-codex shell web queue harness approval-gate console
+BASE_STACK := state queue iii-directory llm-router session-manager context-manager \
+              provider-anthropic provider-openai provider-openai-codex shell scrapling cron \
+              approval-gate harness console
+STACK := $(BASE_STACK) eval
 
-GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart \
-                    engine wait-engine restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
-                    ensure-session require-engine where,$(MAKECMDGOALS))
+# scrapling is a Python worker (pyproject + venv, see prepare-scrapling);
+# every other STACK member is a Rust crate with <worker>/Cargo.toml. Cargo
+# targets must only ever see the Rust subset.
+PYTHON_WORKERS := scrapling
+RUST_WORKERS   := $(filter-out $(PYTHON_WORKERS),$(STACK))
+
+GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-run dev-up dev-down dev-restart \
+                    engine wait-engine wait-base wait-stack restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
+                    ensure-session prepare-scrapling require-engine where integration-e2e integration-playground integration-validate,$(MAKECMDGOALS))
 SELECTED_WORKERS := $(strip $(GOAL_ARGS))
 ACTIVE_WORKERS   := $(if $(SELECTED_WORKERS),$(SELECTED_WORKERS),$(STACK))
 UNKNOWN_WORKERS  := $(filter-out $(STACK),$(SELECTED_WORKERS))
@@ -28,12 +40,14 @@ RUN_FLAG   := $(if $(filter release,$(RUN_PROFILE)),--release,)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install-iii-next build install-local clean cargo-clean dev-up dev-down dev-restart engine wait-engine \
-        restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach ensure-session require-engine where $(STACK)
+.PHONY: help install-iii-next build install-local clean cargo-clean dev-run dev-up dev-down dev-restart engine wait-engine wait-base wait-stack \
+        restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach ensure-session prepare-scrapling \
+        require-engine where integration-e2e integration-playground integration-validate $(STACK)
 
 help:
 	@printf '%s\n' \
 	  'Harness local development targets:' \
+	  '  make dev-run                        start engine + harness stack in tmux' \
 	  '  make dev-up                         start engine + harness stack in tmux' \
 	  '  make dev-down                       stop the tmux stack' \
 	  '  make dev-restart                    restart all workers in the stack' \
@@ -49,10 +63,20 @@ help:
 	  '  make logs                           attach to the tmux session' \
 	  '  make build [workers...]             cargo build stack or selected workers' \
 	  '  make cargo-clean [workers...]       cargo clean stack or selected workers' \
-	  '  make install-local [workers...]     build and symlink into ~/.iii/workers'
+	  '  make install-local [workers...]     build and symlink into ~/.iii/workers' \
+	  '  make integration-e2e III_BIN=<iii>  run the harness integration scenarios (tests/e2e)' \
+	  '  make integration-playground III_BIN=<iii>  open the Console against an isolated integration stack' \
+	  '  make integration-validate           validate every integration scenario'
 
 install-iii-next:
 	@curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --next
+
+$(SCRAPLING_STAMP): $(SCRAPLING_ROOT)/pyproject.toml
+	@test -x "$(SCRAPLING_VENV)/bin/python" || "$(PYTHON)" -m venv --without-pip "$(SCRAPLING_VENV)"
+	@"$(PYTHON)" -m pip --python "$(SCRAPLING_VENV)/bin/python" install --disable-pip-version-check -e "$(SCRAPLING_ROOT)"
+	@touch "$@"
+
+prepare-scrapling: $(SCRAPLING_STAMP)
 
 build:
 	@if [ -n "$(UNKNOWN_WORKERS)" ]; then \
@@ -60,18 +84,24 @@ build:
 	  echo "valid workers: $(STACK)"; \
 	  exit 2; \
 	fi
-	@for w in $(ACTIVE_WORKERS); do \
+	@for w in $(filter $(RUST_WORKERS),$(ACTIVE_WORKERS)); do \
 	  manifest="$(WORKTREE_ROOT_ABS)/$$w/Cargo.toml"; \
 	  test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
 	  echo "building $$w ($(PROFILE)) from $(WORKTREE_ROOT_ABS)"; \
 	  cargo build $(BUILD_FLAG) --manifest-path "$$manifest" || exit 1; \
 	done
+	@if [ -n "$(filter $(PYTHON_WORKERS),$(ACTIVE_WORKERS))" ]; then \
+	  $(MAKE) --no-print-directory prepare-scrapling; \
+	fi
 
 install-local: build
 	@mkdir -p "$(III_WORKERS)"
-	@for w in $(ACTIVE_WORKERS); do \
+	@for w in $(filter $(RUST_WORKERS),$(ACTIVE_WORKERS)); do \
 	  ln -sfn "$(WORKTREE_ROOT_ABS)/$$w/target/$(PROFILE)/$$w" "$(III_WORKERS)/$$w"; \
 	  echo "linked $(III_WORKERS)/$$w"; \
+	done
+	@for w in $(filter $(PYTHON_WORKERS),$(ACTIVE_WORKERS)); do \
+	  echo "skipping $$w: Python worker has no binary to link; run it with make restart $$w"; \
 	done
 	@echo "restart the engine to load linked binaries, or use make dev-up for cargo-run development"
 
@@ -84,15 +114,24 @@ cargo-clean:
 	  echo "valid workers: $(STACK)"; \
 	  exit 2; \
 	fi
-	@for w in $(ACTIVE_WORKERS); do \
+	@for w in $(filter $(RUST_WORKERS),$(ACTIVE_WORKERS)); do \
 	  manifest="$(WORKTREE_ROOT_ABS)/$$w/Cargo.toml"; \
 	  test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
 	  echo "cleaning cargo artifacts for $$w from $(WORKTREE_ROOT_ABS)"; \
 	  cargo clean --manifest-path "$$manifest" || exit 1; \
 	done
+	@for w in $(filter $(PYTHON_WORKERS),$(ACTIVE_WORKERS)); do \
+	  echo "skipping $$w: no cargo artifacts"; \
+	done
+
+dev-run: dev-up
 
 dev-up: engine wait-engine
-	@$(MAKE) --no-print-directory restart $(STACK)
+	@$(MAKE) --no-print-directory build PROFILE=$(RUN_PROFILE) $(STACK)
+	@$(MAKE) --no-print-directory restart $(BASE_STACK)
+	@$(MAKE) --no-print-directory wait-base
+	@$(MAKE) --no-print-directory restart eval
+	@$(MAKE) --no-print-directory wait-stack
 	@$(MAKE) --no-print-directory status
 	@echo "console: http://127.0.0.1:$(CONSOLE_PORT)"
 	@echo "tmux:    tmux attach -t $(TMUX_SESSION)"
@@ -101,7 +140,11 @@ dev-down:
 	@tmux kill-session -t "$(TMUX_SESSION)" 2>/dev/null || true
 
 dev-restart:
-	@$(MAKE) --no-print-directory restart $(STACK)
+	@$(MAKE) --no-print-directory build PROFILE=$(RUN_PROFILE) $(STACK)
+	@$(MAKE) --no-print-directory restart $(BASE_STACK)
+	@$(MAKE) --no-print-directory wait-base
+	@$(MAKE) --no-print-directory restart eval
+	@$(MAKE) --no-print-directory wait-stack
 
 ensure-session:
 	@tmux has-session -t "$(TMUX_SESSION)" 2>/dev/null || \
@@ -140,6 +183,44 @@ wait-engine:
 	echo "engine did not become ready in $(TMUX_SESSION):engine on $(ENGINE_URL)"; \
 	exit 1
 
+wait-base:
+	@i=0; \
+	while [ $$i -lt 120 ]; do \
+	  workers=$$(iii trigger engine::workers::list --port "$(ENGINE_PORT)" --json '{}' 2>/dev/null || true); \
+	  missing=""; \
+	  for worker in $(BASE_STACK); do \
+	    echo "$$workers" | grep -Fq "\"name\": \"$$worker\"" || missing="$$missing $$worker"; \
+	  done; \
+	  if [ -z "$$missing" ] && \
+	     iii trigger harness::status --help --port "$(ENGINE_PORT)" >/dev/null 2>&1 && \
+	     iii trigger console::ui-manifest --port "$(ENGINE_PORT)" --json '{}' >/dev/null 2>&1; then \
+	    echo "base stack ready in $(TMUX_SESSION)"; \
+	    exit 0; \
+	  fi; \
+	  i=$$((i + 1)); \
+	  sleep 0.5; \
+	done; \
+	echo "base stack did not become ready; missing workers:$${missing:- none}"; \
+	echo "inspect logs with: tmux attach -t $(TMUX_SESSION)"; \
+	exit 1
+
+wait-stack:
+	@i=0; \
+	while [ $$i -lt 120 ]; do \
+	  workers=$$(iii trigger engine::workers::list --port "$(ENGINE_PORT)" --json '{}' 2>/dev/null || true); \
+	  if echo "$$workers" | grep -Fq '"name": "eval"' && \
+	     iii trigger eval::status --help --port "$(ENGINE_PORT)" >/dev/null 2>&1 && \
+	     iii trigger console::ui-manifest --port "$(ENGINE_PORT)" --json '{}' 2>/dev/null | grep -Fq '"worker": "eval"'; then \
+	    echo "stack ready in $(TMUX_SESSION)"; \
+	    exit 0; \
+	  fi; \
+	  i=$$((i + 1)); \
+	  sleep 0.5; \
+	done; \
+	echo "eval did not become ready"; \
+	echo "inspect logs with: tmux attach -t $(TMUX_SESSION)"; \
+	exit 1
+
 require-engine:
 	@engine_cmd=$$(tmux display-message -p -t "$(TMUX_SESSION):engine" '#{pane_current_command}' 2>/dev/null || true); \
 	if [ "$$engine_cmd" != "iii" ]; then \
@@ -164,7 +245,11 @@ restart:
 	  exit 2; \
 	fi
 	@for w in $(SELECTED_WORKERS); do \
-	  manifest="$(WORKTREE_ROOT_ABS)/$$w/Cargo.toml"; \
+	  if [ "$$w" = "scrapling" ]; then \
+	    manifest="$(SCRAPLING_ROOT)/pyproject.toml"; \
+	  else \
+	    manifest="$(WORKTREE_ROOT_ABS)/$$w/Cargo.toml"; \
+	  fi; \
 	  test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
 	done
 	@$(MAKE) --no-print-directory require-engine
@@ -180,12 +265,18 @@ restart-worker:
 	  *) echo "unknown worker: $(WORKER)"; echo "valid workers: $(STACK)"; exit 2 ;; \
 	esac
 	@worker="$(WORKER)"; \
-	manifest="$(WORKTREE_ROOT_ABS)/$$worker/Cargo.toml"; \
-	test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
-	args="--url $(ENGINE_URL)"; \
-	if [ "$$worker" = "queue" ]; then args="$$args --config '$(MAKEFILE_DIR)queue.config.yaml'"; fi; \
-	if [ "$$worker" = "console" ]; then args="$$args --http-port $(CONSOLE_PORT)"; fi; \
-	cmd="cd '$(WORKTREE_ROOT_ABS)' && RUST_LOG='$(RUST_LOG)' cargo run $(RUN_FLAG) --manifest-path '$$manifest' -- $$args"; \
+	if [ "$$worker" = "scrapling" ]; then \
+	  test -f "$(SCRAPLING_ROOT)/pyproject.toml" || { echo "missing $(SCRAPLING_ROOT)/pyproject.toml"; exit 2; }; \
+	  $(MAKE) --no-print-directory prepare-scrapling || exit 1; \
+	  cmd="cd '$(SCRAPLING_ROOT)' && III_URL='$(ENGINE_URL)' '$(SCRAPLING_VENV)/bin/python' -m src.main"; \
+	else \
+	  manifest="$(WORKTREE_ROOT_ABS)/$$worker/Cargo.toml"; \
+	  test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
+	  args="--url $(ENGINE_URL)"; \
+	  if [ "$$worker" = "queue" ]; then args="$$args --config '$(MAKEFILE_DIR)queue.config.yaml'"; fi; \
+	  if [ "$$worker" = "console" ]; then args="$$args --http-port $(CONSOLE_PORT)"; fi; \
+	  cmd="cd '$(WORKTREE_ROOT_ABS)' && RUST_LOG='$(RUST_LOG)' cargo run $(RUN_FLAG) --manifest-path '$$manifest' -- $$args"; \
+	fi; \
 	if tmux list-windows -t "$(TMUX_SESSION)" -F '#W' | grep -Fxq "$$worker"; then \
 	  tmux respawn-window -k -t "$(TMUX_SESSION):$$worker" -c "$(WORKTREE_ROOT_ABS)" "$$cmd"; \
 	else \
@@ -268,6 +359,74 @@ where:
 	@echo 'tmux windows:'
 	@tmux list-windows -t "$(TMUX_SESSION)" -F '#I:#W #{pane_current_path} #{pane_current_command}' 2>/dev/null || \
 	  echo "  no tmux session named $(TMUX_SESSION)"
+
+# ---------------------------------------------------------------------------
+# Harness integration E2E (see harness/tests/e2e/README.md)
+#
+# Builds the subject stack + the harness workspace's E2E runner and runs every
+# scenario against the pinned engine binary. The
+# engine is never downloaded here: pass III_BIN (CI builds it from
+# tests/e2e/engine.lock; locally see that file for the pinned source).
+INTEGRATION_WORKERS := queue iii-directory session-manager context-manager state
+INTEGRATION_PROFILE ?= release
+INTEGRATION_FLAG    := $(if $(filter release,$(INTEGRATION_PROFILE)),--release,)
+INTEGRATION_SCENARIO ?= all
+INTEGRATION_ARTIFACTS ?= $(REPO_ROOT)/target/integration
+INTEGRATION_PLAYGROUND_SCENARIO ?= console-streamed-text
+INTEGRATION_PLAYGROUND_ARTIFACTS ?= $(REPO_ROOT)/target/console-e2e
+
+integration-e2e:
+	@if [ -z "$(III_BIN)" ]; then \
+	  echo "III_BIN is required: path to the pinned iii engine binary."; \
+	  echo "Pinned source: harness/tests/e2e/engine.lock"; \
+	  exit 3; \
+	fi
+	@for w in $(INTEGRATION_WORKERS) harness; do \
+	  echo "building $$w ($(INTEGRATION_PROFILE))"; \
+	  cargo build $(INTEGRATION_FLAG) --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
+	done
+	@echo "building harness-integration ($(INTEGRATION_PROFILE))"
+	@cargo build $(INTEGRATION_FLAG) --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration
+	@"$(MAKEFILE_DIR)target/$(INTEGRATION_PROFILE)/harness-integration" \
+	  run \
+	  --engine-bin "$(III_BIN)" \
+	  --harness-bin "$(REPO_ROOT)/harness/target/$(INTEGRATION_PROFILE)/harness" \
+	  --worker-bin "queue=$(REPO_ROOT)/queue/target/$(INTEGRATION_PROFILE)/queue" \
+	  --worker-bin "iii-directory=$(REPO_ROOT)/iii-directory/target/$(INTEGRATION_PROFILE)/iii-directory" \
+	  --worker-bin "session-manager=$(REPO_ROOT)/session-manager/target/$(INTEGRATION_PROFILE)/session-manager" \
+	  --worker-bin "context-manager=$(REPO_ROOT)/context-manager/target/$(INTEGRATION_PROFILE)/context-manager" \
+	  --worker-bin "state=$(REPO_ROOT)/state/target/$(INTEGRATION_PROFILE)/state" \
+	  --scenario "$(INTEGRATION_SCENARIO)" \
+	  --artifacts-dir "$(INTEGRATION_ARTIFACTS)"
+
+integration-playground:
+	@if [ -z "$(III_BIN)" ]; then \
+	  echo "III_BIN is required: path to the pinned iii engine binary."; \
+	  echo "Pinned source: harness/tests/e2e/engine.lock"; \
+	  exit 3; \
+	fi
+	@for w in $(INTEGRATION_WORKERS) harness console; do \
+	  echo "building $$w ($(INTEGRATION_PROFILE))"; \
+	  cargo build $(INTEGRATION_FLAG) --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
+	done
+	@echo "building harness-integration ($(INTEGRATION_PROFILE))"
+	@cargo build $(INTEGRATION_FLAG) --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration
+	@"$(MAKEFILE_DIR)target/$(INTEGRATION_PROFILE)/harness-integration" \
+	  playground \
+	  --engine-bin "$(III_BIN)" \
+	  --harness-bin "$(REPO_ROOT)/harness/target/$(INTEGRATION_PROFILE)/harness" \
+	  --console-bin "$(REPO_ROOT)/console/target/$(INTEGRATION_PROFILE)/console" \
+	  --worker-bin "queue=$(REPO_ROOT)/queue/target/$(INTEGRATION_PROFILE)/queue" \
+	  --worker-bin "iii-directory=$(REPO_ROOT)/iii-directory/target/$(INTEGRATION_PROFILE)/iii-directory" \
+	  --worker-bin "session-manager=$(REPO_ROOT)/session-manager/target/$(INTEGRATION_PROFILE)/session-manager" \
+	  --worker-bin "context-manager=$(REPO_ROOT)/context-manager/target/$(INTEGRATION_PROFILE)/context-manager" \
+	  --worker-bin "state=$(REPO_ROOT)/state/target/$(INTEGRATION_PROFILE)/state" \
+	  --scenario "$(INTEGRATION_PLAYGROUND_SCENARIO)" \
+	  --artifacts-dir "$(INTEGRATION_PLAYGROUND_ARTIFACTS)"
+
+integration-validate:
+	@cargo run --quiet --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration -- \
+	  validate --scenario all
 
 $(STACK):
 	@:

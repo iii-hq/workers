@@ -47,6 +47,18 @@ const CONTEXT_OVERFLOW_FAILURE: FailureInfo = FailureInfo {
     retryable: false,
 };
 
+const BUDGET_EXCEEDED_FAILURE: FailureInfo = FailureInfo {
+    code: "harness.budget_exceeded",
+    phase: "budget_preflight",
+    retryable: false,
+};
+
+const BUDGET_UNAVAILABLE_FAILURE: FailureInfo = FailureInfo {
+    code: "harness.budget_unavailable",
+    phase: "budget_preflight",
+    retryable: false,
+};
+
 /// Provider adapters add framing outside the fields visible to the harness.
 /// Keep a small fixed reserve in addition to the deterministic JSON estimate.
 const PROVIDER_FRAMING_ALLOWANCE_TOKENS: u64 = 64;
@@ -318,7 +330,13 @@ pub async fn run_step(
         PRE_GENERATE_HOOK_ALLOWANCE_TOKENS
     };
     let mut reassembled = false;
-    let (gen_system_prompt, gen_annotations, gen_messages) = loop {
+    let (
+        gen_system_prompt,
+        gen_annotations,
+        gen_messages,
+        generation_input_tokens,
+        generation_max_output_tokens,
+    ) = loop {
         let assembled = match assemble_context(
             deps,
             &session,
@@ -451,7 +469,18 @@ pub async fn run_step(
             final_count.tokens.saturating_add(request_overhead_tokens)
         };
         if final_request_tokens <= assembled.usable {
-            break (gen_system_prompt, gen_annotations, gen_messages);
+            let max_output_tokens = record
+                .options
+                .max_output_tokens
+                .unwrap_or(assembled.effective_max_output_tokens)
+                .min(assembled.effective_max_output_tokens);
+            break (
+                gen_system_prompt,
+                gen_annotations,
+                gen_messages,
+                final_request_tokens,
+                max_output_tokens,
+            );
         }
         if reassembled {
             let reason = format!(
@@ -486,6 +515,33 @@ pub async fn run_step(
         );
     };
 
+    // A stop that landed during context assembly is visible through the
+    // in-process signal even though its durable write is blocked by this
+    // session lock. Do not reserve budget for a call that will never start.
+    if deps.cancels.is_fired(&record.turn_id) {
+        record.abort = true;
+        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+    }
+
+    let budget_reservation = match crate::budget::reserve(
+        deps,
+        &record,
+        generation_input_tokens,
+        generation_max_output_tokens,
+    )
+    .await?
+    {
+        crate::budget::ReserveOutcome::Unlimited => None,
+        crate::budget::ReserveOutcome::Reserved(reservation) => Some(reservation),
+        crate::budget::ReserveOutcome::Rejected(rejection) => {
+            let failure = match &rejection {
+                crate::budget::BudgetRejection::Exceeded(_) => BUDGET_EXCEEDED_FAILURE,
+                crate::budget::BudgetRejection::Unavailable(_) => BUDGET_UNAVAILABLE_FAILURE,
+            };
+            return finalize_failed(deps, &session, &mut record, rejection.reason(), failure).await;
+        }
+    };
+
     let assistant_origin = origin_with(&record.turn_id, &gen_annotations);
 
     // Generate: append an empty assistant under a deterministic id, stream
@@ -493,7 +549,7 @@ pub async fn run_step(
     let assistant_id = ids::assistant_entry_id(&record.turn_id, payload.step);
     let provider = record.options.provider.clone().unwrap_or_default();
     let empty = empty_assistant(&provider, &record.options.model);
-    let _ = session
+    if let Err(error) = session
         .append(
             &record.session_id,
             &AgentMessage::Assistant(empty),
@@ -501,7 +557,13 @@ pub async fn run_step(
             None,
             Some(&assistant_origin),
         )
-        .await?;
+        .await
+    {
+        if let Some(reservation) = budget_reservation.as_ref() {
+            crate::budget::release(deps, reservation).await?;
+        }
+        return Err(error);
+    }
 
     let sink = SessionStreamSink {
         session: session.clone(),
@@ -517,17 +579,34 @@ pub async fn run_step(
         messages: gen_messages,
         tools,
         response_format,
+        // Forward a cap only when the caller set one. `generation_max_output_tokens`
+        // is the internal reservation context assembly budgets against; sending it
+        // unasked would put the model's own ceiling on every request and let a
+        // provider apply a different policy than its default. When the caller DID
+        // ask, send the reservation rather than the raw request — it is their value
+        // already clamped to the model's effective limit, so the provider is never
+        // told it may emit more than we reserved.
+        max_output_tokens: record
+            .options
+            .max_output_tokens
+            .map(|_| generation_max_output_tokens),
         thinking_level: record.options.thinking_level,
         provider_options,
     };
     record.stream_request_id = Some(params.request_id.clone());
-    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+    if let Err(error) = crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await {
+        if let Some(reservation) = budget_reservation.as_ref() {
+            crate::budget::release(deps, reservation).await?;
+        }
+        return Err(error);
+    }
 
-    // A stop that landed during context assembly (its durable write blocked on
-    // the guard held here) is only visible via the in-process signal. Bail
-    // before dispatching generation at all — otherwise the provider starts a
-    // stream that is dead on arrival.
+    // A stop may land after reservation but before dispatch. Release the
+    // unused amount before finalising the cancelled turn.
     if deps.cancels.is_fired(&record.turn_id) {
+        if let Some(reservation) = budget_reservation.as_ref() {
+            crate::budget::release(deps, reservation).await?;
+        }
         record.abort = true;
         return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
     }
@@ -552,7 +631,21 @@ pub async fn run_step(
     // was a no-op (registration race / router restart). Level-triggered, so a
     // stop fired before this subscribe is still observed.
     let abort_rx = deps.cancels.watch(&record.turn_id);
-    let mut outcome = router.chat(params, &sink, abort_rx).await?;
+    let mut outcome = match router.chat(params, &sink, abort_rx).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            // The provider may have consumed the request without returning
+            // usage. Charge the full reservation so transport failures cannot
+            // bypass a hard budget.
+            if let Some(reservation) = budget_reservation.as_ref() {
+                crate::budget::reconcile(deps, reservation, None).await?;
+            }
+            return Err(error);
+        }
+    };
+    if let Some(reservation) = budget_reservation.as_ref() {
+        crate::budget::reconcile(deps, reservation, outcome.message.usage.as_ref()).await?;
+    }
 
     // A stop mid-generation truncates tool-call blocks before their arguments
     // stream. An argument-less call can never execute (the turn is cancelled)
@@ -578,6 +671,7 @@ pub async fn run_step(
             &record.session_id,
             &assistant_id,
             &outcome.message.content,
+            outcome.message.usage.as_ref(),
             None,
             Some(&assistant_origin),
         )
@@ -836,6 +930,7 @@ pub async fn run_step(
                     &call.id,
                     &call.function_id,
                     &trusted_call_args,
+                    None,
                 )
                 .await
             {
@@ -872,10 +967,13 @@ pub async fn run_step(
                     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                     continue;
                 }
-                crate::hooks::runner::PreTriggerOutcome::Hold { held_by, .. } => {
+                crate::hooks::runner::PreTriggerOutcome::Hold {
+                    held_by, arguments, ..
+                } => {
                     let info = trigger::PendingInfo {
                         pending_timeout_ms: None,
                         held_by: Some(held_by),
+                        held_arguments: Some(arguments),
                         child_session_id: None,
                         child_turn_id: None,
                     };
@@ -920,6 +1018,7 @@ pub async fn run_step(
                         child_session_id: child.as_ref().map(|c| c.session_id.clone()),
                         child_turn_id: child.as_ref().map(|c| c.turn_id.clone()),
                         held_by: None,
+                        held_arguments: None,
                         pending_timeout_ms: None,
                         pending_at: None,
                     },
@@ -938,6 +1037,7 @@ pub async fn run_step(
                     child_session_id: None,
                     child_turn_id: None,
                     held_by: None,
+                    held_arguments: None,
                     pending_timeout_ms: None,
                     pending_at: None,
                 },
@@ -983,6 +1083,9 @@ pub async fn run_step(
                     let info = trigger::PendingInfo {
                         pending_timeout_ms: None,
                         held_by: Some(held_by),
+                        // A post-trigger release re-invokes the target: keep
+                        // the fully pre-mutated args, not the model originals.
+                        held_arguments: Some(eff_args.clone()),
                         child_session_id: None,
                         child_turn_id: None,
                     };
@@ -1052,10 +1155,23 @@ async fn has_queued(deps: &Deps, record: &TurnRecord) -> Result<bool, HarnessErr
         .any(|r| !matches!(r.message, AgentMessage::Custom(_))))
 }
 
-/// Drain the session's message queue into the transcript in arrival order.
-/// Idempotent: each row appends under its stored deterministic entry id, and
-/// rows are deleted only after the append lands — a redelivered step re-drains
-/// as a no-op.
+/// How many of these parked rows are MODEL-VISIBLE (non-custom). Custom-role
+/// rows are transcript-only status notices that never enter the model context,
+/// so they neither steer a live turn (`has_queued`) nor, at finalize, warrant
+/// waking a fresh one — a re-generate over an assistant-tailed context is a
+/// guaranteed provider prefill rejection. A parked notification arrives as a
+/// user-role message, so it counts.
+fn count_model_visible(rows: &[crate::state::QueuedMessage]) -> usize {
+    rows.iter()
+        .filter(|r| !matches!(r.message, AgentMessage::Custom(_)))
+        .count()
+}
+
+/// Drain the session's message queue into the transcript in arrival order,
+/// returning how many drained rows were MODEL-VISIBLE. Idempotent: each row
+/// appends under its stored deterministic entry id, and rows are deleted only
+/// after the append lands — a redelivered step re-drains as a no-op and reports
+/// zero, since there is nothing left to drain.
 async fn drain_queued(
     deps: &Deps,
     session: &SessionClient,
@@ -1063,7 +1179,7 @@ async fn drain_queued(
 ) -> Result<usize, HarnessError> {
     let cfg = deps.cfg().await;
     let rows = crate::state::list_queued(&deps.iii, session_id, cfg.session_timeout_ms).await?;
-    let drained = rows.len();
+    let model_visible = count_model_visible(&rows);
     for row in rows {
         session
             .append(
@@ -1076,15 +1192,55 @@ async fn drain_queued(
             .await?;
         crate::state::delete_queued(&deps.iii, session_id, &row.id, cfg.session_timeout_ms).await?;
     }
-    Ok(drained)
+    Ok(model_visible)
 }
 
-/// Best-effort finalize drain: a message enqueued after the loop's last queue
-/// check still lands in the transcript (unreacted — the turn is over, same as
-/// a pre-queue merged send racing completion). Never blocks the finalise.
-async fn drain_queued_best_effort(deps: &Deps, session: &SessionClient, session_id: &str) {
-    if let Err(e) = drain_queued(deps, session, session_id).await {
-        tracing::warn!(session_id = %session_id, error = %e, "finalize queue drain failed");
+/// Finalize drain: a message that parked after the loop's last in-step queue
+/// check still lands in the transcript here. Returns `true` when it delivered a
+/// MODEL-VISIBLE message — the signal that the finalizing turn must reseed
+/// (via [`reseed_after_finalize_drain`]) so something reacts to it. Without the
+/// reseed a parked notification sits unread with no turn to process it, which
+/// strands an autonomous run that ended its turn expecting the fire to wake it.
+/// Never blocks the finalise.
+async fn drain_queued_best_effort(deps: &Deps, session: &SessionClient, session_id: &str) -> bool {
+    match drain_queued(deps, session, session_id).await {
+        Ok(model_visible) => model_visible > 0,
+        Err(e) => {
+            tracing::warn!(session_id = %session_id, error = %e, "finalize queue drain failed");
+            false
+        }
+    }
+}
+
+/// Seed a fresh turn after a finalize drain delivered a model-visible message
+/// with no turn to react to it. Reuses the finalized turn's frozen options
+/// (model / provider / dispatch policy / prompt) and last-acked registry
+/// generation so the woken turn keeps the agent's capabilities — the same
+/// outcome an external `harness::send` produces against a now-terminal session.
+///
+/// MUST be called AFTER the terminal `put_turn`: the turn slot is keyed per
+/// session, so seeding before the finalize write would be clobbered by it. The
+/// caller gates on the drain actually delivering a row, so a redelivered
+/// finalize (queue at-least-once) drains nothing and does not double-seed; a
+/// concurrent external send racing the same slot is resolved by `run_step`'s
+/// stale-turn guard, exactly as two racing sends already are.
+async fn reseed_after_finalize_drain(deps: &Deps, record: &TurnRecord) {
+    let cfg = deps.cfg().await;
+    if let Err(e) = crate::functions::send::seed_new(
+        deps,
+        &cfg,
+        &record.session_id,
+        record.options.clone(),
+        record.functions_generation,
+        None,
+    )
+    .await
+    {
+        tracing::warn!(
+            session_id = %record.session_id,
+            error = %e,
+            "reseed after finalize drain failed; a parked notification may be stranded",
+        );
     }
 }
 
@@ -1220,7 +1376,7 @@ async fn finalize_completed(
     record: &mut TurnRecord,
     result: Option<Value>,
 ) -> Result<TurnStepResult, HarnessError> {
-    drain_queued_best_effort(deps, session, &record.session_id).await;
+    let woke = drain_queued_best_effort(deps, session, &record.session_id).await;
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Completed;
     record.result = result.clone();
@@ -1250,6 +1406,19 @@ async fn finalize_completed(
     if let Some(parent) = record.parent.clone() {
         crate::deferred::resolve_parent(deps, &parent, "completed", result.as_ref(), None).await;
     }
+    // Second sweep, AFTER the terminal write, pairing with `try_enqueue`'s
+    // post-enqueue recheck: a send whose recheck still saw `Running` must have
+    // enqueued before the terminal write landed, so this sweep collects its
+    // row; a recheck that sees the terminal record seeds its own turn. Without
+    // it, a row enqueued between the first drain and the terminal write would
+    // strand — queued against a turn that will never drain again.
+    let woke = woke || drain_queued_best_effort(deps, session, &record.session_id).await;
+    // A message parked during this turn's final step was just drained to the
+    // transcript with no turn to react to it; seed one now (after the terminal
+    // write above, or it would clobber the fresh turn's slot).
+    if woke {
+        reseed_after_finalize_drain(deps, record).await;
+    }
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
         status: TurnStatus::Completed,
@@ -1265,7 +1434,7 @@ async fn finalize_failed(
     reason: &str,
     failure: FailureInfo,
 ) -> Result<TurnStepResult, HarnessError> {
-    drain_queued_best_effort(deps, session, &record.session_id).await;
+    let woke = drain_queued_best_effort(deps, session, &record.session_id).await;
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Failed;
     record.result_error = Some(reason.to_string());
@@ -1345,6 +1514,16 @@ async fn finalize_failed(
         if !delivered {
             notify_parent_of_child_failure(deps, &parent.session_id, record, reason, failure).await;
         }
+    }
+    // Second post-terminal sweep, as in `finalize_completed`: closes the
+    // enqueue-after-drain window against `try_enqueue`'s recheck.
+    let woke = woke || drain_queued_best_effort(deps, session, &record.session_id).await;
+    // As in `finalize_completed`: a message that parked during the failing
+    // turn's final step is genuine new input (a notification, a steer) and
+    // deserves a turn, the same as an external send arriving at a failed
+    // session. Gated on the drain, so it cannot loop on the failure itself.
+    if woke {
+        reseed_after_finalize_drain(deps, record).await;
     }
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
@@ -1534,7 +1713,10 @@ async fn finalize_cancelled(
     record: &mut TurnRecord,
     reason: &str,
 ) -> Result<TurnStepResult, HarnessError> {
-    drain_queued_best_effort(deps, session, &record.session_id).await;
+    // Deliver any parked rows to the transcript but do NOT reseed: the user
+    // stopped this turn, so a parked notification waits for the next explicit
+    // send rather than auto-waking a turn they just cancelled.
+    let _ = drain_queued_best_effort(deps, session, &record.session_id).await;
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Cancelled;
     record.updated_at = AgentMessage::now_ms();
@@ -1573,6 +1755,10 @@ async fn finalize_cancelled(
     if let Some(parent) = record.parent.clone() {
         crate::deferred::resolve_parent(deps, &parent, "cancelled", None, Some(reason)).await;
     }
+    // Second post-terminal sweep (see `finalize_completed`): a row enqueued
+    // between the first drain and the terminal write still reaches the
+    // transcript. Still no reseed — the user cancelled.
+    let _ = drain_queued_best_effort(deps, session, &record.session_id).await;
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
         status: TurnStatus::Cancelled,
@@ -1635,6 +1821,7 @@ fn checkpoint_pending(
             child_session_id: info.child_session_id.clone(),
             child_turn_id: info.child_turn_id.clone(),
             held_by: info.held_by.clone(),
+            held_arguments: info.held_arguments.clone(),
             pending_timeout_ms: info.pending_timeout_ms,
             pending_at: Some(AgentMessage::now_ms()),
         },
@@ -1654,6 +1841,7 @@ fn mark_done(record: &mut TurnRecord, call_id: &str, entry_id: &str) {
             child_session_id: None,
             child_turn_id: None,
             held_by: None,
+            held_arguments: None,
             pending_timeout_ms: None,
             pending_at: None,
         },
@@ -1905,6 +2093,7 @@ async fn assemble_context(
         messages,
         usable: out.usable,
         token_count: out.token_count,
+        effective_max_output_tokens: out.effective_max_output_tokens,
     })
 }
 
@@ -1981,6 +2170,8 @@ struct Assembled {
     /// prompt + tools + request overhead). Reused as the final request
     /// count when nothing mutates the request after assembly.
     token_count: u64,
+    /// Model/output ceiling resolved by context-manager for this request.
+    effective_max_output_tokens: u64,
 }
 
 struct ContextAssemblyInputs<'a> {
@@ -2159,9 +2350,16 @@ async fn build_tools(deps: &Deps, record: &TurnRecord) -> Vec<crate::types::mode
         ExposeMode::Native => {
             let policy = CompiledPolicy::from(record.options.functions.as_ref());
             let snapshot = deps.functions().await;
-            let mut tools = Vec::new();
+            // Subscription controls are harness-intercepted virtual functions,
+            // so the engine's public registry intentionally does not list
+            // them. Publish their real schemas alongside registry functions
+            // whenever this turn's dispatch policy allows them.
+            let mut tools = crate::functions::subscribe::native_control_tools(&policy);
             for descriptor in snapshot.functions.iter() {
                 if !policy.allows(&descriptor.function_id) {
+                    continue;
+                }
+                if tools.iter().any(|tool| tool.name == descriptor.function_id) {
                     continue;
                 }
                 tools.push(crate::types::model::AgentFunction {
@@ -2205,6 +2403,7 @@ impl StreamSink for SessionStreamSink {
                 &self.session_id,
                 &self.entry_id,
                 &message.content,
+                message.usage.as_ref(),
                 None,
                 Some(&origin),
             )
@@ -2228,9 +2427,66 @@ impl Clone for SessionStreamSink {
 
 #[cfg(test)]
 mod tests {
-    use super::{cancel_requested, transient_resume_allowed};
+    use super::{cancel_requested, count_model_visible, transient_resume_allowed};
     use crate::types::content::ContentBlock;
     use crate::types::event::{ErrorKind, StopReason};
+    use crate::types::message::{AgentMessage, CustomMessage, CustomRoleTag};
+
+    fn queued(message: AgentMessage) -> crate::state::QueuedMessage {
+        crate::state::QueuedMessage {
+            id: "q".into(),
+            session_id: "s_1".into(),
+            message,
+            entry_id: "e".into(),
+            origin: None,
+            queued_at: 0,
+        }
+    }
+
+    fn custom_notice(text: &str) -> AgentMessage {
+        AgentMessage::Custom(CustomMessage {
+            role: CustomRoleTag::Custom,
+            custom_type: "notice".into(),
+            content: vec![ContentBlock::text(text)],
+            display: None,
+            details: None,
+            timestamp: 0,
+        })
+    }
+
+    /// The gate that fixes the "notification parked during a turn's final step
+    /// is stranded" bug: `finalize_completed`/`finalize_failed` reseed a turn
+    /// only when the finalize drain delivered a MODEL-VISIBLE message. A
+    /// notification arrives as a user-role message, so it counts and wakes a
+    /// turn; a custom-role status notice drains to the transcript but must not
+    /// reseed (a re-generate over an assistant-tailed context would be a
+    /// provider prefill rejection). A redelivered finalize drains nothing, so
+    /// it reports zero and cannot double-seed.
+    #[test]
+    fn finalize_reseed_gate_counts_only_model_visible_rows() {
+        assert_eq!(count_model_visible(&[]), 0, "empty queue never reseeds");
+
+        let notice = queued(custom_notice("scanning…"));
+        assert_eq!(
+            count_model_visible(std::slice::from_ref(&notice)),
+            0,
+            "a custom-only queue drains but must not reseed",
+        );
+
+        let notification = queued(AgentMessage::user_text("[notification] chunk-done"));
+        assert_eq!(
+            count_model_visible(std::slice::from_ref(&notification)),
+            1,
+            "a parked notification (user role) reseeds so the agent reacts",
+        );
+
+        let steer = queued(AgentMessage::user_text("also check the tests"));
+        assert_eq!(
+            count_model_visible(&[notification, notice, steer]),
+            2,
+            "only the model-visible rows gate the reseed",
+        );
+    }
 
     #[test]
     fn request_overhead_always_reserves_provider_framing() {

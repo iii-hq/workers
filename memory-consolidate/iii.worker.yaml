@@ -10,4 +10,4 @@ description: Scheduled hygiene for the memory worker — deterministic dedup of 
 dependencies:
   memory: "^0.1.0"
   configuration: "^0.21.3"
-  state: "^0.21.0"
+  state: "^0.21.2"

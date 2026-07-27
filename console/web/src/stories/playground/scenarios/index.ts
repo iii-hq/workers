@@ -7,7 +7,6 @@ import { errorOnFcall } from './error-on-fcall'
 import { fastTokens } from './fast-tokens'
 import { happyAgent } from './happy-agent'
 import { happyAsk } from './happy-ask'
-import { happyPlan } from './happy-plan'
 import { harnessSpawn } from './harness-spawn'
 import { longMarkdown } from './long-markdown'
 import { markdownStress } from './markdown-stress'
@@ -37,14 +36,6 @@ export interface PlaygroundScenario {
 }
 
 export const SCENARIOS: PlaygroundScenario[] = [
-  {
-    id: 'happy-plan',
-    label: 'happy · plan',
-    description: 'thought + assistant body, no function triggers.',
-    group: 'happy paths',
-    preferredMode: 'plan',
-    backend: happyPlan,
-  },
   {
     id: 'happy-ask',
     label: 'happy · ask',
@@ -102,7 +93,7 @@ export const SCENARIOS: PlaygroundScenario[] = [
     description:
       'half a thought, then throws AbortError. ChatView should clean up and stay responsive.',
     group: 'failure modes',
-    preferredMode: 'plan',
+    preferredMode: 'agent',
     backend: abortMidThought,
   },
   {

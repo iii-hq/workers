@@ -10,14 +10,17 @@ use crate::functions::react::REACT_ID;
 use crate::functions::{
     function_resolve::{FunctionResolveRequest, FunctionResolveResponse},
     function_trigger::{FunctionTriggerRequest, FunctionTriggerResponse},
+    metrics::{SessionMetricsRequestV1, SessionMetricsResponseV1},
     react::{ReactEvent, ReactResult},
     send::{SendRequest, SendResponse},
+    session_tree::{SessionTreeRequestV1, SessionTreeResponseV1},
     spawn::{SpawnRequest, SpawnResponse},
     status::{StatusReport, StatusRequest},
     stop::{StopRequest, StopResponse},
 };
 use crate::functions::{
-    FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, SEND_ID, SPAWN_ID, STATUS_ID, STOP_ID, TURN_ID,
+    FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, METRICS_ID, SEND_ID, SESSION_TREE_ID, SPAWN_ID,
+    STATUS_ID, STOP_ID, TURN_ID,
 };
 use crate::turn_loop::{TurnStepPayload, TurnStepResult};
 
@@ -64,6 +67,8 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<FunctionResolveRequest, FunctionResolveResponse>(FUNCTION_RESOLVE_ID),
         spec::<StopRequest, StopResponse>(STOP_ID),
         spec::<StatusRequest, Option<StatusReport>>(STATUS_ID),
+        spec::<SessionTreeRequestV1, SessionTreeResponseV1>(SESSION_TREE_ID),
+        spec::<SessionMetricsRequestV1, SessionMetricsResponseV1>(METRICS_ID),
         spec::<ReactEvent, ReactResult>(REACT_ID),
     ]
 }

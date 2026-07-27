@@ -32,6 +32,18 @@ pub struct WorkerView {
     /// Exit code of the last run when the process crashed. Surfaced inline so a
     /// failure is visible in the table without opening the log pane.
     pub exit_code: Option<i32>,
+    /// Injectable-UI dev watcher: `None` = the worker ships no ui/ project,
+    /// `Some(false)` = has one (watch off), `Some(true)` = watcher mode on.
+    pub ui_watch: Option<bool>,
+}
+
+/// Table text for the UI column, shared by the TUI and `status`.
+pub fn ui_watch_label(ui_watch: Option<bool>) -> &'static str {
+    match ui_watch {
+        None => "—",
+        Some(false) => "ui",
+        Some(true) => "watch",
+    }
 }
 
 /// Query the engine for its connected workers over the shared persistent
@@ -68,8 +80,8 @@ pub fn print_status_table(views: &[WorkerView]) {
             }
             println!("── {} ──", v.group.label());
             println!(
-                "{:<28} {:<12} {:<12} {:<8} {:<8}",
-                "WORKER", "PROCESS", "ENGINE", "PID", "UPTIME"
+                "{:<28} {:<12} {:<12} {:<6} {:<8} {:<8}",
+                "WORKER", "PROCESS", "ENGINE", "UI", "PID", "UPTIME"
             );
             last_group = Some(v.group);
         }
@@ -83,8 +95,13 @@ pub fn print_status_table(views: &[WorkerView]) {
             format!("{} (iii worker add)", v.name)
         };
         println!(
-            "{:<28} {:<12} {:<12} {:<8} {:<8}",
-            name, v.process_status, v.engine_status, pid, v.uptime
+            "{:<28} {:<12} {:<12} {:<6} {:<8} {:<8}",
+            name,
+            v.process_status,
+            v.engine_status,
+            ui_watch_label(v.ui_watch),
+            pid,
+            v.uptime
         );
     }
 }

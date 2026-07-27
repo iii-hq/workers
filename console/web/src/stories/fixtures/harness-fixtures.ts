@@ -1,4 +1,4 @@
-import type { FunctionCallMessage } from '@/types/chat'
+import type { FunctionTriggerMessage } from '@/types/chat'
 
 const now = Date.now()
 
@@ -7,11 +7,11 @@ function base(
   functionId: string,
   input: unknown,
   output?: unknown,
-  extra?: Partial<FunctionCallMessage>,
-): FunctionCallMessage {
+  extra?: Partial<FunctionTriggerMessage>,
+): FunctionTriggerMessage {
   return {
     id,
-    role: 'function-call',
+    role: 'function-trigger',
     functionId,
     input,
     ...(output !== undefined ? { output } : {}),

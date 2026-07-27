@@ -42,6 +42,7 @@ export function SpanLogsTab({ span }: SpanLogsTabProps) {
         return (
           <div
             key={`${event.name}-${event.timestamp_unix_nano}`}
+            data-span-event-name={event.name}
             className={`border bg-bg ${
               isException
                 ? 'border-l-2 border-l-alert border-y-rule border-r-rule bg-alert/5'
@@ -115,7 +116,10 @@ function EventAttributeRow({
   const formatted = formatPossibleJson(value)
   if (formatted !== null) {
     return (
-      <div className="flex flex-col gap-1 text-[11px]">
+      <div
+        className="flex flex-col gap-1 text-[11px]"
+        data-span-event-attribute={attrKey}
+      >
         <span className="font-mono text-ink-faint uppercase tracking-[0.06em] text-[10px]">
           {attrKey}
         </span>
@@ -126,7 +130,10 @@ function EventAttributeRow({
     )
   }
   return (
-    <div className="flex items-start gap-2 text-[11px]">
+    <div
+      className="flex items-start gap-2 text-[11px]"
+      data-span-event-attribute={attrKey}
+    >
       <span className="font-mono text-ink-faint uppercase tracking-[0.06em] text-[10px] flex-shrink-0">
         {attrKey}
       </span>

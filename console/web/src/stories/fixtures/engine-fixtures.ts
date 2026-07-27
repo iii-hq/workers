@@ -1,4 +1,4 @@
-import type { FunctionCallMessage } from '@/types/chat'
+import type { FunctionTriggerMessage } from '@/types/chat'
 import { wrapHarness } from './sandbox-fixtures'
 
 const now = Date.now()
@@ -8,11 +8,11 @@ function base(
   functionId: string,
   input: unknown,
   output?: unknown,
-  extra?: Partial<FunctionCallMessage>,
-): FunctionCallMessage {
+  extra?: Partial<FunctionTriggerMessage>,
+): FunctionTriggerMessage {
   return {
     id,
-    role: 'function-call',
+    role: 'function-trigger',
     functionId,
     input,
     output,
@@ -595,6 +595,49 @@ export const engineRegisterTriggerCron = base(
   wrapHarness({ id: 'trg-cron-01' }),
 )
 
+/** Call-mode reaction: the event dispatches an fp::pipe instead of spawning
+ * a sub-agent — the THEN pane renders the pipeline's step route. Mirrors a
+ * live turn-completed → count-check → state::set binding. */
+export const engineRegisterTriggerCallPipe = base(
+  'engine-register-trigger-call-pipe',
+  'engine::register_trigger',
+  {
+    trigger_type: 'harness::turn-completed',
+    function_id: 'harness::react',
+    config: {
+      parent_session_id: 'console-b048edc6-3a09-41f7-884e-fec9ba1b17e2',
+    },
+    metadata: {
+      call: {
+        function_id: 'fp::pipe',
+        payload: {
+          through: [
+            {
+              function: 'database::query',
+              payload: {
+                db: 'sqlite_db',
+                sql: "SELECT COUNT(*) AS n FROM scan_progress WHERE scan_run = 'sec-m8k4' AND status IN ('done','failed')",
+              },
+            },
+            { function: 'fp::get', payload: { path: '/rows/0/n' } },
+            { function: 'fp::when', payload: { op: '>=', to: 12 } },
+            {
+              function: 'state::set',
+              into: '/value/batches_done',
+              payload: {
+                key: 'turn_complete',
+                scope: 'run-sec-m8k4',
+                value: { done: true, run_id: 'sec-m8k4' },
+              },
+            },
+          ],
+        },
+      },
+    },
+  },
+  wrapHarness({ id: 'sub_2a77e6f39bad' }),
+)
+
 export const engineRegisterTriggerSubscribe = base(
   'engine-register-trigger-subscribe',
   'engine::register_trigger',
@@ -644,6 +687,7 @@ export const engineFixtures = [
   engineWorkerRegisterRunning,
   engineRegisterTriggerReact,
   engineRegisterTriggerCron,
+  engineRegisterTriggerCallPipe,
   engineRegisterTriggerSubscribe,
   engineRegisterTriggerRunning,
   engineRunning,

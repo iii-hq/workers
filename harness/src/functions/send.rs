@@ -12,6 +12,7 @@ use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::ids;
+use crate::policy;
 use crate::prompt::{self, Mode, SystemPromptStrategy};
 use crate::turn_loop;
 use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
@@ -34,13 +35,24 @@ pub struct SendOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     /// How `system_prompt` combines with the built-in prompt: `override`
-    /// replaces it; `enrich` (default) appends to it.
+    /// replaces it; `enrich` (default) appends to it; `disabled` omits it.
     #[serde(default)]
     pub system_prompt_strategy: SystemPromptStrategy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
+    /// Per-generation output-token ceiling forwarded to the router.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    /// Hard input-plus-output token budget for the complete root-and-subagent
+    /// session tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_tokens: Option<u64>,
+    /// Hard USD budget for the complete root-and-subagent session tree.
+    /// Every model used by the tree must advertise catalog pricing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
     /// Provider-native per-call options, namespaced by provider id.
@@ -52,7 +64,10 @@ pub struct SendOptions {
     /// The fail-closed dispatch policy. Omitted on a NEW session → deny every
     /// call; omitted when steering an EXISTING session → inherit the prior
     /// turn's policy (a nudge must not disarm a live run). Pass
-    /// `{ allow: [] }` to strip explicitly.
+    /// `{ allow: [] }` to strip explicitly. On a NEW `ask`-mode turn the
+    /// effective policy is capped at the configured default policy; a
+    /// steer folded into an already-running turn keeps that turn's frozen
+    /// policy until it finalises.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
     /// Tracing passthrough.
@@ -179,16 +194,11 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
         .system_prompt_get(provider.as_deref())
         .await;
     let mut options = build_options(&cfg, &req, model, provider, identity.as_deref());
-    // A steer also inherits the prior turn's dispatch policy unless this send
-    // names its own: `functions` is fail-closed, so leaving it `None` on a
-    // fresh steer record would silently DISARM a live run — every turn from
-    // the nudge onward denied all dispatch. Explicit strip stays possible
-    // (`options.functions: { allow: [] }`).
-    if options.functions.is_none() {
-        if let Some(prev) = &prev {
-            options.functions = prev.options.functions.clone();
-        }
-    }
+    inherit_prior_functions(
+        &cfg,
+        &mut options,
+        prev.as_ref().and_then(|p| p.options.functions.as_ref()),
+    );
 
     // Normalise the incoming message and validate its role.
     let message = normalize_message(req.message)?;
@@ -223,6 +233,7 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
         }
         None => session.create(title.as_deref(), metadata.as_ref()).await?,
     };
+    crate::budget::prepare_root(deps, &session_id, &mut options, prev.as_ref()).await?;
 
     // Entry id: idempotent when a dedupe key is set.
     let entry_id = req
@@ -501,6 +512,7 @@ fn build_options(
     identity: Option<&str>,
 ) -> TurnOptions {
     let opts = req.options.clone().unwrap_or_default();
+    let functions = clamp_for_mode(cfg, opts.mode, opts.functions);
     TurnOptions {
         model,
         provider,
@@ -512,14 +524,51 @@ fn build_options(
         ),
         mode: opts.mode,
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
+        max_output_tokens: opts.max_output_tokens,
+        max_total_tokens: opts.max_total_tokens,
+        max_cost_usd: opts.max_cost_usd,
+        budget_root_session_id: None,
         thinking_level: opts.thinking_level,
         provider_options: opts.provider_options,
         output: opts.output.unwrap_or_default(),
-        functions: opts.functions,
+        functions,
         metadata: opts.metadata,
         max_validation_retries: cfg.max_validation_retries,
         max_transient_resumes: cfg.max_transient_resumes,
     }
+}
+
+/// The single chokepoint for the ask-mode policy cap:
+/// every turn-seeding path (a fresh send, an inherited steer, a spawned child)
+/// routes its resolved dispatch policy through here, so ask mode is capped at
+/// the configured default policy no matter how the policy was assembled.
+/// A non-ask turn passes through untouched.
+pub(crate) fn clamp_for_mode(
+    cfg: &WorkerConfig,
+    mode: Option<Mode>,
+    functions: Option<FunctionPolicy>,
+) -> Option<FunctionPolicy> {
+    match mode {
+        Some(Mode::Ask) => policy::clamp_policy(cfg.default_functions.as_ref(), functions.as_ref()),
+        _ => functions,
+    }
+}
+
+/// A steer also inherits the prior turn's dispatch policy unless this send
+/// names its own: `functions` is fail-closed, so leaving it `None` on a fresh
+/// steer record would silently DISARM a live run — every turn from the nudge
+/// onward denied all dispatch. Explicit strip stays possible
+/// (`options.functions: { allow: [] }`). An ask-mode steer stays armed but
+/// read-only via the shared [`clamp_for_mode`] cap.
+fn inherit_prior_functions(
+    cfg: &WorkerConfig,
+    options: &mut TurnOptions,
+    prev_functions: Option<&FunctionPolicy>,
+) {
+    if options.functions.is_some() {
+        return;
+    }
+    options.functions = clamp_for_mode(cfg, options.mode, prev_functions.cloned());
 }
 
 /// Default a BRAND-NEW session's working directory (MOT-3897): when the very
@@ -605,7 +654,11 @@ async fn seed_or_merge(
     }
 }
 
-async fn seed_new(
+/// Seed a fresh turn record and enqueue its first step. Exposed to the turn
+/// loop's finalize-drain reseed path (`turn_loop::reseed_after_finalize_drain`)
+/// so a notification that parked during a turn's final step gets a turn to
+/// react to it, instead of being drained to the transcript and stranded.
+pub(crate) async fn seed_new(
     deps: &Deps,
     cfg: &WorkerConfig,
     session_id: &str,
@@ -796,7 +849,7 @@ mod tests {
             options: Some(SendOptions {
                 system_prompt: Some("custom".into()),
                 system_prompt_strategy: SystemPromptStrategy::Override,
-                mode: Some(Mode::Plan),
+                mode: Some(Mode::Ask),
                 ..Default::default()
             }),
         };
@@ -808,6 +861,121 @@ mod tests {
             Some("You are an iii agent worker. VOICE."),
         );
         assert_eq!(opts.system_prompt.as_deref(), Some("custom"));
+    }
+
+    fn options_with(mode: Option<Mode>, functions: Option<FunctionPolicy>) -> TurnOptions {
+        TurnOptions {
+            model: "m".into(),
+            provider: None,
+            system_prompt: None,
+            mode,
+            max_turns: 16,
+            max_output_tokens: None,
+            max_total_tokens: None,
+            max_cost_usd: None,
+            budget_root_session_id: None,
+            thinking_level: None,
+            provider_options: None,
+            output: OutputContract::Text,
+            functions,
+            metadata: None,
+            max_validation_retries: 2,
+            max_transient_resumes: 1,
+        }
+    }
+
+    #[test]
+    fn ask_mode_steer_inherits_the_prior_policy_clamped() {
+        let cfg = WorkerConfig::default();
+        let broad = FunctionPolicy {
+            allow: vec!["*".into()],
+            deny: vec![],
+            expose: Default::default(),
+        };
+
+        // An ask-mode steer keeps the run armed and is capped at the wildcard
+        // default policy.
+        let mut options = options_with(Some(Mode::Ask), None);
+        inherit_prior_functions(&cfg, &mut options, Some(&broad));
+        let compiled = policy::CompiledPolicy::from(options.functions.as_ref());
+        assert!(compiled.allows("state::get"));
+        assert!(compiled.allows("state::set"));
+
+        // Outside ask mode the prior policy is inherited whole.
+        let mut options = options_with(Some(Mode::Agent), None);
+        inherit_prior_functions(&cfg, &mut options, Some(&broad));
+        assert!(policy::CompiledPolicy::from(options.functions.as_ref()).allows("state::set"));
+
+        // An explicit policy on the send still beats inheritance.
+        let strip = FunctionPolicy {
+            allow: vec![],
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let mut options = options_with(Some(Mode::Ask), Some(strip));
+        inherit_prior_functions(&cfg, &mut options, Some(&broad));
+        assert!(!policy::CompiledPolicy::from(options.functions.as_ref()).allows("state::get"));
+    }
+
+    #[test]
+    fn build_options_clamps_functions_to_the_default_policy_in_ask_mode() {
+        let cfg = WorkerConfig::default();
+        let req = SendRequest {
+            session_id: None,
+            message: MessageInput::Text("hi".into()),
+            model: Some("m".into()),
+            provider: Some("anthropic".into()),
+            idempotency_key: None,
+            session: None,
+            options: Some(SendOptions {
+                mode: Some(Mode::Ask),
+                functions: Some(FunctionPolicy {
+                    allow: vec!["*".into()],
+                    deny: vec![],
+                    expose: Default::default(),
+                }),
+                ..Default::default()
+            }),
+        };
+        let opts = build_options(&cfg, &req, "m".into(), req.provider.clone(), None);
+        let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
+        // The wildcard default preserves the requested policy…
+        assert!(compiled.allows("state::get"));
+        assert!(compiled.allows("engine::functions::list"));
+        assert!(compiled.allows("state::set"));
+        assert!(compiled.allows("harness::spawn"));
+        assert!(compiled.allows("engine::register_trigger"));
+        assert!(compiled.allows("shell::run"));
+    }
+
+    #[test]
+    fn build_options_leaves_functions_unclamped_outside_ask_mode() {
+        let cfg = WorkerConfig::default();
+        for mode in [Some(Mode::Agent), None] {
+            let req = SendRequest {
+                session_id: None,
+                message: MessageInput::Text("hi".into()),
+                model: Some("m".into()),
+                provider: None,
+                idempotency_key: None,
+                session: None,
+                options: Some(SendOptions {
+                    mode,
+                    functions: Some(FunctionPolicy {
+                        allow: vec!["*".into()],
+                        deny: vec![],
+                        expose: Default::default(),
+                    }),
+                    ..Default::default()
+                }),
+            };
+            let opts = build_options(&cfg, &req, "m".into(), None, None);
+            let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
+            assert!(
+                compiled.allows("state::set"),
+                "mode {mode:?} must not clamp"
+            );
+        }
     }
 
     #[test]

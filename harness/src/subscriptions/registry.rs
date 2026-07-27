@@ -19,6 +19,19 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde_json::Value;
 
+/// Reaction-spec fingerprint of a live join predecessor. All predecessors of
+/// one join id must agree on it — the join fires with the COMPLETING
+/// predecessor's spec, so a divergent spec on any predecessor would silently
+/// replace the real reaction at fire time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JoinProbe {
+    /// The shared join id (the accumulator record key — globally namespaced).
+    pub id: String,
+    /// The canonicalized reaction spec minus per-predecessor fields (see
+    /// `react::join_canon`).
+    pub canon: Value,
+}
+
 /// One live subscription's local bookkeeping. Held in an `Arc` so a firing
 /// handler reads it without holding the registry lock.
 pub struct SubEntry {
@@ -40,6 +53,10 @@ pub struct SubEntry {
     /// `harness::turn-completed` — a session with an armed wake completes
     /// non-terminally. Standing watchers and react bindings don't count.
     wake: bool,
+    /// Set post-insert for join-predecessor react bindings (see
+    /// [`set_join_probe`](SubscriptionRegistry::set_join_probe)); dies with
+    /// the entry, so conflict checks never see retired predecessors.
+    join: Mutex<Option<JoinProbe>>,
 }
 
 impl SubEntry {
@@ -50,6 +67,7 @@ impl SubEntry {
             trigger_id: Mutex::new(None),
             dedup_key,
             wake,
+            join: Mutex::new(None),
         }
     }
 }
@@ -69,7 +87,20 @@ pub struct FireClaim {
 struct Inner {
     by_id: HashMap<String, Arc<SubEntry>>,
     by_session: HashMap<String, HashSet<String>>,
+    /// Reaction session → registrant session, recorded when a subscription's
+    /// fire spawns into a distinct session. Lets a reaction clean up its own
+    /// run: unregistering a subscription is permitted for any session whose
+    /// lineage chain reaches the owner (the registrant may be parked waiting
+    /// on a wake its children must tear down). Ephemeral like the rest of the
+    /// registry; entries are purged on `session::deleted`.
+    lineage: HashMap<String, String>,
 }
+
+/// Upper bound when walking the lineage chain — bounds cycles (a session id
+/// can be re-targeted across runs) and pathological depth alike. Deeper than
+/// any real reactive chain, which is itself capped by the reactive-depth
+/// breaker.
+const MAX_LINEAGE_HOPS: usize = 16;
 
 /// The process-wide index of active ephemeral subscriptions.
 pub struct SubscriptionRegistry {
@@ -186,6 +217,36 @@ impl SubscriptionRegistry {
         }
     }
 
+    /// Attach a join-predecessor fingerprint after a successful insert. Same
+    /// race posture as [`set_trigger_id`](Self::set_trigger_id): `false` means
+    /// the entry is already gone.
+    pub fn set_join_probe(&self, sub_id: &str, probe: JoinProbe) -> bool {
+        match self.lock().by_id.get(sub_id) {
+            Some(entry) => {
+                *entry.join.lock().unwrap_or_else(|p| p.into_inner()) = Some(probe);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Find a LIVE join predecessor of `join_id` whose reaction spec differs
+    /// from `canon`. Join ids are globally namespaced (the accumulator record
+    /// key), so this scans across sessions. `Some(sub_id)` names the
+    /// conflicting predecessor for the registration error.
+    pub fn conflicting_join_spec(&self, join_id: &str, canon: &Value) -> Option<String> {
+        let inner = self.lock();
+        for (sub_id, entry) in inner.by_id.iter() {
+            let guard = entry.join.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(probe) = guard.as_ref() {
+                if probe.id == join_id && probe.canon != *canon {
+                    return Some(sub_id.clone());
+                }
+            }
+        }
+        None
+    }
+
     /// Claim a fired subscription against local liveness/ownership. One-shot
     /// fires remove the entry and return the trigger id for teardown; recurring
     /// fires keep the entry and return a monotonic notification entry id.
@@ -216,6 +277,43 @@ impl SubscriptionRegistry {
     /// The owning session of a subscription (unsubscribe ownership check).
     pub fn session_of(&self, sub_id: &str) -> Option<String> {
         self.lock().by_id.get(sub_id).map(|e| e.session_id.clone())
+    }
+
+    /// Record that `child_session` was spawned by a reaction of a subscription
+    /// registered by `registrant_session`. Overwrites any prior parent — the
+    /// latest spawner is the live lineage.
+    pub fn record_lineage(&self, child_session: &str, registrant_session: &str) {
+        if child_session == registrant_session {
+            return;
+        }
+        self.lock()
+            .lineage
+            .insert(child_session.to_string(), registrant_session.to_string());
+    }
+
+    /// Whether `caller`'s lineage chain (reaction session → registrant,
+    /// transitively) reaches `owner`. Grants a reaction the right to
+    /// unregister its run's subscriptions even though another session
+    /// registered them.
+    pub fn in_lineage_of(&self, caller: &str, owner: &str) -> bool {
+        let inner = self.lock();
+        let mut current = caller;
+        for _ in 0..MAX_LINEAGE_HOPS {
+            match inner.lineage.get(current) {
+                Some(parent) if parent == owner => return true,
+                Some(parent) => current = parent,
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// Drop lineage entries pointing at or from a deleted session so the map
+    /// stays bounded by live sessions.
+    pub fn forget_lineage(&self, session_id: &str) {
+        let mut inner = self.lock();
+        inner.lineage.remove(session_id);
+        inner.lineage.retain(|_, parent| parent != session_id);
     }
 
     /// The engine trigger id bound to a subscription, WITHOUT evicting the
@@ -307,6 +405,43 @@ mod tests {
         assert!(reg.try_insert("sub_3", "s", 2).is_err());
         // A different session has its own budget.
         assert!(reg.try_insert("sub_4", "s2", 2).is_ok());
+    }
+
+    #[test]
+    fn join_probe_conflict_detection_and_lifecycle() {
+        let reg = SubscriptionRegistry::new();
+        let canon = serde_json::json!({"task": "the real task", "model": "m"});
+        reg.try_insert("sub_w1", "s", 8).unwrap();
+        assert!(reg.set_join_probe(
+            "sub_w1",
+            JoinProbe {
+                id: "j1".into(),
+                canon: canon.clone()
+            }
+        ));
+
+        // Identical spec on another predecessor: no conflict.
+        assert!(reg.conflicting_join_spec("j1", &canon).is_none());
+        // Divergent spec (the "placeholder" shape): conflict names the live twin.
+        let placeholder = serde_json::json!({"task": "placeholder", "model": "m"});
+        assert_eq!(
+            reg.conflicting_join_spec("j1", &placeholder).as_deref(),
+            Some("sub_w1")
+        );
+        // A different join id is unaffected.
+        assert!(reg.conflicting_join_spec("j2", &placeholder).is_none());
+
+        // The probe dies with the entry — retired predecessors never conflict.
+        assert!(reg.take("sub_w1").is_some());
+        assert!(reg.conflicting_join_spec("j1", &placeholder).is_none());
+        // And a probe cannot attach to a gone entry.
+        assert!(!reg.set_join_probe(
+            "sub_w1",
+            JoinProbe {
+                id: "j1".into(),
+                canon
+            }
+        ));
     }
 
     #[test]
@@ -439,6 +574,48 @@ mod tests {
         // Unknown / already-evicted trigger ids are a no-op.
         assert!(reg.take_by_trigger_id("trig_1").is_none());
         assert!(reg.take_by_trigger_id("trig_unknown").is_none());
+    }
+
+    #[test]
+    fn lineage_grants_transitive_descendants_and_nothing_else() {
+        let reg = SubscriptionRegistry::new();
+        // orchestrator → reactor → repair (a reaction spawning a reaction).
+        reg.record_lineage("reactor", "orchestrator");
+        reg.record_lineage("repair", "reactor");
+
+        assert!(reg.in_lineage_of("reactor", "orchestrator"));
+        assert!(reg.in_lineage_of("repair", "orchestrator"), "transitive");
+        assert!(reg.in_lineage_of("repair", "reactor"));
+        // Never the other direction, never a stranger.
+        assert!(!reg.in_lineage_of("orchestrator", "reactor"));
+        assert!(!reg.in_lineage_of("stranger", "orchestrator"));
+        assert!(!reg.in_lineage_of("reactor", "repair"));
+    }
+
+    #[test]
+    fn lineage_self_edges_are_not_recorded_and_cycles_terminate() {
+        let reg = SubscriptionRegistry::new();
+        reg.record_lineage("s", "s");
+        assert!(!reg.in_lineage_of("s", "s"), "self edge is meaningless");
+        // A ↔ B cycle (session ids re-targeted across runs) must terminate
+        // instead of spinning, and must not grant unrelated ownership.
+        reg.record_lineage("a", "b");
+        reg.record_lineage("b", "a");
+        assert!(!reg.in_lineage_of("a", "z"));
+        assert!(reg.in_lineage_of("a", "b"));
+    }
+
+    #[test]
+    fn forget_lineage_purges_both_directions() {
+        let reg = SubscriptionRegistry::new();
+        reg.record_lineage("child", "parent");
+        reg.record_lineage("grandchild", "child");
+        reg.forget_lineage("child");
+        assert!(!reg.in_lineage_of("child", "parent"));
+        assert!(
+            !reg.in_lineage_of("grandchild", "child"),
+            "entries pointing AT the deleted session are purged too"
+        );
     }
 
     #[test]

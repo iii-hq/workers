@@ -17,7 +17,7 @@ import type { VisualizationSpan } from './traceTransform'
 const ENGINE_VERB_PREFIXES = ['handle_invocation ', 'call '] as const
 
 // Verb prefixes stripped for DISPLAY only. Includes the worker SDK's
-// `execute <fn>` handler-span prefix (see `functionCallFromSpan.ts`), which
+// `execute <fn>` handler-span prefix (see `functionTriggerFromSpan.ts`), which
 // must NOT join ENGINE_VERB_PREFIXES: execute spans are worker work, and
 // classifying them as engine routing would dim/hide them under the
 // "hide engine routing" toggle.

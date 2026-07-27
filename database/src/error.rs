@@ -26,8 +26,12 @@ pub enum DbError {
     TransactionNotFound { transaction_id: String },
 
     #[serde(rename = "UNKNOWN_DB")]
-    #[error("unknown db {db}")]
-    UnknownDb { db: String },
+    #[error("unknown db {db}; available: [{}]", available.join(", "))]
+    UnknownDb { db: String, available: Vec<String> },
+
+    #[serde(rename = "MISSING_DB")]
+    #[error("no `db` specified and none of the configured databases is an unambiguous default; available: [{}]", available.join(", "))]
+    MissingDb { available: Vec<String> },
 
     #[serde(rename = "INVALID_PARAM")]
     #[error("invalid parameter at index {index}: {reason}")]
@@ -84,12 +88,39 @@ mod tests {
     }
 
     #[test]
-    fn unknown_db_serializes_with_stable_code() {
+    fn unknown_db_serializes_with_stable_code_and_available_handles() {
         let e = DbError::UnknownDb {
             db: "missing".into(),
+            available: vec!["analytics".into(), "primary".into()],
         };
         let v: serde_json::Value = serde_json::to_value(&e).unwrap();
         assert_eq!(v["code"], "UNKNOWN_DB");
+        assert_eq!(v["db"], "missing");
+        assert_eq!(
+            v["available"],
+            serde_json::json!(["analytics", "primary"]),
+            "available handles must be in the wire envelope so callers can self-correct"
+        );
+        // The human-readable message names the handles too — that's what an
+        // LLM caller sees in a function_result.
+        assert_eq!(
+            e.to_string(),
+            "unknown db missing; available: [analytics, primary]"
+        );
+    }
+
+    #[test]
+    fn missing_db_serializes_with_stable_code_and_available_handles() {
+        let e = DbError::MissingDb {
+            available: vec!["analytics".into(), "main".into()],
+        };
+        let v: serde_json::Value = serde_json::to_value(&e).unwrap();
+        assert_eq!(v["code"], "MISSING_DB");
+        assert_eq!(v["available"], serde_json::json!(["analytics", "main"]));
+        assert_eq!(
+            e.to_string(),
+            "no `db` specified and none of the configured databases is an unambiguous default; available: [analytics, main]"
+        );
     }
 
     #[test]

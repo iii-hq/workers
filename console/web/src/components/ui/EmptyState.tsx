@@ -1,9 +1,11 @@
-import type { LucideIcon } from 'lucide-react'
+import type * as React from 'react'
 import { Button } from '@/components/ui/Button'
 import { Cell } from '@/components/ui/Cell'
 
 interface EmptyStateProps {
-  icon?: LucideIcon
+  /** Any icon component that takes a className (lucide icons qualify);
+   *  kept wider than LucideIcon so injected worker UI can pass its own. */
+  icon?: React.ComponentType<{ className?: string }>
   title: string
   description: string
   action?: {

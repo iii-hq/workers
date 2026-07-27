@@ -11,7 +11,10 @@ use serde_json::Value;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct QueryReq {
-    pub db: String,
+    /// Logical database name. Optional — omitting it targets the sole
+    /// configured database, or `primary` when several are configured.
+    #[serde(default)]
+    pub db: Option<String>,
     #[serde(alias = "query")]
     pub sql: String,
     #[serde(default, deserialize_with = "crate::handlers::lenient_params")]
@@ -33,7 +36,8 @@ fn default_timeout() -> u64 {
 
 /// Returns a JSON string body suitable to wrap in IIIError on failure.
 pub async fn handle(state: &AppState, req: QueryReq) -> Result<QueryResp, String> {
-    let pool = state.pool(&req.db).await.map_err(err_to_str)?;
+    let db = state.resolve_db(req.db).await.map_err(err_to_str)?;
+    let pool = state.pool(&db).await.map_err(err_to_str)?;
     // Reject empty SQL uniformly. Postgres' tokio-postgres treats `client.query("")`
     // as a valid no-op and returns Ok([]), but sqlite (rusqlite) and mysql
     // (mysql_async) reject it at parse time — without this guard the worker's
@@ -46,6 +50,9 @@ pub async fn handle(state: &AppState, req: QueryReq) -> Result<QueryResp, String
             failed_index: None,
         }));
     }
+    // A `query("BEGIN")` is just as pool-poisoning as an execute — sqlite
+    // happily starts the transaction and returns zero rows.
+    crate::handlers::reject_tx_control_sql(&req.sql).map_err(err_to_str)?;
     let params = JsonParam::from_json_slice(&req.params).map_err(err_to_str)?;
 
     let result = match &pool {
@@ -154,17 +161,77 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("UNKNOWN_DB"), "got: {err}");
+        // The error must enumerate the registered handles so a caller that
+        // guessed a wrong name can self-correct from one failure.
+        assert!(err.contains("\"available\":[\"primary\"]"), "got: {err}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn query_missing_db_field_errors() {
-        // Deserialization moved into the SDK once we switched to typed
-        // RegisterFunction::new_async — at the handler boundary the input is
-        // already a QueryReq. This test keeps the missing-field contract by
-        // exercising the deserialization step explicitly.
-        let err = serde_json::from_value::<QueryReq>(json!({"sql":"SELECT 1"}))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("missing field"), "got: {err}");
+    async fn query_rejects_transaction_control_sql() {
+        // sqlite happily starts a transaction from a query("BEGIN") and
+        // returns zero rows — the same pool poison as the execute path.
+        let st = state();
+        let err = handle(&st, req(json!({"db":"primary","sql":"BEGIN"})))
+            .await
+            .unwrap_err();
+        assert!(err.contains("INVALID_PARAM"), "got: {err}");
+        assert!(err.contains("beginTransaction"), "got: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn query_omitted_db_defaults_to_sole_pool() {
+        // LLM callers routinely omit `db` on their first call. With exactly
+        // one configured pool the omission must resolve to it instead of
+        // failing serde — the old `missing field db` error cost a wasted
+        // round-trip in every live session.
+        let st = state();
+        let resp = handle(&st, req(json!({"sql":"SELECT 1 AS one"})))
+            .await
+            .unwrap();
+        assert_eq!(resp.rows[0]["one"], 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn omitted_db_prefers_primary_among_many() {
+        let st = state();
+        {
+            let extra = SqlitePool::new("sqlite::memory:", &PoolConfig::default()).unwrap();
+            st.pools
+                .write()
+                .await
+                .insert("analytics".to_string(), Pool::Sqlite(extra));
+        }
+        assert_eq!(st.resolve_db(None).await.unwrap(), "primary");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn omitted_db_without_default_errors_with_available_list() {
+        let st = state();
+        {
+            let mut pools = st.pools.write().await;
+            let p = pools.remove("primary").unwrap();
+            pools.insert("main".to_string(), p);
+            let extra = SqlitePool::new("sqlite::memory:", &PoolConfig::default()).unwrap();
+            pools.insert("analytics".to_string(), Pool::Sqlite(extra));
+        }
+        let err = handle(&st, req(json!({"sql":"SELECT 1"})))
+            .await
+            .unwrap_err();
+        assert!(err.contains("MISSING_DB"), "got: {err}");
+        assert!(
+            err.contains("\"available\":[\"analytics\",\"main\"]"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn request_schema_marks_db_optional() {
+        let schema = serde_json::to_value(schemars::schema_for!(QueryReq).schema).unwrap();
+        let required = schema["required"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !required.iter().any(|f| f == "db"),
+            "db must not be required in the function schema: {required:?}"
+        );
+        assert!(required.iter().any(|f| f == "sql"));
     }
 }

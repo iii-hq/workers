@@ -1,8 +1,13 @@
 //! Integration tests for the jobs lifecycle (`list_all`, `running_count`,
-//! `remove_old`). Each test uses a unique ID prefix to avoid collisions in
-//! the global `JOBS` map shared across the integration-test binary.
+//! `remove_old`). Tests that mutate the global `JOBS` map are serialized:
+//! unique IDs prevent replacement, but `remove_old` sweeps every job.
+
+use std::sync::LazyLock;
 
 use shell::jobs::{self, now_ms, JobHandle, JobRecord, JobStatus};
+use tokio::sync::Mutex;
+
+static JOBS_TEST_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 async fn seed(handle: JobHandle) -> String {
     match jobs::try_reserve_and_insert(handle, usize::MAX).await {
@@ -37,6 +42,7 @@ async fn now_ms_returns_a_recent_unix_ms() {
 
 #[tokio::test]
 async fn insert_then_get_round_trips_the_record() {
+    let _guard = JOBS_TEST_GUARD.lock().await;
     let id = "lifecycle-insert-get";
     seed(JobHandle {
         record: rec(id, JobStatus::Running, None),
@@ -59,6 +65,7 @@ async fn get_returns_none_for_unknown_id() {
 
 #[tokio::test]
 async fn list_all_includes_inserted_jobs() {
+    let _guard = JOBS_TEST_GUARD.lock().await;
     let id1 = "lifecycle-list-all-1";
     let id2 = "lifecycle-list-all-2";
     seed(JobHandle {
@@ -81,6 +88,7 @@ async fn list_all_includes_inserted_jobs() {
 
 #[tokio::test]
 async fn running_count_excludes_terminal_states() {
+    let _guard = JOBS_TEST_GUARD.lock().await;
     let running_id = "lifecycle-rc-running";
     let finished_id = "lifecycle-rc-finished";
     let killed_id = "lifecycle-rc-killed";
@@ -125,6 +133,7 @@ async fn running_count_excludes_terminal_states() {
 
 #[tokio::test]
 async fn remove_old_retention_matrix() {
+    let _guard = JOBS_TEST_GUARD.lock().await;
     let stale_id = "lifecycle-remove-old-stale";
     let running_id = "lifecycle-remove-old-running";
     let fresh_id = "lifecycle-remove-old-fresh";
@@ -171,6 +180,7 @@ async fn remove_old_retention_matrix() {
 
 #[tokio::test]
 async fn concurrent_inserts_and_lookups_dont_deadlock() {
+    let _guard = JOBS_TEST_GUARD.lock().await;
     let mut handles = Vec::new();
     for i in 0..50 {
         let h = tokio::spawn(async move {

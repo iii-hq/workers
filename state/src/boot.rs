@@ -61,6 +61,12 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
     });
     functions::register_functions(&iii, ctx.clone());
 
+    // Injectable console UI: content function + console:script trigger.
+    // Ordering doesn't matter for the console side (the engine parks the
+    // registration until a console owns the type), but the content function
+    // must exist before the trigger names it.
+    crate::ui::register(&iii);
+
     Ok(BootHandle {
         ctx,
         triggers,

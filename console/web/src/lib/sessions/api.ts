@@ -122,6 +122,7 @@ export async function appendCustomEntry(input: {
  */
 export async function fetchTranscript(
   sessionId: string,
+  opts?: { timeoutMs?: number },
 ): Promise<TranscriptItem[]> {
   const client = await getIiiClient()
   const items: TranscriptItem[] = []
@@ -130,12 +131,16 @@ export async function fetchTranscript(
     const resp = await client.trigger<{
       messages?: TranscriptItem[]
       next_cursor?: string | null
-    }>('session::messages', {
-      session_id: sessionId,
-      limit: MESSAGES_PAGE_LIMIT,
-      include_custom: true,
-      ...(cursor ? { cursor } : {}),
-    })
+    }>(
+      'session::messages',
+      {
+        session_id: sessionId,
+        limit: MESSAGES_PAGE_LIMIT,
+        include_custom: true,
+        ...(cursor ? { cursor } : {}),
+      },
+      opts?.timeoutMs ? { timeoutMs: opts.timeoutMs } : undefined,
+    )
     const page = resp?.messages ?? []
     for (const item of page) {
       if (item && typeof item.entry_id === 'string') items.push(item)

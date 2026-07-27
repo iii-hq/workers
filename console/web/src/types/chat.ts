@@ -1,4 +1,4 @@
-export type Mode = 'plan' | 'ask' | 'agent'
+export type Mode = 'ask' | 'agent'
 
 /** Composite `provider::<catalog_model_id>` (matches harness models-catalog). */
 export const CATALOG_MODEL_KEY_SEP = '::' as const
@@ -19,7 +19,6 @@ export interface ReasoningEffortOption {
 }
 
 export const MODES: { id: Mode; label: string }[] = [
-  { id: 'plan', label: 'plan' },
   { id: 'ask', label: 'ask' },
   { id: 'agent', label: 'agent' },
 ]
@@ -41,7 +40,7 @@ export const THINKING_LEVELS: ThinkingLevel[] = [
 
 export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'default'
 
-export type Role = 'user' | 'assistant' | 'thought' | 'function-call'
+export type Role = 'user' | 'assistant' | 'thought' | 'function-trigger'
 
 export interface Attachment {
   id: string
@@ -102,8 +101,8 @@ export interface ThoughtMessage extends BaseMessage {
   streaming?: boolean
 }
 
-export interface FunctionCallMessage extends BaseMessage {
-  role: 'function-call'
+export interface FunctionTriggerMessage extends BaseMessage {
+  role: 'function-trigger'
   functionId: string
   input: unknown
   output?: unknown
@@ -125,12 +124,12 @@ export interface FunctionCallMessage extends BaseMessage {
   /** awaiting user approval before execution; lifecycle: pending → running → done */
   pendingApproval?: boolean
   /** iii function_call_id — set on pending entries so the approve/deny UI can resolve. */
-  functionCallId?: string
-  /** iii session_id owning this call — paired with functionCallId for approval::resolve. */
+  functionTriggerId?: string
+  /** iii session_id owning this call — paired with functionTriggerId for approval::resolve. */
   sessionId?: string
   /**
    * Present when this pending call is a filesystem-access grant request rather
-   * than a plain function-call approval — renders `FilesystemAccessPrompt`
+   * than a plain function-trigger approval — renders `FilesystemAccessPrompt`
    * instead of the standard approve/deny/always row.
    */
   filesystemAccess?: {
@@ -190,7 +189,7 @@ export type Message =
   | UserMessage
   | AssistantMessage
   | ThoughtMessage
-  | FunctionCallMessage
+  | FunctionTriggerMessage
   | SystemMessage
 
 /**
@@ -209,7 +208,7 @@ export interface MessagePatch {
   output?: unknown
   pendingApproval?: boolean
   /** Set during fcall-start dedupe so resolve handlers know which iii call to resolve. */
-  functionCallId?: string
+  functionTriggerId?: string
   sessionId?: string
   filesystemAccess?: {
     requestedRoot: string
@@ -287,7 +286,7 @@ const KNOWN_ROLES: ReadonlySet<Role> = new Set<Role>([
   'user',
   'assistant',
   'thought',
-  'function-call',
+  'function-trigger',
 ])
 
 export function isKnownRole(role: unknown): role is Role {

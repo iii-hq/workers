@@ -8,6 +8,7 @@ import {
   markBackgroundedStale,
   mergeConversationMeta,
   mergeHydratedTranscript,
+  mergeSessionListSnapshot,
 } from './use-conversations'
 
 function conversation(overrides: Partial<Conversation>): Conversation {
@@ -105,6 +106,30 @@ describe('mergeConversationMeta', () => {
     ).toBe(undefined)
   })
 
+  it('degrades a removed/unknown persisted mode to the default', () => {
+    // Pre-upgrade sessions parked in the removed "plan" mode (and any garbage
+    // value) must fall back to DEFAULT_MODE, not crash or carry the dead value.
+    expect(
+      mergeConversationMeta(
+        undefined,
+        sessionMeta({ metadata: { mode: 'plan' } }),
+      ).mode,
+    ).toBe('agent')
+    expect(
+      mergeConversationMeta(
+        undefined,
+        sessionMeta({ metadata: { mode: 'xyz' } }),
+      ).mode,
+    ).toBe('agent')
+    // A still-valid mode is preserved.
+    expect(
+      mergeConversationMeta(
+        undefined,
+        sessionMeta({ metadata: { mode: 'ask' } }),
+      ).mode,
+    ).toBe('ask')
+  })
+
   it('repairs a stale idle row from authoritative session metadata', () => {
     const existing = conversation({
       status: 'idle',
@@ -157,9 +182,28 @@ describe('mergeConversationMeta', () => {
   })
 })
 
+describe('mergeSessionListSnapshot', () => {
+  it('preserves a session created while the initial list request was in flight', () => {
+    const draft = conversation({ id: 'draft', draft: true })
+    const concurrent = conversation({
+      id: 'created-live',
+      title: 'created live',
+    })
+    const listed = sessionMeta({ session_id: 'listed' })
+
+    const next = mergeSessionListSnapshot([draft, concurrent], [listed])
+
+    expect(next.map((item) => item.id)).toEqual([
+      'draft',
+      'created-live',
+      'listed',
+    ])
+  })
+})
+
 describe('markBackgroundedStale', () => {
   // Regression: transcript events subscribe for the ACTIVE session only, so
-  // a session backgrounded mid-turn misses entry updates (a function call
+  // a session backgrounded mid-turn misses entry updates (a function trigger
   // freezes as `ƒ …` with empty request/response). Staling it on switch
   // makes re-activation re-hydrate from durable truth.
   it('marks hydrated backgrounded sessions stale, leaves the active one', () => {

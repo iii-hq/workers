@@ -1,0 +1,316 @@
+{
+  "function_id": "harness::metrics",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "root_session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "root_session_id"
+    ],
+    "title": "SessionMetricsRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "SessionTraceMetricsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "by_session": {
+            "items": {
+              "$ref": "#/definitions/SessionTraceUsageV1"
+            },
+            "type": "array"
+          },
+          "duration_ms": {
+            "description": "Elapsed window from the first observed span to the last observed span.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "error_span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "trace_count": {
+            "description": "Distinct traces across the root session and all descendants.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_session",
+          "duration_ms",
+          "error_span_count",
+          "span_count",
+          "trace_count"
+        ],
+        "type": "object"
+      },
+      "SessionTraceUsageV1": {
+        "additionalProperties": false,
+        "properties": {
+          "depth": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "duration_ms": {
+            "description": "Elapsed window from the session's first observed span to its last.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "error_span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "parent_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "trace_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "depth",
+          "duration_ms",
+          "error_span_count",
+          "session_id",
+          "span_count",
+          "trace_count"
+        ],
+        "type": "object"
+      },
+      "SessionUsageTotalsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "cache_read_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "function_call_errors": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "function_calls": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reasoning_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sessions": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "turns": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "function_call_errors",
+          "function_calls",
+          "sessions",
+          "turns"
+        ],
+        "type": "object"
+      },
+      "SessionUsageV1": {
+        "additionalProperties": false,
+        "properties": {
+          "cache_read_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "depth": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "function_call_errors": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "function_calls": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "parent_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reasoning_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "turns": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "depth",
+          "function_call_errors",
+          "function_calls",
+          "session_id",
+          "turns"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "by_session": {
+        "items": {
+          "$ref": "#/definitions/SessionUsageV1"
+        },
+        "type": "array"
+      },
+      "complete": {
+        "type": "boolean"
+      },
+      "root_session_id": {
+        "type": "string"
+      },
+      "totals": {
+        "$ref": "#/definitions/SessionUsageTotalsV1"
+      },
+      "traces": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/SessionTraceMetricsV1"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Trace/span aggregates when the engine's in-memory observability exporter is available. Usage metrics remain available when it is not."
+      }
+    },
+    "required": [
+      "by_session",
+      "complete",
+      "root_session_id",
+      "totals"
+    ],
+    "title": "SessionMetricsResponseV1",
+    "type": "object"
+  }
+}

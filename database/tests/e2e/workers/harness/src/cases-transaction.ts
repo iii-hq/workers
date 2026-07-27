@@ -5,6 +5,8 @@ import { expect, expectEqual } from './cases.ts'
  * Transaction edge cases. The function suite covers commit + rollback at
  * failed_index=1; these target shapes the function suite leaves alone:
  * empty / single-statement / mixed-read-write / failure-at-index-0.
+ * Also hosts the `database::executeBatch` surface cases — a thin wrapper
+ * over the same transaction machinery.
  *
  * Each test creates its own scratch table to stay independent of `t`.
  */
@@ -127,6 +129,106 @@ export const TRANSACTION_EDGE_CASES: TestCase[] = [
       expectEqual(r.results[0].rows.length, 1, 'CTE step row count')
       // VALUES → 3 rows
       expectEqual(r.results[1].rows.length, 3, 'VALUES step row count')
+    },
+  },
+  {
+    name: 'executeBatch bare-string statements commit atomically',
+    async run({ driver, call }) {
+      await call('database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS eb_plain' })
+      await call('database::execute', {
+        db: driver,
+        sql: 'CREATE TABLE eb_plain (n INT NOT NULL)',
+      })
+      const r = await call('database::executeBatch', {
+        db: driver,
+        statements: ['INSERT INTO eb_plain (n) VALUES (1)', 'INSERT INTO eb_plain (n) VALUES (2)'],
+      })
+      expectEqual(r.committed, true, 'committed=true')
+      expectEqual(r.results.length, 2, 'two step results')
+      const verify = await call('database::query', {
+        db: driver,
+        sql: 'SELECT COUNT(*) AS c FROM eb_plain',
+      })
+      expectEqual(Number(verify.rows[0].c), 2, 'both rows landed')
+      await call('database::execute', { db: driver, sql: 'DROP TABLE eb_plain' })
+    },
+  },
+  {
+    name: 'executeBatch rolls back on failure and reports failed_index',
+    async run({ driver, call }) {
+      await call('database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS eb_rb' })
+      await call('database::execute', {
+        db: driver,
+        sql: 'CREATE TABLE eb_rb (n INT NOT NULL)',
+      })
+      const r = await call('database::executeBatch', {
+        db: driver,
+        statements: ['INSERT INTO eb_rb (n) VALUES (1)', 'INSERT INTO eb_rb (n) VALUES (NULL)'],
+      })
+      expectEqual(r.committed, false, 'committed=false')
+      expectEqual(r.failed_index, 1, 'failed_index=1')
+      const verify = await call('database::query', {
+        db: driver,
+        sql: 'SELECT COUNT(*) AS c FROM eb_rb',
+      })
+      expectEqual(Number(verify.rows[0].c), 0, 'rollback dropped all writes')
+      await call('database::execute', { db: driver, sql: 'DROP TABLE eb_rb' })
+    },
+  },
+  {
+    name: 'executeBatch accepts mixed string and {sql, params} forms',
+    async run({ driver, dialect, call }) {
+      const ph1 = dialect.placeholder(1)
+      await call('database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS eb_mixed' })
+      await call('database::execute', {
+        db: driver,
+        sql: 'CREATE TABLE eb_mixed (s VARCHAR(64) NOT NULL)',
+      })
+      const r = await call('database::executeBatch', {
+        db: driver,
+        statements: [
+          { sql: `INSERT INTO eb_mixed (s) VALUES (${ph1})`, params: ['hi; bye'] },
+          "INSERT INTO eb_mixed (s) VALUES ('plain')",
+        ],
+      })
+      expectEqual(r.committed, true, 'committed=true')
+      const verify = await call('database::query', {
+        db: driver,
+        sql: 'SELECT s FROM eb_mixed ORDER BY s',
+      })
+      expectEqual(verify.rows[0].s, 'hi; bye', 'semicolon value landed via bound param')
+      expectEqual(verify.rows[1].s, 'plain', 'bare-string statement landed')
+      await call('database::execute', { db: driver, sql: 'DROP TABLE eb_mixed' })
+    },
+  },
+  {
+    name: 'executeBatch rejects embedded transaction-control SQL',
+    async run({ driver, call }) {
+      let rejected = false
+      try {
+        await call('database::executeBatch', {
+          db: driver,
+          statements: ['SELECT 1', 'COMMIT'],
+        })
+      } catch (e: any) {
+        rejected = (e?.message ?? String(e)).includes('INVALID_PARAM')
+      }
+      expect(rejected, 'COMMIT inside a batch must be rejected with INVALID_PARAM')
+    },
+  },
+  {
+    name: 'transaction rejects embedded transaction-control SQL',
+    async run({ driver, call }) {
+      let rejected = false
+      try {
+        await call('database::transaction', {
+          db: driver,
+          statements: [{ sql: 'COMMIT' }],
+        })
+      } catch (e: any) {
+        rejected = (e?.message ?? String(e)).includes('INVALID_PARAM')
+      }
+      expect(rejected, 'COMMIT inside a transaction batch must be rejected with INVALID_PARAM')
     },
   },
 ]

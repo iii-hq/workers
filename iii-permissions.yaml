@@ -101,6 +101,12 @@ rules:
   - '!harness::stop'
   - '!harness::on-config-change'
   - '!harness::sweep-pending'
+  # eval: durable orchestration internals are trigger/queue targets only.
+  # Starting, cancelling, and deleting evaluations remain approval-gated by
+  # the default. Status/result are read-only and the exact evaluator is pure.
+  - '!eval::step'
+  - '!eval::on-turn-completed'
+  - '!eval::sweep'
   # Trigger-bridge target: fired only by subscriptions (engine-side, bypassing
   # this gate). Never agent-callable directly — the model binds it via
   # engine::register_trigger and names its id from the system prompt.
@@ -166,6 +172,9 @@ rules:
   - router::provider::list
   # harness::status is read-only (current turn status for a session).
   - harness::status
+  - eval::status
+  - eval::result
+  - eval::assert::exact
   - oauth::anthropic::status
   - oauth::openai-codex::status
   - engine::functions::list
@@ -203,7 +212,9 @@ rules:
   # I/O, no authority). fp::pipe stays at the needs_approval default ON
   # PURPOSE: its steps run with the fp worker's authority, so the pipe
   # call itself is the surface an approver reviews (the worker statically
-  # refuses hard-denied classes as steps; see fp/src/pipe.rs).
+  # refuses hard-denied classes as steps; see fp/src/pipe.rs). Allowlisting
+  # fp::pipe would also grant un-approved shell::*/coder::* execution: scoped
+  # steps ride the harness-stamped filesystem scope on the pipe call.
   - fp::get
   - fp::pick
   - fp::omit

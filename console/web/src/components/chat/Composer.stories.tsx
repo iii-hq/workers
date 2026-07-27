@@ -202,7 +202,7 @@ export const Streaming: Story = {
   name: 'disabled (streaming)',
   render: () => (
     <ComposerHarness
-      initialMode="plan"
+      initialMode="ask"
       initialModel="openai::gpt-5-mini"
       isStreaming
     />

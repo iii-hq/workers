@@ -8,5 +8,5 @@ tags: [llm, anthropic, claude, messages, provider]
 description: Anthropic Messages API provider worker; implements provider::anthropic::stream and provider::anthropic::refresh_models behind llm-router.
 
 dependencies:
-  state: "^0.21.0"
+  state: "^0.21.2"
   llm-router: "^1.0.0"

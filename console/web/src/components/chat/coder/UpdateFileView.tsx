@@ -29,6 +29,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
+import { OpenInEditorButton } from './OpenInEditorButton'
 import {
   formatUpdateOp,
   type OpEcho,
@@ -95,6 +96,15 @@ export function contentLineCount(content: string): number {
   if (content === '') return 0
   const parts = content.split('\n')
   return parts[parts.length - 1] === '' ? parts.length - 1 : parts.length
+}
+
+/**
+ * The open-in-editor line anchor for an update-file result: the first
+ * echoed line in wire order, or undefined when the file has no echoes
+ * (a failure, or an echo-less success).
+ */
+export function firstEchoLine(result: UpdateFileResult): number | undefined {
+  return result.echoes[0]?.from_line
 }
 
 /** Mirror of `update_file.rs::ECHO_CONTEXT` — context lines above/below a
@@ -496,6 +506,7 @@ function FileEchoSection({
       <div className="bg-paper-2 border-b border-rule-2 px-3 py-1.5 flex flex-wrap items-center gap-1.5">
         {/* Canonical absolute path from the result, not the request. */}
         <span className="font-mono text-[12px] text-ink">{result.path}</span>
+        <OpenInEditorButton path={result.path} line={firstEchoLine(result)} />
         <Chip label="ops">{file.ops.length}</Chip>
         <Chip label="applied">{result.applied}</Chip>
         <Chip label="lines">{result.new_line_count}</Chip>
