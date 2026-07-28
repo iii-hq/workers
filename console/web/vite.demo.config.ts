@@ -19,8 +19,11 @@ const pierreStub = fileURLToPath(
 )
 
 export default defineConfig({
-  // Relative asset paths: the site serves this from an arbitrary subpath.
-  base: './',
+  // Absolute asset paths at the site's mount point. Relative ('./') paths
+  // break behind Vercel's cleanUrls, which 308s /console-demo/index.html to
+  // /console-demo (no trailing slash), making ./assets/* resolve to the
+  // domain root. The marketing site vendors this build at /console-demo/.
+  base: '/console-demo/',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: [
