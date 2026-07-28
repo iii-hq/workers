@@ -38,7 +38,6 @@ jobs:
       all: ${{ steps.bucket.outputs.all }}
       source_changed: ${{ steps.bucket.outputs.source_changed }}
       integration_changed: ${{ steps.bucket.outputs.integration_changed }}
-      e2e_changed: ${{ steps.bucket.outputs.e2e_changed }}
       vscode_changed: ${{ steps.bucket.outputs.vscode_changed }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
@@ -458,28 +457,6 @@ jobs:
     uses: ./.github/workflows/_harness-integration.yml
     with:
       save-cache: false
-
-  # ──────────────────────────────────────────────────────────────
-  # Harness real-model E2E. Fork pull requests cannot access the model
-  # credential, so they skip this job; trusted PRs run it when the E2E
-  # stack or its workflow changes.
-  # ──────────────────────────────────────────────────────────────
-  harness-e2e:
-    needs: discover
-    if: >-
-      needs.discover.outputs.e2e_changed == 'true' &&
-      github.actor != 'dependabot[bot]' &&
-      (github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository)
-    permissions:
-      actions: read
-      contents: read
-    uses: ./.github/workflows/_harness-e2e.yml
-    with:
-      runs: 1
-      max_parallel: 2
-    secrets:
-      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 
   # ──────────────────────────────────────────────────────────────
   # Node per-worker lint (biome) + test

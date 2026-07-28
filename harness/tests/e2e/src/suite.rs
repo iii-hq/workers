@@ -75,15 +75,22 @@ pub async fn run_suite(config: SuiteRunConfig) -> Result<SuiteRunOutcome> {
                 total_runs = config.runs,
                 "running E2E quality scenario"
             );
-            runs.push(
-                run_once(
-                    &context,
-                    *scenario_id,
-                    &config.subject,
-                    config.judge.as_ref(),
-                )
-                .await,
-            );
+            let run = run_once(
+                &context,
+                *scenario_id,
+                &config.subject,
+                config.judge.as_ref(),
+            )
+            .await;
+            let stop = run.status.is_blocking_failure();
+            runs.push(run);
+            if stop {
+                tracing::warn!(
+                    scenario = scenario_id.as_str(),
+                    "stopping scenario after a blocking failure"
+                );
+                break;
+            }
         }
         scenario_reports.push(E2eScenarioReport::aggregate(
             definition.id,
@@ -237,6 +244,7 @@ async fn run_once(
             );
         }
     }
+    report.update_cost(spec.needs_judge());
     report
 }
 
@@ -360,6 +368,7 @@ async fn execute(
             Ok(outcome) => {
                 awards = outcome.awards;
                 report.judge_attempts = Some(outcome.attempts);
+                report.judge_usage = outcome.usage;
             }
             Err(error) => {
                 return Err(RunFailure::new(

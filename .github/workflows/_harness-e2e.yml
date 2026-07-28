@@ -13,6 +13,11 @@ on:
         required: false
         type: number
         default: 2
+      quality_advisory:
+        description: Report score failures without failing the workflow
+        required: false
+        type: boolean
+        default: false
       subjects:
         description: JSON array of subject entries with id, model, and provider
         required: false
@@ -37,6 +42,7 @@ on:
 jobs:
   build:
     name: harness e2e build
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -285,6 +291,7 @@ jobs:
           HARNESS_E2E_PROVIDER: ${{ matrix.subject.provider }}
           HARNESS_E2E_JUDGE_MODEL: ${{ inputs.judge_model }}
           HARNESS_E2E_JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+          HARNESS_E2E_QUALITY_ADVISORY: ${{ inputs.quality_advisory }}
           HARNESS_E2E_ENGINE_REVISION: ${{ needs.build.outputs.engine_revision }}
         run: harness/tests/e2e/run-ci.sh
 
@@ -293,22 +300,29 @@ jobs:
         env:
           SCENARIO: ${{ matrix.scenario }}
           SUBJECT: ${{ matrix.subject.id }}
+          QUALITY_ADVISORY: ${{ inputs.quality_advisory }}
         run: |
           {
             echo "### Harness E2E · $SUBJECT · $SCENARIO"
+            echo
+            if [[ "$QUALITY_ADVISORY" == "true" ]]; then
+              echo "Quality score gate: advisory. Hard gates and technical failures remain blocking."
+            else
+              echo "Quality score gate: enforced."
+            fi
             echo
             results=target/harness-e2e/results/results.json
             if [[ -f "$results" ]]; then
               jq -r '
                 .scenarios[0] |
-                "| Score median | Threshold | Pass rate | Technical failures | Status |",
-                "| ---: | ---: | ---: | ---: | --- |",
-                "| \(.aggregate.median_score // "n/a") | \(.threshold) | \((.aggregate.pass_rate * 100) | round)% | \(.aggregate.technical_failures) | \(if .passed then "pass" else "fail" end) |",
+                "| Score median | Threshold | Pass rate | Hard-gate failures | Technical failures | Subject cost (USD) | Judge cost (USD) | Total cost (USD) | Status |",
+                "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+                "| \(.aggregate.median_score // "n/a") | \(.threshold) | \((.aggregate.pass_rate * 100) | round)% | \(.aggregate.hard_gate_failures) | \(.aggregate.technical_failures) | \(.aggregate.cost.subject_usd // "n/a") | \(.aggregate.cost.judge_usd // "n/a") | \(.aggregate.cost.total_usd // "n/a") | \(if .passed then "pass" else "fail" end) |",
                 "",
-                "| Run | Score | Status |",
-                "| --- | ---: | --- |",
+                "| Run | Score | Subject cost (USD) | Judge cost (USD) | Total cost (USD) | Status |",
+                "| --- | ---: | ---: | ---: | ---: | --- |",
                 (.runs | to_entries[] |
-                  "| \(.key + 1) | \(.value.score // "n/a") | \(.value.status) |")
+                  "| \(.key + 1) | \(.value.score // "n/a") | \(.value.cost.subject_usd // "n/a") | \(.value.cost.judge_usd // "n/a") | \(.value.cost.total_usd // "n/a") | \(.value.status) |")
               ' "$results"
             else
               echo "No E2E result report was produced."
@@ -334,3 +348,62 @@ jobs:
             target/harness-e2e/stack/
           retention-days: 14
           if-no-files-found: ignore
+
+  summary:
+    name: harness e2e cost summary
+    needs: e2e
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download E2E results
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          pattern: harness-e2e-*-results
+          path: target/harness-e2e-results
+
+      - name: Write suite cost summary
+        run: |
+          {
+            echo "### Harness E2E suite cost"
+            echo
+            mapfile -d '' reports < <(
+              find target/harness-e2e-results -name results.json -print0 2>/dev/null
+            )
+            if ((${#reports[@]} == 0)); then
+              echo "No E2E result reports were produced."
+              exit 0
+            fi
+            jq -sr '
+              [
+                .[] as $report |
+                $report.scenarios[] |
+                {
+                  subject: "\($report.subject.provider)/\($report.subject.model)",
+                  cost: .aggregate.cost
+                }
+              ]
+              | sort_by(.subject)
+              | group_by(.subject)
+              | map({
+                  subject: .[0].subject,
+                  reports: length,
+                  subject_usd: (
+                    map(.cost.subject_usd)
+                    | if all(.[]; . != null) then add else null end
+                  ),
+                  judge_usd: (
+                    map(.cost.judge_usd)
+                    | if all(.[]; . != null) then add else null end
+                  ),
+                  total_usd: (
+                    map(.cost.total_usd)
+                    | if all(.[]; . != null) then add else null end
+                  )
+                })
+              | "| Subject | Reports | Subject cost (USD) | Judge cost (USD) | Total cost (USD) |",
+                "| --- | ---: | ---: | ---: | ---: |",
+                (.[] |
+                  "| \(.subject) | \(.reports) | \(.subject_usd // "n/a") | \(.judge_usd // "n/a") | \(.total_usd // "n/a") |")
+            ' "${reports[@]}"
+          } >> "$GITHUB_STEP_SUMMARY"

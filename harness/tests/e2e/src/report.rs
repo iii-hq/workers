@@ -40,6 +40,29 @@ pub struct CriterionReport {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ModelUsageReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CostReport {
+    pub subject_usd: Option<f64>,
+    pub judge_usd: Option<f64>,
+    pub total_usd: Option<f64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
@@ -59,6 +82,10 @@ impl RunStatus {
             Self::SubjectError | Self::JudgeError | Self::ResourceLimit | Self::InfrastructureError
         )
     }
+
+    pub fn is_blocking_failure(self) -> bool {
+        self == Self::HardGateFailed || self.is_technical_failure()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -77,6 +104,9 @@ pub struct E2eRunReport {
     pub metrics: Option<SessionMetricsResponseV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub judge_attempts: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judge_usage: Option<ModelUsageReport>,
+    pub cost: CostReport,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub failures: Vec<FailureRecord>,
 }
@@ -95,6 +125,8 @@ impl E2eRunReport {
             transcript: None,
             metrics: None,
             judge_attempts: None,
+            judge_usage: None,
+            cost: CostReport::default(),
             failures: Vec::new(),
         }
     }
@@ -115,6 +147,26 @@ impl E2eRunReport {
     pub fn finish(&mut self, status: RunStatus) {
         self.status = status;
     }
+
+    pub fn update_cost(&mut self, judge_expected: bool) {
+        let subject_usd = self
+            .metrics
+            .as_ref()
+            .and_then(|metrics| metrics.totals.cost_usd);
+        let judge_skipped = !judge_expected || self.status == RunStatus::HardGateFailed;
+        let judge_usd = if judge_skipped {
+            Some(0.0)
+        } else {
+            self.judge_usage.as_ref().and_then(|usage| usage.cost_usd)
+        };
+        self.cost = CostReport {
+            subject_usd,
+            judge_usd,
+            total_usd: subject_usd
+                .zip(judge_usd)
+                .map(|(subject, judge)| subject + judge),
+        };
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -125,7 +177,9 @@ pub struct ScenarioAggregate {
     pub required_passes: u32,
     pub pass_rate: f64,
     pub median_score: Option<f64>,
+    pub hard_gate_failures: u32,
     pub technical_failures: u32,
+    pub cost: CostReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -151,13 +205,23 @@ impl E2eScenarioReport {
             .iter()
             .filter(|run| run.status == RunStatus::Passed)
             .count() as u32;
+        let hard_gate_failures = runs
+            .iter()
+            .filter(|run| run.status == RunStatus::HardGateFailed)
+            .count() as u32;
         let technical_failures = runs
             .iter()
             .filter(|run| run.status.is_technical_failure())
             .count() as u32;
         let required_passes = required_passes(run_count);
         let median_score = median(runs.iter().filter_map(|run| run.score));
+        let cost = CostReport {
+            subject_usd: sum_cost(runs.iter().map(|run| run.cost.subject_usd)),
+            judge_usd: sum_cost(runs.iter().map(|run| run.cost.judge_usd)),
+            total_usd: sum_cost(runs.iter().map(|run| run.cost.total_usd)),
+        };
         let passed = run_count > 0
+            && hard_gate_failures == 0
             && technical_failures == 0
             && passed_runs >= required_passes
             && median_score.is_some_and(|score| score >= f64::from(threshold));
@@ -176,7 +240,9 @@ impl E2eScenarioReport {
                     f64::from(passed_runs) / f64::from(run_count)
                 },
                 median_score,
+                hard_gate_failures,
                 technical_failures,
+                cost,
             },
             passed,
             runs,
@@ -249,6 +315,16 @@ impl E2eReport {
         fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
         Ok(path)
     }
+
+    pub fn has_non_quality_failure(&self) -> bool {
+        self.scenarios.is_empty()
+            || self.scenarios.iter().any(|scenario| {
+                scenario
+                    .runs
+                    .iter()
+                    .any(|run| !matches!(run.status, RunStatus::Passed | RunStatus::QualityFailed))
+            })
+    }
 }
 
 fn required_passes(runs: u32) -> u32 {
@@ -267,6 +343,12 @@ fn median(values: impl IntoIterator<Item = u8>) -> Option<f64> {
     } else {
         Some((f64::from(values[middle - 1]) + f64::from(values[middle])) / 2.0)
     }
+}
+
+fn sum_cost(values: impl IntoIterator<Item = Option<f64>>) -> Option<f64> {
+    values
+        .into_iter()
+        .try_fold(0.0, |total, value| Some(total + value?))
 }
 
 #[cfg(test)]
@@ -317,6 +399,26 @@ mod tests {
     }
 
     #[test]
+    fn costs_are_aggregated_without_hiding_unknown_values() {
+        let mut first = run(90, true);
+        first.cost = CostReport {
+            subject_usd: Some(0.1),
+            judge_usd: Some(0.02),
+            total_usd: Some(0.12),
+        };
+        let mut second = run(90, true);
+        second.cost = CostReport {
+            subject_usd: Some(0.2),
+            judge_usd: None,
+            total_usd: None,
+        };
+        let report = aggregate(vec![first, second]);
+        assert!((report.aggregate.cost.subject_usd.unwrap() - 0.3).abs() < f64::EPSILON);
+        assert_eq!(report.aggregate.cost.judge_usd, None);
+        assert_eq!(report.aggregate.cost.total_usd, None);
+    }
+
+    #[test]
     fn technical_errors_are_not_quality_scores_and_fail_the_aggregate() {
         let mut error = E2eRunReport::new("run".into(), "session".into(), "prompt".into());
         error.push_failure(
@@ -329,6 +431,15 @@ mod tests {
         assert_eq!(report.aggregate.scored_runs, 2);
         assert_eq!(report.aggregate.technical_failures, 1);
         assert_eq!(report.aggregate.median_score, Some(90.0));
+    }
+
+    #[test]
+    fn hard_gate_failures_cannot_be_outvoted() {
+        let mut hard_gate = run(100, true);
+        hard_gate.status = RunStatus::HardGateFailed;
+        let report = aggregate(vec![hard_gate, run(90, true), run(90, true)]);
+        assert!(!report.passed);
+        assert_eq!(report.aggregate.hard_gate_failures, 1);
     }
 
     #[test]
@@ -350,5 +461,34 @@ mod tests {
         let value = serde_json::to_value(report).unwrap();
         assert_eq!(value["scenarios"][0]["aggregate"]["median_score"], 90.0);
         assert_eq!(value["scenarios"][0]["runs"][0]["status"], "passed");
+        assert!(value["scenarios"][0]["aggregate"]["cost"].is_object());
+    }
+
+    #[test]
+    fn advisory_mode_only_tolerates_quality_failures() {
+        let quality = E2eReport::new(
+            model(),
+            None,
+            None,
+            None,
+            vec![aggregate(vec![run(70, false)])],
+        );
+        assert!(!quality.has_non_quality_failure());
+
+        let mut hard_gate = run(100, true);
+        hard_gate.status = RunStatus::HardGateFailed;
+        let hard_gate = E2eReport::new(model(), None, None, None, vec![aggregate(vec![hard_gate])]);
+        assert!(hard_gate.has_non_quality_failure());
+    }
+
+    fn model() -> ModelArtifact {
+        ModelArtifact {
+            model: "model".into(),
+            provider: "provider".into(),
+            context_window: 10_000,
+            max_output_tokens: 2_000,
+            supports_tools: Some(true),
+            supports_vision: Some(false),
+        }
     }
 }

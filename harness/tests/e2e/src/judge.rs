@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::context::E2eContext;
+use crate::report::ModelUsageReport;
 use crate::scenarios::{CriterionAward, CriterionSpec, ScenarioSpec};
 
 const JUDGE_SYSTEM_PROMPT: &str = "You are an impartial software-agent quality evaluator. \
@@ -23,6 +24,7 @@ pub struct JudgeConfig {
 pub struct JudgeOutcome {
     pub awards: Vec<CriterionAward>,
     pub attempts: u8,
+    pub usage: Option<ModelUsageReport>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,11 +91,13 @@ Use this exact object shape and replace only the scores and explanatory text:\n{
         serde_json::to_string(&response_template).context("serialize judge response template")?,
     );
     let mut attempt_prompt = prompt.clone();
+    let mut attempt_usage = Vec::new();
 
     for attempt in 1..=MAX_JUDGE_ATTEMPTS {
         let response = invoke(context, config, &attempt_prompt)
             .await
             .with_context(|| format!("invoke E2E judge attempt {attempt}"))?;
+        attempt_usage.push(response_usage(&response));
         let response_text = assistant_text(&response);
 
         match parse_response(&response_text)
@@ -103,6 +107,7 @@ Use this exact object shape and replace only the scores and explanatory text:\n{
                 return Ok(JudgeOutcome {
                     awards,
                     attempts: attempt,
+                    usage: aggregate_usage(&attempt_usage),
                 });
             }
             Err(error) if attempt < MAX_JUDGE_ATTEMPTS => {
@@ -217,6 +222,43 @@ fn assistant_text(response: &Value) -> String {
         .join("")
 }
 
+fn response_usage(response: &Value) -> Option<ModelUsageReport> {
+    let usage = response.get("usage")?;
+    Some(ModelUsageReport {
+        input_tokens: usage.get("input").and_then(Value::as_u64),
+        output_tokens: usage.get("output").and_then(Value::as_u64),
+        cache_read_tokens: usage.get("cache_read").and_then(Value::as_u64),
+        cache_write_tokens: usage.get("cache_write").and_then(Value::as_u64),
+        reasoning_tokens: usage.get("reasoning").and_then(Value::as_u64),
+        cost_usd: usage.get("cost_usd").and_then(Value::as_f64),
+    })
+}
+
+fn aggregate_usage(attempts: &[Option<ModelUsageReport>]) -> Option<ModelUsageReport> {
+    let usages: Option<Vec<_>> = attempts.iter().map(Option::as_ref).collect();
+    let usages = usages?;
+    if usages.is_empty() {
+        return None;
+    }
+    Some(ModelUsageReport {
+        input_tokens: sum_u64(usages.iter().map(|usage| usage.input_tokens)),
+        output_tokens: sum_u64(usages.iter().map(|usage| usage.output_tokens)),
+        cache_read_tokens: sum_u64(usages.iter().map(|usage| usage.cache_read_tokens)),
+        cache_write_tokens: sum_u64(usages.iter().map(|usage| usage.cache_write_tokens)),
+        reasoning_tokens: sum_u64(usages.iter().map(|usage| usage.reasoning_tokens)),
+        cost_usd: usages
+            .iter()
+            .map(|usage| usage.cost_usd)
+            .try_fold(0.0, |total, value| Some(total + value?)),
+    })
+}
+
+fn sum_u64(values: impl IntoIterator<Item = Option<u64>>) -> Option<u64> {
+    values
+        .into_iter()
+        .try_fold(0_u64, |total, value| total.checked_add(value?))
+}
+
 fn response_excerpt(response: &str) -> String {
     const MAX_CHARS: usize = 2_000;
     let mut excerpt: String = response.chars().take(MAX_CHARS).collect();
@@ -316,6 +358,22 @@ mod tests {
         );
         assert!(request.get("response_format").is_none());
         assert_eq!(request["max_output_tokens"], 2_048);
+    }
+
+    #[test]
+    fn aggregates_usage_from_every_judge_attempt() {
+        let usage = |input, output, cost| {
+            Some(ModelUsageReport {
+                input_tokens: Some(input),
+                output_tokens: Some(output),
+                cost_usd: Some(cost),
+                ..ModelUsageReport::default()
+            })
+        };
+        let total = aggregate_usage(&[usage(100, 10, 0.01), usage(120, 12, 0.02)]).unwrap();
+        assert_eq!(total.input_tokens, Some(220));
+        assert_eq!(total.output_tokens, Some(22));
+        assert_eq!(total.cost_usd, Some(0.03));
     }
 
     #[test]

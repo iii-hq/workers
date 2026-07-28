@@ -60,6 +60,13 @@ E2E_WORKERS = {
     "cron",
     "llm-router",
     "provider-anthropic",
+    "provider-claude-code",
+    "provider-kimi",
+    "provider-llamacpp",
+    "provider-openai",
+    "provider-openai-codex",
+    "provider-xai",
+    "provider-zai",
 }
 INTEGRATION_DOC_GLOBS = (
     "README.md",
@@ -77,8 +84,8 @@ INTEGRATION_INFRA_PATHS = {
 }
 E2E_INFRA_PATHS = {
     ".github/scripts/discover_changed_workers.py",
-    ".github/workflows/ci.yml",
     ".github/workflows/_harness-e2e.yml",
+    ".github/workflows/harness-e2e-main.yml",
     ".github/workflows/harness-e2e-nightly.yml",
 }
 INTEGRATION_EXCLUDED_PREFIXES = ("harness/tests/e2e/",)

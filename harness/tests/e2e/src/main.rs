@@ -51,6 +51,10 @@ struct RunArgs {
     #[arg(long, default_value_t = 1)]
     runs: u32,
 
+    /// Keep score-only regressions advisory while still failing hard gates and errors.
+    #[arg(long, env = "HARNESS_E2E_QUALITY_ADVISORY", default_value_t = false)]
+    quality_advisory: bool,
+
     /// Run only the selected scenario. Repeat to select more than one.
     #[arg(long, value_enum)]
     scenario: Vec<ScenarioId>,
@@ -78,6 +82,7 @@ async fn main() -> Result<()> {
 }
 
 async fn run(args: RunArgs) -> Result<()> {
+    let quality_advisory = args.quality_advisory;
     let judge = match (args.judge_model, args.judge_provider) {
         (Some(model), Some(provider)) => Some(JudgeConfig { model, provider }),
         (None, None) => None,
@@ -97,11 +102,15 @@ async fn run(args: RunArgs) -> Result<()> {
     .await
     .context("run E2E quality suite")?;
 
+    if !outcome.report.passed && !(quality_advisory && !outcome.report.has_non_quality_failure()) {
+        bail!("E2E suite failed; see {}", outcome.report_path.display());
+    }
     if !outcome.report.passed {
-        bail!(
-            "E2E quality threshold failed; see {}",
-            outcome.report_path.display()
+        tracing::warn!(
+            path = %outcome.report_path.display(),
+            "E2E score is below threshold; quality gate is advisory"
         );
+        return Ok(());
     }
     tracing::info!(path = %outcome.report_path.display(), "E2E quality suite passed");
     Ok(())

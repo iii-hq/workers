@@ -1,12 +1,17 @@
-# Harness E2E quality tests
+# Harness E2E tests
 
-This package runs code-defined user scenarios against a real iii stack and a
-real model. It uses the provider's production system prompt: the runner never
-injects a test-only system prompt.
+This package validates agent behavior with code-defined user scenarios running
+against a real iii stack and real models. The subject uses the provider's
+production system prompt; the runner never injects a test-only subject prompt.
+The separately configured judge receives an evaluation-only system prompt.
+
+This suite covers behavior and quality. Deterministic stack mechanics live in
+`tests/integration/`, while registry installation and first-run behavior live
+in `tests/quickstart/`.
 
 Each scenario:
 
-1. Builds a natural user prompt with a unique run scope.
+1. Builds a natural user prompt; stateful scenarios embed a unique run scope.
 2. Calls `harness::send` once.
 3. Waits for terminal state through `harness::status`.
 4. Collects the transcript and durable metrics.
@@ -31,10 +36,14 @@ Scenario definitions, prompts, rubrics, and evaluators live under
 `src/scenarios/`. The runner exposes every registered function to every
 scenario through one global `allow: ["*"]` policy:
 
-- `direct_answer`: explains authentication versus authorization without tools.
-- `persistent_state`: discovers and performs one exact durable state write.
-- `security_review`: reviews three vulnerable snippets with a qualitative judge.
-- `reactive_automation`: creates and fires a one-shot state reaction.
+- `direct_answer`: produces a one-turn answer without tools; a judge scores its
+  correctness, clarity, and instruction adherence.
+- `persistent_state`: discovers and performs one exact durable state write,
+  evaluated entirely in code.
+- `security_review`: reviews three vulnerable snippets; a judge scores coverage,
+  accuracy, remediation, and clarity.
+- `reactive_automation`: creates and fires a one-shot state reaction, evaluated
+  entirely through observed calls and durable state.
 
 List the code-defined ids used by CI:
 
@@ -44,7 +53,8 @@ cargo run -p harness-e2e -- list
 
 ## Run against a local stack
 
-Run all scenarios against an already-running stack:
+From the `harness/` directory, run all scenarios against an already-running
+stack:
 
 ```bash
 cargo run -p harness-e2e -- run \
@@ -71,7 +81,11 @@ cargo run -p harness-e2e -- run \
 `III_URL`, `HARNESS_E2E_MODEL`, `HARNESS_E2E_PROVIDER`,
 `HARNESS_E2E_JUDGE_MODEL`, and `HARNESS_E2E_JUDGE_PROVIDER` are accepted as
 environment variables. Judge configuration is required only when a selected
-scenario has qualitative criteria.
+scenario has qualitative criteria (`direct_answer` or `security_review`).
+`--runs` accepts values from 1 through 20.
+
+`--quality-advisory` or `HARNESS_E2E_QUALITY_ADVISORY=true` makes score-only
+failures non-blocking. Hard-gate and technical failures remain blocking.
 
 The judge protocol deliberately uses plain text JSON, which works across
 providers without native structured-output support. The response is parsed and
@@ -81,10 +95,11 @@ attempts; a third invalid response is a `judge_error`, not a zero quality score.
 ## Scores and reports
 
 Criterion weights total 100. A run passes when every hard gate passes and its
-score reaches the scenario threshold. Aggregates require at least two thirds of
-the runs to pass and the median score to reach the threshold. Technical failures
-always fail the aggregate, while ordinary quality failures retain the
-two-of-three tolerance used nightly.
+score reaches the scenario threshold. For repeated runs, the aggregate requires
+at least two thirds of the runs to pass and the median score to reach the
+threshold. Hard-gate and technical failures stop further repetitions for that
+subject/scenario pair and always fail the aggregate. Score-only failures retain
+the two-of-three tolerance used nightly.
 
 Scenarios with a judge reference delegate every criterion score to the judge.
 Scenarios without one award every criterion objectively in code. Mechanical
@@ -96,7 +111,8 @@ Every run has one explicit status:
 - `subject_error`, `judge_error`, `resource_limit`, or `infrastructure_error`
   for failures that must not be interpreted as a score.
 
-Scores and criterion awards are `null` when evaluation did not complete.
+Scores and criterion awards are `null` when evaluation did not complete. A
+technical failure is never converted into a zero score.
 
 The runner writes `results.json` with:
 
@@ -105,20 +121,37 @@ The runner writes `results.json` with:
 - judge protocol and pinned engine revision when CI supplies it;
 - prompt, transcript, and `harness::metrics` for every run;
 - hard-gate results and per-criterion points;
-- judge attempts and failures grouped by phase;
+- judge attempts, token usage, and failures grouped by phase;
+- subject, judge, and total model cost per run and scenario;
 - median score, pass rate, and aggregate status.
+
+Subject usage comes from `harness::metrics`; judge usage comes from
+`router::complete`. When evaluation succeeds, judge usage includes the initial
+response and every repair attempt. Costs are `null` when a provider or model has
+no catalog pricing or complete usage data. Unknown costs are not treated as
+zero.
 
 ## CI
 
-The reusable workflow builds the pinned engine and only the provider workers
-needed by its subject matrix and fixed judge. It reads the scenario matrix from
-`harness-e2e list` and starts one isolated stack per subject/scenario pair. At
-most two live-model jobs run concurrently by default.
+| Workflow | Trigger | Live-model runs | Gate |
+| --- | --- | ---: | --- |
+| Pull-request CI | Relevant pull-request changes | 0 | Deterministic integration only |
+| Harness E2E Main | Relevant push to `main` | 1 per subject/scenario | Score advisory; hard gates and technical failures blocking |
+| Harness E2E Nightly | New `main` revision on schedule, or manual dispatch on `main` | 3 per subject/scenario | Median score, two-of-three pass policy, hard gates and technical failures blocking |
 
-Trusted pull requests run every affected scenario once. The scheduled and
-manual nightly workflow runs every scenario three times. The nightly subject
-matrix can be supplied manually or through the `HARNESS_E2E_SUBJECTS`
-repository variable:
+The reusable workflow itself is guarded to run only from `main`. It builds the
+pinned engine and only the provider workers required by the subject matrix and
+fixed judge. Scenario ids come directly from `harness-e2e list`. Each
+subject/scenario pair receives a fresh stack, and repetitions run sequentially
+inside that job with unique session and state scopes. At most two matrix jobs
+make live-model calls concurrently.
+
+The scheduled nightly skips the live suite when the current `main` SHA already
+has a successful full nightly result. A manual dispatch bypasses this
+same-revision check but must target `main`.
+
+The subject matrix comes from the `HARNESS_E2E_SUBJECTS` repository variable.
+Nightly dispatch inputs may override the matrix and judge:
 
 ```json
 [
@@ -127,8 +160,19 @@ repository variable:
 ]
 ```
 
-The selected providers still need their corresponding CI credentials. Fork
-pull requests and Dependabot do not receive provider credentials.
+`HARNESS_E2E_JUDGE_MODEL` and `HARNESS_E2E_JUDGE_PROVIDER` configure the fixed
+judge used for every subject.
+
+The hosted workflows currently forward `ANTHROPIC_API_KEY` and
+`OPENAI_API_KEY`. Subscription-backed `claude-code` and `openai-codex`
+providers require their credential files to be provisioned securely on the
+runner; the current workflow does not inject those files.
+
+Each matrix job publishes its result for 14 days; failed jobs also publish
+diagnostics for 14 days. The workflow summary shows subject, judge, and total
+cost per scenario and consolidated by subject. CI currently evaluates fixed
+code-defined thresholds; it does not compare scores automatically with a
+previous run.
 
 The launcher performs a clean first boot with isolated configuration, session,
 queue, state, and log directories. It starts the provider workers named by the
@@ -151,4 +195,5 @@ rules:
 - every durable resource has unconditional cleanup.
 
 Unit tests validate the registry, rubric weights, objective awards, judge
-responses, transcript call normalization, aggregation, and report schema.
+responses and usage, transcript call normalization, blocking-gate behavior,
+cost aggregation, advisory mode, and report schema.
