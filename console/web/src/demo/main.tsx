@@ -9,6 +9,8 @@
  * URL params:
  *   ?theme=dark|light   follow the host page's theme (default light)
  *   ?loop=0             play once instead of looping
+ *   ?paused=1           mount paused; the host posts `{type:'iii-demo',
+ *                       active:true}` when the frame is actually on screen
  */
 
 import { StrictMode } from 'react'
@@ -94,7 +96,7 @@ if (!root) throw new Error('missing #root container')
  */
 function mount() {
   const reactRoot = createRoot(root as HTMLElement)
-  let active = true
+  let active = params.get('paused') !== '1'
   /* Bumped to replay: a fresh key remounts the player from the top. */
   let runKey = 0
 
