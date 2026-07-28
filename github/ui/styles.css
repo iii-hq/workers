@@ -10,7 +10,8 @@
  * so light/dark theming is free.
  */
 
-[data-iii-ui="github"] .gh-page {
+[data-iii-ui="github"] .gh-page,
+[data-iii-ui="github"] .gh-graph-page {
   font-family: var(--font-mono, ui-monospace, monospace);
   color: var(--color-ink);
   padding: 20px 24px;
@@ -18,7 +19,10 @@
 }
 [data-iii-ui="github"] .gh-page *,
 [data-iii-ui="github"] .gh-page *::before,
-[data-iii-ui="github"] .gh-page *::after {
+[data-iii-ui="github"] .gh-page *::after,
+[data-iii-ui="github"] .gh-graph-page *,
+[data-iii-ui="github"] .gh-graph-page *::before,
+[data-iii-ui="github"] .gh-graph-page *::after {
   box-sizing: border-box;
 }
 
@@ -317,5 +321,167 @@
   }
   [data-iii-ui="github"] .gh-feed-fn {
     width: 8rem;
+  }
+}
+
+/* --- tab shell (GithubPage.tsx) -------------------------------------- */
+[data-iii-ui="github"] .gh-tabs {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+[data-iii-ui="github"] .gh-tabs-list {
+  padding: 12px 24px 0;
+}
+[data-iii-ui="github"] .gh-tabs-content {
+  min-height: 0;
+}
+
+/* --- git graph (GitGraph.tsx) ---------------------------------------- */
+/*
+ * Lane colors are semantically fixed (like syntax highlighting), not theme
+ * tokens: gitk/Sourcetree keep the same lane palette in both themes. The eight
+ * hues below read on both the light and dark console panels. The renderer sets
+ * a gh-lane-cN class and paints via currentColor.
+ */
+[data-iii-ui="github"] .gh-graph-page {
+  --gh-g0: #2f81f7;
+  --gh-g1: #3fb950;
+  --gh-g2: #a371f7;
+  --gh-g3: #db6d28;
+  --gh-g4: #db61a2;
+  --gh-g5: #1f9e94;
+  --gh-g6: #c9a227;
+  --gh-g7: #f0503c;
+}
+[data-iii-ui="github"] .gh-lane-c0 { color: var(--gh-g0); }
+[data-iii-ui="github"] .gh-lane-c1 { color: var(--gh-g1); }
+[data-iii-ui="github"] .gh-lane-c2 { color: var(--gh-g2); }
+[data-iii-ui="github"] .gh-lane-c3 { color: var(--gh-g3); }
+[data-iii-ui="github"] .gh-lane-c4 { color: var(--gh-g4); }
+[data-iii-ui="github"] .gh-lane-c5 { color: var(--gh-g5); }
+[data-iii-ui="github"] .gh-lane-c6 { color: var(--gh-g6); }
+[data-iii-ui="github"] .gh-lane-c7 { color: var(--gh-g7); }
+
+[data-iii-ui="github"] .gh-graph-body {
+  padding-top: 16px;
+}
+[data-iii-ui="github"] .gh-graph-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+[data-iii-ui="github"] .gh-graph-split {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+[data-iii-ui="github"] .gh-graph-scroll {
+  position: relative;
+  overflow: auto;
+  max-height: calc(100vh - 260px);
+  min-height: 180px;
+  margin-top: 12px;
+  border-top: 1px solid var(--color-rule);
+}
+[data-iii-ui="github"] .gh-graph-svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+[data-iii-ui="github"] .gh-node-selected {
+  stroke: var(--color-accent);
+  stroke-width: 2px;
+}
+
+[data-iii-ui="github"] .gh-graph-rows {
+  position: relative;
+}
+[data-iii-ui="github"] .gh-graph-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: background 0.1s;
+  overflow: hidden;
+}
+[data-iii-ui="github"] .gh-graph-row:hover {
+  background: var(--color-panel);
+}
+[data-iii-ui="github"] .gh-graph-row.selected {
+  background: var(--color-panel);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+[data-iii-ui="github"] .gh-graph-row:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: -2px;
+}
+
+[data-iii-ui="github"] .gh-graph-refs {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+}
+[data-iii-ui="github"] .gh-graph-subject {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="github"] .gh-graph-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+}
+[data-iii-ui="github"] .gh-graph-hash {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="github"] .gh-graph-author {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- commit detail (git show) ---------------------------------------- */
+[data-iii-ui="github"] .gh-graph-detail {
+  margin-top: 12px;
+  border: 1px solid var(--color-rule);
+  border-left: 2px solid var(--color-accent);
+  background: var(--color-paper-2);
+}
+[data-iii-ui="github"] .gh-graph-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="github"] .gh-graph-detail-body {
+  padding: 8px 10px;
+  max-height: 34vh;
+  overflow: auto;
+}
+
+@media (max-width: 720px) {
+  [data-iii-ui="github"] .gh-graph-author {
+    display: none;
+  }
+  [data-iii-ui="github"] .gh-graph-refs {
+    max-width: 55%;
   }
 }

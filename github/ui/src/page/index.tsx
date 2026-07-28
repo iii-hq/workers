@@ -102,7 +102,7 @@ function useCalledFeed(host: Host) {
   return { entries, clear, paused, setPaused }
 }
 
-export function GithubPage({ host }: { host: Host }) {
+export function ActivityFeed({ host }: { host: Host }) {
   const { entries, clear, paused, setPaused } = useCalledFeed(host)
   const [expanded, setExpanded] = useState<string | null>(null)
 
