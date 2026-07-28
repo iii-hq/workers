@@ -90,7 +90,10 @@ async fn main() -> Result<()> {
     }
     configuration::reconcile(&iii, &cell).await;
 
-    register_all(&iii, &cell);
+    // Register the `github::called` trigger type first so the emitter threaded
+    // through every function has a live subscriber set to fan out to.
+    let called = github::events::register_called_trigger(&iii);
+    register_all(&iii, &cell, &called);
 
     // Injectable console UI — after the github::* functions so the console can
     // attribute the assets.

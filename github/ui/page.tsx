@@ -6,11 +6,11 @@
  * the console mounts and link-swaps it, styles-before-scripts on boot.
  *
  * `setup(host)` registers one contribution:
- * - src/page/ — the `#/ext/github` browser: owner/name input plus the
- *   pull-requests / issues / runs / releases / search panels, each reading
- *   the live github worker over `github::*` and unwrapping its `{ value }`
- *   envelope. Read-only on purpose: mutations stay in agent flows behind
- *   the approval gate.
+ * - src/page/ — the `#/ext/github` ACTIVITY feed: a tab-scoped subscription
+ *   to the worker's `github::called` trigger type that renders each github
+ *   call as it finishes (function id, arg echo, ok/error + duration, and a
+ *   short result summary). Read-only: the page observes the bus, it invokes
+ *   nothing.
  *
  * Registrations go through `host` so the loader disposes them on hot
  * reload / worker disconnect.

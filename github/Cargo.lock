@@ -427,6 +427,7 @@ name = "github"
 version = "0.2.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "iii-console-ui",
  "iii-sdk",

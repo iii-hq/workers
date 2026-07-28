@@ -22,6 +22,9 @@ fn main() {
     // project links @iii-dev/console-ui from packages/console-ui).
     println!("cargo:rerun-if-changed=../pnpm-lock.yaml");
     println!("cargo:rerun-if-changed=ui/tsconfig.json");
+    // build.rs branches on SKIP_UI_BUILD below; declare it so toggling the var
+    // re-runs this script (and refreshes the embedded assets accordingly).
+    println!("cargo:rerun-if-env-changed=SKIP_UI_BUILD");
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let ui_dir = manifest_dir.join("ui");

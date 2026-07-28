@@ -131,3 +131,11 @@ export function Search(props: IconProps) {
     </Svg>
   )
 }
+
+export function Activity(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+    </Svg>
+  )
+}

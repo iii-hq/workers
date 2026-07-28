@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod configuration;
+pub mod events;
 pub mod functions;
 pub mod gh;
 pub mod ui;
