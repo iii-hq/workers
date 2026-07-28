@@ -1,9 +1,7 @@
-import { Plus } from 'lucide-react'
 import { useState } from 'react'
-import { Button } from '@/components/ui/Button'
-import { Input } from '@/components/ui/Input'
-import type { MemoryBank } from '@/lib/memory'
-import { cn } from '@/lib/utils'
+import { Button, Input } from '@iii-dev/console-ui'
+import { Plus } from './icons'
+import type { MemoryBank } from './memory-data'
 
 /**
  * Left rail: the bank list (first-class named memory scopes) plus an
@@ -30,35 +28,28 @@ export function BankRail({
   const valid = /^[a-z0-9][a-z0-9_-]{0,63}$/.test(draft)
 
   return (
-    <aside className="w-52 shrink-0 border-r border-rule flex flex-col min-h-0">
-      <div className="px-3 py-2 border-b border-rule-2">
-        <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-ink-faint font-semibold">
-          banks
-        </span>
+    <aside className="mem-rail">
+      <div className="mem-rail-head">
+        <span className="mem-rail-caption">banks</span>
       </div>
-      <div className="flex-1 overflow-auto">
+      <div className="mem-rail-list">
         {banks.map((bank) => (
           <button
             key={bank.name}
             type="button"
             onClick={() => onSelect(bank.name)}
-            className={cn(
-              'w-full text-left px-3 py-2 border-b border-rule-2 font-mono lowercase',
-              'hover:bg-panel transition-colors',
-              selected === bank.name
-                ? 'border-l-2 border-l-accent bg-panel'
-                : 'border-l-2 border-l-transparent',
-            )}
+            className={`mem-rail-item${selected === bank.name ? ' active' : ''}`}
           >
-            <span className="block text-[13px] text-ink">{bank.name}</span>
-            <span className="block text-[11px] text-ink-faint mt-0.5">
-              {bank.memories} memories · {bank.pinned} pinned · {bank.rules} rules
+            <span className="mem-rail-name">{bank.name}</span>
+            <span className="mem-rail-meta">
+              {bank.memories} memories · {bank.pinned} pinned · {bank.rules}{' '}
+              rules
             </span>
           </button>
         ))}
       </div>
       <form
-        className="p-2 border-t border-rule flex items-center gap-1.5"
+        className="mem-rail-form"
         onSubmit={(e) => {
           e.preventDefault()
           if (!valid || creating) return
@@ -72,7 +63,7 @@ export function BankRail({
           onChange={setDraft}
           placeholder="new bank"
           aria-label="new bank name"
-          className="flex-1 min-w-0"
+          className="mem-rail-input"
         />
         <Button
           type="submit"
@@ -81,7 +72,7 @@ export function BankRail({
           disabled={!valid || creating}
           aria-label="create bank"
         >
-          <Plus className="w-3.5 h-3.5" aria-hidden />
+          <Plus size={14} aria-hidden />
         </Button>
       </form>
     </aside>

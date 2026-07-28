@@ -647,10 +647,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-console-ui"
+version = "0.1.0"
+dependencies = [
+ "iii-sdk",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "iii-helpers"
-version = "0.21.5"
+version = "0.21.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9f703e0827e055b8703ddb2c588c3bd2dcedf0ab4fe88cba04ffc596cd61f39"
+checksum = "84bdc7bbc3abfde934a62cdc5d3045adf52914dfc1ed6c20f8af691fc561dc55"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -669,9 +681,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.21.3"
+version = "0.21.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6455e06a9357696d8aa7cf7ba6d6b30ce8803036d85ea53a51de76178b867ec"
+checksum = "07dd060fddcc9153b0dd07c038a14cf172ce15ce1d4edb98155563ed55b2caba"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -785,6 +797,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "iii-console-ui",
  "iii-sdk",
  "schemars",
  "serde",

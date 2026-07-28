@@ -14,7 +14,6 @@ export type View =
   | 'workers'
   | 'worktrees'
   | 'browser'
-  | 'memory'
   | 'github'
   | 'ext'
 
@@ -99,9 +98,6 @@ function routeFromHash(hash: string): View | null {
   if (hash === '#/worktrees') {
     return 'worktrees'
   }
-  if (hash === '#/memory') {
-    return 'memory'
-  }
   if (hash === '#/github') {
     return 'github'
   }
@@ -139,8 +135,6 @@ function hashFor(view: View): string {
       return '#/worktrees'
     case 'browser':
       return '#/browser'
-    case 'memory':
-      return '#/memory'
     case 'github':
       return '#/github'
     case 'configuration':
