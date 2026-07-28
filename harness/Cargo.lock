@@ -524,6 +524,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-e2e"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "harness",
+ "iii-sdk",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "harness-integration"
 version = "0.1.0"
 dependencies = [

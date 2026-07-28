@@ -6,6 +6,7 @@ Outputs a JSON object to stdout AND (if $GITHUB_OUTPUT is set) writes keys:
     source_changed                : workers whose change wasn't only metadata
     rust / node / python          : language buckets (subset of changed_workers)
     integration_changed          : bool, did an integration-stack input change
+    e2e_changed                  : bool, did a real-model E2E input change
     crates                        : shared crates/<name> dirs with source changes
     vscode_changed                : bool, did lsp-vscode/ change
     any                           : bool, any worker, crate, or vscode change
@@ -46,7 +47,27 @@ INTEGRATION_WORKERS = {
     "session-manager",
     "context-manager",
     "iii-directory",
+    "state",
     "console",
+}
+E2E_WORKERS = {
+    "database",
+    "harness",
+    "queue",
+    "session-manager",
+    "context-manager",
+    "iii-directory",
+    "state",
+    "cron",
+    "llm-router",
+    "provider-anthropic",
+    "provider-claude-code",
+    "provider-kimi",
+    "provider-llamacpp",
+    "provider-openai",
+    "provider-openai-codex",
+    "provider-xai",
+    "provider-zai",
 }
 INTEGRATION_DOC_GLOBS = (
     "README.md",
@@ -62,6 +83,14 @@ INTEGRATION_INFRA_PATHS = {
     ".github/workflows/_harness-integration.yml",
     ".github/workflows/cache-warm.yml",
 }
+E2E_INFRA_PATHS = {
+    ".github/scripts/discover_changed_workers.py",
+    ".github/workflows/_harness-e2e.yml",
+    ".github/workflows/harness-e2e-main.yml",
+    ".github/workflows/harness-e2e-nightly.yml",
+}
+INTEGRATION_EXCLUDED_PREFIXES = ("harness/tests/e2e/",)
+E2E_EXCLUDED_PREFIXES = ("harness/tests/integration/",)
 
 # Shared Rust crates live under crates/<name>/ (no iii.worker.yaml — not
 # workers). A source change there (1) reports the crate in the `crates`
@@ -90,6 +119,25 @@ def is_integration_doc(rel: str) -> bool:
 
 def is_crate_metadata(rel: str) -> bool:
     return any(fnmatch.fnmatch(rel, g) for g in CRATE_METADATA_GLOBS)
+
+
+def suite_changed(
+    files: list[str],
+    forced: set[str],
+    workers: set[str],
+    infra_paths: set[str],
+    excluded_prefixes: tuple[str, ...],
+) -> bool:
+    return bool(forced & workers) or any(
+        f in infra_paths
+        or (
+            not f.startswith(excluded_prefixes)
+            and f.split("/", 1)[0] in workers
+            and len(f.split("/", 1)) == 2
+            and not is_integration_doc(f.split("/", 1)[1])
+        )
+        for f in files
+    )
 
 
 def list_worker_dirs(repo_root: pathlib.Path) -> set[str]:
@@ -205,14 +253,19 @@ def main(argv: list[str] | None = None) -> int:
         w for w, rels in touched.items()
         if any(not is_metadata(rel) for rel in rels)
     )
-    integration_changed = bool(forced & INTEGRATION_WORKERS) or any(
-        f in INTEGRATION_INFRA_PATHS
-        or (
-            f.split("/", 1)[0] in INTEGRATION_WORKERS
-            and len(f.split("/", 1)) == 2
-            and not is_integration_doc(f.split("/", 1)[1])
-        )
-        for f in files
+    integration_changed = suite_changed(
+        files,
+        forced,
+        INTEGRATION_WORKERS,
+        INTEGRATION_INFRA_PATHS,
+        INTEGRATION_EXCLUDED_PREFIXES,
+    )
+    e2e_changed = suite_changed(
+        files,
+        forced,
+        E2E_WORKERS,
+        E2E_INFRA_PATHS,
+        E2E_EXCLUDED_PREFIXES,
     )
     by_language: dict[str, list[str]] = {"rust": [], "node": [], "python": []}
     for w in changed:
@@ -227,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
         "source_changed": source_changed,
         "by_language": by_language,
         "integration_changed": integration_changed,
+        "e2e_changed": e2e_changed,
         "crates": changed_crates,
         "vscode_changed": vscode_changed,
     }
@@ -245,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
             f.write(
                 f"integration_changed={'true' if integration_changed else 'false'}\n"
             )
+            f.write(f"e2e_changed={'true' if e2e_changed else 'false'}\n")
             f.write(f"crates={json.dumps(changed_crates)}\n")
             f.write(f"vscode_changed={'true' if vscode_changed else 'false'}\n")
             f.write(f"any={'true' if any_change else 'false'}\n")

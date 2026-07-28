@@ -1,4 +1,4 @@
-name: Harness integration E2E
+name: Harness integration
 
 on:
   workflow_call:
@@ -11,7 +11,7 @@ on:
 
 jobs:
   integration:
-    name: harness integration e2e
+    name: harness integration
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -20,7 +20,7 @@ jobs:
         id: lock
         run: |
           set -euo pipefail
-          lock=harness/tests/e2e/engine.lock
+          lock=harness/tests/integration/engine.lock
           read_field() {
             local field=$1 values
             values=$(sed -n "s/^${field} = \"\\([^\"]*\\)\"$/\\1/p" "$lock")
@@ -133,7 +133,7 @@ jobs:
         run: make -C harness integration-validate
 
       - name: Run integration scenarios
-        run: make -C harness integration-e2e III_BIN="${{ steps.engine.outputs.bin }}"
+        run: make -C harness integration-test III_BIN="${{ steps.engine.outputs.bin }}"
 
       - name: Install Console web dependencies
         working-directory: console/web
