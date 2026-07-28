@@ -4,25 +4,33 @@ on:
   schedule:
     - cron: "17 5 * * *"
   workflow_dispatch:
+    inputs:
+      channel:
+        description: Installer channel to validate
+        type: choice
+        options: [main, next]
+        default: main
 
 permissions:
   contents: read
 
 concurrency:
-  group: harness-quickstart
+  group: harness-quickstart-${{ inputs.channel || 'main' }}
   cancel-in-progress: true
 
 jobs:
   validate:
-    name: harness quickstart / latest registry
+    name: harness quickstart / latest registry (${{ inputs.channel || 'main' }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
 
       - name: Run quickstart validator
         env:
           HARNESS_QUICKSTART_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-quickstart
+          III_CHANNEL: ${{ inputs.channel || 'main' }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
         run: harness/tests/quickstart/run-ci.sh
 
       - name: Show quickstart logs
@@ -77,6 +85,7 @@ jobs:
             target/harness-quickstart/EVIDENCE.md
             target/harness-quickstart/timings.tsv
             target/harness-quickstart/cli-version.txt
+            target/harness-quickstart/console-send.json
             target/harness-quickstart/console-status.json
             target/harness-quickstart/config.yaml
             target/harness-quickstart/iii.lock
