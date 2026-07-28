@@ -192,20 +192,32 @@ function TextView({ preview, error }: { preview: unknown; error: boolean }) {
   )
 }
 
+/** Defensive cap on rendered diff lines. A `git show --stat --patch` diff (see
+ *  GitGraph's CommitDetail) is bounded only by the shell worker's byte cap,
+ *  which can still be thousands of lines — render at most this many so every
+ *  caller of DiffView is protected. */
+const MAX_DIFF_LINES = 500
+
 function DiffView({ preview }: { preview: unknown }) {
   const r = asRecord(preview)
   const diff = typeof r?.diff === 'string' ? (r.diff as string) : ''
   const truncated = r?.truncated === true
   if (!diff) return <Empty>no diff</Empty>
   const lines = diff.split('\n')
+  const shown = lines.slice(0, MAX_DIFF_LINES)
+  const overflow = lines.length - shown.length
   return (
     <div className="gh-rv-diff">
-      {lines.map((line, i) => (
+      {shown.map((line, i) => (
         <div key={i} className={`gh-rv-dline${diffClass(line)}`}>
           {line || ' '}
         </div>
       ))}
-      {truncated ? <TruncMark /> : null}
+      {overflow > 0 ? (
+        <div className="gh-rv-trunc">… {overflow} more lines (truncated)</div>
+      ) : truncated ? (
+        <TruncMark />
+      ) : null}
     </div>
   )
 }

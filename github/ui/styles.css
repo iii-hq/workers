@@ -89,6 +89,9 @@
 
 [data-iii-ui="github"] .gh-feed-args {
   min-width: 0;
+  overflow: hidden;
+}
+[data-iii-ui="github"] .gh-feed-args-inner {
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -109,11 +112,13 @@
 
 [data-iii-ui="github"] .gh-feed-status {
   width: 8rem;
+  font-size: 11px;
+  white-space: nowrap;
+}
+[data-iii-ui="github"] .gh-feed-status-inner {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
-  white-space: nowrap;
 }
 [data-iii-ui="github"] .gh-ok {
   color: var(--color-ok);
@@ -207,7 +212,7 @@
 }
 [data-iii-ui="github"] .gh-rv-title {
   color: var(--color-ink);
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 [data-iii-ui="github"] .gh-rv-title a {
   color: var(--color-accent);
@@ -249,7 +254,7 @@
 }
 [data-iii-ui="github"] .gh-rv-gcell {
   color: var(--color-ink);
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 [data-iii-ui="github"] .gh-rv-more {
   font-size: 11px;
@@ -264,7 +269,7 @@
   font-size: 12px;
   color: var(--color-ink);
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
   max-height: 320px;
   overflow: auto;
 }

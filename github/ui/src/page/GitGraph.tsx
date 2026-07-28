@@ -25,7 +25,7 @@ import {
   StatusDot,
   StatusPanel,
 } from '@iii-dev/console-ui'
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type KeyboardEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useGithubCalled } from './events'
 import { formatRelative } from './format'
 import { type Commit, type GraphEdge, type GraphLayout, layout } from './graph-layout'
@@ -378,7 +378,7 @@ const CommitRow = memo(function CommitRow({
   onSelect: (hash: string) => void
 }) {
   const labels = refLabels(commit.refs)
-  const onKeyDown = (e: React.KeyboardEvent) => {
+  const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
       onSelect(commit.hash)

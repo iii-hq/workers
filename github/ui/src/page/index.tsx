@@ -17,7 +17,7 @@
  */
 
 import { Badge, Button, EmptyState, ErrorBoundary, type Host, StatusDot } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { type CalledEvent, useGithubCalled } from './events'
 import { formatRelative } from './format'
 import { Activity, type IconProps } from './icons'
@@ -145,7 +145,7 @@ function ActivityRow({
   expanded: boolean
   onToggle: () => void
 }) {
-  const onKeyDown = (e: React.KeyboardEvent) => {
+  const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
       onToggle()
@@ -165,13 +165,17 @@ function ActivityRow({
           <Badge>{entry.function_id}</Badge>
         </td>
         <td className="gh-feed-args">
-          {entry.repo ? <span className="gh-feed-repo">{entry.repo}</span> : null}
-          <span className="gh-feed-argtext">{entry.args_summary || '—'}</span>
+          <div className="gh-feed-args-inner">
+            {entry.repo ? <span className="gh-feed-repo">{entry.repo}</span> : null}
+            <span className="gh-feed-argtext">{entry.args_summary || '—'}</span>
+          </div>
         </td>
         <td className="gh-feed-status">
-          <StatusDot tone={entry.ok ? 'accent' : 'alert'} aria-hidden />
-          <span className={entry.ok ? 'gh-ok' : 'gh-err'}>{entry.ok ? 'ok' : 'error'}</span>
-          <span className="gh-feed-dur">{formatDuration(entry.duration_ms)}</span>
+          <div className="gh-feed-status-inner">
+            <StatusDot tone={entry.ok ? 'accent' : 'alert'} aria-hidden />
+            <span className={entry.ok ? 'gh-ok' : 'gh-err'}>{entry.ok ? 'ok' : 'error'}</span>
+            <span className="gh-feed-dur">{formatDuration(entry.duration_ms)}</span>
+          </div>
         </td>
         <td className="gh-feed-time" title={entry.timestamp || undefined}>
           {formatRelative((now - entry.receivedAt) / 1000)}

@@ -239,19 +239,21 @@ where
             )
         }
     };
-    emitter
-        .emit(CalledEvent {
-            function_id: function_id.to_string(),
-            args_summary,
-            repo,
-            ok,
-            duration_ms,
-            result_summary,
-            kind,
-            result_preview,
-            timestamp: now_rfc3339(),
-        })
-        .await;
+    let event = CalledEvent {
+        function_id: function_id.to_string(),
+        args_summary,
+        repo,
+        ok,
+        duration_ms,
+        result_summary,
+        kind,
+        result_preview,
+        timestamp: now_rfc3339(),
+    };
+    // Detach the fan-out so a slow subscriber can never delay the real call's
+    // return — the event + emitter are owned by the spawned task.
+    let emitter = emitter.clone();
+    tokio::spawn(async move { emitter.emit(event).await });
     result
 }
 
@@ -335,14 +337,24 @@ pub fn preview(function_id: &str, result: &Value) -> (String, Value) {
 
 /// `{ items: [first N projected], total }` — keep the true length so the UI can
 /// show "showing 12 of 70", and project each kept item down to its salient
-/// display keys (per [`keys_for`]) so the payload stays small.
+/// display keys (per [`keys_for`]) so the payload stays small. Items are added
+/// until the running serialized size would exceed [`PREVIEW_MAX_BYTES`] (at most
+/// [`PREVIEW_MAX_ITEMS`]), so many small-but-not-tiny rows can't bloat the event
+/// past the byte budget — `total` still reports the honest count.
 fn preview_list(function_id: &str, items: &[Value]) -> Value {
     let allow = keys_for(function_id);
-    let kept: Vec<Value> = items
-        .iter()
-        .take(PREVIEW_MAX_ITEMS)
-        .map(|item| project_item(item, allow))
-        .collect();
+    let mut kept: Vec<Value> = Vec::new();
+    let mut used = 0usize;
+    for item in items.iter().take(PREVIEW_MAX_ITEMS) {
+        let projected = project_item(item, allow);
+        let size = value_bytes(&projected);
+        // Always keep the first item; stop before any later one blows the budget.
+        if !kept.is_empty() && used + size > PREVIEW_MAX_BYTES {
+            break;
+        }
+        used += size;
+        kept.push(projected);
+    }
     json!({ "items": kept, "total": items.len() })
 }
 
@@ -605,10 +617,35 @@ pub fn summarize_args(argv: &[String]) -> String {
                     out.push("…".to_string());
                 }
             }
-            _ => out.push(tok.clone()),
+            // Inline `--flag=value` forms carry the value in the same token, so
+            // the separate-arg arms above never see them — redact them here.
+            _ => {
+                if let Some(tok) = redact_inline(tok) {
+                    out.push(tok);
+                }
+            }
         }
     }
     truncate(&out.join(" "), MAX_ARGS)
+}
+
+/// Redact the value of an inline `--flag=value` token so a body/field/input can
+/// never ride an inline arg into the event. Keeps the flag (and, for a field,
+/// its key); `--json=` is plumbing noise and dropped whole to match the
+/// separate-arg form. `None` drops the token; non-inline tokens pass through.
+fn redact_inline(tok: &str) -> Option<String> {
+    let Some((flag, value)) = tok.split_once('=') else {
+        return Some(tok.to_string());
+    };
+    match flag {
+        "--json" => None,
+        "--body" | "--body-file" | "--input" => Some(format!("{flag}=…")),
+        "--field" | "--raw-field" => {
+            let key = value.split('=').next().unwrap_or("");
+            Some(format!("{flag}={key}=…"))
+        }
+        _ => Some(tok.to_string()),
+    }
 }
 
 /// `owner/name` from a gh argv (`-R` / `--repo`), if present.
@@ -617,6 +654,9 @@ pub fn repo_from_args(argv: &[String]) -> Option<String> {
     while let Some(tok) = iter.next() {
         if tok == "-R" || tok == "--repo" {
             return iter.next().cloned();
+        }
+        if let Some(repo) = tok.strip_prefix("--repo=") {
+            return Some(repo.to_string());
         }
     }
     None
@@ -761,6 +801,24 @@ mod tests {
         assert_eq!(pv["items"].as_array().unwrap().len(), PREVIEW_MAX_ITEMS);
         // First kept item survived intact.
         assert_eq!(pv["items"][0]["number"], json!(0));
+    }
+
+    #[test]
+    fn preview_list_stops_at_the_aggregate_byte_budget() {
+        // Each item projects under the per-field cap, but many together exceed
+        // PREVIEW_MAX_BYTES; the list stops adding rows past the budget while the
+        // true total stays honest.
+        let big_title = "t".repeat(600);
+        let items: Vec<Value> = (0..40)
+            .map(|n| json!({ "number": n, "title": big_title }))
+            .collect();
+        let (kind, pv) = preview("github::pr::list", &json!({ "value": items }));
+        assert_eq!(kind, "list");
+        assert_eq!(pv["total"], json!(40));
+        let kept = pv["items"].as_array().unwrap();
+        assert!(!kept.is_empty() && kept.len() < PREVIEW_MAX_ITEMS);
+        let bytes: usize = kept.iter().map(value_bytes).sum();
+        assert!(bytes <= PREVIEW_MAX_BYTES, "aggregate {bytes} over budget");
     }
 
     #[test]
@@ -918,12 +976,47 @@ mod tests {
     }
 
     #[test]
+    fn args_summary_redacts_inline_flag_values() {
+        let argv: Vec<String> = [
+            "pr",
+            "create",
+            "--repo=o/r",
+            "--title=t",
+            "--body=secret body",
+            "--field=token=abc123",
+            "--raw-field=k=v",
+            "--input=payload",
+            "--json=number,title",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let summary = summarize_args(&argv);
+        // Values that can carry secrets never leak.
+        assert!(!summary.contains("secret"), "body leaked: {summary}");
+        assert!(!summary.contains("abc123"), "field leaked: {summary}");
+        assert!(!summary.contains("payload"), "input leaked: {summary}");
+        // Flags (and the field key) are kept, values redacted.
+        assert!(summary.contains("--body=…"), "{summary}");
+        assert!(summary.contains("--field=token=…"), "{summary}");
+        assert!(summary.contains("--input=…"), "{summary}");
+        // Non-secret inline args pass through; the json field list drops.
+        assert!(summary.contains("--repo=o/r"), "{summary}");
+        assert!(summary.contains("--title=t"), "{summary}");
+        assert!(!summary.contains("--json"), "json list kept: {summary}");
+    }
+
+    #[test]
     fn repo_extracted_from_argv() {
         let argv: Vec<String> = ["pr", "list", "-R", "iii-hq/workers"]
             .iter()
             .map(|s| s.to_string())
             .collect();
         assert_eq!(repo_from_args(&argv), Some("iii-hq/workers".to_string()));
+        assert_eq!(
+            repo_from_args(&["pr".into(), "view".into(), "--repo=octo/cat".into()]),
+            Some("octo/cat".to_string())
+        );
         assert_eq!(repo_from_args(&["api".into(), "rate_limit".into()]), None);
     }
 
