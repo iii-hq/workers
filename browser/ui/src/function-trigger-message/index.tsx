@@ -1,14 +1,26 @@
-import { SquareArrowOutUpRight } from 'lucide-react'
-import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
-import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
-import { hashForBrowserSession } from '@/hooks/use-hash-route'
+/**
+ * Injected function-trigger renderer for every `browser::*` call —
+ * registered through `host.functionTriggers`, so it dispatches BEFORE the
+ * console's built-in families and owns how browser calls render in chat and
+ * in the traces span tab. Ported from the console's `components/chat/browser`
+ * family; the "open in browser tab" link now points at the injected page
+ * (`#/ext/browser`), and shared-infra errors render through the ported
+ * `InfraErrorView` instead of the sandbox family.
+ */
+
+import {
+  type FunctionTriggerMessage,
+  type FunctionTriggerRenderer,
+  type Host,
+  JsonHighlight,
+} from '@iii-dev/console-ui'
 import {
   browserSessionIdFromCall,
   isBrowserFunction,
   parseScreenshotOutput,
-} from '@/lib/browser'
-import { JsonHighlight } from '@/lib/syntax'
-import type { FunctionTriggerMessage } from '@/types/chat'
+} from '../lib/browser'
+import { InfraErrorView, parseInfraErrorDisplay } from '../lib/errors'
+import { ExternalLink } from '../lib/icons'
 import {
   ActView,
   ConsoleReadView,
@@ -26,19 +38,22 @@ import {
 } from './BrowserViews'
 import { decodeBrowserResult } from './parsers'
 
+/** The injected page's route — where "open in browser tab" navigates. */
+const BROWSER_PAGE_HASH = '#/ext/browser'
+
 /**
  * Header label for `browser::*` ids: dims the namespace prefix so the op
- * (`navigate`, `act`, …) reads clearly. Mirrors `StateFunctionIdLabel`.
+ * (`navigate`, `act`, …) reads clearly.
  */
-export function BrowserFunctionIdLabel({ functionId }: { functionId: string }) {
+function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (!functionId.startsWith('browser::')) {
-    return <span className="text-ink">{functionId}</span>
+    return <span style={{ color: 'var(--color-ink)' }}>{functionId}</span>
   }
   const tail = functionId.slice('browser::'.length)
   return (
     <>
-      <span className="text-ink-faint">browser::</span>
-      <span className="text-ink font-medium">{tail}</span>
+      <span style={{ color: 'var(--color-ink-faint)' }}>browser::</span>
+      <span style={{ color: 'var(--color-ink)', fontWeight: 500 }}>{tail}</span>
     </>
   )
 }
@@ -55,11 +70,11 @@ function ScreenshotBody({ output }: { output: unknown }) {
   const screenshot = parseScreenshotOutput(output)
   if (!screenshot?.dataUrl) return null
   return (
-    <div className="p-3">
+    <div className="br-ui-shot">
       <img
         src={screenshot.dataUrl}
         alt={`capture of ${screenshot.url}`}
-        className="block max-w-full max-h-80 border border-rule"
+        className="br-ui-shot-img"
       />
     </div>
   )
@@ -109,61 +124,51 @@ function renderBody(message: FunctionTriggerMessage): React.ReactNode | null {
 
 /**
  * Terminal view for a `browser::*` call: the owning session with an
- * "open in browser tab" affordance (routes to `#/browser/<session_id>`),
- * then the per-function pretty body. Unknown or unparseable payloads fall
- * back to the decoded result as clamped JSON; the raw json tab keeps the
- * untouched request/response panes.
+ * "open in browser tab" affordance (routes to `#/ext/browser`), then the
+ * per-function pretty body. Unknown or unparseable payloads fall back to the
+ * decoded result as clamped JSON.
  */
 function BrowserCallView({ message }: { message: FunctionTriggerMessage }) {
   const sessionId = browserSessionIdFromCall(message.input, message.output)
   const running = !!message.running
 
   const body = !running && message.output != null ? renderBody(message) : null
-  // Fallback decode only when no pretty body renders (the normal case has a
-  // body, so the full envelope parse is skipped there).
   const fallback =
     !body && message.output != null ? decodeBrowserResult(message.output) : null
 
   return (
-    <div className="flex flex-col bg-bg">
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-paper-2 border-b border-rule-2 font-mono text-[11px] lowercase">
+    <div className="br-ui-call">
+      <div className="br-ui-call-head">
         {sessionId ? (
-          <span className="text-ink-faint min-w-0 truncate">
-            session <span className="text-ink tabular-nums">{sessionId}</span>
+          <span className="br-ui-call-session">
+            session <span className="br-ui-call-sid">{sessionId}</span>
           </span>
         ) : (
-          <span className="text-ink-faint">browser</span>
+          <span className="br-ui-call-session">browser</span>
         )}
         {sessionId ? (
-          <a
-            href={hashForBrowserSession(sessionId)}
-            className="ml-auto shrink-0 inline-flex items-center gap-1 text-ink-faint hover:text-ink transition-colors"
-          >
-            <SquareArrowOutUpRight size={11} aria-hidden />
+          <a href={BROWSER_PAGE_HASH} className="br-ui-call-link">
+            <ExternalLink size={11} aria-hidden />
             open in browser tab
           </a>
         ) : null}
       </div>
       {running && message.output == null ? (
-        <p className="px-3 py-2 font-mono text-[12px] lowercase text-ink-faint animate-pulse">
-          running...
-        </p>
+        <p className="br-ui-call-running">running...</p>
       ) : body ? (
         body
       ) : fallback != null ? (
-        <div className="max-h-64 overflow-auto">
+        <div className="br-ui-json">
           <JsonHighlight code={formatJson(fallback)} />
         </div>
       ) : (
-        <p className="px-3 py-2 font-mono text-[12px] lowercase text-ink-ghost">
-          no result
-        </p>
+        <p className="br-ui-empty-line">no result</p>
       )}
     </div>
   )
 }
 
-function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
+function renderCall(message: FunctionTriggerMessage): React.ReactNode | null {
   if (!isBrowserFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -173,23 +178,20 @@ function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
   // envelopes). Browser success payloads never look denial-shaped: results
   // are `ok`-flagged structs or `{content, details}` envelopes.
   const errorDisplay =
-    !running && rawOutput != null ? parseSandboxErrorDisplay(rawOutput) : null
+    !running && rawOutput != null ? parseInfraErrorDisplay(rawOutput) : null
   if (errorDisplay) {
-    return <SandboxErrorView display={errorDisplay} />
+    return <InfraErrorView display={errorDisplay} />
   }
   return <BrowserCallView message={message} />
 }
 
-/** `browser::*` calls have no bespoke pending preview. */
-function tryRenderPreview(
-  _message: FunctionTriggerMessage,
-): React.ReactNode | null {
-  return null
-}
-
-export const BrowserToolView = {
-  isBrowserFunction,
-  tryRender,
-  tryRenderRunning: tryRender,
-  tryRenderPreview,
+export function createBrowserRenderer(_host: Host): FunctionTriggerRenderer {
+  return {
+    id: 'browser/page.js#calls',
+    isMatch: isBrowserFunction,
+    tryRender: (message) => renderCall(message),
+    tryRenderRunning: (message) => renderCall(message),
+    tryRenderPreview: () => null,
+    FunctionIdLabel,
+  }
 }

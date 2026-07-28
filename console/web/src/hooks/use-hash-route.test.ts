@@ -65,11 +65,13 @@ describe('migrated-page hash redirects', () => {
   it('rewrites legacy first-party hashes to their injected #/ext/<id> route', () => {
     expect(normalizeExtHash('#/worktrees')).toBe('#/ext/worktree')
     expect(normalizeExtHash('#/memory')).toBe('#/ext/memory')
+    expect(normalizeExtHash('#/browser')).toBe('#/ext/browser')
   })
 
   it('resolves the injected page id from a legacy hash', () => {
     expect(extPageFromHash(normalizeExtHash('#/worktrees'))).toBe('worktree')
     expect(extPageFromHash(normalizeExtHash('#/memory'))).toBe('memory')
+    expect(extPageFromHash(normalizeExtHash('#/browser'))).toBe('browser')
   })
 
   it('passes non-migrated hashes through unchanged', () => {

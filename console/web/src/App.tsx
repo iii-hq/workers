@@ -26,7 +26,6 @@ import {
 import { buildViewOptions } from '@/lib/nav-options'
 import { type RegisteredPage, useExtPages } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
-import { Browser } from '@/pages/Browser'
 import { Configuration } from '@/pages/Configuration'
 import { ExtPage } from '@/pages/Ext'
 import { Github } from '@/pages/Github'
@@ -108,8 +107,6 @@ export function App() {
               <Configuration theme={theme} onThemeChange={setTheme} />
             ) : view === 'workers' ? (
               <Workers />
-            ) : view === 'browser' ? (
-              <Browser />
             ) : view === 'github' ? (
               <Github />
             ) : view === 'ext' ? (
@@ -150,18 +147,15 @@ function Header({
   onOpenShortcuts,
 }: HeaderProps) {
   // Optional-worker entries appear only while their worker is present; a
-  // direct #/browser hit still lands on that page's install notice.
-  // `memoryAvailable` stays on the context for the chat composer's bank
-  // selector; the memory page is now injected UI, so it is no longer a
-  // first-party nav option here.
-  const { browserAvailable, githubAvailable } =
-    useConversationsCtx()
+  // Only github remains a first-party nav entry; worktrees, memory and browser
+  // moved to injected UI (gated by script presence, not a nav flag).
+  const { githubAvailable } = useConversationsCtx()
   // Injected pages: the runtime analogue of worker-presence gating —
   // presence is the script being loaded, which already tracks worker
   // connectedness via trigger GC.
   const extPages = useExtPages()
   const viewOptions: { value: string; label: string }[] = [
-    ...buildViewOptions(browserAvailable, githubAvailable),
+    ...buildViewOptions(githubAvailable),
     ...extPages.map((page) => ({
       value: extNavValue(page),
       label: page.title,

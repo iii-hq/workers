@@ -7,16 +7,12 @@ import type { View } from '@/hooks/use-hash-route'
  * notice).
  */
 export function buildViewOptions(
-  browserAvailable: boolean,
   githubAvailable: boolean,
 ): { value: View; label: string }[] {
   const options: { value: View; label: string }[] = [
     { value: 'traces', label: 'traces' },
     { value: 'workers', label: 'workers' },
   ]
-  if (browserAvailable) {
-    options.push({ value: 'browser', label: 'browser' })
-  }
   if (githubAvailable) {
     options.push({ value: 'github', label: 'github' })
   }

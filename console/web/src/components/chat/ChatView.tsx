@@ -14,7 +14,6 @@ import {
   isChatBlockedByHarness,
   isHarnessAvailable,
 } from '@/hooks/use-harness-status'
-import { hashForBrowserSession } from '@/hooks/use-hash-route'
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
 import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
@@ -30,10 +29,6 @@ import type {
   CompactResult,
   QueuedMessagePreview,
 } from '@/lib/backend/types'
-import {
-  BROWSER_SESSIONS_START_FUNCTION_ID,
-  browserSessionIdFromCall,
-} from '@/lib/browser'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
@@ -1465,55 +1460,6 @@ export function ChatView({
     onLanded: handleLanded,
     onLandBlocked: handleLandBlocked,
   })
-
-  // Lightweight notice when a browser session starts in this conversation,
-  // pointing at the Browser tab. Sourced from the transcript itself (the
-  // worker's session-started trigger carries no conversation identity): the
-  // first pass over a hydrated transcript only seeds the seen-set, so
-  // reloads never re-announce old sessions.
-  const browserEnabled =
-    backend.id === 'real' &&
-    (conversationsCtx ? conversationsCtx.browserAvailable : false)
-  const browserNoticesRef = useRef<{ seeded: boolean; seen: Set<string> }>({
-    seeded: false,
-    seen: new Set(),
-  })
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset the tracker when the conversation changes
-  useEffect(() => {
-    browserNoticesRef.current = { seeded: false, seen: new Set() }
-  }, [conversation.id])
-  useEffect(() => {
-    if (!browserEnabled) return
-    if (!conversation.draft && !conversation.hydrated) return
-    const tracker = browserNoticesRef.current
-    const fresh: string[] = []
-    for (const m of conversation.messages) {
-      if (m.role !== 'function-trigger') continue
-      if (m.functionId !== BROWSER_SESSIONS_START_FUNCTION_ID) continue
-      if (m.running || m.pendingApproval) continue
-      if (tracker.seen.has(m.id)) continue
-      const browserSessionId = browserSessionIdFromCall(m.input, m.output)
-      if (!browserSessionId) continue
-      tracker.seen.add(m.id)
-      if (tracker.seeded) fresh.push(browserSessionId)
-    }
-    tracker.seeded = true
-    for (const browserSessionId of fresh) {
-      onAppendMessage(
-        conversation.id,
-        makeSystemNotice(
-          `browser session ${browserSessionId} started, watch it live in the browser tab (${hashForBrowserSession(browserSessionId)})`,
-        ),
-      )
-    }
-  }, [
-    browserEnabled,
-    conversation.messages,
-    conversation.id,
-    conversation.draft,
-    conversation.hydrated,
-    onAppendMessage,
-  ])
 
   // Re-scope the working directory. Allowed mid-conversation (no irreversible
   // lock); a change after the chat has started drops a visible marker so the

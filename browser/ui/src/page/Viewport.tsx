@@ -3,22 +3,21 @@ import {
   type BrowserClickOptions,
   type BrowserPickHint,
   elementLabel,
-} from '@/lib/browser'
-import { cn } from '@/lib/utils'
-import type { LiveFrame } from '../hooks/useLiveFrames'
+} from '../lib/browser'
+import { cn } from '../lib/cn'
+import type { LiveFrame } from './useLiveFrames'
 
 /**
  * The session viewport: the latest screencast frame scaled to fit the pane
  * (aspect preserved, centered, letterboxed), acting as a real browser
  * surface. Mouse and keyboard map from the rendered image rect to
- * page-viewport space (the frame's width/height against
- * `getBoundingClientRect` at event time), so the mapping survives any pane
- * size: clicks, double clicks, right clicks, wheel scroll, and (while the
- * surface is focused) typing and special keys all forward as
- * `browser::act`. Events in the letterbox margin outside the image do
- * nothing. In pick mode the page is in inspect mode: the forwarded click
- * resolves the pick, and a throttled `browser::pick::hint` drives the
- * client-drawn hover highlight over the image.
+ * page-viewport space, so the mapping survives any pane size: clicks, double
+ * clicks, right clicks, wheel scroll, and (while the surface is focused)
+ * typing and special keys all forward as `browser::act`. Events in the
+ * letterbox margin outside the image do nothing. In pick mode the page is in
+ * inspect mode: the forwarded click resolves the pick, and a throttled
+ * `browser::pick::hint` drives the client-drawn hover highlight over the
+ * image.
  */
 
 const HINT_INTERVAL_MS = 120
@@ -306,12 +305,7 @@ export function Viewport({
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       onKeyDown={handleKeyDown}
-      className={cn(
-        'relative flex-1 min-h-0 min-w-0 overflow-hidden bg-panel p-3',
-        'flex items-center justify-center',
-        picking ? 'cursor-crosshair' : 'cursor-default',
-        'outline-none focus-visible:ring-1 focus-visible:ring-ring',
-      )}
+      className={cn('br-ui-vp', picking && 'is-picking')}
     >
       {frame ? (
         <img
@@ -319,13 +313,10 @@ export function Viewport({
           src={frame.dataUrl}
           alt="live view of the current page"
           draggable={false}
-          className={cn(
-            'block max-w-full max-h-full w-auto h-auto object-contain select-none border bg-bg',
-            picking ? 'border-accent' : 'border-rule',
-          )}
+          className={cn('br-ui-vp-img', picking && 'is-picking')}
         />
       ) : (
-        <p className="font-mono text-[12px] lowercase text-ink-ghost">
+        <p className="br-ui-vp-empty">
           {error
             ? `live view failed: ${error}`
             : loading
@@ -336,7 +327,7 @@ export function Viewport({
       {hint ? (
         <div
           aria-hidden
-          className="absolute pointer-events-none border border-accent bg-accent/15"
+          className="br-ui-vp-hint"
           style={{
             left: hint.left,
             top: hint.top,
@@ -346,12 +337,12 @@ export function Viewport({
         >
           <span
             className={cn(
-              'absolute left-0 flex items-center gap-1.5 whitespace-nowrap bg-ink text-bg px-1.5 py-0.5 font-mono text-[10px] leading-none',
-              hint.top >= 22 ? 'bottom-full mb-0.5' : 'top-full mt-0.5',
+              'br-ui-vp-hint-label',
+              hint.top >= 22 ? 'above' : 'below',
             )}
           >
-            <span className="text-accent">{hint.label}</span>
-            <span className="opacity-70 tabular-nums">{hint.dims}</span>
+            <span className="br-ui-vp-hint-tag">{hint.label}</span>
+            <span className="br-ui-vp-hint-dims">{hint.dims}</span>
           </span>
         </div>
       ) : null}

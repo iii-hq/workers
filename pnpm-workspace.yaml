@@ -9,6 +9,7 @@ packages:
   - packages/*
   - console/web
   - console/ui
+  - browser/ui
   - database/ui
   - eval/ui
   - memory/ui
