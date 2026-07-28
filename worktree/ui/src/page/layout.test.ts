@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { WorktreeInfo } from '@/lib/worktrees'
 import { GRAPH, layoutWorktreeGraph, repoLabel } from './layout'
+import type { WorktreeInfo } from './worktree-data'
 
 function wt(
   overrides: Partial<WorktreeInfo> & { worktree_id: string },

@@ -3,16 +3,16 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 // `chat` is no longer a routed view; it's always-rendered as the side dock
 // in App.tsx. Hash routes only pick which view fills the right pane. The
 // component spec sheet + streaming playground moved to Storybook, so the
-// routed views are `traces`, `workers`, `worktrees`, `browser`, and
-// `configuration`.
-// `ext` is the injectable-UI prefix: worker-contributed pages route at
-// `#/ext/<page-id>` — deliberately outside the first-party names so an
+// first-party routed views are `traces`, `workers`, `browser`, `github`, and
+// `configuration`. `ext` is the injectable-UI prefix: worker-contributed pages
+// route at `#/ext/<page-id>` — deliberately outside the first-party names so an
 // injected page can never collide with or shadow `#/traces`, `#/workers`, ….
+// Pages that migrated to injected UI (worktrees, memory) keep their old
+// first-party hash working via a redirect to `#/ext/<id>` — see MIGRATED_ROUTES.
 export type View =
   | 'configuration'
   | 'traces'
   | 'workers'
-  | 'worktrees'
   | 'browser'
   | 'github'
   | 'ext'
@@ -82,7 +82,9 @@ export function normalizeWorkersConfigurationHash(hash: string): string | null {
   return hashForWorkersConfiguration(legacy.configurationId, legacy.fieldPath)
 }
 
-function routeFromHash(hash: string): View | null {
+function routeFromHash(rawHash: string): View | null {
+  // Migrated pages (worktrees, memory) resolve through their `#/ext/<id>` form.
+  const hash = normalizeExtHash(rawHash)
   if (hash === '' || hash === '#' || hash === '#/' || hash === '#/traces') {
     return 'traces'
   }
@@ -94,9 +96,6 @@ function routeFromHash(hash: string): View | null {
   if (hash === '#/traces-v2') return 'traces'
   if (hash === '#/workers' || hash.startsWith('#/workers/')) {
     return 'workers'
-  }
-  if (hash === '#/worktrees') {
-    return 'worktrees'
   }
   if (hash === '#/github') {
     return 'github'
@@ -131,8 +130,6 @@ function hashFor(view: View): string {
       return '#/traces'
     case 'workers':
       return '#/workers'
-    case 'worktrees':
-      return '#/worktrees'
     case 'browser':
       return '#/browser'
     case 'github':
@@ -156,6 +153,11 @@ export function useHashRoute(): [View, (next: View) => void] {
   viewRef.current = view
 
   useEffect(() => {
+    // Rewrite a legacy migrated hash (`#/worktrees`, `#/memory`) to its
+    // `#/ext/<id>` form so the URL bar matches the resolved page. The view
+    // state already used the normalized hash, so this is cosmetic.
+    const normalized = normalizeExtHash(window.location.hash)
+    if (normalized !== window.location.hash) replaceHash(normalized)
     const handle = () => {
       const next = routeFromHash(window.location.hash)
       if (next !== null && next !== viewRef.current) setView(next)
@@ -202,20 +204,39 @@ export function hashForExtPage(pageId: string): string {
 }
 
 /**
+ * First-party hashes whose page migrated to injected UI. The old bookmark
+ * still works: it resolves to the worker's `#/ext/<id>` route instead of
+ * falling back to `traces`. Add an entry when a page moves to injected UI.
+ */
+const MIGRATED_ROUTES: Record<string, string> = {
+  '#/worktrees': 'worktree',
+  '#/memory': 'memory',
+}
+
+/**
+ * Rewrite a migrated first-party hash to its `#/ext/<id>` form so old deep
+ * links keep working; any other hash passes through unchanged.
+ */
+export function normalizeExtHash(hash: string): string {
+  const pageId = MIGRATED_ROUTES[hash]
+  return pageId ? hashForExtPage(pageId) : hash
+}
+
+/**
  * Selected extension page as a hash sub-route, so injected pages deep-link
  * (`#/ext/<page-id>`) and survive reloads.
  */
 export function useExtPageRoute(): string | null {
   const [selected, setSelected] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null
-    return extPageFromHash(window.location.hash)
+    return extPageFromHash(normalizeExtHash(window.location.hash))
   })
   const selectedRef = useRef(selected)
   selectedRef.current = selected
 
   useEffect(() => {
     const sync = () => {
-      const next = extPageFromHash(window.location.hash)
+      const next = extPageFromHash(normalizeExtHash(window.location.hash))
       if (next !== selectedRef.current) setSelected(next)
     }
     sync()
