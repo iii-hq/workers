@@ -1,17 +1,18 @@
+import type { Host } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useState } from 'react'
-import { useBrowserLifecycleEvents } from '@/hooks/use-browser-events'
 import {
   type BrowserSessionInfo,
   errorMessage,
   listBrowserSessions,
-} from '@/lib/browser'
+} from '../lib/browser'
+import { useBrowserLifecycleEvents } from '../lib/events'
 
 /**
- * Live session feed for the Browser page: `browser::sessions::list`,
- * re-read on session-started / session-stopped / navigated. While the event
- * bindings are unavailable (SDK hiccup, races around worker restart) a
- * modest poll keeps the rail honest, skipped entirely while the tab is
- * hidden so a backgrounded console never hammers the engine.
+ * Live session feed for the browser page: `browser::sessions::list`, re-read
+ * on session-started / session-stopped / navigated. While the event bindings
+ * are unavailable (SDK hiccup, races around worker restart) a modest poll
+ * keeps the rail honest, skipped entirely while the tab is hidden so a
+ * backgrounded console never hammers the engine.
  */
 
 export const BROWSER_SESSIONS_POLL_MS = 10_000
@@ -25,7 +26,10 @@ export interface BrowserSessionsLive {
   refresh: () => void
 }
 
-export function useBrowserSessionsLive(enabled: boolean): BrowserSessionsLive {
+export function useBrowserSessionsLive(
+  host: Host,
+  enabled: boolean,
+): BrowserSessionsLive {
   const [sessions, setSessions] = useState<BrowserSessionInfo[]>([])
   const [loading, setLoading] = useState(enabled)
   const [error, setError] = useState<string | null>(null)
@@ -34,6 +38,7 @@ export function useBrowserSessionsLive(enabled: boolean): BrowserSessionsLive {
   const refresh = useCallback(() => setToken((t) => t + 1), [])
 
   const { bound } = useBrowserLifecycleEvents({
+    host,
     enabled,
     onEvent: refresh,
   })
@@ -48,7 +53,7 @@ export function useBrowserSessionsLive(enabled: boolean): BrowserSessionsLive {
     let cancelled = false
     void (async () => {
       try {
-        const next = await listBrowserSessions()
+        const next = await listBrowserSessions(host.iii)
         if (cancelled) return
         setSessions(next)
         setError(null)
@@ -62,7 +67,7 @@ export function useBrowserSessionsLive(enabled: boolean): BrowserSessionsLive {
     return () => {
       cancelled = true
     }
-  }, [enabled, token])
+  }, [host, enabled, token])
 
   useEffect(() => {
     if (!enabled || bound) return

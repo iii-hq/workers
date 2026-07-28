@@ -1,5 +1,5 @@
+import type { Host } from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
-import { useBrowserSessionEvent } from '@/hooks/use-browser-events'
 import {
   BROWSER_NETWORK_EVENT_TRIGGER,
   type BrowserNetworkEntry,
@@ -7,8 +7,9 @@ import {
   formatTime,
   parseNetworkEvent,
   readBrowserNetwork,
-} from '@/lib/browser'
-import { cn } from '@/lib/utils'
+} from '../lib/browser'
+import { cn } from '../lib/cn'
+import { useBrowserSessionEvent } from '../lib/events'
 
 /**
  * Network feed for the selected session: seeded from `browser::network::read`,
@@ -20,14 +21,15 @@ import { cn } from '@/lib/utils'
 const SEED_LIMIT = 200
 const MAX_ENTRIES = 500
 
-const NETWORK_FEED_FN = 'console::browser-network-feed'
+const NETWORK_FEED_FN = 'iii::browser-ui::network-feed'
 
 interface NetworkPanelProps {
+  host: Host
   sessionId: string
   enabled: boolean
 }
 
-export function NetworkPanel({ sessionId, enabled }: NetworkPanelProps) {
+export function NetworkPanel({ host, sessionId, enabled }: NetworkPanelProps) {
   const [failedOnly, setFailedOnly] = useState(false)
   const [entries, setEntries] = useState<BrowserNetworkEntry[]>([])
   const [dropped, setDropped] = useState(0)
@@ -41,7 +43,7 @@ export function NetworkPanel({ sessionId, enabled }: NetworkPanelProps) {
     let cancelled = false
     lastSeqRef.current = 0
     setEntries([])
-    void readBrowserNetwork(sessionId, { failedOnly, limit: SEED_LIMIT })
+    void readBrowserNetwork(host.iii, sessionId, { failedOnly, limit: SEED_LIMIT })
       .then((res) => {
         if (cancelled || !res) return
         setEntries(res.entries)
@@ -56,9 +58,10 @@ export function NetworkPanel({ sessionId, enabled }: NetworkPanelProps) {
     return () => {
       cancelled = true
     }
-  }, [enabled, sessionId, failedOnly])
+  }, [host, enabled, sessionId, failedOnly])
 
   useBrowserSessionEvent({
+    host,
     enabled,
     triggerType: BROWSER_NETWORK_EVENT_TRIGGER,
     sessionId,
@@ -74,67 +77,49 @@ export function NetworkPanel({ sessionId, enabled }: NetworkPanelProps) {
   })
 
   return (
-    <div className="flex flex-col h-full min-h-0">
-      <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-rule-2">
+    <div className="br-ui-panel">
+      <div className="br-ui-panel-head">
         <button
           type="button"
           onClick={() => setFailedOnly((v) => !v)}
           aria-pressed={failedOnly}
-          className={cn(
-            'font-mono text-[11px] lowercase h-7 px-2.5 border transition-colors',
-            failedOnly
-              ? 'bg-ink text-bg border-ink'
-              : 'bg-transparent text-ink-faint border-rule hover:text-ink hover:border-ink',
-          )}
+          className={cn('br-ui-toggle', failedOnly && 'is-on')}
         >
           failed only
         </button>
         {dropped > 0 ? (
-          <span className="font-mono text-[11px] lowercase text-ink-ghost">
+          <span className="br-ui-panel-note">
             {dropped} older requests dropped from the buffer
           </span>
         ) : null}
       </div>
       {error ? (
-        <p className="px-3 py-2 font-mono text-[12px] text-alert">{error}</p>
+        <p className="br-ui-panel-err">{error}</p>
       ) : entries.length === 0 ? (
-        <p className="px-3 py-2 font-mono text-[12px] lowercase text-ink-ghost">
+        <p className="br-ui-panel-empty">
           {failedOnly ? 'no failed requests' : 'no requests yet'}
         </p>
       ) : (
-        <ul className="flex-1 min-h-0 overflow-y-auto flex flex-col-reverse">
+        <ul className="br-ui-feed">
           {[...entries].reverse().map((entry) => (
-            <li
-              key={entry.seq}
-              className="flex items-start gap-2 px-3 py-1 border-t border-rule-2 font-mono text-[12px] leading-[1.55]"
-            >
-              <span className="shrink-0 tabular-nums text-ink-ghost">
+            <li key={entry.seq} className="br-ui-nrow">
+              <span className="br-ui-nrow-time">
                 {formatTime(entry.timestamp)}
               </span>
               <span
-                className={cn(
-                  'shrink-0 w-[42px] tabular-nums',
-                  entry.failed ? 'text-alert' : 'text-ink-faint',
-                )}
+                className={cn('br-ui-nrow-status', entry.failed && 'is-failed')}
               >
                 {entry.status ?? (entry.failed ? 'err' : '...')}
               </span>
-              <span className="shrink-0 w-[56px] text-ink-faint">
-                {entry.method}
-              </span>
-              <span
-                className="min-w-0 flex-1 truncate text-ink"
-                title={entry.url}
-              >
+              <span className="br-ui-nrow-method">{entry.method}</span>
+              <span className="br-ui-nrow-url" title={entry.url}>
                 {entry.url}
                 {entry.error ? (
-                  <span className="text-alert"> · {entry.error}</span>
+                  <span className="br-ui-alert"> · {entry.error}</span>
                 ) : null}
               </span>
               {entry.mime_type ? (
-                <span className="shrink-0 text-ink-ghost">
-                  {entry.mime_type}
-                </span>
+                <span className="br-ui-nrow-mime">{entry.mime_type}</span>
               ) : null}
             </li>
           ))}

@@ -1,13 +1,15 @@
+import type { ExtensionIii } from '@iii-dev/console-ui'
 import { z } from 'zod'
-import { getIiiClient } from '@/lib/iii-client'
 
 /**
- * Control plane for the optional `browser` worker: typed wrappers over its
- * session surface (start / list / stop / navigate / screenshot / act /
- * console / network / pick) plus parsers and formatting helpers for the
- * Browser page, the chat function-trigger view, and the pick-to-chat flow.
- * Everything here is gated by the caller on browser presence
- * (`use-browser-status`).
+ * Control plane for the `browser` worker's own injected UI: typed wrappers
+ * over its session surface (start / list / stop / navigate / screenshot / act
+ * / console / network / pick) plus parsers and formatting helpers for the
+ * page, the chat function-trigger views, and the pick-to-clipboard flow.
+ *
+ * Every call goes through the tab's `host.iii` client (an `ExtensionIii`),
+ * passed in by the page — there is no module-level singleton in injected UI.
+ * Wire source: workers/browser/src/functions/*.rs (verbatim ids + payloads).
  */
 
 export const BROWSER_SESSIONS_START_FUNCTION_ID = 'browser::sessions::start'
@@ -34,7 +36,7 @@ export const BROWSER_NETWORK_EVENT_TRIGGER = 'browser::network-event'
 export const BROWSER_PICKED_TRIGGER = 'browser::picked'
 
 /** Stream the worker pushes live viewport frames onto (group = session id).
- * The console subscribes with a `type:'stream'` trigger instead of polling. */
+ * The page subscribes with a `type:'stream'` trigger instead of polling. */
 export const BROWSER_FRAMES_STREAM = 'browser:frames'
 
 /** Session lifecycle trigger types the sessions rail re-reads on. */
@@ -390,9 +392,9 @@ export function pickedSelector(element: BrowserPickedElement): string {
 }
 
 /**
- * Compact text block handed to the chat composer for a picked element:
- * one summary line, the url, recent console errors when present, and the
- * ref the agent can use directly. Never includes outer_html.
+ * Compact text block copied to the clipboard for a picked element: one
+ * summary line, the url, recent console errors when present, and the ref the
+ * agent can use directly. Never includes outer_html.
  */
 export function formatPickedElement(evt: BrowserPickedEvent): string {
   const el = evt.element
@@ -414,12 +416,10 @@ export function formatPickedElement(evt: BrowserPickedEvent): string {
   return lines.join('\n')
 }
 
-export async function listBrowserSessions(): Promise<BrowserSessionInfo[]> {
-  const client = await getIiiClient()
-  const res = await client.trigger<unknown>(
-    BROWSER_SESSIONS_LIST_FUNCTION_ID,
-    {},
-  )
+export async function listBrowserSessions(
+  iii: ExtensionIii,
+): Promise<BrowserSessionInfo[]> {
+  const res = await iii.trigger<unknown>(BROWSER_SESSIONS_LIST_FUNCTION_ID, {})
   const parsed = sessionListSchema.safeParse(res)
   if (!parsed.success) return []
   return (parsed.data.sessions ?? [])
@@ -431,10 +431,10 @@ export async function listBrowserSessions(): Promise<BrowserSessionInfo[]> {
 }
 
 export async function startBrowserSession(
+  iii: ExtensionIii,
   url?: string,
 ): Promise<BrowserSessionStart | null> {
-  const client = await getIiiClient()
-  const res = await client.trigger<unknown>(
+  const res = await iii.trigger<unknown>(
     BROWSER_SESSIONS_START_FUNCTION_ID,
     url ? { url } : {},
   )
@@ -442,29 +442,31 @@ export async function startBrowserSession(
   return parsed.success ? parsed.data : null
 }
 
-export async function stopBrowserSession(sessionId: string): Promise<void> {
-  const client = await getIiiClient()
-  await client.trigger(BROWSER_SESSIONS_STOP_FUNCTION_ID, {
+export async function stopBrowserSession(
+  iii: ExtensionIii,
+  sessionId: string,
+): Promise<void> {
+  await iii.trigger(BROWSER_SESSIONS_STOP_FUNCTION_ID, {
     session_id: sessionId,
   })
 }
 
 export async function navigateBrowser(
+  iii: ExtensionIii,
   sessionId: string,
   url: string,
 ): Promise<void> {
-  const client = await getIiiClient()
-  await client.trigger(BROWSER_NAVIGATE_FUNCTION_ID, {
+  await iii.trigger(BROWSER_NAVIGATE_FUNCTION_ID, {
     session_id: sessionId,
     url,
   })
 }
 
 export async function takeBrowserScreenshot(
+  iii: ExtensionIii,
   sessionId: string,
 ): Promise<BrowserScreenshot | null> {
-  const client = await getIiiClient()
-  const res = await client.trigger<unknown>(BROWSER_SCREENSHOT_FUNCTION_ID, {
+  const res = await iii.trigger<unknown>(BROWSER_SCREENSHOT_FUNCTION_ID, {
     session_id: sessionId,
   })
   return parseScreenshotOutput(res)
@@ -476,13 +478,13 @@ export interface BrowserClickOptions {
 }
 
 export async function clickBrowserAt(
+  iii: ExtensionIii,
   sessionId: string,
   x: number,
   y: number,
   options: BrowserClickOptions = {},
 ): Promise<void> {
-  const client = await getIiiClient()
-  await client.trigger(BROWSER_ACT_FUNCTION_ID, {
+  await iii.trigger(BROWSER_ACT_FUNCTION_ID, {
     session_id: sessionId,
     action: 'click',
     x,
@@ -493,13 +495,13 @@ export async function clickBrowserAt(
 }
 
 export async function scrollBrowserAt(
+  iii: ExtensionIii,
   sessionId: string,
   x: number,
   y: number,
   deltaY: number,
 ): Promise<void> {
-  const client = await getIiiClient()
-  await client.trigger(BROWSER_ACT_FUNCTION_ID, {
+  await iii.trigger(BROWSER_ACT_FUNCTION_ID, {
     session_id: sessionId,
     action: 'scroll',
     x,
@@ -509,11 +511,11 @@ export async function scrollBrowserAt(
 }
 
 export async function typeBrowserText(
+  iii: ExtensionIii,
   sessionId: string,
   text: string,
 ): Promise<void> {
-  const client = await getIiiClient()
-  await client.trigger(BROWSER_ACT_FUNCTION_ID, {
+  await iii.trigger(BROWSER_ACT_FUNCTION_ID, {
     session_id: sessionId,
     action: 'type',
     text,
@@ -521,11 +523,11 @@ export async function typeBrowserText(
 }
 
 export async function pressBrowserKey(
+  iii: ExtensionIii,
   sessionId: string,
   key: string,
 ): Promise<void> {
-  const client = await getIiiClient()
-  await client.trigger(BROWSER_ACT_FUNCTION_ID, {
+  await iii.trigger(BROWSER_ACT_FUNCTION_ID, {
     session_id: sessionId,
     action: 'press',
     key,
@@ -533,12 +535,12 @@ export async function pressBrowserKey(
 }
 
 export async function hintBrowserPick(
+  iii: ExtensionIii,
   sessionId: string,
   x: number,
   y: number,
 ): Promise<BrowserPickHint | null> {
-  const client = await getIiiClient()
-  const res = await client.trigger<unknown>(BROWSER_PICK_HINT_FUNCTION_ID, {
+  const res = await iii.trigger<unknown>(BROWSER_PICK_HINT_FUNCTION_ID, {
     session_id: sessionId,
     x,
     y,
@@ -557,16 +559,20 @@ const frameSchema = z.object({
 })
 export type BrowserFrame = z.infer<typeof frameSchema>
 
-export async function startBrowserScreencast(sessionId: string): Promise<void> {
-  const client = await getIiiClient()
-  await client.trigger(BROWSER_SCREENCAST_START_FUNCTION_ID, {
+export async function startBrowserScreencast(
+  iii: ExtensionIii,
+  sessionId: string,
+): Promise<void> {
+  await iii.trigger(BROWSER_SCREENCAST_START_FUNCTION_ID, {
     session_id: sessionId,
   })
 }
 
-export async function stopBrowserScreencast(sessionId: string): Promise<void> {
-  const client = await getIiiClient()
-  await client.trigger(BROWSER_SCREENCAST_STOP_FUNCTION_ID, {
+export async function stopBrowserScreencast(
+  iii: ExtensionIii,
+  sessionId: string,
+): Promise<void> {
+  await iii.trigger(BROWSER_SCREENCAST_STOP_FUNCTION_ID, {
     session_id: sessionId,
   })
 }
@@ -576,11 +582,11 @@ export async function stopBrowserScreencast(sessionId: string): Promise<void> {
  * poll fast. `frame` is absent while `sinceFrame` is still the newest seq.
  */
 export async function readBrowserFrame(
+  iii: ExtensionIii,
   sessionId: string,
   sinceFrame?: number,
 ): Promise<BrowserFrame | null> {
-  const client = await getIiiClient()
-  const res = await client.trigger<unknown>(BROWSER_FRAME_FUNCTION_ID, {
+  const res = await iii.trigger<unknown>(BROWSER_FRAME_FUNCTION_ID, {
     session_id: sessionId,
     ...(sinceFrame != null ? { since_frame: sinceFrame } : {}),
   })
@@ -596,11 +602,11 @@ export interface BrowserConsoleReadOptions {
 }
 
 export async function readBrowserConsole(
+  iii: ExtensionIii,
   sessionId: string,
   options: BrowserConsoleReadOptions = {},
 ): Promise<BrowserConsoleRead | null> {
-  const client = await getIiiClient()
-  const res = await client.trigger<unknown>(BROWSER_CONSOLE_READ_FUNCTION_ID, {
+  const res = await iii.trigger<unknown>(BROWSER_CONSOLE_READ_FUNCTION_ID, {
     session_id: sessionId,
     ...(options.pattern ? { pattern: options.pattern } : {}),
     ...(options.level ? { level: options.level } : {}),
@@ -619,11 +625,11 @@ export interface BrowserNetworkReadOptions {
 }
 
 export async function readBrowserNetwork(
+  iii: ExtensionIii,
   sessionId: string,
   options: BrowserNetworkReadOptions = {},
 ): Promise<BrowserNetworkRead | null> {
-  const client = await getIiiClient()
-  const res = await client.trigger<unknown>(BROWSER_NETWORK_READ_FUNCTION_ID, {
+  const res = await iii.trigger<unknown>(BROWSER_NETWORK_READ_FUNCTION_ID, {
     session_id: sessionId,
     ...(options.pattern ? { pattern: options.pattern } : {}),
     ...(options.failedOnly ? { failed_only: true } : {}),
@@ -634,9 +640,11 @@ export async function readBrowserNetwork(
   return parsed.success ? parsed.data : null
 }
 
-export async function startBrowserPick(sessionId: string): Promise<void> {
-  const client = await getIiiClient()
-  await client.trigger(BROWSER_PICK_START_FUNCTION_ID, {
+export async function startBrowserPick(
+  iii: ExtensionIii,
+  sessionId: string,
+): Promise<void> {
+  await iii.trigger(BROWSER_PICK_START_FUNCTION_ID, {
     session_id: sessionId,
   })
 }
@@ -645,21 +653,23 @@ export async function startBrowserPick(sessionId: string): Promise<void> {
  * Deterministic (same getNodeForLocation hit-test as the hover hint), unlike
  * a synthesized click through DevTools inspect mode. */
 export async function resolveBrowserPick(
+  iii: ExtensionIii,
   sessionId: string,
   x: number,
   y: number,
 ): Promise<void> {
-  const client = await getIiiClient()
-  await client.trigger(BROWSER_PICK_RESOLVE_FUNCTION_ID, {
+  await iii.trigger(BROWSER_PICK_RESOLVE_FUNCTION_ID, {
     session_id: sessionId,
     x,
     y,
   })
 }
 
-export async function stopBrowserPick(sessionId: string): Promise<void> {
-  const client = await getIiiClient()
-  await client.trigger(BROWSER_PICK_STOP_FUNCTION_ID, {
+export async function stopBrowserPick(
+  iii: ExtensionIii,
+  sessionId: string,
+): Promise<void> {
+  await iii.trigger(BROWSER_PICK_STOP_FUNCTION_ID, {
     session_id: sessionId,
   })
 }

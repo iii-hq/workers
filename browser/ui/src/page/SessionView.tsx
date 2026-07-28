@@ -1,9 +1,5 @@
-import { Crosshair, Square, X } from 'lucide-react'
+import { Button, type Host, Input, Tabs, TabsContent, TabsList, TabsTrigger } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button } from '@/components/ui/Button'
-import { Input } from '@/components/ui/Input'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
-import { useBrowserSessionEvent } from '@/hooks/use-browser-events'
 import {
   BROWSER_PICKED_TRIGGER,
   type BrowserClickOptions,
@@ -23,24 +19,29 @@ import {
   stopBrowserPick,
   stopBrowserSession,
   typeBrowserText,
-} from '@/lib/browser'
-import { insertIntoComposer } from '@/lib/composer-insert'
-import { cn } from '@/lib/utils'
-import { useLiveFrames } from '../hooks/useLiveFrames'
+} from '../lib/browser'
+import { cn } from '../lib/cn'
+import { useBrowserSessionEvent } from '../lib/events'
+import { Crosshair, Square, X } from '../lib/icons'
 import { ConsolePanel } from './ConsolePanel'
 import { NetworkPanel } from './NetworkPanel'
+import { useLiveFrames } from './useLiveFrames'
 import { Viewport } from './Viewport'
 
 /**
- * Everything for one selected session: the URL bar, pick-to-chat toggle,
- * stop control, the screencast-fed viewport, and the console / network
- * tabs.
+ * Everything for one selected session: the URL bar, pick-to-clipboard toggle,
+ * stop control, the screencast-fed viewport, and the console / network tabs.
+ *
+ * Pick-to-chat became pick-to-clipboard: the injected UI has no composer slot
+ * (host.composer is unimplemented), so a picked element's summary is copied
+ * to the clipboard for the user to paste into chat.
  */
 
-const PICKED_FN = 'console::browser-picked'
+const PICKED_FN = 'iii::browser-ui::picked'
 const TYPE_FLUSH_MS = 200
 
 interface SessionViewProps {
+  host: Host
   session: BrowserSessionInfo
   enabled: boolean
   onSessionsRefresh: () => void
@@ -48,6 +49,7 @@ interface SessionViewProps {
 }
 
 export function SessionView({
+  host,
   session,
   enabled,
   onSessionsRefresh,
@@ -55,7 +57,7 @@ export function SessionView({
 }: SessionViewProps) {
   const sessionId = session.session_id
   const [picking, setPicking] = useState(false)
-  const live = useLiveFrames(sessionId, enabled)
+  const live = useLiveFrames(host, sessionId, enabled)
 
   const [actionError, setActionError] = useState<string | null>(null)
   const runAction = useCallback(async (action: () => Promise<void>) => {
@@ -90,13 +92,13 @@ export function SessionView({
     // `host:port` like localhost:3000 is not a scheme and must get https://.
     if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) url = `https://${url}`
     void runAction(async () => {
-      await navigateBrowser(sessionId, url)
+      await navigateBrowser(host.iii, sessionId, url)
       onSessionsRefresh()
     })
-  }, [urlDraft, sessionId, runAction, onSessionsRefresh])
+  }, [host, urlDraft, sessionId, runAction, onSessionsRefresh])
 
-  // Pick-to-chat. The worker auto-exits inspect mode after one pick, so a
-  // received event only flips local state; explicit toggles and unmounts
+  // Pick-to-clipboard. The worker auto-exits inspect mode after one pick, so
+  // a received event only flips local state; explicit toggles and unmounts
   // send pick::stop.
   const [lastPicked, setLastPicked] = useState<BrowserPickedEvent | null>(null)
   const pickingRef = useRef(false)
@@ -108,22 +110,22 @@ export function SessionView({
     setActionError(null)
     return () => {
       if (pickingRef.current) {
-        void stopBrowserPick(sessionId).catch(() => {})
+        void stopBrowserPick(host.iii, sessionId).catch(() => {})
       }
     }
-  }, [sessionId])
+  }, [host, sessionId])
 
   const togglePick = useCallback(() => {
     if (picking) {
       setPicking(false)
-      void runAction(() => stopBrowserPick(sessionId))
+      void runAction(() => stopBrowserPick(host.iii, sessionId))
       return
     }
     void runAction(async () => {
-      await startBrowserPick(sessionId)
+      await startBrowserPick(host.iii, sessionId)
       setPicking(true)
     })
-  }, [picking, sessionId, runAction])
+  }, [host, picking, sessionId, runAction])
 
   useEffect(() => {
     if (!picking) return
@@ -131,13 +133,14 @@ export function SessionView({
       if (e.key !== 'Escape') return
       e.preventDefault()
       setPicking(false)
-      void stopBrowserPick(sessionId).catch(() => {})
+      void stopBrowserPick(host.iii, sessionId).catch(() => {})
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [picking, sessionId])
+  }, [host, picking, sessionId])
 
   useBrowserSessionEvent({
+    host,
     enabled: enabled && picking,
     triggerType: BROWSER_PICKED_TRIGGER,
     sessionId,
@@ -146,16 +149,20 @@ export function SessionView({
       const evt = parsePickedEvent(payload)
       if (!evt || evt.session_id !== sessionId) return
       setLastPicked(evt)
-      insertIntoComposer(formatPickedElement(evt))
+      // No composer slot in injected UI: copy the summary for the user to
+      // paste into chat.
+      void navigator.clipboard
+        ?.writeText(formatPickedElement(evt))
+        .catch(() => {})
       setPicking(false)
     },
   })
 
   const handleClickAt = useCallback(
     (x: number, y: number, options?: BrowserClickOptions) => {
-      void runAction(() => clickBrowserAt(sessionId, x, y, options))
+      void runAction(() => clickBrowserAt(host.iii, sessionId, x, y, options))
     },
-    [sessionId, runAction],
+    [host, sessionId, runAction],
   )
 
   // Pick-mode click: resolve the element at the exact clicked point (the
@@ -163,16 +170,16 @@ export function SessionView({
   // what gets picked.
   const handlePickAt = useCallback(
     (x: number, y: number) => {
-      void runAction(() => resolveBrowserPick(sessionId, x, y))
+      void runAction(() => resolveBrowserPick(host.iii, sessionId, x, y))
     },
-    [sessionId, runAction],
+    [host, sessionId, runAction],
   )
 
   const handleScrollAt = useCallback(
     (x: number, y: number, deltaY: number) => {
-      void runAction(() => scrollBrowserAt(sessionId, x, y, deltaY))
+      void runAction(() => scrollBrowserAt(host.iii, sessionId, x, y, deltaY))
     },
-    [sessionId, runAction],
+    [host, sessionId, runAction],
   )
 
   // Printable characters batch into one type act per idle window; a special
@@ -190,8 +197,8 @@ export function SessionView({
   const flushTypeBuffer = useCallback(() => {
     const text = takeTypeBuffer()
     if (!text) return
-    void runAction(() => typeBrowserText(sessionId, text))
-  }, [takeTypeBuffer, sessionId, runAction])
+    void runAction(() => typeBrowserText(host.iii, sessionId, text))
+  }, [host, takeTypeBuffer, sessionId, runAction])
 
   const handleTextInput = useCallback(
     (text: string) => {
@@ -206,17 +213,16 @@ export function SessionView({
     (key: string) => {
       const text = takeTypeBuffer()
       void runAction(async () => {
-        if (text) await typeBrowserText(sessionId, text)
-        await pressBrowserKey(sessionId, key)
+        if (text) await typeBrowserText(host.iii, sessionId, text)
+        await pressBrowserKey(host.iii, sessionId, key)
       })
     },
-    [takeTypeBuffer, sessionId, runAction],
+    [host, takeTypeBuffer, sessionId, runAction],
   )
 
   // Flush any buffered text before the session changes or the component
   // unmounts, so keystrokes typed against one session are sent to that
-  // session rather than dropped (or leaking into the next one). The cleanup
-  // captures the flush bound to the session that received the text.
+  // session rather than dropped (or leaking into the next one).
   useEffect(() => {
     return () => {
       flushTypeBuffer()
@@ -224,24 +230,21 @@ export function SessionView({
   }, [flushTypeBuffer])
 
   const requestHint = useCallback(
-    (x: number, y: number) => hintBrowserPick(sessionId, x, y),
-    [sessionId],
+    (x: number, y: number) => hintBrowserPick(host.iii, sessionId, x, y),
+    [host, sessionId],
   )
 
   const handleStop = useCallback(() => {
     void runAction(async () => {
-      await stopBrowserSession(sessionId)
+      await stopBrowserSession(host.iii, sessionId)
       onSessionsRefresh()
       onStopped()
     })
-  }, [sessionId, runAction, onSessionsRefresh, onStopped])
+  }, [host, sessionId, runAction, onSessionsRefresh, onStopped])
 
   return (
-    <section
-      className="flex-1 flex flex-col min-w-0 min-h-0"
-      aria-label={`browser session ${sessionId}`}
-    >
-      <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-rule">
+    <section className="br-ui-session" aria-label={`browser session ${sessionId}`}>
+      <div className="br-ui-toolbar">
         <Input
           value={urlDraft}
           onChange={setUrlDraft}
@@ -257,7 +260,7 @@ export function SessionView({
           onKeyDown={(e) => {
             if (e.key === 'Enter') submitUrl()
           }}
-          className="h-8 text-[12px] flex-1 min-w-0"
+          className="br-ui-url-input"
         />
         <Button variant="pill" size="sm" onClick={submitUrl}>
           go
@@ -268,64 +271,46 @@ export function SessionView({
           aria-pressed={picking}
           title={
             picking
-              ? 'pick mode on: click an element in the viewport to send it to chat (esc cancels)'
-              : 'pick an element into chat'
+              ? 'pick mode on: click an element in the viewport to copy it to the clipboard (esc cancels)'
+              : 'pick an element to the clipboard'
           }
-          className={cn(
-            'font-mono text-[12px] lowercase h-8 px-2.5 border inline-flex items-center gap-1.5 transition-colors',
-            picking
-              ? 'bg-accent text-accent-fg border-accent'
-              : 'bg-transparent text-ink-faint border-rule hover:text-ink hover:border-ink',
-          )}
+          className={cn('br-ui-pick-btn', picking && 'is-on')}
         >
           <Crosshair size={13} aria-hidden />
           {picking ? 'picking...' : 'pick element'}
         </button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={handleStop}
-          className="gap-1.5"
-        >
+        <Button variant="ghost" size="sm" onClick={handleStop}>
           <Square size={12} aria-hidden />
           stop
         </Button>
       </div>
 
       {lastPicked ? (
-        <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-rule-2 bg-paper-2">
-          <span className="font-mono text-[11px] lowercase text-ink-faint shrink-0">
-            picked
-          </span>
+        <div className="br-ui-picked">
+          <span className="br-ui-picked-label">picked</span>
           <span
-            className="inline-flex items-center gap-x-2 border border-rule bg-bg px-2 py-0.5 font-mono text-[12px] text-ink min-w-0"
+            className="br-ui-picked-chip"
             title={lastPicked.element.outer_html}
           >
-            <span className="text-accent shrink-0">
-              {lastPicked.element.ref}
-            </span>
-            <span className="truncate min-w-0">
+            <span className="br-ui-picked-ref">{lastPicked.element.ref}</span>
+            <span className="br-ui-truncate">
               {pickedSelector(lastPicked.element)}
             </span>
             <button
               type="button"
               onClick={() => setLastPicked(null)}
               aria-label="dismiss picked element"
-              className="text-ink-faint hover:text-accent transition-colors shrink-0"
+              className="br-ui-picked-x"
             >
               <X size={12} aria-hidden />
             </button>
           </span>
-          <span className="font-mono text-[11px] lowercase text-ink-ghost truncate">
-            sent to the chat composer
-          </span>
+          <span className="br-ui-picked-note">copied to clipboard</span>
         </div>
       ) : null}
 
       {actionError ? (
-        <p className="shrink-0 px-3 py-1.5 border-b border-rule-2 font-mono text-[12px] text-alert">
-          {actionError}
-        </p>
+        <p className="br-ui-session-err">{actionError}</p>
       ) : null}
 
       <Viewport
@@ -341,19 +326,16 @@ export function SessionView({
         requestHint={requestHint}
       />
 
-      <Tabs
-        defaultValue="console"
-        className="shrink-0 h-[38%] min-h-44 flex flex-col border-t border-rule"
-      >
-        <TabsList className="px-3 shrink-0">
+      <Tabs defaultValue="console" className="br-ui-tabs">
+        <TabsList className="br-ui-tabs-list">
           <TabsTrigger value="console">console</TabsTrigger>
           <TabsTrigger value="network">network</TabsTrigger>
         </TabsList>
-        <TabsContent value="console" className="flex-1 min-h-0">
-          <ConsolePanel sessionId={sessionId} enabled={enabled} />
+        <TabsContent value="console" className="br-ui-tabs-content">
+          <ConsolePanel host={host} sessionId={sessionId} enabled={enabled} />
         </TabsContent>
-        <TabsContent value="network" className="flex-1 min-h-0">
-          <NetworkPanel sessionId={sessionId} enabled={enabled} />
+        <TabsContent value="network" className="br-ui-tabs-content">
+          <NetworkPanel host={host} sessionId={sessionId} enabled={enabled} />
         </TabsContent>
       </Tabs>
     </section>

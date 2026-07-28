@@ -5,7 +5,7 @@ import {
   networkReadSchema,
   sessionInfoSchema,
   sessionStartSchema,
-} from '@/lib/browser'
+} from '../lib/browser'
 
 /**
  * Zod schemas + decode helpers for the `browser::*` chat views.

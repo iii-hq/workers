@@ -1,21 +1,15 @@
+import { Badge, JsonHighlight } from '@iii-dev/console-ui'
 import { z } from 'zod'
-import { renderWithHighlight } from '@/components/chat/sandbox/highlight'
-import {
-  ActionLine,
-  Chip,
-  MetaRow,
-  StatusPill,
-} from '@/components/chat/sandbox/shared'
-import { Badge } from '@/components/ui/Badge'
 import {
   type BrowserConsoleEntry,
   type BrowserNetworkEntry,
   elementLabel,
   formatTime,
   levelBadgeVariant,
-} from '@/lib/browser'
-import { JsonHighlight } from '@/lib/syntax'
-import { cn } from '@/lib/utils'
+} from '../lib/browser'
+import { cn } from '../lib/cn'
+import { renderWithHighlight } from '../lib/highlight'
+import { ActionLine, Chip, MetaRow, StatusPill } from '../lib/shared'
 import {
   actResultSchema,
   consoleReadSchema,
@@ -53,7 +47,7 @@ function truncate(s: string, max: number): string {
  * the shared grep-style match highlighter. */
 function SnapshotTree({ tree }: { tree: string }) {
   return (
-    <pre className="m-0 max-h-96 overflow-auto px-3 py-2 font-mono text-[12px] leading-[1.55] text-ink whitespace-pre-wrap break-words">
+    <pre className="br-ui-tree">
       <code>
         {renderWithHighlight(tree, '\\[ref=[^\\]]*\\]', {
           isRegex: true,
@@ -75,7 +69,7 @@ export function SnapshotView({ output }: { output: unknown }) {
         {res.truncated ? <StatusPill label="truncated" variant="warn" /> : null}
       </MetaRow>
       <ActionLine symbol="→" tone="ink">
-        <span className="break-all">{res.url}</span>
+        <span className="br-ui-break">{res.url}</span>
       </ActionLine>
       <SnapshotTree tree={res.tree} />
     </div>
@@ -95,7 +89,7 @@ export function SessionStartView({ output }: { output: unknown }) {
         <Chip>{res.headless ? 'headless' : 'headful'}</Chip>
       </MetaRow>
       <ActionLine symbol="→" tone="ink">
-        <span className="break-all">{res.url}</span>
+        <span className="br-ui-break">{res.url}</span>
       </ActionLine>
     </div>
   )
@@ -126,25 +120,20 @@ export function SessionListView({ output }: { output: unknown }) {
         />
       </MetaRow>
       {res.sessions.length === 0 ? (
-        <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost">
-          · no live sessions
-        </div>
+        <div className="br-ui-empty-line">· no live sessions</div>
       ) : (
-        <table className="w-full font-mono text-[11.5px] text-ink">
+        <table className="br-ui-vtable">
           <tbody>
             {res.sessions.map((s) => (
-              <tr
-                key={s.session_id}
-                className="border-b border-rule-2 last:border-b-0"
-              >
-                <td className="px-3 py-1 text-accent whitespace-nowrap">
+              <tr key={s.session_id}>
+                <td className="br-ui-td br-ui-td-accent br-ui-nowrap">
                   {s.session_id}
                 </td>
-                <td className="px-3 py-1 text-ink break-all">{s.url}</td>
-                <td className="px-3 py-1 text-ink-faint whitespace-nowrap">
+                <td className="br-ui-td br-ui-break">{s.url}</td>
+                <td className="br-ui-td br-ui-td-dim br-ui-nowrap">
                   {s.headless ? 'headless' : 'headful'}
                 </td>
-                <td className="px-3 py-1 text-ink-faint tabular-nums text-right whitespace-nowrap">
+                <td className="br-ui-td br-ui-td-dim br-ui-num br-ui-right br-ui-nowrap">
                   {s.console_entries} logs
                 </td>
               </tr>
@@ -172,7 +161,7 @@ export function NavigateView({ output }: { output: unknown }) {
         {res.title ? <Chip>{truncate(res.title, 60)}</Chip> : null}
       </MetaRow>
       <ActionLine symbol="→" tone="ink">
-        <span className="break-all">{res.url}</span>
+        <span className="br-ui-break">{res.url}</span>
       </ActionLine>
     </div>
   )
@@ -204,10 +193,10 @@ export function ActView({
           variant={res.ok ? 'accent' : 'alert'}
         />
         {req?.action ? <Chip>{req.action}</Chip> : null}
-        {req?.ref ? <Chip className="text-accent">{req.ref}</Chip> : null}
+        {req?.ref ? <Chip className="br-ui-chip-accent">{req.ref}</Chip> : null}
         {req?.key ? <Chip>{req.key}</Chip> : null}
         {req?.x != null && req?.y != null ? (
-          <Chip className="tabular-nums">
+          <Chip className="br-ui-chip-num">
             {Math.round(req.x)},{Math.round(req.y)}
           </Chip>
         ) : null}
@@ -243,7 +232,7 @@ export function HistoryView({
         ) : null}
       </MetaRow>
       <ActionLine symbol="→" tone="ink">
-        <span className="break-all">{res.url}</span>
+        <span className="br-ui-break">{res.url}</span>
       </ActionLine>
     </div>
   )
@@ -261,20 +250,15 @@ const readInputSchema = z.object({
 
 export function ConsoleEntryRow({ entry }: { entry: BrowserConsoleEntry }) {
   return (
-    <li className="flex items-start gap-2 border-b border-rule-2 px-3 py-1 font-mono text-[12px] leading-[1.55] last:border-b-0">
-      <span className="shrink-0 tabular-nums text-ink-ghost">
-        {formatTime(entry.timestamp)}
-      </span>
-      <Badge
-        variant={levelBadgeVariant(entry.level)}
-        className="w-[72px] shrink-0"
-      >
+    <li className="br-ui-log-row">
+      <span className="br-ui-log-time">{formatTime(entry.timestamp)}</span>
+      <Badge variant={levelBadgeVariant(entry.level)} className="br-ui-log-level">
         {entry.level}
       </Badge>
-      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-ink">
+      <span className="br-ui-log-text">
         {entry.text}
         {entry.source ? (
-          <span className="text-ink-ghost"> · {entry.source}</span>
+          <span className="br-ui-dim"> · {entry.source}</span>
         ) : null}
       </span>
     </li>
@@ -301,17 +285,13 @@ export function ConsoleReadView({
         {req?.level ? <Chip>{req.level}</Chip> : null}
         {req?.pattern ? <Chip>/{req.pattern}/</Chip> : null}
         {res.dropped > 0 ? (
-          <Chip className="text-warn border-warn/40">
-            {res.dropped} dropped
-          </Chip>
+          <Chip className="br-ui-chip-warn">{res.dropped} dropped</Chip>
         ) : null}
       </MetaRow>
       {res.entries.length === 0 ? (
-        <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost">
-          · no matching console entries
-        </div>
+        <div className="br-ui-empty-line">· no matching console entries</div>
       ) : (
-        <ul className="max-h-80 overflow-auto">
+        <ul className="br-ui-scroll">
           {res.entries.map((entry) => (
             <ConsoleEntryRow key={entry.seq} entry={entry} />
           ))}
@@ -323,25 +303,17 @@ export function ConsoleReadView({
 
 export function NetworkEntryRow({ entry }: { entry: BrowserNetworkEntry }) {
   return (
-    <li className="flex items-start gap-2 border-b border-rule-2 px-3 py-1 font-mono text-[12px] leading-[1.55] last:border-b-0">
+    <li className="br-ui-log-row">
       <span
-        className={cn(
-          'w-[42px] shrink-0 tabular-nums',
-          entry.failed ? 'text-alert' : 'text-ink-faint',
-        )}
+        className={cn('br-ui-net-status', entry.failed && 'is-failed')}
       >
         {entry.status ?? (entry.failed ? 'err' : '...')}
       </span>
-      <span className="w-[56px] shrink-0 text-ink-faint">{entry.method}</span>
-      <span
-        className={cn(
-          'min-w-0 flex-1 break-all',
-          entry.failed ? 'text-alert' : 'text-ink',
-        )}
-      >
+      <span className="br-ui-net-method">{entry.method}</span>
+      <span className={cn('br-ui-net-url', entry.failed && 'is-failed')}>
         {entry.url}
         {entry.error ? (
-          <span className="text-alert"> · {entry.error}</span>
+          <span className="br-ui-alert"> · {entry.error}</span>
         ) : null}
       </span>
     </li>
@@ -366,21 +338,17 @@ export function NetworkReadView({
           variant={res.entries.length > 0 ? 'accent' : 'default'}
         />
         {req?.failed_only ? (
-          <Chip className="text-warn border-warn/40">failed only</Chip>
+          <Chip className="br-ui-chip-warn">failed only</Chip>
         ) : null}
         {req?.pattern ? <Chip>/{req.pattern}/</Chip> : null}
         {res.dropped > 0 ? (
-          <Chip className="text-warn border-warn/40">
-            {res.dropped} dropped
-          </Chip>
+          <Chip className="br-ui-chip-warn">{res.dropped} dropped</Chip>
         ) : null}
       </MetaRow>
       {res.entries.length === 0 ? (
-        <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost">
-          · no matching requests
-        </div>
+        <div className="br-ui-empty-line">· no matching requests</div>
       ) : (
-        <ul className="max-h-80 overflow-auto">
+        <ul className="br-ui-scroll">
           {res.entries.map((entry) => (
             <NetworkEntryRow key={entry.seq} entry={entry} />
           ))}
@@ -402,29 +370,24 @@ export function StylesReadView({ output }: { output: unknown }) {
           label={`${res.properties.length} properties`}
           variant="accent"
         />
-        <Chip className="text-accent">{res.ref}</Chip>
+        <Chip className="br-ui-chip-accent">{res.ref}</Chip>
       </MetaRow>
-      <div className="max-h-80 overflow-auto">
-        <table className="w-full font-mono text-[11.5px]">
+      <div className="br-ui-scroll">
+        <table className="br-ui-vtable">
           <tbody>
             {res.properties.map((prop) => (
-              <tr
-                key={prop.name}
-                className="border-b border-rule-2 last:border-b-0"
-              >
-                <td className="w-[45%] px-3 py-1 text-ink-faint break-all">
+              <tr key={prop.name}>
+                <td className="br-ui-td br-ui-td-dim br-ui-break br-ui-td-name">
                   {prop.name}
                 </td>
-                <td className="px-3 py-1 text-ink break-all">{prop.value}</td>
+                <td className="br-ui-td br-ui-break">{prop.value}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
       {res.inline_style ? (
-        <div className="border-t border-rule-2 px-3 py-1.5 font-mono text-[11.5px] text-ink-faint break-all">
-          style="{res.inline_style}"
-        </div>
+        <div className="br-ui-inline-style">style="{res.inline_style}"</div>
       ) : null}
     </div>
   )
@@ -453,16 +416,14 @@ export function StylesWriteView({
           label={res.ok ? 'applied' : 'failed'}
           variant={res.ok ? 'accent' : 'alert'}
         />
-        {req?.ref ? <Chip className="text-accent">{req.ref}</Chip> : null}
+        {req?.ref ? <Chip className="br-ui-chip-accent">{req.ref}</Chip> : null}
       </MetaRow>
       {req?.property ? (
         <ActionLine symbol="·" tone="ink">
           {req.property}: {req.value ?? ''}
         </ActionLine>
       ) : null}
-      <div className="px-3 py-1.5 font-mono text-[11.5px] text-ink-faint break-all">
-        style="{res.inline_style}"
-      </div>
+      <div className="br-ui-inline-style">style="{res.inline_style}"</div>
     </div>
   )
 }
@@ -490,25 +451,25 @@ export function DomReadView({ output }: { output: unknown }) {
         <StatusPill label={`${rows.length} nodes`} variant="accent" />
         {res.truncated ? <StatusPill label="truncated" variant="warn" /> : null}
       </MetaRow>
-      <div className="max-h-96 overflow-auto px-3 py-2 font-mono text-[12px] leading-[1.55]">
+      <div className="br-ui-dom">
         {rows.map(({ node, depth }) => (
           <div
             key={node.ref}
-            className="whitespace-nowrap"
+            className="br-ui-dom-row"
             style={{ paddingLeft: depth * 14 }}
           >
             {node.tag === '#text' ? (
-              <span className="text-ink-faint">
+              <span className="br-ui-dom-text">
                 "{truncate(node.text ?? '', 80)}"
               </span>
             ) : (
-              <span className="text-ink">
+              <span className="br-ui-dom-el">
                 {elementLabel(node.tag, node.id, node.classes)}
               </span>
             )}{' '}
-            <span className="text-accent">[{node.ref}]</span>
+            <span className="br-ui-dom-ref">[{node.ref}]</span>
             {node.child_count > node.children.length ? (
-              <span className="text-ink-ghost">
+              <span className="br-ui-dom-more">
                 {' '}
                 +{node.child_count - node.children.length} more
               </span>
@@ -544,25 +505,19 @@ export function EvaluateView({
       </MetaRow>
       {req?.expression ? (
         <ActionLine symbol="$" tone="ink">
-          <span className="break-all">{truncate(req.expression, 200)}</span>
+          <span className="br-ui-break">{truncate(req.expression, 200)}</span>
         </ActionLine>
       ) : null}
       {res.ok ? (
         res.value === undefined ? (
-          <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost">
-            · undefined
-          </div>
+          <div className="br-ui-empty-line">· undefined</div>
         ) : (
-          <div className="max-h-80 overflow-auto">
-            <JsonHighlight
-              code={JSON.stringify(res.value, null, 2) ?? 'null'}
-            />
+          <div className="br-ui-json-sm">
+            <JsonHighlight code={JSON.stringify(res.value, null, 2) ?? 'null'} />
           </div>
         )
       ) : (
-        <div className="px-3 py-2 font-mono text-[12px] text-alert whitespace-pre-wrap break-words">
-          {res.error ?? 'evaluation failed'}
-        </div>
+        <div className="br-ui-eval-err">{res.error ?? 'evaluation failed'}</div>
       )}
     </div>
   )

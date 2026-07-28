@@ -1,14 +1,14 @@
+import { Input, type Host } from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
-import { ConsoleEntryRow } from '@/components/chat/browser/BrowserViews'
-import { Input } from '@/components/ui/Input'
-import { useBrowserSessionEvent } from '@/hooks/use-browser-events'
 import {
   BROWSER_CONSOLE_EVENT_TRIGGER,
   type BrowserConsoleEntry,
   errorMessage,
   parseConsoleEvent,
   readBrowserConsole,
-} from '@/lib/browser'
+} from '../lib/browser'
+import { useBrowserSessionEvent } from '../lib/events'
+import { ConsoleEntryRow } from '../function-trigger-message/BrowserViews'
 
 /**
  * Live console feed for the selected session: seeded from
@@ -23,7 +23,7 @@ const SEED_LIMIT = 200
 const MAX_ENTRIES = 500
 const PATTERN_DEBOUNCE_MS = 300
 
-const CONSOLE_FEED_FN = 'console::browser-console-feed'
+const CONSOLE_FEED_FN = 'iii::browser-ui::console-feed'
 
 function matchesPattern(text: string, pattern: string): boolean {
   if (!pattern) return true
@@ -35,11 +35,12 @@ function matchesPattern(text: string, pattern: string): boolean {
 }
 
 interface ConsolePanelProps {
+  host: Host
   sessionId: string
   enabled: boolean
 }
 
-export function ConsolePanel({ sessionId, enabled }: ConsolePanelProps) {
+export function ConsolePanel({ host, sessionId, enabled }: ConsolePanelProps) {
   const [pattern, setPattern] = useState('')
   const [debouncedPattern, setDebouncedPattern] = useState('')
   const [entries, setEntries] = useState<BrowserConsoleEntry[]>([])
@@ -62,7 +63,7 @@ export function ConsolePanel({ sessionId, enabled }: ConsolePanelProps) {
     let cancelled = false
     lastSeqRef.current = 0
     setEntries([])
-    void readBrowserConsole(sessionId, {
+    void readBrowserConsole(host.iii, sessionId, {
       pattern: debouncedPattern || undefined,
       limit: SEED_LIMIT,
     })
@@ -80,9 +81,10 @@ export function ConsolePanel({ sessionId, enabled }: ConsolePanelProps) {
     return () => {
       cancelled = true
     }
-  }, [enabled, sessionId, debouncedPattern])
+  }, [host, enabled, sessionId, debouncedPattern])
 
   useBrowserSessionEvent({
+    host,
     enabled,
     triggerType: BROWSER_CONSOLE_EVENT_TRIGGER,
     sessionId,
@@ -98,32 +100,30 @@ export function ConsolePanel({ sessionId, enabled }: ConsolePanelProps) {
   })
 
   return (
-    <div className="flex flex-col h-full min-h-0">
-      <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-rule-2">
+    <div className="br-ui-panel">
+      <div className="br-ui-panel-head">
         <Input
           value={pattern}
           onChange={setPattern}
           preserveCase
           placeholder="filter (regex)"
           aria-label="filter console entries"
-          className="h-7 text-[12px] max-w-[280px]"
+          className="br-ui-filter-input"
         />
         {dropped > 0 ? (
-          <span className="font-mono text-[11px] lowercase text-ink-ghost">
+          <span className="br-ui-panel-note">
             {dropped} older entries dropped from the buffer
           </span>
         ) : null}
       </div>
       {error ? (
-        <p className="px-3 py-2 font-mono text-[12px] text-alert">{error}</p>
+        <p className="br-ui-panel-err">{error}</p>
       ) : entries.length === 0 ? (
-        <p className="px-3 py-2 font-mono text-[12px] lowercase text-ink-ghost">
-          no console entries yet
-        </p>
+        <p className="br-ui-panel-empty">no console entries yet</p>
       ) : (
         // Column-reverse with the newest entry first in the DOM pins the
         // scroll position to the bottom, terminal-style.
-        <ul className="flex-1 min-h-0 overflow-y-auto flex flex-col-reverse">
+        <ul className="br-ui-feed">
           {[...entries].reverse().map((entry) => (
             <ConsoleEntryRow key={entry.seq} entry={entry} />
           ))}

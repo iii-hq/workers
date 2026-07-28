@@ -1,5 +1,5 @@
+import type { Host } from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
-import { useBrowserStream } from '@/hooks/use-browser-events'
 import {
   BROWSER_FRAMES_STREAM,
   extractStreamFrame,
@@ -7,7 +7,8 @@ import {
   startBrowserScreencast,
   stopBrowserScreencast,
   takeBrowserScreenshot,
-} from '@/lib/browser'
+} from '../lib/browser'
+import { useBrowserStream } from '../lib/events'
 
 /**
  * Live view for the selected session, fed by the worker's screencast stream:
@@ -36,6 +37,7 @@ export interface LiveViewState {
 }
 
 export function useLiveFrames(
+  host: Host,
   sessionId: string | null,
   enabled: boolean,
 ): LiveViewState {
@@ -60,7 +62,7 @@ export function useLiveFrames(
 
     // Retain the start so teardown can wait for it to settle before stopping;
     // otherwise a late start could reactivate the screencast after cleanup.
-    const started = startBrowserScreencast(sessionId)
+    const started = startBrowserScreencast(host.iii, sessionId)
 
     void (async () => {
       try {
@@ -68,7 +70,9 @@ export function useLiveFrames(
       } catch {
         // Older worker without the screencast surface: one screenshot so the
         // viewport is not blank.
-        const shot = await takeBrowserScreenshot(sessionId).catch(() => null)
+        const shot = await takeBrowserScreenshot(host.iii, sessionId).catch(
+          () => null,
+        )
         if (!cancelled && shot?.dataUrl) {
           setFrame({
             dataUrl: shot.dataUrl,
@@ -81,7 +85,7 @@ export function useLiveFrames(
       if (cancelled) return
       // Immediate first paint: the stream only delivers frames produced after
       // the subscription, so read the current one once.
-      const seed = await readBrowserFrame(sessionId).catch(() => null)
+      const seed = await readBrowserFrame(host.iii, sessionId).catch(() => null)
       if (cancelled || !seed?.frame) return
       if (seed.frame_seq > lastSeqRef.current) {
         lastSeqRef.current = seed.frame_seq
@@ -100,16 +104,17 @@ export function useLiveFrames(
       // overtaken by an in-flight start reactivating the screencast.
       void started
         .catch(() => {})
-        .then(() => stopBrowserScreencast(sessionId))
+        .then(() => stopBrowserScreencast(host.iii, sessionId))
         .catch(() => {})
     }
-  }, [enabled, sessionId])
+  }, [host, enabled, sessionId])
 
   useBrowserStream({
+    host,
     enabled: enabled && !!sessionId,
     streamName: BROWSER_FRAMES_STREAM,
     groupId: sessionId,
-    fnId: 'console::browser-frames',
+    fnId: 'iii::browser-ui::frames',
     onFrame: (payload) => {
       const f = extractStreamFrame(payload)
       if (!f || f.frame_seq <= lastSeqRef.current) return
