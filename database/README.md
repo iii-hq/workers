@@ -195,21 +195,47 @@ const { rows } = await iii.trigger({
 
 ## Triggers
 
-### `database::row-change`
-Postgres only. Streams row-level changes via logical replication (`pgoutput`).
+### `database::row-changed`
 
-> **NOTE (v1.0.0):** Event dispatch is not yet functional. The publication and replication slot are created at startup, but the streaming decode loop is stubbed pending an upstream `tokio-postgres` replication API release. Operators can pre-provision slots and publications now; events will start flowing in a later release.
+Fires after this worker commits a row change. Driver-agnostic — no logical
+replication, no per-database setup, identical on SQLite, Postgres and MySQL.
 
 ```yaml
 triggers:
-  - type: database::row-change
+  - type: database::row-changed
     config:
-      db: primary
-      schema: public
-      tables: [orders, payments]
+      db: primary        # required
+      table: orders      # optional; case- and schema-insensitive
+      ops: [insert]      # optional; insert / update / delete / other
 ```
 
-The worker derives slot/publication names from `trigger_id`: `iii_slot_<sanitized>_<8hex>` and `iii_pub_<sanitized>_<8hex>`, where the 8-hex-char suffix is an FNV-1a-32 hash of the original `trigger_id`. The hash guarantees that two distinct trigger_ids (e.g. `orders-v1` vs `orders.v1`) produce distinct names even though both sanitize to `orders_v1`. The sanitized prefix is truncated at 40 chars so the final name fits in Postgres' 63-byte slot-name limit. Operators can override slot/publication names explicitly with `slot_name`/`publication_name`. Drop them with `pg_drop_replication_slot('<slot>')` and `DROP PUBLICATION <name>` if the worker is decommissioned without graceful shutdown.
+Event: `{ db, table, op, affected_rows, returning?, at }`, where `op` is
+`insert` / `update` / `delete` / `other`.
+
+**This is not change data capture.** It reports mutations made *through this
+worker* — `execute`, `executeBatch`, `transaction`, and the interactive
+transaction surface. A write applied by psql, another worker, or a
+database-side trigger is invisible to it. That covers the case it exists for
+(the worker is the only writer, and something needs to know when rows land)
+and nothing more.
+
+Four things worth knowing:
+
+- **Announced on commit, never before.** Statements inside an interactive
+  transaction are buffered until `commitTransaction`; a rollback — including
+  the timeout watcher's — drops the buffer. Atomic batches announce their
+  statements in order only after the whole batch commits.
+- **Delivery is best-effort.** Dispatch happens after commit and is not durable
+  or atomic with the database write. There is no replay, retry, or exactly-once
+  guarantee; a crash between commit and dispatch can lose an event. Subscriber
+  failures are logged and never fail the write.
+- **`table` can be null.** The table is read off the SQL. A CTE-wrapped write
+  (`WITH … INSERT`) still fires, with `table: null`, rather than being dropped;
+  a binding that named a table simply does not match it. Omit `table` to match
+  every write, including these.
+- **`runStatement` does not fire.** The prepared-run path returns rows, not an
+  affected-row count, and an event that invented one would be lying. Use
+  `execute` when you need the change announced.
 
 ## Errors
 
@@ -224,8 +250,6 @@ Returned `IIIError::Handler` bodies carry a stable `code` field:
 | `UNKNOWN_DB` | `db` parameter doesn't match any configured database. |
 | `INVALID_PARAM` | JSON value couldn't be coerced for the target driver, transaction-control SQL was sent to `transactionExecute` (use `commitTransaction` / `rollbackTransaction`), or a `transaction`/`executeBatch` batch contained transaction-control SQL or an empty statement. |
 | `DRIVER_ERROR` | Wraps underlying driver error with `driver` and `inner_code` (nullable). `inner_code` format is per-driver: Postgres = SQLSTATE 5-char string (e.g. `42P01`), MySQL = server error number as string, SQLite = `rusqlite::ErrorCode` debug name. Pool-acquire failures use the message form `pool connection failed (<class>)` where `<class>` is one of `tls`, `auth`, `network`, `server-policy`, or `unknown` — a redacted hint so untrusted callers can self-triage without seeing host/userinfo/db fragments. The full driver error is in the worker's stderr via `tracing::warn!`. |
-| `REPLICATION_SLOT_EXISTS` | Startup-only: another instance owns the slot. |
-| `UNSUPPORTED` | Operation not supported on the chosen driver. |
 | `CONFIG_ERROR` | Config parse or pool init failure. |
 
 ## Driver compatibility
@@ -237,7 +261,6 @@ A few operations are no-ops on certain drivers. They emit a `tracing::warn!` rat
 | `execute` with `returning: [...]` | ✓ | ✓ | warn-once + ignore |
 | `transaction` `isolation: read_committed` / `repeatable_read` | warn + use serializable | ✓ | ✓ |
 | `transaction` `isolation: serializable` | ✓ (`BEGIN IMMEDIATE`) | ✓ | ✓ |
-| `database::row-change` trigger | — | setup-only in v1.0.0 (see above) | — |
 
 
 ## Troubleshooting
@@ -249,7 +272,6 @@ A few operations are no-ops on certain drivers. They emit a `tracing::warn!` rat
     - `(auth)` — credential or pg_hba/SCRAM rejection. Includes Neon's `?channel_binding=require` failing through the pooler endpoint (drop the URL param, use `tls.mode` in YAML).
     - `(network)` — TCP refuse, DNS, route, or peer reset. Check host/port reachability and any firewalls.
     - `(server-policy)` — server reachable and TLS+auth OK, but the server actively refused (e.g. `max_connections` exceeded, admin shutdown). Look at the worker stderr for the underlying driver message.
-- **Replication slot already exists**: another instance is consuming the slot. Either reuse the slot name or run `SELECT pg_drop_replication_slot('<slot>')`.
 
 ## License
 

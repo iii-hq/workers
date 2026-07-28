@@ -3,9 +3,10 @@
 Self-asserting smoke harness for the `database` worker. Validates the
 function surface (query / execute / prepareStatement / runStatement /
 transaction), the **interactive-transaction** surface (begin /
-transactionQuery / transactionExecute / commit / rollback), the
-`row-change` slot/publication derivation contract, and the side-channel-
-finalization repros from the `/review` of branch `feat/database-and-skills`
+transactionQuery / transactionExecute / commit / rollback),
+`database::row-changed` delivery, and the side-channel-finalization repros
+from the `/review` of branch
+`feat/database-and-skills`
 against real **SQLite**, **PostgreSQL 16**, and **MySQL 8.4** with one
 command.
 
@@ -34,7 +35,7 @@ Runs locally and in CI (`.github/workflows/database-e2e.yml`).
 ```
 
 Builds the worker (`cargo build --release --bin database`), brings up
-the docker stack with `wal_level=logical`, starts the engine, seeds the
+the docker stack, starts the engine, seeds the
 `database` configuration entry, starts the database worker, and runs the
 selected case groups across all 3 drivers. Exits 0 on PASS, 1 on any FAIL.
 
@@ -71,6 +72,8 @@ overridden:
 | `III_BIN` | `$(command -v iii)` then `$HOME/.local/bin/iii` | Engine binary |
 | `WORKER_BIN_TARGET` | `$WORKER_SRC/target/release/database` | Built worker |
 | `WORKER_BIN_LINK` | `$HOME/.iii/workers/database` | Symlink the engine reads |
+| `TEST_POSTGRES_URL` | `postgres://iii:iii@127.0.0.1:55432/iii_test` | Override the PostgreSQL E2E database |
+| `TEST_MYSQL_URL` | `mysql://iii:iii@127.0.0.1:53306/iii_test` | Override the MySQL E2E database |
 | `COMPOSE` | `docker compose` | Compose command. Set to `podman-compose` for rootless podman; the script auto-switches its healthcheck strategy to `podman inspect` (since podman-compose 1.x doesn't implement compose v2's `--wait`). |
 | `HARNESS_MODE` | `full` | `full` / `no-bypass` / `bypass-only`. Set by the flags above; you usually don't need to set this directly. |
 | `HARNESS_TIMEOUT` | `180` | Seconds to wait for the test sentinel |
@@ -104,13 +107,14 @@ accepted; outside-tx COUNT=1`).
 | File | Role |
 |---|---|
 | `run-tests.sh` | Orchestrator |
-| `docker-compose.yml` | Postgres (wal_level=logical) + MySQL with healthchecks |
+| `docker-compose.yml` | Postgres + MySQL with healthchecks |
 | `config.yaml` | Engine infra only (queue, observability) |
 | `workers/harness/src/seed-configuration.ts` | Bootstrap: `configuration::register` for id `database` |
 | `workers/harness/src/database-config.ts` | E2e `databases` value (sqlite + pg + mysql) |
 | `workers/harness/fixtures/database.schema.json` | JSON Schema fixture (sync with Rust via export test) |
 | `workers/harness/` | TypeScript smoke-test worker (runs as a host process) |
 | `workers/harness/src/cases-interactive-tx.ts` | Interactive-transaction lifecycle cases |
+| `workers/harness/src/cases-row-changed.ts` | Row-change trigger delivery cases |
 | `workers/harness/src/cases-tx-control-bypass.ts` | Side-channel-finalization repros |
 | `reports/report.json` | Per-case results (latest run) |
 

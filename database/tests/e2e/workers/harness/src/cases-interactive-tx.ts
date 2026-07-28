@@ -84,6 +84,56 @@ export const INTERACTIVE_TX_CASES: TestCase[] = [
     },
   },
   {
+    // PostgreSQL reports COMMIT on an aborted transaction with the command
+    // tag ROLLBACK. The worker must surface an error instead of treating that
+    // as a commit and flushing bookkeeping for writes that never became durable.
+    name: 'postgres aborted interactive tx rejects commit',
+    applies: ['pg_db'],
+    async run({ driver, call, expectError }) {
+      await call('database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS itx_aborted' })
+      await call('database::execute', {
+        db: driver,
+        sql: 'CREATE TABLE itx_aborted (n INT NOT NULL)',
+      })
+      let id: string | undefined
+      try {
+        const begin = await call('database::beginTransaction', { db: driver })
+        id = begin.transaction.id
+        await call('database::transactionExecute', {
+          transaction_id: id,
+          sql: 'INSERT INTO itx_aborted VALUES (1)',
+        })
+        await expectError(
+          () =>
+            call('database::transactionExecute', {
+              transaction_id: id,
+              sql: 'INSERT INTO itx_aborted VALUES (NULL)',
+            }),
+          'DRIVER_ERROR',
+        )
+        await expectError(
+          () => call('database::commitTransaction', { transaction_id: id }),
+          'DRIVER_ERROR',
+        )
+
+        const verify = await call('database::query', {
+          db: driver,
+          sql: 'SELECT COUNT(*) AS c FROM itx_aborted',
+        })
+        expectEqual(Number(verify.rows[0].c), 0, 'aborted transaction persisted no rows')
+      } finally {
+        if (id) {
+          try {
+            await call('database::rollbackTransaction', { transaction_id: id })
+          } catch {
+            /* commit failure already finalized it */
+          }
+        }
+        await call('database::execute', { db: driver, sql: 'DROP TABLE itx_aborted' })
+      }
+    },
+  },
+  {
     name: 'interactive tx commit then query returns TRANSACTION_NOT_FOUND',
     async run({ driver, call, expectError }) {
       const begin = await call('database::beginTransaction', { db: driver })

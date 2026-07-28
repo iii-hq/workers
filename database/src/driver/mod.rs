@@ -51,4 +51,5 @@ pub struct TxStatement {
 pub struct TxStepResult {
     pub affected_rows: u64,
     pub rows: Vec<Row>,
+    pub columns: Vec<ColumnMeta>,
 }

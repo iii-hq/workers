@@ -19,11 +19,14 @@ use database::handlers::{
     AppState,
 };
 use database::transaction::TxRegistry;
-use database::triggers::handler::RowChangeTrigger;
 use iii_helpers::observability::{Logger, OtelConfig};
 use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterTriggerType};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+/// A row-changed subscriber must not be able to stall the write that already
+/// committed; the dispatch is void and bounded by this.
+const ROW_CHANGE_DISPATCH_TIMEOUT_MS: u64 = 10_000;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -103,16 +106,21 @@ async fn main() -> Result<()> {
     let handles = Arc::new(HandleRegistry::new());
     let transactions = TxRegistry::new();
     let log = Logger::new();
+    let row_changes = Arc::new(database::triggers::RowChangeBus::new(
+        iii.clone(),
+        ROW_CHANGE_DISPATCH_TIMEOUT_MS,
+    ));
     let state = AppState {
         pools: Arc::new(RwLock::new(pools)),
         config: Arc::new(RwLock::new(cfg)),
         handles: handles.clone(),
         transactions: transactions.clone(),
         log: log.clone(),
+        row_changes: Some(row_changes.clone()),
     };
 
     let _evictor = handles.spawn_evictor();
-    let _tx_watcher = transactions.spawn_timeout_watcher(log.clone());
+    let _tx_watcher = transactions.spawn_timeout_watcher(log.clone(), Some(row_changes.clone()));
 
     {
         let st = state.clone();
@@ -308,11 +316,22 @@ async fn main() -> Result<()> {
         );
     }
 
-    let _row_change = iii.register_trigger_type(RegisterTriggerType::new(
-        "database::row-change",
-        "Postgres logical replication. Stubbed in v1.0 pending tokio-postgres replication API.",
-        RowChangeTrigger,
-    ));
+    // The worker announces its own writes. Registered AFTER the functions so
+    // the console can attribute the type, and gated on the databases that
+    // actually exist — a binding on a typo'd handle would listen to nothing.
+    let _row_changed = iii.register_trigger_type(
+        RegisterTriggerType::new(
+            database::triggers::ROW_CHANGED_TYPE,
+            "Fires after this worker commits a row change, filtered by `db`, optional `table`, and optional `ops`. \
+             Reports only mutations made THROUGH this worker — not change data capture.",
+            database::triggers::RowChangedHandler {
+                bus: row_changes.clone(),
+                config: state.config.clone(),
+            },
+        )
+        .trigger_request_format::<database::triggers::RowChangedConfig>()
+        .call_request_format::<database::triggers::RowChangedEvent>(),
+    );
 
     configuration::register_config_trigger(&iii, state.clone())
         .context("registering configuration change trigger")?;

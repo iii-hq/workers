@@ -29,14 +29,13 @@ point. Placeholder syntax: `?` for SQLite and MySQL, `$1`/`$2`/… for Postgres.
   `database::runStatement`).
 - You need read-your-writes across round-trips with logic between steps
   (`database::beginTransaction` … `commitTransaction` / `rollbackTransaction`).
-- You want to react to Postgres row-level changes once logical replication
-  streaming ships (`database::row-change` trigger — see below).
 
 ## Boundaries
 
 - Not a migration tool, ORM, or schema designer — pass raw SQL only.
-- Not a general pub/sub bus — use `database::row-change` only for Postgres
-  table change feeds, not for application events.
+- Not a general pub/sub bus. `database::row-changed` reports only what THIS
+  worker wrote, on commit — not change data capture; a write from psql or
+  another worker is invisible to it.
 - `database::query` is read-oriented; use `database::execute` for writes.
   Running a SELECT through `execute` discards rows.
 - Prepared handles pin a pool connection until TTL expiry — not transactions.
@@ -82,45 +81,19 @@ Interactive transactions auto-roll back when `timeout_ms` elapses (default
 30 s, max 5 min). Prepared handles default to a 1 h TTL (max 24 h) with no
 explicit release call — let them expire or stop using them when done.
 
-## Reactive triggers
+## Reacting to writes
 
-Register a `database::row-change` trigger when a function should run
-automatically on Postgres INSERT/UPDATE/DELETE for specific tables — without
-polling with `database::query`.
+Register a `database::row-changed` trigger to be told when this worker commits
+a change, instead of polling:
 
-Reach for it when:
-
-- A downstream worker or workflow must react to row mutations in near real
-  time on Postgres.
-- You need decoded row payloads (old/new values) from logical replication
-  rather than polling an outbox table.
-
-Do not bind when:
-
-- The writer already has the new row in its `execute` or `transactionExecute`
-  return payload.
-- You are on SQLite or MySQL — this trigger type is Postgres-only.
-- You need events today — v1.0.0 returns `UNSUPPORTED` on `registerTrigger`
-  pending an upstream `tokio-postgres` replication API release.
-
-### How to bind
-
-1. Register a handler: `registerFunction('stream::on-row-change', handler)`.
-2. Register the trigger:
-
-```typescript
-iii.registerTrigger({
-  type: 'database::row-change',
-  function_id: 'stream::on-row-change',
-  config: {
-    db: 'primary',
-    schema: 'public',
-    tables: ['orders', 'payments'],
-    // optional: slot_name, publication_name — see get function info
-  },
-})
+```json
+{ "trigger_type": "database::row-changed", "config": { "db": "primary", "table": "orders", "ops": ["insert"] } }
 ```
 
-Config: `db`, `schema` (default `public`), `tables`. Slot/publication names
-derive from `trigger_id` unless overridden. For event payload shape, call
-`get function info` on the trigger type or handler function id.
+The event is `{ db, table, op, affected_rows, returning?, at }`. It fires on
+commit — an interactive transaction's writes are announced by
+`commitTransaction`, and a rollback announces nothing. `table` is null when the
+statement's table cannot be read off the SQL (a CTE-wrapped write), and
+`runStatement` does not fire because it has no affected-row count to report.
+Delivery is best-effort: it is not durable with the commit and has no replay or
+exactly-once guarantee.

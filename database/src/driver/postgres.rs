@@ -384,6 +384,18 @@ pub async fn transaction(
         let step = if returns_rows {
             match tx_client.query(&stmt.sql, bound_refs.as_slice()).await {
                 Ok(rows) => {
+                    let columns = rows
+                        .first()
+                        .map(|row| {
+                            row.columns()
+                                .iter()
+                                .map(|col| ColumnMeta {
+                                    name: col.name().to_string(),
+                                    ty: col.type_().name().to_string(),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     let mut cells_rows: Vec<Row> = Vec::with_capacity(rows.len());
                     for row in &rows {
                         let mut cells = Vec::with_capacity(row.columns().len());
@@ -395,6 +407,7 @@ pub async fn transaction(
                     TxStepResult {
                         affected_rows: cells_rows.len() as u64,
                         rows: cells_rows,
+                        columns,
                     }
                 }
                 Err(e) => {
@@ -407,6 +420,7 @@ pub async fn transaction(
                 Ok(n) => TxStepResult {
                     affected_rows: n,
                     rows: vec![],
+                    columns: vec![],
                 },
                 Err(e) => {
                     let _ = tx_client.batch_execute("ROLLBACK").await;
@@ -456,6 +470,10 @@ pub async fn tx_begin(
 
 /// `COMMIT` the in-progress transaction on a pinned client.
 pub async fn tx_commit(client: &mut crate::pool::postgres::PgClient) -> Result<(), DbError> {
+    // PostgreSQL accepts COMMIT in an aborted transaction but reports the
+    // command tag ROLLBACK; batch_execute discards that tag. Probe while the
+    // transaction is still open so 25P02 takes the ordinary commit-error path.
+    client.simple_query("SELECT 1").await.map_err(map_err)?;
     client.batch_execute("COMMIT").await.map_err(map_err)
 }
 
@@ -1091,6 +1109,48 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(&r.rows[0].0[0], RowValue::BigInt(0)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_interactive_commit_rejects_an_aborted_transaction() {
+        let Some(p) = fresh_pool().await else { return };
+        let _ = execute(&p, "DROP TABLE IF EXISTS db_w_aborted_tx", &[], &[]).await;
+        execute(
+            &p,
+            "CREATE TABLE db_w_aborted_tx (n INT NOT NULL)",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let mut client = p.acquire().await.unwrap();
+        tx_begin(&mut client, None).await.unwrap();
+        tx_execute(
+            &mut client,
+            "INSERT INTO db_w_aborted_tx VALUES (1)",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+        tx_execute(
+            &mut client,
+            "INSERT INTO db_w_aborted_tx VALUES (NULL)",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap_err();
+
+        assert!(tx_commit(&mut client).await.is_err());
+        tx_rollback(&mut client).await.unwrap();
+        drop(client);
+
+        let rows = query(&p, "SELECT COUNT(*) FROM db_w_aborted_tx", &[], 30_000)
+            .await
+            .unwrap();
+        assert!(matches!(&rows.rows[0].0[0], RowValue::BigInt(0)));
     }
 
     #[tokio::test(flavor = "multi_thread")]

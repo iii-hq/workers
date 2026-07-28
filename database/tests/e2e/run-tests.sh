@@ -180,11 +180,10 @@ fi
 echo "[run-tests] both services healthy"
 
 # 5. (Optional) Run cargo unit + integration tests against the live DBs.
-# The 5 gated tests in src/{driver,pool}/{postgres,mysql}.rs and
-# src/triggers/row_change.rs early-return when TEST_*_URL is unset; we set
-# both here so they exercise real connections, binary param encoding,
-# replication-slot creation, etc — finer-grained than the e2e harness
-# alone. CI passes --with-cargo-test; local runs skip this by default.
+# The gated tests in src/{driver,pool}/{postgres,mysql}.rs early-return when
+# TEST_*_URL is unset; we set both here so they exercise real connections,
+# binary param encoding, etc — finer-grained than the e2e harness alone.
+# CI passes --with-cargo-test; local runs skip this by default.
 if [[ "$WITH_CARGO_TEST" -eq 1 ]]; then
   echo "[run-tests] cargo test --all-features (with TEST_POSTGRES_URL + TEST_MYSQL_URL)"
   (
