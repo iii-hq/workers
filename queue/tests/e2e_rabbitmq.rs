@@ -312,10 +312,10 @@ async fn function_queue_retry_then_dlq_then_redrive_connect_or_skip() {
 /// inspection must isolate that failure from the channel used by consumers.
 #[tokio::test]
 #[serial]
-async fn missing_dlq_inspection_does_not_close_consumer_channel_connect_or_skip() {
-    let Some(container) = docker::start_rabbitmq().await else {
-        return; // skip: docker not reachable
-    };
+async fn missing_dlq_inspection_does_not_close_consumer_channel() {
+    let container = docker::start_rabbitmq()
+        .await
+        .expect("Docker and a healthy RabbitMQ container are required for this E2E test");
 
     let invoker: Arc<dyn Invoker> = Arc::new(NoopInvoker);
     let adapter =
