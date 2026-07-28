@@ -57,13 +57,27 @@ impl E2eContext {
             .await
     }
 
+    pub async fn function_exists(&self, function_id: &str) -> Result<bool> {
+        let listed = self
+            .trigger_value(
+                "engine::functions::list",
+                json!({ "include_internal": true }),
+            )
+            .await?;
+        let exists = function_ids(&listed).any(|id| id == function_id);
+        Ok(exists)
+    }
+
     pub async fn wait_for_turn(
         &self,
         session_id: &str,
         initial_turn_id: &str,
         timeout: Duration,
+        progress_interval: Option<Duration>,
     ) -> Result<StatusReport> {
-        let deadline = tokio::time::Instant::now() + timeout;
+        let started = tokio::time::Instant::now();
+        let deadline = started + timeout;
+        let mut next_progress = progress_interval.map(|interval| started + interval);
         let mut active_turn_id = initial_turn_id.to_string();
         loop {
             let status: Option<StatusReport> = self
@@ -75,6 +89,21 @@ impl E2eContext {
                 }
                 if session_is_terminal(&status)? {
                     return Ok(status);
+                }
+                if progress_due(&mut next_progress, progress_interval) {
+                    tracing::info!(
+                        session_id,
+                        elapsed_seconds = started.elapsed().as_secs(),
+                        status = ?status.status,
+                        step = status.step,
+                        turns = status.turn_count,
+                        max_turns = status.max_turns,
+                        pending_functions = status.pending_function_calls.len(),
+                        children = status.children.len(),
+                        queued_messages = status.queued.len(),
+                        expects_wake = status.expects_wake,
+                        "E2E scenario progress"
+                    );
                 }
             }
             if tokio::time::Instant::now() >= deadline {
@@ -99,8 +128,11 @@ impl E2eContext {
         &self,
         session_id: &str,
         timeout: Duration,
+        progress_interval: Option<Duration>,
     ) -> Result<SessionMetricsResponseV1> {
-        let deadline = tokio::time::Instant::now() + timeout;
+        let started = tokio::time::Instant::now();
+        let deadline = started + timeout;
+        let mut next_progress = progress_interval.map(|interval| started + interval);
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
@@ -122,6 +154,28 @@ impl E2eContext {
             };
             if metrics.complete {
                 return Ok(metrics);
+            }
+            if progress_due(&mut next_progress, progress_interval) {
+                let tree = self
+                    .trigger::<_, harness::functions::session_tree::SessionTreeResponseV1>(
+                        "harness::session-tree",
+                        json!({ "root_session_id": session_id }),
+                    )
+                    .await;
+                match tree {
+                    Ok(tree) => tracing::info!(
+                        session_id,
+                        elapsed_seconds = started.elapsed().as_secs(),
+                        sessions = tree.sessions.len(),
+                        tree_complete = tree.complete,
+                        "waiting for descendant sessions to finish"
+                    ),
+                    Err(error) => tracing::debug!(
+                        session_id,
+                        %error,
+                        "could not collect progress for descendant sessions"
+                    ),
+                }
             }
             tokio::time::sleep(POLL_INTERVAL.min(remaining)).await;
         }
@@ -251,6 +305,34 @@ impl E2eContext {
     }
 }
 
+fn progress_due(
+    next_progress: &mut Option<tokio::time::Instant>,
+    interval: Option<Duration>,
+) -> bool {
+    let Some(next) = *next_progress else {
+        return false;
+    };
+    let now = tokio::time::Instant::now();
+    if now < next {
+        return false;
+    }
+    *next_progress = interval.map(|interval| now + interval);
+    true
+}
+
+fn function_ids(listed: &Value) -> impl Iterator<Item = &str> {
+    listed
+        .as_array()
+        .or_else(|| listed.as_object()?.values().find_map(Value::as_array))
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            item.as_str()
+                .or_else(|| item.get("function_id").and_then(Value::as_str))
+                .or_else(|| item.get("id").and_then(Value::as_str))
+        })
+}
+
 fn session_is_terminal(status: &StatusReport) -> Result<bool> {
     match status.status {
         TurnStatus::Completed => Ok(!status.expects_wake),
@@ -315,5 +397,20 @@ mod tests {
             let error = session_is_terminal(&report).unwrap_err();
             assert!(error.to_string().contains("provider stopped"));
         }
+    }
+
+    #[test]
+    fn function_discovery_accepts_engine_response_shapes() {
+        let listed = json!({
+            "functions": [
+                { "function_id": "provider::zai::stream" },
+                { "id": "database::query" },
+                "state::get"
+            ]
+        });
+        assert_eq!(
+            function_ids(&listed).collect::<Vec<_>>(),
+            ["provider::zai::stream", "database::query", "state::get"]
+        );
     }
 }

@@ -6,6 +6,9 @@ use crate::scenarios::CleanupFuture;
 
 pub(super) fn run<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
+        if !context.function_exists("database::query").await? {
+            return Ok(());
+        }
         let names = ScenarioNames::new(run_id);
         for table in queries::existing_tables(context, &names).await? {
             if !table.starts_with(&format!("{}_", names.table_prefix))

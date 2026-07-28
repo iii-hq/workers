@@ -55,6 +55,13 @@ List the code-defined ids used by CI:
 cargo run -p harness-e2e -- list
 ```
 
+List the models registered in the running stack:
+
+```bash
+cargo run -p harness-e2e -- models
+cargo run -p harness-e2e -- models --provider openai-codex
+```
+
 ## Run against a local stack
 
 From the `harness/` directory, run all scenarios against an already-running
@@ -62,12 +69,20 @@ stack:
 
 ```bash
 cargo run -p harness-e2e -- run \
-  --model claude-sonnet-4-6 \
-  --provider anthropic \
-  --judge-model claude-sonnet-4-6 \
-  --judge-provider anthropic \
-  --output target/e2e
+  --model glm-5.2 \
+  --provider zai
 ```
+
+The command only connects to the stack configured by `III_URL`; it never
+starts, builds, or stops the engine or workers. The stack must already expose
+the Harness dependencies, worker lifecycle and directory functions, plus the
+selected provider and model. Scenario capabilities such as `database` are
+discovered and installed by the agent when absent.
+
+`--model` and `--provider` are the only required parameters. Results default to
+`target/e2e`, and qualitative scenarios automatically use the subject model as
+their judge. Use `--output`, `--judge-model`, or `--judge-provider` only to
+override those defaults.
 
 Select one scenario and repeat it three times:
 
@@ -75,21 +90,27 @@ Select one scenario and repeat it three times:
 cargo run -p harness-e2e -- run \
   --model claude-sonnet-4-6 \
   --provider anthropic \
-  --judge-model claude-sonnet-4-6 \
-  --judge-provider anthropic \
-  --output target/e2e \
   --scenario security_review \
   --runs 3
 ```
 
 `III_URL`, `HARNESS_E2E_MODEL`, `HARNESS_E2E_PROVIDER`,
-`HARNESS_E2E_JUDGE_MODEL`, and `HARNESS_E2E_JUDGE_PROVIDER` are accepted as
-environment variables. Judge configuration is required only when a selected
-scenario has qualitative criteria (`direct_answer` or `security_review`).
-`--runs` accepts values from 1 through 20.
+`HARNESS_E2E_JUDGE_MODEL`, `HARNESS_E2E_JUDGE_PROVIDER`, and
+`HARNESS_E2E_OUTPUT` are accepted as environment variables. `--runs` accepts
+values from 1 through 20.
 
 `--quality-advisory` or `HARNESS_E2E_QUALITY_ADVISORY=true` makes score-only
 failures non-blocking. Hard-gate and technical failures remain blocking.
+
+The runner emits a progress heartbeat every 15 seconds with the active turn,
+step, pending function count, child-session count, and descendant-tree size.
+Set `--progress-interval-seconds 0` to disable it.
+
+Transient provider and transport failures receive one retry by default.
+Quality failures, hard-gate failures, cleanup failures, and resource limits are
+never retried. `--technical-retries` accepts values from 0 through 3. Retried
+attempts, their failure reasons, elapsed time, and cost remain visible in the
+report.
 
 The judge protocol deliberately uses plain text JSON, which works across
 providers without native structured-output support. The response is parsed and
@@ -118,6 +139,15 @@ Every run has one explicit status:
 Scores and criterion awards are `null` when evaluation did not complete. A
 technical failure is never converted into a zero score.
 
+Every execution also prints a compact terminal summary with scenario status,
+median score, threshold, elapsed time, cost, failed gates, partial criteria, and
+technical failure reasons. Inspect a saved artifact without a running stack:
+
+```bash
+cargo run -p harness-e2e -- report target/e2e
+cargo run -p harness-e2e -- report target/e2e/results.json --verbose
+```
+
 The runner writes `results.json` with:
 
 - exact catalog-resolved subject and judge model identity and capabilities;
@@ -126,6 +156,7 @@ The runner writes `results.json` with:
 - prompt, transcript, and `harness::metrics` for every run;
 - hard-gate results and per-criterion points;
 - judge attempts, token usage, and failures grouped by phase;
+- transient retry attempts and their original technical failures;
 - subject, judge, and total model cost per run and scenario;
 - median score, pass rate, and aggregate status.
 

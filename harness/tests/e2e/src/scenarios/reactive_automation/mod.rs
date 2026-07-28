@@ -66,6 +66,9 @@ fn evaluate<'a>(
 ) -> EvaluationFuture<'a> {
     Box::pin(async move {
         let names = ScenarioNames::new(run_id);
+        if !context.function_exists("database::query").await? {
+            return Ok(evaluate::missing_database());
+        }
         let evidence = queries::collect(context, observation, &names).await?;
         Ok(evaluate::score(&evidence, &names))
     })

@@ -13,12 +13,13 @@ use crate::context::E2eContext;
 use crate::judge::{self, JudgeConfig};
 use crate::report::{
     CriterionReport, E2eReport, E2eRunReport, E2eScenarioReport, FailurePhase, ModelArtifact,
-    RunStatus,
+    RetryAttemptReport, RunStatus,
 };
 use crate::scenarios::common;
 use crate::scenarios::{CriterionAward, ScenarioId, ScenarioObservation, ScenarioSpec};
 
 const MAX_RUNS: u32 = 20;
+const MAX_TECHNICAL_RETRIES: u8 = 3;
 
 fn e2e_function_policy() -> FunctionPolicy {
     FunctionPolicy {
@@ -40,6 +41,8 @@ pub struct SuiteRunConfig {
     pub output: PathBuf,
     pub scenarios: Vec<ScenarioId>,
     pub runs: u32,
+    pub technical_retries: u8,
+    pub progress_interval: Option<Duration>,
 }
 
 pub struct SuiteRunOutcome {
@@ -75,11 +78,13 @@ pub async fn run_suite(config: SuiteRunConfig) -> Result<SuiteRunOutcome> {
                 total_runs = config.runs,
                 "running E2E quality scenario"
             );
-            let run = run_once(
+            let run = run_with_technical_retries(
                 &context,
                 *scenario_id,
                 &config.subject,
                 config.judge.as_ref(),
+                config.technical_retries,
+                config.progress_interval,
             )
             .await;
             let stop = run.status.is_blocking_failure();
@@ -130,6 +135,9 @@ fn validate_config(config: &SuiteRunConfig) -> Result<()> {
     if !(1..=MAX_RUNS).contains(&config.runs) {
         bail!("runs must be between 1 and {MAX_RUNS}");
     }
+    if config.technical_retries > MAX_TECHNICAL_RETRIES {
+        bail!("technical retries must be between 0 and {MAX_TECHNICAL_RETRIES}");
+    }
     if config.scenarios.is_empty() {
         bail!("at least one scenario is required");
     }
@@ -175,6 +183,17 @@ async fn resolve_model(context: &E2eContext, model: &str, provider: &str) -> Res
             resolved.id
         );
     }
+    let stream_function = format!("provider::{provider}::stream");
+    if !context
+        .function_exists(&stream_function)
+        .await
+        .with_context(|| format!("check live provider function {stream_function}"))?
+    {
+        bail!(
+            "model {provider}/{model} is present in the catalog, but provider {provider} is not \
+             running; missing function {stream_function}"
+        );
+    }
     Ok(resolved)
 }
 
@@ -189,6 +208,7 @@ async fn run_once(
     scenario_id: ScenarioId,
     subject: &SubjectConfig,
     judge_config: Option<&JudgeConfig>,
+    progress_interval: Option<Duration>,
 ) -> E2eRunReport {
     let started = Instant::now();
     let run_id = Uuid::new_v4().simple().to_string();
@@ -198,11 +218,14 @@ async fn run_once(
 
     if let Err(error) = execute(
         context,
-        subject,
-        judge_config,
-        &run_id,
-        &session_id,
-        &spec,
+        ExecutionRequest {
+            subject,
+            judge_config,
+            run_id: &run_id,
+            session_id: &session_id,
+            spec: &spec,
+            progress_interval,
+        },
         &mut report,
     )
     .await
@@ -248,10 +271,60 @@ async fn run_once(
     report
 }
 
+async fn run_with_technical_retries(
+    context: &E2eContext,
+    scenario_id: ScenarioId,
+    subject: &SubjectConfig,
+    judge_config: Option<&JudgeConfig>,
+    technical_retries: u8,
+    progress_interval: Option<Duration>,
+) -> E2eRunReport {
+    let mut retry_attempts = Vec::with_capacity(technical_retries as usize);
+    loop {
+        let mut report = run_once(
+            context,
+            scenario_id,
+            subject,
+            judge_config,
+            progress_interval,
+        )
+        .await;
+        if retry_attempts.len() < technical_retries as usize
+            && is_retryable_technical_failure(&report)
+        {
+            let reason = report
+                .failures
+                .first()
+                .map(|failure| failure.message.as_str())
+                .unwrap_or("transient technical failure");
+            tracing::warn!(
+                scenario = scenario_id.as_str(),
+                attempt = retry_attempts.len() + 1,
+                max_retries = technical_retries,
+                reason,
+                "retrying E2E scenario after a transient technical failure"
+            );
+            retry_attempts.push(RetryAttemptReport::from(&report));
+            continue;
+        }
+        report.attach_retry_attempts(retry_attempts);
+        return report;
+    }
+}
+
 struct RunFailure {
     status: RunStatus,
     phase: FailurePhase,
     message: String,
+}
+
+struct ExecutionRequest<'a> {
+    subject: &'a SubjectConfig,
+    judge_config: Option<&'a JudgeConfig>,
+    run_id: &'a str,
+    session_id: &'a str,
+    spec: &'a ScenarioSpec,
+    progress_interval: Option<Duration>,
 }
 
 impl RunFailure {
@@ -266,13 +339,17 @@ impl RunFailure {
 
 async fn execute(
     context: &E2eContext,
-    subject: &SubjectConfig,
-    judge_config: Option<&JudgeConfig>,
-    run_id: &str,
-    session_id: &str,
-    spec: &ScenarioSpec,
+    request: ExecutionRequest<'_>,
     report: &mut E2eRunReport,
 ) -> Result<(), RunFailure> {
+    let ExecutionRequest {
+        subject,
+        judge_config,
+        run_id,
+        session_id,
+        spec,
+        progress_interval,
+    } = request;
     let scenario_timeout = Duration::from_secs(spec.execution.timeout_seconds);
     let scenario_deadline = tokio::time::Instant::now() + scenario_timeout;
     let response: SendResponse = context
@@ -315,11 +392,16 @@ async fn execute(
     }
 
     context
-        .wait_for_turn(session_id, &response.turn_id, remaining(scenario_deadline))
+        .wait_for_turn(
+            session_id,
+            &response.turn_id,
+            remaining(scenario_deadline),
+            progress_interval,
+        )
         .await
         .map_err(|error| subject_failure(FailurePhase::Execute, error.to_string()))?;
     let metrics = context
-        .wait_for_complete_metrics(session_id, remaining(scenario_deadline))
+        .wait_for_complete_metrics(session_id, remaining(scenario_deadline), progress_interval)
         .await
         .map_err(|error| collection_failure(FailurePhase::Collect, error.to_string()))?;
     let transcript = context.transcript(session_id).await.map_err(|error| {
@@ -404,6 +486,43 @@ fn is_resource_limit(message: &str) -> bool {
     ]
     .iter()
     .any(|needle| lower.contains(needle))
+}
+
+fn is_retryable_technical_failure(report: &E2eRunReport) -> bool {
+    if !matches!(
+        report.status,
+        RunStatus::SubjectError | RunStatus::JudgeError | RunStatus::InfrastructureError
+    ) || report
+        .failures
+        .iter()
+        .any(|failure| failure.phase == FailurePhase::Cleanup)
+    {
+        return false;
+    }
+    report.failures.iter().any(|failure| {
+        let lower = failure.message.to_ascii_lowercase();
+        [
+            "stream ended without",
+            "terminal frame",
+            "connection reset",
+            "connection closed",
+            "broken pipe",
+            "temporarily unavailable",
+            "service unavailable",
+            "rate limit",
+            "too many requests",
+            "http 429",
+            "status 429",
+            "status 502",
+            "status 503",
+            "status 504",
+            "transport error",
+            "network error",
+            "timed out",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    })
 }
 
 fn subject_failure(phase: FailurePhase, message: String) -> RunFailure {
@@ -602,5 +721,40 @@ mod tests {
             "scenario exceeded 600s while waiting for the complete session tree".into(),
         );
         assert_eq!(collection.status, RunStatus::ResourceLimit);
+    }
+
+    #[test]
+    fn only_transient_technical_failures_are_retried() {
+        let mut transient = E2eRunReport::new("run".into(), "session".into(), "prompt".into());
+        transient.push_failure(
+            RunStatus::SubjectError,
+            FailurePhase::Execute,
+            "zai stream ended without a terminal frame",
+        );
+        assert!(is_retryable_technical_failure(&transient));
+
+        let mut deterministic = E2eRunReport::new("run".into(), "session".into(), "prompt".into());
+        deterministic.push_failure(
+            RunStatus::JudgeError,
+            FailurePhase::Evaluate,
+            "judge returned an invalid criterion set",
+        );
+        assert!(!is_retryable_technical_failure(&deterministic));
+
+        let mut cleanup = E2eRunReport::new("run".into(), "session".into(), "prompt".into());
+        cleanup.push_failure(
+            RunStatus::InfrastructureError,
+            FailurePhase::Cleanup,
+            "connection reset during cleanup",
+        );
+        assert!(!is_retryable_technical_failure(&cleanup));
+
+        let mut budget = E2eRunReport::new("run".into(), "session".into(), "prompt".into());
+        budget.push_failure(
+            RunStatus::ResourceLimit,
+            FailurePhase::Execute,
+            "scenario exceeded its deadline",
+        );
+        assert!(!is_retryable_technical_failure(&budget));
     }
 }

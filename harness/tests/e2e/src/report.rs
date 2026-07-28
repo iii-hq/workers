@@ -4,12 +4,14 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use harness::functions::metrics::SessionMetricsResponseV1;
 use harness::types::model::Model;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::scenarios::ExecutionPolicy;
 
-#[derive(Debug, Clone, Copy, Serialize)]
+mod summary;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailurePhase {
     Setup,
@@ -19,20 +21,20 @@ pub enum FailurePhase {
     Cleanup,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FailureRecord {
     pub phase: FailurePhase,
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HardGateReport {
     pub id: String,
     pub passed: bool,
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CriterionReport {
     pub id: String,
     pub possible: u8,
@@ -40,7 +42,7 @@ pub struct CriterionReport {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelUsageReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
@@ -56,14 +58,14 @@ pub struct ModelUsageReport {
     pub cost_usd: Option<f64>,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CostReport {
     pub subject_usd: Option<f64>,
     pub judge_usd: Option<f64>,
     pub total_usd: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
     Passed,
@@ -86,9 +88,44 @@ impl RunStatus {
     pub fn is_blocking_failure(self) -> bool {
         self == Self::HardGateFailed || self.is_technical_failure()
     }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Passed => "PASS",
+            Self::QualityFailed => "QUALITY FAIL",
+            Self::HardGateFailed => "HARD GATE FAIL",
+            Self::SubjectError => "SUBJECT ERROR",
+            Self::JudgeError => "JUDGE ERROR",
+            Self::ResourceLimit => "RESOURCE LIMIT",
+            Self::InfrastructureError => "INFRA ERROR",
+        }
+    }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryAttemptReport {
+    pub run_id: String,
+    pub session_id: String,
+    pub wall_time_ms: u64,
+    pub status: RunStatus,
+    pub cost: CostReport,
+    pub failures: Vec<FailureRecord>,
+}
+
+impl From<&E2eRunReport> for RetryAttemptReport {
+    fn from(report: &E2eRunReport) -> Self {
+        Self {
+            run_id: report.run_id.clone(),
+            session_id: report.session_id.clone(),
+            wall_time_ms: report.wall_time_ms,
+            status: report.status,
+            cost: report.cost.clone(),
+            failures: report.failures.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct E2eRunReport {
     pub run_id: String,
     pub session_id: String,
@@ -107,7 +144,9 @@ pub struct E2eRunReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub judge_usage: Option<ModelUsageReport>,
     pub cost: CostReport,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retry_attempts: Vec<RetryAttemptReport>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failures: Vec<FailureRecord>,
 }
 
@@ -127,6 +166,7 @@ impl E2eRunReport {
             judge_attempts: None,
             judge_usage: None,
             cost: CostReport::default(),
+            retry_attempts: Vec::new(),
             failures: Vec::new(),
         }
     }
@@ -137,11 +177,14 @@ impl E2eRunReport {
         phase: FailurePhase,
         message: impl Into<String>,
     ) {
+        let is_primary = self.failures.is_empty();
         self.failures.push(FailureRecord {
             phase,
             message: message.into(),
         });
-        self.status = status;
+        if is_primary {
+            self.status = status;
+        }
     }
 
     pub fn finish(&mut self, status: RunStatus) {
@@ -167,9 +210,39 @@ impl E2eRunReport {
                 .map(|(subject, judge)| subject + judge),
         };
     }
+
+    pub fn attach_retry_attempts(&mut self, retry_attempts: Vec<RetryAttemptReport>) {
+        if retry_attempts.is_empty() {
+            return;
+        }
+        self.wall_time_ms = retry_attempts
+            .iter()
+            .fold(self.wall_time_ms, |total, attempt| {
+                total.saturating_add(attempt.wall_time_ms)
+            });
+        self.cost.subject_usd = sum_cost(
+            retry_attempts
+                .iter()
+                .map(|attempt| attempt.cost.subject_usd)
+                .chain([self.cost.subject_usd]),
+        );
+        self.cost.judge_usd = sum_cost(
+            retry_attempts
+                .iter()
+                .map(|attempt| attempt.cost.judge_usd)
+                .chain([self.cost.judge_usd]),
+        );
+        self.cost.total_usd = sum_cost(
+            retry_attempts
+                .iter()
+                .map(|attempt| attempt.cost.total_usd)
+                .chain([self.cost.total_usd]),
+        );
+        self.retry_attempts = retry_attempts;
+    }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ScenarioAggregate {
     pub runs: u32,
     pub scored_runs: u32,
@@ -182,7 +255,7 @@ pub struct ScenarioAggregate {
     pub cost: CostReport,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct E2eScenarioReport {
     pub scenario_id: String,
     pub threshold: u8,
@@ -250,7 +323,7 @@ impl E2eScenarioReport {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelArtifact {
     pub model: String,
     pub provider: String,
@@ -273,7 +346,7 @@ impl From<Model> for ModelArtifact {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct E2eReport {
     pub subject: ModelArtifact,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -314,6 +387,18 @@ impl E2eReport {
         bytes.push(b'\n');
         fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
         Ok(path)
+    }
+
+    pub fn read_from(input: &Path) -> Result<(Self, PathBuf)> {
+        let path = if input.is_dir() {
+            input.join("results.json")
+        } else {
+            input.to_path_buf()
+        };
+        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+        let report = serde_json::from_slice(&bytes)
+            .with_context(|| format!("decode E2E report {}", path.display()))?;
+        Ok((report, path))
     }
 
     pub fn has_non_quality_failure(&self) -> bool {
@@ -434,6 +519,24 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_failure_does_not_hide_the_primary_failure_status() {
+        let mut report = E2eRunReport::new("run".into(), "session".into(), "prompt".into());
+        report.push_failure(
+            RunStatus::SubjectError,
+            FailurePhase::Execute,
+            "provider unavailable",
+        );
+        report.push_failure(
+            RunStatus::InfrastructureError,
+            FailurePhase::Cleanup,
+            "cleanup unavailable",
+        );
+
+        assert_eq!(report.status, RunStatus::SubjectError);
+        assert_eq!(report.failures.len(), 2);
+    }
+
+    #[test]
     fn hard_gate_failures_cannot_be_outvoted() {
         let mut hard_gate = run(100, true);
         hard_gate.status = RunStatus::HardGateFailed;
@@ -462,6 +565,58 @@ mod tests {
         assert_eq!(value["scenarios"][0]["aggregate"]["median_score"], 90.0);
         assert_eq!(value["scenarios"][0]["runs"][0]["status"], "passed");
         assert!(value["scenarios"][0]["aggregate"]["cost"].is_object());
+    }
+
+    #[test]
+    fn retry_attempts_preserve_failures_time_and_cost() {
+        let mut failed = E2eRunReport::new("retry".into(), "retry-session".into(), "prompt".into());
+        failed.wall_time_ms = 2_000;
+        failed.cost = CostReport {
+            subject_usd: Some(0.10),
+            judge_usd: Some(0.0),
+            total_usd: Some(0.10),
+        };
+        failed.push_failure(
+            RunStatus::SubjectError,
+            FailurePhase::Execute,
+            "stream ended without a terminal frame",
+        );
+
+        let mut passed = run(100, true);
+        passed.wall_time_ms = 3_000;
+        passed.cost = CostReport {
+            subject_usd: Some(0.20),
+            judge_usd: Some(0.0),
+            total_usd: Some(0.20),
+        };
+        passed.attach_retry_attempts(vec![RetryAttemptReport::from(&failed)]);
+
+        assert_eq!(passed.wall_time_ms, 5_000);
+        assert_eq!(passed.retry_attempts.len(), 1);
+        assert!((passed.cost.total_usd.unwrap() - 0.30).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn summary_surfaces_the_actionable_failure_details() {
+        let mut failed = run(50, false);
+        failed.status = RunStatus::HardGateFailed;
+        failed.hard_gates.push(HardGateReport {
+            id: "durable_effect".into(),
+            passed: false,
+            reason: "expected row was missing".into(),
+        });
+        failed.criteria.push(CriterionReport {
+            id: "correctness".into(),
+            possible: 100,
+            awarded: Some(50),
+            reason: "only half of the expected result was present".into(),
+        });
+        let report = E2eReport::new(model(), None, None, None, vec![aggregate(vec![failed])]);
+
+        let summary = report.summary(false);
+        assert!(summary.contains("Harness E2E: FAIL"));
+        assert!(summary.contains("gate durable_effect: FAIL - expected row was missing"));
+        assert!(summary.contains("criterion correctness: 50/100"));
     }
 
     #[test]

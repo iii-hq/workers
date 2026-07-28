@@ -5,7 +5,7 @@ use std::pin::Pin;
 use anyhow::{bail, Result};
 use clap::ValueEnum;
 use harness::functions::metrics::SessionMetricsResponseV1;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::context::E2eContext;
@@ -31,7 +31,7 @@ pub struct CriterionSpec {
     pub description: &'static str,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionPolicy {
     pub max_turns: u32,
     #[serde(skip_serializing_if = "Option::is_none")]

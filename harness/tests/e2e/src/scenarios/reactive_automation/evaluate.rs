@@ -5,6 +5,20 @@ use super::names::ScenarioNames;
 use super::{EXPECTED_ORDERS, EXPECTED_WRITERS, ORDERS_PER_WRITER};
 use crate::scenarios::{common, ObjectiveEvaluation};
 
+pub(super) fn missing_database() -> ObjectiveEvaluation {
+    let reason = "database capability is unavailable; the agent was expected to discover and \
+                  install the database worker before executing the scenario";
+    ObjectiveEvaluation {
+        hard_gates: vec![common::gate("database_capability_available", false, reason)],
+        awards: vec![
+            common::award("parallel_writes", 0, reason),
+            common::award("reactive_aggregates", 0, reason),
+            common::award("trigger_orchestration", 0, reason),
+            common::award("finalization_cleanup", 0, reason),
+        ],
+    }
+}
+
 pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEvaluation {
     let expected_writer_sessions: BTreeSet<_> = names.writer_sessions.iter().cloned().collect();
     let expected_writer_names: BTreeSet<_> = (1..=EXPECTED_WRITERS)
@@ -276,6 +290,23 @@ mod tests {
                 .map(|award| u16::from(award.awarded))
                 .sum::<u16>(),
             100
+        );
+    }
+
+    #[test]
+    fn missing_database_is_a_behavioral_hard_gate() {
+        let evaluation = missing_database();
+
+        assert_eq!(evaluation.hard_gates.len(), 1);
+        assert_eq!(evaluation.hard_gates[0].id, "database_capability_available");
+        assert!(!evaluation.hard_gates[0].passed);
+        assert_eq!(
+            evaluation
+                .awards
+                .iter()
+                .map(|award| u16::from(award.awarded))
+                .sum::<u16>(),
+            0
         );
     }
 }

@@ -4,6 +4,9 @@ pub(super) fn build(names: &ScenarioNames, watchdog_seconds: u64) -> String {
     format!(
         r#"Validate trigger-based orchestration using the existing run id `{run_label}`.
 
+If database capability is not currently available, discover and install the database worker from
+the registry before proceeding, then confirm its functions are registered.
+
 Use database `primary`, SQL-safe namespace `{namespace}`, and these exact resources:
 
 - orders: `{orders}` (`id`, `writer`, `amount`, `created_at`)
