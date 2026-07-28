@@ -167,8 +167,23 @@ Nightly dispatch inputs may override the matrix and judge:
 `HARNESS_E2E_JUDGE_MODEL` and `HARNESS_E2E_JUDGE_PROVIDER` configure the fixed
 judge used for every subject.
 
-The hosted workflows currently forward `ANTHROPIC_API_KEY` and
-`OPENAI_API_KEY`. Subscription-backed `claude-code` and `openai-codex`
+To run GLM in CI, configure the repository secret `ZAI_API_KEY` and set the
+subject matrix to a Z.AI provider entry. For example, the Coding Plan catalog
+uses `glm-5.2`:
+
+```json
+[{"id":"glm-5-2","model":"glm-5.2","provider":"zai"}]
+```
+
+The same provider can be used as the judge with
+`HARNESS_E2E_JUDGE_MODEL=glm-5.2` and
+`HARNESS_E2E_JUDGE_PROVIDER=zai`. The workflow passes `ZAI_API_KEY` only to
+the isolated E2E job; never put the key in `HARNESS_E2E_SUBJECTS` or a tracked
+file. Pay-as-you-go Z.AI keys require configuring the provider's general API
+endpoint; Coding Plan keys use the provider's default coding endpoint.
+
+The hosted workflows currently forward `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+and `ZAI_API_KEY`. Subscription-backed `claude-code` and `openai-codex`
 providers require their credential files to be provisioned securely on the
 runner; the current workflow does not inject those files.
 

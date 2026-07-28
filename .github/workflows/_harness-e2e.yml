@@ -38,6 +38,8 @@ on:
         required: false
       openai_api_key:
         required: false
+      zai_api_key:
+        required: false
 
 jobs:
   build:
@@ -172,6 +174,7 @@ jobs:
             provider-openai -> target
             provider-openai-codex -> target
             provider-claude-code -> target
+            provider-zai -> target
             context-manager -> target
             iii-directory -> target
             cron -> target
@@ -284,6 +287,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
           OPENAI_API_KEY: ${{ secrets.openai_api_key }}
+          ZAI_API_KEY: ${{ secrets.zai_api_key }}
           III_BIN: ${{ github.workspace }}/target/integration-engine-src/${{ needs.build.outputs.engine_binary }}
           HARNESS_E2E_BIN: ${{ github.workspace }}/harness/target/release/harness-e2e
           HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
