@@ -22,7 +22,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
         ),
         execution: ExecutionPolicy {
             max_turns: 12,
-            max_output_tokens: 8_192,
+            max_output_tokens: Some(8_192),
             max_total_tokens: 122_880,
             timeout_seconds: 240,
         },

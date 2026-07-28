@@ -34,7 +34,8 @@ pub struct CriterionSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ExecutionPolicy {
     pub max_turns: u32,
-    pub max_output_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
     pub max_total_tokens: u64,
     pub timeout_seconds: u64,
 }
@@ -42,13 +43,16 @@ pub struct ExecutionPolicy {
 impl ExecutionPolicy {
     fn validate(self, scenario_id: &str) -> Result<()> {
         if self.max_turns == 0
-            || self.max_output_tokens == 0
+            || self.max_output_tokens == Some(0)
             || self.max_total_tokens == 0
             || self.timeout_seconds == 0
         {
             bail!("scenario {scenario_id} has an invalid execution policy");
         }
-        if self.max_total_tokens < self.max_output_tokens {
+        if self
+            .max_output_tokens
+            .is_some_and(|max_output_tokens| self.max_total_tokens < max_output_tokens)
+        {
             bail!(
                 "scenario {scenario_id} total-token budget is smaller than its per-call output budget"
             );
@@ -196,6 +200,17 @@ mod tests {
                 ScenarioId::ReactiveAutomation,
             ]),
             vec![ScenarioId::ReactiveAutomation, ScenarioId::DirectAnswer]
+        );
+    }
+
+    #[test]
+    fn reactive_automation_uses_the_provider_output_limit() {
+        assert_eq!(
+            ScenarioId::ReactiveAutomation
+                .spec("run")
+                .execution
+                .max_output_tokens,
+            None
         );
     }
 }

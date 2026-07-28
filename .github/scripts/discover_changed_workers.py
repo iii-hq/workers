@@ -51,6 +51,7 @@ INTEGRATION_WORKERS = {
     "console",
 }
 E2E_WORKERS = {
+    "database",
     "harness",
     "queue",
     "session-manager",

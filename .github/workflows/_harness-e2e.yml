@@ -163,6 +163,7 @@ jobs:
           save-if: false
           workspaces: |
             harness -> target
+            database -> target
             state -> target
             queue -> target
             session-manager -> target
@@ -187,7 +188,7 @@ jobs:
           JUDGE_PROVIDER: ${{ inputs.judge_provider }}
         run: |
           set -euo pipefail
-          for worker in state queue session-manager llm-router context-manager iii-directory cron; do
+          for worker in database state queue session-manager llm-router context-manager iii-directory cron; do
             cargo build --locked --release --manifest-path "$worker/Cargo.toml"
           done
           mapfile -t providers < <(
@@ -223,6 +224,7 @@ jobs:
           set -euo pipefail
           paths=(
             "target/integration-engine-src/${{ steps.lock.outputs.binary }}"
+            database/target/release/database
             state/target/release/state
             queue/target/release/queue
             session-manager/target/release/session-manager

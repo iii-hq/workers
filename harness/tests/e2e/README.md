@@ -42,8 +42,12 @@ scenario through one global `allow: ["*"]` policy:
   evaluated entirely in code.
 - `security_review`: reviews three vulnerable snippets; a judge scores coverage,
   accuracy, remediation, and clarity.
-- `reactive_automation`: creates and fires a one-shot state reaction, evaluated
-  entirely through observed calls and durable state.
+- `reactive_automation`: orchestrates three parallel database writers,
+  trigger-spawned aggregate reactors, and a single finalizer. The CI stack uses
+  SQLite, so the scenario proves bounded `database::row-change` discovery and
+  the namespaced `state`-trigger fallback. The evaluator queries the resulting
+  tables, verifies trigger provenance from session metadata, and checks that all
+  run-owned triggers were removed.
 
 List the code-defined ids used by CI:
 
@@ -140,11 +144,11 @@ zero.
 | Harness E2E Nightly | New `main` revision on schedule, or manual dispatch on `main` | 3 per subject/scenario | Median score, two-of-three pass policy, hard gates and technical failures blocking |
 
 The reusable workflow itself is guarded to run only from `main`. It builds the
-pinned engine and only the provider workers required by the subject matrix and
-fixed judge. Scenario ids come directly from `harness-e2e list`. Each
-subject/scenario pair receives a fresh stack, and repetitions run sequentially
-inside that job with unique session and state scopes. At most two matrix jobs
-make live-model calls concurrently.
+pinned engine, the SQLite-backed database worker, and only the provider workers
+required by the subject matrix and fixed judge. Scenario ids come directly from
+`harness-e2e list`. Each subject/scenario pair receives a fresh stack, and
+repetitions run sequentially inside that job with unique table, session, and
+state namespaces. At most two matrix jobs make live-model calls concurrently.
 
 The scheduled nightly skips the live suite when the current `main` SHA already
 has a successful full nightly result. A manual dispatch bypasses this

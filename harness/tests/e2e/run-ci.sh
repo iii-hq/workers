@@ -19,8 +19,9 @@ logs_dir="$artifacts_dir/logs"
 iii_port=${HARNESS_E2E_PORT:-49134}
 iii_url="ws://127.0.0.1:$iii_port"
 engine_config=${HARNESS_E2E_ENGINE_CONFIG:-"$script_dir/stack-config/engine.yaml"}
+database_config=${HARNESS_E2E_DATABASE_CONFIG:-"$script_dir/stack-config/database.yaml"}
 
-mkdir -p "$run_dir" "$logs_dir"
+mkdir -p "$run_dir" "$logs_dir" "$run_dir/database"
 export HARNESS_E2E_RUN_DIR="$run_dir"
 export HARNESS_E2E_PORT="$iii_port"
 
@@ -130,6 +131,13 @@ start_provider() {
 
 start_process engine "$III_BIN" -c "$engine_config"
 wait_for_function engine::workers::list
+
+start_process database \
+  "$repo_root/database/target/release/database" \
+  --url "$iii_url" \
+  --config "$database_config"
+wait_for_function database::query
+wait_for_trigger_type database::row-change
 
 start_process state \
   "$repo_root/state/target/release/state" \

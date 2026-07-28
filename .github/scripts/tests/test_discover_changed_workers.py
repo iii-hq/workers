@@ -161,13 +161,13 @@ def make_repo_with_harness(tmp_path: Path) -> Path:
     (tmp_path / "console" / "package.json").write_text(
         '{"name":"console","version":"0.1.0"}'
     )
-    for provider in ("provider-anthropic", "provider-openai-codex"):
-        (tmp_path / provider).mkdir()
-        (tmp_path / provider / "iii.worker.yaml").write_text(
-            f'iii: v1\nname: {provider}\nlanguage: rust\ndeploy: binary\nmanifest: Cargo.toml\n'
+    for worker in ("database", "provider-anthropic", "provider-openai-codex"):
+        (tmp_path / worker).mkdir()
+        (tmp_path / worker / "iii.worker.yaml").write_text(
+            f'iii: v1\nname: {worker}\nlanguage: rust\ndeploy: binary\nmanifest: Cargo.toml\n'
         )
-        (tmp_path / provider / "Cargo.toml").write_text(
-            f'[package]\nname = "{provider}"\nversion = "0.1.0"\n'
+        (tmp_path / worker / "Cargo.toml").write_text(
+            f'[package]\nname = "{worker}"\nversion = "0.1.0"\n'
         )
     (tmp_path / ".github" / "workflows").mkdir(parents=True)
     (tmp_path / ".github" / "workflows" / "ci.yml").write_text(
@@ -289,6 +289,25 @@ class TestHarnessSelection:
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert data["changed_workers"] == ["provider-anthropic"]
+        assert data["integration_changed"] is False
+        assert data["e2e_changed"] is True
+
+    def test_database_change_runs_only_e2e(self, tmp_path):
+        repo = make_repo_with_harness(tmp_path)
+        (repo / "database" / "lib.rs").write_text("// change\n")
+        subprocess.run(
+            ["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "database"],
+            cwd=repo,
+            check=True,
+            env=GIT_HERMETIC_ENV,
+        )
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["changed_workers"] == ["database"]
         assert data["integration_changed"] is False
         assert data["e2e_changed"] is True
 

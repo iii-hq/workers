@@ -372,7 +372,7 @@ mod tests {
             80,
             ExecutionPolicy {
                 max_turns: 1,
-                max_output_tokens: 1,
+                max_output_tokens: Some(1),
                 max_total_tokens: 1,
                 timeout_seconds: 1,
             },

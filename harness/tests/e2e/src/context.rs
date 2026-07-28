@@ -60,38 +60,27 @@ impl E2eContext {
     pub async fn wait_for_turn(
         &self,
         session_id: &str,
-        turn_id: &str,
+        initial_turn_id: &str,
         timeout: Duration,
     ) -> Result<StatusReport> {
         let deadline = tokio::time::Instant::now() + timeout;
+        let mut active_turn_id = initial_turn_id.to_string();
         loop {
             let status: Option<StatusReport> = self
                 .trigger("harness::status", json!({ "session_id": session_id }))
                 .await?;
             if let Some(status) = status {
-                if status.turn_id.as_deref().is_some_and(|id| id != turn_id) {
-                    bail!(
-                        "harness::status returned turn {:?} instead of {turn_id}",
-                        status.turn_id
-                    );
+                if let Some(turn_id) = &status.turn_id {
+                    active_turn_id.clone_from(turn_id);
                 }
-                match status.status {
-                    TurnStatus::Completed if !status.expects_wake => return Ok(status),
-                    TurnStatus::Failed | TurnStatus::Cancelled => {
-                        bail!(
-                            "turn ended as {:?}: {}",
-                            status.status,
-                            status
-                                .result_error
-                                .as_deref()
-                                .unwrap_or("no error was reported")
-                        );
-                    }
-                    _ => {}
+                if session_is_terminal(&status)? {
+                    return Ok(status);
                 }
             }
             if tokio::time::Instant::now() >= deadline {
-                let _ = self.stop_session(session_id, Some(turn_id)).await;
+                let _ = self
+                    .stop_session(session_id, Some(active_turn_id.as_str()))
+                    .await;
                 bail!(
                     "scenario exceeded {}s while waiting for session {session_id}",
                     timeout.as_secs()
@@ -258,6 +247,73 @@ impl E2eContext {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(error)) => Err(anyhow!("{function_id}: {error}")),
             Err(_) => bail!("{function_id}: no response within {}ms", outer.as_millis()),
+        }
+    }
+}
+
+fn session_is_terminal(status: &StatusReport) -> Result<bool> {
+    match status.status {
+        TurnStatus::Completed => Ok(!status.expects_wake),
+        TurnStatus::Failed | TurnStatus::Cancelled => {
+            bail!(
+                "turn ended as {:?}: {}",
+                status.status,
+                status
+                    .result_error
+                    .as_deref()
+                    .unwrap_or("no error was reported")
+            );
+        }
+        TurnStatus::Running | TurnStatus::AwaitingFunctions => Ok(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(turn_id: &str, status: TurnStatus, expects_wake: bool) -> StatusReport {
+        StatusReport {
+            session_id: "session".to_string(),
+            turn_id: Some(turn_id.to_string()),
+            status,
+            step: 0,
+            turn_count: 1,
+            max_turns: 100,
+            validation_retries: 0,
+            max_validation_retries: 0,
+            transient_resumes: 0,
+            max_transient_resumes: 0,
+            partial_result_available: false,
+            depth: 0,
+            pending_function_calls: Vec::new(),
+            children: Vec::new(),
+            expects_wake,
+            queued: Vec::new(),
+            result: None,
+            result_error: None,
+        }
+    }
+
+    #[test]
+    fn a_wake_can_advance_the_session_to_a_new_turn() {
+        let parked = status("turn-initial", TurnStatus::Completed, true);
+        let resumed = status("turn-after-wake", TurnStatus::Running, false);
+        let completed = status("turn-after-wake", TurnStatus::Completed, false);
+
+        assert!(!session_is_terminal(&parked).unwrap());
+        assert!(!session_is_terminal(&resumed).unwrap());
+        assert!(session_is_terminal(&completed).unwrap());
+    }
+
+    #[test]
+    fn failed_and_cancelled_turns_are_errors() {
+        for turn_status in [TurnStatus::Failed, TurnStatus::Cancelled] {
+            let mut report = status("turn", turn_status, false);
+            report.result_error = Some("provider stopped".to_string());
+
+            let error = session_is_terminal(&report).unwrap_err();
+            assert!(error.to_string().contains("provider stopped"));
         }
     }
 }

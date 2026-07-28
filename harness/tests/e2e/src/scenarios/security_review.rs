@@ -18,7 +18,7 @@ For each snippet, identify the vulnerability, explain its impact, and recommend 
             .into(),
         execution: ExecutionPolicy {
             max_turns: 2,
-            max_output_tokens: 4_096,
+            max_output_tokens: Some(4_096),
             max_total_tokens: 49_152,
             timeout_seconds: 120,
         },

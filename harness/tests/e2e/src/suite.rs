@@ -293,7 +293,7 @@ async fn execute(
                 }),
                 options: Some(SendOptions {
                     max_turns: Some(spec.execution.max_turns),
-                    max_output_tokens: Some(spec.execution.max_output_tokens),
+                    max_output_tokens: spec.execution.max_output_tokens,
                     max_total_tokens: Some(spec.execution.max_total_tokens),
                     functions: Some(e2e_function_policy()),
                     ..SendOptions::default()
@@ -513,7 +513,7 @@ mod tests {
             prompt: "prompt".into(),
             execution: ExecutionPolicy {
                 max_turns: 1,
-                max_output_tokens: 1,
+                max_output_tokens: Some(1),
                 max_total_tokens: 1,
                 timeout_seconds: 1,
             },
