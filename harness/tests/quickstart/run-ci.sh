@@ -93,21 +93,9 @@ rm -f \
   "$artifact_dir/commands.log" \
   "$log_dir"/*.log
 
+trace_log="$artifact_dir/commands.log"
 if [[ "$trace_enabled" == 1 ]]; then
-  trace_secret=${ZAI_API_KEY:-}
-  trace_log="$artifact_dir/commands.log"
-  exec {trace_fd}> >(
-    while IFS= read -r trace_line; do
-      if [[ -n "$trace_secret" ]]; then
-        trace_line=${trace_line//"$trace_secret"/"[REDACTED]"}
-      fi
-      printf '%s\n' "$trace_line" >&2
-      printf '%s\n' "$trace_line" >>"$trace_log"
-    done
-  )
-  BASH_XTRACEFD=$trace_fd
-  PS4='+ ${SECONDS}s ${BASH_SOURCE##*/}:${LINENO}:${FUNCNAME[0]:-main}: '
-  set -x
+  : >"$trace_log"
 fi
 
 export HOME="$quickstart_home"
@@ -122,6 +110,17 @@ started_at_seconds=$SECONDS
 
 log() {
   printf '\n[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2
+}
+
+log_command() {
+  [[ "$trace_enabled" == 1 ]] || return 0
+
+  local rendered="$*"
+  if [[ -n "${ZAI_API_KEY:-}" ]]; then
+    rendered=${rendered//"$ZAI_API_KEY"/"[REDACTED]"}
+  fi
+  printf '\n  $ %s\n' "$rendered" >&2
+  printf '$ %s\n' "$rendered" >>"$trace_log"
 }
 
 ok() {
@@ -210,6 +209,7 @@ trap 'exit 143' TERM
 wait_for_engine() {
   local response attempt
   log "Waiting for engine on port $engine_port (up to ${wait_seconds}s)"
+  log_command "iii trigger engine::workers::list --port $engine_port --json '{}'"
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
     kill -0 "$engine_pid" 2>/dev/null || die "engine exited before becoming ready"
     response=$("$iii_bin" trigger engine::workers::list --port "$engine_port" \
@@ -236,6 +236,7 @@ wait_for_functions() {
   ]'
 
   log "Waiting for the harness and Console function surface (up to ${wait_seconds}s)"
+  log_command "iii trigger engine::functions::list --port $engine_port --json '{\"include_internal\":true}'"
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
     response=$("$iii_bin" trigger engine::functions::list --port "$engine_port" \
       --json '{"include_internal":true}' 2>>"$log_dir/discovery.log" || true)
@@ -259,6 +260,7 @@ wait_for_functions() {
 wait_for_function() {
   local function_id=$1 response attempt
   log "Waiting for $function_id (up to ${wait_seconds}s)"
+  log_command "iii trigger engine::functions::list --port $engine_port --json '{\"include_internal\":true}'"
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
     response=$("$iii_bin" trigger engine::functions::list --port "$engine_port" \
       --json '{"include_internal":true}' 2>>"$log_dir/discovery.log" || true)
@@ -278,6 +280,7 @@ wait_for_model() {
   request=$(jq -cn --arg provider "$send_provider" --arg id "$send_model" \
     '{provider: $provider, id: $id}')
   log "Waiting for model $send_provider/$send_model (up to ${wait_seconds}s)"
+  log_command "iii trigger router::models::get --port $engine_port --json '{\"provider\":\"$send_provider\",\"id\":\"$send_model\"}'"
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
     response=$("$iii_bin" trigger router::models::get --port "$engine_port" \
       --json "$request" 2>>"$log_dir/discovery.log" || true)
@@ -292,6 +295,7 @@ wait_for_model() {
 }
 
 run_worker_add() {
+  log_command "iii worker add $*"
   if command -v timeout >/dev/null 2>&1; then
     timeout --signal=TERM --kill-after=15s "$add_timeout_seconds" \
       "$iii_bin" worker add "$@"
@@ -302,6 +306,7 @@ run_worker_add() {
 
 start_engine() {
   local command=("$iii_bin" -c "$project_dir/config.yaml" --no-update-check)
+  log_command "iii -c config.yaml --no-update-check"
   if command -v setsid >/dev/null 2>&1; then
     setsid "${command[@]}" >"$log_dir/engine.log" 2>&1 &
   else
@@ -313,15 +318,19 @@ start_engine() {
 cd "$project_dir"
 
 log "Step 1/6: Install iii from $install_url (channel=$channel)"
+log_command "curl -fsSL $install_url -o install.sh"
 curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
   "$install_url" -o "$run_root/install.sh"
 if [[ "$channel" == "next" ]]; then
+  log_command "sh install.sh --next"
   sh "$run_root/install.sh" --next 2>&1 | tee "$log_dir/install.log"
 else
+  log_command "sh install.sh"
   sh "$run_root/install.sh" 2>&1 | tee "$log_dir/install.log"
 fi
 iii_bin=$(command -v iii || true)
 [[ -n "$iii_bin" && -x "$iii_bin" ]] || die "iii CLI was not installed"
+log_command "iii --version"
 cli_version=$("$iii_bin" --version 2>&1)
 printf '%s\n' "$cli_version" >"$artifact_dir/cli-version.txt"
 ok "installed $cli_version"
@@ -339,11 +348,13 @@ log "Step 4/6: Verify registered functions"
 wait_for_functions
 
 log "Step 5/6: Verify the Console HTTP surface"
+log_command "iii trigger console::status --port $engine_port --json '{}'"
 console_status=$("$iii_bin" trigger console::status --port "$engine_port" \
   --json '{}' 2>"$log_dir/console-status.log")
 printf '%s\n' "$console_status" >"$artifact_dir/console-status.json"
 console_port=$(jq -er '.http_port | select(type == "number")' <<<"$console_status") \
   || die "console::status did not return a numeric http_port"
+log_command "curl -fsS http://127.0.0.1:$console_port/"
 curl -fsS --retry 10 --retry-all-errors --retry-delay 1 \
   "http://127.0.0.1:$console_port/" -o "$artifact_dir/console.html"
 ok "Console answered on port $console_port"
@@ -371,6 +382,7 @@ if [[ "$has_zai_key" == true ]]; then
   "$run_root/venv/bin/pip" install --quiet --disable-pip-version-check websockets \
     >>"$log_dir/console-send.log" 2>&1 \
     || die "pip install websockets failed (see console-send.log)"
+  log_command "python console_send.py --model $send_model --provider $send_provider --timeout $turn_timeout_seconds"
   if ! "$run_root/venv/bin/python" "$script_dir/console_send.py" \
     --url "ws://127.0.0.1:$console_port/ws" \
     --model "$send_model" \

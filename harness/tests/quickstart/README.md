@@ -31,9 +31,11 @@ The machine needs `curl` and `jq`; the GLM canary additionally needs
 `python3` with `venv` support. The default engine and Console ports (`49134`
 and `3113`) must be available. Set `III_CHANNEL=next` to validate the `next`
 installer channel. `HARNESS_QUICKSTART_MODEL` overrides the default GLM model.
-Set `HARNESS_QUICKSTART_TRACE=1` to print each executed command with its source
-line and save the sanitized trace as `commands.log`. Secret values such as
-`ZAI_API_KEY` are replaced with `[REDACTED]`.
+Set `HARNESS_QUICKSTART_TRACE=1` to print only the important external commands
+(`iii worker add`, `iii trigger`, installer, engine, and GLM send) and save the
+sanitized list as `commands.log`. Polling attempts, assignments, cleanup, and
+other shell internals are omitted. Secret values such as `ZAI_API_KEY` are
+replaced with `[REDACTED]`.
 
 The nightly/manual CI workflow preserves `result.json`, the generated project
 files, Console responses, raw logs, and the command trace. In CI a
