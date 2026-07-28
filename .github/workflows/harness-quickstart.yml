@@ -22,7 +22,8 @@ jobs:
   validate:
     name: harness quickstart / latest registry (${{ inputs.channel || 'main' }})
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Leaves room for the unrecorded fallback rerun when VHS misbehaves.
+    timeout-minutes: 35
     steps:
       - name: Notify Slack that validation started
         id: slack_start
@@ -50,8 +51,32 @@ jobs:
             exit 1
           fi
           echo "ts=$(jq -er '.ts' <<<"$response")" >>"$GITHUB_OUTPUT"
+          echo "channel_id=$(jq -er '.channel' <<<"$response")" >>"$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v5
+
+      - name: Install VHS for terminal recording
+        continue-on-error: true
+        env:
+          VHS_VERSION: "0.11.0"
+          TTYD_VERSION: "1.7.7"
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          curl -fsSL --retry 3 \
+            "https://github.com/charmbracelet/vhs/releases/download/v${VHS_VERSION}/vhs_${VHS_VERSION}_Linux_x86_64.tar.gz" \
+            -o /tmp/vhs.tar.gz
+          tar -xzf /tmp/vhs.tar.gz -C /tmp
+          sudo install -m 755 "/tmp/vhs_${VHS_VERSION}_Linux_x86_64/vhs" /usr/local/bin/vhs
+          curl -fsSL --retry 3 \
+            "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64" \
+            -o /tmp/ttyd
+          sudo install -m 755 /tmp/ttyd /usr/local/bin/ttyd
+          vhs --version
+          ttyd --version
+          ffprobe -v quiet -version | sed -n '1p'
+          vhs validate harness/tests/quickstart/quickstart.tape
 
       - name: Run quickstart validator
         id: quickstart
@@ -59,7 +84,42 @@ jobs:
           HARNESS_QUICKSTART_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-quickstart
           III_CHANNEL: ${{ inputs.channel || 'main' }}
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
-        run: harness/tests/quickstart/run-ci.sh
+        run: |
+          set -euo pipefail
+
+          # VHS records the actual validator run as terminal evidence. The tape
+          # cannot propagate the script's exit code, so pass/fail is read from
+          # result.json below. Recording problems fall back to an unrecorded
+          # run only when the validator did not produce a result.
+          if command -v vhs >/dev/null 2>&1; then
+            if vhs harness/tests/quickstart/quickstart.tape; then
+              if ! ffprobe -v error \
+                -select_streams v:0 \
+                -show_entries stream=codec_type \
+                -of csv=p=0 \
+                target/harness-quickstart/quickstart.mp4 |
+                grep -qx video; then
+                echo "::warning::VHS produced an invalid terminal recording"
+                rm -f target/harness-quickstart/quickstart.mp4
+              fi
+            else
+              echo "::warning::VHS recording failed"
+              rm -f target/harness-quickstart/quickstart.mp4
+              if [[ ! -f target/harness-quickstart/result.json ]]; then
+                echo "::warning::No validator result was produced; rerunning without recording"
+                harness/tests/quickstart/run-ci.sh
+              fi
+            fi
+          else
+            echo "::warning::vhs is not installed; running the validator without recording"
+            harness/tests/quickstart/run-ci.sh
+          fi
+
+          jq -e '.status == "passed"' target/harness-quickstart/result.json >/dev/null || {
+            reason=$(jq -r '.failure_reason // empty' target/harness-quickstart/result.json 2>/dev/null || true)
+            echo "::error::quickstart validator failed${reason:+: $reason}"
+            exit 1
+          }
 
       - name: Show quickstart logs
         if: always()
@@ -93,6 +153,10 @@ jobs:
               echo "### Harness quickstart"
               echo
               echo "No quickstart result was produced."
+            fi
+            if [[ -f target/harness-quickstart/quickstart.mp4 ]]; then
+              echo
+              echo "Terminal recording: \`quickstart.mp4\` in the \`harness-quickstart\` artifact."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -194,3 +258,67 @@ jobs:
           slack_call chat.update "$update_payload" || failed=1
           slack_call chat.postMessage "$thread_payload" || failed=1
           exit "$failed"
+
+      - name: Upload terminal recording to Slack thread
+        if: ${{ always() && steps.slack_start.outputs.ts != '' && steps.slack_start.outputs.channel_id != '' }}
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ steps.slack_start.outputs.channel_id }}
+          SLACK_MESSAGE_TS: ${{ steps.slack_start.outputs.ts }}
+        run: |
+          set -uo pipefail
+
+          recording=target/harness-quickstart/quickstart.mp4
+          if [[ ! -s "$recording" ]]; then
+            echo "No terminal recording was produced; skipping the Slack upload."
+            exit 0
+          fi
+          filename=$(basename "$recording")
+          length=$(wc -c <"$recording" | tr -d '[:space:]')
+
+          # Slack external upload flow: reserve a URL, send the bytes, then
+          # attach the file to the run's thread. Needs the files:write scope.
+          ticket=$(curl -sS --retry 3 --retry-all-errors \
+            -X POST https://slack.com/api/files.getUploadURLExternal \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            --data-urlencode "filename=${filename}" \
+            --data-urlencode "length=${length}")
+          if ! jq -e '.ok == true' <<<"$ticket" >/dev/null 2>&1; then
+            error=$(jq -r '.error // "invalid_response"' <<<"$ticket" 2>/dev/null || printf 'invalid_response')
+            echo "::warning::Slack files.getUploadURLExternal failed: $error (is the files:write scope granted?)"
+            exit 1
+          fi
+          upload_url=$(jq -er '.upload_url' <<<"$ticket")
+          file_id=$(jq -er '.file_id' <<<"$ticket")
+
+          if ! curl -sS --fail --retry 3 --retry-all-errors \
+            -X POST "$upload_url" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @"$recording" >/dev/null; then
+            echo "::warning::Slack recording upload failed"
+            exit 1
+          fi
+
+          complete_payload=$(jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg ts "$SLACK_MESSAGE_TS" \
+            --arg id "$file_id" \
+            --arg title "Harness quickstart terminal recording.mp4" \
+            '{
+              channel_id: $channel,
+              thread_ts: $ts,
+              initial_comment: "🎬 Terminal recording of this run",
+              files: [{id: $id, title: $title}]
+            }')
+          response=$(curl -sS --retry 3 --retry-all-errors \
+            -X POST https://slack.com/api/files.completeUploadExternal \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            -d "$complete_payload")
+          if ! jq -e '.ok == true' <<<"$response" >/dev/null 2>&1; then
+            error=$(jq -r '.error // "invalid_response"' <<<"$response" 2>/dev/null || printf 'invalid_response')
+            echo "::warning::Slack files.completeUploadExternal failed: $error"
+            exit 1
+          fi
+          echo "Uploaded ${filename} (${length} bytes) to the Slack thread."
