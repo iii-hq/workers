@@ -124,6 +124,7 @@ mod tests {
             handles: Arc::new(HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_helpers::observability::Logger::new(),
+            row_changes: None,
         }
     }
 

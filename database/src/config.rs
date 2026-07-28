@@ -298,8 +298,8 @@ pub fn redact_url(input: &str) -> String {
 /// Max 63 chars (Postgres NAMEDATALEN - 1).
 ///
 /// This is the chokepoint for any operator-supplied identifier that gets
-/// interpolated into a SQL string via `format!()` (replication slots,
-/// publication names, schema/table names, cursor table). Validation is
+/// interpolated into a SQL string via `format!()` (schema/table names,
+/// cursor table). Validation is
 /// strict ASCII because the alternative — quoting and escaping per-driver —
 /// is fragile and the v1.0 surface does not need unicode identifiers.
 pub fn validate_sql_identifier(s: &str) -> Result<(), String> {

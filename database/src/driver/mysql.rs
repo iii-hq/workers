@@ -205,6 +205,14 @@ pub async fn transaction(
         let step_result: Result<TxStepResult, DbError> = if returns_rows {
             match conn.exec_iter(stmt.sql.as_str(), bound).await {
                 Ok(mut iter) => {
+                    let columns = iter
+                        .columns_ref()
+                        .iter()
+                        .map(|col| ColumnMeta {
+                            name: col.name_str().to_string(),
+                            ty: format!("{:?}", col.column_type()),
+                        })
+                        .collect();
                     let raw: Result<Vec<mysql_async::Row>, _> = iter.collect().await;
                     match raw {
                         Ok(raw_rows) => {
@@ -213,6 +221,7 @@ pub async fn transaction(
                             Ok(TxStepResult {
                                 affected_rows: cells_rows.len() as u64,
                                 rows: cells_rows,
+                                columns,
                             })
                         }
                         Err(e) => Err(step_err(idx, e)),
@@ -225,6 +234,7 @@ pub async fn transaction(
                 Ok(_) => Ok(TxStepResult {
                     affected_rows: conn.affected_rows(),
                     rows: vec![],
+                    columns: vec![],
                 }),
                 Err(e) => Err(step_err(idx, e)),
             }

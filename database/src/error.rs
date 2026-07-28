@@ -50,14 +50,6 @@ pub enum DbError {
         failed_index: Option<usize>,
     },
 
-    #[serde(rename = "REPLICATION_SLOT_EXISTS")]
-    #[error("replication slot {slot} already in use")]
-    ReplicationSlotExists { slot: String },
-
-    #[serde(rename = "UNSUPPORTED")]
-    #[error("operation {op} not supported on driver {driver}")]
-    Unsupported { op: String, driver: String },
-
     #[serde(rename = "CONFIG_ERROR")]
     #[error("config error: {message}")]
     ConfigError { message: String },

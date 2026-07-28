@@ -33,6 +33,7 @@ async fn build_state() -> AppState {
         handles: Arc::new(HandleRegistry::new()),
         transactions: TxRegistry::new(),
         log: Logger::new(),
+        row_changes: None,
     }
 }
 
@@ -219,6 +220,7 @@ async fn build_pool_creates_missing_sqlite_parent_dir() {
         handles: Arc::new(HandleRegistry::new()),
         transactions: TxRegistry::new(),
         log: Logger::new(),
+        row_changes: None,
     };
 
     // The freshly-created on-disk db is usable end-to-end.

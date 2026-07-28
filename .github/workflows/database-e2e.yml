@@ -49,9 +49,8 @@ jobs:
           cache: 'npm'
           cache-dependency-path: database/tests/e2e/workers/harness/package-lock.json
 
-      # GHA `services:` blocks can't pass `-c wal_level=logical` to postgres,
-      # which the row-change tests require. Reuse the same docker-compose
-      # stack the harness uses locally for dev/CI parity.
+      # The harness brings up its own postgres + mysql via docker-compose
+      # (not GHA `services:`) so local and CI runs share one stack definition.
       - name: Install iii engine (next)
         run: |
           curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \

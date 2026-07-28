@@ -33,13 +33,11 @@ url = "2"
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 bytes = "1"
-futures-util = "0.3"
 
 # Postgres
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
 deadpool-postgres = "0.14"
 postgres-types = { version = "0.2", features = ["with-chrono-0_4", "with-serde_json-1"] }
-postgres-protocol = "0.6"
 tokio-postgres-rustls = "0.13"
 # `db-tokio-postgres` registers FromSql/ToSql for NUMERIC. postgres-types
 # itself ships no NUMERIC FromSql impl — String accepts only TEXT-family OIDs,

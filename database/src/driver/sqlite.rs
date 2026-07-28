@@ -21,7 +21,9 @@ pub async fn query(
 
     tokio::task::spawn_blocking(move || -> Result<QueryResult, DbError> {
         conn.with(|c| {
-            let mut stmt = c.prepare(&sql).map_err(map_err)?;
+            let mut stmt = c
+                .prepare(&sql)
+                .map_err(|e| enrich_schema_err(c, &sql, map_err(e)))?;
             // `database::query` is the READ surface a narrowed agent policy
             // grants; enforcement must live here, not in the docs — live
             // testing showed agents running raw INSERTs through it.
@@ -111,6 +113,149 @@ pub(crate) fn map_err(e: rusqlite::Error) -> DbError {
     }
 }
 
+/// A schema-mismatch error names what is MISSING but never what EXISTS — and
+/// an agent that guessed a column name once will guess it again. Append the
+/// real schema so the first failure carries its own correction. Discovery run
+/// 2: fifteen delivered events, ONE surviving ledger row — the inspector's
+/// INSERTs disagreed with the coordinator's CREATE TABLE on a column name,
+/// and the bare "has no column named value" left it guessing for 13 turns.
+fn enrich_schema_err(c: &rusqlite::Connection, sql: &str, e: DbError) -> DbError {
+    let DbError::DriverError {
+        driver,
+        code,
+        message,
+        failed_index,
+    } = e
+    else {
+        return e;
+    };
+    let message = match schema_hint(c, sql, &message) {
+        Some(hint) => format!("{message}; {hint}"),
+        None => message,
+    };
+    DbError::DriverError {
+        driver,
+        code,
+        message,
+        failed_index,
+    }
+}
+
+fn schema_hint(c: &rusqlite::Connection, sql: &str, message: &str) -> Option<String> {
+    // `INSERT INTO t (bad) …` → "table t has no column named bad": the
+    // message itself names the table.
+    if let Some(rest) = message.strip_prefix("table ") {
+        if let Some(table) = rest.split(" has no column named ").next() {
+            if rest.contains(" has no column named ") {
+                return columns_hint(c, table);
+            }
+        }
+    }
+    // `UPDATE t SET bad = …` / `SELECT bad FROM t` → "no such column: bad":
+    // use SQLite's qualifier when present; otherwise hint only when the
+    // statement has one unambiguous source.
+    if message.contains("no such column") {
+        let qualified = message
+            .split_once("no such column: ")
+            .and_then(|(_, missing)| missing.split_whitespace().next())
+            .and_then(|missing| missing.rsplit('.').nth(1));
+        let table = qualified
+            .map(str::to_string)
+            .or_else(|| crate::triggers::sql::classify(sql).and_then(|m| m.table))
+            .or_else(|| crate::triggers::sql::table_after_from(sql))?;
+        return columns_hint(c, &table);
+    }
+    // "no such table: t" → say what tables DO exist.
+    if let Some(rest) = message.strip_prefix("no such table: ") {
+        let missing = rest.split(" in ").next().unwrap_or(rest).trim();
+        let names = existing_tables(c)?;
+        if names.is_empty() {
+            return Some(format!("`{missing}` not found and no tables exist yet"));
+        }
+        return Some(format!("existing tables: ({})", names.join(", ")));
+    }
+    // A syntax error on SQL that is valid PostgreSQL: name the dialect gap.
+    // The bare `near "INSERT": syntax error` reads as a typo and gets retried
+    // verbatim — discovery run 6 lost its whole ledger that way.
+    if message.contains("syntax error") {
+        return dialect_hint(sql);
+    }
+    None
+}
+
+/// PostgreSQL constructs SQLite rejects, answered with the SQLite way.
+fn dialect_hint(sql: &str) -> Option<String> {
+    is_data_modifying_cte(sql).then(|| {
+        "SQLite does not support data-modifying CTEs (INSERT/UPDATE/DELETE inside `WITH`) — that \
+         is PostgreSQL syntax. Use one statement per call (a plain `INSERT … ON CONFLICT … \
+         RETURNING` reports what it wrote), or database::transaction for a multi-step atomic \
+         sequence"
+            .to_string()
+    })
+}
+
+/// Whether the statement opens a `WITH` whose first parenthesised body is a
+/// write — `WITH x AS (INSERT …)`. Keyword-level, like the mutation
+/// classifier: a false negative just leaves the bare error in place.
+fn is_data_modifying_cte(sql: &str) -> bool {
+    let upper = sql.trim_start().to_ascii_uppercase();
+    if !upper.starts_with("WITH") {
+        return false;
+    }
+    let Some(open) = upper.find('(') else {
+        return false;
+    };
+    let body = upper[open + 1..].trim_start();
+    ["INSERT", "UPDATE", "DELETE", "REPLACE", "MERGE"]
+        .iter()
+        .any(|verb| body.starts_with(verb))
+}
+
+/// `name declared-type` for every column of `table`, via the parameterized
+/// pragma function — no identifier interpolation.
+fn columns_hint(c: &rusqlite::Connection, table: &str) -> Option<String> {
+    let mut stmt = c
+        .prepare("SELECT name, type FROM pragma_table_info(?1)")
+        .ok()?;
+    let cols: Vec<String> = stmt
+        .query_map([table], |row| {
+            let name: String = row.get(0)?;
+            let ty: String = row.get(1)?;
+            Ok(if ty.is_empty() {
+                name
+            } else {
+                format!("{name} {ty}")
+            })
+        })
+        .ok()?
+        .filter_map(Result::ok)
+        .collect();
+    if cols.is_empty() {
+        return None;
+    }
+    Some(format!("table {table} columns: ({})", cols.join(", ")))
+}
+
+fn existing_tables(c: &rusqlite::Connection) -> Option<Vec<String>> {
+    const MAX: usize = 20;
+    let mut stmt = c
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' \
+             AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .ok()?;
+    let mut names: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .ok()?
+        .filter_map(Result::ok)
+        .collect();
+    if names.len() > MAX {
+        names.truncate(MAX);
+        names.push("…".into());
+    }
+    Some(names)
+}
+
 /// Stamp a transaction-step index onto an existing `DbError`. Used inside
 /// `run_tx_steps` to preserve the failed-step index when an error bubbles up
 /// from a helper (e.g. `row_value_at`) that has no notion of "which step is
@@ -156,16 +301,26 @@ fn is_insert(sql: &str) -> bool {
     sql.trim_start().to_ascii_uppercase().starts_with("INSERT")
 }
 
-/// Returns true if the prepared statement will surface result rows, or the
-/// caller explicitly requested row capture via `returning`. SQLite's
-/// `Statement::column_count` is the planner's source-of-truth: it returns
-/// `> 0` for any statement shape that produces rows — `SELECT`,
-/// `WITH cte AS (...) SELECT ...`, `VALUES (...)`, `PRAGMA foreign_keys`,
-/// `EXPLAIN QUERY PLAN`, and any DML with a `RETURNING` clause regardless
-/// of casing or whitespace. Replaces brittle text-prefix matches that
-/// false-negatived CTE-prefixed SELECTs and aborted transactions for them.
-fn statement_returns_rows(stmt: &rusqlite::Statement<'_>, returning: &[String]) -> bool {
-    !returning.is_empty() || stmt.column_count() > 0
+/// SQLite's planner is the source of truth for whether a prepared statement
+/// produces rows, including CTEs, PRAGMAs, and DML with `RETURNING`.
+fn statement_returns_rows(stmt: &rusqlite::Statement<'_>) -> bool {
+    stmt.column_count() > 0
+}
+
+fn validate_returning(stmt: &rusqlite::Statement<'_>, returning: &[String]) -> Result<(), DbError> {
+    if !returning.is_empty() && stmt.column_count() == 0 {
+        return Err(DbError::DriverError {
+            driver: "sqlite".into(),
+            code: Some("RETURNING_MISMATCH".into()),
+            message: format!(
+                "`returning` was requested but the statement returns no rows — \
+                 write the clause into the SQL itself: ... RETURNING {}",
+                returning.join(", ")
+            ),
+            failed_index: None,
+        });
+    }
+    Ok(())
 }
 
 pub async fn execute(
@@ -203,8 +358,20 @@ pub async fn execute(
             // and DML-with-RETURNING split across lines, falling through to
             // `c.execute(...)` which errored with ExecuteReturnedResults.
             let (affected_rows, returned_rows, returned_columns) = {
-                let mut stmt = c.prepare(&sql).map_err(map_err)?;
-                if statement_returns_rows(&stmt, &returning) {
+                let mut stmt = c
+                    .prepare(&sql)
+                    .map_err(|e| enrich_schema_err(c, &sql, map_err(e)))?;
+                // A `returning` OPTION against a statement that produces no
+                // rows is a contradiction the caller needs to hear about: the
+                // option does not inject a RETURNING clause, so running the
+                // statement query-style would insert the row and then report
+                // affected_rows: 0 with no rows — silent garbage that
+                // downstream consumers (the row-changed event's identity, a
+                // caller reading its ids back) build on. Live run rctest9:
+                // fifteen identity-less events, an aggregator that rightly
+                // refused them, and a barrier that starved.
+                validate_returning(&stmt, &returning)?;
+                if statement_returns_rows(&stmt) {
                     let columns: Vec<ColumnMeta> = stmt
                         .columns()
                         .into_iter()
@@ -367,9 +534,19 @@ fn run_tx_steps(
         // `is_select || is_returning` heuristic and fell through to
         // `c.execute(...)`, which errors with ExecuteReturnedResults and
         // aborts the entire transaction.
-        let mut prepared = c.prepare(&stmt.sql).map_err(|e| step_err(idx, e))?;
-        if statement_returns_rows(&prepared, &[]) {
-            let n = prepared.columns().len();
+        let mut prepared = c
+            .prepare(&stmt.sql)
+            .map_err(|e| enrich_schema_err(c, &stmt.sql, step_err(idx, e)))?;
+        if statement_returns_rows(&prepared) {
+            let columns: Vec<ColumnMeta> = prepared
+                .columns()
+                .into_iter()
+                .map(|col| ColumnMeta {
+                    name: col.name().to_string(),
+                    ty: col.decl_type().unwrap_or("").to_string(),
+                })
+                .collect();
+            let n = columns.len();
             let mut rows_out: Vec<Row> = Vec::new();
             let mut rows = prepared
                 .query(bound_refs.as_slice())
@@ -388,6 +565,7 @@ fn run_tx_steps(
             results.push(TxStepResult {
                 affected_rows: rows_out.len() as u64,
                 rows: rows_out,
+                columns,
             });
         } else {
             let affected = prepared
@@ -396,6 +574,7 @@ fn run_tx_steps(
             results.push(TxStepResult {
                 affected_rows: affected as u64,
                 rows: vec![],
+                columns: vec![],
             });
         }
     }
@@ -512,8 +691,11 @@ pub async fn tx_execute(
                     bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
 
                 let (affected_rows, returned_rows, returned_columns) = {
-                    let mut stmt = c.prepare(&sql).map_err(map_err)?;
-                    if statement_returns_rows(&stmt, &returning) {
+                    let mut stmt = c
+                        .prepare(&sql)
+                        .map_err(|e| enrich_schema_err(c, &sql, map_err(e)))?;
+                    validate_returning(&stmt, &returning)?;
+                    if statement_returns_rows(&stmt) {
                         let columns: Vec<ColumnMeta> = stmt
                             .columns()
                             .into_iter()
@@ -604,7 +786,9 @@ pub async fn run_prepared(
                 let bound: Vec<SqlValue> = params.iter().map(json_param_to_sql).collect();
                 let bound_refs: Vec<&dyn rusqlite::ToSql> =
                     bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-                let mut stmt = c.prepare(&sql).map_err(map_err)?;
+                let mut stmt = c
+                .prepare(&sql)
+                .map_err(|e| enrich_schema_err(c, &sql, map_err(e)))?;
                 let columns: Vec<ColumnMeta> = stmt
                     .columns()
                     .into_iter()
@@ -1193,5 +1377,255 @@ mod tests {
             }
             other => panic!("expected DriverError, got {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn returning_option_without_a_returning_clause_is_refused() {
+        // The rctest9 failure shape: the option forces the query path, a plain
+        // INSERT yields no rows, and the caller got affected_rows: 0 with no
+        // rows while the insert silently succeeded — identity-less events all
+        // the way down. Refusing loudly turns a starved run into a one-call fix.
+        let pool =
+            SqlitePool::new("sqlite::memory:", &crate::config::PoolConfig::default()).unwrap();
+        execute(
+            &pool,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, n INT)",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let err = execute(
+            &pool,
+            "INSERT INTO t (n) VALUES (1)",
+            &[],
+            &["id".into(), "n".into()],
+        )
+        .await
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("RETURNING id, n"), "must name the fix: {msg}");
+        // Nothing was inserted by the refused call.
+        let q = query(&pool, "SELECT COUNT(*) AS c FROM t", &[], 5_000)
+            .await
+            .unwrap();
+        assert_eq!(q.rows[0].0[0].clone().into_json(), serde_json::json!(0));
+
+        // The same statement WITH the clause works and reports real rows.
+        let ok = execute(
+            &pool,
+            "INSERT INTO t (n) VALUES (1) RETURNING id, n",
+            &[],
+            &["id".into(), "n".into()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(ok.affected_rows, 1);
+        assert_eq!(ok.returned_rows.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn interactive_returning_mismatch_is_refused_before_insert() {
+        let p = pool().await;
+        let mut slot = Some(p.acquire().await.unwrap());
+        tx_begin(&mut slot, None).await.unwrap();
+        tx_execute(
+            &mut slot,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, n INT)",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let err = tx_execute(
+            &mut slot,
+            "INSERT INTO t (n) VALUES (1)",
+            &[],
+            &["id".into()],
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("RETURNING id"), "{err}");
+
+        let count = run_prepared(&mut slot, "SELECT COUNT(*) FROM t", &[])
+            .await
+            .unwrap();
+        assert_eq!(count.rows[0].0[0].clone().into_json(), serde_json::json!(0));
+        tx_rollback(&mut slot).await.unwrap();
+    }
+
+    /// The schema-drift fix: a mismatch error carries the table's REAL
+    /// columns (or the real table names), so the first failure is
+    /// self-correcting instead of the start of a guess loop.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn schema_errors_carry_the_actual_schema() {
+        let p = pool().await;
+        execute(
+            &p,
+            "CREATE TABLE receiving (shipment_id TEXT PRIMARY KEY, shipment_value NUMERIC)",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        // INSERT against a wrong column: sqlite names the table itself.
+        let err = execute(
+            &p,
+            "INSERT INTO receiving (shipment_id, value) VALUES ('a', 1)",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("has no column named value"), "{msg}");
+        assert!(
+            msg.contains("table receiving columns: (shipment_id TEXT, shipment_value NUMERIC)"),
+            "the fix is the columns list: {msg}"
+        );
+
+        // SELECT against a wrong column: the table comes off the FROM clause.
+        let err = query(&p, "SELECT value FROM receiving", &[], 1_000)
+            .await
+            .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("no such column"), "{msg}");
+        assert!(msg.contains("shipment_value NUMERIC"), "{msg}");
+
+        // UPDATE against a wrong column: the table comes off the classifier.
+        let err = execute(&p, "UPDATE receiving SET value = 2", &[], &[])
+            .await
+            .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("shipment_value NUMERIC"), "{msg}");
+
+        execute(&p, "CREATE TABLE a (id INT, a_value TEXT)", &[], &[])
+            .await
+            .unwrap();
+        execute(&p, "CREATE TABLE b (id INT, b_value TEXT)", &[], &[])
+            .await
+            .unwrap();
+
+        // A qualified joined-column error names the qualified table, not the
+        // first FROM source.
+        let err = query(
+            &p,
+            "SELECT b.missing FROM a JOIN b ON a.id = b.id",
+            &[],
+            1_000,
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("table b columns: (id INT, b_value TEXT)"),
+            "{msg}"
+        );
+        assert!(!msg.contains("a_value"), "{msg}");
+
+        // An unqualified missing column in a multi-table query is ambiguous,
+        // so no table schema is safer than a wrong one.
+        let err = query(
+            &p,
+            "SELECT missing FROM a JOIN b ON a.id = b.id",
+            &[],
+            1_000,
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(!msg.contains("columns: ("), "{msg}");
+
+        // Missing table: the existing tables are named.
+        let err = query(&p, "SELECT * FROM receiving_shipments", &[], 1_000)
+            .await
+            .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("no such table"), "{msg}");
+        assert!(msg.contains("existing tables: (a, b, receiving)"), "{msg}");
+
+        // A non-schema error stays untouched (no hint appended).
+        let err = execute(
+            &p,
+            "INSERT INTO receiving (shipment_id) VALUES ('a', 'b')",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(!msg.contains("columns: ("), "{msg}");
+    }
+
+    /// Discovery run 6: the inspector wrote a PostgreSQL data-modifying CTE,
+    /// got `near \"INSERT\": syntax error`, read it as a typo, and retried the
+    /// same dialect — 0 rows written. The error now names the dialect gap.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_data_modifying_cte_is_named_as_postgres_syntax() {
+        let p = pool().await;
+        execute(
+            &p,
+            "CREATE TABLE t (id TEXT PRIMARY KEY, n INTEGER)",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let err = execute(
+            &p,
+            "WITH inserted AS (INSERT INTO t (id, n) VALUES ('a', 1) RETURNING id) \
+             UPDATE t SET n = 2 WHERE id IN (SELECT id FROM inserted)",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("syntax error"), "{msg}");
+        assert!(
+            msg.contains("data-modifying CTEs") && msg.contains("PostgreSQL"),
+            "the dialect gap must be named: {msg}"
+        );
+        assert!(
+            msg.contains("database::transaction"),
+            "the fix is named: {msg}"
+        );
+
+        // A read-only CTE is valid SQLite and must keep working.
+        query(
+            &p,
+            "WITH ids AS (SELECT id FROM t) SELECT COUNT(*) c FROM ids",
+            &[],
+            1_000,
+        )
+        .await
+        .expect("a read-only CTE is ordinary SQLite");
+
+        // An ordinary typo gets no dialect hint.
+        let err = execute(&p, "INSERTT INTO t (id) VALUES ('x')", &[], &[])
+            .await
+            .unwrap_err();
+        assert!(!format!("{err:?}").contains("PostgreSQL"));
+    }
+
+    #[test]
+    fn data_modifying_cte_detection_is_keyword_level() {
+        assert!(is_data_modifying_cte(
+            "WITH x AS (INSERT INTO t VALUES (1)) SELECT 1"
+        ));
+        assert!(is_data_modifying_cte(
+            "  with x as ( update t set a = 1 ) select 1"
+        ));
+        assert!(is_data_modifying_cte("WITH x AS (DELETE FROM t) SELECT 1"));
+        // Read-only CTEs and plain statements are not flagged.
+        assert!(!is_data_modifying_cte(
+            "WITH x AS (SELECT 1) SELECT * FROM x"
+        ));
+        assert!(!is_data_modifying_cte("INSERT INTO t VALUES (1)"));
+        assert!(!is_data_modifying_cte("SELECT 1"));
     }
 }

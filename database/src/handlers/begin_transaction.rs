@@ -142,6 +142,7 @@ pub(crate) mod tests {
             handles: Arc::new(HandleRegistry::new()),
             transactions: TxRegistry::new(),
             log: Logger::new(),
+            row_changes: None,
         }
     }
 
