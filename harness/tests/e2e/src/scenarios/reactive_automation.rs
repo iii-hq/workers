@@ -59,75 +59,57 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
 
 fn prompt(names: &ScenarioNames) -> String {
     format!(
-        r#"Test this system's ability to orchestrate sub-agents around database-change triggers.
-I am describing the outcome, not the implementation: work out the mechanics with the workers
-and trigger types available on this stack.
+        r#"Validate trigger-based orchestration using the existing run id `{run_label}`.
 
-This run already has the fresh run id `{run_label}`. Do not generate another id. Use
-`{namespace}` as its SQL-safe namespace, database `primary`, and these exact table names:
+Use database `primary`, SQL-safe namespace `{namespace}`, and these exact resources:
 
-- `{orders}`: orders with columns `id`, `writer`, `amount`, and `created_at`
-- `{writers}`: one status row per writer
-- `{totals}`: one row per writer with `writer`, `order_count`, and `amount_sum`
-- `{report}`: exactly one final report row
+- orders: `{orders}` (`id`, `writer`, `amount`, `created_at`)
+- writer status: `{writers}` (`writer`, `status`)
+- aggregates: `{totals}` (`writer`, `order_count`, `amount_sum`)
+- report: `{report}`
+- writer sessions: `{writer_1}`, `{writer_2}`, `{writer_3}`
+- finalizer session: `{finalizer}`
 
-Namespace every additional table, state scope, signal, subscription label, and session id with
-`{run_label}` so this run cannot collide with another one. Use these exact writer session ids:
-`{writer_1}`, `{writer_2}`, and `{writer_3}`. Use `{finalizer}` for the finalizer session.
+Namespace every other resource and session with `{run_label}`.
 
-The scenario:
+Required execution:
 
-1. WATCH — Before any workload order insert or writer spawn, inspect the available trigger types
-   and arrange to be notified when rows change in `{orders}`. Prefer a real push-based database
-   change trigger if one is registered. Give it a bounded probe: register it, perform one test
-   write, and wait at most 30 seconds for an event. Remove the probe row before the writers
-   start. If no event arrives, or the mechanism rejects the configured database driver, record
-   exactly what you tried and what happened, then fall back to a notification path that
-   demonstrably fires. A valid fallback is for each writer to emit a namespaced state change
-   signal immediately after each insert. The watcher must be a registered trigger targeting
-   `harness::react`, which spawns or wakes a reactor session; it must not be a polling loop in
-   your own turn.
+1. Before spawning writers, list the available trigger types and probe
+   `database::row-change` against `{orders}`. Allow at most 30 seconds for the probe, remove its
+   test row afterward, and record the result.
 
-2. WRITE — Spawn exactly three writer sub-agents in parallel, using the session ids above.
-   Each writer inserts exactly five orders, one insert at a time and roughly two seconds apart.
-   Each order must have a unique id, the writer name (`writer-1`, `writer-2`, or `writer-3`), a
-   numeric amount, and a non-null creation time. Writers know nothing about watcher internals:
-   they only insert, emit the bridge signal immediately after each insert when the fallback is
-   active, and mark themselves `done` in `{writers}`.
+2. Before spawning writers, register a namespaced `state` trigger targeting `harness::react`.
+   Use it as the notification path if the database trigger is unsupported or does not fire.
 
-3. REACT — Every change notification must wake a reactor through the registered trigger.
-   Reactors upsert running aggregates into `{totals}` by recomputing from source rows. They must
-   be idempotent: processing the same change twice cannot double-count. Reactor session ids must
-   also start with `{run_label}`.
+3. Spawn the three writer sessions in parallel. Each writer must insert exactly five unique
+   orders, one at a time and about two seconds apart; use its matching name (`writer-1`,
+   `writer-2`, or `writer-3`), a numeric amount, and a non-null `created_at`; emit the state
+   signal immediately after each insert when using the fallback; then mark itself `done` in
+   `{writers}`.
 
-4. FINISH — After all three writers are done and the totals cover all 15 orders, exactly one
-   trigger-spawned finalizer in `{finalizer}` writes exactly one row to `{report}`. Use these
-   snake_case report columns:
+4. Each notification must wake a trigger-spawned reactor session namespaced with `{run_label}`.
+   Reactors must recompute and upsert `{totals}` from `{orders}` so replaying an event cannot
+   double-count.
+
+5. Once all writers are done and totals cover 15 orders, a trigger-spawned finalizer in
+   `{finalizer}` must write exactly one row to `{report}` with:
 
    `run_id`, `watch_mechanism`, `fallback_reason`, `events_received`, `rows_written`,
    `elapsed_ms`, `totals_match`, `no_notification_loss`, `no_double_counting`,
    `reactor_session_id`, `spawning_event`, `trigger_spawned_reactor`,
    `no_inline_waiting`, and `finalizer_session_id`.
 
-   Store `{run_label}` in `run_id` and `{finalizer}` in `finalizer_session_id`. Record the actual
-   watch mechanism and a non-empty fallback reason when fallback was needed. Store counts for
-   events received and rows written, elapsed milliseconds from the first order insert to the
-   last aggregate, one cited reactor session id and its spawning event, and boolean pass/fail
-   values for every acceptance check below.
+   Use `{run_label}` as `run_id` and `{finalizer}` as `finalizer_session_id`. Report the actual
+   watch mechanism, a non-empty fallback reason when fallback is used, 15 events and rows,
+   positive elapsed milliseconds, and one trigger-spawned reactor session and spawning event.
 
-   Once the report exists, unregister every trigger and subscription created for this run.
-   Nothing namespaced with `{run_label}` may keep firing. Wake this root session when the report
-   and cleanup are complete so it can return the final summary.
+6. Unregister every trigger and subscription created for this run, then wake the root session.
 
-Acceptance checks must be self-verified with queries before the report is written:
+Success requires exact equality between `{totals}` and a direct `GROUP BY` over `{orders}`, no
+lost or duplicated orders, trigger provenance for reactor and finalizer sessions, no inline
+sleeping or polling in place of triggers, and no remaining run triggers.
 
-- totals match a direct `GROUP BY` over `{orders}` exactly
-- aggregates cover every order and no order is double-counted
-- the cited reactor ran in a session spawned by a trigger, not inline in this turn
-- writers, reactors, and finalizer did not hold a turn open by sleeping or polling instead of
-  using the trigger mechanism
-
-Report progress as the run is wired and started. Keep the final summary short and factual."#,
+Report progress briefly and keep the final response factual."#,
         run_label = names.run_label,
         namespace = names.table_prefix,
         orders = names.orders,
