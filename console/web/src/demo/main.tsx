@@ -28,6 +28,62 @@ if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
   setScenarioSpeed(0.02)
 }
 
+/**
+ * Keep every scroll inside this document.
+ *
+ * `scrollIntoView` walks the ancestor scroll chain past the iframe and into
+ * the EMBEDDER's viewport, so the transcript's auto-follow (`MessageList`
+ * pins the newest row, and pulls a fresh approval into view) drags the host
+ * page around while the session plays inline on it. The replacement does the
+ * same alignment in the nearest scrollport and stops there; it is the whole
+ * behavior the demo needs, and the product code stays untouched.
+ */
+Element.prototype.scrollIntoView = function scrollWithinFrame(
+  this: Element,
+  arg?: boolean | ScrollIntoViewOptions,
+) {
+  const opts: ScrollIntoViewOptions =
+    typeof arg === 'object' ? arg : { block: arg === false ? 'end' : 'start' }
+  let port: HTMLElement | null = null
+  for (let p = this.parentElement; p; p = p.parentElement) {
+    const overflowY = getComputedStyle(p).overflowY
+    if (
+      (overflowY === 'auto' || overflowY === 'scroll') &&
+      p.scrollHeight > p.clientHeight
+    ) {
+      port = p
+      break
+    }
+  }
+  if (!port) return
+  const offset =
+    this.getBoundingClientRect().top -
+    port.getBoundingClientRect().top +
+    port.scrollTop
+  const height = this.getBoundingClientRect().height
+  const top =
+    opts.block === 'center'
+      ? offset - (port.clientHeight - height) / 2
+      : opts.block === 'end' || opts.block === 'nearest'
+        ? offset - port.clientHeight + height
+        : offset
+  port.scrollTo({ top, behavior: opts.behavior ?? 'auto' })
+}
+
+/**
+ * Inner scrollports keep the wheel they catch: when the transcript or the
+ * trace list bottoms out, the scroll ends there. Surface with nothing of its
+ * own to scroll still chains out to the embedding page (html and body keep
+ * the default), and that chain is what un-pins the marketing site's
+ * scroll-zoom. Below the lg breakpoint the whole demo is one scroller, so
+ * containing it would trap the reader; the rule only covers the two-pane
+ * layout.
+ */
+const contain = document.createElement('style')
+contain.textContent =
+  '@media (min-width: 1024px) { body * { overscroll-behavior: contain; } }'
+document.head.appendChild(contain)
+
 const root = document.getElementById('root')
 if (!root) throw new Error('missing #root container')
 

@@ -121,6 +121,8 @@ export interface PlayerState {
   /** Characters of the prompt typed so far, for the composer. */
   typed: string
   waterfall: WaterfallData | null
+  /** The raw feed, for the live TimelineStrip masthead. */
+  spans: readonly StoredSpan[]
   spanCount: number
   callout: Callout | null
   /** The turn is between visible outputs — drives the thinking shimmer. */
@@ -155,6 +157,9 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
   // waterfall needs to repaint, and the pending tick owns the cadence.
   const spansRef = useRef<StoredSpan[]>([])
   const [waterfall, setWaterfall] = useState<WaterfallData | null>(null)
+  // The strip masthead reads spans directly (it does its own layout), so the
+  // repaint publishes the array alongside the derived waterfall.
+  const [spans, setSpans] = useState<readonly StoredSpan[]>([])
   const [spanCount, setSpanCount] = useState(0)
 
   const gateResolveRef = useRef<(() => void) | null>(null)
@@ -260,6 +265,7 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
 
   const repaintSpans = useCallback(() => {
     const spans = spansRef.current
+    setSpans(spans)
     setSpanCount(spans.length)
     setWaterfall(spans.length ? toWaterfallData(spans, TRACE_ID) : null)
   }, [])
@@ -325,6 +331,7 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
       setTyped('')
       showCallout(null)
       setWaterfall(null)
+      setSpans([])
       setSpanCount(0)
       setIsStreaming(false)
       setTurnPhase(null)
@@ -606,6 +613,7 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
     messages: activeChild ? activeChild.messages : messages,
     typed,
     waterfall,
+    spans,
     spanCount,
     callout,
     isThinking: activeChild ? activeChild.status === 'working' : rootThinking,

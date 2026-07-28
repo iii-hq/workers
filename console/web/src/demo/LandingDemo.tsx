@@ -1,12 +1,16 @@
 /**
  * The landing-page demo surface: the console's real chat transcript and real
- * trace waterfall, side by side, replaying a scripted turn.
+ * traces surface, side by side, replaying a scripted turn.
  *
  * Everything below the chrome is the shipped product code — `MessageList`
- * (and through it every per-worker result renderer) and `WaterfallChart` over
- * `toWaterfallData`. Only three things are demo-local: the composer is a
- * lookalike that types instead of a Lexical editor, the events come from
- * `scenario.ts` instead of the engine, and the callout chips are new.
+ * (and through it every per-worker result renderer), and on the traces side
+ * the page's own stack: the live `TimelineStrip` masthead, `TraceFilters`,
+ * the `timeline`/`waterfall` switcher over `TraceTimeline` / `WaterfallChart`,
+ * and the `WorkerBreakdown` footer: same components, same defaults (the
+ * hierarchical timeline, not the waterfall). Only three things are demo-local:
+ * the composer is a lookalike that types instead of a Lexical editor, the
+ * events come from `scenario.ts` instead of the engine, and the callout chips
+ * are new.
  */
 
 import { ArrowUp, Paperclip } from 'lucide-react'
@@ -16,7 +20,16 @@ import { MessageList } from '@/components/chat/MessageList'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
+import { TimelineStrip } from '@/pages/TracesV2/components/timeline/TimelineStrip'
+import { TraceTimeline } from '@/pages/TracesV2/components/timeline/TraceTimeline'
+import { TraceFilters } from '@/pages/TracesV2/components/TraceFilters'
+import {
+  ViewSwitcher,
+  type ViewType,
+} from '@/pages/TracesV2/components/ViewSwitcher'
 import { WaterfallChart } from '@/pages/TracesV2/components/WaterfallChart'
+import { WorkerBreakdown } from '@/pages/TracesV2/components/WorkerBreakdown'
+import { useTraceFilters } from '@/pages/TracesV2/hooks/useTraceFilters'
 import type { VisualizationSpan } from '@/pages/TracesV2/lib/traceTransform'
 import { MODEL_ID, SESSION_ID, TRACE_ID } from './scenario'
 import { usePlayer } from './usePlayer'
@@ -96,6 +109,11 @@ export interface LandingDemoProps {
 export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
   const player = usePlayer(active, loop)
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null)
+  // The page's default view, and the page's own filter state. The filters
+  // control a single recorded trace, so narrowing has nothing to narrow;
+  // they are here because the surface is not the surface without them.
+  const [view, setView] = useState<ViewType>('timeline')
+  const traceFilters = useTraceFilters()
   const listWrapRef = useRef<HTMLDivElement>(null)
   const traceWrapRef = useRef<HTMLDivElement>(null)
 
@@ -230,20 +248,67 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
             </div>
           </header>
 
-          <div ref={traceWrapRef} className="flex min-h-0 flex-1 flex-col">
+          {/* The masthead and filter bar the real page carries above its
+              trace list; the strip runs live off the same span feed the
+              detail below is built from. */}
+          <TimelineStrip spans={player.spans} isPaused={!active} />
+          <div className="border-b border-rule px-4 py-2.5">
+            <TraceFilters
+              filters={traceFilters.filters}
+              onFilterChange={traceFilters.updateFilter}
+              onClear={traceFilters.resetFilters}
+              validationWarnings={traceFilters.validationWarnings}
+              onClearWarnings={traceFilters.clearValidationWarnings}
+              stats={{
+                totalTraces: 1,
+                errorCount: player.waterfall
+                  ? player.waterfall.spans.filter((s) => s.status === 'error')
+                      .length
+                  : 0,
+                avgDuration: player.waterfall?.total_duration_ms ?? 0,
+              }}
+            />
+          </div>
+
+          <div className="border-b border-rule px-4 py-2.5">
+            <ViewSwitcher currentView={view} onViewChange={setView} />
+          </div>
+
+          <div
+            ref={traceWrapRef}
+            className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+          >
             {player.waterfall ? (
-              <WaterfallChart
-                data={player.waterfall}
-                onSpanClick={handleSpanClick}
-                selectedSpanId={selectedSpanId}
-                showExpandControls={false}
-              />
+              view === 'timeline' ? (
+                <TraceTimeline
+                  data={player.waterfall}
+                  onSpanClick={handleSpanClick}
+                  selectedSpanId={selectedSpanId ?? undefined}
+                  fitContent
+                />
+              ) : (
+                <div className="min-h-0 flex-1">
+                  {/* The real console boxes the chart at 420px; the demo pane is the whole column, so it takes all of it. */}
+                  <WaterfallChart
+                    data={player.waterfall}
+                    onSpanClick={handleSpanClick}
+                    selectedSpanId={selectedSpanId}
+                    showExpandControls={false}
+                  />
+                </div>
+              )
             ) : (
               <div className="flex h-full items-center justify-center px-6 text-center font-mono text-[12px] text-ink-ghost">
                 waiting for the first span…
               </div>
             )}
           </div>
+
+          {player.waterfall ? (
+            <div className="shrink-0 border-t border-rule">
+              <WorkerBreakdown data={player.waterfall} />
+            </div>
+          ) : null}
 
           <CalloutStrip
             callout={
