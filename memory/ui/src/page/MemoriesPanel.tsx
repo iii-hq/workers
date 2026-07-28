@@ -1,3 +1,5 @@
+import { useMemo, useState } from 'react'
+import { Badge, Button, EmptyState, type Host, Input } from '@iii-dev/console-ui'
 import {
   ChevronLeft,
   ChevronRight,
@@ -8,14 +10,8 @@ import {
   Search,
   Trash2,
   X,
-} from 'lucide-react'
-import { useMemo, useState } from 'react'
-import { Badge } from '@/components/ui/Badge'
-import { Button } from '@/components/ui/Button'
-import { EmptyState } from '@/components/ui/EmptyState'
-import { Input } from '@/components/ui/Input'
-import { type MemoryItem, recall } from '@/lib/memory'
-import { cn } from '@/lib/utils'
+} from './icons'
+import { type MemoryItem, recall } from './memory-data'
 
 /**
  * The selected bank's memories, built for large banks: server-side pages of
@@ -51,6 +47,7 @@ export function activityBuckets(
 }
 
 interface MemoriesPanelProps {
+  host: Host
   bank: string
   memories: MemoryItem[]
   total: number
@@ -93,15 +90,11 @@ function FactRow({
 
   return (
     <li
-      className={cn(
-        'px-3 py-2 flex flex-col gap-1.5',
-        memory.pinned && 'border-l-2 border-l-accent',
-        superseded && 'opacity-50',
-      )}
+      className={`mem-fact${memory.pinned ? ' pinned' : ''}${superseded ? ' superseded' : ''}`}
     >
       {editing ? (
         <form
-          className="flex items-center gap-2"
+          className="mem-row"
           onSubmit={(e) => {
             e.preventDefault()
             const text = editText.trim()
@@ -116,7 +109,7 @@ function FactRow({
             onChange={setEditText}
             preserveCase
             aria-label="edit memory"
-            className="flex-1"
+            className="mem-flex1"
           />
           <Button type="submit" variant="primary" size="sm">
             save
@@ -131,28 +124,21 @@ function FactRow({
           </Button>
         </form>
       ) : (
-        <p className="font-mono text-[13px] text-ink leading-snug">
-          {memory.text}
-        </p>
+        <p className="mem-fact-text">{memory.text}</p>
       )}
-      <div className="flex items-center gap-2 flex-wrap">
+      <div className="mem-fact-meta">
         {score !== undefined ? (
-          <span className="font-mono text-[10px] text-ink-ghost tabular-nums">
-            {score.toFixed(2)}
-          </span>
+          <span className="mem-score">{score.toFixed(2)}</span>
         ) : null}
         {memory.entities.map((entity) => (
           <Badge key={entity}>{entity}</Badge>
         ))}
         {memory.tags.map((tag) => (
-          <span
-            key={tag}
-            className="font-mono text-[10px] lowercase px-1 border border-rule-2 text-ink-faint"
-          >
+          <span key={tag} className="mem-tag">
             #{tag}
           </span>
         ))}
-        <span className="font-mono text-[10px] lowercase text-ink-ghost">
+        <span className="mem-meta-note">
           {timeAgo(memory.created_at)}
           {memory.corroboration > 0 && ` · seen ×${memory.corroboration + 1}`}
           {memory.confidence === 'stated' && ' · saved explicitly'}
@@ -163,13 +149,13 @@ function FactRow({
             type="button"
             onClick={() => onOpenChat(memory.source?.session_id ?? '')}
             title="open the conversation this memory came from"
-            className="inline-flex items-center gap-1 font-mono text-[10px] lowercase text-ink-ghost hover:text-ink transition-colors"
+            className="mem-fromchat"
           >
-            <MessageSquare className="w-3 h-3" aria-hidden />
+            <MessageSquare size={12} aria-hidden />
             from chat
           </button>
         ) : null}
-        <span className="flex-1" />
+        <span className="mem-spacer" />
         <Button
           variant="icon"
           size="icon"
@@ -183,9 +169,9 @@ function FactRow({
           }
         >
           {memory.pinned ? (
-            <PinOff className="w-3.5 h-3.5" aria-hidden />
+            <PinOff size={14} aria-hidden />
           ) : (
-            <Pin className="w-3.5 h-3.5" aria-hidden />
+            <Pin size={14} aria-hidden />
           )}
         </Button>
         <Button
@@ -198,7 +184,7 @@ function FactRow({
           disabled={busy || superseded}
           aria-label="edit memory"
         >
-          <Pencil className="w-3.5 h-3.5" aria-hidden />
+          <Pencil size={14} aria-hidden />
         </Button>
         <Button
           variant="icon"
@@ -208,7 +194,7 @@ function FactRow({
           aria-label="delete memory"
           title="tombstone (leaves recall; stays on disk under show history)"
         >
-          <Trash2 className="w-3.5 h-3.5" aria-hidden />
+          <Trash2 size={14} aria-hidden />
         </Button>
       </div>
     </li>
@@ -216,6 +202,7 @@ function FactRow({
 }
 
 export function MemoriesPanel({
+  host,
   bank,
   memories,
   total,
@@ -251,7 +238,7 @@ export function MemoriesPanel({
     }
     setSearching(true)
     try {
-      const res = await recall(bank, q, 50)
+      const res = await recall(host, bank, q, 50)
       setResults(res.memories)
     } finally {
       setSearching(false)
@@ -272,8 +259,8 @@ export function MemoriesPanel({
   const maxBucket = Math.max(1, ...buckets)
 
   return (
-    <div className="flex flex-col gap-3">
-      <p className="font-mono text-[11px] lowercase text-ink-faint">
+    <div className="mem-stack">
+      <p className="mem-hint">
         one line per durable thing said in chat — captured automatically after
         each turn, each with the conversation it came from. a memory reaches
         the agent only when it matches the question being asked; rules are the
@@ -281,26 +268,26 @@ export function MemoriesPanel({
       </p>
 
       {total > 0 ? (
-        <div className="flex items-center gap-3 border border-rule-2 bg-panel px-3 py-2">
-          <div className="flex items-end gap-[2px] h-8" aria-hidden>
+        <div className="mem-activity">
+          <div className="mem-bars" aria-hidden>
             {buckets.map((count, i) => (
               <span
                 // biome-ignore lint/suspicious/noArrayIndexKey: fixed-size day series
                 key={i}
-                className={cn('w-[5px]', count > 0 ? 'bg-accent' : 'bg-rule')}
+                className={`mem-bar${count > 0 ? ' on' : ''}`}
                 style={{
                   height: `${count > 0 ? Math.max(15, Math.round((count / maxBucket) * 100)) : 6}%`,
                 }}
               />
             ))}
           </div>
-          <div className="flex flex-col">
-            <span className="font-mono text-[12px] text-ink tabular-nums">
+          <div className="mem-activity-text">
+            <span className="mem-activity-count">
               {capturedThisWeek > 0
                 ? `${capturedThisWeek} captured this week`
                 : 'nothing captured this week'}
             </span>
-            <span className="font-mono text-[10px] lowercase text-ink-ghost">
+            <span className="mem-subhint">
               last 30 days · {total} total · chat and this page stay in sync
               live
             </span>
@@ -309,7 +296,7 @@ export function MemoriesPanel({
       ) : null}
 
       <form
-        className="flex items-center gap-2"
+        className="mem-row"
         onSubmit={(e) => {
           e.preventDefault()
           const text = draft.trim()
@@ -325,7 +312,7 @@ export function MemoriesPanel({
           preserveCase
           placeholder="remember something..."
           aria-label="new memory"
-          className="flex-1"
+          className="mem-flex1"
         />
         <Button
           type="submit"
@@ -338,7 +325,7 @@ export function MemoriesPanel({
       </form>
 
       <form
-        className="flex items-center gap-2"
+        className="mem-row"
         onSubmit={(e) => {
           e.preventDefault()
           void runSearch()
@@ -353,16 +340,16 @@ export function MemoriesPanel({
           preserveCase
           placeholder={`search ${total} memories (ranked recall)...`}
           aria-label="search memories"
-          className="flex-1"
+          className="mem-flex1"
         />
         <Button
           type="submit"
           variant="ghost"
           size="sm"
           disabled={!query.trim() || searching}
-          className="gap-1"
+          className="mem-gap1"
         >
-          <Search className="w-3.5 h-3.5" aria-hidden />
+          <Search size={14} aria-hidden />
           search
         </Button>
         {searchMode ? (
@@ -374,30 +361,23 @@ export function MemoriesPanel({
               setQuery('')
               setResults(null)
             }}
-            className="gap-1"
+            className="mem-gap1"
           >
-            <X className="w-3.5 h-3.5" aria-hidden />
+            <X size={14} aria-hidden />
             clear
           </Button>
         ) : null}
       </form>
 
       {tags.length > 0 ? (
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-ghost">
-            tags
-          </span>
+        <div className="mem-row wrap">
+          <span className="mem-caption">tags</span>
           {tags.map(({ tag: t, count }) => (
             <button
               key={t}
               type="button"
               onClick={() => onTagChange(tag === t ? null : t)}
-              className={cn(
-                'font-mono text-[11px] lowercase px-1.5 py-0.5 border transition-colors',
-                tag === t
-                  ? 'border-accent text-ink'
-                  : 'border-rule text-ink-faint hover:border-ink hover:text-ink',
-              )}
+              className={`mem-tagbtn${tag === t ? ' active' : ''}`}
             >
               #{t} · {count}
             </button>
@@ -406,7 +386,7 @@ export function MemoriesPanel({
             <button
               type="button"
               onClick={() => onTagChange(null)}
-              className="font-mono text-[11px] lowercase text-ink-ghost hover:text-ink"
+              className="mem-linklike"
             >
               clear
             </button>
@@ -414,15 +394,15 @@ export function MemoriesPanel({
         </div>
       ) : null}
 
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <span className="font-mono text-[11px] lowercase text-ink-faint">
+      <div className="mem-spread wrap">
+        <span className="mem-hint">
           {searchMode
             ? `${results.length} matches (top 50 by score)`
             : `${total} memories · page ${page}/${pages}`}
         </span>
-        <div className="flex items-center gap-2">
+        <div className="mem-row">
           {!searchMode && pages > 1 ? (
-            <span className="flex items-center gap-1">
+            <span className="mem-row tight">
               <Button
                 variant="icon"
                 size="icon"
@@ -430,7 +410,7 @@ export function MemoriesPanel({
                 onClick={() => onOffsetChange(Math.max(0, offset - pageSize))}
                 aria-label="previous page"
               >
-                <ChevronLeft className="w-3.5 h-3.5" aria-hidden />
+                <ChevronLeft size={14} aria-hidden />
               </Button>
               <Button
                 variant="icon"
@@ -439,16 +419,15 @@ export function MemoriesPanel({
                 onClick={() => onOffsetChange(offset + pageSize)}
                 aria-label="next page"
               >
-                <ChevronRight className="w-3.5 h-3.5" aria-hidden />
+                <ChevronRight size={14} aria-hidden />
               </Button>
             </span>
           ) : null}
-          <label className="flex items-center gap-1.5 font-mono text-[11px] lowercase text-ink-faint cursor-pointer">
+          <label className="mem-check">
             <input
               type="checkbox"
               checked={includeSuperseded}
               onChange={(e) => onToggleSuperseded(e.target.checked)}
-              className="accent-[var(--color-accent,#ff5a1f)]"
             />
             show history
           </label>
@@ -462,7 +441,7 @@ export function MemoriesPanel({
             description="recall matches on words and entity handles. try different terms or clear the search."
           />
         ) : (
-          <ul className="border border-rule divide-y divide-rule-2">
+          <ul className="mem-fact-list">
             {results.map(({ memory, score }) => (
               <FactRow
                 key={memory.id}
@@ -483,7 +462,7 @@ export function MemoriesPanel({
           description="pick this bank in the chat composer, then just talk — say something durable ('our api port is 3111') and it appears here after the turn, linked to that conversation. or type one above."
         />
       ) : (
-        <ul className="border border-rule divide-y divide-rule-2">
+        <ul className="mem-fact-list">
           {memories.map((memory) => (
             <FactRow
               key={memory.id}

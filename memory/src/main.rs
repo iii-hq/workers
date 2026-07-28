@@ -211,6 +211,11 @@ async fn main() -> Result<()> {
     functions::register_all(&iii, &deps);
     register_hook_functions(&iii, &deps);
 
+    // Injectable console UI — after the memory::* functions so the console can
+    // attribute the assets. `iii` is already Arc-wrapped (the console-ui crate
+    // clones the client into its hot-reload watcher task).
+    memory::ui::register(&iii);
+
     // Bind the harness/session/queue seams (injection fail-OPEN — a
     // memory failure must never block a turn — plus turn-completed
     // extraction, session GC, and the durable extraction consumer).

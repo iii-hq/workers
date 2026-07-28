@@ -11,6 +11,7 @@ packages:
   - console/ui
   - database/ui
   - eval/ui
+  - memory/ui
   - state/ui
   - iii-directory/ui
   - worktree/ui

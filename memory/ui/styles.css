@@ -1,0 +1,589 @@
+/*
+ * The memory worker's console stylesheet, shipped as its own `console:style`
+ * asset (memory/styles.css) — the console mounts it as a <link> in
+ * document.head and link-swaps it on hot reload, styles-before-scripts on
+ * boot. Every rule is scoped under `[data-iii-ui="memory"]`, the wrapper the
+ * console mounts around every injected render. Styling uses the console's
+ * design tokens, so light/dark theming is free; component chrome (Button,
+ * Input, Badge, StatusPanel, CodeEditor, …) comes pre-styled from
+ * @iii-dev/console-ui and is only given layout classes here.
+ */
+
+/* ── page shell ─────────────────────────────────────────────────────── */
+[data-iii-ui="memory"] .mem-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink);
+}
+[data-iii-ui="memory"] .mem-header {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="memory"] .mem-h1 {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-transform: lowercase;
+  color: var(--color-ink);
+}
+[data-iii-ui="memory"] .mem-header-sub {
+  font-size: 12px;
+  text-transform: lowercase;
+  color: var(--color-ink-faint);
+  margin-top: 2px;
+}
+[data-iii-ui="memory"] .mem-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  text-transform: lowercase;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="memory"] .mem-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+[data-iii-ui="memory"] .mem-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+[data-iii-ui="memory"] .mem-empty-banks {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 64px 0;
+}
+
+/* ── shared primitives ──────────────────────────────────────────────── */
+[data-iii-ui="memory"] .mem-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+[data-iii-ui="memory"] .mem-stack.tight {
+  gap: 8px;
+}
+[data-iii-ui="memory"] .mem-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui="memory"] .mem-row.tight {
+  gap: 4px;
+}
+[data-iii-ui="memory"] .mem-row.wrap {
+  flex-wrap: wrap;
+}
+[data-iii-ui="memory"] .mem-spread {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+[data-iii-ui="memory"] .mem-spread.wrap {
+  flex-wrap: wrap;
+}
+[data-iii-ui="memory"] .mem-flex1 {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+[data-iii-ui="memory"] .mem-spacer {
+  flex: 1;
+}
+[data-iii-ui="memory"] .mem-gap1 {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+[data-iii-ui="memory"] .mem-hint {
+  font-size: 11px;
+  text-transform: lowercase;
+  color: var(--color-ink-faint);
+  line-height: 1.5;
+}
+[data-iii-ui="memory"] .mem-hint.mem-center {
+  text-align: center;
+  max-width: 28rem;
+}
+[data-iii-ui="memory"] .mem-subhint {
+  font-size: 10px;
+  text-transform: lowercase;
+  color: var(--color-ink-ghost);
+  line-height: 1.5;
+}
+[data-iii-ui="memory"] .mem-caption {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="memory"] .mem-danger {
+  color: var(--color-alert);
+}
+[data-iii-ui="memory"] .mem-truncate {
+  font-size: 11px;
+  text-transform: lowercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="memory"] .mem-error-text {
+  font-size: 12px;
+  text-transform: lowercase;
+  color: var(--color-alert);
+}
+[data-iii-ui="memory"] .mem-linklike {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-family: inherit;
+  font-size: 11px;
+  text-transform: lowercase;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+}
+[data-iii-ui="memory"] .mem-linklike:hover {
+  color: var(--color-ink);
+}
+[data-iii-ui="memory"] .mem-spin {
+  animation: mem-ui-spin 1s linear infinite;
+}
+@keyframes mem-ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* console-ui component layout overrides (chrome stays theirs) */
+[data-iii-ui="memory"] .mem-editor {
+  width: 100%;
+  min-height: 96px;
+}
+[data-iii-ui="memory"] .mem-graph-filter {
+  width: 224px;
+  max-width: 100%;
+}
+[data-iii-ui="memory"] .mem-rail-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ── bank rail ──────────────────────────────────────────────────────── */
+[data-iii-ui="memory"] .mem-rail {
+  width: 208px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--color-rule);
+}
+[data-iii-ui="memory"] .mem-rail-head {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="memory"] .mem-rail-caption {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="memory"] .mem-rail-list {
+  flex: 1;
+  overflow: auto;
+}
+[data-iii-ui="memory"] .mem-rail-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--color-rule-2);
+  border-left: 2px solid transparent;
+  background: transparent;
+  font-family: inherit;
+  text-transform: lowercase;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+[data-iii-ui="memory"] .mem-rail-item:hover {
+  background: var(--color-panel);
+}
+[data-iii-ui="memory"] .mem-rail-item.active {
+  border-left-color: var(--color-accent);
+  background: var(--color-panel);
+}
+[data-iii-ui="memory"] .mem-rail-name {
+  display: block;
+  font-size: 13px;
+  color: var(--color-ink);
+}
+[data-iii-ui="memory"] .mem-rail-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="memory"] .mem-rail-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--color-rule);
+}
+
+/* ── mode toggle (segmented) ────────────────────────────────────────── */
+[data-iii-ui="memory"] .mem-modes {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-rule);
+  overflow: hidden;
+}
+[data-iii-ui="memory"] .mem-mode {
+  border: 0;
+  border-right: 1px solid var(--color-rule);
+  background: transparent;
+  padding: 5px 12px;
+  font-family: inherit;
+  font-size: 12px;
+  text-transform: lowercase;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  transition: color 0.12s ease, background-color 0.12s ease;
+}
+[data-iii-ui="memory"] .mem-mode:last-child {
+  border-right: 0;
+}
+[data-iii-ui="memory"] .mem-mode:hover {
+  color: var(--color-ink);
+}
+[data-iii-ui="memory"] .mem-mode.active {
+  background: var(--color-panel);
+  color: var(--color-ink);
+}
+
+/* ── tag pills / buttons ────────────────────────────────────────────── */
+[data-iii-ui="memory"] .mem-tag {
+  font-size: 10px;
+  text-transform: lowercase;
+  padding: 0 4px;
+  border: 1px solid var(--color-rule-2);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="memory"] .mem-tagbtn {
+  font-family: inherit;
+  font-size: 11px;
+  text-transform: lowercase;
+  padding: 2px 6px;
+  border: 1px solid var(--color-rule);
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+[data-iii-ui="memory"] .mem-tagbtn:hover {
+  border-color: var(--color-ink);
+  color: var(--color-ink);
+}
+[data-iii-ui="memory"] .mem-tagbtn.active {
+  border-color: var(--color-accent);
+  color: var(--color-ink);
+}
+
+/* ── memories list ──────────────────────────────────────────────────── */
+[data-iii-ui="memory"] .mem-activity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--color-rule-2);
+  background: var(--color-panel);
+  padding: 8px 12px;
+}
+[data-iii-ui="memory"] .mem-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 32px;
+}
+[data-iii-ui="memory"] .mem-bar {
+  width: 5px;
+  background: var(--color-rule);
+}
+[data-iii-ui="memory"] .mem-bar.on {
+  background: var(--color-accent);
+}
+[data-iii-ui="memory"] .mem-activity-text {
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="memory"] .mem-activity-count {
+  font-size: 12px;
+  color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="memory"] .mem-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  text-transform: lowercase;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="memory"] .mem-check input {
+  accent-color: var(--color-accent);
+}
+[data-iii-ui="memory"] .mem-fact-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--color-rule);
+}
+[data-iii-ui="memory"] .mem-fact-list > li + li {
+  border-top: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="memory"] .mem-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-left: 2px solid transparent;
+}
+[data-iii-ui="memory"] .mem-fact.pinned {
+  border-left-color: var(--color-accent);
+}
+[data-iii-ui="memory"] .mem-fact.superseded {
+  opacity: 0.5;
+}
+[data-iii-ui="memory"] .mem-fact-text {
+  font-size: 13px;
+  color: var(--color-ink);
+  line-height: 1.375;
+}
+[data-iii-ui="memory"] .mem-fact-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="memory"] .mem-score {
+  font-size: 10px;
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="memory"] .mem-meta-note {
+  font-size: 10px;
+  text-transform: lowercase;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="memory"] .mem-fromchat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-family: inherit;
+  font-size: 10px;
+  text-transform: lowercase;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+[data-iii-ui="memory"] .mem-fromchat:hover {
+  color: var(--color-ink);
+}
+
+/* ── rules ──────────────────────────────────────────────────────────── */
+[data-iii-ui="memory"] .mem-rule {
+  border: 1px solid var(--color-rule);
+}
+[data-iii-ui="memory"] .mem-rule-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="memory"] .mem-rule-name {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: lowercase;
+  color: var(--color-ink);
+}
+[data-iii-ui="memory"] .mem-rule-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui="memory"] .mem-unsaved {
+  font-size: 10px;
+  text-transform: lowercase;
+  color: var(--color-warn);
+}
+[data-iii-ui="memory"] .mem-rule-editor {
+  max-height: 480px;
+  overflow: auto;
+}
+
+/* ── recall / turn preview ──────────────────────────────────────────── */
+[data-iii-ui="memory"] .mem-prompt {
+  border: 1px solid var(--color-rule);
+}
+[data-iii-ui="memory"] .mem-prompt-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+}
+[data-iii-ui="memory"] .mem-prompt-label {
+  font-size: 11px;
+  text-transform: lowercase;
+  color: var(--color-ink);
+}
+[data-iii-ui="memory"] .mem-prompt-body {
+  margin: 0;
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--color-rule-2);
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  white-space: pre-wrap;
+  line-height: 1.6;
+  max-height: 288px;
+  overflow: auto;
+}
+[data-iii-ui="memory"] .mem-recall-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+}
+[data-iii-ui="memory"] .mem-scorebar {
+  height: 6px;
+  flex-shrink: 0;
+  background: var(--color-rule);
+}
+[data-iii-ui="memory"] .mem-scorebar.on {
+  background: var(--color-accent);
+}
+
+/* ── graph ──────────────────────────────────────────────────────────── */
+[data-iii-ui="memory"] .mem-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+}
+[data-iii-ui="memory"] .mem-graph-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--color-rule);
+}
+[data-iii-ui="memory"] .mem-graph-svg {
+  width: 100%;
+  height: 100%;
+  min-height: 440px;
+  cursor: grab;
+  user-select: none;
+}
+[data-iii-ui="memory"] .mem-graph-svg:active {
+  cursor: grabbing;
+}
+[data-iii-ui="memory"] .mem-node {
+  cursor: grab;
+  outline: none;
+}
+[data-iii-ui="memory"] .mem-node:active {
+  cursor: grabbing;
+}
+[data-iii-ui="memory"] .mem-more {
+  cursor: pointer;
+  outline: none;
+}
+[data-iii-ui="memory"] .mem-legend {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 8px;
+  font-size: 10px;
+  text-transform: lowercase;
+  color: var(--color-ink-ghost);
+  background: color-mix(in srgb, var(--color-bg) 90%, transparent);
+  border: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="memory"] .mem-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+[data-iii-ui="memory"] .mem-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+}
+[data-iii-ui="memory"] .mem-swatch.entity {
+  border: 1px solid var(--color-ink-faint);
+  background: var(--color-panel);
+}
+[data-iii-ui="memory"] .mem-swatch.memory {
+  border-radius: 9999px;
+  background: var(--color-ink);
+}
+[data-iii-ui="memory"] .mem-swatch.pinned {
+  border-radius: 9999px;
+  background: var(--color-accent);
+}
+[data-iii-ui="memory"] .mem-card {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 288px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--color-rule);
+  background: var(--color-bg);
+}
+[data-iii-ui="memory"] .mem-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+[data-iii-ui="memory"] .mem-card-text {
+  font-size: 12px;
+  color: var(--color-ink);
+  line-height: 1.375;
+}
