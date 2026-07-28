@@ -6,17 +6,20 @@
  *
  * Each row shows the function id (badge), a one-line arg echo, an ok/error dot
  * with the call duration, and a relative timestamp; clicking a row expands the
- * short result summary the worker derived. A live/paused toggle stops appending
- * new events, and clear empties the (bounded, newest-first) list.
+ * ACTUAL result the worker budgeted into the event, rendered by its `kind`
+ * (list / object / text / diff / outcome — see result-views.tsx and the
+ * `preview()` budgeter in github/src/events.rs). A live/paused toggle stops
+ * appending new events, and clear empties the (bounded, newest-first) list.
  *
  * The host only mounts this page while the github worker is connected, so there
  * is no presence gate; this page invokes nothing — it is a passive observer of
  * the bus.
  */
 
-import { Badge, Button, EmptyState, type Host, StatusDot } from '@iii-dev/console-ui'
+import { Badge, Button, EmptyState, ErrorBoundary, type Host, StatusDot } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Activity, type IconProps } from './icons'
+import { ResultView } from './result-views'
 
 /** The worker's trigger type; see github/src/events.rs. */
 const CALLED_TYPE = 'github::called'
@@ -35,6 +38,11 @@ interface CalledEvent {
   ok: boolean
   duration_ms: number
   result_summary: string
+  /** Renderer discriminator for `result_preview`: list/object/text/diff/outcome. */
+  kind: string
+  /** The budgeted, projected result the worker carried in the event; `null`
+   *  when there was nothing useful. Rendered by `kind` (see result-views.tsx). */
+  result_preview: unknown
   timestamp: string
 }
 
@@ -71,6 +79,8 @@ function useCalledFeed(host: Host) {
         ok: Boolean(event.ok),
         duration_ms: Number(event.duration_ms) || 0,
         result_summary: event.result_summary ?? '',
+        kind: typeof event.kind === 'string' ? event.kind : 'object',
+        result_preview: event.result_preview ?? null,
         timestamp: event.timestamp ?? '',
         key: `${Date.now()}-${seq.current++}`,
         receivedAt: Date.now(),
@@ -116,21 +126,11 @@ export function GithubPage({ host }: { host: Host }) {
           </div>
         </div>
         <div className="gh-head-actions">
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-pressed={!paused}
-            onClick={() => setPaused((p) => !p)}
-          >
+          <Button variant="ghost" size="sm" aria-pressed={!paused} onClick={() => setPaused((p) => !p)}>
             <StatusDot tone={paused ? 'warn' : 'accent'} pulse={!paused} aria-hidden />
             {paused ? 'paused' : 'live'}
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={entries.length === 0}
-            onClick={clear}
-          >
+          <Button variant="ghost" size="sm" disabled={entries.length === 0} onClick={clear}>
             clear
           </Button>
         </div>
@@ -151,9 +151,7 @@ export function GithubPage({ host }: { host: Host }) {
                 entry={entry}
                 now={now}
                 expanded={expanded === entry.key}
-                onToggle={() =>
-                  setExpanded((cur) => (cur === entry.key ? null : entry.key))
-                }
+                onToggle={() => setExpanded((cur) => (cur === entry.key ? null : entry.key))}
               />
             ))}
           </tbody>
@@ -199,9 +197,7 @@ function ActivityRow({
         </td>
         <td className="gh-feed-status">
           <StatusDot tone={entry.ok ? 'accent' : 'alert'} aria-hidden />
-          <span className={entry.ok ? 'gh-ok' : 'gh-err'}>
-            {entry.ok ? 'ok' : 'error'}
-          </span>
+          <span className={entry.ok ? 'gh-ok' : 'gh-err'}>{entry.ok ? 'ok' : 'error'}</span>
           <span className="gh-feed-dur">{formatDuration(entry.duration_ms)}</span>
         </td>
         <td className="gh-feed-time" title={entry.timestamp || undefined}>
@@ -212,7 +208,10 @@ function ActivityRow({
         <tr className="gh-feed-detail-row">
           <td colSpan={4}>
             <div className="gh-feed-detail">
-              {entry.result_summary || '(no result summary)'}
+              {entry.result_summary ? <div className="gh-feed-summary">{entry.result_summary}</div> : null}
+              <ErrorBoundary fallback={() => <div className="gh-rv-empty">could not render this result</div>}>
+                <ResultView kind={entry.kind} preview={entry.result_preview} ok={entry.ok} />
+              </ErrorBoundary>
             </div>
           </td>
         </tr>

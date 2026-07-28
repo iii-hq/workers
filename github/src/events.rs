@@ -21,7 +21,7 @@ use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
 use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 /// The trigger type the console subscribes to for the activity feed.
 pub const CALLED: &str = "github::called";
@@ -30,6 +30,22 @@ pub const CALLED: &str = "github::called";
 /// event past what the feed row needs.
 const MAX_SUMMARY: usize = 512;
 const MAX_ARGS: usize = 256;
+
+/// The result PREVIEW carried alongside the one-line summary is budgeted so the
+/// event stays small no matter how big the underlying gh output was.
+/// List previews keep at most this many items (with the true total recorded);
+/// object/text/diff/outcome previews are byte-capped.
+const PREVIEW_MAX_ITEMS: usize = 12;
+const PREVIEW_MAX_BYTES: usize = 6144;
+/// Per-item value cap for a projected list entry (an `author`/`repository`
+/// object stays whole; a rogue long field is trimmed).
+const PREVIEW_ITEM_VALUE_BYTES: usize = 512;
+/// Long top-level strings on a projected object (a PR body, release notes) are
+/// trimmed to this before the object is re-measured against the byte budget.
+const PREVIEW_STRING_BYTES: usize = 1024;
+/// Each stream of an outcome preview is capped independently so a chatty
+/// stdout AND stderr together still fit the budget.
+const PREVIEW_STREAM_BYTES: usize = PREVIEW_MAX_BYTES / 2;
 
 /// One `github::called` event: the call that ran plus a short, human result
 /// summary. Serialized as the trigger payload; the console renders it directly.
@@ -46,8 +62,17 @@ pub struct CalledEvent {
     pub ok: bool,
     /// Wall-clock duration of the wrapped handler, in ms.
     pub duration_ms: u64,
-    /// Short human string derived from the result (e.g. "3 pull requests").
+    /// Short human string derived from the result (e.g. "3 pull requests") —
+    /// the collapsed row header.
     pub result_summary: String,
+    /// Which renderer the UI should use for [`Self::result_preview`], derived
+    /// from the response envelope + function id:
+    /// `"list" | "object" | "text" | "diff" | "outcome"`.
+    pub kind: String,
+    /// The ACTUAL result, budgeted small (see the `PREVIEW_*` caps): a
+    /// projected + truncated slice of what the call returned so the feed shows
+    /// the substance, not just a count. `null` when there is nothing useful.
+    pub result_preview: Value,
     /// RFC 3339 UTC timestamp of completion.
     pub timestamp: String,
 }
@@ -186,12 +211,22 @@ where
     let started = std::time::Instant::now();
     let result = fut.await;
     let duration_ms = started.elapsed().as_millis() as u64;
-    let (ok, result_summary) = match &result {
+    let (ok, result_summary, kind, result_preview) = match &result {
         Ok(resp) => {
             let value = serde_json::to_value(resp).unwrap_or(Value::Null);
-            (true, summarize(function_id, &value))
+            let (kind, preview) = preview(function_id, &value);
+            (true, summarize(function_id, &value), kind, preview)
         }
-        Err(e) => (false, truncate(&e.to_string(), MAX_SUMMARY)),
+        Err(e) => {
+            let msg = e.to_string();
+            let (text, truncated) = truncate_bytes(&msg, PREVIEW_MAX_BYTES);
+            (
+                false,
+                truncate(&msg, MAX_SUMMARY),
+                "text".to_string(),
+                json!({ "text": text, "truncated": truncated }),
+            )
+        }
     };
     emitter
         .emit(CalledEvent {
@@ -201,6 +236,8 @@ where
             ok,
             duration_ms,
             result_summary,
+            kind,
+            result_preview,
             timestamp: now_rfc3339(),
         })
         .await;
@@ -239,6 +276,232 @@ pub fn summarize(function_id: &str, result: &Value) -> String {
         _ => first_line(&result.to_string()),
     };
     truncate(&raw, MAX_SUMMARY)
+}
+
+/// The `kind` discriminator + the budgeted `result_preview` for an event.
+/// Dispatches on the SAME response envelope as [`summarize`] so the UI can pick
+/// a renderer without re-parsing:
+///
+/// - `{ output }`  → `"text"`,   `{ text, truncated }` (byte-capped)
+/// - `{ diff }`    → `"diff"`,   `{ diff, truncated }` (first ~6 KB kept)
+/// - `{ value: [] }`→ `"list"`,  `{ items: [projected…], total }` (first N kept)
+/// - `{ value: {} }`→ `"object"`, the object whole (under budget) or top-level
+///   keys projected
+/// - `{ exit_code|stdout }` → `"outcome"`, `{ exit_code, stdout, stderr, … }`
+/// - anything else → `"object"`, the value projected to fit the byte budget
+pub fn preview(function_id: &str, result: &Value) -> (String, Value) {
+    match result {
+        Value::Object(m) if m.contains_key("output") => {
+            let out = m.get("output").and_then(Value::as_str).unwrap_or("");
+            let (text, truncated) = truncate_bytes(out, PREVIEW_MAX_BYTES);
+            (
+                "text".to_string(),
+                json!({ "text": text, "truncated": truncated }),
+            )
+        }
+        Value::Object(m) if m.contains_key("diff") => {
+            let diff = m.get("diff").and_then(Value::as_str).unwrap_or("");
+            let already = m.get("truncated").and_then(Value::as_bool).unwrap_or(false);
+            let (text, cut) = truncate_bytes(diff, PREVIEW_MAX_BYTES);
+            (
+                "diff".to_string(),
+                json!({ "diff": text, "truncated": already || cut }),
+            )
+        }
+        Value::Object(m) if m.contains_key("value") => match m.get("value").unwrap_or(&Value::Null)
+        {
+            Value::Array(items) => ("list".to_string(), preview_list(function_id, items)),
+            Value::Null => ("object".to_string(), Value::Null),
+            other => ("object".to_string(), project_object(other)),
+        },
+        Value::Object(m) if m.contains_key("exit_code") || m.contains_key("stdout") => {
+            ("outcome".to_string(), preview_outcome(m))
+        }
+        Value::Null => ("object".to_string(), Value::Null),
+        other => ("object".to_string(), project_object(other)),
+    }
+}
+
+/// `{ items: [first N projected], total }` — keep the true length so the UI can
+/// show "showing 12 of 70", and project each kept item down to its salient
+/// display keys (per [`keys_for`]) so the payload stays small.
+fn preview_list(function_id: &str, items: &[Value]) -> Value {
+    let allow = keys_for(function_id);
+    let kept: Vec<Value> = items
+        .iter()
+        .take(PREVIEW_MAX_ITEMS)
+        .map(|item| project_item(item, allow))
+        .collect();
+    json!({ "items": kept, "total": items.len() })
+}
+
+/// Project one list item to the salient keys. With an allowlist, keep exactly
+/// those keys (each bounded); without one, keep top-level scalar keys and drop
+/// the blobs (nested arrays/objects, long strings).
+fn project_item(item: &Value, allow: &[&str]) -> Value {
+    let Value::Object(map) = item else {
+        return item.clone();
+    };
+    let mut out = Map::new();
+    if allow.is_empty() {
+        for (k, v) in map {
+            let keep = match v {
+                Value::String(s) => s.len() <= PREVIEW_ITEM_VALUE_BYTES,
+                Value::Array(_) | Value::Object(_) => false,
+                _ => true,
+            };
+            if keep {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+    } else {
+        for &k in allow {
+            if let Some(v) = map.get(k) {
+                out.insert(k.to_string(), bound_value(v));
+            }
+        }
+    }
+    Value::Object(out)
+}
+
+/// Keep a projected value, trimming a rogue long string / oversized nested
+/// value so a single item can't blow the budget. Small objects (an `author`)
+/// pass through whole.
+fn bound_value(v: &Value) -> Value {
+    match v {
+        Value::String(s) => Value::String(truncate_bytes(s, PREVIEW_ITEM_VALUE_BYTES).0),
+        other if value_bytes(other) > PREVIEW_ITEM_VALUE_BYTES => {
+            Value::String(format!("… ({} bytes elided)", value_bytes(other)))
+        }
+        other => other.clone(),
+    }
+}
+
+/// An object result: keep it whole when it fits the byte budget, else project
+/// top-level keys — scalars kept, long strings trimmed, nested blobs dropped.
+fn project_object(value: &Value) -> Value {
+    if value_bytes(value) <= PREVIEW_MAX_BYTES {
+        return value.clone();
+    }
+    match value {
+        Value::Object(map) => {
+            let mut out = Map::new();
+            for (k, v) in map {
+                match v {
+                    Value::String(s) => {
+                        out.insert(
+                            k.clone(),
+                            Value::String(truncate_bytes(s, PREVIEW_STRING_BYTES).0),
+                        );
+                    }
+                    Value::Array(_) | Value::Object(_) => {}
+                    other => {
+                        out.insert(k.clone(), other.clone());
+                    }
+                }
+            }
+            Value::Object(out)
+        }
+        Value::String(s) => Value::String(truncate_bytes(s, PREVIEW_MAX_BYTES).0),
+        other => other.clone(),
+    }
+}
+
+/// A `GhOutcome` preview: exit code / kill state plus byte-capped stdout+stderr.
+fn preview_outcome(m: &Map<String, Value>) -> Value {
+    let (stdout, out_cut) = truncate_bytes(
+        m.get("stdout").and_then(Value::as_str).unwrap_or(""),
+        PREVIEW_STREAM_BYTES,
+    );
+    let (stderr, err_cut) = truncate_bytes(
+        m.get("stderr").and_then(Value::as_str).unwrap_or(""),
+        PREVIEW_STREAM_BYTES,
+    );
+    let already = m
+        .get("stdout_truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || m.get("stderr_truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    json!({
+        "exit_code": m.get("exit_code").cloned().unwrap_or(Value::Null),
+        "timed_out": m.get("timed_out").and_then(Value::as_bool).unwrap_or(false),
+        "stdout": stdout,
+        "stderr": stderr,
+        "truncated": already || out_cut || err_cut,
+    })
+}
+
+/// The salient display keys to keep for each list-returning function, dropping
+/// the noise (labels, timestamps, text-match blobs). An empty slice means
+/// "no allowlist" — [`project_item`] falls back to keeping scalar keys.
+fn keys_for(function_id: &str) -> &'static [&'static str] {
+    match function_id {
+        "github::pr::list" => &["number", "title", "state", "url", "author", "isDraft"],
+        "github::search::prs" => &[
+            "number",
+            "title",
+            "state",
+            "url",
+            "repository",
+            "author",
+            "isDraft",
+        ],
+        "github::issue::list" => &["number", "title", "state", "url", "author"],
+        "github::search::issues" => &["number", "title", "state", "url", "repository", "author"],
+        "github::pr::checks" => &["name", "state", "bucket", "workflow", "link"],
+        "github::repo::list" => &[
+            "nameWithOwner",
+            "name",
+            "description",
+            "url",
+            "stargazerCount",
+            "primaryLanguage",
+            "visibility",
+        ],
+        "github::search::repos" => &[
+            "fullName",
+            "description",
+            "url",
+            "stargazersCount",
+            "language",
+            "visibility",
+        ],
+        "github::run::list" => &[
+            "databaseId",
+            "displayTitle",
+            "workflowName",
+            "name",
+            "status",
+            "conclusion",
+            "headBranch",
+            "event",
+            "url",
+        ],
+        "github::workflow::list" => &["id", "name", "path", "state"],
+        "github::release::list" => &["tagName", "name", "isLatest", "isPrerelease", "isDraft"],
+        "github::search::code" => &["path", "repository", "sha", "url"],
+        _ => &[],
+    }
+}
+
+/// Byte length of a value's compact JSON encoding.
+fn value_bytes(v: &Value) -> usize {
+    serde_json::to_string(v).map(|s| s.len()).unwrap_or(0)
+}
+
+/// Truncate `s` to at most `max` bytes on a char boundary. Returns the bounded
+/// string and whether anything was dropped.
+fn truncate_bytes(s: &str, max: usize) -> (String, bool) {
+    if s.len() <= max {
+        return (s.to_string(), false);
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    (s[..end].to_string(), true)
 }
 
 /// Count arrays (with a function-derived noun), name a single object, else a
@@ -474,6 +737,137 @@ mod tests {
         let big = "x".repeat(5000);
         let s = summarize("github::pr::edit", &json!({ "output": big }));
         assert!(s.chars().count() <= MAX_SUMMARY);
+    }
+
+    #[test]
+    fn preview_list_truncates_to_n_and_records_the_true_total() {
+        let items: Vec<Value> = (0..70)
+            .map(|n| json!({ "number": n, "title": format!("pr {n}") }))
+            .collect();
+        let (kind, pv) = preview("github::pr::list", &json!({ "value": items }));
+        assert_eq!(kind, "list");
+        assert_eq!(pv["total"], json!(70));
+        assert_eq!(pv["items"].as_array().unwrap().len(), PREVIEW_MAX_ITEMS);
+        // First kept item survived intact.
+        assert_eq!(pv["items"][0]["number"], json!(0));
+    }
+
+    #[test]
+    fn preview_list_projects_to_the_namespace_allowlist() {
+        // A PR list item carries labels + timestamps the feed does not need;
+        // the allowlist keeps the salient keys (incl. the author object) and
+        // drops the rest.
+        let item = json!({
+            "number": 7,
+            "title": "fix",
+            "state": "OPEN",
+            "url": "https://x/7",
+            "author": { "login": "octocat", "id": "abc" },
+            "isDraft": false,
+            "labels": [{ "name": "bug" }, { "name": "p1" }],
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-02T00:00:00Z",
+        });
+        let (_, pv) = preview("github::pr::list", &json!({ "value": [item] }));
+        let projected = &pv["items"][0];
+        assert_eq!(projected["number"], json!(7));
+        assert_eq!(projected["title"], json!("fix"));
+        assert_eq!(projected["author"]["login"], json!("octocat"));
+        assert!(projected.get("labels").is_none(), "labels dropped");
+        assert!(projected.get("createdAt").is_none(), "timestamp dropped");
+    }
+
+    #[test]
+    fn preview_list_default_projection_keeps_scalars_drops_blobs() {
+        // github::api (contents) has no allowlist: keep scalar keys, drop the
+        // nested `_links` blob.
+        let item = json!({
+            "name": "main.rs",
+            "path": "src/main.rs",
+            "type": "file",
+            "size": 1234,
+            "_links": { "self": "https://x", "git": "https://y" },
+        });
+        let (kind, pv) = preview("github::api", &json!({ "value": [item] }));
+        assert_eq!(kind, "list");
+        let projected = &pv["items"][0];
+        assert_eq!(projected["name"], json!("main.rs"));
+        assert_eq!(projected["type"], json!("file"));
+        assert_eq!(projected["size"], json!(1234));
+        assert!(projected.get("_links").is_none(), "nested blob dropped");
+    }
+
+    #[test]
+    fn preview_object_kept_whole_when_small_projected_when_big() {
+        let small = json!({ "value": { "number": 7, "title": "ok" } });
+        let (kind, pv) = preview("github::pr::view", &small);
+        assert_eq!(kind, "object");
+        assert_eq!(pv["title"], json!("ok"));
+
+        let big = json!({
+            "value": {
+                "number": 7,
+                "body": "x".repeat(20_000),
+                "comments": vec![json!({ "b": "y".repeat(4000) }); 5],
+            }
+        });
+        let (_, pv) = preview("github::pr::view", &big);
+        assert!(value_bytes(&pv) <= PREVIEW_MAX_BYTES);
+        assert_eq!(pv["number"], json!(7));
+        assert!(pv.get("comments").is_none(), "nested blob dropped");
+        assert!(
+            pv["body"].as_str().unwrap().len() <= PREVIEW_STRING_BYTES,
+            "long string trimmed"
+        );
+    }
+
+    #[test]
+    fn preview_text_and_diff_are_byte_capped() {
+        let (kind, pv) = preview("github::pr::edit", &json!({ "output": "x".repeat(20_000) }));
+        assert_eq!(kind, "text");
+        assert!(pv["text"].as_str().unwrap().len() <= PREVIEW_MAX_BYTES);
+        assert_eq!(pv["truncated"], json!(true));
+
+        let (kind, pv) = preview(
+            "github::pr::diff",
+            &json!({ "diff": "+".repeat(20_000), "truncated": false }),
+        );
+        assert_eq!(kind, "diff");
+        assert!(pv["diff"].as_str().unwrap().len() <= PREVIEW_MAX_BYTES);
+        assert_eq!(pv["truncated"], json!(true));
+
+        // The wrapper's own truncation flag is preserved even when the preview
+        // itself fit.
+        let (_, pv) = preview(
+            "github::pr::diff",
+            &json!({ "diff": "small", "truncated": true }),
+        );
+        assert_eq!(pv["truncated"], json!(true));
+    }
+
+    #[test]
+    fn preview_outcome_caps_each_stream_and_carries_exit() {
+        let (kind, pv) = preview(
+            "github::exec",
+            &json!({
+                "stdout": "a".repeat(20_000),
+                "stderr": "boom",
+                "exit_code": 3,
+                "timed_out": false,
+            }),
+        );
+        assert_eq!(kind, "outcome");
+        assert_eq!(pv["exit_code"], json!(3));
+        assert_eq!(pv["stderr"], json!("boom"));
+        assert!(pv["stdout"].as_str().unwrap().len() <= PREVIEW_STREAM_BYTES);
+        assert_eq!(pv["truncated"], json!(true));
+    }
+
+    #[test]
+    fn preview_null_value_is_object_null() {
+        let (kind, pv) = preview("github::pr::edit", &json!({ "value": Value::Null }));
+        assert_eq!(kind, "object");
+        assert_eq!(pv, Value::Null);
     }
 
     #[test]
