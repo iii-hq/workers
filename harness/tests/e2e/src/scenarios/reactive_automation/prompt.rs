@@ -21,7 +21,7 @@ Namespace every other resource and session with `{run_label}`.
 Required execution:
 
 1. Before spawning writers, list the available trigger types and probe
-   `database::row-change` against `{orders}`. Allow at most 30 seconds for the probe, remove its
+   `database::row-changed` against `{orders}`. Allow at most 30 seconds for the probe, remove its
    test row afterward, and record the result.
 
 2. Before spawning writers, register a namespaced `state` trigger targeting `harness::react`.
