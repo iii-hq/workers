@@ -24,9 +24,37 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      - name: Notify Slack that validation started
+        id: slack_start
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: worker-releases
+          III_CHANNEL: ${{ inputs.channel || 'main' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          text="⏳ *Harness quickstart* started · \`${III_CHANNEL}\` · <${RUN_URL}|view run>"
+          payload=$(jq -n \
+            --arg channel "$SLACK_CHANNEL" \
+            --arg text "$text" \
+            '{channel: $channel, text: $text}')
+          response=$(curl -sS --retry 3 --retry-all-errors \
+            -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            -d "$payload")
+          if ! jq -e '.ok == true' <<<"$response" >/dev/null 2>&1; then
+            error=$(jq -r '.error // "invalid_response"' <<<"$response" 2>/dev/null || printf 'invalid_response')
+            echo "::warning::Slack start notification failed: $error"
+            exit 1
+          fi
+          echo "ts=$(jq -er '.ts' <<<"$response")" >>"$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v5
 
       - name: Run quickstart validator
+        id: quickstart
         env:
           HARNESS_QUICKSTART_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-quickstart
           III_CHANNEL: ${{ inputs.channel || 'main' }}
@@ -37,11 +65,6 @@ jobs:
         if: always()
         run: |
           shopt -s nullglob
-          if [[ -f target/harness-quickstart/EVIDENCE.md ]]; then
-            echo "::group::EVIDENCE.md"
-            cat target/harness-quickstart/EVIDENCE.md
-            echo "::endgroup::"
-          fi
           logs=(target/harness-quickstart/logs/*.log)
           if ((${#logs[@]} == 0)); then
             echo "No quickstart logs were produced."
@@ -57,16 +80,14 @@ jobs:
         if: always()
         run: |
           {
-            if [[ -f target/harness-quickstart/EVIDENCE.md ]]; then
-              cat target/harness-quickstart/EVIDENCE.md
-            elif [[ -f target/harness-quickstart/result.json ]]; then
+            if [[ -f target/harness-quickstart/result.json ]]; then
               echo "### Harness quickstart"
               echo
               jq -r '
-                "| Status | CLI | Duration |",
-                "| --- | --- | ---: |",
-                "| \(.status) | \(.cli_version) | \(.elapsed_ms) ms |",
-                (if .failure_reason != "" then "", "Failure: \(.failure_reason)" else empty end)
+                "| Status | Channel | CLI | GLM canary | Duration |",
+                "| --- | --- | --- | --- | ---: |",
+                "| \(.status) | \(.channel) | \(.cli_version) | \(.message_check) | \(.elapsed_ms) ms |",
+                (if .failure_reason != "" then "", "**Failure:** \(.failure_reason)" else empty end)
               ' target/harness-quickstart/result.json
             else
               echo "### Harness quickstart"
@@ -75,30 +96,101 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload quickstart result
+      - name: Upload quickstart artifacts
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: harness-quickstart-result
-          path: |
-            target/harness-quickstart/result.json
-            target/harness-quickstart/EVIDENCE.md
-            target/harness-quickstart/timings.tsv
-            target/harness-quickstart/cli-version.txt
-            target/harness-quickstart/console-send.json
-            target/harness-quickstart/console-status.json
-            target/harness-quickstart/config.yaml
-            target/harness-quickstart/iii.lock
+          name: harness-quickstart
+          path: target/harness-quickstart/
           retention-days: 7
           if-no-files-found: ignore
 
-      - name: Upload quickstart logs
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: harness-quickstart-logs
-          path: |
-            target/harness-quickstart/logs/
-            target/harness-quickstart/console.html
-          retention-days: 7
-          if-no-files-found: ignore
+      - name: Finalize Slack notification
+        if: ${{ always() && steps.slack_start.outputs.ts != '' }}
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: worker-releases
+          SLACK_MESSAGE_TS: ${{ steps.slack_start.outputs.ts }}
+          III_CHANNEL: ${{ inputs.channel || 'main' }}
+          QUICKSTART_OUTCOME: ${{ steps.quickstart.outcome }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+
+          slack_call() {
+            local method=$1 payload=$2 response error
+            if ! response=$(curl -sS --retry 3 --retry-all-errors \
+              -X POST "https://slack.com/api/${method}" \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              -d "$payload"); then
+              echo "::warning::Slack ${method} request failed"
+              return 1
+            fi
+            if ! jq -e '.ok == true' <<<"$response" >/dev/null 2>&1; then
+              error=$(jq -r '.error // "invalid_response"' <<<"$response" 2>/dev/null || printf 'invalid_response')
+              echo "::warning::Slack ${method} failed: $error"
+              return 1
+            fi
+          }
+
+          result_file=target/harness-quickstart/result.json
+          if [[ -f "$result_file" ]]; then
+            result_status=$(jq -r '.status // "failed"' "$result_file")
+            cli_version=$(jq -r '.cli_version // "unknown"' "$result_file")
+            duration=$(jq -r '((.elapsed_ms // 0) / 1000 | floor | tostring) + "s"' "$result_file")
+            failure_reason=$(jq -r '.failure_reason // ""' "$result_file")
+            message_check=$(jq -r '.message_check // "unknown"' "$result_file")
+          else
+            result_status=failed
+            cli_version=unknown
+            duration=unknown
+            message_check=unknown
+            failure_reason="No result.json was produced (validator outcome: ${QUICKSTART_OUTCOME})."
+          fi
+
+          short_sha=${COMMIT_SHA:0:7}
+          if [[ "$JOB_STATUS" == "success" && "$result_status" == "passed" ]]; then
+            icon=✅
+            label=succeeded
+            detail=$(printf "*Status:* succeeded\n*Installer channel:* \`%s\`\n*CLI:* \`%s\`\n*GLM canary:* \`%s\`\n*Duration:* %s\n*Commit:* <%s|\`%s\`>\n<%s|Open GitHub Actions run>" \
+              "$III_CHANNEL" "$cli_version" "$message_check" "$duration" \
+              "$COMMIT_URL" "$short_sha" "$RUN_URL")
+          else
+            icon=❌
+            label=failed
+            if [[ -z "$failure_reason" ]]; then
+              failure_reason="Workflow status: ${JOB_STATUS} (validator outcome: ${QUICKSTART_OUTCOME})."
+            fi
+            detail=$(printf "*Status:* failed\n*Installer channel:* \`%s\`\n*CLI:* \`%s\`\n*GLM canary:* \`%s\`\n*Duration:* %s\n*Failure:* %s\n*Commit:* <%s|\`%s\`>\n<%s|Open GitHub Actions run>" \
+              "$III_CHANNEL" "$cli_version" "$message_check" "$duration" \
+              "${failure_reason:-unknown failure}" \
+              "$COMMIT_URL" "$short_sha" "$RUN_URL")
+          fi
+
+          root_text="${icon} *Harness quickstart* ${label} · \`${III_CHANNEL}\` · GLM ${message_check} · ${duration} · <${RUN_URL}|view run>"
+          update_payload=$(
+            # shellcheck disable=SC2016
+            jq -n \
+              --arg channel "$SLACK_CHANNEL" \
+              --arg ts "$SLACK_MESSAGE_TS" \
+              --arg text "$root_text" \
+              '{channel: $channel, ts: $ts, text: $text}'
+          )
+          thread_payload=$(
+            # shellcheck disable=SC2016
+            jq -n \
+              --arg channel "$SLACK_CHANNEL" \
+              --arg ts "$SLACK_MESSAGE_TS" \
+              --arg text "$detail" \
+              '{channel: $channel, thread_ts: $ts, text: $text}'
+          )
+
+          failed=0
+          slack_call chat.update "$update_payload" || failed=1
+          slack_call chat.postMessage "$thread_payload" || failed=1
+          exit "$failed"

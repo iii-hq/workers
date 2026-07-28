@@ -1,8 +1,7 @@
 # Harness quickstart validator
 
-This validator exercises the published installation path. It runs in an
-isolated temporary home and project directory, installs the `iii` CLI, starts
-a clean engine, and follows the documented commands:
+This check exercises the published installation path in an isolated temporary
+home and project:
 
 ```bash
 printf 'workers: []\n' > config.yaml
@@ -10,20 +9,17 @@ iii -c config.yaml
 iii worker add harness console
 ```
 
-The check waits for the engine and the core harness/Console function surface,
-calls `console::status`, and fetches the Console HTTP root. It also verifies
-that `config.yaml` and `iii.lock` were produced by the registry install.
+It verifies that:
 
-When `ZAI_API_KEY` is set, the validator goes one step further: it adds the
-Z.AI provider (`iii worker add provider-zai`), then sends a real message
-through the Console's `/ws` proxy — the same WebSocket path the browser SPA
-uses — via `console_send.py`, and asserts the turn completes with a non-empty
-assistant reply (default model `glm-5.2`, overridable with
-`HARNESS_QUICKSTART_MODEL`/`HARNESS_QUICKSTART_PROVIDER`). Without the key the
-live check is skipped and recorded as such in `result.json` and `EVIDENCE.md`.
+- the published installer provides a working `iii` CLI;
+- a clean engine starts;
+- the core harness and Console functions register;
+- `console::status` and the Console HTTP root respond; and
+- `config.yaml` and `iii.lock` contain the installed workers.
 
-Set `III_CHANNEL=next` to validate the `next` installer channel instead of
-`main`; in CI this is exposed as the `channel` input on manual dispatches.
+When `ZAI_API_KEY` is set, it also installs `provider-zai`, resolves
+`zai/glm-5.2`, sends a real Harness message through the Console `/ws` proxy,
+waits for the turn to complete, and requires a non-empty assistant reply.
 
 Run it locally with:
 
@@ -31,17 +27,17 @@ Run it locally with:
 make -C harness quickstart-validate
 ```
 
-The local machine needs `curl` and `jq`; CI provides both on the standard
-Ubuntu runner.
+The machine needs `curl` and `jq`; the GLM canary additionally needs
+`python3` with `venv` support. The default engine and Console ports (`49134`
+and `3113`) must be available. Set `III_CHANNEL=next` to validate the `next`
+installer channel. `HARNESS_QUICKSTART_MODEL` overrides the default GLM model.
 
-The run narrates every step with timestamped log lines and `[ok]` assertions,
-records per-stage durations in `timings.tsv` (rendered as a `[timing breakdown]`
-at the end and embedded in `result.json`), and always writes an `EVIDENCE.md`
-digest — status, CLI version, timing, and the tail of every log — into the
-artifacts directory, on success and on failure alike. In CI the evidence file
-becomes the job step summary and the raw logs are printed in collapsible
-groups, so a run can be audited without downloading anything.
+The nightly/manual CI workflow preserves `result.json`, the generated project
+files, Console responses, and raw logs. Each run also creates one
+`#worker-releases` Slack message, updates it with the final status, and posts
+the result details in its thread. This uses the organization-level
+`SLACK_BOT_TOKEN`; the bot must be invited to the channel. Notification errors
+are reported as workflow warnings without blocking validation.
 
-The CI workflow runs this check nightly and manually against the `latest`
-registry artifacts. It intentionally does not test model generation; provider
-credentials and model quality are covered by the Harness E2E workflow.
+Without `ZAI_API_KEY`, the live canary is recorded as `skipped`. Behavioral
+quality remains covered by the Harness E2E workflows.
