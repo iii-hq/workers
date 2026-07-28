@@ -56,7 +56,7 @@ pub(super) async fn collect(
         row_change_probe: calls.iter().position(|call| {
             call.function_id == "engine::register_trigger"
                 && call.arguments.get("trigger_type").and_then(Value::as_str)
-                    == Some("database::row-change")
+                    == Some("database::row-changed")
         }),
         state_reaction: calls.iter().position(|call| {
             call.function_id == "engine::register_trigger"

@@ -137,7 +137,7 @@ start_process database \
   --url "$iii_url" \
   --config "$database_config"
 wait_for_function database::query
-wait_for_trigger_type database::row-change
+wait_for_trigger_type database::row-changed
 
 start_process state \
   "$repo_root/state/target/release/state" \
