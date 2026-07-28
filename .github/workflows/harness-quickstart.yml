@@ -25,13 +25,35 @@ jobs:
           HARNESS_QUICKSTART_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-quickstart
         run: harness/tests/quickstart/run-ci.sh
 
+      - name: Show quickstart logs
+        if: always()
+        run: |
+          shopt -s nullglob
+          if [[ -f target/harness-quickstart/EVIDENCE.md ]]; then
+            echo "::group::EVIDENCE.md"
+            cat target/harness-quickstart/EVIDENCE.md
+            echo "::endgroup::"
+          fi
+          logs=(target/harness-quickstart/logs/*.log)
+          if ((${#logs[@]} == 0)); then
+            echo "No quickstart logs were produced."
+            exit 0
+          fi
+          for log in "${logs[@]}"; do
+            echo "::group::$(basename "$log")"
+            cat "$log"
+            echo "::endgroup::"
+          done
+
       - name: Write quickstart summary
         if: always()
         run: |
           {
-            echo "### Harness quickstart"
-            echo
-            if [[ -f target/harness-quickstart/result.json ]]; then
+            if [[ -f target/harness-quickstart/EVIDENCE.md ]]; then
+              cat target/harness-quickstart/EVIDENCE.md
+            elif [[ -f target/harness-quickstart/result.json ]]; then
+              echo "### Harness quickstart"
+              echo
               jq -r '
                 "| Status | CLI | Duration |",
                 "| --- | --- | ---: |",
@@ -39,6 +61,8 @@ jobs:
                 (if .failure_reason != "" then "", "Failure: \(.failure_reason)" else empty end)
               ' target/harness-quickstart/result.json
             else
+              echo "### Harness quickstart"
+              echo
               echo "No quickstart result was produced."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
@@ -50,6 +74,8 @@ jobs:
           name: harness-quickstart-result
           path: |
             target/harness-quickstart/result.json
+            target/harness-quickstart/EVIDENCE.md
+            target/harness-quickstart/timings.tsv
             target/harness-quickstart/cli-version.txt
             target/harness-quickstart/console-status.json
             target/harness-quickstart/config.yaml
@@ -57,11 +83,11 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      - name: Upload quickstart diagnostics
-        if: failure()
+      - name: Upload quickstart logs
+        if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: harness-quickstart-diagnostics
+          name: harness-quickstart-logs
           path: |
             target/harness-quickstart/logs/
             target/harness-quickstart/console.html

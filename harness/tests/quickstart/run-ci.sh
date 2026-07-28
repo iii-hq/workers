@@ -4,6 +4,14 @@ set -Eeuo pipefail
 # Validate the documented install path against the published registry. This
 # intentionally does not start a provider or make a model request: the goal is
 # to prove that a fresh project can install and boot the harness stack.
+#
+# Output contract (mirrors iii-hq/quickstart-validator):
+#   - every step logs a timestamped narrative line plus [ok] assertions, so
+#     the CI job log shows live what happened and in which order;
+#   - each stage appends a row to $artifact_dir/timings.tsv and the run ends
+#     with an aligned [timing breakdown];
+#   - a self-contained $artifact_dir/EVIDENCE.md digest (status, versions,
+#     timing, log tails) is always written, even when the run fails.
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$script_dir/../../.." && pwd)
@@ -12,6 +20,7 @@ install_url=${III_INSTALL_URL:-https://install.iii.dev/iii/main/install.sh}
 engine_port=${HARNESS_QUICKSTART_ENGINE_PORT:-49134}
 wait_seconds=${HARNESS_QUICKSTART_WAIT_SECONDS:-180}
 add_timeout_seconds=${HARNESS_QUICKSTART_ADD_TIMEOUT_SECONDS:-600}
+tail_lines=${HARNESS_QUICKSTART_EVIDENCE_TAIL_LINES:-80}
 
 [[ "$engine_port" =~ ^[0-9]+$ ]] || {
   echo "HARNESS_QUICKSTART_ENGINE_PORT must be numeric" >&2
@@ -29,7 +38,12 @@ run_root=$(mktemp -d "${TMPDIR:-/tmp}/harness-quickstart.XXXXXX")
 home_dir="$run_root/home"
 project_dir="$run_root/project"
 log_dir="$artifact_dir/logs"
+timings_file="$artifact_dir/timings.tsv"
+evidence_file="$artifact_dir/EVIDENCE.md"
 mkdir -p "$home_dir" "$project_dir" "$log_dir"
+# Reset per-run outputs so local reruns don't accumulate stale rows.
+: >"$timings_file"
+rm -f "$evidence_file"
 
 export HOME="$home_dir"
 export XDG_CONFIG_HOME="$home_dir/.config"
@@ -38,6 +52,14 @@ export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
 engine_pid=""
 failure_reason=""
 cli_version="unknown"
+
+log() {
+  printf '\n[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2
+}
+
+ok() {
+  printf '  [ok] %s\n' "$*" >&2
+}
 
 now_ms() {
   local value
@@ -51,13 +73,73 @@ now_ms() {
 
 started_at_ms=$(now_ms)
 
+# --- per-stage timing ------------------------------------------------------
+stage_name=""
+stage_start_epoch=""
+
+stage_start() {
+  stage_name=$1
+  stage_start_epoch=$(date +%s)
+}
+
+stage_end() {
+  [[ -n "$stage_name" ]] || return 0
+  local duration=$(($(date +%s) - stage_start_epoch))
+  if [[ ! -s "$timings_file" ]]; then
+    printf 'stage\tduration_seconds\n' >"$timings_file"
+  fi
+  printf '%s\t%s\n' "$stage_name" "$duration" >>"$timings_file"
+  log "[timing] $stage_name: ${duration}s"
+  stage_name=""
+  stage_start_epoch=""
+}
+
+print_timing_breakdown() {
+  [[ -s "$timings_file" ]] || return 0
+  local data_lines
+  data_lines=$(tail -n +2 "$timings_file" | wc -l | tr -d '[:space:]')
+  [[ "${data_lines:-0}" -gt 0 ]] || return 0
+  awk -F'\t' '
+    NR == 1 { next }
+    {
+      n++
+      stages[n] = $1
+      durations[n] = $2 + 0
+      total += $2
+      if (length($1) > maxname) maxname = length($1)
+    }
+    END {
+      if (maxname < 6) maxname = 6
+      width = maxname + 10
+      print "[timing breakdown]"
+      for (i = 1; i <= n; i++) {
+        dots = ""
+        for (j = 0; j < width - length(stages[i]) - 1; j++) dots = dots "."
+        printf "  %s %s %3ds\n", stages[i], dots, durations[i]
+      }
+      sep = ""
+      for (j = 0; j < width + 6; j++) sep = sep "-"
+      printf "  %s\n", sep
+      dots = ""
+      for (j = 0; j < width - 6; j++) dots = dots "."
+      printf "  %s %s %3ds\n", "Total", dots, total
+    }
+  ' "$timings_file" >&2
+}
+
 write_result() {
   local status=$1
-  local finished_at_ms elapsed_ms
+  local finished_at_ms elapsed_ms timings_json
   finished_at_ms=$(now_ms)
   elapsed_ms=$((finished_at_ms - started_at_ms))
 
   if command -v jq >/dev/null 2>&1; then
+    timings_json='[]'
+    if [[ -s "$timings_file" ]]; then
+      timings_json=$(tail -n +2 "$timings_file" | jq -Rn \
+        '[inputs | split("\t") | {stage: .[0], duration_seconds: (.[1] | tonumber)}]' \
+        2>/dev/null) || timings_json='[]'
+    fi
     jq -n \
       --arg status "$status" \
       --arg reason "${failure_reason:-}" \
@@ -65,14 +147,73 @@ write_result() {
       --arg install_url "$install_url" \
       --argjson elapsed_ms "$elapsed_ms" \
       --argjson engine_port "$engine_port" \
+      --argjson timings "$timings_json" \
       '{status: $status, failure_reason: $reason, cli_version: $cli_version,
         install_url: $install_url, elapsed_ms: $elapsed_ms,
-        engine_port: $engine_port}' \
+        engine_port: $engine_port, timings: $timings}' \
       >"$artifact_dir/result.json"
   else
     printf '{"status":"%s","failure_reason":"%s"}\n' \
       "$status" "${failure_reason:-}" >"$artifact_dir/result.json"
   fi
+}
+
+# Aggregate everything we know into one markdown digest. Best-effort: runs in
+# the cleanup trap, so it must never fail the script.
+collect_evidence() {
+  local status=$1
+  local run_url=""
+  if [[ -n "${GITHUB_SERVER_URL:-}" && -n "${GITHUB_REPOSITORY:-}" && -n "${GITHUB_RUN_ID:-}" ]]; then
+    run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  fi
+  {
+    printf '# Harness quickstart -- evidence\n\n'
+    printf -- '- **Status:** %s\n' "$status"
+    printf -- '- **CLI:** %s\n' "$cli_version"
+    printf -- '- **Install URL:** %s\n' "$install_url"
+    printf -- '- **Timestamp (UTC):** %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf -- '- **Commit:** %s\n' "${GITHUB_SHA:-local}"
+    [[ -n "$run_url" ]] && printf -- '- **CI run:** <%s>\n' "$run_url"
+    printf '\n'
+
+    if [[ -n "$failure_reason" ]]; then
+      printf '## Failure\n\n```\n%s\n```\n\n' "$failure_reason"
+    fi
+
+    if [[ -s "$timings_file" ]]; then
+      printf '## Timing breakdown\n\n```\n'
+      print_timing_breakdown 2>&1
+      printf '```\n\n'
+    fi
+
+    local f name
+    for f in "$log_dir"/*.log; do
+      [[ -f "$f" ]] || continue
+      name=$(basename "$f")
+      printf '## %s (last %s lines)\n\n```\n' "$name" "$tail_lines"
+      tail -n "$tail_lines" "$f" 2>/dev/null
+      printf '```\n\n'
+    done
+
+    if [[ -f "$artifact_dir/console-status.json" ]]; then
+      printf '## console::status\n\n```json\n'
+      cat "$artifact_dir/console-status.json"
+      printf '```\n\n'
+    fi
+
+    if [[ -f "$artifact_dir/config.yaml" ]]; then
+      printf '## config.yaml\n\n```yaml\n'
+      cat "$artifact_dir/config.yaml"
+      printf '```\n\n'
+    fi
+
+    if [[ -f "$artifact_dir/iii.lock" ]]; then
+      printf '## iii.lock\n\n```\n'
+      cat "$artifact_dir/iii.lock"
+      printf '```\n'
+    fi
+  } >"$evidence_file" 2>/dev/null
+  echo "[collect-evidence] wrote $evidence_file" >&2
 }
 
 stop_engine() {
@@ -94,6 +235,10 @@ cleanup() {
   trap - EXIT INT TERM ERR
   set +e
 
+  # Close a stage interrupted by a failure so its partial duration still lands
+  # in the breakdown.
+  stage_end
+
   stop_engine
 
   if [[ -f "$project_dir/config.yaml" ]]; then
@@ -103,10 +248,14 @@ cleanup() {
     cp "$project_dir/iii.lock" "$artifact_dir/iii.lock"
   fi
 
+  print_timing_breakdown
+
   if ((status == 0)); then
     write_result passed
+    collect_evidence PASS
   else
     write_result failed
+    collect_evidence "FAIL (exit $status)"
     echo "quickstart validator failed: ${failure_reason:-exit $status}" >&2
   fi
 
@@ -127,6 +276,7 @@ trap cleanup EXIT INT TERM
 
 die() {
   failure_reason=$1
+  printf '\n[FAIL] %s\n' "$1" >&2
   return 1
 }
 
@@ -134,14 +284,16 @@ command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v jq >/dev/null 2>&1 || die "jq is required"
 
 wait_for_engine() {
-  local response
-  for _ in $(seq 1 "$wait_seconds"); do
+  local response i
+  log "waiting for engine on port $engine_port (up to ${wait_seconds}s)"
+  for ((i = 0; i < wait_seconds; i++)); do
     if ! kill -0 "$engine_pid" 2>/dev/null; then
       die "engine exited before becoming ready"
     fi
     response=$("$iii_bin" trigger engine::workers::list --port "$engine_port" \
       --json '{}' 2>>"$log_dir/discovery.log" || true)
     if jq -e '.workers != null' <<<"$response" >/dev/null 2>&1; then
+      ok "engine answered engine::workers::list after ${i}s"
       return 0
     fi
     sleep 1
@@ -150,7 +302,7 @@ wait_for_engine() {
 }
 
 wait_for_functions() {
-  local response missing function_id
+  local response missing function_id i
   local required_functions=(
     harness::send
     harness::status
@@ -161,7 +313,8 @@ wait_for_functions() {
     console::status
   )
 
-  for _ in $(seq 1 "$wait_seconds"); do
+  log "waiting for ${#required_functions[@]} required functions (up to ${wait_seconds}s)"
+  for ((i = 0; i < wait_seconds; i++)); do
     response=$("$iii_bin" trigger engine::functions::list --port "$engine_port" \
       --json '{"include_internal":true}' 2>>"$log_dir/discovery.log" || true)
     missing=""
@@ -173,7 +326,11 @@ wait_for_functions() {
       fi
     done
     if [[ -z "$missing" ]]; then
+      ok "all required functions registered after ${i}s"
       return 0
+    fi
+    if ((i > 0 && i % 15 == 0)); then
+      log "still waiting; missing:${missing}"
     fi
     sleep 1
   done
@@ -203,36 +360,79 @@ start_engine() {
 mkdir -p "$project_dir"
 cd "$project_dir"
 
+# ---------------------------------------------------------------------------
+# Step 1: install the CLI from the published installer
+# ---------------------------------------------------------------------------
+stage_start install_cli
+log "Step 1: install the iii CLI from $install_url"
 curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
   "$install_url" -o "$run_root/install.sh"
-sh "$run_root/install.sh" >"$log_dir/install.log" 2>&1
+sh "$run_root/install.sh" 2>&1 | tee "$log_dir/install.log"
 
 iii_bin=$(command -v iii || true)
 [[ -n "$iii_bin" && -x "$iii_bin" ]] || die "iii CLI was not installed"
 cli_version=$("$iii_bin" --version 2>&1)
 printf '%s\n' "$cli_version" >"$artifact_dir/cli-version.txt"
+ok "installed $cli_version at $iii_bin"
+stage_end
 
+# ---------------------------------------------------------------------------
+# Step 2: start a clean engine
+# ---------------------------------------------------------------------------
+stage_start start_engine
+log "Step 2: start the engine with an empty config"
 printf 'workers: []\n' >config.yaml
 start_engine
+ok "engine started (pid $engine_pid)"
 wait_for_engine
+stage_end
 
-run_add >"$log_dir/worker-add.log" 2>&1
+# ---------------------------------------------------------------------------
+# Step 3: the command this pipeline exists to guarantee
+# ---------------------------------------------------------------------------
+stage_start worker_add_harness_console
+log "Step 3: iii worker add harness console"
+run_add 2>&1 | tee "$log_dir/worker-add.log"
+ok "worker add exited 0"
+stage_end
+
+# ---------------------------------------------------------------------------
+# Step 4: wait for the harness/Console function surface
+# ---------------------------------------------------------------------------
+stage_start wait_for_functions
+log "Step 4: wait for the harness/Console function surface"
 wait_for_functions
+stage_end
 
+# ---------------------------------------------------------------------------
+# Step 5: Console answers over HTTP
+# ---------------------------------------------------------------------------
+stage_start console_check
+log "Step 5: query console::status and fetch the Console root"
 console_status=$("$iii_bin" trigger console::status --port "$engine_port" \
   --json '{}' 2>"$log_dir/console-status.log")
 printf '%s\n' "$console_status" >"$artifact_dir/console-status.json"
 console_port=$(jq -er '.http_port | select(type == "number")' <<<"$console_status") \
   || die "console::status did not return a numeric http_port"
+ok "console reports http_port=$console_port"
 
 curl -fsS --retry 10 --retry-delay 1 \
   "http://127.0.0.1:$console_port/" -o "$artifact_dir/console.html"
+ok "fetched Console root ($(wc -c <"$artifact_dir/console.html" | tr -d ' ') bytes)"
+stage_end
 
+# ---------------------------------------------------------------------------
+# Step 6: the install left the documented files behind
+# ---------------------------------------------------------------------------
+stage_start verify_files
+log "Step 6: verify config.yaml and iii.lock"
 [[ -s config.yaml ]] || die "worker add did not write config.yaml"
 [[ -s iii.lock ]] || die "worker add did not write iii.lock"
 grep -Eiq 'harness' config.yaml || die "config.yaml does not contain harness"
 grep -Eiq 'console' config.yaml || die "config.yaml does not contain console"
 grep -Eiq 'harness' iii.lock || die "iii.lock does not contain harness"
 grep -Eiq 'console' iii.lock || die "iii.lock does not contain console"
+ok "config.yaml and iii.lock reference harness + console"
+stage_end
 
-echo "Harness quickstart passed with $cli_version"
+log "ALL QUICKSTART ASSERTIONS PASSED ($cli_version)"
