@@ -1,0 +1,69 @@
+name: Harness quickstart
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-quickstart
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: harness quickstart / latest registry
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run quickstart validator
+        env:
+          HARNESS_QUICKSTART_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-quickstart
+        run: harness/tests/quickstart/run-ci.sh
+
+      - name: Write quickstart summary
+        if: always()
+        run: |
+          {
+            echo "### Harness quickstart"
+            echo
+            if [[ -f target/harness-quickstart/result.json ]]; then
+              jq -r '
+                "| Status | CLI | Duration |",
+                "| --- | --- | ---: |",
+                "| \(.status) | \(.cli_version) | \(.elapsed_ms) ms |",
+                (if .failure_reason != "" then "", "Failure: \(.failure_reason)" else empty end)
+              ' target/harness-quickstart/result.json
+            else
+              echo "No quickstart result was produced."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload quickstart result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-quickstart-result
+          path: |
+            target/harness-quickstart/result.json
+            target/harness-quickstart/cli-version.txt
+            target/harness-quickstart/console-status.json
+            target/harness-quickstart/config.yaml
+            target/harness-quickstart/iii.lock
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload quickstart diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-quickstart-diagnostics
+          path: |
+            target/harness-quickstart/logs/
+            target/harness-quickstart/console.html
+          retention-days: 7
+          if-no-files-found: ignore

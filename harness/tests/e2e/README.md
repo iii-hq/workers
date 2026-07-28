@@ -133,7 +133,9 @@ pull requests and Dependabot do not receive provider credentials.
 The launcher performs a clean first boot with isolated configuration, session,
 queue, state, and log directories. It starts the provider workers named by the
 subject and judge configuration. It executes repository binaries directly; it
-does not test registry installation or `iii worker add`.
+does not test registry installation or `iii worker add`. Those paths are covered
+by the nightly/manual [Harness quickstart validator](../quickstart/README.md),
+which runs without provider credentials or model calls.
 
 ## Adding a scenario
 

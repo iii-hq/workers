@@ -30,7 +30,7 @@ RUST_WORKERS   := $(filter-out $(PYTHON_WORKERS),$(STACK))
 
 GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-run dev-up dev-down dev-restart \
                     engine wait-engine wait-base wait-stack restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
-                    ensure-session prepare-scrapling require-engine where integration-test integration-playground integration-validate,$(MAKECMDGOALS))
+                    ensure-session prepare-scrapling require-engine where integration-test integration-playground integration-validate quickstart-validate,$(MAKECMDGOALS))
 SELECTED_WORKERS := $(strip $(GOAL_ARGS))
 ACTIVE_WORKERS   := $(if $(SELECTED_WORKERS),$(SELECTED_WORKERS),$(STACK))
 UNKNOWN_WORKERS  := $(filter-out $(STACK),$(SELECTED_WORKERS))
@@ -42,7 +42,7 @@ RUN_FLAG   := $(if $(filter release,$(RUN_PROFILE)),--release,)
 
 .PHONY: help install-iii-next build install-local clean cargo-clean dev-run dev-up dev-down dev-restart engine wait-engine wait-base wait-stack \
         restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach ensure-session prepare-scrapling \
-        require-engine where integration-test integration-playground integration-validate $(STACK)
+        require-engine where integration-test integration-playground integration-validate quickstart-validate $(STACK)
 
 help:
 	@printf '%s\n' \
@@ -66,7 +66,11 @@ help:
 	  '  make install-local [workers...]     build and symlink into ~/.iii/workers' \
 	  '  make integration-test III_BIN=<iii>  run the harness integration scenarios (tests/integration)' \
 	  '  make integration-playground III_BIN=<iii>  open the Console against an isolated integration stack' \
-	  '  make integration-validate           validate every integration scenario'
+	  '  make integration-validate           validate every integration scenario' \
+	  '  make quickstart-validate            validate the published harness quickstart'
+
+quickstart-validate:
+	@$(MAKEFILE_DIR)tests/quickstart/run-ci.sh
 
 install-iii-next:
 	@curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --next
