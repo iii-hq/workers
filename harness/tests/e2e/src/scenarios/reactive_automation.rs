@@ -16,6 +16,9 @@ const DATABASE: &str = "primary";
 const EXPECTED_WRITERS: usize = 3;
 const ORDERS_PER_WRITER: i64 = 5;
 const EXPECTED_ORDERS: i64 = EXPECTED_WRITERS as i64 * ORDERS_PER_WRITER;
+const STUCK_WATCHDOG_SECONDS: u64 = 600;
+const SCENARIO_TIMEOUT_SECONDS: u64 = 1_800;
+const SCENARIO_MAX_TOTAL_TOKENS: u64 = 1_000_000;
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = ScenarioNames::new(run_id);
@@ -25,8 +28,8 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
         execution: ExecutionPolicy {
             max_turns: 64,
             max_output_tokens: None,
-            max_total_tokens: 600_000,
-            timeout_seconds: 1_200,
+            max_total_tokens: SCENARIO_MAX_TOTAL_TOKENS,
+            timeout_seconds: SCENARIO_TIMEOUT_SECONDS,
         },
         threshold: 90,
         criteria: vec![
@@ -105,6 +108,12 @@ Required execution:
 
 6. Unregister every trigger and subscription created for this run, then wake the root session.
 
+This is a deliberately large execution. A deadline is only a stuck-execution watchdog, not a
+normal completion deadline. If you register a watchdog, use at least {watchdog_seconds} seconds
+after the writers start and fire it only when there has been no progress; never use a 120-second
+deadline to interrupt normal work. Do not write the report from the root as a substitute for the
+trigger-spawned finalizer: wait for `{finalizer}` to run and write it.
+
 Success requires exact equality between `{totals}` and a direct `GROUP BY` over `{orders}`, no
 lost or duplicated orders, trigger provenance for reactor and finalizer sessions, no inline
 sleeping or polling in place of triggers, and no remaining run triggers.
@@ -120,6 +129,7 @@ Report progress briefly and keep the final response factual."#,
         writer_2 = names.writer_sessions[1],
         writer_3 = names.writer_sessions[2],
         finalizer = names.finalizer_session,
+        watchdog_seconds = STUCK_WATCHDOG_SECONDS,
     )
 }
 
