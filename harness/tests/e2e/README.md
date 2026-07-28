@@ -44,7 +44,7 @@ scenario through one global `allow: ["*"]` policy:
   accuracy, remediation, and clarity.
 - `reactive_automation`: orchestrates three parallel database writers,
   trigger-spawned aggregate reactors, and a single finalizer. The CI stack uses
-  SQLite, so the scenario proves bounded `database::row-change` discovery and
+  SQLite, so the scenario proves bounded `database::row-changed` discovery and
   the namespaced `state`-trigger fallback. The evaluator queries the resulting
   tables, verifies trigger provenance from session metadata, and checks that all
   run-owned triggers were removed.
