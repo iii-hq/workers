@@ -339,6 +339,19 @@ function DemoChrome({ working }: { working: boolean }) {
         <span className="hidden sm:inline">recorded session</span>
         <StatusDot tone={working ? 'accent' : 'ink'} pulse={working} />
       </span>
+      {/* Embedded only: the host page listens for iii-demo-close and scrolls
+          the console away. Inverted so the way out is unmissable. */}
+      {window.self !== window.top && (
+        <button
+          type="button"
+          onClick={() =>
+            window.parent?.postMessage({ type: 'iii-demo-close' }, '*')
+          }
+          className="flex items-center gap-1.5 bg-ink px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-bg transition-opacity hover:opacity-80"
+        >
+          close <span className="opacity-60">esc</span>
+        </button>
+      )}
     </div>
   )
 }
