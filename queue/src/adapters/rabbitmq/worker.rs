@@ -89,6 +89,7 @@ impl Worker {
         self: Arc<Self>,
         topic: String,
         function_id: String,
+        metadata: Option<Value>,
         condition_function_id: Option<String>,
         consumer_tag: String,
         queue_name: String,
@@ -134,6 +135,7 @@ impl Worker {
                     let worker = Arc::clone(&self);
                     let topic_clone = topic.clone();
                     let function_id_clone = function_id.clone();
+                    let metadata_clone = metadata.clone();
                     let condition_function_id_clone = condition_function_id.clone();
 
                     match self.queue_mode {
@@ -143,6 +145,7 @@ impl Worker {
                                     delivery,
                                     &topic_clone,
                                     &function_id_clone,
+                                    metadata_clone.as_ref(),
                                     condition_function_id_clone.as_deref(),
                                 )
                                 .await
@@ -168,6 +171,7 @@ impl Worker {
                                         delivery,
                                         &topic_clone,
                                         &function_id_clone,
+                                        metadata_clone.as_ref(),
                                         condition_function_id_clone.as_deref(),
                                     )
                                     .await
@@ -200,12 +204,13 @@ impl Worker {
         delivery: Delivery,
         topic: &str,
         function_id: &str,
+        metadata: Option<&Value>,
         condition_function_id: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut job = JobParser::parse_from_delivery(&delivery)?;
 
         match self
-            .process_job(&job, function_id, condition_function_id)
+            .process_job(&job, function_id, metadata, condition_function_id)
             .await
         {
             Ok(_) => {
@@ -242,6 +247,7 @@ impl Worker {
         &self,
         job: &Job,
         function_id: &str,
+        metadata: Option<&Value>,
         condition_function_id: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let invoker = Arc::clone(&self.invoker);
@@ -272,7 +278,10 @@ impl Worker {
             }
         }
 
-        match invoker.call(function_id, data).await {
+        match invoker
+            .call_delivery(function_id, data, metadata.cloned())
+            .await
+        {
             Ok(_) => {
                 tracing::debug!(job_id = %job.id, "Job processed successfully");
                 Ok(())

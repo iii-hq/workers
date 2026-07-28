@@ -124,10 +124,10 @@ describe('entrySegments', () => {
   })
 
   it('splits a reaction task from its appended event block', () => {
-    // The exact format react.rs produces (single_event_task).
+    // The exact format spawn.rs produces (single_event_task).
     const content =
       'Present the results.\n\n<event>\n```json\n{"session_id":"reviewer-1","status":"completed"}\n```\n</event>'
-    const [msg] = entrySegments(userItem('e_react_1', content))
+    const [msg] = entrySegments(userItem('e_spawned_1', content))
     expect(msg).toMatchObject({
       reaction: true,
       content: 'Present the results.',
@@ -170,9 +170,11 @@ describe('entrySegments', () => {
     expect(
       entrySegments(userItem('e-1', 'do the thing', { reaction: true }))[0],
     ).toMatchObject({ reaction: true })
-    expect(entrySegments(userItem('e_react_ab12', 'do it'))[0]).toMatchObject({
-      reaction: true,
-    })
+    expect(entrySegments(userItem('e_spawned_ab12', 'do it'))[0]).toMatchObject(
+      {
+        reaction: true,
+      },
+    )
     expect(
       entrySegments(userItem('e-2', 'typed by hand'))[0],
     ).not.toHaveProperty('reaction')
@@ -420,23 +422,17 @@ describe('entrySegments', () => {
     )
   })
 
-  it('triggerFiredSummary reads join progress and notify targets', () => {
+  it('triggerFiredSummary reads spawn and notify targets', () => {
     expect(
       triggerFiredSummary({
         subscription_id: 's',
         target: 'spawn',
+        model: 'claude-sonnet-5',
         once: false,
         retired: false,
-        join: {
-          id: 'J1',
-          key: 'insights',
-          arrived: 1,
-          expected: 2,
-          completed: false,
-        },
         fired_at: 0,
       }),
-    ).toBe('join J1 · 1/2 arrived')
+    ).toBe('trigger · spawned claude-sonnet-5')
     expect(
       triggerFiredSummary({
         subscription_id: 's',

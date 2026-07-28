@@ -224,10 +224,6 @@ pub async fn run_step(
                 &record.turn_id,
                 record.parent.as_ref(),
                 record.display_parent_session_id.as_deref(),
-                crate::events::ReactiveMeta {
-                    spawned_by: record.spawned_by_subscription_id.as_deref(),
-                    depth: record.reactive_depth,
-                },
             )
             .await;
         if let Err(reason) = deps.hooks.run_pre_turn(&record, payload.step).await {
@@ -1223,6 +1219,14 @@ async fn drain_queued_best_effort(deps: &Deps, session: &SessionClient, session_
 /// stale-turn guard, exactly as two racing sends already are.
 async fn reseed_after_finalize_drain(deps: &Deps, record: &TurnRecord) {
     let cfg = deps.cfg().await;
+    // Carry the finalized turn's lineage onto the reseeded one: it is the same
+    // session continuing, so its depth still counts against the spawn budget
+    // and its console nesting must not flatten.
+    let lineage = crate::functions::send::TurnLineage {
+        depth: record.depth,
+        parent: record.parent.clone(),
+        display_parent_session_id: record.display_parent_session_id.clone(),
+    };
     if let Err(e) = crate::functions::send::seed_new(
         deps,
         &cfg,
@@ -1230,6 +1234,7 @@ async fn reseed_after_finalize_drain(deps: &Deps, record: &TurnRecord) {
         record.options.clone(),
         record.functions_generation,
         None,
+        &lineage,
     )
     .await
     {
@@ -1363,8 +1368,8 @@ async fn advance(deps: &Deps, record: &mut TurnRecord) -> Result<TurnStepResult,
 /// with its `turn_complete` watcher armed and completes non-terminally; the
 /// final compose turn (wake consumed, nothing re-armed) is terminal.
 /// Consumers finalize a logical exchange only on `terminal: true`.
-fn turn_is_terminal(deps: &Deps, session_id: &str) -> bool {
-    !deps.subscriptions.session_expects_wake(session_id)
+async fn turn_is_terminal(deps: &Deps, session_id: &str) -> bool {
+    !crate::bindings::session_expects_wake(deps, session_id).await
 }
 
 async fn finalize_completed(
@@ -1392,11 +1397,7 @@ async fn finalize_completed(
             None,
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
-            crate::events::ReactiveMeta {
-                spawned_by: record.spawned_by_subscription_id.as_deref(),
-                depth: record.reactive_depth,
-            },
-            turn_is_terminal(deps, &record.session_id),
+            turn_is_terminal(deps, &record.session_id).await,
         )
         .await;
     // Sub-agent turns resolve the parent's pending call with their result.
@@ -1484,15 +1485,18 @@ async fn finalize_failed(
             Some(reason),
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
-            crate::events::ReactiveMeta {
-                spawned_by: record.spawned_by_subscription_id.as_deref(),
-                depth: record.reactive_depth,
-            },
-            turn_is_terminal(deps, &record.session_id),
+            turn_is_terminal(deps, &record.session_id).await,
         )
         .await;
     if let Some(parent) = record.parent.clone() {
-        let delivered = crate::deferred::resolve_parent(
+        // Settle any parked parent call. Fire-and-forget spawns settled `Done`
+        // at spawn time, so this usually no-ops — and that is the whole story:
+        // a child's failure reaches its parent only through the medium the
+        // child was told to write (an `error` status it managed to record) or
+        // through the parent's own deadlines (a `timer` wake, a binding
+        // `lifecycle`, a `harness::status` poll). Nothing is injected into the
+        // parent session on a child's behalf.
+        crate::deferred::resolve_parent(
             deps,
             &parent,
             "failed",
@@ -1500,26 +1504,6 @@ async fn finalize_failed(
             Some(reason),
         )
         .await;
-        // Fire-and-forget spawns settle their call `Done` at spawn time and
-        // the parent turn has usually completed by now, so the resolve above
-        // no-ops — and a dead child can never write the state keys or
-        // completion markers its spawner is watching. Wake the parent SESSION
-        // with the failure instead: spawned-child death must be loud by
-        // default, not structurally silent (observed live 2026-07-21: two
-        // spawned scanners died instantly and their coordinator waited
-        // forever on state triggers that could never fire).
-        if !delivered {
-            notify_parent_of_child_failure(deps, &parent.session_id, record, reason, failure).await;
-        }
-    }
-    if let Some(owner_session_id) = record.reactive_owner_session_id.clone() {
-        let already_notified = record
-            .parent
-            .as_ref()
-            .is_some_and(|parent| parent.session_id == owner_session_id);
-        if !already_notified && owner_session_id != record.session_id {
-            notify_parent_of_child_failure(deps, &owner_session_id, record, reason, failure).await;
-        }
     }
     // Second post-terminal sweep, as in `finalize_completed`: closes the
     // enqueue-after-drain window against `try_enqueue`'s recheck.
@@ -1537,61 +1521,6 @@ async fn finalize_failed(
         next_step: None,
         skipped: false,
     })
-}
-
-/// Best-effort child-failure wake-up: send a user-visible failure notice to
-/// the spawner's session, starting (or steering) a turn there so the model
-/// can respawn, reroute, or report. Idempotent per child turn.
-async fn notify_parent_of_child_failure(
-    deps: &Deps,
-    parent_session_id: &str,
-    record: &TurnRecord,
-    reason: &str,
-    failure: FailureInfo,
-) {
-    let notice = child_failure_notice(
-        &record.session_id,
-        &record.turn_id,
-        failure.code,
-        failure.retryable,
-        reason,
-    );
-    let req = crate::functions::send::SendRequest {
-        session_id: Some(parent_session_id.to_string()),
-        message: crate::functions::send::MessageInput::Text(notice),
-        model: None,
-        provider: None,
-        idempotency_key: Some(format!("child_failure_{}", record.turn_id)),
-        session: None,
-        options: None,
-    };
-    if let Err(e) = crate::functions::send::handle(deps, req).await {
-        tracing::warn!(
-            parent_session = %parent_session_id,
-            child_session = %record.session_id,
-            child_turn = %record.turn_id,
-            error = %e,
-            "child-failure notification to the parent session failed"
-        );
-    }
-}
-
-/// The wake-up text the spawner's model sees when a spawned child dies
-/// terminally without a parked parent call to deliver into.
-fn child_failure_notice(
-    child_session_id: &str,
-    child_turn_id: &str,
-    code: &str,
-    retryable: bool,
-    reason: &str,
-) -> String {
-    format!(
-        "[child-failure] Spawned child session '{child_session_id}' (turn {child_turn_id}) \
-         FAILED terminally [{code}] and will deliver no result: {reason} (retryable: \
-         {retryable}). Any state keys or completion markers that child was expected to write \
-         will never arrive — stop waiting on them. Recover now: respawn the work, reassign \
-         it, or report the failure."
-    )
 }
 
 fn llm_failure_info(error_kind: Option<ErrorKind>) -> FailureInfo {
@@ -1751,11 +1680,7 @@ async fn finalize_cancelled(
             Some(reason),
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
-            crate::events::ReactiveMeta {
-                spawned_by: record.spawned_by_subscription_id.as_deref(),
-                depth: record.reactive_depth,
-            },
-            turn_is_terminal(deps, &record.session_id),
+            turn_is_terminal(deps, &record.session_id).await,
         )
         .await;
     if let Some(parent) = record.parent.clone() {
@@ -2534,28 +2459,6 @@ mod tests {
             &prompt
         ));
         assert!(!super::final_request_unchanged(false, 0, &None, &prompt));
-    }
-
-    #[test]
-    fn child_failure_notice_names_the_child_and_the_consequence() {
-        // Live incident (2026-07-21, console-42ae032b): two fire-and-forget
-        // spawned scanners failed instantly; their coordinator had only
-        // success-path state triggers and waited forever. The wake-up notice
-        // must name the child, the failure code, and the key consequence —
-        // the child's completion markers will never arrive.
-        let notice = super::child_failure_notice(
-            "dcmcp-scan-a2k9",
-            "t_6d37d87e",
-            "llm.permanent",
-            false,
-            "model not found: gpt-4o-mini",
-        );
-        assert!(notice.contains("dcmcp-scan-a2k9"));
-        assert!(notice.contains("t_6d37d87e"));
-        assert!(notice.contains("[llm.permanent]"));
-        assert!(notice.contains("retryable: false"));
-        assert!(notice.contains("will never arrive"));
-        assert!(notice.contains("model not found: gpt-4o-mini"));
     }
 
     #[test]

@@ -1,9 +1,10 @@
-# Harness integration tests
+# Harness integration E2E
 
 Deterministic public-path regression tests for the harness. Each scenario
 boots a fresh isolated stack with the pinned engine and the real queue,
-session-manager, context-manager, iii-directory, and harness workers. Only
-the `router::*` model boundary is replaced by a strict scripted worker.
+session-manager, context-manager, iii-directory, state, database, and harness
+workers. Only the `router::*` model boundary is replaced by a strict scripted
+worker.
 
 No provider key or network access is required.
 
@@ -14,12 +15,13 @@ No provider key or network access is required.
 | INT-001 | `streamed-text` | direct | streamed text reaches durable completion |
 | INT-002 | `exactly-once-function` | direct | a native function executes exactly once |
 | INT-003 | `reseed-parked-message` | direct | a message parked during a turn's failing final step is delivered by a harness-reseeded turn |
-| INT-004 | `join-spec-mismatch` | direct | a join predecessor registered with a divergent reaction spec is rejected at registration |
-| INT-005 | `reaction-policy-inheritance` | direct | a reaction with no options inherits the registering turn's dispatch policy |
-| INT-006 | `state-worker-sidecar` | direct | a state-key reaction fires through the standalone state worker with its metadata sidecar (probe-hook driven) |
-| INT-007 | `coalesced-fire` | direct | a burst past the fire-rate cap coalesces: cap + 1 dispatches, the trailing one stamped `__coalesced_fires` (shrunken gate via harness env; probe-side whole-run call evidence) |
-| INT-008 | `reaction-unregisters-run` | direct | a reaction session in the registrant's lineage unregisters the registrant's subscription (serve-time capture of the runtime sub id; probe-side call await) |
-| INT-009 | `late-join-predecessor-replay` | direct | a join predecessor registered after its watched session completed receives a catch-up completion fire (level-triggered join barrier; `probe_after_calls` gating) |
+| INT-005 | `direct-spawn-leaf-pipeline` | direct | the parent-owned control plane end to end: a barrier-gated wake, a directly spawned leaf writing the state medium, one wake with the aggregate, and no child-outcome injection |
+| INT-006 | `state-worker-sidecar` | direct | a state-key wake fires through the standalone state worker with its metadata sidecar (probe-hook driven) |
+| INT-011 | `standing-wake-delivery` | direct | a standing notify binding delivers every fire as a notification AND a trigger_fired record on distinct entry ids (the burst-loss regression: shared wake/record ids let session-manager's entry-id idempotence swallow one append per fire) |
+| INT-012 | `wake-expiry-notice` | direct | a parked wake whose lifecycle deadline passes unfired wakes its owner with the expiry notice |
+| INT-013 | `timer-wake` | direct | a one-shot `timer` registration parks the session and wakes it exactly once on the deadline |
+| INT-014 | `database-row-wake` | direct | a `database::row-changed` wake notifies the owner through the same generic delivery path the state medium uses |
+| INT-015 | `leaf-denied-control-plane` | direct | a spawned child without the orchestrator grant is policy-denied trigger registration and spawning, and sees neither in its toolset |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 

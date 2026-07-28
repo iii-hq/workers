@@ -78,15 +78,25 @@ pub struct WorkerConfig {
     #[serde(default = "default_sweep_expression")]
     pub sweep_expression: String,
 
-    /// Dispatch policy for a PARENTLESS spawn (a direct/CLI `harness::spawn`
-    /// or a trigger-fired `harness::react` spawn) whose request carries no
-    /// `options.functions`. Children of live turns still inherit/subset the
-    /// parent policy, and explicit options always win. Defaults to allowing
-    /// every function; set to `null` explicitly to restore deny-all. Doubles
-    /// as the ceiling every ask-mode turn's policy is clamped to — `null`
-    /// makes ask mode a plain chat loop.
+    /// Dispatch policy for a PARENTLESS spawn (a direct/CLI/console
+    /// `harness::spawn`) whose request carries no `options.functions`.
+    /// Children of live turns still inherit/subset the parent policy, and
+    /// explicit options always win; spawned children additionally get the
+    /// leaf control-plane denies unless `options.orchestrator` is set.
+    /// Defaults to allowing every function; set to `null` explicitly to
+    /// restore deny-all. Doubles as the ceiling every ask-mode turn's policy
+    /// is clamped to — `null` makes ask mode a plain chat loop.
     #[serde(default = "default_functions")]
     pub default_functions: Option<FunctionPolicy>,
+
+    /// Use the provider-served identity prompt (`router::system_prompt::get`)
+    /// as the turn's system prompt. Off pins every turn to the harness's
+    /// embedded default prompt instead — the operator escape hatch for a
+    /// provider prompt that has drifted from the harness's actual surface.
+    /// Sub-agents are unaffected: they always take the embedded sub-agent
+    /// prompt.
+    #[serde(default = "default_provider_identity_prompt")]
+    pub provider_identity_prompt: bool,
 
     /// Working-directory root stamped onto the FIRST turn of a session whose
     /// send carries no `metadata.fs_scope.root`. Absent/null → the harness
@@ -243,9 +253,9 @@ fn default_sweep_expression() -> String {
 }
 fn default_functions() -> Option<FunctionPolicy> {
     // Default policy for PARENTLESS spawns that carry no inherited policy
-    // (direct/CLI/raw trigger calls). In-turn children inherit their parent
-    // directly; harness::react persists the registering turn's policy into
-    // its parentless spawn options.
+    // (direct/CLI/console calls). In-turn children inherit their parent
+    // directly; every spawned child additionally gets the leaf
+    // control-plane denies unless the spawn passed `options.orchestrator`.
     //
     // DOUBLES AS THE ASK-MODE CEILING: every ask-mode send / steer / child has
     // its dispatch policy clamped to this policy (see
@@ -255,6 +265,9 @@ fn default_functions() -> Option<FunctionPolicy> {
         deny: vec![],
         expose: Default::default(),
     })
+}
+fn default_provider_identity_prompt() -> bool {
+    true
 }
 
 fn expand_env(input: &str) -> String {
@@ -299,6 +312,7 @@ impl Default for WorkerConfig {
             stream_coalesce_ms: default_stream_coalesce_ms(),
             sweep_expression: default_sweep_expression(),
             default_functions: default_functions(),
+            provider_identity_prompt: default_provider_identity_prompt(),
             default_filesystem_root: None,
         }
     }

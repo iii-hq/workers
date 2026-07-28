@@ -324,54 +324,6 @@ export const stateTriggerConfigSchema = z.object({
 export type StateTriggerConfig = z.infer<typeof stateTriggerConfigSchema>
 
 /**
- * `metadata` shape for `function_id: "harness::react"` — the reactive bridge.
- * Wire source: `harness/src/functions/react.rs` (`ReactSpec` / `JoinSpec`).
- * `options` is free-form (mirrors `harness::spawn` SpawnOptions); the common
- * `options.functions.allow: string[]` is surfaced by the view.
- */
-export const joinSpecSchema = z.object({
-  id: z.string(),
-  expect: z.array(z.string()),
-  key: z.string(),
-  rearm: z.boolean().optional(),
-})
-export type JoinSpec = z.infer<typeof joinSpecSchema>
-
-/** Call-mode reaction target (`harness/src/functions/react.rs` `CallSpec`):
- * the event dispatches a plain function call instead of spawning a
- * sub-agent. `event_into` is the JSON pointer where the event lands in the
- * payload (default `/event`). */
-export const callSpecSchema = z.object({
-  function_id: z.string(),
-  payload: z.unknown().optional(),
-  event_into: z.string().optional(),
-})
-export type CallSpec = z.infer<typeof callSpecSchema>
-
-/** `model`/`task` are optional on the wire: call-mode reactions carry `call`
- * instead, and agent-mode registrations may omit `model` (inherited from the
- * registering turn). The VIEW decides the mode: `call` present → call mode;
- * `task` present → spawn mode; neither → not a react spec at all. */
-export const reactSpecSchema = z.object({
-  model: z.string().optional(),
-  task: z.string().optional(),
-  call: callSpecSchema.optional(),
-  session_id: z.string().optional(),
-  provider: z.string().optional(),
-  options: z.unknown().optional(),
-  parent_session_id: z.string().optional(),
-  join: joinSpecSchema.optional(),
-})
-export type ReactSpec = z.infer<typeof reactSpecSchema>
-
-/** `options.functions.allow` — the only bit of the free-form `options` the
- * view reads. Non-strict so unknown option keys pass through. */
-export const reactOptionsSchema = z.object({
-  functions: z.object({ allow: z.array(z.string()).optional() }).optional(),
-})
-export type ReactOptions = z.infer<typeof reactOptionsSchema>
-
-/**
  * The known filter fields across trigger `config` shapes — state
  * (`scope`/`key`/`condition_function_id`) and turn events
  * (`session_id`/`parent_session_id`) — as labeled chips, in a stable order.

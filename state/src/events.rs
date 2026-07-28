@@ -16,7 +16,7 @@ use crate::trigger::{TriggerTable, matches};
 ///
 /// `metadata` is the binding's registration metadata, delivered as the
 /// fire-time sidecar (engine `fire_triggers` parity: `call_with_metadata`).
-/// Handlers like `harness::react` / `harness::notify_agent` resolve which
+/// Handlers like `harness::spawn` / `harness::notify_agent` resolve which
 /// reaction or subscription fired from it and no-op without it, so a plain
 /// call here silently kills every state-triggered reaction.
 #[async_trait::async_trait]
@@ -208,7 +208,7 @@ mod tests {
     }
 
     /// Registration metadata must reach the handler as the fire-time sidecar.
-    /// `harness::react` / `harness::notify_agent` resolve the reaction or
+    /// `harness::spawn` / `harness::notify_agent` resolve the reaction or
     /// subscription from it and silently no-op without it — dropping it here
     /// killed every state-triggered reaction (rctest-x7k2 postmortem).
     #[tokio::test]

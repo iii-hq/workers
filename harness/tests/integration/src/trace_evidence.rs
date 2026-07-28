@@ -24,6 +24,7 @@ pub(crate) async fn collect(
     probe: &ScenarioProbe,
     session_id: &str,
     expected_terminal_turns: usize,
+    expected_total_turns: usize,
     after_generation: u64,
     deadline: Deadline,
 ) -> anyhow::Result<TraceEvidenceV1> {
@@ -43,10 +44,26 @@ pub(crate) async fn collect(
         }
         let evidence = collect_once(client, session_id, deadline).await?;
         last_summary = Some(evidence.summary.clone());
-        if evidence.is_stable_for(expected_terminal_turns, LIFECYCLE_FUNCTION_ID) {
+        if evidence.is_stable_for(
+            expected_terminal_turns,
+            expected_total_turns,
+            LIFECYCLE_FUNCTION_ID,
+        ) {
             return Ok(evidence);
         }
-        generation = probe.wait_for_trace_change(generation, deadline).await?;
+        generation = probe
+            .wait_for_trace_change(generation, deadline)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "{error}; traces never stabilized for {expected_terminal_turns} terminal / \
+                     {expected_total_turns} total turn(s); last summary: {}",
+                    last_summary
+                        .as_ref()
+                        .and_then(|summary| serde_json::to_string(summary).ok())
+                        .unwrap_or_else(|| "none".to_string())
+                )
+            })?;
     }
 }
 
@@ -98,5 +115,5 @@ async fn collect_once(
             .map_err(anyhow::Error::msg)?;
         traces.push(TraceTreeV1::from_engine_response(trace_id, response)?);
     }
-    Ok(TraceEvidenceV1::new(traces))
+    Ok(TraceEvidenceV1::for_session(traces, session_id))
 }

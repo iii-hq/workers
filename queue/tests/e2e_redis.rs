@@ -75,7 +75,7 @@ async fn publish_delivers_unwrapped_payload_to_subscriber_connect_or_skip() {
 
     let topic = format!("e2e-redis-{}", Uuid::new_v4());
     adapter
-        .subscribe(&topic, "sub-1", &function_id, None, None)
+        .subscribe(&topic, "sub-1", &function_id, None, None, None)
         .await;
     // Give the subscription task a beat to actually SUBSCRIBE on the Redis
     // connection before the first publish — pub/sub has no buffering for a

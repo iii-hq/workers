@@ -54,6 +54,7 @@ pub(super) struct Scenario {
     target: Option<ControlledTargetV1>,
     generations: Vec<Generation>,
     expected_turn_statuses: Vec<String>,
+    parked_completions: usize,
     verify: Option<VerifyFn>,
     probe_actions: Vec<crate::fixtures::ProbeAction>,
     harness_env: Vec<(String, String)>,
@@ -79,6 +80,7 @@ impl Scenario {
             target: None,
             generations: Vec::new(),
             expected_turn_statuses: vec!["completed".to_string()],
+            parked_completions: 0,
             verify: None,
             probe_actions: Vec::new(),
             harness_env: Vec::new(),
@@ -117,33 +119,6 @@ impl Scenario {
             function_id: function_id.to_string(),
             payload,
         });
-        self
-    }
-
-    /// [`probe_after`](Self::probe_after) that additionally gates on the
-    /// controlled function having served `after_target_calls` invocations —
-    /// the only milestone an UNTRACKED session can signal (e.g. a call-mode
-    /// reaction on that session's completion).
-    pub(super) fn probe_after_calls(
-        mut self,
-        after_turns: usize,
-        after_target_calls: usize,
-        function_id: &str,
-        payload: serde_json::Value,
-    ) -> Self {
-        self.probe_actions.push(crate::fixtures::ProbeAction {
-            after_turns,
-            after_target_calls: Some(after_target_calls),
-            function_id: function_id.to_string(),
-            payload,
-        });
-        self
-    }
-
-    /// Extra environment for the harness process under test (integration
-    /// knobs like `III_HARNESS_FIRE_WINDOW_MS`).
-    pub(super) fn harness_env(mut self, key: &str, value: &str) -> Self {
-        self.harness_env.push((key.to_string(), value.to_string()));
         self
     }
 
@@ -186,6 +161,26 @@ impl Scenario {
         self
     }
 
+    /// Declare that the FIRST `count` completions in the statuses list are
+    /// PARKED: the turn completed while its session still owned an armed
+    /// wake, so `harness::turn-completed` carried `terminal: false`. They
+    /// appear in the statuses list and in the traces, but the completion
+    /// waiter and the durable terminal check bind only to the remaining
+    /// terminal turns. The park-then-wake run (arm a once-wake, park, be
+    /// woken) is the shape that needs this.
+    pub(super) fn parked_completions(mut self, count: usize) -> Self {
+        self.parked_completions = count;
+        self
+    }
+
+    /// Extra environment for the harness process under test — integration
+    /// knobs (e.g. a shrunken expiry-sweep interval) that tune the subject
+    /// for one scenario without touching the others.
+    pub(super) fn harness_env(mut self, key: &str, value: &str) -> Self {
+        self.harness_env.push((key.to_string(), value.to_string()));
+        self
+    }
+
     pub(super) fn verify(mut self, verify: VerifyFn) -> Self {
         self.verify = Some(verify);
         self
@@ -201,10 +196,14 @@ impl Scenario {
             .map(|generation| generation.compile(&self.model))
             .collect();
 
+        assert!(
+            self.parked_completions < self.expected_turn_statuses.len(),
+            "at least one completion must be terminal"
+        );
         ScenarioFixture {
             slug: self.slug,
             driver: self.driver,
-            expected_terminal_turns: self.expected_turn_statuses.len(),
+            expected_terminal_turns: self.expected_turn_statuses.len() - self.parked_completions,
             expected_turn_statuses: self.expected_turn_statuses,
             scenario: CompiledScenarioV1 {
                 schema_version: SchemaVersion1::V1,
@@ -525,6 +524,12 @@ impl Generation {
     /// regex's first group is stored under `name`, and later frames may echo
     /// it as `[[cap:<name>]]` — e.g. a `sub_…` subscription id from a
     /// registration function_result in the history.
+    ///
+    /// Authored by no checked-in fixture right now (INT-008, the scenario the
+    /// serve-time capture engine was built for, died with the lineage
+    /// unregister grant); the engine stays tested in `types::script`, and this
+    /// remains its authoring surface for the next runtime-id scenario.
+    #[allow(dead_code)]
     pub(super) fn capture(mut self, name: &str, pattern: &str) -> Self {
         self.captures.push((name.to_string(), pattern.to_string()));
         self

@@ -33,6 +33,33 @@ pub trait StateAdapter: Send + Sync + 'static {
         key: &str,
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<StreamUpdateResult>;
+    /// Swap `scope/key` from `expected` to `value` atomically. `expected:
+    /// None` means "expect absent". Returns `None` when the swap happened, or
+    /// `Some(current)` when it did not — the caller retries against that.
+    ///
+    /// `get` then `set` from outside cannot express this: two callers reading
+    /// the same value both believe they hold it, and both write.
+    async fn compare_and_set(
+        &self,
+        scope: &str,
+        key: &str,
+        expected: Option<&Value>,
+        value: Value,
+    ) -> anyhow::Result<Option<Value>>;
+
+    /// Apply one barrier arrival atomically to `scope/key`.
+    ///
+    /// Not expressible with the `UpdateOp` set (there is no compare-and-set),
+    /// and it must not be a get-then-set from outside: two arrivals racing on
+    /// the last slot would both see "incomplete" and both answer `allow`.
+    /// Adapters implement it with whatever atomicity they actually have.
+    async fn barrier_arrive(
+        &self,
+        scope: &str,
+        key: &str,
+        cfg: &crate::barrier::BarrierConfig,
+        event: &Value,
+    ) -> anyhow::Result<crate::barrier::Decision>;
     async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>>;
     /// Keys within a scope, in the adapter's natural order (kv: insertion
     /// order; redis: hash-field order). Added for the console state UI —
@@ -85,6 +112,31 @@ impl StateAdapter for KvStoreAdapter {
             .storage
             .update(scope.to_string(), key.to_string(), ops)
             .await)
+    }
+    async fn compare_and_set(
+        &self,
+        scope: &str,
+        key: &str,
+        expected: Option<&Value>,
+        value: Value,
+    ) -> anyhow::Result<Option<Value>> {
+        Ok(self
+            .storage
+            .compare_and_set(scope.to_string(), key.to_string(), expected, value)
+            .await)
+    }
+
+    async fn barrier_arrive(
+        &self,
+        scope: &str,
+        key: &str,
+        cfg: &crate::barrier::BarrierConfig,
+        event: &Value,
+    ) -> anyhow::Result<crate::barrier::Decision> {
+        self.storage
+            .barrier_arrive(scope.to_string(), key.to_string(), cfg, event)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
     }
     async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>> {
         Ok(self.storage.list(scope.to_string()).await)
@@ -616,6 +668,88 @@ impl RedisAdapter {
 
 #[async_trait]
 impl StateAdapter for RedisAdapter {
+    /// A real CAS: compare-and-swap over the hash field in one script. Unlike
+    /// the barrier there is no decision logic to keep in step — the comparison
+    /// is byte equality on the serialized value, so nothing can drift out of
+    /// sync with the Rust side. A value whose JSON re-serializes differently
+    /// fails the compare and the caller retries, which converges.
+    async fn compare_and_set(
+        &self,
+        scope: &str,
+        key: &str,
+        expected: Option<&Value>,
+        value: Value,
+    ) -> anyhow::Result<Option<Value>> {
+        const ABSENT: &str = "\u{0}__absent__";
+        let scope_key = format!("state:{}", scope);
+        let mut conn = self.publisher.lock().await;
+        let next = serde_json::to_string(&value)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize value: {}", e))?;
+        let want = match expected {
+            Some(v) => serde_json::to_string(v)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize expected: {}", e))?,
+            None => ABSENT.to_string(),
+        };
+
+        let script = redis::Script::new(
+            r#"
+                local current = redis.call('HGET', KEYS[1], ARGV[1])
+                local absent = (current == false or current == nil)
+                if (ARGV[2] == ARGV[4]) then
+                    if absent then
+                        redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])
+                        return nil
+                    end
+                    return current
+                end
+                if ((not absent) and current == ARGV[2]) then
+                    redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])
+                    return nil
+                end
+                if absent then return '' end
+                return current
+            "#,
+        );
+
+        let current: Option<String> = script
+            .key(&scope_key)
+            .arg(key)
+            .arg(&want)
+            .arg(&next)
+            .arg(ABSENT)
+            .invoke_async(&mut *conn)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to compare-and-set value in Redis: {}", e))?;
+
+        Ok(current.map(|s| {
+            if s.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_str(&s).unwrap_or(Value::Null)
+            }
+        }))
+    }
+
+    /// Redis has the atomicity for this (a Lua script over the hash field),
+    /// but the decision logic lives in Rust and porting it to Lua would mean
+    /// maintaining the same rules twice — the kind of divergence that shows up
+    /// as "the barrier behaves differently in prod". Refuse clearly instead;
+    /// the port is a bounded task if a redis-backed deployment needs it.
+    async fn barrier_arrive(
+        &self,
+        _scope: &str,
+        _key: &str,
+        cfg: &crate::barrier::BarrierConfig,
+        _event: &Value,
+    ) -> anyhow::Result<crate::barrier::Decision> {
+        anyhow::bail!(
+            "barrier `{}` needs the kv adapter: the redis adapter has no atomic \
+             read-modify-write for it yet, and a non-atomic one would let two arrivals \
+             both complete the same barrier",
+            cfg.id
+        )
+    }
+
     async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<StreamSetResult> {
         let scope_key: String = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;

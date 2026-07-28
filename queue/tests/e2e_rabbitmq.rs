@@ -168,7 +168,7 @@ async fn basic_delivery_connect_or_skip() {
 
     let topic = format!("e2e-rmq-basic-{}", Uuid::new_v4());
     adapter
-        .subscribe(&topic, "sub-1", &function_id, None, None)
+        .subscribe(&topic, "sub-1", &function_id, None, None, None)
         .await;
     // Give the consumer task a beat to actually attach before the first
     // publish.
@@ -390,6 +390,7 @@ async fn priority_ordering_connect_or_skip() {
             sub_id,
             &function_id,
             None,
+            None,
             Some(SubscriberQueueConfig {
                 max_priority: Some(10),
                 concurrency: Some(1),
@@ -465,6 +466,7 @@ async fn fifo_mode_preserves_order_connect_or_skip() {
             &topic,
             "sub-fifo-1",
             &function_id,
+            None,
             None,
             Some(SubscriberQueueConfig {
                 queue_mode: Some("fifo".to_string()),

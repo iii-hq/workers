@@ -197,6 +197,7 @@ pub trait QueueAdapter: Send + Sync + 'static {
         topic: &str,
         id: &str,
         function_id: &str,
+        metadata: Option<Value>,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     );
@@ -384,12 +385,13 @@ impl QueueAdapter for SwappableAdapter {
         topic: &str,
         id: &str,
         function_id: &str,
+        metadata: Option<Value>,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
         self.current()
             .await
-            .subscribe(topic, id, function_id, condition_function_id, queue_config)
+            .subscribe(topic, id, function_id, metadata, condition_function_id, queue_config)
             .await;
     }
 
@@ -549,6 +551,7 @@ mod tests {
             _topic: &str,
             _id: &str,
             _function_id: &str,
+            _metadata: Option<Value>,
             _condition_function_id: Option<String>,
             _queue_config: Option<SubscriberQueueConfig>,
         ) {

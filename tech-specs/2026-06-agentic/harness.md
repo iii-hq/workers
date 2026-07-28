@@ -632,12 +632,15 @@ type TurnCompletedEvent = {
 };
 ```
 
-`harness::react` treats these as success-path events by default: only
+A reactive `harness::spawn` binding treats these as success-path events by default: only
 `status: "completed"` spawns the downstream sub-agent. Contract exhaustion is a failed turn with
-its best-effort result preserved; failed or cancelled completions are recorded by joins but stop the normal downstream
-spawn. An explicit error handler opts in with `metadata.continue_on_error: true`. Simple
-non-cron reactions default to one-shot; `once: false` creates a standing watcher, while joins
-own predecessor retirement and use `join.rearm` for recurring barriers.
+its best-effort result preserved; failed or cancelled completions stop the downstream spawn unless
+the binding sets `metadata.continue_on_error: true`. Non-cron reactions default to one-shot;
+`once: false` creates a standing watcher. Reactive chains are capped at depth 8; there is no
+fan-in join primitive here — join parallel work in the workflow worker. The self-edge skip and the
+depth-8 cap are the ONLY loop breakers: a cycle routed through a state write (or any other hop that
+starts a fresh turn) re-enters at depth 0 and is NOT throttled, so every lap around the cycle spawns
+another paid turn indefinitely. Design reaction graphs acyclically.
 
 A backend worker that chains agents binds `harness::turn_completed` and calls `harness::send`
 from the handler — that is the supported way to build event-driven loops. **The

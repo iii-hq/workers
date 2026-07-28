@@ -210,6 +210,7 @@ impl QueueAdapter for RedisAdapter {
         topic: &str,
         id: &str,
         function_id: &str,
+        metadata: Option<Value>,
         condition_function_id: Option<String>,
         _queue_config: Option<SubscriberQueueConfig>,
     ) {
@@ -235,6 +236,7 @@ impl QueueAdapter for RedisAdapter {
         let topic_for_task = topic.clone();
         let id_for_task = id.clone();
         let function_id_for_task = function_id.clone();
+        let metadata_for_task = metadata.clone();
         let condition_function_id_for_task = condition_function_id.clone();
 
         tracing::debug!(topic = %topic_for_task, id = %id_for_task, function_id = %function_id_for_task, "Subscribing to Redis channel");
@@ -337,10 +339,11 @@ impl QueueAdapter for RedisAdapter {
 
                 let invoker = Arc::clone(&invoker);
                 let function_id = function_id_for_task.clone();
+                let metadata = metadata_for_task.clone();
                 let topic_for_call = topic_for_task.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = invoker.call(&function_id, data).await {
+                    if let Err(e) = invoker.call_delivery(&function_id, data, metadata).await {
                         tracing::error!(
                             error = %e,
                             function_id = %function_id,

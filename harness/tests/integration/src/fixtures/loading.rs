@@ -7,13 +7,17 @@ use crate::types::script::RouterScriptV1;
 pub struct ScenarioFixture {
     pub slug: String,
     pub driver: ScenarioDriver,
-    /// Number of distinct terminal turns the run must observe. Usually 1;
+    /// Number of distinct TERMINAL turns the run must observe. Usually 1;
     /// Playground turns and harness-initiated follow-on turns (e.g. a reseed
-    /// after a message parks mid-final-step) push it higher. Always equals
-    /// `expected_turn_statuses.len()`.
+    /// after a message parks mid-final-step) push it higher. May be LESS than
+    /// `expected_turn_statuses.len()`: the difference is PARKED completions —
+    /// turns that completed while the session owned an armed wake
+    /// (`terminal: false`), declared with `parked_completions(n)` and always
+    /// first in the statuses list.
     pub expected_terminal_turns: usize,
-    /// Each terminal turn's lifecycle status, in completion order. The last
-    /// must be `completed` — the floor's durable-status check binds to it.
+    /// Each completion's lifecycle status, in completion order — parked
+    /// completions first, then terminal turns. The last must be `completed` —
+    /// the floor's durable-status check binds to it.
     pub expected_turn_statuses: Vec<String>,
     pub scenario: CompiledScenarioV1,
     pub script: RouterScriptV1,
@@ -26,9 +30,8 @@ pub struct ScenarioFixture {
     /// runs while the tracked session is idle (ordinal-clean under the
     /// scripted router). `{{run_id}}`/`{{session_id}}` in the payload expand.
     pub probe_actions: Vec<ProbeAction>,
-    /// Extra environment for the harness process under test. The integration
-    /// knobs live here (e.g. `III_HARNESS_FIRE_WINDOW_MS` to shrink the
-    /// fire-rate window so a coalescing scenario completes in seconds).
+    /// Extra environment for the harness process under test. Integration
+    /// knobs that tune the harness process for a scenario live here.
     pub harness_env: Vec<(String, String)>,
     /// Await this many controlled-function invocations (probe-side, whole-run)
     /// after every terminal turn arrived. This is the only way to await work
@@ -88,7 +91,7 @@ impl ScenarioFixture {
             "scenario must expect at least one terminal turn"
         );
         anyhow::ensure!(
-            self.expected_turn_statuses.len() == self.expected_terminal_turns,
+            self.expected_turn_statuses.len() >= self.expected_terminal_turns,
             "scenario declares {} turn status(es) for {} terminal turn(s)",
             self.expected_turn_statuses.len(),
             self.expected_terminal_turns
@@ -97,6 +100,15 @@ impl ScenarioFixture {
             anyhow::ensure!(
                 matches!(status.as_str(), "completed" | "failed" | "cancelled"),
                 "unknown terminal turn status {status:?}"
+            );
+        }
+        // A parked completion is by definition a COMPLETED turn whose session
+        // still owned an armed wake — a turn cannot park by failing.
+        let parked = self.expected_turn_statuses.len() - self.expected_terminal_turns;
+        for status in &self.expected_turn_statuses[..parked] {
+            anyhow::ensure!(
+                status == "completed",
+                "a parked completion must be `completed`, got {status:?}"
             );
         }
         // Controlled-call waits depend on a controlled function existing:

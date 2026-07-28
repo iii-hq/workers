@@ -1,0 +1,35 @@
+{
+  "function_id": "harness::triggers::unregister",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "description": "The binding's owner session — a correctness handshake, checked against the record. (Deployment permissions keep this function off the unattended agent surface; the console's privileged path supplies the owner it just listed.)",
+        "type": "string"
+      },
+      "subscription_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id",
+      "subscription_id"
+    ],
+    "title": "TriggersUnregisterRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "removed": {
+        "description": "False when no record existed (already retired) — honest, not an error.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "removed"
+    ],
+    "title": "TriggersUnregisterResponse",
+    "type": "object"
+  }
+}

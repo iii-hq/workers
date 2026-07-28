@@ -217,10 +217,10 @@ function reactionEventHint(event: {
 }
 
 /**
- * A react-fired task delivered into this session (`harness::react`): the
- * turn's input, but machine-sent — labeled "trigger" and left-aligned so it
- * never reads as something the human typed. The appended firing event (or
- * join inputs) collapses to a summary line, expandable to highlighted JSON.
+ * HISTORICAL transcripts only: a trigger-fired task delivered into a session
+ * back when bindings could target `harness::spawn`. New runs never produce
+ * these — trigger delivery no longer creates agents — but old conversations
+ * must keep rendering faithfully.
  */
 function ReactionTaskMessage({ message }: { message: UserMessageType }) {
   const event = message.reactionEvent
@@ -235,7 +235,7 @@ function ReactionTaskMessage({ message }: { message: UserMessageType }) {
         {event ? (
           <details className="mt-2 group">
             <summary className="cursor-pointer list-none select-none font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost group-hover:text-ink transition-colors">
-              {event.label === 'inputs' ? 'join inputs' : 'firing event'}
+              firing event
               {hint ? ` · ${hint}` : ''}
               <span className="normal-case tracking-normal text-[10px]">
                 {' '}

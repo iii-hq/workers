@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
@@ -23,6 +25,36 @@ use crate::trigger::TriggerTable;
 pub type ConfigCell = Arc<RwLock<Arc<StateConfig>>>;
 
 /// Everything a function handler needs; one Arc cloned per registration.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct CompareAndSetInput {
+    pub scope: String,
+    pub key: String,
+    /// The value the caller believes is there. Omit to mean "expect absent" —
+    /// the set-if-absent form.
+    #[serde(default)]
+    pub expected: Option<Value>,
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct CompareAndSetResult {
+    pub swapped: bool,
+    /// What is actually stored, when the swap did not happen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<Value>,
+}
+
+/// The condition-contract envelope. `event` is the fired event; the rest of
+/// the envelope (binding, context) is accepted and ignored so the same
+/// function works as a condition and as a direct call.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct BarrierInput {
+    #[serde(default)]
+    pub event: Value,
+    #[serde(default)]
+    pub condition_config: Option<crate::barrier::BarrierConfig>,
+}
+
 pub struct StateCtx {
     pub adapter: Arc<dyn StateAdapter>,
     pub triggers: TriggerTable,
@@ -123,6 +155,105 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                 }
             })
             .description("Set a value in state"),
+        );
+    }
+
+    // state::compare-and-set — the primitive a claim needs. `get` then `set`
+    // from outside cannot express "swap only if nobody moved it": two callers
+    // reading the same value both write, and both believe they won.
+    {
+        let ctx = ctx.clone();
+        iii.register_function(
+            "state::compare-and-set",
+            RegisterFunction::new_async(move |input: CompareAndSetInput| {
+                let ctx = ctx.clone();
+                async move {
+                    let swapped = ctx
+                        .adapter
+                        .compare_and_set(
+                            &input.scope,
+                            &input.key,
+                            input.expected.as_ref(),
+                            input.value.clone(),
+                        )
+                        .await
+                        .map_err(|e| Error::Handler(format!("CAS_ERROR: {e}")))?;
+                    match swapped {
+                        None => {
+                            // Same event a plain set emits: a watcher must not
+                            // miss a write just because it went through CAS.
+                            let et = if input.expected.is_none() {
+                                StateEventType::Created
+                            } else {
+                                StateEventType::Updated
+                            };
+                            ctx.emit(event(
+                                et,
+                                input.scope,
+                                input.key,
+                                input.expected,
+                                input.value,
+                            ))
+                            .await;
+                            Ok(CompareAndSetResult {
+                                swapped: true,
+                                current: None,
+                            })
+                        }
+                        // The caller retries against `current` rather than
+                        // paying another round trip to find out what changed.
+                        Some(current) => Ok(CompareAndSetResult {
+                            swapped: false,
+                            current: Some(current),
+                        }),
+                    }
+                }
+            })
+            .description(
+                "Atomically set a value only if it currently equals `expected` (omit `expected` \
+                 to mean 'only if absent'). Returns { swapped, current } — on a miss, `current` \
+                 is what is actually there, so a caller can recompute and retry. The primitive \
+                 for counters, claims and any read-modify-write that two callers might race.",
+            ),
+        );
+    }
+
+    // state::barrier — fan-in as a condition. Registered beside the plain
+    // state verbs because that is what it is: a function over one state key.
+    {
+        let ctx = ctx.clone();
+        iii.register_function(
+            "state::barrier",
+            RegisterFunction::new_async(move |input: BarrierInput| {
+                let ctx = ctx.clone();
+                async move {
+                    let cfg = input.condition_config.ok_or_else(|| {
+                        Error::Handler(
+                            "BARRIER_CONFIG: state::barrier needs `condition_config` \
+                             { id, expect, key_from?, carry? } — as a binding it goes in \
+                             `conditions: [{ function_id, config }]`"
+                                .to_string(),
+                        )
+                    })?;
+                    let decision = ctx
+                        .adapter
+                        .barrier_arrive(
+                            crate::barrier::BARRIER_SCOPE,
+                            &cfg.id.clone(),
+                            &cfg,
+                            &input.event,
+                        )
+                        .await
+                        .map_err(|e| Error::Handler(format!("BARRIER_ERROR: {e}")))?;
+                    Ok(decision)
+                }
+            })
+            .description(
+                "Fan-in gate: record one arrival against a barrier and answer the typed \
+                 condition decision — `skip` until the expected set has arrived, then `allow` \
+                 EXACTLY ONCE carrying every arrival's payload. Use as a binding condition so a \
+                 coordinator wakes once when N producers finish instead of once per producer.",
+            ),
         );
     }
 

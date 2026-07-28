@@ -1,0 +1,123 @@
+{
+  "function_id": "harness::triggers::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "description": "The owning session whose bindings to list.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "TriggersListRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ConditionSpec": {
+        "description": "One declared condition. Evaluated at fire time with the typed decision contract; ordinary iii functions, so a barrier or a claim is just a function someone wrote.",
+        "properties": {
+          "config": true,
+          "function_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "function_id"
+        ],
+        "type": "object"
+      },
+      "TriggerRow": {
+        "description": "One binding, as data. `trigger_type`/`config` are read from the canonicalised registration request and absent on records that predate it.",
+        "properties": {
+          "conditions": {
+            "items": {
+              "$ref": "#/definitions/ConditionSpec"
+            },
+            "type": "array"
+          },
+          "config": true,
+          "created_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "expires_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "fires": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_fires": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "once": {
+            "type": "boolean"
+          },
+          "subscription_id": {
+            "type": "string"
+          },
+          "target": {
+            "description": "The function a fire calls. Absent for a wake — the fire notifies the owner session.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trigger_id": {
+            "description": "The engine's own trigger id (absent only in the brief window before the engine acknowledged the registration).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trigger_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "created_at",
+          "fires",
+          "once",
+          "subscription_id"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "subscriptions": {
+        "items": {
+          "$ref": "#/definitions/TriggerRow"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "subscriptions"
+    ],
+    "title": "TriggersListResponse",
+    "type": "object"
+  }
+}

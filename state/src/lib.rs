@@ -4,6 +4,7 @@
 pub const TRIGGER_TYPE: &str = "state";
 
 pub mod adapters;
+pub mod barrier;
 pub mod boot;
 pub mod condition;
 pub mod config;

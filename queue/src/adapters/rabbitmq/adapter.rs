@@ -342,6 +342,7 @@ impl QueueAdapter for RabbitMQAdapter {
         topic: &str,
         id: &str,
         function_id: &str,
+        metadata: Option<Value>,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
@@ -418,6 +419,7 @@ impl QueueAdapter for RabbitMQAdapter {
                 .run(
                     topic_clone,
                     function_id_clone,
+                    metadata,
                     condition_function_id,
                     consumer_tag_clone,
                     queue_name_clone,

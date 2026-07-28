@@ -602,17 +602,33 @@ binds an external event source to the function.
 **Naming.** A trigger's `function_id` is the id the function was registered
 under, so it follows the same kebab-case rule as functions (§7 Naming). Any
 custom `trigger_type` string you introduce is also kebab-case (e.g.
-`row-change`), never snake_case.
+`storage::object-created`), never snake_case.
 
 Trigger types in use across this repo and the SDK's built-ins:
 
 | Trigger type | Config keys | Used for |
 |---|---|---|
 | `http` | `api_path`, `http_method` | Expose a function as an HTTP endpoint at `<engine_http>/<api_path>` |
-| `cron` | `schedule` (6-field cron, e.g. `"0 */5 * * * *"`) | Periodic invocation |
-| `queue` / `subscribe` | `topic` | Drain a named queue / pubsub topic |
-| `state` | `scope`, `key` | Reactive: fire when a state key changes |
-| `stream` / `stream:join` / `stream:leave` | `stream_name`, `group_id` | React to stream item / group events |
+| `cron` | `expression` (6-field cron, e.g. `"0 */5 * * * *"`) | Periodic invocation |
+| `durable:subscriber` | `topic`, `queue_config?` | Drain a named durable queue topic. The type string is `durable:subscriber` — `queue` is the provider *package*, not a trigger type |
+| `subscribe` | `topic` | Fan-out on a pubsub topic |
+| `state` | `scope?`, `key?` | Reactive: fire when a state key changes (omit `key` and it fires for every key in the scope) |
+| `stream` | `stream_name?`, `group_id?`, `item_id?` | React to stream item events |
+| `stream:join` / `stream:leave` | `stream_name?` | React to stream group join / leave |
+| `log` | `level?` | Log events at or above a level |
+| `trace` | `service_name?`, `status?` | Spans from a service / with a status |
+| `configuration` | `configuration_id?`, `event_types?` | A configuration value changed |
+
+**Conditions.** Every builtin type above except `log` and `trace` also accepts
+`condition_function_id` in its config. Before dispatching, the engine calls
+that function with the event as its whole payload: a bare `false` skips the
+handler, any other value (or no result) proceeds, and a condition that
+**errors** — unknown id, payload the target can't parse — also skips, silently
+and forever. The condition sees only the event payload, so gating on external
+state means naming a function that fetches it. Worker-defined trigger types
+(the custom ones you register with `register_trigger_type`) are dispatched by
+your own worker and never consult a condition: the key rides along as inert
+metadata.
 
 Example HTTP trigger:
 

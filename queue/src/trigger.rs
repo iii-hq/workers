@@ -41,6 +41,24 @@ pub trait Invoker: Send + Sync + 'static {
         self.call(function_id, payload).await
     }
 
+    /// Dispatch one SUBSCRIPTION DELIVERY: the payload plus the trigger's
+    /// stored metadata, which the target may need to know which binding this
+    /// is (for a harness-managed binding it is the `__binding` pointer the
+    /// delivery hop resolves — without it every delivery is an unresolvable
+    /// fire, dropped on arrival; discovery run 4 lost all 18 messages to
+    /// exactly that). Condition checks and infrastructure calls stay on
+    /// [`Self::call`]. The default ignores metadata so bare test invokers
+    /// keep working; the iii-backed invoker overrides it.
+    async fn call_delivery(
+        &self,
+        function_id: &str,
+        payload: Value,
+        metadata: Option<Value>,
+    ) -> Result<Option<Value>, String> {
+        let _ = metadata;
+        self.call(function_id, payload).await
+    }
+
     /// Whether the target is currently registered with the engine.
     ///
     /// Adapters used in unit tests and embedded deployments can keep the
@@ -96,6 +114,26 @@ impl Invoker for IiiInvoker {
             .map_err(|e| e.to_string())
     }
 
+    async fn call_delivery(
+        &self,
+        function_id: &str,
+        payload: Value,
+        metadata: Option<Value>,
+    ) -> Result<Option<Value>, String> {
+        let request = TriggerRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: None,
+            timeout_ms: Some(FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS),
+        };
+        match metadata {
+            Some(m) => self.iii.trigger(request.metadata(m)).await,
+            None => self.iii.trigger(request).await,
+        }
+        .map(Some)
+        .map_err(|e| e.to_string())
+    }
+
     async fn function_available(&self, function_id: &str) -> Result<bool, String> {
         match self
             .iii
@@ -143,6 +181,11 @@ pub struct SubscriberSpec {
 pub struct RegisteredSubscriber {
     pub trigger_id: String,
     pub function_id: String,
+    /// The trigger's stored metadata, delivered verbatim with every message.
+    /// For a harness-managed binding this carries `{"__binding": <id>}` — the
+    /// pointer the delivery hop resolves; dropping it makes every delivery an
+    /// unresolvable fire.
+    pub metadata: Option<Value>,
     pub spec: SubscriberSpec,
 }
 
@@ -205,6 +248,7 @@ impl QueueTriggerHandler {
                     &registration.spec.queue,
                     &registration.trigger_id,
                     &registration.function_id,
+                    registration.metadata.clone(),
                     registration.spec.condition_function_id.clone(),
                     Some(queue_config),
                 )
@@ -234,6 +278,7 @@ impl QueueTriggerHandler {
                 &registration.spec.queue,
                 &registration.trigger_id,
                 &registration.function_id,
+                registration.metadata.clone(),
                 registration.spec.condition_function_id.clone(),
                 Some(queue_config),
             )
@@ -264,6 +309,7 @@ impl TriggerHandler for QueueTriggerHandler {
         self.register_subscriber(RegisteredSubscriber {
             trigger_id: config.id,
             function_id: config.function_id,
+            metadata: config.metadata,
             spec,
         })
         .await
@@ -290,6 +336,7 @@ mod tests {
             topic: String,
             id: String,
             function_id: String,
+            metadata: Option<Value>,
             condition_function_id: Option<String>,
             queue_config: Option<SubscriberQueueConfig>,
         },
@@ -326,6 +373,7 @@ mod tests {
             topic: &str,
             id: &str,
             function_id: &str,
+            metadata: Option<Value>,
             condition_function_id: Option<String>,
             queue_config: Option<SubscriberQueueConfig>,
         ) {
@@ -333,6 +381,7 @@ mod tests {
                 topic: topic.to_string(),
                 id: id.to_string(),
                 function_id: function_id.to_string(),
+                metadata,
                 condition_function_id,
                 queue_config,
             });
@@ -415,6 +464,7 @@ mod tests {
                 topic: "demo".to_string(),
                 id: "t1".to_string(),
                 function_id: "backend".to_string(),
+                metadata: None,
                 condition_function_id: None,
                 queue_config: Some(SubscriberQueueConfig {
                     max_retries: Some(2),
@@ -423,6 +473,32 @@ mod tests {
                 }),
             }]
         );
+    }
+
+    /// The discovery-run-4 regression: the harness's `__binding` pointer
+    /// arrives as trigger metadata and MUST reach the adapter — the delivery
+    /// hop cannot resolve a fire without it.
+    #[tokio::test]
+    async fn register_passes_trigger_metadata_to_the_adapter() {
+        let (handler, mock) = handler_with_mock();
+        let mut config = trigger_config("t1", "harness::trigger::deliver", json!({"queue": "q"}));
+        config.metadata = Some(json!({ "__binding": "sub_abc" }));
+        handler.register_trigger(config).await.unwrap();
+
+        let Call::Subscribe { metadata, .. } = &mock.calls()[0] else {
+            panic!("expected a Subscribe call");
+        };
+        assert_eq!(metadata, &Some(json!({ "__binding": "sub_abc" })));
+
+        // And a hot-swap resubscribe carries it to the NEW adapter too.
+        let new_mock = Arc::new(MockAdapter::default());
+        let new_adapter: Arc<dyn QueueAdapter> = new_mock.clone();
+        handler.adapter.replace(new_adapter, "new-mock").await;
+        handler.resubscribe_all().await;
+        let Call::Subscribe { metadata, .. } = &new_mock.calls()[0] else {
+            panic!("expected a Subscribe call");
+        };
+        assert_eq!(metadata, &Some(json!({ "__binding": "sub_abc" })));
     }
 
     #[tokio::test]
@@ -529,6 +605,7 @@ mod tests {
             topic: "demo-1".to_string(),
             id: "t1".to_string(),
             function_id: "backend-1".to_string(),
+            metadata: None,
             condition_function_id: None,
             queue_config: Some(SubscriberQueueConfig {
                 max_retries: Some(2),
@@ -539,6 +616,7 @@ mod tests {
             topic: "demo-2".to_string(),
             id: "t2".to_string(),
             function_id: "backend-2".to_string(),
+            metadata: None,
             condition_function_id: None,
             queue_config: Some(SubscriberQueueConfig::default()),
         }));

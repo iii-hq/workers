@@ -32,7 +32,7 @@ pub struct StateTriggerEntry {
     pub config: StateTriggerSpec,
     pub function_id: String,
     /// Registration metadata, replayed as the fire-time sidecar. Consumers
-    /// like `harness::react` / `harness::notify_agent` resolve which
+    /// like `harness::spawn` / `harness::notify_agent` resolve which
     /// reaction/subscription fired from it; dropping it makes every fire a
     /// silent no-op on their side.
     pub metadata: Option<serde_json::Value>,

@@ -426,6 +426,77 @@ impl KvStore {
         removed
     }
 
+    /// Swap `key` from `expected` to `value`, atomically. Returns the value
+    /// that was there — `Ok(None)` on success, `Ok(Some(current))` when the
+    /// caller's `expected` did not match and nothing was written.
+    ///
+    /// The whole point is the read and the write happening under ONE lock. A
+    /// caller doing `get` then `set` cannot tell "nobody touched it" from "two
+    /// of us read the same value and both wrote", which is how two concurrent
+    /// consumers of the same counter each believe they claimed slot N.
+    pub async fn compare_and_set(
+        &self,
+        index: String,
+        key: String,
+        expected: Option<&Value>,
+        value: Value,
+    ) -> Option<Value> {
+        let mut store = self.store.write().await;
+        let index_map = store.entry(index.clone()).or_insert_with(IndexMap::new);
+        let current = index_map.get(&key);
+
+        // `expected: None` means "I expect this key to be absent" — the
+        // set-if-absent form a claim needs. A stored `null` counts as absent so
+        // a deleted-and-rewritten key behaves the same as a never-written one.
+        let matches = match (expected, current) {
+            (None, None) => true,
+            (None, Some(Value::Null)) => true,
+            (Some(want), Some(got)) => want == got,
+            _ => false,
+        };
+        if !matches {
+            return Some(current.cloned().unwrap_or(Value::Null));
+        }
+
+        index_map.insert(key, value);
+        drop(store);
+
+        if self.file_store_dir.is_some() {
+            self.dirty.write().await.insert(index, DirtyOp::Upsert);
+        }
+        None
+    }
+
+    /// Apply one barrier arrival under the SAME write lock `update` uses.
+    ///
+    /// Atomicity is the whole point: a barrier is a read-modify-write on one
+    /// key, and two children completing at once would otherwise each read
+    /// "n-1 arrived" and both answer `allow`, spawning the downstream twice.
+    /// Holding the lock across the decision makes the completing arrival
+    /// unambiguous.
+    pub async fn barrier_arrive(
+        &self,
+        index: String,
+        key: String,
+        cfg: &crate::barrier::BarrierConfig,
+        event: &Value,
+    ) -> Result<crate::barrier::Decision, String> {
+        let mut store = self.store.write().await;
+        let index_map = store.entry(index.clone()).or_insert_with(IndexMap::new);
+        let current = index_map.get(&key).cloned();
+
+        let (next, decision) = crate::barrier::arrive(current.as_ref(), cfg, event)?;
+        let encoded =
+            serde_json::to_value(&next).map_err(|e| format!("barrier state serialize: {e}"))?;
+        index_map.insert(key.clone(), encoded);
+        drop(store);
+
+        if self.file_store_dir.is_some() {
+            self.dirty.write().await.insert(index, DirtyOp::Upsert);
+        }
+        Ok(decision)
+    }
+
     pub async fn update(
         &self,
         index: String,
@@ -681,5 +752,190 @@ mod test {
             Some(serde_json::json!({"name": "Alice"}))
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod barrier_tests {
+    use super::*;
+    use crate::barrier::{BarrierConfig, Decision, Expect};
+
+    /// The property the barrier exists for: N producers finishing at the same
+    /// moment must produce ONE completion, not N. A get-then-set from outside
+    /// the store fails this — every racer reads "not yet complete" and every
+    /// racer answers `allow`, so the downstream runs N times.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_arrivals_complete_a_barrier_exactly_once() {
+        const N: usize = 32;
+        let store = Arc::new(KvStore::new(None));
+        let cfg = Arc::new(BarrierConfig {
+            id: "race".into(),
+            expect: Expect::Count(N as u64),
+            key_from: Some("/key".into()),
+            carry: None,
+        });
+
+        let mut handles = Vec::new();
+        for i in 0..N {
+            let store = store.clone();
+            let cfg = cfg.clone();
+            handles.push(tokio::spawn(async move {
+                let event = serde_json::json!({ "key": format!("w{i}") });
+                store
+                    .barrier_arrive("state_barrier".into(), cfg.id.clone(), &cfg, &event)
+                    .await
+                    .unwrap()
+            }));
+        }
+
+        let mut allows = 0;
+        for h in handles {
+            if matches!(h.await.unwrap(), Decision::Allow { .. }) {
+                allows += 1;
+            }
+        }
+        assert_eq!(allows, 1, "exactly one arrival may complete the barrier");
+    }
+
+    /// Redelivery is the normal case with at-least-once triggers: the same
+    /// arrival racing itself must still count once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn duplicate_arrivals_racing_do_not_over_count() {
+        let store = Arc::new(KvStore::new(None));
+        let cfg = Arc::new(BarrierConfig {
+            id: "dupes".into(),
+            expect: Expect::Count(2),
+            key_from: Some("/key".into()),
+            carry: None,
+        });
+
+        // Eight deliveries of the SAME single arrival: the barrier expects two
+        // distinct producers, so none of these may complete it.
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let store = store.clone();
+            let cfg = cfg.clone();
+            handles.push(tokio::spawn(async move {
+                let event = serde_json::json!({ "key": "only-one" });
+                store
+                    .barrier_arrive("state_barrier".into(), cfg.id.clone(), &cfg, &event)
+                    .await
+                    .unwrap()
+            }));
+        }
+        for h in handles {
+            assert!(
+                matches!(h.await.unwrap(), Decision::Skip { .. }),
+                "one producer delivered eight times is still one arrival"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod cas_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn a_swap_happens_only_when_the_expectation_holds() {
+        let store = KvStore::new(None);
+        // Absent → set-if-absent succeeds.
+        assert_eq!(
+            store
+                .compare_and_set("s".into(), "k".into(), None, json!(1))
+                .await,
+            None
+        );
+        // Absent again → now occupied, so the same call reports what is there.
+        assert_eq!(
+            store
+                .compare_and_set("s".into(), "k".into(), None, json!(2))
+                .await,
+            Some(json!(1))
+        );
+        // Correct expectation swaps.
+        assert_eq!(
+            store
+                .compare_and_set("s".into(), "k".into(), Some(&json!(1)), json!(2))
+                .await,
+            None
+        );
+        // Stale expectation does not, and hands back the current value so the
+        // caller can recompute instead of re-reading.
+        assert_eq!(
+            store
+                .compare_and_set("s".into(), "k".into(), Some(&json!(1)), json!(3))
+                .await,
+            Some(json!(2))
+        );
+        assert_eq!(store.get("s".into(), "k".into()).await, Some(json!(2)));
+    }
+
+    /// The bug this exists for: N consumers claiming slots off one counter must
+    /// produce N distinct slots. With `get` then `set` they collide — two read
+    /// the same value, both write, and both believe they hold that slot.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_claimers_each_get_a_distinct_slot() {
+        const N: usize = 40;
+        let store = Arc::new(KvStore::new(None));
+        store
+            .compare_and_set("claims".into(), "counter".into(), None, json!(0))
+            .await;
+
+        let mut handles = Vec::new();
+        for _ in 0..N {
+            let store = store.clone();
+            handles.push(tokio::spawn(async move {
+                // Retry until this claimer wins a slot — the loop a caller
+                // writes on top of the primitive.
+                loop {
+                    let current = store
+                        .get("claims".into(), "counter".into())
+                        .await
+                        .unwrap_or(json!(0));
+                    let next = current.as_u64().unwrap_or(0) + 1;
+                    if store
+                        .compare_and_set(
+                            "claims".into(),
+                            "counter".into(),
+                            Some(&current),
+                            json!(next),
+                        )
+                        .await
+                        .is_none()
+                    {
+                        return next;
+                    }
+                }
+            }));
+        }
+
+        let mut slots = Vec::new();
+        for h in handles {
+            slots.push(h.await.unwrap());
+        }
+        slots.sort_unstable();
+        let distinct: std::collections::HashSet<_> = slots.iter().collect();
+        assert_eq!(distinct.len(), N, "every claimer must hold its own slot");
+        assert_eq!(slots, (1..=N as u64).collect::<Vec<_>>());
+        assert_eq!(
+            store.get("claims".into(), "counter".into()).await,
+            Some(json!(N))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stored_null_counts_as_absent() {
+        // A deleted-then-rewritten key must behave like a never-written one, or
+        // set-if-absent would refuse forever after the first delete.
+        let store = KvStore::new(None);
+        store.set("s".into(), "k".into(), Value::Null).await;
+        assert_eq!(
+            store
+                .compare_and_set("s".into(), "k".into(), None, json!("claimed"))
+                .await,
+            None
+        );
     }
 }

@@ -105,24 +105,28 @@ function customNotice(
   }
 }
 
-/** The trigger's display name: label, else join id, else state scope/key. */
+/** The trigger's display name: label, else state scope/key. */
 export function triggerFiredName(t: TriggerFiredData): string {
   if (t.label) return t.label
-  if (t.join) return `join ${t.join.id}`
   if (t.key) return t.scope ? `${t.scope}/${t.key}` : t.key
   return 'trigger'
 }
 
-/** Plain one-liner for the fired notice (also the a11y/fallback content). */
+/**
+ * Plain one-liner for the fired notice (also the a11y/fallback content).
+ * Generic over the delivery target: a wake reads "notified this chat", any
+ * function target reads "called <fn>". The legacy branch keeps historical
+ * `'spawn'` records (written before spawn stopped being a binding target)
+ * rendering as they did.
+ */
 export function triggerFiredSummary(t: TriggerFiredData): string {
   const name = triggerFiredName(t)
-  if (t.join && !t.join.completed) {
-    return `${name} · ${t.join.arrived}/${t.join.expected} arrived`
-  }
   const action =
     t.target === 'spawn'
       ? `spawned${t.model ? ` ${t.model}` : ''}`
-      : 'notified this chat'
+      : !t.target || t.target === 'notify' || t.target === 'harness::send'
+        ? 'notified this chat'
+        : `called ${t.target}`
   return `${name} · ${action}${t.retired ? ' · unregistered' : ''}`
 }
 
@@ -321,7 +325,7 @@ function splitUserContent(blocks: ContentBlock[]): {
 }
 
 /**
- * `harness::react` appends the firing event (or a join's gathered inputs) to
+ * `harness::spawn` appends the firing event (or a join's gathered inputs) to
  * the task as a trailing `<event>`/`<inputs>` fenced-JSON block. Split it off
  * so the task renders as clean prose and the payload as collapsible JSON.
  * Tolerant of whitespace collapse; pretty-prints when the JSON parses.
@@ -407,9 +411,9 @@ export function entrySegments(
       const isNotif =
         origin?.notification === true || item.entry_id.startsWith('e_notify_')
       // A react-fired task delivered into this session (origin on events,
-      // `e_react_` prefix on reads — session::messages carries no origin).
+      // `e_spawned_` prefix on reads — session::messages carries no origin).
       const isReaction =
-        origin?.reaction === true || item.entry_id.startsWith('e_react_')
+        origin?.reaction === true || item.entry_id.startsWith('e_spawned_')
       // A direct `harness::spawn` seed task — same pattern, `e_spawn_` prefix.
       const isSpawn =
         origin?.spawn === true || item.entry_id.startsWith('e_spawn_')

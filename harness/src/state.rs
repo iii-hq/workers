@@ -1,10 +1,11 @@
 //! Durable loop bookkeeping in iii state (harness.md § State).
 //!
-//! Three scopes: `harness_turn/<session_id>` holds the [`TurnRecord`] (loop
+//! Four scopes: `harness_turn/<session_id>` holds the [`TurnRecord`] (loop
 //! progress, per-send options, per-call checkpoints),
-//! `harness_idem/<idempotency_key>` holds the webhook-dedupe row, and
+//! `harness_idem/<idempotency_key>` holds the webhook-dedupe row,
 //! `harness_queue/<session_id>:<id>` holds one [`QueuedMessage`] per message
-//! that arrived while a step was streaming (drained by the loop). `state::get`
+//! that arrived while a step was streaming (drained by the loop), and
+//! `harness_binding/<binding_id>` holds one [`crate::bindings::Binding`]. `state::get`
 //! returns the stored value directly (null when absent); `state::delete`
 //! returns the prior value.
 
@@ -22,6 +23,9 @@ use crate::types::turn::{IdemRecord, TurnRecord};
 pub const TURN_SCOPE: &str = "harness_turn";
 pub const IDEM_SCOPE: &str = "harness_idem";
 pub const QUEUE_SCOPE: &str = "harness_queue";
+/// One durable trigger binding per key (`bindings::Binding`). The engine-side
+/// trigger metadata holds only this key; everything the fire needs is here.
+pub const BINDING_SCOPE: &str = "harness_binding";
 
 /// Every `state::*` call below is loop bookkeeping that fires several times
 /// per turn step — tagged `iii.tag.hidden` so trace UIs stack the spans into
@@ -127,6 +131,97 @@ pub async fn delete_turn(
 /// returns a values array (or an object map); both shapes are tolerated.
 pub async fn list_turns(iii: &IIIClient, timeout_ms: u64) -> Result<Vec<TurnRecord>, HarnessError> {
     Ok(parse_list(&state_list(iii, TURN_SCOPE, timeout_ms).await?))
+}
+
+/// Read one trigger binding (`None` when absent or null).
+pub async fn get_binding(
+    iii: &IIIClient,
+    id: &str,
+    timeout_ms: u64,
+) -> Result<Option<crate::bindings::Binding>, HarnessError> {
+    let v = state_get(iii, BINDING_SCOPE, id, timeout_ms).await?;
+    if v.is_null() {
+        return Ok(None);
+    }
+    serde_json::from_value(v)
+        .map(Some)
+        .map_err(|e| HarnessError::State(format!("binding parse: {e}")))
+}
+
+pub async fn put_binding(
+    iii: &IIIClient,
+    binding: &crate::bindings::Binding,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
+    let value = serde_json::to_value(binding)
+        .map_err(|e| HarnessError::State(format!("binding serialize: {e}")))?;
+    state_set(iii, BINDING_SCOPE, &binding.id, value, timeout_ms).await
+}
+
+/// Swap a binding record only if it still holds `expected`. `Ok(None)` means
+/// the swap happened; `Ok(Some(current))` means someone else moved it first
+/// and `current` is what is there now.
+///
+/// The claim path needs this: `get` then `put` cannot tell "nobody else fired"
+/// from "two fires read the same count and both wrote", which loses a delivery
+/// and lets a bounded lifecycle over-spend.
+pub async fn cas_binding(
+    iii: &IIIClient,
+    expected: Option<&crate::bindings::Binding>,
+    next: &crate::bindings::Binding,
+    timeout_ms: u64,
+) -> Result<Option<Value>, HarnessError> {
+    let expected_value = match expected {
+        Some(b) => Some(
+            serde_json::to_value(b)
+                .map_err(|e| HarnessError::State(format!("binding serialize: {e}")))?,
+        ),
+        None => None,
+    };
+    let value = serde_json::to_value(next)
+        .map_err(|e| HarnessError::State(format!("binding serialize: {e}")))?;
+    let mut payload = json!({
+        "scope": BINDING_SCOPE,
+        "key": next.id,
+        "value": value,
+    });
+    if let Some(e) = expected_value {
+        payload["expected"] = e;
+    }
+    let resp = run_hidden(
+        HIDDEN_FAMILY,
+        iii.trigger(TriggerRequest {
+            function_id: "state::compare-and-set".into(),
+            payload,
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        }),
+    )
+    .await
+    .map_err(|e| HarnessError::State(format!("state::compare-and-set {}: {e}", next.id)))?;
+
+    if resp.get("swapped").and_then(Value::as_bool) == Some(true) {
+        return Ok(None);
+    }
+    Ok(Some(resp.get("current").cloned().unwrap_or(Value::Null)))
+}
+
+pub async fn delete_binding(
+    iii: &IIIClient,
+    id: &str,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
+    state_delete(iii, BINDING_SCOPE, id, timeout_ms).await
+}
+
+/// Every live binding — the owner-gone sweep and the per-owner cap read this.
+pub async fn list_bindings(
+    iii: &IIIClient,
+    timeout_ms: u64,
+) -> Result<Vec<crate::bindings::Binding>, HarnessError> {
+    Ok(parse_list(
+        &state_list(iii, BINDING_SCOPE, timeout_ms).await?,
+    ))
 }
 
 async fn state_list(iii: &IIIClient, scope: &str, timeout_ms: u64) -> Result<Value, HarnessError> {
