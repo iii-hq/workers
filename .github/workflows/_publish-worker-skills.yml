@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       version:
-        description: 'Registry tag channel (latest, next, rc, beta, alpha)'
+        description: 'Registry channel (latest, next, experimental)'
         required: true
         type: string
       api_url:

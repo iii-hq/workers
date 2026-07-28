@@ -82,21 +82,41 @@ class TestParseReleaseTag:
         assert out["dry_run"] == "false"
         assert out["registry_tag"] == "next"
 
-    @pytest.mark.parametrize("channel", ["rc", "beta", "alpha"])
-    def test_prerelease_channels(self, tmp_path, channel):
+    def test_experimental_channel(self, tmp_path):
         repo = make_repo_with_tagged_worker(
             tmp_path, "smoke/v1.2.3", "1.2.3",
-            registry_tag_line=f"registry-tag: {channel}")
+            registry_tag_line="registry-tag: experimental")
         out_path = tmp_path / "gh_output"
         out_path.touch()
         r = run_script(repo, "smoke/v1.2.3", out_path)
         assert r.returncode == 0, r.stderr
-        assert parse_outputs(out_path)["registry_tag"] == channel
+        assert parse_outputs(out_path)["registry_tag"] == "experimental"
 
-    def test_unknown_channel_fails(self, tmp_path):
+    # A suffixed version is orthogonal to the channel: it ships on whichever
+    # channel the tag message names, and still marks the GitHub Release as a
+    # prerelease.
+    @pytest.mark.parametrize("suffix", ["alpha", "beta", "rc"])
+    def test_suffixed_version_on_next_channel(self, tmp_path, suffix):
+        version = f"1.2.3-{suffix}.1"
+        repo = make_repo_with_tagged_worker(
+            tmp_path, f"smoke/v{version}", version,
+            registry_tag_line="registry-tag: next")
+        out_path = tmp_path / "gh_output"
+        out_path.touch()
+        r = run_script(repo, f"smoke/v{version}", out_path)
+        assert r.returncode == 0, r.stderr
+        out = parse_outputs(out_path)
+        assert out["version"] == version
+        assert out["registry_tag"] == "next"
+        assert out["is_prerelease"] == "true"
+
+    # `alpha` is a version suffix, never a channel; accepting it here would
+    # publish a channel the registry resolves for nobody.
+    @pytest.mark.parametrize("bad", ["alpha", "latests", "stable"])
+    def test_unknown_channel_fails(self, tmp_path, bad):
         repo = make_repo_with_tagged_worker(
             tmp_path, "smoke/v1.2.3", "1.2.3",
-            registry_tag_line="registry-tag: latests")
+            registry_tag_line=f"registry-tag: {bad}")
         out_path = tmp_path / "gh_output"
         out_path.touch()
         r = run_script(repo, "smoke/v1.2.3", out_path)

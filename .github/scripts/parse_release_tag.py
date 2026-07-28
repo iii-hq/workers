@@ -21,11 +21,12 @@ TAG_RE = re.compile(r"^([a-z0-9][a-z0-9_-]*)/v(.+)$")
 DRY_RUN_RE = re.compile(r"-dry-run\.\d+$")
 PRERELEASE_RE = re.compile(r"-[a-z]+\.\d+$")
 
-# The registry stores `registry-tag` verbatim (a free-form string column), so a
-# typo in the annotated tag message would silently create a dead channel that
-# nothing resolves. Keep the accepted set closed here, matching the Create Tag
-# workflow options.
-RELEASE_CHANNELS = ("latest", "next", "rc", "beta", "alpha")
+# Distribution channels, orthogonal to the version's pre-release suffix: a
+# release is `<version>@<channel>`, e.g. 1.2.3-rc.1@next. The registry stores
+# `registry-tag` verbatim (a free-form string column), so a typo in the
+# annotated tag message would silently create a dead channel that nothing
+# resolves. Keep the accepted set closed here, matching the Create Tag options.
+RELEASE_CHANNELS = ("latest", "next", "experimental")
 
 
 def main(argv: list[str] | None = None) -> int:

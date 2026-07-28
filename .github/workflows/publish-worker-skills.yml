@@ -14,9 +14,7 @@ on:
         options:
           - latest
           - next
-          - rc
-          - beta
-          - alpha
+          - experimental
         default: latest
 
 concurrency:

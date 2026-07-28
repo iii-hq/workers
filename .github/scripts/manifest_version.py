@@ -4,6 +4,7 @@
 Subcommands:
     read <path>            print the manifest's version to stdout
     bump <path> --kind ... bump the version in-place
+                           [--suffix alpha|beta|rc|stable|none --worker NAME]
     verify <path> --expected V
                            assert the file's version equals V
     deploy-mode <worker>   print the interface-collection mode
@@ -31,11 +32,28 @@ def cmd_read(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_version(current: str, kind: str, suffix: str, worker: str | None) -> str:
+    """Applies `kind` (version bump) and `suffix` (pre-release line) to `current`.
+
+    The two are independent: `kind` picks the base version, `suffix` decides
+    whether that base ships as a pre-release. `none` leaves the manifest value
+    alone (a merged PR may have set it); `stable` promotes a pre-release to its
+    base without bumping (1.2.3-rc.2 -> 1.2.3).
+    """
+    if suffix in _lib.PRERELEASE_SUFFIXES:
+        base = _lib.core_version(current) if kind == "none" else _lib.bump(current, kind)
+        existing = _lib.list_tagged_versions(worker) if worker else []
+        return _lib.next_prerelease(base, suffix, existing)
+    if suffix == "stable":
+        return _lib.core_version(current) if kind == "none" else _lib.bump(current, kind)
+    return current if kind == "none" else _lib.bump(current, kind)
+
+
 def cmd_bump(args: argparse.Namespace) -> int:
     path = Path(args.manifest)
     try:
         current = _lib.read_version(path)
-        new = current if args.kind == "none" else _lib.bump(current, args.kind)
+        new = _resolve_version(current, args.kind, args.suffix, args.worker)
         _lib.write_version(path, new)
     except (FileNotFoundError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
@@ -131,6 +149,16 @@ def main(argv: list[str] | None = None) -> int:
     p_bump = sub.add_parser("bump", help="bump the manifest version in place")
     p_bump.add_argument("manifest")
     p_bump.add_argument("--kind", choices=["patch", "minor", "major", "none"], required=True)
+    p_bump.add_argument(
+        "--suffix",
+        choices=["none", "stable", *_lib.PRERELEASE_SUFFIXES],
+        default="none",
+        help="pre-release line for the bumped version (none = leave as-is)",
+    )
+    p_bump.add_argument(
+        "--worker",
+        help="worker name; used to read existing git tags when numbering a pre-release",
+    )
     p_bump.set_defaults(func=cmd_bump)
 
     p_verify = sub.add_parser("verify", help="assert the manifest version equals --expected")
