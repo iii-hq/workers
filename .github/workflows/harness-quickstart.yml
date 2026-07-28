@@ -84,6 +84,7 @@ jobs:
         id: quickstart
         env:
           HARNESS_QUICKSTART_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-quickstart
+          HARNESS_QUICKSTART_TRACE: "1"
           III_CHANNEL: ${{ inputs.channel || 'main' }}
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
         run: |

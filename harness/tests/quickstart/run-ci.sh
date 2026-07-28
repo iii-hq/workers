@@ -17,6 +17,17 @@ turn_timeout_seconds=${HARNESS_QUICKSTART_TURN_TIMEOUT_SECONDS:-240}
 send_model=${HARNESS_QUICKSTART_MODEL:-glm-5.2}
 send_provider=zai
 send_prompt=${HARNESS_QUICKSTART_PROMPT:-"Reply with exactly: harness quickstart ok"}
+trace_enabled=${HARNESS_QUICKSTART_TRACE:-0}
+has_zai_key=false
+[[ -n "${ZAI_API_KEY:-}" ]] && has_zai_key=true
+
+case "$trace_enabled" in
+  0 | 1) ;;
+  *)
+    echo "HARNESS_QUICKSTART_TRACE must be '0' or '1' (got: $trace_enabled)" >&2
+    exit 2
+    ;;
+esac
 
 case "$channel" in
   main | next) ;;
@@ -79,7 +90,25 @@ rm -f \
   "$artifact_dir/EVIDENCE.md" \
   "$artifact_dir/timings.tsv" \
   "$artifact_dir/console-send.json" \
+  "$artifact_dir/commands.log" \
   "$log_dir"/*.log
+
+if [[ "$trace_enabled" == 1 ]]; then
+  trace_secret=${ZAI_API_KEY:-}
+  trace_log="$artifact_dir/commands.log"
+  exec {trace_fd}> >(
+    while IFS= read -r trace_line; do
+      if [[ -n "$trace_secret" ]]; then
+        trace_line=${trace_line//"$trace_secret"/"[REDACTED]"}
+      fi
+      printf '%s\n' "$trace_line" >&2
+      printf '%s\n' "$trace_line" >>"$trace_log"
+    done
+  )
+  BASH_XTRACEFD=$trace_fd
+  PS4='+ ${SECONDS}s ${BASH_SOURCE##*/}:${LINENO}:${FUNCNAME[0]:-main}: '
+  set -x
+fi
 
 export HOME="$quickstart_home"
 export XDG_CONFIG_HOME="$quickstart_home/.config"
@@ -327,7 +356,7 @@ for output in config.yaml iii.lock; do
 done
 ok "config.yaml and iii.lock reference harness + console"
 
-if [[ -n "${ZAI_API_KEY:-}" ]]; then
+if [[ "$has_zai_key" == true ]]; then
   command -v python3 >/dev/null 2>&1 || die "python3 is required for the GLM canary"
   message_check="failed"
 
