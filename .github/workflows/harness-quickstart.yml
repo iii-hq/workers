@@ -22,7 +22,7 @@ jobs:
   validate:
     name: harness quickstart / latest registry (${{ inputs.channel || 'main' }})
     runs-on: ubuntu-latest
-    # Leaves room for the unrecorded fallback rerun when VHS misbehaves.
+    # Covers registry timeouts plus terminal rendering and finalization.
     timeout-minutes: 35
     steps:
       - name: Notify Slack that validation started
@@ -87,11 +87,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          # VHS records the actual validator run as terminal evidence. The tape
-          # cannot propagate the script's exit code, so pass/fail is read from
-          # result.json below. Recording problems fall back to an unrecorded
-          # run only when the validator did not produce a result.
-          if command -v vhs >/dev/null 2>&1; then
+          terminal_log=target/harness-quickstart/terminal.log
+          mkdir -p "$(dirname "$terminal_log")"
+
+          # Keep the real validator outside the VHS pseudo-terminal: some
+          # installer commands change behavior when stdin is interactive.
+          # Capture its normal CI output, then replay that log into the video.
+          set +e
+          harness/tests/quickstart/run-ci.sh 2>&1 | tee "$terminal_log"
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          validator_status=${pipeline_status[0]}
+          capture_status=${pipeline_status[1]}
+
+          if ((capture_status != 0)); then
+            echo "::warning::Could not persist the complete terminal log"
+          fi
+
+          if command -v vhs >/dev/null 2>&1 && [[ -s "$terminal_log" ]]; then
             if vhs harness/tests/quickstart/quickstart.tape; then
               if ! ffprobe -v error \
                 -select_streams v:0 \
@@ -105,14 +118,15 @@ jobs:
             else
               echo "::warning::VHS recording failed"
               rm -f target/harness-quickstart/quickstart.mp4
-              if [[ ! -f target/harness-quickstart/result.json ]]; then
-                echo "::warning::No validator result was produced; rerunning without recording"
-                harness/tests/quickstart/run-ci.sh
-              fi
             fi
           else
-            echo "::warning::vhs is not installed; running the validator without recording"
-            harness/tests/quickstart/run-ci.sh
+            echo "::warning::VHS is unavailable or the terminal log is empty; skipping recording"
+          fi
+
+          if ((validator_status != 0)); then
+            reason=$(jq -r '.failure_reason // empty' target/harness-quickstart/result.json 2>/dev/null || true)
+            echo "::error::quickstart validator exited ${validator_status}${reason:+: $reason}"
+            exit "$validator_status"
           fi
 
           jq -e '.status == "passed"' target/harness-quickstart/result.json >/dev/null || {
@@ -170,11 +184,11 @@ jobs:
           if-no-files-found: ignore
 
       - name: Finalize Slack notification
-        if: ${{ always() && steps.slack_start.outputs.ts != '' }}
+        if: ${{ always() && steps.slack_start.outputs.ts != '' && steps.slack_start.outputs.channel_id != '' }}
         continue-on-error: true
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_CHANNEL: worker-releases
+          SLACK_CHANNEL_ID: ${{ steps.slack_start.outputs.channel_id }}
           SLACK_MESSAGE_TS: ${{ steps.slack_start.outputs.ts }}
           III_CHANNEL: ${{ inputs.channel || 'main' }}
           QUICKSTART_OUTCOME: ${{ steps.quickstart.outcome }}
@@ -240,7 +254,7 @@ jobs:
           update_payload=$(
             # shellcheck disable=SC2016
             jq -n \
-              --arg channel "$SLACK_CHANNEL" \
+              --arg channel "$SLACK_CHANNEL_ID" \
               --arg ts "$SLACK_MESSAGE_TS" \
               --arg text "$root_text" \
               '{channel: $channel, ts: $ts, text: $text}'
@@ -248,7 +262,7 @@ jobs:
           thread_payload=$(
             # shellcheck disable=SC2016
             jq -n \
-              --arg channel "$SLACK_CHANNEL" \
+              --arg channel "$SLACK_CHANNEL_ID" \
               --arg ts "$SLACK_MESSAGE_TS" \
               --arg text "$detail" \
               '{channel: $channel, thread_ts: $ts, text: $text}'

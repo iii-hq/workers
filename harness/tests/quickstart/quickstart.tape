@@ -1,6 +1,6 @@
-# Records the real quickstart validator run as terminal evidence (same VHS
-# pattern as iii-hq/templates). VHS does not propagate the typed command's
-# exit code, so the workflow decides pass/fail from result.json afterwards.
+# Replays the validator's non-interactive CI log as terminal evidence. Keeping
+# the real run outside the VHS pseudo-terminal preserves installer behavior and
+# the original exit code.
 Output target/harness-quickstart/quickstart.mp4
 
 Set Shell bash
@@ -11,18 +11,14 @@ Set FontFamily "DejaVu Sans Mono"
 Set Theme "Catppuccin Mocha"
 Set Padding 18
 Set Framerate 15
-Set PlaybackSpeed 3
-Set WaitTimeout 1200s
+Set PlaybackSpeed 1.5
 
 Hide
 Type "clear"
 Enter
 Show
 
-Type "harness/tests/quickstart/run-ci.sh"
+Type "harness/tests/quickstart/replay-terminal.sh target/harness-quickstart/terminal.log"
 Enter
-# The validator always ends on one of these lines (success log or the
-# cleanup-trap failure message), then the prompt returns once cleanup is done.
-Wait+Screen /ALL QUICKSTART ASSERTIONS PASSED|quickstart validator failed/
-Wait@60s
+Sleep 15s
 Sleep 2s

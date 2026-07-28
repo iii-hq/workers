@@ -33,13 +33,12 @@ and `3113`) must be available. Set `III_CHANNEL=next` to validate the `next`
 installer channel. `HARNESS_QUICKSTART_MODEL` overrides the default GLM model.
 
 The nightly/manual CI workflow preserves `result.json`, the generated project
-files, Console responses, and raw logs. In CI the validator runs inside a
-[VHS](https://github.com/charmbracelet/vhs) terminal session (the same pattern
-as `iii-hq/templates`), so each run also uploads `quickstart.mp4` — a recording
-of the real validator run, defined by `quickstart.tape`. VHS cannot propagate
-the script's exit code, so the workflow reads pass/fail from `result.json`; if
-the recorder fails before producing a result, the validator reruns without
-recording instead of failing the check. Each run also creates one
+files, Console responses, and raw logs. In CI the validator keeps its normal
+non-interactive behavior and exit code while its output is captured in
+`terminal.log`. A [VHS](https://github.com/charmbracelet/vhs) tape then replays
+that log and renders `quickstart.mp4` (the same recording pattern as
+`iii-hq/templates`). Recording failures do not repeat the live GLM request or
+override the validator result. Each run also creates one
 `#worker-releases` Slack message, updates it with the final status, posts the
 result details in its thread, and uploads the terminal recording to the same
 thread (pass or fail; requires the `files:write` bot scope). This uses the
