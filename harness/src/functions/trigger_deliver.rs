@@ -239,7 +239,35 @@ pub async fn handle(
             ));
         }
         Err(e) => {
-            tracing::warn!(binding = %binding.id, error = %e, "claim failed; dropping fire");
+            // A claim that cannot even be attempted is an infrastructure
+            // failure (store down, `state::compare-and-set` missing from the
+            // stack), and it silently eats EVERY fire of EVERY binding. Tell
+            // the owner once per binding — the entry id makes the injection
+            // idempotent — so the failure surfaces where the wake was
+            // expected, not only in worker logs nobody is tailing.
+            tracing::error!(binding = %binding.id, error = %e, "claim failed; dropping fire");
+            let watch = binding
+                .trigger_watch()
+                .map(|(ty, cfg)| format!(" (watching `{ty}` {cfg})"))
+                .unwrap_or_default();
+            let notice = format!(
+                "[notification] binding {}{watch} is DROPPING fires: the delivery claim \
+                 failed with `{e}`. Nothing this binding watches can be delivered until \
+                 the store dependency recovers (is a state worker providing \
+                 `state::compare-and-set` in the stack?).",
+                binding.id
+            );
+            if let Err(inject_err) = crate::functions::send::inject(
+                deps,
+                &binding.owner.session_id,
+                AgentMessage::user_text(notice),
+                Some(&format!("e_claimfail_{}", binding.id)),
+                Some(&json!({ "notification": true, "binding": binding.id })),
+            )
+            .await
+            {
+                tracing::warn!(binding = %binding.id, error = %inject_err, "claim-failure notice failed");
+            }
             return Ok(DeliverResult::stopped(
                 "store",
                 format!("claim failed: {e}"),
