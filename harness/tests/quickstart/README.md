@@ -1,9 +1,8 @@
 # Harness quickstart validator
 
-This validator exercises the published installation path without provider
-credentials or model calls. It runs in an isolated temporary home and project
-directory, installs the `iii` CLI, starts a clean engine, and follows the
-documented commands:
+This validator exercises the published installation path. It runs in an
+isolated temporary home and project directory, installs the `iii` CLI, starts
+a clean engine, and follows the documented commands:
 
 ```bash
 printf 'workers: []\n' > config.yaml
@@ -14,6 +13,17 @@ iii worker add harness console
 The check waits for the engine and the core harness/Console function surface,
 calls `console::status`, and fetches the Console HTTP root. It also verifies
 that `config.yaml` and `iii.lock` were produced by the registry install.
+
+When `ZAI_API_KEY` is set, the validator goes one step further: it adds the
+Z.AI provider (`iii worker add provider-zai`), then sends a real message
+through the Console's `/ws` proxy — the same WebSocket path the browser SPA
+uses — via `console_send.py`, and asserts the turn completes with a non-empty
+assistant reply (default model `glm-5.2`, overridable with
+`HARNESS_QUICKSTART_MODEL`/`HARNESS_QUICKSTART_PROVIDER`). Without the key the
+live check is skipped and recorded as such in `result.json` and `EVIDENCE.md`.
+
+Set `III_CHANNEL=next` to validate the `next` installer channel instead of
+`main`; in CI this is exposed as the `channel` input on manual dispatches.
 
 Run it locally with:
 
