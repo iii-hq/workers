@@ -425,8 +425,17 @@
   display: inline-flex;
   gap: 4px;
   flex-shrink: 0;
+  flex-wrap: nowrap;
   max-width: 45%;
   overflow: hidden;
+  white-space: nowrap;
+}
+[data-iii-ui="github"] .gh-graph-refs > * {
+  flex-shrink: 0;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 [data-iii-ui="github"] .gh-graph-subject {
   flex: 1 1 auto;

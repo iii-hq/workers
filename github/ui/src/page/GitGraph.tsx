@@ -25,13 +25,13 @@ import {
   StatusDot,
   StatusPanel,
 } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useGithubCalled } from './events'
+import { formatRelative } from './format'
 import { type Commit, type GraphEdge, type GraphLayout, layout } from './graph-layout'
 import { AlertCircle, FolderGit2, RefreshCw } from './icons'
 import { ResultView } from './result-views'
 
-/** The worker's trigger type; see github/src/events.rs. */
-const CALLED_TYPE = 'github::called'
 /** Per-tab handler id for the graph's live refresh — distinct from the activity
  *  feed's (`iii::github-ui::called`) so the two subscriptions never collide.
  *  The `iii::` prefix keeps per-event invocations out of the trace feed. */
@@ -104,20 +104,50 @@ interface RefLabel {
   name: string
 }
 
-/** Classify raw refs into badge-able labels (HEAD pointer split out). */
+/** Max ref-label chars before ellipsis, so a long branch name can't wrap the
+ *  row or crowd out the subject. */
+const REF_MAX = 22
+
+function clampRef(name: string): string {
+  return name.length > REF_MAX ? `${name.slice(0, REF_MAX - 1)}…` : name
+}
+
+/**
+ * Classify raw refs into badge-able labels: HEAD pointer split out, the
+ * redundant `origin/` prefix dropped, and local/remote duplicates of the same
+ * branch collapsed to one badge (so `main` + `origin/main` render once). Keeps
+ * the label list short enough that badges stay single-line.
+ */
 function refLabels(refs: string[]): RefLabel[] {
   const labels: RefLabel[] = []
+  const seen = new Set<string>()
+  const pushBranch = (branch: string) => {
+    const short = branch.replace(/^origin\//, '')
+    const key = `b:${short}`
+    if (seen.has(key)) return
+    seen.add(key)
+    labels.push({ kind: 'branch', name: clampRef(short) })
+  }
+  const pushHead = () => {
+    if (seen.has('HEAD')) return
+    seen.add('HEAD')
+    labels.push({ kind: 'head', name: 'HEAD' })
+  }
   for (const raw of refs) {
     if (raw.startsWith('tag: ')) {
-      labels.push({ kind: 'tag', name: raw.slice(5) })
+      const name = raw.slice(5)
+      const key = `t:${name}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      labels.push({ kind: 'tag', name: clampRef(name) })
     } else if (raw.includes(' -> ')) {
       const [head, branch] = raw.split(' -> ')
-      if (head === 'HEAD') labels.push({ kind: 'head', name: 'HEAD' })
-      labels.push({ kind: 'branch', name: branch })
+      if (head === 'HEAD') pushHead()
+      pushBranch(branch)
     } else if (raw === 'HEAD') {
-      labels.push({ kind: 'head', name: 'HEAD' })
+      pushHead()
     } else {
-      labels.push({ kind: 'branch', name: raw })
+      pushBranch(raw)
     }
   }
   return labels
@@ -137,6 +167,7 @@ function useGitGraph(host: Host) {
   const liveRef = useRef(live)
   liveRef.current = live
   const inFlight = useRef(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   const fetchDag = useCallback(async () => {
     if (inFlight.current) return
@@ -166,23 +197,16 @@ function useGitGraph(host: Host) {
 
   useEffect(() => {
     void fetchDag()
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const offHandler = host.iii.on(GRAPH_EVENTS_FN, () => {
-      if (!liveRef.current) return
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(() => void fetchDag(), REFRESH_DEBOUNCE_MS)
-    })
-    const offTrigger = host.iii.registerTrigger({
-      type: CALLED_TYPE,
-      function_id: `${GRAPH_EVENTS_FN}::${host.iii.browserId}`,
-      config: {},
-    })
     return () => {
-      if (timer) clearTimeout(timer)
-      offTrigger()
-      offHandler()
+      if (timer.current) clearTimeout(timer.current)
     }
-  }, [host, fetchDag])
+  }, [fetchDag])
+
+  useGithubCalled(host, GRAPH_EVENTS_FN, () => {
+    if (!liveRef.current) return
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = setTimeout(() => void fetchDag(), REFRESH_DEBOUNCE_MS)
+  })
 
   return { commits, status, error, live, setLive, refreshing, refresh: fetchDag }
 }
@@ -190,7 +214,7 @@ function useGitGraph(host: Host) {
 export function GitGraph({ host }: { host: Host }) {
   const { commits, status, error, live, setLive, refreshing, refresh } = useGitGraph(host)
   const [selected, setSelected] = useState<string | null>(null)
-  const graph = useMemo(() => layout(commits.slice(0, MAX_COMMITS)), [commits])
+  const graph = useMemo(() => layout(commits), [commits])
 
   return (
     <div className="gh-graph-page">
@@ -266,19 +290,27 @@ function GraphCanvas({
   const x = (col: number) => PAD_X + col * COL_W
   const y = (row: number) => row * ROW_H + ROW_H / 2
 
+  // The lane edges depend only on the layout, never on selection — memoize them
+  // so selecting a row doesn't rebuild every `<path>`.
+  const edges = useMemo(
+    () =>
+      graph.edges.map((e, i) => (
+        <path
+          key={i}
+          className={`gh-lane-c${e.color}`}
+          d={edgePath(e, x, y)}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.5}
+        />
+      )),
+    [graph],
+  )
+
   return (
     <div className="gh-graph-scroll">
       <svg className="gh-graph-svg" width={gutter} height={height} viewBox={`0 0 ${gutter} ${height}`} aria-hidden>
-        {graph.edges.map((e, i) => (
-          <path
-            key={i}
-            className={`gh-lane-c${e.color}`}
-            d={edgePath(e, x, y)}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={1.5}
-          />
-        ))}
+        {edges}
         {graph.rows.map((r) => (
           <g key={r.commit.hash} className={`gh-lane-c${r.color}`}>
             {r.isRefTip ? (
@@ -309,7 +341,7 @@ function GraphCanvas({
             commit={r.commit}
             gutter={gutter}
             selected={selected === r.commit.hash}
-            onSelect={() => onSelect(r.commit.hash)}
+            onSelect={onSelect}
           />
         ))}
       </div>
@@ -334,7 +366,7 @@ function edgePath(e: GraphEdge, x: (c: number) => number, y: (r: number) => numb
   return `M ${x0} ${y0} C ${x0} ${y0 + t / 2} ${x1} ${yb - t / 2} ${x1} ${yb} L ${x1} ${y1}`
 }
 
-function CommitRow({
+const CommitRow = memo(function CommitRow({
   commit,
   gutter,
   selected,
@@ -343,13 +375,13 @@ function CommitRow({
   commit: Commit
   gutter: number
   selected: boolean
-  onSelect: () => void
+  onSelect: (hash: string) => void
 }) {
   const labels = refLabels(commit.refs)
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
-      onSelect()
+      onSelect(commit.hash)
     }
   }
   return (
@@ -359,7 +391,7 @@ function CommitRow({
       role="button"
       tabIndex={0}
       aria-pressed={selected}
-      onClick={onSelect}
+      onClick={() => onSelect(commit.hash)}
       onKeyDown={onKeyDown}
     >
       {labels.length > 0 ? (
@@ -375,11 +407,11 @@ function CommitRow({
       <span className="gh-graph-meta">
         <span className="gh-graph-hash">{commit.hash.slice(0, 7)}</span>
         <span className="gh-graph-author">{commit.author}</span>
-        <span className="gh-graph-time">{relTime(commit.time)}</span>
+        <span className="gh-graph-time">{commit.time ? formatRelative(Date.now() / 1000 - commit.time) : ''}</span>
       </span>
     </div>
   )
-}
+})
 
 /* ── commit detail (git show → shared diff renderer) ─────────────────────── */
 
@@ -439,21 +471,4 @@ function CommitDetail({ host, hash, onClose }: { host: Host; hash: string; onClo
       </div>
     </div>
   )
-}
-
-/* ── time ────────────────────────────────────────────────────────────────── */
-
-function relTime(unixSeconds: number): string {
-  if (!unixSeconds) return ''
-  const s = Math.max(0, Math.floor(Date.now() / 1000 - unixSeconds))
-  if (s < 60) return `${s}s ago`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  const d = Math.floor(h / 24)
-  if (d < 30) return `${d}d ago`
-  const mo = Math.floor(d / 30)
-  if (mo < 12) return `${mo}mo ago`
-  return `${Math.floor(d / 365)}y ago`
 }

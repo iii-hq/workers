@@ -104,6 +104,10 @@ impl SubscriberSet {
         self.lock().values().cloned().collect()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.lock().is_empty()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -144,6 +148,10 @@ pub struct CalledEmitter {
 impl CalledEmitter {
     pub fn new(iii: Arc<IIIClient>, subscribers: SubscriberSet) -> Self {
         Self { iii, subscribers }
+    }
+
+    pub fn has_subscribers(&self) -> bool {
+        !self.subscribers.is_empty()
     }
 
     /// Fan `event` out to every subscriber with `TriggerAction::Void`
@@ -211,6 +219,9 @@ where
     let started = std::time::Instant::now();
     let result = fut.await;
     let duration_ms = started.elapsed().as_millis() as u64;
+    if !emitter.has_subscribers() {
+        return result;
+    }
     let (ok, result_summary, kind, result_preview) = match &result {
         Ok(resp) => {
             let value = serde_json::to_value(resp).unwrap_or(Value::Null);

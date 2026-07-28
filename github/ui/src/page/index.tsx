@@ -18,33 +18,17 @@
 
 import { Badge, Button, EmptyState, ErrorBoundary, type Host, StatusDot } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { type CalledEvent, useGithubCalled } from './events'
+import { formatRelative } from './format'
 import { Activity, type IconProps } from './icons'
 import { ResultView } from './result-views'
 
-/** The worker's trigger type; see github/src/events.rs. */
-const CALLED_TYPE = 'github::called'
 /** Per-tab handler id — the `iii::` prefix keeps per-event invocations
  *  span-suppressed and out of the trace feed (host.iii.on namespaces it
  *  `::<browserId>`, which the trigger's function_id must match). */
 const EVENTS_FN = 'iii::github-ui::called'
 /** Newest-first cap so a long-running session can't grow the list unbounded. */
 const MAX_ENTRIES = 200
-
-/** The `github::called` payload the worker emits (github/src/events.rs). */
-interface CalledEvent {
-  function_id: string
-  args_summary: string
-  repo: string | null
-  ok: boolean
-  duration_ms: number
-  result_summary: string
-  /** Renderer discriminator for `result_preview`: list/object/text/diff/outcome. */
-  kind: string
-  /** The budgeted, projected result the worker carried in the event; `null`
-   *  when there was nothing useful. Rendered by `kind` (see result-views.tsx). */
-  result_preview: unknown
-  timestamp: string
-}
 
 interface Entry extends CalledEvent {
   /** Stable react key + expansion id. */
@@ -68,35 +52,24 @@ function useCalledFeed(host: Host) {
   pausedRef.current = paused
   const seq = useRef(0)
 
-  useEffect(() => {
-    const offHandler = host.iii.on<CalledEvent>(EVENTS_FN, (event) => {
-      if (pausedRef.current) return
-      if (!event || typeof event.function_id !== 'string') return
-      const entry: Entry = {
-        function_id: event.function_id,
-        args_summary: event.args_summary ?? '',
-        repo: event.repo ?? null,
-        ok: Boolean(event.ok),
-        duration_ms: Number(event.duration_ms) || 0,
-        result_summary: event.result_summary ?? '',
-        kind: typeof event.kind === 'string' ? event.kind : 'object',
-        result_preview: event.result_preview ?? null,
-        timestamp: event.timestamp ?? '',
-        key: `${Date.now()}-${seq.current++}`,
-        receivedAt: Date.now(),
-      }
-      setEntries((prev) => [entry, ...prev].slice(0, MAX_ENTRIES))
-    })
-    const offTrigger = host.iii.registerTrigger({
-      type: CALLED_TYPE,
-      function_id: `${EVENTS_FN}::${host.iii.browserId}`,
-      config: {},
-    })
-    return () => {
-      offTrigger()
-      offHandler()
+  useGithubCalled(host, EVENTS_FN, (event) => {
+    if (pausedRef.current) return
+    if (!event || typeof event.function_id !== 'string') return
+    const entry: Entry = {
+      function_id: event.function_id,
+      args_summary: event.args_summary ?? '',
+      repo: event.repo ?? null,
+      ok: Boolean(event.ok),
+      duration_ms: Number(event.duration_ms) || 0,
+      result_summary: event.result_summary ?? '',
+      kind: typeof event.kind === 'string' ? event.kind : 'object',
+      result_preview: event.result_preview ?? null,
+      timestamp: event.timestamp ?? '',
+      key: `${Date.now()}-${seq.current++}`,
+      receivedAt: Date.now(),
     }
-  }, [host])
+    setEntries((prev) => [entry, ...prev].slice(0, MAX_ENTRIES))
+  })
 
   const clear = useCallback(() => setEntries([]), [])
   return { entries, clear, paused, setPaused }
@@ -201,7 +174,7 @@ function ActivityRow({
           <span className="gh-feed-dur">{formatDuration(entry.duration_ms)}</span>
         </td>
         <td className="gh-feed-time" title={entry.timestamp || undefined}>
-          {relativeTime(entry.receivedAt, now)}
+          {formatRelative((now - entry.receivedAt) / 1000)}
         </td>
       </tr>
       {expanded ? (
@@ -223,15 +196,4 @@ function ActivityRow({
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`
   return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`
-}
-
-function relativeTime(then: number, now: number): string {
-  const s = Math.max(0, Math.floor((now - then) / 1000))
-  if (s < 5) return 'just now'
-  if (s < 60) return `${s}s ago`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
 }

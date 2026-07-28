@@ -83,55 +83,6 @@ export function FolderGit2(props: IconProps) {
   )
 }
 
-export function GitPullRequest(props: IconProps) {
-  return (
-    <Svg {...props}>
-      <circle cx="6" cy="6" r="3" />
-      <circle cx="6" cy="18" r="3" />
-      <path d="M6 9v6" />
-      <path d="M13 6h3a2 2 0 0 1 2 2v7" />
-      <path d="m16 4-3 2 3 2" />
-    </Svg>
-  )
-}
-
-export function CircleDot(props: IconProps) {
-  return (
-    <Svg {...props}>
-      <circle cx="12" cy="12" r="10" />
-      <circle cx="12" cy="12" r="1" />
-    </Svg>
-  )
-}
-
-export function Workflow(props: IconProps) {
-  return (
-    <Svg {...props}>
-      <rect x="3" y="3" width="8" height="8" rx="2" />
-      <path d="M7 11v4a2 2 0 0 0 2 2h4" />
-      <rect x="13" y="13" width="8" height="8" rx="2" />
-    </Svg>
-  )
-}
-
-export function Tag(props: IconProps) {
-  return (
-    <Svg {...props}>
-      <path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z" />
-      <circle cx="7.5" cy="7.5" r=".5" fill="currentColor" />
-    </Svg>
-  )
-}
-
-export function Search(props: IconProps) {
-  return (
-    <Svg {...props}>
-      <circle cx="11" cy="11" r="8" />
-      <path d="m21 21-4.3-4.3" />
-    </Svg>
-  )
-}
-
 export function Activity(props: IconProps) {
   return (
     <Svg {...props}>
