@@ -13,6 +13,7 @@ packages:
   - eval/ui
   - state/ui
   - iii-directory/ui
+  - github/ui
 
 # pnpm ≥11 blocks dependency postinstall scripts by default; esbuild's
 # installs its platform binary.

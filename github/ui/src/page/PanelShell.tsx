@@ -1,22 +1,21 @@
-import { AlertCircle, type LucideIcon } from 'lucide-react'
+import { EmptyState, StatusPanel } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
-import { EmptyState } from '@/components/ui/EmptyState'
-import { StatusPanel } from '@/components/ui/StatusPanel'
+import { AlertCircle, type IconProps } from './icons'
 
 interface PanelShellProps {
   loading: boolean
   error: string | null
   empty: boolean
-  emptyIcon: LucideIcon
+  emptyIcon: (props: IconProps) => ReactNode
   emptyTitle: string
   emptyDescription: string
   children: ReactNode
 }
 
 /**
- * Shared error / first-load / empty scaffolding for the Github panels.
- * Worker errors carry gh's own stderr (auth failures, 404s), so the alert
- * detail is already the actionable message.
+ * Shared error / first-load / empty scaffolding for the github panels. Worker
+ * errors carry gh's own stderr (auth failures, 404s), so the alert detail is
+ * already the actionable message.
  */
 export function PanelShell({
   loading,
@@ -31,18 +30,14 @@ export function PanelShell({
     return (
       <StatusPanel
         variant="alert"
-        icon={<AlertCircle className="w-full h-full" />}
+        icon={<AlertCircle size={18} />}
         headline="github call failed"
         detail={error}
       />
     )
   }
   if (loading && empty) {
-    return (
-      <p className="font-mono text-[12px] lowercase text-ink-ghost">
-        loading...
-      </p>
-    )
+    return <p className="gh-msg gh-pulse">loading…</p>
   }
   if (empty) {
     return (

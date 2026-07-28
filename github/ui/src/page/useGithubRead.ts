@@ -4,21 +4,21 @@ import { useCallback, useEffect, useState } from 'react'
  * One in-flight github read: run `fetcher` while `enabled`, re-run when the
  * fetcher identity changes (callers memo it on repo/filter deps) or on
  * `refresh`. No polling and no live trigger bindings on purpose — the data
- * changes on GitHub's side, not the engine's, so the page refreshes on
- * demand instead of hammering the gh rate limit.
+ * changes on GitHub's side, not the engine's, so the page refreshes on demand
+ * instead of hammering the gh rate limit.
  */
 
-export interface GithubQuery<T> {
+export interface GithubRead<T> {
   data: T | null
   loading: boolean
   error: string | null
   refresh: () => void
 }
 
-export function useGithubQuery<T>(
+export function useGithubRead<T>(
   enabled: boolean,
   fetcher: () => Promise<T>,
-): GithubQuery<T> {
+): GithubRead<T> {
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(enabled)
   const [error, setError] = useState<string | null>(null)
@@ -26,7 +26,8 @@ export function useGithubQuery<T>(
 
   const refresh = useCallback(() => setToken((t) => t + 1), [])
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: token is a re-run token (bumped by manual refresh), not read by the effect body
+  // `token` is a re-run token (bumped by manual refresh), not read by the
+  // effect body — it only needs to be in the dependency list.
   useEffect(() => {
     if (!enabled) {
       setData(null)

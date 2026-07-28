@@ -1,18 +1,21 @@
-import { Tag } from 'lucide-react'
+import { Badge, type Host } from '@iii-dev/console-ui'
 import { useCallback } from 'react'
-import { Badge } from '@/components/ui/Badge'
-import { listReleases, releaseUrl, timeAgoIso } from '@/lib/github'
-import { useGithubQuery } from '../hooks/useGithubQuery'
+import { listReleases, releaseUrl, timeAgoIso } from './github-data'
+import { type IconProps, Tag } from './icons'
 import { PanelShell } from './PanelShell'
+import { useGithubRead } from './useGithubRead'
+
+const ReleaseIcon = (p: IconProps) => <Tag size={28} {...p} />
 
 interface ReleasesPanelProps {
+  host: Host
   repo: string
   enabled: boolean
 }
 
-export function ReleasesPanel({ repo, enabled }: ReleasesPanelProps) {
-  const fetcher = useCallback(() => listReleases(repo), [repo])
-  const { data, loading, error } = useGithubQuery(enabled, fetcher)
+export function ReleasesPanel({ host, repo, enabled }: ReleasesPanelProps) {
+  const fetcher = useCallback(() => listReleases(host, repo), [host, repo])
+  const { data, loading, error } = useGithubRead(enabled, fetcher)
   const releases = data ?? []
 
   return (
@@ -20,28 +23,25 @@ export function ReleasesPanel({ repo, enabled }: ReleasesPanelProps) {
       loading={loading}
       error={error}
       empty={releases.length === 0}
-      emptyIcon={Tag}
+      emptyIcon={ReleaseIcon}
       emptyTitle="no releases"
       emptyDescription={`no releases in ${repo}`}
     >
-      <ul className="flex flex-col">
+      <ul className="gh-list">
         {releases.map((release) => (
-          <li
-            key={release.tagName}
-            className="flex items-center gap-3 py-2 border-b border-rule last:border-b-0"
-          >
+          <li key={release.tagName} className="gh-row">
             <a
               href={releaseUrl(repo, release.tagName)}
               target="_blank"
               rel="noreferrer"
-              className="font-mono text-[13px] text-ink hover:text-accent transition-colors shrink-0"
+              className="gh-row-tag"
             >
               {release.tagName}
             </a>
-            <span className="flex-1 min-w-0 truncate font-mono text-[12px] text-ink-faint">
+            <span className="gh-row-title gh-row-title-quiet">
               {release.name ?? ''}
             </span>
-            <span className="hidden sm:block font-mono text-[11px] lowercase text-ink-faint shrink-0">
+            <span className="gh-row-meta">
               {timeAgoIso(release.publishedAt ?? release.createdAt)}
             </span>
             {release.isLatest ? <Badge variant="accent">latest</Badge> : null}

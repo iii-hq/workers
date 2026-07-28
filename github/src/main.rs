@@ -40,7 +40,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     tracing::info!(url = %cli.url, seed_config = %cli.config, "connecting to III engine");
 
-    let iii = register_worker(
+    // Arc-wrapped for `ui::register` (the console-ui crate clones the client
+    // into its hot-reload watcher task); everything else auto-derefs.
+    let iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {
             metadata: Some(WorkerMetadata {
@@ -55,7 +57,7 @@ async fn main() -> Result<()> {
             }),
             ..InitOptions::default()
         },
-    );
+    ));
 
     // Seed from config.yaml when present; a missing file means defaults.
     let seed = match Config::load(&cli.config) {
@@ -89,6 +91,11 @@ async fn main() -> Result<()> {
     configuration::reconcile(&iii, &cell).await;
 
     register_all(&iii, &cell);
+
+    // Injectable console UI — after the github::* functions so the console can
+    // attribute the assets.
+    github::ui::register(&iii);
+
     tracing::info!("github worker ready: 30 typed functions + github::exec + github::api");
 
     wait_for_shutdown_signal().await?;

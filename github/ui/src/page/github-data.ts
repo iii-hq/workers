@@ -1,18 +1,21 @@
-import { z } from 'zod'
-import { getIiiClient } from '@/lib/iii-client'
-
 /**
- * Typed wrappers over the optional `github` worker (the gh CLI as
- * `github::*` functions): the read-only list/search surface the Github page
- * renders. Every wrapper unwraps the worker's `{ value }` envelope and
- * parses rows with a tolerant zod schema (unknown fields ignored, invalid
- * rows dropped). Callers gate on presence (`use-github-status`).
+ * Read-only RPC surface for the injected github page: typed wrappers over the
+ * optional `github` worker (the gh CLI as `github::*` functions) — the
+ * list/search surface the page renders. Every wrapper unwraps the worker's
+ * `{ value }` envelope and parses rows with a tolerant zod schema (unknown
+ * fields ignored, invalid rows dropped).
+ *
+ * Ported from the console's `lib/github.ts`: the function ids, payload shapes,
+ * and zod parsing are verbatim; only the transport changed — every call now
+ * takes the tab's `host` and routes through `host.iii.trigger(...)` instead of
+ * a console-internal iii client.
  *
  * Mutating `github::*` functions are deliberately NOT wrapped here — writes
  * stay in agent flows where the approval gate reviews them.
  */
 
-export const GITHUB_WORKER_NAME = 'github'
+import type { Host } from '@iii-dev/console-ui'
+import { z } from 'zod'
 
 export const GITHUB_PR_LIST_FN = 'github::pr::list'
 export const GITHUB_PR_CHECKS_FN = 'github::pr::checks'
@@ -163,7 +166,7 @@ const searchCodeSchema = z.object({
 })
 export type GithubSearchCode = z.infer<typeof searchCodeSchema>
 
-// ---- parsing (exported for tests; wrappers below are thin) ----
+// ---- parsing ----
 
 const valueEnvelopeSchema = z.object({ value: z.unknown() })
 
@@ -181,19 +184,19 @@ function parseArray<T>(value: unknown, schema: z.ZodType<T>): T[] {
   })
 }
 
-export function parsePrs(value: unknown): GithubPr[] {
+function parsePrs(value: unknown): GithubPr[] {
   return parseArray(value, prSchema)
 }
-export function parsePrChecks(value: unknown): GithubPrCheck[] {
+function parsePrChecks(value: unknown): GithubPrCheck[] {
   return parseArray(value, prCheckSchema)
 }
-export function parseIssues(value: unknown): GithubIssue[] {
+function parseIssues(value: unknown): GithubIssue[] {
   return parseArray(value, issueSchema)
 }
-export function parseRuns(value: unknown): GithubRun[] {
+function parseRuns(value: unknown): GithubRun[] {
   return parseArray(value, runSchema)
 }
-export function parseReleases(value: unknown): GithubRelease[] {
+function parseReleases(value: unknown): GithubRelease[] {
   return parseArray(value, releaseSchema)
 }
 
@@ -203,10 +206,7 @@ export type GithubSearchItems =
   | { kind: 'prs'; items: GithubSearchIssue[] }
   | { kind: 'code'; items: GithubSearchCode[] }
 
-export function parseSearchItems(
-  kind: SearchKind,
-  value: unknown,
-): GithubSearchItems {
+function parseSearchItems(kind: SearchKind, value: unknown): GithubSearchItems {
   switch (kind) {
     case 'repos':
       return { kind, items: parseArray(value, searchRepoSchema) }
@@ -224,38 +224,21 @@ export function parseSearchItems(
 const LIST_LIMIT = 30
 
 async function triggerValue(
+  host: Host,
   fnId: string,
   payload: Record<string, unknown>,
 ): Promise<unknown> {
-  const client = await getIiiClient()
-  const res = await client.trigger<unknown>(fnId, payload)
+  const res = await host.iii.trigger<unknown>(fnId, payload)
   return unwrapValue(res)
 }
 
 export async function listPrs(
+  host: Host,
   repo: string,
   state: PrStateFilter,
 ): Promise<GithubPr[]> {
   return parsePrs(
-    await triggerValue(GITHUB_PR_LIST_FN, { repo, state, limit: LIST_LIMIT }),
-  )
-}
-
-export async function listPrChecks(
-  repo: string,
-  number: number,
-): Promise<GithubPrCheck[]> {
-  return parsePrChecks(
-    await triggerValue(GITHUB_PR_CHECKS_FN, { repo, number }),
-  )
-}
-
-export async function listIssues(
-  repo: string,
-  state: IssueStateFilter,
-): Promise<GithubIssue[]> {
-  return parseIssues(
-    await triggerValue(GITHUB_ISSUE_LIST_FN, {
+    await triggerValue(host, GITHUB_PR_LIST_FN, {
       repo,
       state,
       limit: LIST_LIMIT,
@@ -263,25 +246,59 @@ export async function listIssues(
   )
 }
 
-export async function listRuns(repo: string): Promise<GithubRun[]> {
-  return parseRuns(
-    await triggerValue(GITHUB_RUN_LIST_FN, { repo, limit: LIST_LIMIT }),
+export async function listPrChecks(
+  host: Host,
+  repo: string,
+  number: number,
+): Promise<GithubPrCheck[]> {
+  return parsePrChecks(
+    await triggerValue(host, GITHUB_PR_CHECKS_FN, { repo, number }),
   )
 }
 
-export async function listReleases(repo: string): Promise<GithubRelease[]> {
+export async function listIssues(
+  host: Host,
+  repo: string,
+  state: IssueStateFilter,
+): Promise<GithubIssue[]> {
+  return parseIssues(
+    await triggerValue(host, GITHUB_ISSUE_LIST_FN, {
+      repo,
+      state,
+      limit: LIST_LIMIT,
+    }),
+  )
+}
+
+export async function listRuns(host: Host, repo: string): Promise<GithubRun[]> {
+  return parseRuns(
+    await triggerValue(host, GITHUB_RUN_LIST_FN, { repo, limit: LIST_LIMIT }),
+  )
+}
+
+export async function listReleases(
+  host: Host,
+  repo: string,
+): Promise<GithubRelease[]> {
   return parseReleases(
-    await triggerValue(GITHUB_RELEASE_LIST_FN, { repo, limit: LIST_LIMIT }),
+    await triggerValue(host, GITHUB_RELEASE_LIST_FN, {
+      repo,
+      limit: LIST_LIMIT,
+    }),
   )
 }
 
 export async function searchGithub(
+  host: Host,
   kind: SearchKind,
   query: string,
 ): Promise<GithubSearchItems> {
   return parseSearchItems(
     kind,
-    await triggerValue(GITHUB_SEARCH_FNS[kind], { query, limit: LIST_LIMIT }),
+    await triggerValue(host, GITHUB_SEARCH_FNS[kind], {
+      query,
+      limit: LIST_LIMIT,
+    }),
   )
 }
 

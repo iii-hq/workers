@@ -1,9 +1,11 @@
-import { Workflow } from 'lucide-react'
+import { Badge, type Host } from '@iii-dev/console-ui'
 import { useCallback } from 'react'
-import { Badge } from '@/components/ui/Badge'
-import { type GithubRun, listRuns, timeAgoIso } from '@/lib/github'
-import { useGithubQuery } from '../hooks/useGithubQuery'
+import { type GithubRun, listRuns, timeAgoIso } from './github-data'
+import { type IconProps, Workflow } from './icons'
 import { PanelShell } from './PanelShell'
+import { useGithubRead } from './useGithubRead'
+
+const RunIcon = (p: IconProps) => <Workflow size={28} {...p} />
 
 type BadgeVariant = 'default' | 'warn' | 'alert' | 'accent'
 
@@ -25,14 +27,15 @@ function runBadge(run: GithubRun): { label: string; variant: BadgeVariant } {
 }
 
 interface RunsPanelProps {
+  host: Host
   repo: string
   enabled: boolean
 }
 
 /** GitHub Actions runs, newest first (worker default order from gh). */
-export function RunsPanel({ repo, enabled }: RunsPanelProps) {
-  const fetcher = useCallback(() => listRuns(repo), [repo])
-  const { data, loading, error } = useGithubQuery(enabled, fetcher)
+export function RunsPanel({ host, repo, enabled }: RunsPanelProps) {
+  const fetcher = useCallback(() => listRuns(host, repo), [host, repo])
+  const { data, loading, error } = useGithubRead(enabled, fetcher)
   const runs = data ?? []
 
   return (
@@ -40,11 +43,11 @@ export function RunsPanel({ repo, enabled }: RunsPanelProps) {
       loading={loading}
       error={error}
       empty={runs.length === 0}
-      emptyIcon={Workflow}
+      emptyIcon={RunIcon}
       emptyTitle="no workflow runs"
       emptyDescription={`no recent actions runs in ${repo}`}
     >
-      <ul className="flex flex-col">
+      <ul className="gh-list">
         {runs.map((run) => {
           const badge = runBadge(run)
           const meta = [
@@ -54,28 +57,22 @@ export function RunsPanel({ repo, enabled }: RunsPanelProps) {
           ]
             .filter(Boolean)
             .join(' · ')
+          const title = run.displayTitle ?? run.name ?? String(run.databaseId)
           return (
-            <li
-              key={run.databaseId}
-              className="flex items-center gap-3 py-2 border-b border-rule last:border-b-0"
-            >
+            <li key={run.databaseId} className="gh-row">
               {run.url ? (
                 <a
                   href={run.url}
                   target="_blank"
                   rel="noreferrer"
-                  className="flex-1 min-w-0 truncate font-mono text-[13px] text-ink hover:text-accent transition-colors"
+                  className="gh-row-title"
                 >
-                  {run.displayTitle ?? run.name ?? String(run.databaseId)}
+                  {title}
                 </a>
               ) : (
-                <span className="flex-1 min-w-0 truncate font-mono text-[13px] text-ink">
-                  {run.displayTitle ?? run.name ?? String(run.databaseId)}
-                </span>
+                <span className="gh-row-title">{title}</span>
               )}
-              <span className="hidden sm:block font-mono text-[11px] lowercase text-ink-faint truncate max-w-72 shrink-0">
-                {meta}
-              </span>
+              <span className="gh-row-meta gh-trunc-72">{meta}</span>
               <Badge variant={badge.variant}>{badge.label}</Badge>
             </li>
           )

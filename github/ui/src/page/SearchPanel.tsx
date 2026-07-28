@@ -1,16 +1,15 @@
-import { Search } from 'lucide-react'
+import { Badge, type Host, Input } from '@iii-dev/console-ui'
 import { useCallback, useState } from 'react'
-import { Badge } from '@/components/ui/Badge'
-import { Input } from '@/components/ui/Input'
-import { ModeToggle } from '@/components/ui/ModeToggle'
 import {
   type GithubSearchItems,
   type SearchKind,
   searchGithub,
   timeAgoIso,
-} from '@/lib/github'
-import { useGithubQuery } from '../hooks/useGithubQuery'
+} from './github-data'
+import { type IconProps, Search } from './icons'
+import { ModeToggle } from './ModeToggle'
 import { PanelShell } from './PanelShell'
+import { useGithubRead } from './useGithubRead'
 
 const KIND_OPTIONS: { value: SearchKind; label: string }[] = [
   { value: 'repos', label: 'repos' },
@@ -19,7 +18,10 @@ const KIND_OPTIONS: { value: SearchKind; label: string }[] = [
   { value: 'code', label: 'code' },
 ]
 
+const SearchIcon = (p: IconProps) => <Search size={28} {...p} />
+
 interface SearchPanelProps {
+  host: Host
   enabled: boolean
 }
 
@@ -27,18 +29,21 @@ interface SearchPanelProps {
  * Org-wide GitHub search. Repo scoping happens inside the query itself
  * (`repo:owner/name ...`), so this panel ignores the page's repo field.
  */
-export function SearchPanel({ enabled }: SearchPanelProps) {
+export function SearchPanel({ host, enabled }: SearchPanelProps) {
   const [kind, setKind] = useState<SearchKind>('repos')
   const [queryInput, setQueryInput] = useState('')
   const [query, setQuery] = useState('')
 
-  const fetcher = useCallback(() => searchGithub(kind, query), [kind, query])
+  const fetcher = useCallback(
+    () => searchGithub(host, kind, query),
+    [host, kind, query],
+  )
   const active = enabled && query !== ''
-  const { data, loading, error } = useGithubQuery(active, fetcher)
+  const { data, loading, error } = useGithubRead(active, fetcher)
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-3">
+    <div className="gh-panel">
+      <div className="gh-search-bar">
         <Input
           value={queryInput}
           onChange={setQueryInput}
@@ -48,16 +53,17 @@ export function SearchPanel({ enabled }: SearchPanelProps) {
           placeholder='search query, e.g. "repo:iii-hq/workers is:open"'
           preserveCase
           aria-label="search query"
-          className="w-80 max-w-full"
+          className="gh-search-input"
         />
         <ModeToggle<SearchKind>
           value={kind}
           onChange={setKind}
           options={KIND_OPTIONS}
+          aria-label="search kind"
         />
       </div>
       {query === '' ? (
-        <p className="font-mono text-[12px] lowercase text-ink-faint">
+        <p className="gh-msg">
           type a query and press enter — github search syntax, qualifiers
           included
         </p>
@@ -66,7 +72,7 @@ export function SearchPanel({ enabled }: SearchPanelProps) {
           loading={loading}
           error={error}
           empty={isEmpty(data)}
-          emptyIcon={Search}
+          emptyIcon={SearchIcon}
           emptyTitle="no results"
           emptyDescription={`nothing matched "${query}" in ${kind}`}
         >
@@ -84,24 +90,21 @@ function isEmpty(results: GithubSearchItems | null): boolean {
 function SearchResults({ results }: { results: GithubSearchItems }) {
   if (results.kind === 'repos') {
     return (
-      <ul className="flex flex-col">
+      <ul className="gh-list">
         {results.items.map((repo) => (
-          <li
-            key={repo.fullName}
-            className="flex items-center gap-3 py-2 border-b border-rule last:border-b-0"
-          >
+          <li key={repo.fullName} className="gh-row">
             <a
               href={repo.url}
               target="_blank"
               rel="noreferrer"
-              className="font-mono text-[13px] text-ink hover:text-accent transition-colors shrink-0"
+              className="gh-row-tag"
             >
               {repo.fullName}
             </a>
-            <span className="flex-1 min-w-0 truncate font-mono text-[12px] text-ink-faint">
+            <span className="gh-row-title gh-row-title-quiet">
               {repo.description ?? ''}
             </span>
-            <span className="hidden sm:block font-mono text-[11px] lowercase text-ink-faint shrink-0">
+            <span className="gh-row-meta">
               {[
                 repo.language ?? undefined,
                 repo.stargazersCount != null
@@ -119,27 +122,25 @@ function SearchResults({ results }: { results: GithubSearchItems }) {
   }
   if (results.kind === 'code') {
     return (
-      <ul className="flex flex-col">
+      <ul className="gh-list">
         {results.items.map((hit) => (
           <li
             key={`${hit.repository?.nameWithOwner ?? ''}/${hit.path}`}
-            className="flex items-center gap-3 py-2 border-b border-rule last:border-b-0"
+            className="gh-row"
           >
             {hit.url ? (
               <a
                 href={hit.url}
                 target="_blank"
                 rel="noreferrer"
-                className="flex-1 min-w-0 truncate font-mono text-[12px] text-ink hover:text-accent transition-colors"
+                className="gh-row-title"
               >
                 {hit.path}
               </a>
             ) : (
-              <span className="flex-1 min-w-0 truncate font-mono text-[12px] text-ink">
-                {hit.path}
-              </span>
+              <span className="gh-row-title">{hit.path}</span>
             )}
-            <span className="hidden sm:block font-mono text-[11px] lowercase text-ink-faint truncate max-w-64 shrink-0">
+            <span className="gh-row-meta gh-trunc-64">
               {hit.repository?.nameWithOwner ?? ''}
             </span>
           </li>
@@ -148,24 +149,22 @@ function SearchResults({ results }: { results: GithubSearchItems }) {
     )
   }
   return (
-    <ul className="flex flex-col">
+    <ul className="gh-list">
       {results.items.map((item) => (
         <li
           key={`${item.repository?.nameWithOwner ?? ''}#${item.number}`}
-          className="flex items-center gap-3 py-2 border-b border-rule last:border-b-0"
+          className="gh-row"
         >
-          <span className="font-mono text-[11px] text-ink-faint shrink-0">
-            #{item.number}
-          </span>
+          <span className="gh-num">#{item.number}</span>
           <a
             href={item.url}
             target="_blank"
             rel="noreferrer"
-            className="flex-1 min-w-0 truncate font-mono text-[13px] text-ink hover:text-accent transition-colors"
+            className="gh-row-title"
           >
             {item.title}
           </a>
-          <span className="hidden sm:block font-mono text-[11px] lowercase text-ink-faint truncate max-w-64 shrink-0">
+          <span className="gh-row-meta gh-trunc-64">
             {[
               item.repository?.nameWithOwner ?? undefined,
               item.author?.login ?? undefined,

@@ -1,0 +1,280 @@
+/*
+ * Styles for the github worker's injected console UI. Shipped as its own
+ * `console:style` asset (github/styles.css) — the console mounts it as a
+ * <link> and link-swaps it on change.
+ *
+ * EVERY rule is scoped under [data-iii-ui="github"] — the wrapper the console
+ * mounts around every injected render. Unscoped rules would beat the console's
+ * layered CSS document-wide (injected sheets are unlayered). Keyframe names are
+ * global: keep the gh-ui- prefix. Colors come from the console's design tokens
+ * so light/dark theming is free.
+ */
+
+[data-iii-ui="github"] .gh-page {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink);
+  padding: 20px 24px;
+  box-sizing: border-box;
+}
+[data-iii-ui="github"] .gh-page *,
+[data-iii-ui="github"] .gh-page *::before,
+[data-iii-ui="github"] .gh-page *::after {
+  box-sizing: border-box;
+}
+
+/* --- header ---------------------------------------------------------- */
+[data-iii-ui="github"] .gh-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="github"] .gh-title {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-transform: lowercase;
+  color: var(--color-ink);
+}
+[data-iii-ui="github"] .gh-sub {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  margin-top: 2px;
+  text-transform: lowercase;
+  word-break: break-all;
+}
+
+/* --- controls row ---------------------------------------------------- */
+[data-iii-ui="github"] .gh-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="github"] .gh-repo-input {
+  width: 16rem;
+  max-width: 100%;
+}
+[data-iii-ui="github"] .gh-search-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+[data-iii-ui="github"] .gh-search-input {
+  width: 20rem;
+  max-width: 100%;
+}
+
+/* --- mode toggle (segmented control) --------------------------------- */
+[data-iii-ui="github"] .gh-modes {
+  display: inline-flex;
+  border: 1px solid var(--color-rule);
+  padding: 2px;
+}
+[data-iii-ui="github"] .gh-mode {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--color-ink-faint);
+  font: inherit;
+  font-size: 13px;
+  text-transform: lowercase;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+[data-iii-ui="github"] .gh-mode:hover {
+  color: var(--color-ink);
+}
+[data-iii-ui="github"] .gh-mode.active {
+  background: var(--color-ink);
+  color: var(--color-bg);
+}
+
+/* --- body / panels --------------------------------------------------- */
+[data-iii-ui="github"] .gh-body {
+  padding-top: 16px;
+}
+[data-iii-ui="github"] .gh-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+[data-iii-ui="github"] .gh-msg {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  text-transform: lowercase;
+}
+[data-iii-ui="github"] .gh-pulse {
+  color: var(--color-ink-ghost);
+  animation: gh-ui-pulse 1.6s ease-in-out infinite;
+}
+@keyframes gh-ui-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* --- list rows ------------------------------------------------------- */
+[data-iii-ui="github"] .gh-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="github"] .gh-row-outer {
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="github"] .gh-row-outer:last-child {
+  border-bottom: 0;
+}
+[data-iii-ui="github"] .gh-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+[data-iii-ui="github"] .gh-list > .gh-row {
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="github"] .gh-list > .gh-row:last-child {
+  border-bottom: 0;
+}
+
+[data-iii-ui="github"] .gh-num {
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  width: 3.5rem;
+  flex-shrink: 0;
+}
+[data-iii-ui="github"] .gh-num-btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="github"] .gh-num-btn:hover {
+  color: var(--color-ink);
+}
+
+[data-iii-ui="github"] .gh-row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--color-ink);
+  text-decoration: none;
+  transition: color 0.12s;
+}
+[data-iii-ui="github"] a.gh-row-title:hover {
+  color: var(--color-accent);
+}
+[data-iii-ui="github"] .gh-row-title-quiet {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="github"] .gh-row-tag {
+  font-size: 13px;
+  color: var(--color-ink);
+  text-decoration: none;
+  flex-shrink: 0;
+  transition: color 0.12s;
+}
+[data-iii-ui="github"] a.gh-row-tag:hover {
+  color: var(--color-accent);
+}
+
+[data-iii-ui="github"] .gh-row-meta {
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  text-transform: lowercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+[data-iii-ui="github"] .gh-row-meta-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui="github"] .gh-labels {
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="github"] .gh-trunc-44 {
+  max-width: 11rem;
+}
+[data-iii-ui="github"] .gh-trunc-64 {
+  max-width: 16rem;
+}
+[data-iii-ui="github"] .gh-trunc-72 {
+  max-width: 18rem;
+}
+
+/* --- pr checks rollup ------------------------------------------------ */
+[data-iii-ui="github"] .gh-checks {
+  padding: 0 0 8px 3.5rem;
+}
+[data-iii-ui="github"] .gh-checks-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="github"] .gh-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui="github"] .gh-check-label {
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="github"] a.gh-check-label.link:hover {
+  color: var(--color-accent);
+}
+[data-iii-ui="github"] .gh-checks-msg {
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  text-transform: lowercase;
+}
+[data-iii-ui="github"] .gh-checks-msg.alert {
+  color: var(--color-alert);
+  text-transform: none;
+}
+[data-iii-ui="github"] .gh-checks-msg.ghost {
+  color: var(--color-ink-ghost);
+}
+
+@media (max-width: 720px) {
+  [data-iii-ui="github"] .gh-row-meta {
+    display: none;
+  }
+}

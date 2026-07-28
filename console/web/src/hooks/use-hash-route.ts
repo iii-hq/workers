@@ -15,7 +15,6 @@ export type View =
   | 'worktrees'
   | 'browser'
   | 'memory'
-  | 'github'
   | 'ext'
 
 export interface WorkersConfigurationRoute {
@@ -102,9 +101,6 @@ function routeFromHash(hash: string): View | null {
   if (hash === '#/memory') {
     return 'memory'
   }
-  if (hash === '#/github') {
-    return 'github'
-  }
   if (hash === '#/browser' || hash.startsWith('#/browser/')) {
     return 'browser'
   }
@@ -141,8 +137,6 @@ function hashFor(view: View): string {
       return '#/browser'
     case 'memory':
       return '#/memory'
-    case 'github':
-      return '#/github'
     case 'configuration':
       return '#/configuration'
     // `ext` needs a page id; navigation to a specific extension page goes

@@ -10,7 +10,6 @@ export function buildViewOptions(
   worktreeAvailable: boolean,
   browserAvailable: boolean,
   memoryAvailable: boolean,
-  githubAvailable: boolean,
 ): { value: View; label: string }[] {
   const options: { value: View; label: string }[] = [
     { value: 'traces', label: 'traces' },
@@ -24,9 +23,6 @@ export function buildViewOptions(
   }
   if (memoryAvailable) {
     options.push({ value: 'memory', label: 'memory' })
-  }
-  if (githubAvailable) {
-    options.push({ value: 'github', label: 'github' })
   }
   return options
 }
