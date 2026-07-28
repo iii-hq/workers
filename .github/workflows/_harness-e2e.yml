@@ -46,6 +46,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # state/build.rs builds its embedded UI when the checked-out assets are
+      # stale, so the isolated E2E build needs the same Node/pnpm toolchain as
+      # the regular CI worker builds.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
       - name: Validate subject matrix
         env:
           SUBJECTS: ${{ inputs.subjects }}
