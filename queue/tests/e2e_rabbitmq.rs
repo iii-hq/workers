@@ -202,24 +202,9 @@ async fn basic_delivery_connect_or_skip() {
 /// Exercised through the function-queue trait methods
 /// (`setup_function_queue`/`publish_to_function_queue`/
 /// `consume_function_queue`/`ack_function_queue`/`nack_function_queue`)
-/// rather than through `subscribe`'s topic-fanout path. Discovered while
-/// writing this test: `RabbitMQAdapter::resolve_dlq_name` (and therefore
-/// `dlq_count`/`redrive_dlq`/`redrive_dlq_message`/`discard_dlq_message`)
-/// resolves a bare (non-`__fn_queue::`) topic to `RabbitNames::dlq()`
-/// (`iii.{topic}.dlq`) -- a queue name that `subscribe`'s
-/// `setup_subscriber_queue` never actually declares (it declares
-/// `RabbitNames::function_dlq(function_id)`, i.e.
-/// `iii.{topic}.{function_id}.dlq`, a *different* name). That mismatch is
-/// inherited verbatim from the engine
-/// (`engine/src/workers/queue/adapters/rabbitmq/adapter.rs`) -- the engine's
-/// own `rabbitmq_queue_integration.rs` test suite never calls
-/// `dlq_count`/`redrive_dlq` against a bare subscribed topic either (only
-/// against `__fn_queue::`-prefixed function-queue names, which resolve
-/// correctly). A passive `queue_declare` against a queue that doesn't exist
-/// is a channel-level AMQP error, which would poison this adapter's shared
-/// channel for every other operation -- so this test deliberately exercises
-/// the function-queue path, which resolves correctly end-to-end, instead of
-/// tripping that pre-existing engine gap.
+/// rather than through `subscribe`'s topic-fanout path. DLQ operations use
+/// the same bare function-queue name returned by `list_topics`; the adapter
+/// must resolve it to the internal `__fn_queue::` RabbitMQ topology.
 #[tokio::test]
 #[serial]
 async fn function_queue_retry_then_dlq_then_redrive_connect_or_skip() {
@@ -234,7 +219,6 @@ async fn function_queue_retry_then_dlq_then_redrive_connect_or_skip() {
             .expect("rabbitmq adapter should connect");
 
     let queue_name = format!("e2e-rmq-fnq-{}", Uuid::new_v4());
-    let dlq_topic = format!("__fn_queue::{queue_name}");
 
     adapter
         .setup_function_queue(
@@ -292,20 +276,24 @@ async fn function_queue_retry_then_dlq_then_redrive_connect_or_skip() {
     wait_until(
         || {
             let adapter = &adapter;
-            let dlq_topic = dlq_topic.clone();
-            async move { adapter.dlq_count(&dlq_topic).await.unwrap_or(0) >= 1 }
+            let queue_name = queue_name.clone();
+            async move { adapter.dlq_count(&queue_name).await.unwrap_or(0) >= 1 }
         },
         Duration::from_secs(5),
     )
     .await;
-    assert_eq!(adapter.dlq_count(&dlq_topic).await.unwrap(), 1);
+    assert_eq!(adapter.dlq_count(&queue_name).await.unwrap(), 1);
+
+    let messages = adapter.dlq_messages(&queue_name, 10).await.unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["payload"], json!({"n": 1}));
 
     let redriven = adapter
-        .redrive_dlq(&dlq_topic)
+        .redrive_dlq(&queue_name)
         .await
         .expect("redrive_dlq should succeed");
     assert_eq!(redriven, 1);
-    assert_eq!(adapter.dlq_count(&dlq_topic).await.unwrap(), 0);
+    assert_eq!(adapter.dlq_count(&queue_name).await.unwrap(), 0);
 
     let msg3 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
         .await
@@ -317,6 +305,41 @@ async fn function_queue_retry_then_dlq_then_redrive_connect_or_skip() {
         .await
         .expect("ack should succeed");
 
+    adapter.shutdown().await;
+}
+
+/// A missing passive declaration is an AMQP channel-level error. DLQ
+/// inspection must isolate that failure from the channel used by consumers.
+#[tokio::test]
+#[serial]
+async fn missing_dlq_inspection_does_not_close_consumer_channel_connect_or_skip() {
+    let Some(container) = docker::start_rabbitmq().await else {
+        return; // skip: docker not reachable
+    };
+
+    let invoker: Arc<dyn Invoker> = Arc::new(NoopInvoker);
+    let adapter =
+        RabbitMQAdapter::from_config(Some(&json!({"amqp_url": container.amqp_url()})), invoker)
+            .await
+            .expect("rabbitmq adapter should connect");
+
+    let missing_topic = format!("e2e-rmq-missing-{}", Uuid::new_v4());
+    assert!(
+        adapter.dlq_count(&missing_topic).await.is_err(),
+        "missing DLQ inspection should report the broker error"
+    );
+
+    let queue_name = format!("e2e-rmq-after-missing-{}", Uuid::new_v4());
+    adapter
+        .setup_function_queue(&queue_name, &FunctionQueueConfig::default())
+        .await
+        .expect("function queue topology should still be configurable");
+    let receiver = adapter
+        .consume_function_queue(&queue_name, 1)
+        .await
+        .expect("consumer channel should remain open after failed DLQ inspection");
+
+    drop(receiver);
     adapter.shutdown().await;
 }
 
