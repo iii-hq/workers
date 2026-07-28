@@ -3,13 +3,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 // `chat` is no longer a routed view; it's always-rendered as the side dock
 // in App.tsx. Hash routes only pick which view fills the right pane. The
 // component spec sheet + streaming playground moved to Storybook, so the
-// first-party routed views are `traces`, `workers`, `github`, and
-// `configuration`. `ext` is the injectable-UI prefix: worker-contributed pages
+// first-party routed views are `traces`, `workers`, and `configuration`.
+// `ext` is the injectable-UI prefix: worker-contributed pages
 // route at `#/ext/<page-id>` — deliberately outside the first-party names so an
 // injected page can never collide with or shadow `#/traces`, `#/workers`, ….
-// Pages that migrated to injected UI (worktrees, memory, browser) keep their old
-// first-party hash working via a redirect to `#/ext/<id>` — see MIGRATED_ROUTES.
-export type View = 'configuration' | 'traces' | 'workers' | 'github' | 'ext'
+// Pages that migrated to injected UI (worktrees, memory, browser, github) keep
+// their old first-party hash working via a redirect to `#/ext/<id>` — see
+// MIGRATED_ROUTES.
+export type View = 'configuration' | 'traces' | 'workers' | 'ext'
 
 export interface WorkersConfigurationRoute {
   configurationId: string | null
@@ -77,7 +78,7 @@ export function normalizeWorkersConfigurationHash(hash: string): string | null {
 }
 
 function routeFromHash(rawHash: string): View | null {
-  // Migrated pages (worktrees, memory, browser) resolve via `#/ext/<id>`.
+  // Migrated pages (worktrees, memory, browser, github) resolve via `#/ext/<id>`.
   const hash = normalizeExtHash(rawHash)
   if (hash === '' || hash === '#' || hash === '#/' || hash === '#/traces') {
     return 'traces'
@@ -90,9 +91,6 @@ function routeFromHash(rawHash: string): View | null {
   if (hash === '#/traces-v2') return 'traces'
   if (hash === '#/workers' || hash.startsWith('#/workers/')) {
     return 'workers'
-  }
-  if (hash === '#/github') {
-    return 'github'
   }
   if (hash.startsWith('#/ext/')) {
     return 'ext'
@@ -121,8 +119,6 @@ function hashFor(view: View): string {
       return '#/traces'
     case 'workers':
       return '#/workers'
-    case 'github':
-      return '#/github'
     case 'configuration':
       return '#/configuration'
     // `ext` needs a page id; navigation to a specific extension page goes
@@ -142,8 +138,9 @@ export function useHashRoute(): [View, (next: View) => void] {
   viewRef.current = view
 
   useEffect(() => {
-    // Rewrite a legacy migrated hash (`#/worktrees`, `#/memory`, `#/browser`)
-    // to its `#/ext/<id>` form so the URL bar matches the resolved page. The view
+    // Rewrite a legacy migrated hash (`#/worktrees`, `#/memory`, `#/browser`,
+    // `#/github`) to its `#/ext/<id>` form so the URL bar matches the resolved
+    // page. The view
     // state already used the normalized hash, so this is cosmetic.
     const normalized = normalizeExtHash(window.location.hash)
     if (normalized !== window.location.hash) replaceHash(normalized)
@@ -201,6 +198,7 @@ const MIGRATED_ROUTES: Record<string, string> = {
   '#/worktrees': 'worktree',
   '#/memory': 'memory',
   '#/browser': 'browser',
+  '#/github': 'github',
 }
 
 /**

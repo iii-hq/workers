@@ -13,7 +13,6 @@ import {
   type ConversationsApi,
   useConversations,
 } from '@/hooks/use-conversations'
-import { isGithubAvailable, useGithubStatus } from '@/hooks/use-github-status'
 import {
   type HarnessStatus,
   isHarnessAvailable,
@@ -83,12 +82,6 @@ interface ConversationsContextValue extends ConversationsApi {
    * backend.
    */
   memoryAvailable: boolean
-  /**
-   * Whether the optional `github` worker is connected — gates the Github
-   * page nav entry and its `github::*` RPC. Only meaningful on the real
-   * backend.
-   */
-  githubAvailable: boolean
 }
 
 const ConversationsContext = createContext<ConversationsContextValue | null>(
@@ -119,9 +112,6 @@ export function ConversationsProvider({
   )
   const memoryAvailable = isMemoryAvailable(
     useMemoryStatus(backend.id === 'real'),
-  )
-  const githubAvailable = isGithubAvailable(
-    useGithubStatus(backend.id === 'real'),
   )
   const {
     modelOptions,
@@ -171,7 +161,6 @@ export function ConversationsProvider({
     shellAvailable,
     worktreeAvailable,
     memoryAvailable,
-    githubAvailable,
   }
 
   return (

@@ -18,6 +18,7 @@ path = "src/lib.rs"
 
 [dependencies]
 iii-sdk = "=0.21.6"
+iii-console-ui = { path = "../crates/console-ui" }
 # Must stay on the same schemars major as iii-sdk so the derived schemas line up.
 schemars = "0.8"
 tokio = { version = "1", features = [
@@ -33,6 +34,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 anyhow = "1"
+async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
