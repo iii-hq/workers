@@ -55,20 +55,6 @@ jobs:
           echo "ts=$message_ts" >>"$GITHUB_OUTPUT"
           echo "channel_id=$channel_id" >>"$GITHUB_OUTPUT"
 
-          # File sharing requires bot membership even when chat:write.public
-          # allows the root message. Join the public channel when permitted.
-          join_payload=$(jq -n --arg channel "$channel_id" '{channel: $channel}')
-          if ! join_response=$(curl -sS --retry 3 --retry-all-errors \
-            -X POST https://slack.com/api/conversations.join \
-            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            -d "$join_payload"); then
-            echo "::warning::Slack conversations.join request failed"
-          elif ! jq -e '.ok == true' <<<"$join_response" >/dev/null 2>&1; then
-            error=$(jq -r '.error // "invalid_response"' <<<"$join_response" 2>/dev/null || printf 'invalid_response')
-            echo "::warning::Slack conversations.join failed: $error (invite the bot or grant channels:join)"
-          fi
-
       - uses: actions/checkout@v5
 
       - name: Install VHS for terminal recording
