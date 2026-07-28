@@ -75,6 +75,9 @@ on:
         options:
           - latest
           - next
+          - rc
+          - beta
+          - alpha
         default: latest
 
 permissions:

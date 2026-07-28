@@ -35,14 +35,14 @@ Actions → **Create Tag**:
 |---|---|
 | Worker | Folder name (must be in workflow options) |
 | Bump | `patch` / `minor` / `major` |
-| Registry tag | `latest` or `next` — channel for `iii worker add` resolution |
+| Registry tag | `latest`, `next`, `rc`, `beta` or `alpha` — see [Registry tag semantics](#4-registry-tag-semantics) |
 
 The workflow:
 
 1. Bumps version in the worker manifest (`Cargo.toml`, `package.json`, …).
 2. Commits `chore(<worker>): bump to vX.Y.Z` to `main`.
 3. Creates and pushes an **annotated** tag `<worker>/vX.Y.Z` with
-   `registry-tag: <latest|next>` in the tag message.
+   `registry-tag: <latest|next|rc|beta|alpha>` in the tag message.
 
 ### 2. Release pipeline
 
@@ -96,10 +96,24 @@ Workers with `interface_smoke: false` skip the entire publish job.
 |---|---|
 | `latest` | Default; what most `iii worker add` installs resolve |
 | `next` | Pre-release / risky channel; safer for first publish |
+| `rc` | Release candidate; promoted to `latest` once validated |
+| `beta` | Feature-complete but unstable |
+| `alpha` | Earliest, expected to break |
+
+A worker version carries **at most one** channel, and a worker has at most one
+version per channel. Publishing moves the channel: the previous holder loses it
+(`clearTagOnWorker` in the registry), so channels are reassigned on each release.
 
 The channel is stored in the **annotated tag message** (`registry-tag:`).
 `release.yml` refetches the annotated tag for this reason. Lightweight tags
-lose the channel and default to `latest`.
+lose the channel and default to `latest`. `parse_release_tag.py` rejects any
+value outside the table above, so a typo fails the release instead of creating
+a dead channel.
+
+> **Note:** installs resolve `latest` only. The other channels are published
+> and queryable by tag through the registry API, but `iii worker add
+> <worker>@beta` is not supported until the registry resolver accepts channel
+> names as version ranges.
 
 ## Variants
 
@@ -117,8 +131,9 @@ Create Tag cannot produce prerelease suffixes. Push a manual **annotated** tag:
 <worker>/vX.Y.Z-beta.1
 ```
 
-With tag message including `registry-tag: next`. Marks the GitHub Release as
-prerelease; still builds and publishes (unless `interface_smoke: false`).
+With tag message including a prerelease channel (`registry-tag: rc`, `beta`,
+`alpha` or `next`). Marks the GitHub Release as prerelease; still builds and
+publishes (unless `interface_smoke: false`).
 
 ### Dry run
 

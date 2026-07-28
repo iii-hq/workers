@@ -21,6 +21,12 @@ TAG_RE = re.compile(r"^([a-z0-9][a-z0-9_-]*)/v(.+)$")
 DRY_RUN_RE = re.compile(r"-dry-run\.\d+$")
 PRERELEASE_RE = re.compile(r"-[a-z]+\.\d+$")
 
+# The registry stores `registry-tag` verbatim (a free-form string column), so a
+# typo in the annotated tag message would silently create a dead channel that
+# nothing resolves. Keep the accepted set closed here, matching the Create Tag
+# workflow options.
+RELEASE_CHANNELS = ("latest", "next", "rc", "beta", "alpha")
+
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
@@ -56,6 +62,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     registry_tag = _lib.read_tag_annotation(raw).get("registry-tag", "latest") or "latest"
+    if registry_tag not in RELEASE_CHANNELS:
+        print(
+            f"::error::Unknown registry-tag {registry_tag!r} in the annotated tag "
+            f"message; expected one of {', '.join(RELEASE_CHANNELS)}",
+            file=sys.stderr,
+        )
+        return 1
 
     # `targets` is an optional iii.worker.yaml field that can be either a
     # list (`- aarch64-apple-darwin\n- x86_64-unknown-linux-gnu`) or a comma

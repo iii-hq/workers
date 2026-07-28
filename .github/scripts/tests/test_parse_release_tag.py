@@ -82,6 +82,27 @@ class TestParseReleaseTag:
         assert out["dry_run"] == "false"
         assert out["registry_tag"] == "next"
 
+    @pytest.mark.parametrize("channel", ["rc", "beta", "alpha"])
+    def test_prerelease_channels(self, tmp_path, channel):
+        repo = make_repo_with_tagged_worker(
+            tmp_path, "smoke/v1.2.3", "1.2.3",
+            registry_tag_line=f"registry-tag: {channel}")
+        out_path = tmp_path / "gh_output"
+        out_path.touch()
+        r = run_script(repo, "smoke/v1.2.3", out_path)
+        assert r.returncode == 0, r.stderr
+        assert parse_outputs(out_path)["registry_tag"] == channel
+
+    def test_unknown_channel_fails(self, tmp_path):
+        repo = make_repo_with_tagged_worker(
+            tmp_path, "smoke/v1.2.3", "1.2.3",
+            registry_tag_line="registry-tag: latests")
+        out_path = tmp_path / "gh_output"
+        out_path.touch()
+        r = run_script(repo, "smoke/v1.2.3", out_path)
+        assert r.returncode == 1
+        assert "Unknown registry-tag" in r.stderr
+
     def test_dry_run_tag(self, tmp_path):
         repo = make_repo_with_tagged_worker(tmp_path, "smoke/v9.9.9-dry-run.1", "9.9.9-dry-run.1")
         out_path = tmp_path / "gh_output"
