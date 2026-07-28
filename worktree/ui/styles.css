@@ -1,0 +1,394 @@
+/*
+ * Styles for the worktree worker's injected console UI. Shipped as its own
+ * `console:style` asset (worktree/styles.css) — the console mounts it as a
+ * <link> and link-swaps it on change.
+ *
+ * EVERY rule is scoped under [data-iii-ui="worktree"] — the wrapper the
+ * console mounts around every injected render. Unscoped rules would beat the
+ * console's layered CSS document-wide (injected sheets are unlayered).
+ * Keyframe names are global: keep the wt-ui- prefix. Colors come from the
+ * console's design tokens so light/dark theming is free.
+ */
+
+[data-iii-ui="worktree"] .wt-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink);
+}
+[data-iii-ui="worktree"] .wt-page *,
+[data-iii-ui="worktree"] .wt-page *::before,
+[data-iii-ui="worktree"] .wt-page *::after {
+  box-sizing: border-box;
+}
+
+/* --- header ---------------------------------------------------------- */
+[data-iii-ui="worktree"] .wt-head {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="worktree"] .wt-title {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-transform: lowercase;
+  color: var(--color-ink);
+}
+[data-iii-ui="worktree"] .wt-sub {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  margin-top: 2px;
+  text-transform: lowercase;
+}
+[data-iii-ui="worktree"] .wt-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+[data-iii-ui="worktree"] .wt-liveness {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  text-transform: lowercase;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="worktree"] .wt-refresh-icon {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="worktree"] .wt-refresh-icon.spin {
+  animation: wt-ui-spin 1s linear infinite;
+}
+@keyframes wt-ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* --- body split: canvas + detail ------------------------------------- */
+[data-iii-ui="worktree"] .wt-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+[data-iii-ui="worktree"] .wt-canvas {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 16px 24px;
+}
+
+/* --- graph ----------------------------------------------------------- */
+[data-iii-ui="worktree"] .wt-graph {
+  position: relative;
+}
+[data-iii-ui="worktree"] .wt-graph-svg {
+  position: absolute;
+  inset: 0;
+}
+[data-iii-ui="worktree"] .wt-edge {
+  fill: none;
+  stroke: var(--color-rule);
+}
+[data-iii-ui="worktree"] .wt-edge.selected {
+  stroke: var(--color-accent);
+}
+[data-iii-ui="worktree"] .wt-edge-label {
+  fill: var(--color-ink-ghost);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  text-transform: lowercase;
+}
+
+/* --- repo node ------------------------------------------------------- */
+[data-iii-ui="worktree"] .wt-repo {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 12px;
+  border: 1px solid var(--color-rule);
+  background: var(--color-panel);
+}
+[data-iii-ui="worktree"] .wt-repo-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: lowercase;
+  color: var(--color-ink);
+}
+[data-iii-ui="worktree"] .wt-repo-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--color-ink-ghost);
+}
+
+/* --- worktree node --------------------------------------------------- */
+[data-iii-ui="worktree"] .wt-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 12px;
+  text-align: left;
+  border: 1px solid var(--color-rule);
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+[data-iii-ui="worktree"] .wt-node:hover {
+  background: var(--color-panel);
+}
+[data-iii-ui="worktree"] .wt-node.selected {
+  border-left: 2px solid var(--color-accent);
+  background: var(--color-panel);
+}
+[data-iii-ui="worktree"] .wt-node-branch {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+[data-iii-ui="worktree"] .wt-node-id {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="worktree"] .wt-dirty {
+  flex-shrink: 0;
+  color: var(--color-warn);
+}
+[data-iii-ui="worktree"] .wt-ahead {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="worktree"] .wt-node-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  text-transform: lowercase;
+}
+[data-iii-ui="worktree"] .wt-lifecycle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+[data-iii-ui="worktree"] .wt-session {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+  border: 1px solid var(--color-rule-2);
+  color: var(--color-ink-ghost);
+}
+
+/* --- detail panel ---------------------------------------------------- */
+[data-iii-ui="worktree"] .wt-detail {
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--color-rule);
+  background: var(--color-bg);
+}
+[data-iii-ui="worktree"] .wt-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-rule);
+  background: var(--color-panel);
+}
+[data-iii-ui="worktree"] .wt-detail-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: lowercase;
+  color: var(--color-ink);
+}
+[data-iii-ui="worktree"] .wt-detail-close {
+  flex-shrink: 0;
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--color-ink-ghost);
+  transition: color 0.12s;
+}
+[data-iii-ui="worktree"] .wt-detail-close:hover {
+  color: var(--color-ink);
+}
+[data-iii-ui="worktree"] .wt-detail-body > * {
+  border-top: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="worktree"] .wt-detail-body > *:first-child {
+  border-top: 0;
+}
+
+[data-iii-ui="worktree"] .wt-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 14px;
+}
+[data-iii-ui="worktree"] .wt-row-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="worktree"] .wt-row-value {
+  min-width: 0;
+  word-break: break-all;
+  font-size: 12px;
+  color: var(--color-ink);
+}
+[data-iii-ui="worktree"] .wt-inline-tone {
+  margin-left: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  text-transform: lowercase;
+}
+[data-iii-ui="worktree"] .wt-path {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+[data-iii-ui="worktree"] .wt-path-val {
+  min-width: 0;
+  flex: 1;
+  word-break: break-all;
+}
+[data-iii-ui="worktree"] .wt-copy {
+  margin-top: 2px;
+  flex-shrink: 0;
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--color-ink-ghost);
+  transition: color 0.12s;
+}
+[data-iii-ui="worktree"] .wt-copy:hover {
+  color: var(--color-ink);
+}
+[data-iii-ui="worktree"] .wt-sha {
+  margin-left: 8px;
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="worktree"] .wt-tabular {
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="worktree"] .wt-note {
+  margin-left: 8px;
+  font-size: 11px;
+  text-transform: lowercase;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="worktree"] .wt-integrated {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-ink);
+}
+
+[data-iii-ui="worktree"] .wt-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 14px;
+}
+[data-iii-ui="worktree"] .wt-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 12px;
+  row-gap: 2px;
+  margin: 0;
+  font-size: 11px;
+  color: var(--color-ink);
+}
+[data-iii-ui="worktree"] .wt-status-dt {
+  color: var(--color-ink-faint);
+  text-transform: lowercase;
+}
+[data-iii-ui="worktree"] .wt-status-dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="worktree"] .wt-diffstat {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="worktree"] .wt-head-sha {
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- shared helpers -------------------------------------------------- */
+[data-iii-ui="worktree"] .wt-truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="worktree"] .wt-ink {
+  color: var(--color-ink);
+}
+[data-iii-ui="worktree"] .wt-icon-faint {
+  flex-shrink: 0;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="worktree"] .wt-icon-ghost {
+  flex-shrink: 0;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="worktree"] .wt-accent {
+  color: var(--color-accent);
+}
+[data-iii-ui="worktree"] .wt-tone-ink {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="worktree"] .wt-tone-accent {
+  color: var(--color-accent);
+}
+[data-iii-ui="worktree"] .wt-tone-warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="worktree"] .wt-tone-alert {
+  color: var(--color-alert);
+}

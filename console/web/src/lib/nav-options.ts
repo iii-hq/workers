@@ -1,28 +1,13 @@
 import type { View } from '@/hooks/use-hash-route'
 
 /**
- * Header nav entries. Optional-worker surfaces appear only while their
- * worker is present, so the nav never advertises a page whose functions
- * don't exist (a direct hash hit still lands on that page's install
- * notice).
+ * Header nav entries. Every optional per-worker surface moved to injected UI
+ * (`#/ext/<id>`), so the first-party nav is just traces + workers; injected
+ * pages are appended by the caller from the live script registry.
  */
-export function buildViewOptions(
-  worktreeAvailable: boolean,
-  browserAvailable: boolean,
-  memoryAvailable: boolean,
-): { value: View; label: string }[] {
-  const options: { value: View; label: string }[] = [
+export function buildViewOptions(): { value: View; label: string }[] {
+  return [
     { value: 'traces', label: 'traces' },
     { value: 'workers', label: 'workers' },
   ]
-  if (worktreeAvailable) {
-    options.push({ value: 'worktrees', label: 'worktrees' })
-  }
-  if (browserAvailable) {
-    options.push({ value: 'browser', label: 'browser' })
-  }
-  if (memoryAvailable) {
-    options.push({ value: 'memory', label: 'memory' })
-  }
-  return options
 }

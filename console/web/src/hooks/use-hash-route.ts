@@ -3,19 +3,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 // `chat` is no longer a routed view; it's always-rendered as the side dock
 // in App.tsx. Hash routes only pick which view fills the right pane. The
 // component spec sheet + streaming playground moved to Storybook, so the
-// routed views are `traces`, `workers`, `worktrees`, `browser`, and
-// `configuration`.
-// `ext` is the injectable-UI prefix: worker-contributed pages route at
-// `#/ext/<page-id>` — deliberately outside the first-party names so an
+// first-party routed views are `traces`, `workers`, and `configuration`.
+// `ext` is the injectable-UI prefix: worker-contributed pages
+// route at `#/ext/<page-id>` — deliberately outside the first-party names so an
 // injected page can never collide with or shadow `#/traces`, `#/workers`, ….
-export type View =
-  | 'configuration'
-  | 'traces'
-  | 'workers'
-  | 'worktrees'
-  | 'browser'
-  | 'memory'
-  | 'ext'
+// Pages that migrated to injected UI (worktrees, memory, browser, github) keep
+// their old first-party hash working via a redirect to `#/ext/<id>` — see
+// MIGRATED_ROUTES.
+export type View = 'configuration' | 'traces' | 'workers' | 'ext'
 
 export interface WorkersConfigurationRoute {
   configurationId: string | null
@@ -82,7 +77,9 @@ export function normalizeWorkersConfigurationHash(hash: string): string | null {
   return hashForWorkersConfiguration(legacy.configurationId, legacy.fieldPath)
 }
 
-function routeFromHash(hash: string): View | null {
+function routeFromHash(rawHash: string): View | null {
+  // Migrated pages (worktrees, memory, browser, github) resolve via `#/ext/<id>`.
+  const hash = normalizeExtHash(rawHash)
   if (hash === '' || hash === '#' || hash === '#/' || hash === '#/traces') {
     return 'traces'
   }
@@ -94,15 +91,6 @@ function routeFromHash(hash: string): View | null {
   if (hash === '#/traces-v2') return 'traces'
   if (hash === '#/workers' || hash.startsWith('#/workers/')) {
     return 'workers'
-  }
-  if (hash === '#/worktrees') {
-    return 'worktrees'
-  }
-  if (hash === '#/memory') {
-    return 'memory'
-  }
-  if (hash === '#/browser' || hash.startsWith('#/browser/')) {
-    return 'browser'
   }
   if (hash.startsWith('#/ext/')) {
     return 'ext'
@@ -131,12 +119,6 @@ function hashFor(view: View): string {
       return '#/traces'
     case 'workers':
       return '#/workers'
-    case 'worktrees':
-      return '#/worktrees'
-    case 'browser':
-      return '#/browser'
-    case 'memory':
-      return '#/memory'
     case 'configuration':
       return '#/configuration'
     // `ext` needs a page id; navigation to a specific extension page goes
@@ -156,6 +138,12 @@ export function useHashRoute(): [View, (next: View) => void] {
   viewRef.current = view
 
   useEffect(() => {
+    // Rewrite a legacy migrated hash (`#/worktrees`, `#/memory`, `#/browser`,
+    // `#/github`) to its `#/ext/<id>` form so the URL bar matches the resolved
+    // page. The view
+    // state already used the normalized hash, so this is cosmetic.
+    const normalized = normalizeExtHash(window.location.hash)
+    if (normalized !== window.location.hash) replaceHash(normalized)
     const handle = () => {
       const next = routeFromHash(window.location.hash)
       if (next !== null && next !== viewRef.current) setView(next)
@@ -202,20 +190,41 @@ export function hashForExtPage(pageId: string): string {
 }
 
 /**
+ * First-party hashes whose page migrated to injected UI. The old bookmark
+ * still works: it resolves to the worker's `#/ext/<id>` route instead of
+ * falling back to `traces`. Add an entry when a page moves to injected UI.
+ */
+const MIGRATED_ROUTES: Record<string, string> = {
+  '#/worktrees': 'worktree',
+  '#/memory': 'memory',
+  '#/browser': 'browser',
+  '#/github': 'github',
+}
+
+/**
+ * Rewrite a migrated first-party hash to its `#/ext/<id>` form so old deep
+ * links keep working; any other hash passes through unchanged.
+ */
+export function normalizeExtHash(hash: string): string {
+  const pageId = MIGRATED_ROUTES[hash]
+  return pageId ? hashForExtPage(pageId) : hash
+}
+
+/**
  * Selected extension page as a hash sub-route, so injected pages deep-link
  * (`#/ext/<page-id>`) and survive reloads.
  */
 export function useExtPageRoute(): string | null {
   const [selected, setSelected] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null
-    return extPageFromHash(window.location.hash)
+    return extPageFromHash(normalizeExtHash(window.location.hash))
   })
   const selectedRef = useRef(selected)
   selectedRef.current = selected
 
   useEffect(() => {
     const sync = () => {
-      const next = extPageFromHash(window.location.hash)
+      const next = extPageFromHash(normalizeExtHash(window.location.hash))
       if (next !== selectedRef.current) setSelected(next)
     }
     sync()
@@ -224,61 +233,6 @@ export function useExtPageRoute(): string | null {
   }, [])
 
   return selected
-}
-
-const BROWSER_HASH = '#/browser'
-
-/** `#/browser/<session_id>` -> the session id, or null for `#/browser`. */
-export function browserSessionFromHash(hash: string): string | null {
-  if (!hash.startsWith(`${BROWSER_HASH}/`)) return null
-  const segment = hash
-    .slice(BROWSER_HASH.length + 1)
-    .split('/')
-    .filter(Boolean)[0]
-  if (!segment) return null
-  return decodeSegment(segment)
-}
-
-export function hashForBrowserSession(sessionId: string | null): string {
-  if (!sessionId) return BROWSER_HASH
-  return `${BROWSER_HASH}/${encodeURIComponent(sessionId)}`
-}
-
-/**
- * Selected browser session as a hash sub-route, so sessions deep-link
- * (`#/browser/<session_id>`) from chat cards and survive reloads.
- */
-export function useBrowserSessionRoute(): [
-  string | null,
-  (next: string | null) => void,
-] {
-  const [selected, setSelected] = useState<string | null>(() => {
-    if (typeof window === 'undefined') return null
-    return browserSessionFromHash(window.location.hash)
-  })
-  const selectedRef = useRef(selected)
-  selectedRef.current = selected
-
-  useEffect(() => {
-    const sync = () => {
-      const next = browserSessionFromHash(window.location.hash)
-      if (next !== selectedRef.current) setSelected(next)
-    }
-    sync()
-    window.addEventListener('hashchange', sync)
-    return () => window.removeEventListener('hashchange', sync)
-  }, [])
-
-  const navigate = useCallback((next: string | null) => {
-    const targetHash = hashForBrowserSession(next)
-    if (window.location.hash !== targetHash) {
-      window.location.hash = targetHash
-    } else {
-      setSelected(next)
-    }
-  }, [])
-
-  return [selected, navigate]
 }
 
 export function useWorkersConfigurationRoute(): [

@@ -10,10 +10,6 @@
  */
 
 import { useMemo } from 'react'
-import {
-  BrowserFunctionIdLabel,
-  BrowserToolView,
-} from '@/components/chat/browser'
 import { CoderFunctionIdLabel, CoderToolView } from '@/components/chat/coder'
 import { EngineFunctionIdLabel, EngineToolView } from '@/components/chat/engine'
 import { FpFunctionIdLabel, FpToolView } from '@/components/chat/fp'
@@ -44,9 +40,10 @@ import type { FunctionTriggerMessage } from '@/types/chat'
 import type { FunctionTriggerRenderer } from '@/types/injectable-ui'
 
 /**
- * The first-party families (12 since directory moved into its worker's injected UI), in the exact order of the old `??` chains.
- * Each family's `tryRender*` already gates on its own function ids, so an
- * entry returning `null` falls through to the next.
+ * The first-party families (11 since directory and browser moved into their
+ * workers' injected UI), in the exact order of the old `??` chains. Each
+ * family's `tryRender*` already gates on its own function ids, so an entry
+ * returning `null` falls through to the next.
  */
 export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
   {
@@ -146,14 +143,6 @@ export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
     tryRenderRunning: StateToolView.tryRenderRunning,
     tryRenderPreview: StateToolView.tryRenderPreview,
     FunctionIdLabel: StateFunctionIdLabel,
-  },
-  {
-    id: 'first-party/browser',
-    isMatch: BrowserToolView.isBrowserFunction,
-    tryRender: BrowserToolView.tryRender,
-    tryRenderRunning: BrowserToolView.tryRenderRunning,
-    tryRenderPreview: BrowserToolView.tryRenderPreview,
-    FunctionIdLabel: BrowserFunctionIdLabel,
   },
 ]
 
