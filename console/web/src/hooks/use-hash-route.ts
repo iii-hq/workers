@@ -3,8 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 // `chat` is no longer a routed view; it's always-rendered as the side dock
 // in App.tsx. Hash routes only pick which view fills the right pane. The
 // component spec sheet + streaming playground moved to Storybook, so the
-// routed views are `traces`, `workers`, `worktrees`, `browser`, and
-// `configuration`.
+// routed views are `traces`, `workers`, `browser`, and `configuration`.
 // `ext` is the injectable-UI prefix: worker-contributed pages route at
 // `#/ext/<page-id>` — deliberately outside the first-party names so an
 // injected page can never collide with or shadow `#/traces`, `#/workers`, ….
@@ -12,7 +11,6 @@ export type View =
   | 'configuration'
   | 'traces'
   | 'workers'
-  | 'worktrees'
   | 'browser'
   | 'memory'
   | 'github'
@@ -96,9 +94,6 @@ function routeFromHash(hash: string): View | null {
   if (hash === '#/workers' || hash.startsWith('#/workers/')) {
     return 'workers'
   }
-  if (hash === '#/worktrees') {
-    return 'worktrees'
-  }
   if (hash === '#/memory') {
     return 'memory'
   }
@@ -135,8 +130,6 @@ function hashFor(view: View): string {
       return '#/traces'
     case 'workers':
       return '#/workers'
-    case 'worktrees':
-      return '#/worktrees'
     case 'browser':
       return '#/browser'
     case 'memory':

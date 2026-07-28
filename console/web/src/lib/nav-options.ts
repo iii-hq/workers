@@ -7,7 +7,6 @@ import type { View } from '@/hooks/use-hash-route'
  * notice).
  */
 export function buildViewOptions(
-  worktreeAvailable: boolean,
   browserAvailable: boolean,
   memoryAvailable: boolean,
   githubAvailable: boolean,
@@ -16,9 +15,6 @@ export function buildViewOptions(
     { value: 'traces', label: 'traces' },
     { value: 'workers', label: 'workers' },
   ]
-  if (worktreeAvailable) {
-    options.push({ value: 'worktrees', label: 'worktrees' })
-  }
   if (browserAvailable) {
     options.push({ value: 'browser', label: 'browser' })
   }

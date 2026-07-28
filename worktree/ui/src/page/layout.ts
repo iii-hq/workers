@@ -1,4 +1,4 @@
-import type { WorktreeInfo } from '@/lib/worktrees'
+import type { WorktreeInfo } from './worktree-data'
 
 /**
  * Pure layered layout for the worktree graph: one repo node column on the
