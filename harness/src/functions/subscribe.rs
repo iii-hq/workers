@@ -132,17 +132,41 @@ pub struct UnsubscribeResponse {
 /// Subscription controls are intercepted by the harness and therefore do not
 /// appear in the engine's public function registry. Native exposure still has
 /// to publish their real contracts when the turn policy allows them.
+/// The contract agents actually get for the intercepted control ids — shown
+/// as the native tool AND overlaid onto `engine::functions::info/list`
+/// responses, which would otherwise report the raw engine registration (no
+/// `once`, no `lifecycle`, no `conditions`, `function_id` required).
+pub const REGISTER_TOOL_DESC: &str =
+    "Subscribe the current harness session to a iii trigger: omit function_id to be \
+     notified in this session, or name a non-harness function to call with the event.";
+pub const UNREGISTER_TOOL_DESC: &str =
+    "Remove a trigger subscription owned by the current harness session.";
+
+/// The intercept's request schema for a control id, for discovery overlays.
+pub fn control_contract(function_id: &str) -> Option<(&'static str, Value)> {
+    match function_id {
+        REGISTER_TRIGGER_ID => Some((
+            REGISTER_TOOL_DESC,
+            crate::surface::schema_value::<SubscribeRequest>(),
+        )),
+        UNREGISTER_TRIGGER_ID => Some((
+            UNREGISTER_TOOL_DESC,
+            crate::surface::schema_value::<UnsubscribeRequest>(),
+        )),
+        _ => None,
+    }
+}
+
 pub fn native_control_tools(policy: &CompiledPolicy) -> Vec<AgentFunction> {
     [
         (
             REGISTER_TRIGGER_ID,
-            "Subscribe the current harness session to a iii trigger: omit function_id to be \
-             notified in this session, or name a non-harness function to call with the event.",
+            REGISTER_TOOL_DESC,
             crate::surface::schema_value::<SubscribeRequest>(),
         ),
         (
             UNREGISTER_TRIGGER_ID,
-            "Remove a trigger subscription owned by the current harness session.",
+            UNREGISTER_TOOL_DESC,
             crate::surface::schema_value::<UnsubscribeRequest>(),
         ),
     ]
@@ -197,8 +221,30 @@ pub async fn invoke(
             intercept_register(deps, arguments, session_id, caller, policy).await
         }
         UNREGISTER_TRIGGER_ID => intercept_unregister(deps, arguments, session_id).await,
+        crate::functions::triggers_list::TRIGGERS_LIST_ID
+        | crate::functions::triggers_list::TRIGGERS_UNREGISTER_ID => {
+            // Trusted default: an in-turn call that names no session targets
+            // its own. An explicit session_id passes through untouched (the
+            // ownership check still applies).
+            let args = with_default_session_id(arguments, session_id);
+            trigger::invoke_target(engine, policy, function_id, &args).await
+        }
         _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
     }
+}
+
+/// Fill `session_id` with the calling session when the args omit it (or set
+/// it null). Non-object args pass through untouched — the target's own
+/// deserialization owns that rejection.
+fn with_default_session_id(arguments: &Value, session_id: &str) -> Value {
+    let mut args = arguments.clone();
+    if let Some(map) = args.as_object_mut() {
+        let absent = map.get("session_id").is_none_or(Value::is_null);
+        if absent {
+            map.insert("session_id".into(), Value::String(session_id.to_string()));
+        }
+    }
+    args
 }
 
 /// The `once` default, by SHAPE — the single semantic that killed three of
@@ -1181,6 +1227,22 @@ mod tests {
     /// The intercepted controls never reach the engine registry, so native
     /// exposure must publish their contracts itself — but only when the
     /// turn's policy allows them (a leaf child sees neither).
+    #[test]
+    fn in_turn_triggers_calls_default_to_the_calling_session() {
+        // Absent and null both take the caller; explicit passes through.
+        let filled = with_default_session_id(&json!({}), "s_me");
+        assert_eq!(filled["session_id"], "s_me");
+        let filled = with_default_session_id(&json!({ "session_id": null }), "s_me");
+        assert_eq!(filled["session_id"], "s_me");
+        let kept = with_default_session_id(&json!({ "session_id": "s_other" }), "s_me");
+        assert_eq!(kept["session_id"], "s_other");
+        // Non-object args pass through for the target to reject.
+        assert_eq!(
+            with_default_session_id(&json!("nope"), "s_me"),
+            json!("nope")
+        );
+    }
+
     #[test]
     fn native_subscription_controls_follow_dispatch_policy() {
         let both = policy_allowing(&["engine::register_trigger", "engine::unregister_trigger"]);

@@ -4,13 +4,14 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "session_id": {
-        "description": "The owning session whose bindings to list.",
-        "type": "string"
+        "default": null,
+        "description": "The owning session whose bindings to list. In-turn agent calls may omit it — the harness injects the calling session. External callers (console, CLI) must name the owner explicitly.",
+        "type": [
+          "string",
+          "null"
+        ]
       }
     },
-    "required": [
-      "session_id"
-    ],
     "title": "TriggersListRequest",
     "type": "object"
   },

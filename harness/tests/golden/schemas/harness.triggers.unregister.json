@@ -4,15 +4,18 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "session_id": {
-        "description": "The binding's owner session — a correctness handshake, checked against the record. (Deployment permissions keep this function off the unattended agent surface; the console's privileged path supplies the owner it just listed.)",
-        "type": "string"
+        "default": null,
+        "description": "The binding's owner session — a correctness handshake, checked against the record. In-turn agent calls may omit it (the harness injects the calling session). The console's privileged path supplies the owner it just listed.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "subscription_id": {
         "type": "string"
       }
     },
     "required": [
-      "session_id",
       "subscription_id"
     ],
     "title": "TriggersUnregisterRequest",

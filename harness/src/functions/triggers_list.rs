@@ -28,19 +28,24 @@ pub const TRIGGERS_LIST_ID: &str = "harness::triggers::list";
 pub const TRIGGERS_LIST_DESC: &str =
     "Read-only: the trigger bindings a session owns (durable records) — subscription id, \
      trigger type/config, delivery target (absent = notifies the owner), conditions, \
-     lifecycle, and fire count.";
+     lifecycle, and fire count. In-turn agent calls may omit `session_id` (defaults to \
+     the calling session).";
 
 pub const TRIGGERS_UNREGISTER_ID: &str = "harness::triggers::unregister";
 pub const TRIGGERS_UNREGISTER_DESC: &str =
     "Tear down one trigger binding by subscription id: unregister the engine trigger AND \
      delete the durable record (an engine-side unregister alone strands the owner's armed \
-     wake). `session_id` must name the binding's owner. A still-armed wake torn down this \
-     way notifies its parked owner.";
+     wake). `session_id` must name the binding's owner; in-turn agent calls may omit it \
+     (defaults to the calling session). A still-armed wake torn down this way notifies \
+     its parked owner.";
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct TriggersListRequest {
-    /// The owning session whose bindings to list.
-    pub session_id: String,
+    /// The owning session whose bindings to list. In-turn agent calls may
+    /// omit it — the harness injects the calling session. External callers
+    /// (console, CLI) must name the owner explicitly.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 /// One binding, as data. `trigger_type`/`config` are read from the
@@ -78,12 +83,24 @@ pub struct TriggersListResponse {
     pub subscriptions: Vec<TriggerRow>,
 }
 
+/// In-turn calls arrive with the caller's session injected at the dispatch
+/// chokepoint; a still-absent id means an external caller that must name the
+/// owner itself.
+fn required_session_id(session_id: Option<&str>) -> Result<&str, HarnessError> {
+    session_id.ok_or_else(|| {
+        HarnessError::InvalidRequest(
+            "session_id is required outside a turn — name the owning session".into(),
+        )
+    })
+}
+
 pub async fn list(
     deps: &Deps,
     req: TriggersListRequest,
 ) -> Result<TriggersListResponse, HarnessError> {
+    let session_id = required_session_id(req.session_id.as_deref())?;
     let store = deps.bindings().await;
-    let mut bindings = store.list_for_owner(&req.session_id).await?;
+    let mut bindings = store.list_for_owner(session_id).await?;
     bindings.sort_by_key(|b| b.created_at);
     Ok(TriggersListResponse {
         subscriptions: bindings.iter().map(row_from).collect(),
@@ -133,10 +150,11 @@ fn row_from(binding: &Binding) -> TriggerRow {
 pub struct TriggersUnregisterRequest {
     pub subscription_id: String,
     /// The binding's owner session — a correctness handshake, checked against
-    /// the record. (Deployment permissions keep this function off the
-    /// unattended agent surface; the console's privileged path supplies the
-    /// owner it just listed.)
-    pub session_id: String,
+    /// the record. In-turn agent calls may omit it (the harness injects the
+    /// calling session). The console's privileged path supplies the owner it
+    /// just listed.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -149,14 +167,15 @@ pub async fn unregister(
     deps: &Deps,
     req: TriggersUnregisterRequest,
 ) -> Result<TriggersUnregisterResponse, HarnessError> {
+    let session_id = required_session_id(req.session_id.as_deref())?;
     let store = deps.bindings().await;
     let Some(binding) = store.get(&req.subscription_id).await? else {
         return Ok(TriggersUnregisterResponse { removed: false });
     };
-    if binding.owner.session_id != req.session_id {
+    if binding.owner.session_id != session_id {
         return Err(HarnessError::InvalidRequest(format!(
             "subscription {} belongs to session {}, not {}",
-            binding.id, binding.owner.session_id, req.session_id
+            binding.id, binding.owner.session_id, session_id
         )));
     }
     let was_armed_wake = crate::bindings::expiry::is_unfired_wake(&binding);
@@ -184,6 +203,13 @@ mod tests {
     use super::*;
     use crate::bindings::{BindingTarget, Causation, Lifecycle, OwnerScope};
     use serde_json::json;
+
+    #[test]
+    fn absent_session_id_errors_with_the_external_caller_message() {
+        let err = required_session_id(None).unwrap_err();
+        assert!(err.to_string().contains("required outside a turn"));
+        assert_eq!(required_session_id(Some("s1")).unwrap(), "s1");
+    }
 
     fn binding(id: &str, target_fn: &str, created_at: i64) -> Binding {
         let mut target = BindingTarget::new(target_fn);
