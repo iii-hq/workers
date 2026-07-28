@@ -89,24 +89,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          terminal_log=target/harness-quickstart/terminal.log
-          mkdir -p "$(dirname "$terminal_log")"
-
-          # Keep the real validator outside the VHS pseudo-terminal: some
-          # installer commands change behavior when stdin is interactive.
-          # Capture its normal CI output, then replay that log into the video.
-          set +e
-          harness/tests/quickstart/run-ci.sh 2>&1 | tee "$terminal_log"
-          pipeline_status=("${PIPESTATUS[@]}")
-          set -e
-          validator_status=${pipeline_status[0]}
-          capture_status=${pipeline_status[1]}
-
-          if ((capture_status != 0)); then
-            echo "::warning::Could not persist the complete terminal log"
-          fi
-
-          if command -v vhs >/dev/null 2>&1 && [[ -s "$terminal_log" ]]; then
+          # VHS records the real validator operations. The tape waits for a
+          # unique shell prompt instead of matching transient terminal output.
+          # Pass/fail is read from result.json because VHS cannot propagate the
+          # typed command's exit code.
+          if command -v vhs >/dev/null 2>&1; then
             if vhs harness/tests/quickstart/quickstart.tape; then
               if ! ffprobe -v error \
                 -select_streams v:0 \
@@ -120,15 +107,14 @@ jobs:
             else
               echo "::warning::VHS recording failed"
               rm -f target/harness-quickstart/quickstart.mp4
+              if [[ ! -f target/harness-quickstart/result.json ]]; then
+                echo "::warning::No validator result was produced; rerunning without recording"
+                harness/tests/quickstart/run-ci.sh
+              fi
             fi
           else
-            echo "::warning::VHS is unavailable or the terminal log is empty; skipping recording"
-          fi
-
-          if ((validator_status != 0)); then
-            reason=$(jq -r '.failure_reason // empty' target/harness-quickstart/result.json 2>/dev/null || true)
-            echo "::error::quickstart validator exited ${validator_status}${reason:+: $reason}"
-            exit "$validator_status"
+            echo "::warning::VHS is unavailable; running without recording"
+            harness/tests/quickstart/run-ci.sh
           fi
 
           jq -e '.status == "passed"' target/harness-quickstart/result.json >/dev/null || {

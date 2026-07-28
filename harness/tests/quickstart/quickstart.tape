@@ -1,6 +1,5 @@
-# Replays the validator's non-interactive CI log as terminal evidence. Keeping
-# the real run outside the VHS pseudo-terminal preserves installer behavior and
-# the original exit code.
+# Records the real quickstart validator operations. A unique shell prompt makes
+# completion deterministic without matching output that may leave the viewport.
 Output target/harness-quickstart/quickstart.mp4
 
 Set Shell bash
@@ -12,13 +11,16 @@ Set Theme "Catppuccin Mocha"
 Set Padding 18
 Set Framerate 15
 Set PlaybackSpeed 1.5
+Set WaitTimeout 1200s
 
 Hide
+Type "export PS1='__HARNESS_QUICKSTART_DONE__> '"
+Enter
 Type "clear"
 Enter
 Show
 
-Type "harness/tests/quickstart/replay-terminal.sh target/harness-quickstart/terminal.log"
+Type "harness/tests/quickstart/run-ci.sh"
 Enter
-Sleep 15s
+Wait /__HARNESS_QUICKSTART_DONE__>/
 Sleep 2s
