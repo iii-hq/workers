@@ -42,9 +42,9 @@ override the validator result. Each run also creates one
 `#worker-releases` Slack message, updates it with the final status, posts the
 result details in its thread, and uploads the terminal recording to the same
 thread (pass or fail; requires the `files:write` bot scope). This uses the
-organization-level `SLACK_BOT_TOKEN`; the bot must be invited to the channel.
-Notification errors are reported as workflow warnings without blocking
-validation.
+organization-level `SLACK_BOT_TOKEN`. The bot must be invited to the channel,
+or have `channels:join` so the workflow can join automatically. Notification
+errors are reported as workflow warnings without blocking validation.
 
 Without `ZAI_API_KEY`, the live canary is recorded as `skipped`. Behavioral
 quality remains covered by the Harness E2E workflows.
