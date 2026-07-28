@@ -1,20 +1,22 @@
-import { Check, Copy, GitMerge, X } from 'lucide-react'
+import { StatusDot } from '@iii-dev/console-ui'
+import type { ReactNode } from 'react'
 import { useCallback, useState } from 'react'
-import { StatusDot } from '@/components/ui/StatusDot'
-import { cn } from '@/lib/utils'
+import { Check, Copy, GitMerge, X } from './icons'
 import {
+  cn,
   integrationLabel,
   lifecycleTone,
   lifecycleToneClass,
   shortWorktreeId,
   type WorktreeInfo,
   worktreeIndicators,
-} from '@/lib/worktrees'
+} from './worktree-data'
 
 /**
  * Detail side panel for one selected worktree. Renders only fields the
  * worker exposes: identity, paths, base, timestamps, and the git status
- * block when the list call computed one.
+ * block when the list call computed one. Ported from the console page;
+ * Tailwind utilities became scoped `wt-*` classes (see styles.css).
  */
 
 interface WorktreeDetailPanelProps {
@@ -22,21 +24,11 @@ interface WorktreeDetailPanelProps {
   onClose: () => void
 }
 
-function Row({
-  label,
-  children,
-}: {
-  label: string
-  children: React.ReactNode
-}) {
+function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex flex-col gap-0.5 px-3.5 py-2">
-      <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
-        {label}
-      </span>
-      <span className="min-w-0 break-all font-mono text-[12px] text-ink">
-        {children}
-      </span>
+    <div className="wt-row">
+      <span className="wt-row-label">{label}</span>
+      <span className="wt-row-value">{children}</span>
     </div>
   )
 }
@@ -74,47 +66,40 @@ export function WorktreeDetailPanel({
   return (
     <aside
       aria-label={`worktree ${worktree.worktree_id} details`}
-      className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-l border-rule bg-bg"
+      className="wt-detail"
     >
-      <header className="flex items-center justify-between gap-2 border-b border-rule bg-panel px-3.5 py-2.5">
-        <span className="min-w-0 truncate font-mono text-[12px] font-semibold lowercase text-ink">
-          {worktree.branch}
-        </span>
+      <header className="wt-detail-head">
+        <span className="wt-detail-title">{worktree.branch}</span>
         <button
           type="button"
           onClick={onClose}
           aria-label="close details"
-          className="shrink-0 text-ink-ghost transition-colors hover:text-ink"
+          className="wt-detail-close"
         >
           <X size={14} aria-hidden />
         </button>
       </header>
 
-      <div className="divide-y divide-rule-2">
+      <div className="wt-detail-body">
         <Row label="worktree">
           {shortWorktreeId(worktree.worktree_id)}
-          <span
-            className={cn(
-              'ml-2 inline-flex items-center gap-1 text-[11px] lowercase',
-              lifecycleToneClass[tone],
-            )}
-          >
+          <span className={cn('wt-inline-tone', lifecycleToneClass[tone])}>
             <StatusDot tone={tone} pulse={worktree.lifecycle === 'landing'} />
             {worktree.lifecycle}
           </span>
         </Row>
         <Row label="path">
-          <span className="flex items-start gap-1.5">
-            <span className="min-w-0 flex-1 break-all">{worktree.path}</span>
+          <span className="wt-path">
+            <span className="wt-path-val">{worktree.path}</span>
             <button
               type="button"
               onClick={copyPath}
               aria-label="copy worktree path"
               title={copied ? 'copied' : 'copy path'}
-              className="mt-0.5 shrink-0 text-ink-ghost transition-colors hover:text-ink"
+              className="wt-copy"
             >
               {copied ? (
-                <Check size={12} className="text-accent" aria-hidden />
+                <Check size={12} className="wt-accent" aria-hidden />
               ) : (
                 <Copy size={12} aria-hidden />
               )}
@@ -126,10 +111,7 @@ export function WorktreeDetailPanel({
           <Row label="base">
             {worktree.base_ref}
             {worktree.base_sha ? (
-              <span
-                className="ml-2 text-ink-ghost tabular-nums"
-                title={worktree.base_sha}
-              >
+              <span className="wt-sha" title={worktree.base_sha}>
                 {worktree.base_sha.slice(0, 12)}
               </span>
             ) : null}
@@ -140,16 +122,14 @@ export function WorktreeDetailPanel({
         ) : null}
         {worktree.dev_port != null ? (
           <Row label="dev port">
-            <span className="tabular-nums">{worktree.dev_port}</span>
-            <span className="ml-2 text-[11px] lowercase text-ink-ghost">
-              advisory, derived from the id
-            </span>
+            <span className="wt-tabular">{worktree.dev_port}</span>
+            <span className="wt-note">advisory, derived from the id</span>
           </Row>
         ) : null}
         {status?.integrated ? (
           <Row label="integrated">
-            <span className="inline-flex items-center gap-1.5 text-ink">
-              <GitMerge size={12} className="text-ink-faint" aria-hidden />
+            <span className="wt-integrated">
+              <GitMerge size={12} className="wt-icon-faint" aria-hidden />
               {integrationLabel(status)}
             </span>
           </Row>
@@ -158,15 +138,13 @@ export function WorktreeDetailPanel({
         {updated ? <Row label="updated">{updated}</Row> : null}
 
         {status ? (
-          <div className="flex flex-col gap-1 px-3.5 py-2">
-            <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
-              status
-            </span>
-            <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 font-mono text-[11px] text-ink">
+          <div className="wt-status">
+            <span className="wt-row-label">status</span>
+            <dl className="wt-status-grid">
               <StatusEntry
                 label="clean"
                 value={status.clean ? 'yes' : 'no'}
-                tint={dirty ? 'text-warn' : undefined}
+                tint={dirty ? 'wt-tone-warn' : undefined}
               />
               <StatusEntry label="ahead" value={String(ahead)} />
               <StatusEntry label="behind" value={String(status.behind)} />
@@ -176,25 +154,20 @@ export function WorktreeDetailPanel({
               <StatusEntry
                 label="conflicted"
                 value={String(status.conflicted)}
-                tint={status.conflicted > 0 ? 'text-alert' : undefined}
+                tint={status.conflicted > 0 ? 'wt-tone-alert' : undefined}
               />
               <StatusEntry label="unpushed" value={String(status.unpushed)} />
               <StatusEntry
                 label="rebase"
                 value={status.in_rebase ? 'in progress' : 'none'}
-                tint={status.in_rebase ? 'text-alert' : undefined}
+                tint={status.in_rebase ? 'wt-tone-alert' : undefined}
               />
             </dl>
             {status.diffstat ? (
-              <span className="mt-1 font-mono text-[11px] text-ink-faint">
-                {status.diffstat}
-              </span>
+              <span className="wt-diffstat">{status.diffstat}</span>
             ) : null}
             {status.head_sha ? (
-              <span
-                className="font-mono text-[11px] text-ink-ghost tabular-nums"
-                title={status.head_sha}
-              >
+              <span className="wt-head-sha" title={status.head_sha}>
                 head {status.head_sha.slice(0, 12)}
               </span>
             ) : null}
@@ -216,8 +189,8 @@ function StatusEntry({
 }) {
   return (
     <>
-      <dt className="text-ink-faint lowercase">{label}</dt>
-      <dd className={cn('tabular-nums', tint)}>{value}</dd>
+      <dt className="wt-status-dt">{label}</dt>
+      <dd className={cn('wt-status-dd', tint)}>{value}</dd>
     </>
   )
 }

@@ -7,20 +7,12 @@ import type { View } from '@/hooks/use-hash-route'
  * notice).
  */
 export function buildViewOptions(
-  worktreeAvailable: boolean,
-  memoryAvailable: boolean,
   githubAvailable: boolean,
 ): { value: View; label: string }[] {
   const options: { value: View; label: string }[] = [
     { value: 'traces', label: 'traces' },
     { value: 'workers', label: 'workers' },
   ]
-  if (worktreeAvailable) {
-    options.push({ value: 'worktrees', label: 'worktrees' })
-  }
-  if (memoryAvailable) {
-    options.push({ value: 'memory', label: 'memory' })
-  }
   if (githubAvailable) {
     options.push({ value: 'github', label: 'github' })
   }

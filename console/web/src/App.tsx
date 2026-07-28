@@ -29,10 +29,8 @@ import { cn } from '@/lib/utils'
 import { Configuration } from '@/pages/Configuration'
 import { ExtPage } from '@/pages/Ext'
 import { Github } from '@/pages/Github'
-import { Memory } from '@/pages/Memory'
 import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
-import { Worktrees } from '@/pages/Worktrees'
 
 export function App() {
   const [theme, setTheme] = useTheme()
@@ -109,10 +107,6 @@ export function App() {
               <Configuration theme={theme} onThemeChange={setTheme} />
             ) : view === 'workers' ? (
               <Workers />
-            ) : view === 'worktrees' ? (
-              <Worktrees />
-            ) : view === 'memory' ? (
-              <Memory />
             ) : view === 'github' ? (
               <Github />
             ) : view === 'ext' ? (
@@ -153,17 +147,15 @@ function Header({
   onOpenShortcuts,
 }: HeaderProps) {
   // Optional-worker entries appear only while their worker is present; a
-  // direct #/worktrees hit still lands on that page's install notice. The
-  // browser page moved into the browser worker's injected UI (#/ext/browser),
-  // so it is gated by script presence, not a nav flag here.
-  const { worktreeAvailable, memoryAvailable, githubAvailable } =
-    useConversationsCtx()
+  // Only github remains a first-party nav entry; worktrees, memory and browser
+  // moved to injected UI (gated by script presence, not a nav flag).
+  const { githubAvailable } = useConversationsCtx()
   // Injected pages: the runtime analogue of worker-presence gating —
   // presence is the script being loaded, which already tracks worker
   // connectedness via trigger GC.
   const extPages = useExtPages()
   const viewOptions: { value: string; label: string }[] = [
-    ...buildViewOptions(worktreeAvailable, memoryAvailable, githubAvailable),
+    ...buildViewOptions(githubAvailable),
     ...extPages.map((page) => ({
       value: extNavValue(page),
       label: page.title,

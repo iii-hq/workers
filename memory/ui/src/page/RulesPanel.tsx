@@ -1,16 +1,14 @@
-import { Plus, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { Button } from '@/components/ui/Button'
-import { CodeEditor } from '@/components/ui/CodeEditor'
-import { EmptyState } from '@/components/ui/EmptyState'
-import { Input } from '@/components/ui/Input'
-import type { MemoryRule } from '@/lib/memory'
+import { Button, CodeEditor, EmptyState, Input } from '@iii-dev/console-ui'
+import { Plus, X } from './icons'
+import type { MemoryRule } from './memory-data'
 
 /**
  * The bank's markdown rules — injected whole into the system prompt of
  * every session using this bank. Each rule is a plain `.md` file on disk;
  * editing here and editing the file are equivalent. Saving empty content
- * removes a rule.
+ * removes a rule. Editing uses the console's shared Monaco `CodeEditor`
+ * (never a bundled editor).
  */
 
 interface RulesPanelProps {
@@ -44,17 +42,13 @@ function RuleEditor({
 
   const dirty = content !== initial
   return (
-    <div className="border border-rule">
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-rule-2">
-        <span className="font-mono text-[12px] lowercase text-ink font-semibold">
-          {name}.md
-        </span>
-        <div className="flex items-center gap-2">
+    <div className="mem-rule">
+      <div className="mem-rule-head">
+        <span className="mem-rule-name">{name}.md</span>
+        <div className="mem-rule-actions">
           {dirty ? (
             <>
-              <span className="font-mono text-[10px] lowercase text-warn">
-                unsaved
-              </span>
+              <span className="mem-unsaved">unsaved</span>
               <Button
                 variant="ghost"
                 size="sm"
@@ -79,7 +73,7 @@ function RuleEditor({
                 variant="ghost"
                 size="sm"
                 disabled={busy}
-                className="text-danger"
+                className="mem-danger"
                 onClick={() => {
                   void onSet(name, '')
                   setConfirmDelete(false)
@@ -103,12 +97,12 @@ function RuleEditor({
               aria-label={`delete rule ${name}`}
               onClick={() => setConfirmDelete(true)}
             >
-              <X className="w-3.5 h-3.5" aria-hidden />
+              <X size={14} aria-hidden />
             </Button>
           )}
         </div>
       </div>
-      <div className="max-h-[480px] overflow-auto">
+      <div className="mem-rule-editor">
         <CodeEditor
           value={content}
           onChange={(next) => {
@@ -117,7 +111,7 @@ function RuleEditor({
           }}
           language="markdown"
           aria-label={`rule ${name}`}
-          className="min-h-24"
+          className="mem-editor"
           placeholder="empty the content and save to remove this rule (asks to confirm)"
         />
       </div>
@@ -144,8 +138,8 @@ export function RulesPanel({ rules, onSet, busy }: RulesPanelProps) {
   const suggestion = validName ? '' : slugifyRuleName(newName)
 
   return (
-    <div className="flex flex-col gap-3">
-      <p className="font-mono text-[11px] lowercase text-ink-faint">
+    <div className="mem-stack">
+      <p className="mem-hint">
         every chat on this bank starts with these — word for word, every turn.
         put what must always hold here: voice, conventions, constants. correct
         the agent in chat ("stop using em-dashes") and the correction lands in
@@ -169,7 +163,7 @@ export function RulesPanel({ rules, onSet, busy }: RulesPanelProps) {
         ))
       )}
       <form
-        className="flex flex-col gap-1"
+        className="mem-stack tight"
         onSubmit={(e) => {
           e.preventDefault()
           if (busy) return
@@ -180,27 +174,27 @@ export function RulesPanel({ rules, onSet, busy }: RulesPanelProps) {
           })
         }}
       >
-        <div className="flex items-center gap-2">
+        <div className="mem-row">
           <Input
             value={newName}
             onChange={setNewName}
             placeholder="name the rule first (e.g. style) — content goes in the editor after"
             aria-label="new rule name"
-            className="flex-1"
+            className="mem-flex1"
           />
           <Button
             type="submit"
             variant="ghost"
             size="sm"
             disabled={busy || (!validName && !suggestion)}
-            className="gap-1"
+            className="mem-gap1"
           >
-            <Plus className="w-3.5 h-3.5" aria-hidden />
+            <Plus size={14} aria-hidden />
             add rule
           </Button>
         </div>
         {newName && !validName ? (
-          <p className="font-mono text-[10px] lowercase text-ink-ghost">
+          <p className="mem-subhint">
             {suggestion
               ? `names are lowercase-with-dashes (it becomes ${suggestion}.md) — adding will create "${suggestion}"; paste the content into its editor after`
               : 'names are lowercase letters, numbers, and dashes — like style or coding-rules'}

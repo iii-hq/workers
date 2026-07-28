@@ -1,11 +1,7 @@
-import { Pin, PinOff, Trash2, X } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
-import { Badge } from '@/components/ui/Badge'
-import { Button } from '@/components/ui/Button'
-import { EmptyState } from '@/components/ui/EmptyState'
-import { Input } from '@/components/ui/Input'
-import type { MemoryItem } from '@/lib/memory'
-import { cn } from '@/lib/utils'
+import { Badge, Button, EmptyState, Input } from '@iii-dev/console-ui'
+import { Pin, PinOff, Trash2, X } from './icons'
+import type { MemoryItem } from './memory-data'
 
 /**
  * The bank as a schematic constellation, built to stay readable at 10k+
@@ -24,6 +20,10 @@ import { cn } from '@/lib/utils'
  * degree), so the same bank always draws the same map. This is a
  * render-time projection of the flat store: `entities[]` IS the edge
  * list; storage stays flat.
+ *
+ * Ported verbatim from the console page: only the component imports
+ * (`@iii-dev/console-ui` + inline icons) and the styling (scoped CSS +
+ * `var(--color-*)` SVG fills instead of Tailwind utilities) changed.
  */
 
 interface MemoryGraphProps {
@@ -40,6 +40,11 @@ const MAX_SPOKES = 20
 const AUTO_EXPAND_MEMORIES = 30
 const GOLDEN_ANGLE = 2.399963
 const NO_ENTITY_HUB = '(no entities)'
+
+const monoText = {
+  fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+  pointerEvents: 'none',
+} as const
 
 interface HubNode {
   entity: string
@@ -229,7 +234,10 @@ export function MemoryGraph({
   onShowFacts,
   busy,
 }: MemoryGraphProps) {
-  const live = useMemo(() => memories.filter((f) => f.invalid_at == null), [memories])
+  const live = useMemo(
+    () => memories.filter((f) => f.invalid_at == null),
+    [memories],
+  )
   const [filter, setFilter] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -327,23 +335,23 @@ export function MemoryGraph({
   }
 
   return (
-    <div className="flex flex-col gap-2 flex-1 min-h-0">
-      <div className="flex items-center gap-2 flex-wrap">
+    <div className="mem-graph">
+      <div className="mem-row wrap">
         <Input
           value={filter}
           onChange={setFilter}
           placeholder="focus entities..."
           aria-label="filter entities"
-          className="w-56"
+          className="mem-graph-filter"
         />
-        <span className="font-mono text-[11px] lowercase text-ink-faint">
+        <span className="mem-hint">
           {layout.hubs.length} entities
           {layout.hiddenHubs > 0 &&
             ` (top ${MAX_HUBS} shown, ${layout.hiddenHubs} more — search to focus)`}
           {totalFacts > live.length &&
             ` · mapping newest ${live.length} of ${totalFacts} memories`}
         </span>
-        <span className="flex-1" />
+        <span className="mem-spacer" />
         <Button variant="ghost" size="sm" onClick={() => setView(null)}>
           fit
         </Button>
@@ -368,11 +376,11 @@ export function MemoryGraph({
         ) : null}
       </div>
 
-      <div className="relative flex-1 min-h-0 border border-rule">
+      <div className="mem-graph-canvas">
         <svg
           ref={svgRef}
           viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
-          className="w-full h-full min-h-[440px] cursor-grab active:cursor-grabbing select-none"
+          className="mem-graph-svg"
           role="img"
           aria-label="memory graph: entity hubs and memory nodes"
           onWheel={(e) => {
@@ -436,7 +444,7 @@ export function MemoryGraph({
               height={28}
               patternUnits="userSpaceOnUse"
             >
-              <circle cx={1} cy={1} r={1} className="fill-rule-2" />
+              <circle cx={1} cy={1} r={1} fill="var(--color-rule-2)" />
             </pattern>
           </defs>
           <rect
@@ -454,10 +462,11 @@ export function MemoryGraph({
               y1={edge.y1}
               x2={edge.x2}
               y2={edge.y2}
-              className={cn(
-                'stroke-rule',
-                activeId === edge.memoryId && 'stroke-accent',
-              )}
+              stroke={
+                activeId === edge.memoryId
+                  ? 'var(--color-accent)'
+                  : 'var(--color-rule)'
+              }
               strokeWidth={activeId === edge.memoryId ? 1.8 : 1}
               opacity={activeId && activeId !== edge.memoryId ? 0.35 : 1}
             />
@@ -470,7 +479,7 @@ export function MemoryGraph({
               role="button"
               tabIndex={0}
               aria-label={`entity ${hub.entity}: ${hub.count} memories`}
-              className="cursor-grab active:cursor-grabbing focus:outline-none"
+              className="mem-node"
               onPointerDown={(e) => startNodeDrag(e, `h:${hub.entity}`)}
               onClick={() => {
                 if (wasDrag() || autoExpand) return
@@ -499,17 +508,20 @@ export function MemoryGraph({
                 y={hub.y - hub.r}
                 width={hub.r * 2}
                 height={hub.r * 2}
-                className={cn(
-                  'fill-panel stroke-ink-faint',
-                  hub.expanded && 'stroke-accent',
-                )}
+                fill="var(--color-panel)"
+                stroke={
+                  hub.expanded
+                    ? 'var(--color-accent)'
+                    : 'var(--color-ink-faint)'
+                }
                 strokeWidth={1.5}
               />
               <text
                 x={hub.x}
                 y={hub.y + 4}
                 textAnchor="middle"
-                className="fill-ink font-mono tabular-nums pointer-events-none"
+                fill="var(--color-ink)"
+                style={{ ...monoText, fontVariantNumeric: 'tabular-nums' }}
                 fontSize={11}
               >
                 {hub.count}
@@ -521,13 +533,14 @@ export function MemoryGraph({
                     : hub.entity
                 const w = label.length * 6.8 + 14
                 return (
-                  <g className="pointer-events-none">
+                  <g style={{ pointerEvents: 'none' }}>
                     <rect
                       x={hub.x - w / 2}
                       y={hub.y - hub.r - 24}
                       width={w}
                       height={17}
-                      className="fill-bg stroke-rule"
+                      fill="var(--color-bg)"
+                      stroke="var(--color-rule)"
                       strokeWidth={1}
                     />
                     <text
@@ -535,10 +548,15 @@ export function MemoryGraph({
                       y={hub.y - hub.r - 12}
                       textAnchor="middle"
                       fontSize={11}
-                      className={cn(
-                        'font-mono lowercase',
-                        hub.expanded ? 'fill-ink' : 'fill-ink-faint',
-                      )}
+                      fill={
+                        hub.expanded
+                          ? 'var(--color-ink)'
+                          : 'var(--color-ink-faint)'
+                      }
+                      style={{
+                        fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+                        textTransform: 'lowercase',
+                      }}
                     >
                       {label}
                     </text>
@@ -555,7 +573,7 @@ export function MemoryGraph({
               role="button"
               tabIndex={0}
               aria-label={`memory: ${memory.text.slice(0, 60)}`}
-              className="cursor-grab active:cursor-grabbing focus:outline-none"
+              className="mem-node"
               onPointerDown={(e) => startNodeDrag(e, `f:${memory.id}:${hub}`)}
               onClick={(e) => {
                 e.stopPropagation()
@@ -575,11 +593,14 @@ export function MemoryGraph({
                 cx={x}
                 cy={y}
                 r={activeId === memory.id ? 8 : 6}
-                className={cn(
-                  'stroke-bg',
-                  memory.pinned ? 'fill-accent' : 'fill-ink',
-                  activeId === memory.id && 'stroke-accent',
-                )}
+                fill={
+                  memory.pinned ? 'var(--color-accent)' : 'var(--color-ink)'
+                }
+                stroke={
+                  activeId === memory.id
+                    ? 'var(--color-accent)'
+                    : 'var(--color-bg)'
+                }
                 strokeWidth={activeId === memory.id ? 2 : 1.5}
               />
               {hoverId === memory.id && selectedId !== memory.id ? (
@@ -588,7 +609,8 @@ export function MemoryGraph({
                   y={y - 14}
                   textAnchor="middle"
                   fontSize={11}
-                  className="fill-ink font-mono pointer-events-none"
+                  fill="var(--color-ink)"
+                  style={monoText}
                   paintOrder="stroke"
                   stroke="var(--color-bg, #f2f0ed)"
                   strokeWidth={5}
@@ -608,7 +630,7 @@ export function MemoryGraph({
               role="button"
               tabIndex={0}
               aria-label={`${m.hidden} more memories for ${m.hub} — open the memories tab`}
-              className="cursor-pointer focus:outline-none"
+              className="mem-more"
               onClick={onShowFacts}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
@@ -622,7 +644,11 @@ export function MemoryGraph({
                 y={m.y}
                 textAnchor="middle"
                 fontSize={11}
-                className="fill-accent font-mono lowercase"
+                fill="var(--color-accent)"
+                style={{
+                  fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+                  textTransform: 'lowercase',
+                }}
                 paintOrder="stroke"
                 stroke="var(--color-bg, #111110)"
                 strokeWidth={4}
@@ -633,61 +659,57 @@ export function MemoryGraph({
           ))}
         </svg>
 
-        <div className="absolute bottom-2 left-2 flex items-center gap-3 font-mono text-[10px] lowercase text-ink-ghost bg-bg/90 border border-rule-2 px-2 py-1">
-          <span className="flex items-center gap-1">
-            <span className="inline-block w-2 h-2 border border-ink-faint bg-panel" />{' '}
-            entity (click to expand)
+        <div className="mem-legend">
+          <span className="mem-legend-item">
+            <span className="mem-swatch entity" /> entity (click to expand)
           </span>
-          <span className="flex items-center gap-1">
-            <span className="inline-block w-2 h-2 rounded-full bg-ink" /> memory
+          <span className="mem-legend-item">
+            <span className="mem-swatch memory" /> memory
           </span>
-          <span className="flex items-center gap-1">
-            <span className="inline-block w-2 h-2 rounded-full bg-accent" />{' '}
-            pinned
+          <span className="mem-legend-item">
+            <span className="mem-swatch pinned" /> pinned
           </span>
           <span>wheel: zoom · drag: pan</span>
         </div>
 
         {selected ? (
-          <div className="absolute top-2 right-2 w-72 border border-rule bg-bg p-3 flex flex-col gap-2">
-            <div className="flex items-start justify-between gap-2">
-              <p className="font-mono text-[12px] text-ink leading-snug">
-                {selected.text}
-              </p>
+          <div className="mem-card">
+            <div className="mem-card-head">
+              <p className="mem-card-text">{selected.text}</p>
               <Button
                 variant="icon"
                 size="icon"
                 onClick={() => setSelectedId(null)}
                 aria-label="close memory card"
               >
-                <X className="w-3.5 h-3.5" aria-hidden />
+                <X size={14} aria-hidden />
               </Button>
             </div>
-            <div className="flex items-center gap-1.5 flex-wrap">
+            <div className="mem-row wrap">
               {selected.entities.map((entity) => (
                 <Badge key={entity}>{entity}</Badge>
               ))}
-              <span className="font-mono text-[10px] lowercase text-ink-ghost">
+              <span className="mem-subhint">
                 {selected.confidence}
                 {selected.corroboration > 0 &&
                   ` · seen ×${selected.corroboration + 1}`}
               </span>
             </div>
-            <div className="flex items-center gap-1.5">
+            <div className="mem-row">
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => onPin(selected)}
                 disabled={busy}
-                className="gap-1"
+                className="mem-gap1"
               >
                 {selected.pinned ? (
                   <>
-                    <PinOff className="w-3 h-3" aria-hidden /> unpin
+                    <PinOff size={12} aria-hidden /> unpin
                   </>
                 ) : (
                   <>
-                    <Pin className="w-3 h-3" aria-hidden /> pin
+                    <Pin size={12} aria-hidden /> pin
                   </>
                 )}
               </Button>
@@ -699,9 +721,9 @@ export function MemoryGraph({
                   setSelectedId(null)
                 }}
                 disabled={busy}
-                className="gap-1"
+                className="mem-gap1"
               >
-                <Trash2 className="w-3 h-3" aria-hidden /> delete
+                <Trash2 size={12} aria-hidden /> delete
               </Button>
             </div>
           </div>
