@@ -118,6 +118,11 @@ export type StreamEvent =
 export interface ChatStreamOptions {
   signal?: AbortSignal
   /**
+   * Full system prompt override for this send (a kind: system entry from
+   * the prompt store). Omitted = the harness identity chain.
+   */
+  systemPrompt?: string
+  /**
    * Reasoning effort for the turn. `default` omits the override; exact native
    * values also travel through namespaced provider options.
    */

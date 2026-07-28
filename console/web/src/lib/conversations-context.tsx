@@ -25,6 +25,10 @@ import {
 } from '@/hooks/use-harness-status'
 import { isMemoryAvailable, useMemoryStatus } from '@/hooks/use-memory-status'
 import { useModelPickerSource } from '@/hooks/use-model-picker-source'
+import {
+  isPromptsAvailable,
+  usePromptsStatus,
+} from '@/hooks/use-prompts-status'
 import { isShellAvailable, useShellStatus } from '@/hooks/use-shell-status'
 import {
   isWorktreeAvailable,
@@ -99,6 +103,12 @@ interface ConversationsContextValue extends ConversationsApi {
    * backend.
    */
   githubAvailable: boolean
+  /**
+   * Whether the directory worker (the prompt store) is connected - gates
+   * the Prompts page nav entry and its directory::prompts::* RPC. Only
+   * meaningful on the real backend.
+   */
+  promptsAvailable: boolean
 }
 
 const ConversationsContext = createContext<ConversationsContextValue | null>(
@@ -135,6 +145,9 @@ export function ConversationsProvider({
   )
   const githubAvailable = isGithubAvailable(
     useGithubStatus(backend.id === 'real'),
+  )
+  const promptsAvailable = isPromptsAvailable(
+    usePromptsStatus(backend.id === 'real'),
   )
   const {
     modelOptions,
@@ -186,6 +199,7 @@ export function ConversationsProvider({
     browserAvailable,
     memoryAvailable,
     githubAvailable,
+    promptsAvailable,
   }
 
   return (

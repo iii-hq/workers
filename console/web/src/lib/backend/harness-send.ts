@@ -45,6 +45,8 @@ export type HarnessSendMode = 'ask' | 'agent'
 /** Per-send options frozen onto the turn record. */
 export interface HarnessSendOptions {
   system_prompt?: string
+  /** How a caller prompt combines with the built-in identity: override replaces it verbatim. */
+  system_prompt_strategy?: 'override' | 'enrich'
   mode?: HarnessSendMode
   max_turns?: number
   thinking_level?: HarnessThinkingLevel

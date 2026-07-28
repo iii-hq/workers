@@ -1,16 +1,25 @@
+import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext'
 import {
   LexicalTypeaheadMenuPlugin,
   MenuOption,
 } from '@lexical/react/LexicalTypeaheadMenuPlugin'
 import {
   $createTextNode,
+  $getNodeByKey,
+  $isTextNode,
   COMMAND_PRIORITY_NORMAL,
   type LexicalEditor,
   type TextNode,
 } from 'lexical'
 import { useCallback, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { fuzzyFilterSlash, type SlashCommand } from '@/lib/slash-commands'
+import { getPrompt } from '@/lib/prompts'
+import {
+  fuzzyFilterSlash,
+  loadPromptSlashCommands,
+  SLASH_COMMANDS,
+  type SlashCommand,
+} from '@/lib/slash-commands'
 import { FlipMenu } from './FlipMenu'
 
 class SlashCommandOption extends MenuOption {
@@ -27,7 +36,8 @@ interface SlashCommandsPluginProps {
 }
 
 // Anchored at column 0 so `/` mid-sentence ("either/or") doesn't fire.
-const SLASH_PATTERN = /^\/(\w*)$/
+// `-` is allowed because prompt names are kebab-case (`/blog-writer`).
+const SLASH_PATTERN = /^\/([\w-]*)$/
 
 function slashTriggerFn(text: string, _editor: LexicalEditor) {
   const match = text.match(SLASH_PATTERN)
@@ -42,14 +52,22 @@ function slashTriggerFn(text: string, _editor: LexicalEditor) {
 export function SlashCommandsPlugin({
   menuOpenRef,
 }: SlashCommandsPluginProps = {}) {
+  const [editor] = useLexicalComposerContext()
   const [query, setQuery] = useState<string | null>(null)
+  const [promptCommands, setPromptCommands] = useState<SlashCommand[]>([])
+
+  // The prompt store changes rarely; re-read each time the menu opens so a
+  // save in the prompts library shows up without a reload.
+  const refreshPromptCommands = useCallback(() => {
+    void loadPromptSlashCommands().then(setPromptCommands)
+  }, [])
 
   const options = useMemo(
     () =>
-      fuzzyFilterSlash(query ?? '').map(
+      fuzzyFilterSlash(query ?? '', [...SLASH_COMMANDS, ...promptCommands]).map(
         (entry) => new SlashCommandOption(entry),
       ),
-    [query],
+    [query, promptCommands],
   )
 
   const onSelectOption = useCallback(
@@ -58,14 +76,46 @@ export function SlashCommandsPlugin({
       textNodeContainingQuery: TextNode | null,
       closeMenu: () => void,
     ) => {
-      if (textNodeContainingQuery) {
-        const replacement = $createTextNode(`${option.entry.command} `)
+      const { entry } = option
+      if (!textNodeContainingQuery) {
+        closeMenu()
+        return
+      }
+      if (!entry.promptName) {
+        const replacement = $createTextNode(`${entry.command} `)
         textNodeContainingQuery.replace(replacement)
         replacement.selectEnd()
+        closeMenu()
+        return
       }
+      // Prompt entry: inject the prompt BODY into the message (claude-code
+      // style context injection). The body is fetched async, so drop a
+      // placeholder now and swap it once the read lands.
+      const placeholder = $createTextNode(`${entry.command} `)
+      textNodeContainingQuery.replace(placeholder)
+      placeholder.selectEnd()
+      const key = placeholder.getKey()
+      const name = entry.promptName
       closeMenu()
+      void getPrompt(name).then((detail) => {
+        editor.update(() => {
+          const node = $getNodeByKey(key)
+          if (!node || !detail) return
+          // Swap only while the node still holds the untouched placeholder.
+          // If the user kept typing into it while the read was pending, leave
+          // their text alone rather than clobbering it.
+          if (
+            !$isTextNode(node) ||
+            node.getTextContent() !== `${entry.command} `
+          )
+            return
+          const body = $createTextNode(`${detail.body.trim()}\n`)
+          node.replace(body)
+          body.selectEnd()
+        })
+      })
     },
-    [],
+    [editor],
   )
 
   return (
@@ -75,6 +125,7 @@ export function SlashCommandsPlugin({
       onSelectOption={onSelectOption}
       onOpen={() => {
         if (menuOpenRef) menuOpenRef.current = true
+        refreshPromptCommands()
       }}
       onClose={() => {
         if (menuOpenRef) menuOpenRef.current = false

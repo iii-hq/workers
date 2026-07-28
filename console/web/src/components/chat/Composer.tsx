@@ -24,6 +24,7 @@ import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import { LexicalShell } from './LexicalShell'
 import { ModelPicker } from './ModelPicker'
 import { ModePicker } from './ModePicker'
+import { PromptPicker, type SessionPrompt } from './PromptPicker'
 import { nextHistoryTarget } from './queue-history'
 
 export interface ComposerSubmitPayload {
@@ -64,6 +65,11 @@ interface ComposerProps {
   workingDir?: string | null
   /** Show the memory bank picker (memory worker present, real backend). */
   showMemoryBank?: boolean
+  /** Show the system prompt picker (directory worker present, real backend). */
+  showPromptPicker?: boolean
+  /** This chat's system prompt override; null = the harness default chain. */
+  sessionPrompt?: SessionPrompt | null
+  onSessionPromptChange?: (next: SessionPrompt | null) => void
   /** This chat's memory bank; null = the worker's default bank. */
   memoryBank?: string | null
   onMemoryBankChange?: (next: string | null) => void
@@ -150,6 +156,9 @@ export function Composer({
   workingDir,
   showMemoryBank,
   memoryBank,
+  showPromptPicker,
+  sessionPrompt,
+  onSessionPromptChange,
   onMemoryBankChange,
   workingDirLocked,
   workingDirError,
@@ -355,6 +364,13 @@ export function Composer({
             <BankPicker
               value={memoryBank ?? null}
               onChange={onMemoryBankChange}
+              disabled={optionsDisabled}
+            />
+          ) : null}
+          {showPromptPicker && onSessionPromptChange ? (
+            <PromptPicker
+              value={sessionPrompt ?? null}
+              onChange={onSessionPromptChange}
               disabled={optionsDisabled}
             />
           ) : null}
