@@ -1,0 +1,61 @@
+{
+  "description": "Read a file's contents at a revision (HEAD by default). Pair it with the working copy to render a real side-by-side or unified diff, rather than parsing a patch.",
+  "function_id": "editor::git::show",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "cwd": {
+        "default": null,
+        "description": "Repository to run in. Defaults to the workspace root.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "path": {
+        "description": "Root-relative path.",
+        "type": "string"
+      },
+      "rev": {
+        "default": null,
+        "description": "Revision to read the file at. Defaults to `HEAD`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "title": "GitShowInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "content": {
+        "description": "The file's contents at that revision. Empty when the path did not exist there — which is what `exists: false` distinguishes from an empty file.",
+        "type": "string"
+      },
+      "exists": {
+        "description": "False when the path is absent at that revision (a file being added).",
+        "type": "boolean"
+      },
+      "path": {
+        "type": "string"
+      },
+      "rev": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "content",
+      "exists",
+      "path",
+      "rev"
+    ],
+    "title": "GitShowOutput",
+    "type": "object"
+  }
+}

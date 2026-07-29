@@ -54,6 +54,7 @@ npx skills add iii-hq/iii --all
 | [`slack`](slack/) | Rust | Slack Web API as `slack::*` functions plus a harness bridge — @mention-triggered turns, native `chat.*Stream` replies, Block Kit approvals. See [`slack/architecture/`](slack/architecture/). |
 | [`context-manager`](context-manager/) | Rust | Model-ready context assembly — four `context::*` functions for token counting, function-result pruning, and history compaction over caller-supplied messages. Storage-agnostic; summarisation via `llm-router` when installed. |
 | [`database`](database/) | Rust | PostgreSQL, MySQL, and SQLite client — query, execute, transactions, prepared statements, and change feeds. |
+| [`editor`](editor/) | Rust | A shared code workspace — open buffers, file tree, unified diffs, fuzzy find and conflict-safe saves, held in `state` so an agent and a person see one editor. Files and git go through `shell`; ships a console editor page. |
 | [`iii-directory`](iii-directory/) | Rust | Engine introspection (functions / triggers / workers), workers-registry proxy, and filesystem-backed skill + prompt reader. |
 | [`lsp`](lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |
 | [`lsp-vscode`](lsp-vscode/) | Node | VS Code extension package `iii-lsp`, embedding the `lsp` server. |

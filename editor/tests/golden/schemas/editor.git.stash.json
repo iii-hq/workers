@@ -1,0 +1,69 @@
+{
+  "description": "Stash the working tree, or pop the most recent stash.",
+  "function_id": "editor::git::stash",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "StashAction": {
+        "enum": [
+          "push",
+          "pop"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "action": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/StashAction"
+          }
+        ],
+        "description": "Stash the working tree, or restore the most recent stash."
+      },
+      "cwd": {
+        "default": null,
+        "description": "Repository to run in. Defaults to the workspace root.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "title": "GitStashInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "StashAction": {
+        "enum": [
+          "push",
+          "pop"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "action": {
+        "$ref": "#/definitions/StashAction"
+      },
+      "ok": {
+        "type": "boolean"
+      },
+      "summary": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "action",
+      "ok",
+      "summary"
+    ],
+    "title": "GitStashOutput",
+    "type": "object"
+  }
+}

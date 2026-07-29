@@ -1,0 +1,69 @@
+{
+  "description": "Close one open buffer. The file on disk is untouched.",
+  "function_id": "editor::buffers::close",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "path": {
+        "description": "Root-relative path of the buffer to close.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "title": "BufferCloseInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Buffer": {
+        "description": "One open file. `mtime` is what the conflict guard compares against, so it is part of the shared record rather than per-surface bookkeeping — two surfaces editing one file must agree on which version they started from.",
+        "properties": {
+          "language": {
+            "description": "Monaco language id for the path.",
+            "type": "string"
+          },
+          "mtime": {
+            "description": "Last-modified time this buffer was read at, Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "path": {
+            "description": "Path relative to the workspace root.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "language",
+          "mtime",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "buffers": {
+        "items": {
+          "$ref": "#/definitions/Buffer"
+        },
+        "type": "array"
+      },
+      "closed": {
+        "description": "False when nothing was open at that path.",
+        "type": "boolean"
+      },
+      "root": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "buffers",
+      "closed",
+      "root"
+    ],
+    "title": "BufferCloseOutput",
+    "type": "object"
+  }
+}

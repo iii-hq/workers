@@ -1,0 +1,38 @@
+{
+  "description": "Undo the last commit, keeping its changes staged (reset --soft HEAD~1). Returns the SHA and message that were undone.",
+  "function_id": "editor::git::undo-commit",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "cwd": {
+        "default": null,
+        "description": "Repository to run in. Defaults to the workspace root.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "GitUndoCommitInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "message": {
+        "description": "Its message, so a caller can put it straight back in a commit box.",
+        "type": "string"
+      },
+      "undone_sha": {
+        "description": "SHA that was undone.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "message",
+      "undone_sha"
+    ],
+    "title": "GitUndoCommitOutput",
+    "type": "object"
+  }
+}

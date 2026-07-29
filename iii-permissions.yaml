@@ -83,6 +83,7 @@ rules:
   # change cannot inadvertently re-open the injection path.
   - '!storage::on-config-change'
   - '!database::on-config-change'
+  - '!editor::on-config-change'
   - '!session::on-config-change'
   # (coder::on-config-change retired: the code surface folded into the shell
   # worker, whose shell::on-config-change is already denied above.)
@@ -201,6 +202,26 @@ rules:
   - worktree::get
   - worktree::status
   - worktree::validate
+  # editor: the reading half. editor::diff is pure (two strings in, a patch
+  # out — no I/O at all); the rest read through the shell worker, so they reach
+  # nothing shell::fs::read and shell::exec could not already reach.
+  # editor::open is allowed even though it records a buffer: recording what an
+  # agent read is the point of the shared workspace, and gating the only read
+  # path would make the worker unusable.
+  # Left at the needs_approval default on purpose: editor::save, ::create,
+  # ::delete and ::move write to disk; the editor::git write surface
+  # (commit / sync / stash / undo-commit) rewrites history or talks to a
+  # remote; editor::workspace::open repoints the workspace for every surface
+  # at once; editor::buffers::close discards someone else's tab.
+  - editor::diff
+  - editor::open
+  - editor::tree
+  - editor::find
+  - editor::search
+  - editor::workspace::get
+  - editor::buffers::list
+  - editor::git::status
+  - editor::git::hunks
   # Read-only code surface (coder::*, now served by the shell worker).
   # Mutating ops (create/update/move/delete-file) stay approval-gated.
   - coder::info

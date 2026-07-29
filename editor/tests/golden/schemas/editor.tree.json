@@ -1,0 +1,75 @@
+{
+  "description": "List a folder in the workspace, with the expansion state the workspace remembers. The walk, the noise-folder excludes and the jail are the shell worker's.",
+  "function_id": "editor::tree",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "collapse": {
+        "default": [],
+        "description": "Root-relative folders to collapse. Collapsing takes its descendants with it.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "expand": {
+        "default": [],
+        "description": "Root-relative folders to mark expanded before listing. Expansion is part of the shared workspace, so it survives a reload and both surfaces agree on it.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "max_depth": {
+        "default": null,
+        "description": "Levels to descend. Defaults to 4 — deep enough to navigate, shallow enough that one call does not walk a whole monorepo.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "path": {
+        "default": null,
+        "description": "Folder to list, relative to the workspace root. Defaults to the root.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "TreeInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "expanded": {
+        "description": "Folders the workspace has expanded, root-relative.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "path": {
+        "description": "Canonical absolute path of the listed folder, as shell resolved it.",
+        "type": "string"
+      },
+      "root": {
+        "type": "string"
+      },
+      "tree": {
+        "description": "The listing exactly as the shell worker returned it (nested `{name, kind, size, mtime, children}` nodes). Passed through rather than re-modelled so this worker does not pin shell's response shape."
+      }
+    },
+    "required": [
+      "expanded",
+      "path",
+      "root",
+      "tree"
+    ],
+    "title": "TreeOutput",
+    "type": "object"
+  }
+}

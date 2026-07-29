@@ -16,6 +16,7 @@ on:
       - 'context-manager/v*'
       - 'cron/v*'
       - 'database/v*'
+      - 'editor/v*'
       - 'email/v*'
       - 'eval/v*'
       - 'harness/v*'

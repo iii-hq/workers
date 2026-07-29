@@ -1,0 +1,94 @@
+{
+  "description": "Write a file, refusing the write when it changed underneath since the editor::open it started from. On refusal the divergence comes back as a patch.",
+  "function_id": "editor::save",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "content": {
+        "description": "Full new contents. This is a whole-file write, not a patch.",
+        "type": "string"
+      },
+      "expected_mtime": {
+        "default": null,
+        "description": "The `mtime` from the `editor::open` this edit started from. When it no longer matches the file on disk, the write is refused and the divergence comes back as a patch. Omit only when deliberately overwriting whatever is there.",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "path": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "content",
+      "path"
+    ],
+    "title": "SaveInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "added": {
+        "description": "Lines this save added relative to what was on disk before it.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "conflict": {
+        "description": "True when the write was refused because the file changed underneath.",
+        "type": "boolean"
+      },
+      "conflict_patch": {
+        "description": "On conflict: a unified diff from the current disk contents to the contents you tried to write, so the divergence is reviewable without a second round trip.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "created": {
+        "description": "True when the file did not exist and was created.",
+        "type": "boolean"
+      },
+      "disk_mtime": {
+        "description": "What was on disk when a conflict was detected.",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "mtime": {
+        "description": "Last-modified time after the write. Feed it into the next save.",
+        "format": "int64",
+        "type": "integer"
+      },
+      "path": {
+        "type": "string"
+      },
+      "removed": {
+        "description": "Lines this save removed.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "saved": {
+        "description": "True when the file was written.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "added",
+      "conflict",
+      "created",
+      "mtime",
+      "path",
+      "removed",
+      "saved"
+    ],
+    "title": "SaveOutput",
+    "type": "object"
+  }
+}

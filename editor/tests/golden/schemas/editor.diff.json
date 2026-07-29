@@ -1,0 +1,140 @@
+{
+  "description": "Unified diff between two texts. Pure: nothing is read from disk. Use it to show what an edit will do before writing it, or to explain what a write did.",
+  "function_id": "editor::diff",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "after": {
+        "description": "The text as it will be.",
+        "type": "string"
+      },
+      "before": {
+        "description": "The text as it was.",
+        "type": "string"
+      },
+      "context_lines": {
+        "default": null,
+        "description": "Unchanged lines kept around each hunk (`-U` of `git diff`). Defaults to the worker's `diff_context_lines`.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "path": {
+        "default": null,
+        "description": "Path used to label the patch header. Nothing is read from disk — this is presentation only.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "after",
+      "before"
+    ],
+    "title": "DiffInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Hunk": {
+        "description": "One `@@` block: the line ranges it covers on each side, plus the counts a gutter needs without re-reading the patch body.",
+        "properties": {
+          "added": {
+            "description": "Lines added within this hunk.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "new_lines": {
+            "description": "Number of \"after\" lines the hunk spans.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "new_start": {
+            "description": "First line of the hunk on the \"after\" side, 1-based.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "old_lines": {
+            "description": "Number of \"before\" lines the hunk spans.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "old_start": {
+            "description": "First line of the hunk on the \"before\" side, 1-based. `0` when the before side is empty (pure addition), matching unified-diff convention.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "removed": {
+            "description": "Lines removed within this hunk.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "added",
+          "new_lines",
+          "new_start",
+          "old_lines",
+          "old_start",
+          "removed"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "A rendered patch plus the structured view of the same edits.",
+    "properties": {
+      "added": {
+        "description": "Total lines added across every hunk.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "hunks": {
+        "description": "One entry per `@@` block, in file order.",
+        "items": {
+          "$ref": "#/definitions/Hunk"
+        },
+        "type": "array"
+      },
+      "identical": {
+        "description": "True when `before` and `after` are byte-identical.",
+        "type": "boolean"
+      },
+      "patch": {
+        "description": "Unified diff. Empty when the two sides are identical.",
+        "type": "string"
+      },
+      "removed": {
+        "description": "Total lines removed across every hunk.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "truncated": {
+        "description": "True when either side exceeded `max_bytes` and the diff was skipped. `patch` and `hunks` are empty in that case — a caller that ignores this flag would read \"no changes\" from a file that was simply too big.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "added",
+      "hunks",
+      "identical",
+      "patch",
+      "removed",
+      "truncated"
+    ],
+    "title": "DiffResult",
+    "type": "object"
+  }
+}

@@ -1,0 +1,596 @@
+/*
+ * Every rule is scoped under [data-iii-ui="editor"] — the console mounts each
+ * injected render inside that wrapper, and injected CSS is unlayered, so an
+ * unscoped selector would silently outrank the console's own styles
+ * document-wide.
+ *
+ * Colours are design tokens only: dark mode is a variable flip, so a
+ * token-based rule themes for free and a hardcoded hex does not.
+ *
+ * The page shares a viewport with the console's chat pane, so it gets roughly
+ * half the window. Everything below is sized for that: a 200px sidebar rather
+ * than 300, 22px rows, 12px monospace. Give the code the room.
+ */
+
+[data-iii-ui='editor'] .ed-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-size: 13px;
+}
+
+/* ---------------------------------------------------------------- header */
+
+[data-iii-ui='editor'] .ed-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--color-rule);
+  flex: none;
+}
+
+/* The console prefixes its section headers with a dim `$`; matching it is
+   most of what makes an injected page read as part of the same product. */
+[data-iii-ui='editor'] .ed-brand {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--color-ink-faint);
+  flex: none;
+}
+
+[data-iii-ui='editor'] .ed-brand::before {
+  content: '$ ';
+  color: var(--color-accent);
+}
+
+[data-iii-ui='editor'] .ed-rootpath {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='editor'] .ed-icon {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+[data-iii-ui='editor'] .ed-icon:hover {
+  background: var(--color-panel);
+  color: var(--color-ink);
+}
+
+/* ------------------------------------------------------------------ body */
+
+[data-iii-ui='editor'] .ed-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+[data-iii-ui='editor'] .ed-side {
+  width: 200px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-right: 1px solid var(--color-rule);
+  min-height: 0;
+}
+
+[data-iii-ui='editor'] .ed-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ------------------------------------------------- segmented mode switch */
+
+[data-iii-ui='editor'] .ed-seg {
+  display: flex;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  overflow: hidden;
+  flex: none;
+}
+
+[data-iii-ui='editor'] .ed-seg button {
+  flex: 1;
+  padding: 4px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* Active reads as the nav tabs do: ink fill, paper text. */
+[data-iii-ui='editor'] .ed-seg button[data-active='true'] {
+  background: var(--color-ink);
+  color: var(--color-bg);
+}
+
+/* -------------------------------------------------------------- the tree */
+
+[data-iii-ui='editor'] .ed-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0 -4px;
+}
+
+[data-iii-ui='editor'] .ed-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+[data-iii-ui='editor'] .ed-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-iii-ui='editor'] .ed-row:hover {
+  background: var(--color-panel);
+}
+
+[data-iii-ui='editor'] .ed-row[data-active='true'] {
+  background: var(--color-panel);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+/* An edit that just landed. The accent expires on a timer in the page, not in
+   CSS, so a row that changes twice re-lights instead of finishing its run. */
+[data-iii-ui='editor'] .ed-row[data-fresh='true'] {
+  animation: ed-land 700ms ease-out;
+}
+
+@keyframes ed-land {
+  from {
+    background: var(--color-accent);
+    color: var(--color-accent-fg);
+  }
+  to {
+    background: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui='editor'] .ed-row[data-fresh='true'] {
+    animation: none;
+    box-shadow: inset 2px 0 0 var(--color-accent);
+  }
+}
+
+[data-iii-ui='editor'] .ed-caret {
+  flex: none;
+  width: 10px;
+  color: var(--color-ink-ghost);
+  font-size: 9px;
+}
+
+[data-iii-ui='editor'] .ed-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='editor'] .ed-dir {
+  color: var(--color-ink-faint);
+}
+
+/* One-letter git mark, the vocabulary git itself uses. */
+[data-iii-ui='editor'] .ed-mark {
+  flex: none;
+  width: 1em;
+  text-align: center;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+[data-iii-ui='editor'] .ed-mark[data-s='modified'] {
+  color: var(--color-warn);
+}
+[data-iii-ui='editor'] .ed-mark[data-s='added'],
+[data-iii-ui='editor'] .ed-mark[data-s='untracked'] {
+  color: var(--color-ok);
+}
+[data-iii-ui='editor'] .ed-mark[data-s='deleted'],
+[data-iii-ui='editor'] .ed-mark[data-s='conflicted'] {
+  color: var(--color-alert);
+}
+
+[data-iii-ui='editor'] .ed-hint {
+  padding: 6px;
+  color: var(--color-ink-faint);
+  font-size: 11.5px;
+}
+
+[data-iii-ui='editor'] .ed-count {
+  flex: none;
+  color: var(--color-ink-ghost);
+  font-size: 10.5px;
+}
+
+/* ------------------------------------------------------------------ tabs */
+
+[data-iii-ui='editor'] .ed-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  height: 30px;
+  flex: none;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--color-rule);
+  scrollbar-width: none;
+}
+
+[data-iii-ui='editor'] .ed-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+[data-iii-ui='editor'] .ed-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px 0 10px;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+
+[data-iii-ui='editor'] .ed-tab[data-active='true'] {
+  background: var(--color-panel);
+  border-bottom-color: var(--color-accent);
+}
+
+[data-iii-ui='editor'] .ed-tab-name {
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 0;
+}
+
+[data-iii-ui='editor'] .ed-tab[data-active='true'] .ed-tab-name {
+  color: var(--color-ink);
+}
+
+[data-iii-ui='editor'] .ed-dot {
+  color: var(--color-accent);
+  font-size: 14px;
+  line-height: 1;
+}
+
+[data-iii-ui='editor'] .ed-close {
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-ghost);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  visibility: hidden;
+}
+
+[data-iii-ui='editor'] .ed-tab:hover .ed-close,
+[data-iii-ui='editor'] .ed-tab[data-active='true'] .ed-close {
+  visibility: visible;
+}
+
+[data-iii-ui='editor'] .ed-close:hover {
+  color: var(--color-alert);
+}
+
+/* ---------------------------------------------------------- editor + bar */
+
+[data-iii-ui='editor'] .ed-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  flex: none;
+}
+
+[data-iii-ui='editor'] .ed-spacer {
+  flex: 1;
+}
+
+[data-iii-ui='editor'] .ed-surface {
+  flex: 1;
+  min-height: 0;
+  margin: 0 8px;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+[data-iii-ui='editor'] .ed-patch {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0 8px;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+}
+
+/* The status line carries what a gutter would have: the shared CodeEditor is
+   deliberately chrome-less (no line numbers, no glyph margin), so the file's
+   language, size and git deltas are surfaced here instead. */
+[data-iii-ui='editor'] .ed-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 24px;
+  padding: 0 10px;
+  flex: none;
+  border-top: 1px solid var(--color-rule);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='editor'] .ed-status-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-ink);
+}
+
+[data-iii-ui='editor'] .ed-add {
+  color: var(--color-ok);
+}
+[data-iii-ui='editor'] .ed-del {
+  color: var(--color-alert);
+}
+[data-iii-ui='editor'] .ed-unsaved {
+  color: var(--color-accent);
+}
+
+/* ------------------------------------------------------------- git strip */
+
+/* The strip has to survive a narrow pane: this page shares the viewport with
+   the chat column, so the actions wrap rather than clip. */
+[data-iii-ui='editor'] .ed-git {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 6px 10px;
+  flex: none;
+  border-top: 1px solid var(--color-rule);
+  background: var(--color-panel);
+}
+
+[data-iii-ui='editor'] .ed-branch {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+
+[data-iii-ui='editor'] .ed-ab {
+  color: var(--color-ink-faint);
+  font-size: 10.5px;
+}
+
+[data-iii-ui='editor'] .ed-commit {
+  flex: 1 1 120px;
+  min-width: 100px;
+}
+
+[data-iii-ui='editor'] .ed-gitnote {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 5px 10px;
+  border-top: 1px solid var(--color-rule);
+  flex: none;
+  max-height: 96px;
+}
+
+[data-iii-ui='editor'] .ed-gitnote-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: auto;
+  max-height: 84px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--color-ink-faint);
+  white-space: pre-wrap;
+}
+
+[data-iii-ui='editor'] .ed-gitnote-x {
+  flex: none;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 1;
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+}
+
+[data-iii-ui='editor'] .ed-gitnote-x:hover {
+  background: var(--color-panel);
+  color: var(--color-ink);
+}
+
+[data-iii-ui='editor'] .ed-error {
+  padding: 6px 10px;
+  flex: none;
+  border-top: 1px solid var(--color-alert);
+  color: var(--color-ink);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+}
+
+[data-iii-ui='editor'] .ed-warn {
+  margin: 6px 8px 0;
+  padding: 5px 8px;
+  border: 1px solid var(--color-warn);
+  border-radius: 4px;
+  font-size: 11.5px;
+}
+
+/* --------------------------------------------------- chat + trace cards */
+
+[data-iii-ui='editor'] .ed-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 9px;
+  border: 1px solid var(--color-rule);
+  border-radius: 5px;
+  background: var(--color-panel);
+  font-size: 12px;
+}
+
+[data-iii-ui='editor'] .ed-card-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+[data-iii-ui='editor'] .ed-card-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='editor'] .ed-stat {
+  display: inline-flex;
+  gap: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+[data-iii-ui='editor'] .ed-card-patch {
+  max-height: 380px;
+  overflow: auto;
+  border-top: 1px solid var(--color-rule);
+  padding-top: 5px;
+}
+
+[data-iii-ui='editor'] .ed-hits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+
+[data-iii-ui='editor'] .ed-muted {
+  color: var(--color-ink-faint);
+}
+
+/* ------------------------------------------------------------ patch view */
+
+[data-iii-ui='editor'] .ed-patch-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-rule);
+  background: var(--color-panel);
+}
+
+[data-iii-ui='editor'] .ed-patch-body {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+[data-iii-ui='editor'] .ed-dline {
+  display: flex;
+  gap: 8px;
+  padding: 0 8px;
+  white-space: pre;
+}
+
+[data-iii-ui='editor'] .ed-dnum {
+  flex: none;
+  width: 3ch;
+  text-align: right;
+  color: var(--color-ink-ghost);
+  user-select: none;
+}
+
+[data-iii-ui='editor'] .ed-dtext {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+/* Banded rows, not a coloured leading character — colour-blind readers get the
+   +/- glyph, everyone else gets the band. */
+[data-iii-ui='editor'] .ed-dline[data-k='add'] {
+  background: color-mix(in srgb, var(--color-ok) 16%, transparent);
+}
+
+[data-iii-ui='editor'] .ed-dline[data-k='del'] {
+  background: color-mix(in srgb, var(--color-alert) 14%, transparent);
+}
+
+[data-iii-ui='editor'] .ed-dline[data-k='hunk'] {
+  color: var(--color-ink-faint);
+  background: var(--color-panel);
+}
+
+[data-iii-ui='editor'] .ed-dline[data-k='meta'] {
+  color: var(--color-ink-ghost);
+}
