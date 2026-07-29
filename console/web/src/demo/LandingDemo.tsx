@@ -183,7 +183,7 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
                 <>
                   <span className="flex-shrink-0 text-ink-ghost">·</span>
                   <span className="flex-shrink-0 text-accent">
-                    sub-agent · depth 1
+                    subagent · depth 1
                   </span>
                 </>
               ) : null}

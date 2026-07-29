@@ -415,7 +415,7 @@ async function* spawnFanOut(
         attributes: [
           ["iii.session.id", child.sessionId],
           ["iii.tag.kind", "harness.subagent"],
-          ["iii.tag.display_name", `Sub-agent · ${child.title}`],
+          ["iii.tag.display_name", `Subagent · ${child.title}`],
         ],
       },
     };
@@ -480,8 +480,8 @@ async function* spawnFanOut(
     kind: "demo-callout",
     callout: {
       anchor: "transcript",
-      title: "three sub-agents, one held at the gate",
-      text: "Each child is its own session with its own budget and its own function policy, listed under this chat as it starts and readable on its own. Only `ledger core` asked for `database::*`, a write scope this session does not hold, so only that one waits for a human. Click approve to release it.",
+      title: "three subagents, one held at the gate",
+      text: "Each subagent is a real session started in iii's native way, the sandbox worker, with its own transcript, its own turn budget and its own function policy, listed under this chat as it starts. Only `ledger core` asked for `database::*`, a write scope this session does not hold, so only that one waits for a human. Click approve to release it.",
     },
   };
 
@@ -502,7 +502,7 @@ async function* spawnFanOut(
     callout: {
       anchor: "transcript",
       title: "three sessions, running at once",
-      text: "Every child is a session of its own, listed in the sidebar. Click one to watch it think and call while the others keep going; whatever it dispatches lands in this same trace, under its own `harness::turn step`.",
+      text: "Every subagent is a session of its own, listed in the sidebar. Click one to watch it think and call while the others keep going; whatever it dispatches lands in this same trace, under its own `harness::turn step`.",
     },
   };
 
@@ -1199,18 +1199,18 @@ export async function* runScenario(
         callout: {
           anchor: "waterfall",
           title: "every operation is traced",
-          text: "Every call opens a span. This is the console’s own trace view, filling in live. The observability comes with the runtime and is OTel compatible.",
+          text: "Every call opens a span. This is the console’s own trace view, filling in live, recorded by the observability worker. Any worker added to the engine is immediately observable, no separate setup, and it is OTel compatible.",
         },
       }),
   );
   if (signal?.aborted) return;
   yield* readPause(signal);
 
-  /* step 3 — fan out to three sub-agents; one of them stops at the gate */
+  /* step 3 — fan out to three subagents; one of them stops at the gate */
   yield* step(
     3,
     assistant(
-      "`database` gives me durable postgres with transactions, so the ledger can be double-entry without a second datastore. Three pieces here are independent, so I’ll run them as three sub-agents and stay on the wiring myself.",
+      "`database` gives me durable postgres with transactions, so the ledger can be double-entry without a second datastore. Three pieces here are independent, so I’ll run them as three subagents and stay on the wiring myself.",
       signal,
     ),
     signal,
@@ -1219,11 +1219,11 @@ export async function* runScenario(
   if (signal?.aborted) return;
   yield* readPause(signal);
 
-  /* step 4 — install the worker the children wrote */
+  /* step 4 — install the worker the subagents wrote */
   yield* step(
     4,
     thought(
-      "All three children are back: core, webhook and tests. Install the worker so the engine can route to it.",
+      "All three subagents are back: core, webhook and tests. Install the worker so the engine can route to it.",
       signal,
     ),
     signal,
@@ -1284,7 +1284,7 @@ export async function* runScenario(
   );
   if (signal?.aborted) return;
 
-  /* step 6 — run the child's tests against the live worker */
+  /* step 6 — run the subagent's tests against the live worker */
   yield* step(
     6,
     thought(
@@ -1369,7 +1369,7 @@ export async function* runScenario(
         callout: {
           anchor: "waterfall",
           title: "one trace, eight durable steps",
-          text: "Each `harness::turn step` row is one queue item. A crash mid-turn resumes from the last completed step. Agentic loops are a normal engineering pattern in iii. They work the same as any programmatic loop would in iii.",
+          text: "Each `harness::turn step` row is one durable step of the loop, running on top of the queue worker. A crash mid-turn resumes from the last completed step, into the same trace. Agentic loops are a normal engineering pattern in iii. They work the same as any programmatic loop would in iii.",
         },
       };
     },

@@ -647,7 +647,7 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
     callout,
     isThinking: activeChild ? activeChild.status === 'working' : rootThinking,
     thinkingDetail: activeChild
-      ? 'sub-agent working…'
+      ? 'subagent working…'
       : turnPhase === 'accepted'
         ? 'turn accepted, step queued…'
         : turnPhase === 'started'
