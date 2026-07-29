@@ -29,8 +29,9 @@ make -C harness quickstart-validate
 
 The machine needs `curl` and `jq`; the GLM canary additionally needs
 `python3` with `venv` support. The default engine and Console ports (`49134`
-and `3113`) must be available. Set `III_CHANNEL=next` to validate the `next`
-installer channel. `HARNESS_QUICKSTART_MODEL` overrides the default GLM model.
+and `3113`) must be available. The default installer channel is `latest`; set
+`III_CHANNEL=next` to validate `next`. `HARNESS_QUICKSTART_MODEL` overrides the
+default GLM model.
 Set `HARNESS_QUICKSTART_TRACE=1` to print only the important external commands
 (`iii worker add`, `iii trigger`, installer, engine, and GLM send) and save the
 sanitized list as `commands.log`. Polling attempts, assignments, cleanup, and
@@ -52,6 +53,9 @@ thread (pass or fail; requires the `files:write` bot scope). This uses the
 organization-level `SLACK_BOT_TOKEN`; the bot must be invited to the channel.
 Notification errors are reported as workflow warnings without blocking
 validation.
+
+The nightly schedule runs both `latest` and `next` as independent matrix jobs.
+Manual runs select one of those channels through the workflow input.
 
 Without `ZAI_API_KEY`, the live canary is recorded as `skipped`. Behavioral
 quality remains covered by the Harness E2E workflows.

@@ -8,19 +8,28 @@ on:
       channel:
         description: Installer channel to validate
         type: choice
-        options: [main, next]
-        default: main
+        options: [latest, next]
+        default: latest
 
 permissions:
   contents: read
 
 concurrency:
-  group: harness-quickstart-${{ inputs.channel || 'main' }}
+  group: harness-quickstart-${{ inputs.channel || github.event_name }}
   cancel-in-progress: true
 
 jobs:
   validate:
-    name: harness quickstart / latest registry (${{ inputs.channel || 'main' }})
+    name: harness quickstart / published registry (${{ matrix.channel }})
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: >-
+          ${{
+            github.event_name == 'schedule'
+            && fromJSON('["latest","next"]')
+            || fromJSON(format('["{0}"]', inputs.channel))
+          }}
     runs-on: ubuntu-latest
     # Covers registry timeouts plus terminal rendering and finalization.
     timeout-minutes: 35
@@ -31,7 +40,7 @@ jobs:
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL: worker-releases
-          III_CHANNEL: ${{ inputs.channel || 'main' }}
+          III_CHANNEL: ${{ matrix.channel }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -85,7 +94,7 @@ jobs:
         env:
           HARNESS_QUICKSTART_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-quickstart
           HARNESS_QUICKSTART_TRACE: "1"
-          III_CHANNEL: ${{ inputs.channel || 'main' }}
+          III_CHANNEL: ${{ matrix.channel }}
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
         run: |
           set -euo pipefail
@@ -159,7 +168,7 @@ jobs:
             fi
             if [[ -f target/harness-quickstart/quickstart.mp4 ]]; then
               echo
-              echo "Terminal recording: \`quickstart.mp4\` in the \`harness-quickstart\` artifact."
+              echo "Terminal recording: \`quickstart.mp4\` in the \`harness-quickstart-${{ matrix.channel }}\` artifact."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -167,7 +176,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: harness-quickstart
+          name: harness-quickstart-${{ matrix.channel }}
           path: target/harness-quickstart/
           retention-days: 7
           if-no-files-found: ignore
@@ -179,7 +188,7 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ steps.slack_start.outputs.channel_id }}
           SLACK_MESSAGE_TS: ${{ steps.slack_start.outputs.ts }}
-          III_CHANNEL: ${{ inputs.channel || 'main' }}
+          III_CHANNEL: ${{ matrix.channel }}
           QUICKSTART_OUTCOME: ${{ steps.quickstart.outcome }}
           JOB_STATUS: ${{ job.status }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

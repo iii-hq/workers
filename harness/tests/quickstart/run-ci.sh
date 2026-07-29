@@ -9,7 +9,7 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$script_dir/../../.." && pwd)
 artifact_dir=${HARNESS_QUICKSTART_ARTIFACTS_DIR:-"$repo_root/target/harness-quickstart"}
 install_url=${III_INSTALL_URL:-https://install.iii.dev/iii/main/install.sh}
-channel=${III_CHANNEL:-main}
+channel=${III_CHANNEL:-latest}
 engine_port=49134
 wait_seconds=${HARNESS_QUICKSTART_WAIT_SECONDS:-180}
 add_timeout_seconds=${HARNESS_QUICKSTART_ADD_TIMEOUT_SECONDS:-600}
@@ -30,9 +30,9 @@ case "$trace_enabled" in
 esac
 
 case "$channel" in
-  main | next) ;;
+  latest | next) ;;
   *)
-    echo "III_CHANNEL must be 'main' or 'next' (got: $channel)" >&2
+    echo "III_CHANNEL must be 'latest' or 'next' (got: $channel)" >&2
     exit 2
     ;;
 esac
