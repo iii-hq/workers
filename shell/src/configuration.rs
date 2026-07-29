@@ -163,13 +163,21 @@ pub fn build_runtime(cfg: &ShellConfig, iii: &IIIClient) -> Result<ShellRuntime,
 
 /// Register the `shell` configuration schema with the configuration worker.
 ///
-/// `initial_value` (used only on first registration; preserved afterwards) is
-/// taken from an explicit `--config` seed when given, otherwise from the
-/// built-in zero-config default when no value is stored yet — so the worker
-/// boots with no config file at all (database parity). Unlike database we
-/// cannot seed `ShellConfig::default()`: it is intentionally unjailed/invalid,
-/// so the built-in seed is `ShellConfig::seed_default()`, a bootable permissive
-/// dev default.
+/// `initial_value` is taken from an explicit `--config` seed when given,
+/// otherwise from the built-in zero-config default — so the worker boots with
+/// no config file at all (database parity). Unlike database we cannot seed
+/// `ShellConfig::default()`: it is intentionally unjailed/invalid, so the
+/// built-in seed is `ShellConfig::seed_default()`, a bootable permissive dev
+/// default.
+///
+/// Seeding is gated on the stored value being absent or null:
+/// `configuration::register` REPLACES the stored value whenever
+/// `initial_value` is present (not only on first registration), so an
+/// ungated seed would let every reboot with a `--config` file clobber
+/// runtime `configuration::set` changes — the documented contract is the
+/// opposite ("the live value takes precedence once an entry exists"). The
+/// null case is a boot that previously could not seed (MOT-4252): re-seeding
+/// over it repairs the entry instead of leaving the worker in a crash loop.
 pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": CONFIG_ID,
@@ -177,20 +185,18 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
         "description": "Command denylist, timeout & output caps, and the fs jail.",
         "schema": ShellConfig::json_schema(),
     });
-    let candidate: Option<ShellConfig> = match seed {
-        Some(s) => Some(s.clone()),
-        None if should_seed_default_value(iii).await? => Some(ShellConfig::seed_default()),
-        None => None,
-    };
-    if let Some(cfg) = &candidate {
+    if stored_value_absent(iii).await? {
+        let candidate = match seed {
+            Some(s) => s.clone(),
+            None => ShellConfig::seed_default(),
+        };
         // Validate with the SAME checks build_runtime uses (denylist regex
         // compile, fs-jail rule, host_roots/denylist reachability) BEFORE
-        // persisting. configuration::register preserves the value after first
-        // registration, so a one-line typo in --config — or an unbootable
-        // built-in seed — would become a persistent outage. If invalid, register
-        // the schema only and let the worker fail closed with a clear error.
-        match build_runtime(cfg, iii) {
-            Ok(_) => payload["initial_value"] = cfg.to_json(),
+        // persisting: a one-line typo in --config — or an unbootable built-in
+        // seed — would become a persistent outage. If invalid, register the
+        // schema only and let the worker fail closed with a clear error.
+        match build_runtime(&candidate, iii) {
+            Ok(_) => payload["initial_value"] = candidate.to_json(),
             Err(e) => tracing::error!(
                 error = %e,
                 "ignoring invalid config seed; not registering it as initial_value"
@@ -201,13 +207,20 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
     Ok(())
 }
 
-/// Seed the built-in default only when nothing is stored yet — never overwrite
-/// an operator's persisted value.
-async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
-    match try_get_config_value(iii).await? {
+/// True when no usable value is stored yet (entry missing or value null) —
+/// the only state in which a boot seed may be installed.
+///
+/// The probe uses `raw: true`: the engine validates the stored value against
+/// the registered schema on a plain `configuration::get`, so a stored null —
+/// exactly the state left behind by a boot that could not seed — surfaces as
+/// a SCHEMA_INVALID error instead of a readable null, and treating that error
+/// as fatal is what kept broken installs in a permanent crash loop
+/// (MOT-4252). `raw` skips validation (and env expansion, which is fine: only
+/// nullness is inspected here).
+async fn stored_value_absent(iii: &IIIClient) -> Result<bool, String> {
+    match try_get_config_value(iii, true).await? {
         None => Ok(true),
-        Some(value) if value.is_null() => Ok(true),
-        Some(_) => Ok(false),
+        Some(value) => Ok(value.is_null()),
     }
 }
 
@@ -243,13 +256,19 @@ fn parse_fetched_value(value: Value) -> Result<ShellConfig, String> {
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
-    try_get_config_value(iii)
+    try_get_config_value(iii, false)
         .await?
         .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
 }
 
-async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
+async fn try_get_config_value(iii: &IIIClient, raw: bool) -> Result<Option<Value>, String> {
+    match trigger_with_retry(
+        iii,
+        "configuration::get",
+        json!({ "id": CONFIG_ID, "raw": raw }),
+    )
+    .await
+    {
         Ok(resp) => Ok(resp.get("value").cloned()),
         // `trigger_with_retry` flattens the structured `Error` to its
         // Display string, so we substring-match the recovered message rather
@@ -594,7 +613,8 @@ mod tests {
     #[test]
     fn build_runtime_accepts_shipped_collect_config() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.collect.yaml");
-        let cfg = ShellConfig::from_file(path).expect("config.collect.yaml parses");
+        let raw = std::fs::read_to_string(path).expect("config.collect.yaml reads");
+        let cfg = ShellConfig::from_yaml(&raw).expect("config.collect.yaml parses");
         let iii = iii_sdk::register_worker("ws://127.0.0.1:59598", iii_sdk::InitOptions::default());
         build_runtime(&cfg, &iii)
             .expect("config.collect.yaml must boot for CI interface collection");

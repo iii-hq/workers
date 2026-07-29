@@ -78,6 +78,52 @@ pub struct AppState {
     pub handles: Arc<HandleRegistry>,
     pub transactions: TxRegistry,
     pub log: Logger,
+    /// `database::row-changed` bindings and their fan-out. Absent when the
+    /// worker runs without an engine connection (tests).
+    pub row_changes: Option<Arc<crate::triggers::RowChangeBus>>,
+}
+
+impl AppState {
+    /// Announce a committed change, if anything is listening. Every mutating
+    /// handler ends with this; the bus decides whether the statement changed
+    /// rows and who cares.
+    pub async fn emit_row_change(
+        &self,
+        db: &str,
+        sql: &str,
+        affected_rows: u64,
+        returning: Option<&[serde_json::Map<String, serde_json::Value>]>,
+    ) {
+        if let Some(bus) = &self.row_changes {
+            bus.emit(db, sql, affected_rows, returning).await;
+        }
+    }
+
+    /// Buffer a change made inside an interactive transaction until its commit.
+    pub fn stage_row_change(
+        &self,
+        transaction_id: &str,
+        db: &str,
+        sql: &str,
+        affected_rows: u64,
+        returning: Option<&[serde_json::Map<String, serde_json::Value>]>,
+    ) {
+        if let Some(bus) = &self.row_changes {
+            bus.stage(transaction_id, db, sql, affected_rows, returning);
+        }
+    }
+
+    pub async fn commit_row_changes(&self, transaction_id: &str) {
+        if let Some(bus) = &self.row_changes {
+            bus.commit(transaction_id).await;
+        }
+    }
+
+    pub fn drop_row_changes(&self, transaction_id: &str) {
+        if let Some(bus) = &self.row_changes {
+            bus.rollback(transaction_id);
+        }
+    }
 }
 
 impl AppState {

@@ -1515,6 +1515,15 @@ async fn finalize_failed(
             notify_parent_of_child_failure(deps, &parent.session_id, record, reason, failure).await;
         }
     }
+    if let Some(owner_session_id) = record.reactive_owner_session_id.clone() {
+        let already_notified = record
+            .parent
+            .as_ref()
+            .is_some_and(|parent| parent.session_id == owner_session_id);
+        if !already_notified && owner_session_id != record.session_id {
+            notify_parent_of_child_failure(deps, &owner_session_id, record, reason, failure).await;
+        }
+    }
     // Second post-terminal sweep, as in `finalize_completed`: closes the
     // enqueue-after-drain window against `try_enqueue`'s recheck.
     let woke = woke || drain_queued_best_effort(deps, session, &record.session_id).await;

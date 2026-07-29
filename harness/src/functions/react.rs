@@ -32,10 +32,11 @@
 //! by design; deployments additionally deny it in their permissions policy
 //! (see the repo's iii-permissions.yaml conventions).
 //!
-//! ponytail: a trigger fires with no live parent turn, so spawned sub-agents
-//! are unparented (depth 0). Emergent joins are fixed-arity (`expect` lists the
-//! predecessors) — no fan-out over arrays, no retries, no central run record;
-//! that heavier machinery stays in the `workflow` worker.
+//! ponytail: a trigger fires with no live parent turn, so reactive children
+//! inherit policy and budgets from the registering session through a trusted
+//! owner stamp rather than a live parent call. Emergent joins are fixed-arity
+//! (`expect` lists the predecessors) — no fan-out over arrays, no retries, no
+//! central run record; that heavier machinery stays in the `workflow` worker.
 
 use iii_helpers::observability::opentelemetry::trace::{Status, TraceContextExt as _};
 use iii_helpers::observability::opentelemetry::{Context, KeyValue};
@@ -1243,6 +1244,34 @@ pub(crate) fn kind_name(v: &Value) -> &'static str {
     }
 }
 
+async fn notify_owner_of_reaction_failure(deps: &Deps, spec: &ReactSpec, reason: &str) {
+    let Some(owner_session_id) = spec.owner_session_id.as_deref() else {
+        return;
+    };
+    let subscription = spec.subscription_id.as_deref().unwrap_or("untracked");
+    let message = format!(
+        "[reaction-failure] Reactive execution `{subscription}` failed and could not make \
+         progress. Reason: {reason}. Inspect or replace the binding, then clean up its trigger."
+    );
+    let req = crate::functions::send::SendRequest {
+        session_id: Some(owner_session_id.to_string()),
+        message: crate::functions::send::MessageInput::Text(message),
+        model: None,
+        provider: None,
+        idempotency_key: Some(format!("reaction_failure_{subscription}")),
+        session: None,
+        options: None,
+    };
+    if let Err(error) = crate::functions::send::handle(deps, req).await {
+        tracing::warn!(
+            owner_session = %owner_session_id,
+            subscription,
+            error = %error,
+            "reaction failure notification failed"
+        );
+    }
+}
+
 async fn spawn_reaction(
     deps: &Deps,
     task: String,
@@ -1252,26 +1281,22 @@ async fn spawn_reaction(
 ) -> Result<ReactResult, HarnessError> {
     let mut payload = build_spawn_payload(task, spec, parent.as_deref());
     payload["reactive_depth"] = json!(reactive_depth);
-    let request = TriggerRequest {
-        function_id: super::SPAWN_ID.to_string(),
-        payload,
-        action: None,
-        timeout_ms: None,
+    let req: crate::functions::spawn::SpawnRequest =
+        serde_json::from_value(payload).map_err(|error| {
+            HarnessError::InvalidRequest(format!("invalid reaction spawn: {error}"))
+        })?;
+    let spawned = match spec.owner_session_id.as_deref() {
+        Some(owner_session_id) => {
+            crate::subagent::spawn_reactive_child(deps, &req, owner_session_id).await
+        }
+        // Raw engine registrations have no harness turn to inherit from.
+        // Preserve their historical parentless behavior.
+        None => crate::subagent::spawn_child(deps, &req, None).await,
     };
-    let res = match deps.iii.namespace() {
-        Some(ns) => deps.iii.trigger(request.namespace(ns)).await,
-        None => deps.iii.trigger(request).await,
-    };
-    match res {
-        Ok(v) => {
-            let child = v
-                .get("child_session_id")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            let turn = v
-                .get("child_turn_id")
-                .and_then(Value::as_str)
-                .map(str::to_string);
+    match spawned {
+        Ok(ids) => {
+            let child = Some(ids.session_id);
+            let turn = Some(ids.turn_id);
             // Reaction sessions may need to clean up their own run while the
             // registrant is parked on a wake: record child → registrant so
             // the unregister ownership check accepts lineage descendants.
@@ -1289,7 +1314,7 @@ async fn spawn_reaction(
             Ok(ReactResult::spawned(child, turn))
         }
         Err(e) => {
-            tracing::warn!(error = %e, "harness::react: harness::spawn dispatch failed");
+            tracing::warn!(error = %e, "harness::react: reactive child spawn failed");
             Ok(ReactResult::note(format!("spawn failed: {e}")))
         }
     }
@@ -1356,6 +1381,10 @@ async fn record_reaction_outcome(
                 KeyValue::new("summary", summary.to_string()),
             ],
         );
+    }
+
+    if status == "failed" {
+        notify_owner_of_reaction_failure(deps, spec, summary).await;
     }
 
     // Outcomes belong in the chat that wired the pipeline even when the
@@ -1737,13 +1766,11 @@ fn build_spawn_payload(task: String, spec: &ReactSpec, parent_session_id: Option
     if let Some(o) = &spec.options {
         payload["options"] = o.clone();
     }
-    // Interceptor-registered reactions inherit the REGISTRANT's dispatch
-    // policy, subset when the spec narrows it (the in-turn child rule).
-    // Without this the spawned turn is parentless and lands on the read-only
-    // baseline — a wrap-up reaction delivered into the registrant's own chat
-    // suddenly can't call what every earlier turn there could (rctest-k7m3:
-    // database::query / state::set / engine::unregister_trigger all denied).
-    // Raw engine-side registrations carry no stamp and keep the baseline.
+    // Preserve the interceptor-stamped effective policy in the spawn request.
+    // The trusted reactive spawn path also loads the durable owner record and
+    // subsets against it, so policy and budget inheritance share one source
+    // of truth. Raw engine-side registrations carry no stamp or owner and keep
+    // the configured parentless baseline.
     if let Some(registrant) = &spec.registrant_functions {
         let requested: Option<crate::types::turn::FunctionPolicy> = spec
             .options

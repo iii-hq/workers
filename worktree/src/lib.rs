@@ -16,3 +16,4 @@ pub mod state;
 pub mod surface;
 pub mod trash;
 pub mod types;
+pub mod ui;

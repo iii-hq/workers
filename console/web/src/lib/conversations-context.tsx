@@ -10,14 +10,9 @@ import {
   useApprovalGateStatus,
 } from '@/hooks/use-approval-gate-status'
 import {
-  isBrowserAvailable,
-  useBrowserStatus,
-} from '@/hooks/use-browser-status'
-import {
   type ConversationsApi,
   useConversations,
 } from '@/hooks/use-conversations'
-import { isGithubAvailable, useGithubStatus } from '@/hooks/use-github-status'
 import {
   type HarnessStatus,
   isHarnessAvailable,
@@ -82,23 +77,11 @@ interface ConversationsContextValue extends ConversationsApi {
    */
   worktreeAvailable: boolean
   /**
-   * Whether the optional `browser` worker is connected. Gates the Browser
-   * page nav entry, its `browser::*` RPC, and the chat's browser
-   * session-start notices. Only meaningful on the real backend.
-   */
-  browserAvailable: boolean
-  /**
    * Whether the optional `memory` worker is connected. Gates the Memory
    * page nav entry and its `memory::*` RPC. Only meaningful on the real
    * backend.
    */
   memoryAvailable: boolean
-  /**
-   * Whether the optional `github` worker is connected — gates the Github
-   * page nav entry and its `github::*` RPC. Only meaningful on the real
-   * backend.
-   */
-  githubAvailable: boolean
 }
 
 const ConversationsContext = createContext<ConversationsContextValue | null>(
@@ -127,14 +110,8 @@ export function ConversationsProvider({
   const worktreeAvailable = isWorktreeAvailable(
     useWorktreeStatus(backend.id === 'real'),
   )
-  const browserAvailable = isBrowserAvailable(
-    useBrowserStatus(backend.id === 'real'),
-  )
   const memoryAvailable = isMemoryAvailable(
     useMemoryStatus(backend.id === 'real'),
-  )
-  const githubAvailable = isGithubAvailable(
-    useGithubStatus(backend.id === 'real'),
   )
   const {
     modelOptions,
@@ -183,9 +160,7 @@ export function ConversationsProvider({
     approvalGateAvailable,
     shellAvailable,
     worktreeAvailable,
-    browserAvailable,
     memoryAvailable,
-    githubAvailable,
   }
 
   return (

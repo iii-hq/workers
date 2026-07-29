@@ -18,12 +18,12 @@ name = "http"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.22.0-alpha.3"
+iii-sdk = "=0.22.0-alpha.5"
 # Direct dep for W3C trace-context propagation helpers
 # (`observability::extract_context` + the re-exported `opentelemetry` crate).
 # Pinned to the version `iii-sdk` already resolves so the `opentelemetry` types
 # line up across both crates.
-iii-helpers = "=0.22.0-alpha.3"
+iii-helpers = "=0.22.0-alpha.5"
 # W3C trace-context parent propagation on `tracing::Span` (`OpenTelemetrySpanExt`).
 # 0.32 pairs with opentelemetry 0.31 (same as the engine).
 tracing-opentelemetry = "0.32"

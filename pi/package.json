@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.79.0",
-    "iii-sdk": "0.22.0-alpha.3",
+    "iii-sdk": "0.22.0-alpha.5",
     "yaml": "^2.6.0",
     "zod": "^4.0.0"
   },

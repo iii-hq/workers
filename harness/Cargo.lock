@@ -502,14 +502,14 @@ dependencies = [
 
 [[package]]
 name = "harness"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "anyhow",
  "async-trait",
  "clap",
  "globset",
- "iii-helpers 0.22.0-alpha.3",
- "iii-sdk 0.22.0-alpha.3",
+ "iii-helpers 0.22.0-alpha.5",
+ "iii-sdk 0.22.0-alpha.5",
  "jsonschema",
  "schemars",
  "serde",
@@ -517,6 +517,22 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "harness-e2e"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "harness",
+ "iii-sdk 0.21.6",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -809,9 +825,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.22.0-alpha.3"
+version = "0.22.0-alpha.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5090e8ba42874e09f8fa82419a0ef9f150eae4301eb64272cd0a184b548812fc"
+checksum = "61fd747aff864a8fc67b87c2e627fe41f596a89448bb008fe350b29f7721296d"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -851,14 +867,14 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.22.0-alpha.3"
+version = "0.22.0-alpha.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89e2b076a2227fea8175522eb184c3623af102841a641ec2ff90a8936215d982"
+checksum = "5dbed4f65438e83ac85dda6292486c2c5d843c842b94a32d68c5ff6963b6b46d"
 dependencies = [
  "async-trait",
  "futures-util",
  "hostname",
- "iii-helpers 0.22.0-alpha.3",
+ "iii-helpers 0.22.0-alpha.5",
  "reqwest",
  "schemars",
  "serde",

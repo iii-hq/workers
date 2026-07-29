@@ -5,15 +5,29 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from _test_helpers import GIT_HERMETIC_ENV
+
 SCRIPT = Path(__file__).resolve().parents[1] / "manifest_version.py"
 
 
-def run_script(*args: str) -> subprocess.CompletedProcess[str]:
+def run_script(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     """Run manifest_version.py with arguments; capture stdout/stderr/exit."""
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         capture_output=True,
         text=True,
+        cwd=cwd,
+        env=GIT_HERMETIC_ENV,
+    )
+
+
+def tag(repo: Path, name: str) -> None:
+    """Create an annotated tag in `repo` (the shape create-tag.yml pushes)."""
+    subprocess.run(
+        ["git", "tag", "-a", name, "-m", f"Release {name}\n\nregistry-tag: next\n"],
+        cwd=repo, check=True, env=GIT_HERMETIC_ENV,
     )
 
 
@@ -67,6 +81,76 @@ class TestBumpSubcommand:
     def test_bump_rejects_unknown_kind(self, cargo_manifest):
         r = run_script("bump", str(cargo_manifest), "--kind", "weird")
         assert r.returncode != 0
+
+    def test_bump_defaults_to_no_suffix(self, cargo_manifest):
+        r = run_script("bump", str(cargo_manifest), "--kind", "patch")
+        assert r.stdout.strip() == "0.1.1"
+
+
+class TestBumpSuffix:
+    """`--suffix` picks the pre-release line; `--kind` still picks the base."""
+
+    @pytest.mark.parametrize("suffix", ["alpha", "beta", "rc"])
+    def test_suffix_starts_counter_at_one(self, cargo_manifest, suffix):
+        r = run_script("bump", str(cargo_manifest), "--kind", "patch", "--suffix", suffix)
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == f"0.1.1-{suffix}.1"
+
+    def test_suffix_with_kind_none_keeps_base(self, cargo_manifest):
+        """Iterating a pre-release must not walk the base version forward."""
+        r = run_script("bump", str(cargo_manifest), "--kind", "none", "--suffix", "alpha")
+        assert r.stdout.strip() == "0.1.0-alpha.1"
+
+    def test_suffix_strips_existing_prerelease_before_bumping(self, cargo_manifest):
+        run_script("bump", str(cargo_manifest), "--kind", "none", "--suffix", "alpha")
+        r = run_script("bump", str(cargo_manifest), "--kind", "patch", "--suffix", "beta")
+        assert r.stdout.strip() == "0.1.1-beta.1"
+
+    def test_stable_promotes_prerelease_to_base(self, cargo_manifest):
+        run_script("bump", str(cargo_manifest), "--kind", "none", "--suffix", "rc")
+        r = run_script("bump", str(cargo_manifest), "--kind", "none", "--suffix", "stable")
+        assert r.stdout.strip() == "0.1.0"
+
+    def test_stable_on_stable_version_is_a_noop(self, cargo_manifest):
+        r = run_script("bump", str(cargo_manifest), "--kind", "none", "--suffix", "stable")
+        assert r.stdout.strip() == "0.1.0"
+
+    def test_rejects_unknown_suffix(self, cargo_manifest):
+        r = run_script("bump", str(cargo_manifest), "--kind", "patch", "--suffix", "gamma")
+        assert r.returncode != 0
+
+
+class TestPrereleaseCounter:
+    """`--worker` numbers the pre-release from tags already in the repo."""
+
+    def test_counter_continues_from_existing_tags(self, git_repo_manifest):
+        repo, manifest = git_repo_manifest
+        tag(repo, "smoke/v0.1.1-alpha.1")
+        tag(repo, "smoke/v0.1.1-alpha.2")
+        r = run_script("bump", str(manifest), "--kind", "patch",
+                       "--suffix", "alpha", "--worker", "smoke", cwd=repo)
+        assert r.stdout.strip() == "0.1.1-alpha.3"
+
+    def test_counter_ignores_other_suffixes_at_same_base(self, git_repo_manifest):
+        repo, manifest = git_repo_manifest
+        tag(repo, "smoke/v0.1.1-alpha.4")
+        r = run_script("bump", str(manifest), "--kind", "patch",
+                       "--suffix", "beta", "--worker", "smoke", cwd=repo)
+        assert r.stdout.strip() == "0.1.1-beta.1"
+
+    def test_counter_ignores_other_workers(self, git_repo_manifest):
+        repo, manifest = git_repo_manifest
+        tag(repo, "other/v0.1.1-alpha.9")
+        r = run_script("bump", str(manifest), "--kind", "patch",
+                       "--suffix", "alpha", "--worker", "smoke", cwd=repo)
+        assert r.stdout.strip() == "0.1.1-alpha.1"
+
+    def test_counter_ignores_other_base_versions(self, git_repo_manifest):
+        repo, manifest = git_repo_manifest
+        tag(repo, "smoke/v0.2.0-alpha.7")
+        r = run_script("bump", str(manifest), "--kind", "patch",
+                       "--suffix", "alpha", "--worker", "smoke", cwd=repo)
+        assert r.stdout.strip() == "0.1.1-alpha.1"
 
 
 class TestVerifySubcommand:

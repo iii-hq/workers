@@ -19,7 +19,7 @@ path = "src/lib.rs"
 llm-router = { path = "../llm-router" }
 # Must match llm-router's pin (one iii-sdk per graph). 0.21.5 brings the
 # live span-start push: `provider::zai::stream` renders while streaming.
-iii-sdk = "=0.22.0-alpha.3"
+iii-sdk = "=0.22.0-alpha.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Must stay on the same schemars major as iii-sdk so the derived

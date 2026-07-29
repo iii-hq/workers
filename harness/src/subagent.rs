@@ -87,7 +87,7 @@ pub async fn spawn_from_turn(
         turn_id: parent.turn_id.clone(),
         function_call_id: call_id.to_string(),
     };
-    seed_child(deps, &cfg, &req, Some(&parent_link), Some(parent))
+    seed_child(deps, &cfg, &req, Some(&parent_link), Some(parent), None)
         .await
         .map_err(|e| is_error(e.code(), e.to_string()))
 }
@@ -124,7 +124,29 @@ pub async fn spawn_child(
     parent: Option<&ParentLink>,
 ) -> Result<ChildIds, HarnessError> {
     let cfg = deps.cfg().await;
-    seed_child(deps, &cfg, req, parent, None).await
+    seed_child(deps, &cfg, req, parent, None, None).await
+}
+
+/// Trusted spawn path for a reaction registered by a harness turn.
+///
+/// Reactive children remain fire-and-forget and therefore do not get a
+/// `ParentLink`, but they inherit the registering turn's policy, filesystem
+/// scope, model limits, and shared token/cost ledger. The durable owner id is
+/// also retained so terminal failures wake the orchestration session.
+pub async fn spawn_reactive_child(
+    deps: &Deps,
+    req: &SpawnRequest,
+    owner_session_id: &str,
+) -> Result<ChildIds, HarnessError> {
+    let cfg = deps.cfg().await;
+    let owner = crate::state::get_turn(&deps.iii, owner_session_id, cfg.session_timeout_ms)
+        .await?
+        .ok_or_else(|| {
+            HarnessError::InvalidRequest(format!(
+                "reaction owner session `{owner_session_id}` has no durable turn record"
+            ))
+        })?;
+    seed_child(deps, &cfg, req, None, Some(&owner), Some(owner_session_id)).await
 }
 
 /// Resolve a child's dispatch policy. An in-turn child inherits the PARENT'S
@@ -132,8 +154,9 @@ pub async fn spawn_child(
 /// `subset_policy` still forbids escalation and honours an explicit narrower
 /// request. Dumbness is a prompt/data-flow property, not a capability wall — a
 /// child CAN spawn/register, it just shouldn't (subagent.txt). A parentless
-/// (direct/CLI/trigger-fired) spawn has no parent to mirror: explicit options
-/// win, else the configured default policy. Whatever was resolved, an ask-mode
+/// direct/CLI/raw-trigger spawn has no owner to mirror: explicit options win,
+/// else the configured default policy. Harness-owned reactions use the
+/// registering turn as `parent_record`. Whatever was resolved, an ask-mode
 /// child is then capped at that policy.
 fn child_functions(
     cfg: &WorkerConfig,
@@ -157,6 +180,7 @@ async fn seed_child(
     req: &SpawnRequest,
     parent: Option<&ParentLink>,
     parent_record: Option<&TurnRecord>,
+    reactive_owner_session_id: Option<&str>,
 ) -> Result<ChildIds, HarnessError> {
     let session = deps.session().await;
 
@@ -166,9 +190,9 @@ async fn seed_child(
         .or_else(|| parent_record.map(|p| p.options.model.clone()))
         .ok_or_else(|| {
             HarnessError::InvalidRequest(
-                "spawn requires a model — only an IN-TURN spawn inherits its parent's; a spawn \
-                 dispatched from a reaction, trigger, or CLI is parentless and inherits \
-                 nothing, so name `model` explicitly in that spawn payload"
+                "spawn requires a model — only an in-turn spawn or a harness-owned reaction \
+                 inherits it; a direct, CLI, or raw-trigger spawn has no owner, so name `model` \
+                 explicitly in that spawn payload"
                     .into(),
             )
         })?;
@@ -345,6 +369,7 @@ async fn seed_child(
         },
         spawned_by_subscription_id: req.spawned_by_subscription_id.clone(),
         reactive_depth: req.reactive_depth,
+        reactive_owner_session_id: reactive_owner_session_id.map(str::to_string),
         functions_generation: None,
         result: None,
         result_error: None,
@@ -463,6 +488,7 @@ mod tests {
             display_parent_session_id: None,
             spawned_by_subscription_id: None,
             reactive_depth: None,
+            reactive_owner_session_id: None,
             functions_generation: None,
             result: None,
             result_error: None,

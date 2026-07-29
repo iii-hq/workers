@@ -1,0 +1,7 @@
+databases:
+  primary:
+    url: sqlite:${HARNESS_E2E_RUN_DIR}/database/iii.db
+    pool:
+      max: 10
+      idle_timeout_ms: 30000
+      acquire_timeout_ms: 5000

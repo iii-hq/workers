@@ -1,0 +1,4 @@
+adapter:
+  name: kv
+  config:
+    store_method: in_memory

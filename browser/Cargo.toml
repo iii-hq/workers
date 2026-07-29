@@ -2,7 +2,7 @@
 
 [package]
 name = "browser"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 publish = false
 
@@ -15,7 +15,8 @@ name = "browser"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.22.0-alpha.3"
+iii-sdk = "=0.22.0-alpha.5"
+iii-console-ui = { path = "../crates/console-ui" }
 arc-swap = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process"] }
 serde = { version = "1", features = ["derive"] }

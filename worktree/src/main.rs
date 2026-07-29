@@ -133,6 +133,11 @@ async fn main() -> Result<()> {
     });
     functions::register_all(&iii, &deps);
 
+    // Injectable console UI — after the worktree::* functions so the console
+    // can attribute the assets. `iii` is already an Arc<IIIClient> (the
+    // console-ui crate clones it into its hot-reload watcher task).
+    worktree::ui::register(&iii);
+
     // Best-effort HTTP exposure for the read-only surface. The `http`
     // trigger type may be absent (no http worker installed); a failed
     // registration warns and the worker keeps serving the bus.

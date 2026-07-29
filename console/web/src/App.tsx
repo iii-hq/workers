@@ -26,14 +26,10 @@ import {
 import { buildViewOptions } from '@/lib/nav-options'
 import { type RegisteredPage, useExtPages } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
-import { Browser } from '@/pages/Browser'
 import { Configuration } from '@/pages/Configuration'
 import { ExtPage } from '@/pages/Ext'
-import { Github } from '@/pages/Github'
-import { Memory } from '@/pages/Memory'
 import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
-import { Worktrees } from '@/pages/Worktrees'
 
 export function App() {
   const [theme, setTheme] = useTheme()
@@ -110,14 +106,6 @@ export function App() {
               <Configuration theme={theme} onThemeChange={setTheme} />
             ) : view === 'workers' ? (
               <Workers />
-            ) : view === 'worktrees' ? (
-              <Worktrees />
-            ) : view === 'browser' ? (
-              <Browser />
-            ) : view === 'memory' ? (
-              <Memory />
-            ) : view === 'github' ? (
-              <Github />
             ) : view === 'ext' ? (
               <ExtPage onMissing={onExtMissing} />
             ) : (
@@ -156,25 +144,14 @@ function Header({
   onOpenShortcuts,
 }: HeaderProps) {
   // Optional-worker entries appear only while their worker is present; a
-  // direct #/worktrees or #/browser hit still lands on that page's install
-  // notice.
-  const {
-    worktreeAvailable,
-    browserAvailable,
-    memoryAvailable,
-    githubAvailable,
-  } = useConversationsCtx()
+  // Every per-worker page moved to injected UI; the first-party nav is just
+  // traces + workers, so the header no longer reads worker presence here.
   // Injected pages: the runtime analogue of worker-presence gating —
   // presence is the script being loaded, which already tracks worker
   // connectedness via trigger GC.
   const extPages = useExtPages()
   const viewOptions: { value: string; label: string }[] = [
-    ...buildViewOptions(
-      worktreeAvailable,
-      browserAvailable,
-      memoryAvailable,
-      githubAvailable,
-    ),
+    ...buildViewOptions(),
     ...extPages.map((page) => ({
       value: extNavValue(page),
       label: page.title,

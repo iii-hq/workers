@@ -16,7 +16,7 @@ on:
         required: true
         type: string
       registry_tag:
-        description: 'Registry tag (latest, next, ...)'
+        description: 'Registry channel (latest, next, experimental)'
         required: false
         type: string
         default: latest

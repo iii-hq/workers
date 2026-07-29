@@ -250,6 +250,13 @@ pub struct TurnRecord {
     /// so `harness::react` can refuse chains past `MAX_REACTIVE_DEPTH`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reactive_depth: Option<u32>,
+    /// Session that registered the reaction which spawned this turn.
+    ///
+    /// Unlike `parent`, this does not resolve a pending function call. It is
+    /// durable ownership used to inherit execution limits and to deliver a
+    /// terminal child failure back to the orchestration session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reactive_owner_session_id: Option<String>,
     /// Function-registry generation this session last acknowledged; a mismatch
     /// at generate time appends a registry-change notice so session-cached
     /// contracts get re-fetched.
@@ -343,6 +350,7 @@ mod tests {
             display_parent_session_id: None,
             spawned_by_subscription_id: None,
             reactive_depth: None,
+            reactive_owner_session_id: None,
             functions_generation: None,
             result: None,
             result_error: None,
@@ -424,6 +432,7 @@ mod tests {
         r.display_parent_session_id = Some("s_display_parent".into());
         r.spawned_by_subscription_id = Some("sub_1".into());
         r.reactive_depth = Some(3);
+        r.reactive_owner_session_id = Some("s_owner".into());
         let back: TurnRecord = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
         assert_eq!(back, r);
     }

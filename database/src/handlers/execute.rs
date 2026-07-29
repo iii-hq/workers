@@ -57,6 +57,10 @@ pub async fn handle(state: &AppState, req: ExecuteReq) -> Result<ExecuteResp, St
 
     let returned_rows =
         crate::handlers::query_rows_to_objects(&result.returned_columns, result.returned_rows);
+    // The write is committed (autocommit) — announce it.
+    state
+        .emit_row_change(&db, &req.sql, result.affected_rows, Some(&returned_rows))
+        .await;
     Ok(ExecuteResp {
         affected_rows: result.affected_rows,
         last_insert_id: result.last_insert_id,
@@ -86,6 +90,7 @@ mod tests {
             handles: Arc::new(HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_helpers::observability::Logger::new(),
+            row_changes: None,
         }
     }
 

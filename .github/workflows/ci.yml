@@ -444,7 +444,7 @@ jobs:
           fi
 
   # ──────────────────────────────────────────────────────────────
-  # Harness integration E2E (non-required). Pull requests only run
+  # Harness integration tests (non-required). Pull requests only run
   # the complete live stack when an integration input changed. The
   # default branch and daily cache warmer run it unconditionally.
   # ──────────────────────────────────────────────────────────────
