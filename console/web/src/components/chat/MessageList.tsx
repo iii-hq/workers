@@ -46,6 +46,12 @@ interface MessageListProps {
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
   workingDir?: string | null
+  /**
+   * Render every function-call card (and group) already expanded. Off in the
+   * product, where a turn's calls collapse to one line each; on for showcase
+   * surfaces whose whole point is the result renderers.
+   */
+  defaultOpenCalls?: boolean
 }
 
 type RenderItem =
@@ -104,6 +110,7 @@ export function MessageList({
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
   workingDir,
+  defaultOpenCalls,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -187,6 +194,7 @@ export function MessageList({
               <FunctionTriggerGroup
                 key={item.key}
                 messages={item.messages}
+                defaultOpen={defaultOpenCalls}
                 onResolveApproval={onResolveApproval}
                 onAlwaysAllow={onAlwaysAllow}
                 onResolveFilesystemAccess={onResolveFilesystemAccess}
@@ -211,6 +219,7 @@ export function MessageList({
               key={item.key}
               message={m}
               copyText={copyText}
+              defaultOpenCalls={defaultOpenCalls}
               onResolveApproval={onResolveApproval}
               onAlwaysAllow={onAlwaysAllow}
               onResolveFilesystemAccess={onResolveFilesystemAccess}
