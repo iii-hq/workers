@@ -70,16 +70,23 @@ async fn boot() -> Option<Harness> {
 
     sleep(Duration::from_millis(800)).await;
 
-    let worker = Command::new(env!("CARGO_BIN_EXE_editor"))
+    // `?` here would drop `iii` without killing it: `Harness` does not exist
+    // yet, so nothing owns the engine until both children are spawned.
+    let worker = match Command::new(env!("CARGO_BIN_EXE_editor"))
         .args(["--url", ENGINE_WS])
-        .args([
-            "--config",
-            concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml"),
-        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
+    {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("failed to spawn the worker: {e}");
+            let mut iii = iii;
+            let _ = iii.kill();
+            let _ = iii.wait();
+            return None;
+        }
+    };
 
     sleep(Duration::from_millis(1500)).await;
 

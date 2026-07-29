@@ -86,20 +86,25 @@ async fn main() -> Result<()> {
     let cfg = configuration::fetch_config(&iii)
         .await
         .map_err(|e| anyhow::anyhow!("loading editor configuration: {e}"))?;
-    let git_timeout_ms = cfg.git_timeout_ms;
+    let git_timeout_ms = Arc::new(std::sync::atomic::AtomicU64::new(cfg.git_timeout_ms));
     let cfg = configuration::cell(cfg);
 
     // The bus carries the engine URL because `shell::fs::read` answers with a
     // channel reference that has to be dialled separately.
-    let bus = Arc::new(Bus::new(iii.clone(), cli.url.clone(), git_timeout_ms));
+    let bus = Arc::new(Bus::new(
+        iii.clone(),
+        cli.url.clone(),
+        git_timeout_ms.clone(),
+    ));
 
     functions::register_all(&iii, &cfg, &bus);
     ui::register(&iii);
 
-    // Bound last, so the handler closes over fully-built state.
-    if let Err(e) = configuration::register_config_trigger(&iii, cfg.clone()) {
-        tracing::warn!(error = %e, "failed to bind the configuration trigger");
-    }
+    // Bound last, so the handler closes over fully-built state. A failure here
+    // is fatal rather than a warning: the worker would keep serving with limits
+    // that can never be changed, which is worse than not starting.
+    configuration::register_config_trigger(&iii, cfg.clone(), git_timeout_ms)
+        .map_err(|e| anyhow::anyhow!("binding the configuration trigger: {e}"))?;
 
     tracing::info!("editor ready, waiting for invocations");
     tokio::signal::ctrl_c().await?;

@@ -1,7 +1,5 @@
 # editor
 
-A line an agent wrote through shell::fs::write, without ever calling editor::*.
-
 A code workspace that an agent and a person share. Open a folder, and the
 buffers you have open, the folders you have expanded, and the mtimes each
 buffer was read at are one record on the bus — so the file an agent opens

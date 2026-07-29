@@ -9,6 +9,7 @@
 //! every handler reads the live snapshot per call rather than capturing one at
 //! registration. Nothing requires a restart.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -132,7 +133,11 @@ async fn trigger_with_retry(
 
 /// Swap the snapshot. Handlers read it per call, so the next invocation of
 /// every function sees the new values.
-pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
+pub async fn apply_config(cell: &ConfigCell, git_timeout_ms: &AtomicU64, cfg: WorkerConfig) {
+    // The bus holds the git timeout separately (it is read on a path that has
+    // no access to the snapshot), so it has to be published here or it would
+    // be the one field a reload silently skipped.
+    git_timeout_ms.store(cfg.git_timeout_ms, Ordering::Relaxed);
     *cell.write().await = Arc::new(cfg);
 }
 
@@ -154,16 +159,22 @@ pub struct OnConfigChangeResponse {
 /// Register the internal config-change handler and bind a `configuration`
 /// trigger. Registered here rather than in `functions::register_all` so it
 /// stays off the public `catalog()`.
-pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), Error> {
+pub fn register_config_trigger(
+    iii: &IIIClient,
+    cell: ConfigCell,
+    git_timeout_ms: Arc<AtomicU64>,
+) -> Result<(), Error> {
     let cell_for_fn = cell.clone();
+    let timeout_for_fn = git_timeout_ms.clone();
     let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
         RegisterFunction::new_async(move |_event: OnConfigChangeEvent| {
             let cell = cell_for_fn.clone();
+            let timeout = timeout_for_fn.clone();
             let engine = engine.clone();
             async move {
-                on_config_change(&engine, &cell).await;
+                on_config_change(&engine, &cell, &timeout).await;
                 Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
@@ -193,10 +204,10 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
 /// limits without updating persisted state. A failed fetch keeps the previous
 /// snapshot (last-good) rather than falling back to defaults, which would
 /// silently widen every cap.
-async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) {
+async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, git_timeout_ms: &AtomicU64) {
     match fetch_config(iii).await {
         Ok(cfg) => {
-            apply_config(cell, cfg).await;
+            apply_config(cell, git_timeout_ms, cfg).await;
             tracing::info!("editor configuration reloaded");
         }
         Err(e) => tracing::error!(

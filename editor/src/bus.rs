@@ -12,6 +12,7 @@
 //! jail-escape from `shell` must read as a jail-escape to the caller, not as
 //! an `editor` error.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use iii_sdk::channels::{ChannelReader, StreamChannelRef};
@@ -64,16 +65,23 @@ pub struct Bus {
     /// Engine WebSocket base, needed to open the read channel `shell::fs::read`
     /// hands back. Same string the binary was started with.
     ws_url: String,
-    git_timeout_ms: u64,
+    /// Shared with the configuration reload path rather than copied: every
+    /// other limit is read from the live snapshot per call, and a timeout
+    /// frozen at boot would be the one field that quietly ignored an edit.
+    git_timeout_ms: Arc<AtomicU64>,
 }
 
 impl Bus {
-    pub fn new(iii: Arc<IIIClient>, ws_url: String, git_timeout_ms: u64) -> Self {
+    pub fn new(iii: Arc<IIIClient>, ws_url: String, git_timeout_ms: Arc<AtomicU64>) -> Self {
         Self {
             iii,
             ws_url,
             git_timeout_ms,
         }
+    }
+
+    fn git_timeout(&self) -> u64 {
+        self.git_timeout_ms.load(Ordering::Relaxed)
     }
 
     async fn call(
@@ -101,13 +109,13 @@ impl Bus {
         let mut payload = json!({
             "command": "git",
             "args": args,
-            "timeout_ms": self.git_timeout_ms,
+            "timeout_ms": self.git_timeout(),
         });
         if let Some(dir) = cwd {
             payload["cwd"] = json!(dir);
         }
         let value = self
-            .call("shell::exec", payload, self.git_timeout_ms + 5_000)
+            .call("shell::exec", payload, self.git_timeout() + 5_000)
             .await?;
         serde_json::from_value(value)
             .map_err(|e| Error::Handler(format!("shell::exec returned an unexpected shape: {e}")))
@@ -120,7 +128,7 @@ impl Bus {
             return Err(Error::Handler(format!(
                 "git {} timed out after {}ms",
                 args.join(" "),
-                self.git_timeout_ms
+                self.git_timeout()
             )));
         }
         if out.exit_code != Some(0) {
@@ -152,9 +160,9 @@ impl Bus {
 
     /// Read a file's text through the channel `shell::fs::read` returns.
     ///
-    /// The size check runs on the stat that comes back with the channel ref,
-    /// before a byte is pulled, so an oversized file costs one round trip
-    /// rather than streaming megabytes we intend to throw away.
+    /// The cap is enforced while draining, not after: the reader stops pulling
+    /// once it holds more than `max_bytes`, so an oversized file costs one
+    /// chunk past the limit rather than its whole length in memory.
     pub async fn read(&self, path: &str, max_bytes: usize) -> Result<FileRead, Error> {
         let value = self
             .call("shell::fs::read", json!({ "path": path }), 30_000)
@@ -173,7 +181,16 @@ impl Bus {
             })?;
 
         let reader = ChannelReader::new(&self.ws_url, &channel_ref);
-        let bytes = reader.read_all().await?;
+        let mut bytes: Vec<u8> = Vec::new();
+        // Drain chunk by chunk so a huge file cannot be materialised in full
+        // just to be discarded. One chunk of overshoot is enough to know the
+        // file exceeded the cap.
+        while let Some(chunk) = reader.next_binary().await? {
+            bytes.extend_from_slice(&chunk);
+            if bytes.len() > max_bytes {
+                break;
+            }
+        }
         let _ = reader.close().await;
 
         let truncated = bytes.len() > max_bytes;

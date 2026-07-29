@@ -364,9 +364,10 @@ pub struct GitHunksInput {
     /// Which comparison to make. Defaults to `worktree`.
     #[serde(default)]
     pub against: Against,
-    /// Unchanged lines kept around each hunk in `patch`. Defaults to 3, which
-    /// reads well. Pass 0 for ranges that match a gutter exactly — with
-    /// context, a hunk's reported range widens to include it.
+    /// Unchanged lines kept around each hunk in `patch`. Omitted, it follows
+    /// the worker's `diff_context_lines` setting. Pass 0 for ranges that match
+    /// a gutter exactly — with context, a hunk's reported range widens to
+    /// include it.
     #[serde(default)]
     pub context_lines: Option<u32>,
 }
@@ -498,6 +499,12 @@ pub struct SaveInput {
     /// longer matches the file on disk, the write is refused and the
     /// divergence comes back as a patch. Omit only when deliberately
     /// overwriting whatever is there.
+    ///
+    /// Resolution is one second, which is what the filesystem reports. Two
+    /// writes inside the same second are therefore indistinguishable, and the
+    /// second one wins silently. The guard is built for the case it actually
+    /// sees, a person and an agent editing minutes apart, not for concurrent
+    /// writers racing on the same file.
     #[serde(default)]
     pub expected_mtime: Option<i64>,
 }

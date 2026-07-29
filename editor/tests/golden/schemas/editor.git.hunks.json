@@ -43,7 +43,7 @@
       },
       "context_lines": {
         "default": null,
-        "description": "Unchanged lines kept around each hunk in `patch`. Defaults to 3, which reads well. Pass 0 for ranges that match a gutter exactly — with context, a hunk's reported range widens to include it.",
+        "description": "Unchanged lines kept around each hunk in `patch`. Omitted, it follows the worker's `diff_context_lines` setting. Pass 0 for ranges that match a gutter exactly — with context, a hunk's reported range widens to include it.",
         "format": "uint32",
         "minimum": 0.0,
         "type": [

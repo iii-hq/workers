@@ -655,7 +655,12 @@ fn register_git_hunks(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>) {
                 // `-U0` ranges, a person reading the patch wants surrounding
                 // lines. Defaulting to 3 favours the reader, because the
                 // ranges are still correct — just wider.
-                let context = format!("-U{}", req.context_lines.unwrap_or(3));
+                let context = format!(
+                    "-U{}",
+                    req.context_lines
+                        .map(|c| c as usize)
+                        .unwrap_or(cfg.diff_context_lines)
+                );
                 let mut args = vec!["diff", &context, "--no-color"];
                 match req.against {
                     Against::Worktree => {}
@@ -686,9 +691,17 @@ fn register_git_hunks(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>) {
                 let removed = hunks.iter().map(|h| h.removed).sum();
                 // Bounded like every other patch this worker emits: a huge
                 // diff must not become an unbounded response.
+                // `String::truncate` panics on a non-boundary index, and a
+                // byte cap lands mid-codepoint the moment a diff contains any
+                // multibyte character. Cut back to the last boundary at or
+                // before the cap.
                 let mut patch = out.stdout;
                 if patch.len() > cfg.max_diff_bytes {
-                    patch.truncate(cfg.max_diff_bytes);
+                    let mut cut = cfg.max_diff_bytes;
+                    while cut > 0 && !patch.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    patch.truncate(cut);
                 }
                 Ok::<_, Error>(GitHunksOutput {
                     path: req.path,
@@ -811,8 +824,12 @@ fn register_delete(iii: &Arc<IIIClient>, bus: &Arc<Bus>) {
                 for path in &closed {
                     session.close(path);
                 }
+                // `collapse` mutates `expanded` as well, so a delete that closed
+                // no buffers can still have changed the session. Compare the
+                // whole record rather than gating on the buffer list.
+                let before = session.clone();
                 session.collapse(&req.path);
-                if !closed.is_empty() {
+                if !closed.is_empty() || session != before {
                     save_session(&bus, &root, &session).await?;
                 }
 

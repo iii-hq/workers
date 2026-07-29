@@ -17,23 +17,28 @@ use serde_json::Value;
 /// cannot turn one call into an unbounded allocation.
 pub fn file_paths(tree: &Value, limit: usize) -> Vec<String> {
     let mut out = Vec::new();
+    // Directories do not grow `out`, so a tree of mostly-empty folders would
+    // be walked in full however low the file limit is. Bound the visit count
+    // as well, generously enough that it never truncates a real result.
+    let mut budget = limit.saturating_mul(8).max(1_000);
     if let Some(root) = tree.get("root") {
-        walk(root, "", limit, &mut out);
+        walk(root, "", limit, &mut budget, &mut out);
     }
     out
 }
 
-fn walk(node: &Value, prefix: &str, limit: usize, out: &mut Vec<String>) {
-    if out.len() >= limit {
+fn walk(node: &Value, prefix: &str, limit: usize, budget: &mut usize, out: &mut Vec<String>) {
+    if out.len() >= limit || *budget == 0 {
         return;
     }
     let Some(children) = node.get("children").and_then(Value::as_array) else {
         return;
     };
     for child in children {
-        if out.len() >= limit {
+        if out.len() >= limit || *budget == 0 {
             return;
         }
+        *budget -= 1;
         let Some(name) = child.get("name").and_then(Value::as_str) else {
             continue;
         };
@@ -43,7 +48,7 @@ fn walk(node: &Value, prefix: &str, limit: usize, out: &mut Vec<String>) {
             format!("{prefix}/{name}")
         };
         if is_dir(child) {
-            walk(child, &path, limit, out);
+            walk(child, &path, limit, budget, out);
         } else {
             // Anything that is not a directory is openable as far as this is
             // concerned; `editor::open` is the one guard that decides whether
@@ -131,6 +136,17 @@ mod tests {
             }
         });
         assert!(file_paths(&tree, 10).is_empty());
+    }
+
+    /// A tree of empty directories must not be traversed without bound just
+    /// because it yields no files.
+    #[test]
+    fn the_visit_budget_stops_a_directory_only_tree() {
+        let mut node = json!({ "name": "leaf", "kind": "dir", "children": [] });
+        for i in 0..400 {
+            node = json!({ "name": format!("d{i}"), "kind": "dir", "children": [node] });
+        }
+        assert!(file_paths(&json!({ "root": node }), 10).is_empty());
     }
 
     #[test]

@@ -10,7 +10,7 @@
       },
       "expected_mtime": {
         "default": null,
-        "description": "The `mtime` from the `editor::open` this edit started from. When it no longer matches the file on disk, the write is refused and the divergence comes back as a patch. Omit only when deliberately overwriting whatever is there.",
+        "description": "The `mtime` from the `editor::open` this edit started from. When it no longer matches the file on disk, the write is refused and the divergence comes back as a patch. Omit only when deliberately overwriting whatever is there.\n\nResolution is one second, which is what the filesystem reports. Two writes inside the same second are therefore indistinguishable, and the second one wins silently. The guard is built for the case it actually sees, a person and an agent editing minutes apart, not for concurrent writers racing on the same file.",
         "format": "int64",
         "type": [
           "integer",

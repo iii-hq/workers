@@ -302,20 +302,22 @@
   line-height: 1;
 }
 
+/* Faded rather than `visibility: hidden`: hiding it removes the button from
+   the focus order, so a keyboard user could not close an inactive tab. */
 [data-iii-ui='editor'] .ed-close {
   border: 0;
   background: transparent;
-  color: var(--color-ink-ghost);
+  color: transparent;
   font-size: 13px;
   line-height: 1;
   padding: 0 2px;
   cursor: pointer;
-  visibility: hidden;
 }
 
 [data-iii-ui='editor'] .ed-tab:hover .ed-close,
-[data-iii-ui='editor'] .ed-tab[data-active='true'] .ed-close {
-  visibility: visible;
+[data-iii-ui='editor'] .ed-tab[data-active='true'] .ed-close,
+[data-iii-ui='editor'] .ed-close:focus-visible {
+  color: var(--color-ink-ghost);
 }
 
 [data-iii-ui='editor'] .ed-close:hover {

@@ -114,10 +114,11 @@ pub fn parse_status(stdout: &str) -> StatusReport {
                 renamed_from: None,
             });
         } else if let Some(rest) = line.strip_prefix("u ") {
-            // Unmerged. Same leading shape as an ordinary line but with three
-            // extra mode/hash columns before the path.
-            let fields: Vec<&str> = rest.splitn(11, ' ').collect();
-            if let Some(path) = fields.get(10) {
+            // Unmerged: `<XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`
+            // — nine columns before the path, not ten. Reading one field too far
+            // meant conflicted entries were silently dropped from the status.
+            let fields: Vec<&str> = rest.splitn(10, ' ').collect();
+            if let Some(path) = fields.get(9) {
                 report.entries.push(StatusEntry {
                     path: (*path).to_string(),
                     index: "conflicted".to_string(),
@@ -303,6 +304,17 @@ mod tests {
     fn only_ignored_entries_still_count_as_clean() {
         let r = parse_status("! target/\n");
         assert!(r.clean);
+    }
+
+    #[test]
+    fn unmerged_entries_are_reported_as_conflicted() {
+        // Nine columns then the path, per porcelain v2.
+        let out = "u UU N... 100644 100644 100644 100644 aaa bbb ccc src/conflict.rs\n";
+        let r = parse_status(out);
+        assert_eq!(r.entries.len(), 1, "an unmerged entry must not be dropped");
+        assert_eq!(r.entries[0].path, "src/conflict.rs");
+        assert_eq!(r.entries[0].worktree, "conflicted");
+        assert!(!r.clean);
     }
 
     #[test]

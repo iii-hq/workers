@@ -1,4 +1,4 @@
-//! Wire-schema snapshots for the six `editor::*` functions.
+//! Wire-schema snapshots for every registered `editor::*` function.
 //!
 //! `editor::surface::catalog()` is the single source of truth for each
 //! function's id, registration description, and schemars-derived
