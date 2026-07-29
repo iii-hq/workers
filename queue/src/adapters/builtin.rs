@@ -160,6 +160,9 @@ struct FunctionQueueEnvelope {
     traceparent: Option<String>,
     baggage: Option<String>,
     priority: Option<u8>,
+    /// `default` so jobs persisted before namespaces shipped still deserialize.
+    #[serde(default)]
+    namespace: Option<String>,
 }
 
 /// `format!("{topic}::{function_id}")` — the internal queue name a
@@ -530,6 +533,7 @@ impl QueueAdapter for BuiltinAdapter {
         traceparent: Option<String>,
         baggage: Option<String>,
         priority: Option<u8>,
+        namespace: Option<String>,
     ) -> anyhow::Result<()> {
         if !self
             .function_queue_configs
@@ -555,6 +559,7 @@ impl QueueAdapter for BuiltinAdapter {
             traceparent,
             baggage,
             priority,
+            namespace,
         };
         self.store
             .enqueue(queue_name, serde_json::to_value(envelope)?)
@@ -773,6 +778,7 @@ async fn run_function_queue_consumer(
             message_id: Some(envelope.message_id),
             traceparent: envelope.traceparent,
             baggage: envelope.baggage,
+            namespace: envelope.namespace,
         };
         deliveries.lock().await.insert(
             delivery_id,
@@ -1002,6 +1008,7 @@ mod tests {
                 Some("trace".to_string()),
                 Some("bag".to_string()),
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1043,6 +1050,7 @@ mod tests {
                 "receipt-1",
                 config.max_retries,
                 config.backoff_ms,
+                None,
                 None,
                 None,
                 None,
@@ -1094,6 +1102,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1141,6 +1150,7 @@ mod tests {
                 "receipt-1",
                 config.max_retries,
                 config.backoff_ms,
+                None,
                 None,
                 None,
                 None,
