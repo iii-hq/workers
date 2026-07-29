@@ -24,6 +24,7 @@ pub(super) struct WriterSpawnEvidence {
     pub(super) call_count: usize,
     pub(super) session_ids: BTreeSet<String>,
     pub(super) max_parallel_calls: usize,
+    pub(super) max_concurrent_sessions: usize,
     pub(super) sessions_in_tree: BTreeSet<String>,
 }
 

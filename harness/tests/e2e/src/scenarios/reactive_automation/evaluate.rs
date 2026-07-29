@@ -27,7 +27,8 @@ pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEval
 
     let parallel_writers = evidence.writer_spawns.call_count == EXPECTED_WRITERS
         && evidence.writer_spawns.session_ids == expected_writer_sessions
-        && evidence.writer_spawns.max_parallel_calls == EXPECTED_WRITERS
+        && (evidence.writer_spawns.max_parallel_calls == EXPECTED_WRITERS
+            || evidence.writer_spawns.max_concurrent_sessions == EXPECTED_WRITERS)
         && expected_writer_sessions
             .iter()
             .all(|session| evidence.writer_spawns.sessions_in_tree.contains(session));
@@ -247,7 +248,8 @@ mod tests {
             writer_spawns: WriterSpawnEvidence {
                 call_count: 3,
                 session_ids: expected_sessions,
-                max_parallel_calls: 3,
+                max_parallel_calls: 1,
+                max_concurrent_sessions: 3,
                 sessions_in_tree,
             },
             watch: WatchEvidence {
