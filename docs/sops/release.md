@@ -173,6 +173,23 @@ way the GitHub Release is marked prerelease and still builds and publishes
 (unless `interface_smoke: false`). A hand-pushed tag must carry the `.N`
 counter — `parse_release_tag.py` detects prereleases as `-<word>.<number>`.
 
+### Alpha release from a pull request branch
+
+To publish a worker from an unmerged pull request for integration testing, use
+**Actions → Alpha Release** from `main`. Set **Source ref** to the pull request
+branch (or `refs/pull/<number>/head`), then choose the worker and the intended
+base-version bump. The workflow creates an ephemeral commit with an
+`-alpha.N` manifest version, then pushes only its annotated tag, for example
+`browser/v1.4.0-alpha.1`.
+
+The release pipeline publishes that tag as a GitHub prerelease and assigns it
+the `experimental` registry channel (`browser@experimental`). Neither the
+selected branch nor `main` is pushed or changed. The channel is shared: a new
+alpha release for the same worker moves `experimental` to that version.
+
+**Source ref** must not resolve to `main`; use **Create Tag** for a release
+that should move `latest` or `next`.
+
 ### Dry run
 
 Tag shape: `<worker>/vX.Y.Z-dry-run.1` (parsed by `parse_release_tag.py`).
