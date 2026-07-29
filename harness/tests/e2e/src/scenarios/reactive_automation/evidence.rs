@@ -41,6 +41,7 @@ pub(super) struct OrderSummary {
     pub(super) rows_written: Option<i64>,
     pub(super) distinct_ids: Option<i64>,
     pub(super) writer_count: Option<i64>,
+    pub(super) invalid_amounts: Option<i64>,
     pub(super) missing_created_at: Option<i64>,
 }
 
@@ -74,6 +75,7 @@ impl OrderSummary {
             rows_written: integer_field(value, "rows_written"),
             distinct_ids: integer_field(value, "distinct_ids"),
             writer_count: integer_field(value, "writer_count"),
+            invalid_amounts: integer_field(value, "invalid_amounts"),
             missing_created_at: integer_field(value, "missing_created_at"),
         }
     }

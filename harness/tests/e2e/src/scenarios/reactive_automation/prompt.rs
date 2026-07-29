@@ -63,16 +63,17 @@ Required execution:
 
 6. After the trigger-spawned finalizer writes the report, wake the existing root session
    explicitly. Set the wake reaction's `metadata.session_id` to the current root session id;
-   setting only `parent_session_id` spawns a new unnamed child and does not wake the root. In the
-   resumed root turn, unregister every trigger and subscription created for this run, then list
-   the registered triggers and verify that none contains `{run_label}` or `{namespace}`. Do not
-   give the final response before the root has resumed and this cleanup check has passed.
+   setting only `parent_session_id` spawns a new unnamed child and does not wake the root. Set
+   that reaction's `metadata.options.functions.allow` to `["*"]`; a narrower policy can prevent
+   the resumed root from listing and unregistering triggers. In the resumed root turn, unregister
+   every trigger and subscription created for this run, then list the registered triggers and
+   verify that none contains `{run_label}` or `{namespace}`. Do not give the final response before
+   the root has resumed and this cleanup check has passed.
 
-This is a deliberately large execution. A deadline is only a stuck-execution watchdog, not a
-normal completion deadline. If you register a watchdog, use at least {watchdog_seconds} seconds
-after the writers start and fire it only when there has been no progress; never use a 120-second
-deadline to interrupt normal work. Do not write the report from the root as a substitute for the
-trigger-spawned finalizer: wait for `{finalizer}` to run and write it.
+This is a deliberately large execution. The harness already applies a {watchdog_seconds}-second
+stuck-execution watchdog, so do not register a cron or deadline watchdog for this run. Do not
+write the report from the root as a substitute for the trigger-spawned finalizer: wait for
+`{finalizer}` to run and write it.
 
 Success requires exact equality between `{totals}` and a direct `GROUP BY` over `{orders}`, no
 lost or duplicated orders, trigger provenance for reactor and finalizer sessions, no inline
@@ -90,4 +91,18 @@ Report progress briefly and keep the final response factual."#,
         writer_3 = names.writer_sessions[2],
         finalizer = names.finalizer_session,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_wake_preserves_cleanup_access_without_a_competing_watchdog() {
+        let prompt = build(&ScenarioNames::new("abcd-rest"), 600);
+
+        assert!(prompt.contains("reaction's `metadata.options.functions.allow` to `[\"*\"]`"));
+        assert!(prompt.contains("harness already applies a 600-second\nstuck-execution watchdog"));
+        assert!(prompt.contains("do not register a cron or deadline watchdog for this run"));
+    }
 }
