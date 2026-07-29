@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import type { ConfigFormProps, JsonValue } from '@iii-dev/console-ui'
+import type { ConfigFormProps, Host, JsonValue } from '@iii-dev/console-ui'
 
 type JsonObject = { [key: string]: JsonValue }
 
@@ -48,7 +48,18 @@ const POOL_FIELDS = [
   { key: 'acquire_timeout_ms', label: 'acquire timeout (ms)', placeholder: '5000' },
 ] as const
 
-export function DatabaseConfigForm(props: ConfigFormProps) {
+/** Wire shape of `database::testConnection`. */
+interface TestConnectionResp {
+  ok: boolean
+  driver: string
+  latency_ms: number
+  server_version?: string
+  message?: string
+}
+
+type TestResult = { status: 'testing' } | { status: 'done'; ok: boolean; text: string }
+
+export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
   const value = asObject(props.value)
   const databases = asObject(value.databases)
   const names = Object.keys(databases)
@@ -56,14 +67,50 @@ export function DatabaseConfigForm(props: ConfigFormProps) {
   // Renames commit on blur: committing per keystroke would collide with a
   // sibling entry mid-typing and silently swallow it.
   const [pendingNames, setPendingNames] = useState<Record<string, string>>({})
+  // Probe outcomes are keyed by handle and dropped on any edit of that
+  // handle — a stale "connected" next to a changed url would be a lie.
+  const [testResults, setTestResults] = useState<Record<string, TestResult>>({})
 
   const commit = (nextDatabases: JsonObject) =>
     props.onChange({ ...value, databases: nextDatabases })
 
-  const setDb = (name: string, next: JsonObject) =>
+  const clearTest = (name: string) =>
+    setTestResults((r) => {
+      const next = { ...r }
+      delete next[name]
+      return next
+    })
+
+  const setDb = (name: string, next: JsonObject) => {
+    clearTest(name)
     commit({ ...databases, [name]: next })
+  }
+
+  const runTest = async (name: string) => {
+    const db = asObject(databases[name])
+    setTestResults((r) => ({ ...r, [name]: { status: 'testing' } }))
+    let result: TestResult
+    try {
+      const resp = await props.host.iii.trigger<TestConnectionResp>(
+        'database::testConnection',
+        { url: asString(db.url), tls: db.tls ?? undefined, timeout_ms: 8000 },
+        { timeoutMs: 10_000 },
+      )
+      result = {
+        status: 'done',
+        ok: resp.ok,
+        text: resp.ok
+          ? `connected · ${resp.server_version ?? resp.driver} · ${resp.latency_ms}ms`
+          : resp.message ?? 'connection failed',
+      }
+    } catch (e) {
+      result = { status: 'done', ok: false, text: e instanceof Error ? e.message : String(e) }
+    }
+    setTestResults((r) => ({ ...r, [name]: result }))
+  }
 
   const removeDb = (name: string) => {
+    clearTest(name)
     const next = { ...databases }
     delete next[name]
     commit(next)
@@ -84,6 +131,7 @@ export function DatabaseConfigForm(props: ConfigFormProps) {
       return next
     })
     if (trimmed === '' || trimmed === from || databases[trimmed] !== undefined) return
+    clearTest(from)
     // Rebuild in place so the card doesn't jump to the end of the list.
     const next: JsonObject = {}
     for (const key of names) {
@@ -127,6 +175,8 @@ export function DatabaseConfigForm(props: ConfigFormProps) {
           onChange={(next) => setDb(name, next)}
           onRemove={() => removeDb(name)}
           removable={names.length > 1}
+          test={testResults[name]}
+          onTest={() => runTest(name)}
         />
       ))}
 
@@ -157,6 +207,8 @@ function DatabaseCard(card: {
   onChange: (next: JsonObject) => void
   onRemove: () => void
   removable: boolean
+  test: TestResult | undefined
+  onTest: () => void
 }) {
   const { name, db } = card
   const url = asString(db.url)
@@ -203,15 +255,30 @@ function DatabaseCard(card: {
 
       <div className="db-cfg-field">
         <label htmlFor={`db-cfg-url-${name}`}>connection url</label>
-        <input
-          id={`db-cfg-url-${name}`}
-          data-field={`databases-${name}-url`}
-          className="db-cfg-input"
-          type="text"
-          value={url}
-          placeholder="postgres://user:pass@host:5432/db · mysql://… · sqlite:./data/app.db"
-          onChange={(e) => set((next) => (next.url = e.target.value))}
-        />
+        <div className="db-cfg-url-row">
+          <input
+            id={`db-cfg-url-${name}`}
+            data-field={`databases-${name}-url`}
+            className="db-cfg-input db-cfg-grow"
+            type="text"
+            value={url}
+            placeholder="postgres://user:pass@host:5432/db · mysql://… · sqlite:./data/app.db"
+            onChange={(e) => set((next) => (next.url = e.target.value))}
+          />
+          <button
+            type="button"
+            className="db-cfg-test"
+            disabled={card.test?.status === 'testing' || url.trim() === ''}
+            onClick={card.onTest}
+          >
+            {card.test?.status === 'testing' ? 'testing…' : 'test connection'}
+          </button>
+        </div>
+        {card.test?.status === 'done' ? (
+          <span className={card.test.ok ? 'db-cfg-test-ok' : 'db-cfg-test-fail'}>
+            {card.test.text}
+          </span>
+        ) : null}
       </div>
 
       <div className="db-cfg-field">

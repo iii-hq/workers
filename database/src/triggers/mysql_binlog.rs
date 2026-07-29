@@ -47,7 +47,7 @@ fn server_id() -> u32 {
     1_000_000_000 + (std::process::id() % 1_000_000)
 }
 
-fn build_opts(url: &str, tls: &TlsConfig) -> Result<Opts, String> {
+pub(crate) fn build_opts(url: &str, tls: &TlsConfig) -> Result<Opts, String> {
     let base = Opts::from_url(url).map_err(|_| "invalid mysql url".to_string())?;
     let mut builder = OptsBuilder::from_opts(base);
     if let Some(ssl) = make_mysql_ssl_opts(tls).map_err(|e| format!("{e:?}"))? {

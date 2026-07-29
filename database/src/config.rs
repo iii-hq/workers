@@ -378,7 +378,7 @@ pub fn validate_sql_identifier(s: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn detect_driver(url: &str) -> Option<DriverKind> {
+pub(crate) fn detect_driver(url: &str) -> Option<DriverKind> {
     let lower = url.to_ascii_lowercase();
     if lower.starts_with("postgres://") || lower.starts_with("postgresql://") {
         Some(DriverKind::Postgres)

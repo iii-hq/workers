@@ -13,6 +13,7 @@ use database::handlers::{
     query::{self, QueryReq},
     rollback_transaction::{self, RollbackTxReq},
     run_statement::{self, RunReq},
+    test_connection::{self, TestConnectionReq},
     transaction::{self, TxReq},
     transaction_execute::{self, TxExecuteReq},
     transaction_query::{self, TxQueryReq},
@@ -317,6 +318,21 @@ async fn main() -> Result<()> {
         );
     }
     {
+        iii.register_function(
+            "database::testConnection",
+            RegisterFunction::new_async(move |req: TestConnectionReq| async move {
+                test_connection::handle(req)
+                    .await
+                    .map_err(iii_sdk::errors::Error::from)
+            })
+            .description(
+                "Probe a candidate database config (url + optional tls) with one \
+                 throwaway connection, without touching configured pools. Reports \
+                 ok/driver/latency/server version; failures are data, not errors.",
+            ),
+        );
+    }
+    {
         let st = state.clone();
         iii.register_function(
             "database::listDatabases",
@@ -362,7 +378,7 @@ async fn main() -> Result<()> {
     database::ui::register(&iii);
 
     tracing::info!(
-        "database worker registered 13 functions and 1 trigger type, waiting for invocations"
+        "database worker registered 14 functions and 1 trigger type, waiting for invocations"
     );
     wait_for_shutdown_signal().await?;
     tracing::info!("database worker shutting down");

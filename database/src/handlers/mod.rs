@@ -38,6 +38,7 @@ pub mod prepare;
 pub mod query;
 pub mod rollback_transaction;
 pub mod run_statement;
+pub mod test_connection;
 pub mod transaction;
 pub mod transaction_execute;
 pub mod transaction_query;

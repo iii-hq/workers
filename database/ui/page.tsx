@@ -32,5 +32,7 @@ export default function setup(host: Host) {
     render: () => <DatabasePage host={host} />,
   })
 
-  host.configForms.register('database', DatabaseConfigForm)
+  host.configForms.register('database', (props) => (
+    <DatabaseConfigForm {...props} host={host} />
+  ))
 }

@@ -598,3 +598,31 @@
   flex-direction: column;
   gap: 4px;
 }
+[data-iii-ui="database"] .db-cfg-url-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+[data-iii-ui="database"] .db-cfg-test {
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--color-ink-faint);
+  background: transparent;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-cfg-test:hover:not(:disabled) {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+[data-iii-ui="database"] .db-cfg-test:disabled { opacity: 0.6; cursor: default; }
+[data-iii-ui="database"] .db-cfg-test-ok,
+[data-iii-ui="database"] .db-cfg-test-fail {
+  font-size: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  line-height: 1.4;
+}
+[data-iii-ui="database"] .db-cfg-test-ok { color: var(--color-ok); }
+[data-iii-ui="database"] .db-cfg-test-fail { color: var(--color-alert); }
