@@ -1,0 +1,286 @@
+name: Harness E2E Release Benchmark
+
+on:
+  repository_dispatch:
+    types:
+      - harness-e2e-release
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Commit to evaluate; defaults to the current revision
+        required: false
+        type: string
+      release_tag:
+        description: Optional release tag shown in the dashboard
+        required: false
+        type: string
+      release_worker:
+        description: Optional released worker shown in the dashboard
+        required: false
+        type: string
+      release_version:
+        description: Optional released version shown in the dashboard
+        required: false
+        type: string
+      registry_tag:
+        description: Optional registry tag shown in the dashboard
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: harness-e2e-release-benchmarks
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  route:
+    name: Route relevant release
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.route.outputs.should_run }}
+      source_sha: ${{ steps.route.outputs.source_sha }}
+      release_tag: ${{ steps.route.outputs.release_tag }}
+      release_worker: ${{ steps.route.outputs.release_worker }}
+      release_version: ${{ steps.route.outputs.release_version }}
+      release_url: ${{ steps.route.outputs.release_url }}
+      registry_tag: ${{ steps.route.outputs.registry_tag }}
+    steps:
+      - name: Validate metadata and route release
+        id: route
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+          EVENT_RELEASE_TAG: ${{ github.event.client_payload.release_tag }}
+          EVENT_RELEASE_WORKER: ${{ github.event.client_payload.release_worker }}
+          EVENT_RELEASE_VERSION: ${{ github.event.client_payload.release_version }}
+          EVENT_RELEASE_URL: ${{ github.event.client_payload.release_url }}
+          EVENT_REGISTRY_TAG: ${{ github.event.client_payload.registry_tag }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          INPUT_RELEASE_WORKER: ${{ inputs.release_worker }}
+          INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
+          INPUT_REGISTRY_TAG: ${{ inputs.registry_tag }}
+          CURRENT_SHA: ${{ github.sha }}
+          SUBJECTS: ${{ vars.HARNESS_E2E_SUBJECTS || '[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]' }}
+          JUDGE_PROVIDER: ${{ vars.HARNESS_E2E_JUDGE_PROVIDER || 'anthropic' }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            source_sha=${INPUT_SOURCE_SHA:-$CURRENT_SHA}
+            release_tag=$INPUT_RELEASE_TAG
+            release_worker=$INPUT_RELEASE_WORKER
+            release_version=$INPUT_RELEASE_VERSION
+            registry_tag=$INPUT_REGISTRY_TAG
+            release_url=""
+            should_run=true
+          else
+            source_sha=$EVENT_SOURCE_SHA
+            release_tag=$EVENT_RELEASE_TAG
+            release_worker=$EVENT_RELEASE_WORKER
+            release_version=$EVENT_RELEASE_VERSION
+            registry_tag=$EVENT_REGISTRY_TAG
+            release_url=$EVENT_RELEASE_URL
+
+            core_workers=(
+              database
+              harness
+              queue
+              session-manager
+              context-manager
+              iii-directory
+              state
+              cron
+              llm-router
+            )
+            mapfile -t provider_workers < <(
+              {
+                jq -r '.[].provider' <<<"$SUBJECTS"
+                printf '%s\n' "$JUDGE_PROVIDER"
+              } | sed '/^$/d' | sort -u | sed 's/^/provider-/'
+            )
+            should_run=false
+            for worker in "${core_workers[@]}" "${provider_workers[@]}"; do
+              if [[ "$release_worker" == "$worker" ]]; then
+                should_run=true
+                break
+              fi
+            done
+          fi
+
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::source_sha must be a full 40-character commit SHA"
+            exit 2
+          }
+          if [[ -n "$release_worker" && ! "$release_worker" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::release_worker contains unsupported characters"
+            exit 2
+          fi
+          if [[ -n "$release_tag" && ! "$release_tag" =~ ^[A-Za-z0-9_./-]+$ ]]; then
+            echo "::error::release_tag contains unsupported characters"
+            exit 2
+          fi
+          if [[ -n "$release_version" && ! "$release_version" =~ ^[A-Za-z0-9_.+-]+$ ]]; then
+            echo "::error::release_version contains unsupported characters"
+            exit 2
+          fi
+          for value in "$registry_tag" "$release_url"; do
+            [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || {
+              echo "::error::release metadata must be single-line"
+              exit 2
+            }
+          done
+
+          if [[ -z "$release_url" && -n "$release_tag" ]]; then
+            release_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${release_tag}"
+          fi
+          {
+            echo "should_run=$should_run"
+            echo "source_sha=$source_sha"
+            echo "release_tag=$release_tag"
+            echo "release_worker=$release_worker"
+            echo "release_version=$release_version"
+            echo "release_url=$release_url"
+            echo "registry_tag=$registry_tag"
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ "$should_run" != "true" ]]; then
+            echo "Skipping $release_worker: it does not affect the active Harness E2E stack."
+          fi
+
+  e2e:
+    name: Run release benchmark
+    needs: route
+    if: needs.route.outputs.should_run == 'true'
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/_harness-e2e.yml
+    with:
+      runs: 3
+      max_parallel: 2
+      quality_advisory: false
+      source_ref: ${{ needs.route.outputs.source_sha }}
+      benchmark_lane: release
+      release_tag: ${{ needs.route.outputs.release_tag }}
+      release_worker: ${{ needs.route.outputs.release_worker }}
+      release_version: ${{ needs.route.outputs.release_version }}
+      release_url: ${{ needs.route.outputs.release_url }}
+      registry_tag: ${{ needs.route.outputs.registry_tag }}
+      subjects: ${{ vars.HARNESS_E2E_SUBJECTS || '[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]' }}
+      judge_model: ${{ vars.HARNESS_E2E_JUDGE_MODEL || 'claude-sonnet-4-6' }}
+      judge_provider: ${{ vars.HARNESS_E2E_JUDGE_PROVIDER || 'anthropic' }}
+    secrets:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      zai_api_key: ${{ secrets.ZAI_API_KEY }}
+
+  publish:
+    name: Publish benchmark history
+    needs: [route, e2e]
+    if: always() && needs.route.outputs.should_run == 'true' && needs.e2e.result != 'cancelled'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Stage dashboard assets
+        env:
+          SITE_DIR: ${{ runner.temp }}/harness-benchmark-site
+        run: |
+          set -euo pipefail
+          mkdir -p "$SITE_DIR"
+          cp -R .github/benchmark-site/. "$SITE_DIR/"
+
+      - name: Download compact benchmark metrics
+        uses: actions/download-artifact@v7
+        with:
+          name: harness-e2e-benchmark
+          path: target/harness-e2e-benchmark
+
+      - name: Store quality history
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Harness E2E Quality
+          tool: customBiggerIsBetter
+          output-file-path: target/harness-e2e-benchmark/quality.json
+          ref: ${{ needs.route.outputs.source_sha }}
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/harness-e2e
+          max-items-in-chart: 100
+          github-token: ${{ github.token }}
+          auto-push: true
+          summary-always: true
+
+      - name: Store efficiency and reliability history
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Harness E2E Efficiency and Reliability
+          tool: customSmallerIsBetter
+          output-file-path: target/harness-e2e-benchmark/efficiency.json
+          ref: ${{ needs.route.outputs.source_sha }}
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/harness-e2e
+          max-items-in-chart: 100
+          github-token: ${{ github.token }}
+          auto-push: true
+          summary-always: true
+
+      - name: Checkout benchmark history
+        uses: actions/checkout@v5
+        with:
+          ref: gh-pages
+          path: pages-source
+          fetch-depth: 0
+
+      - name: Install dashboard shell
+        env:
+          SITE_DIR: ${{ runner.temp }}/harness-benchmark-site
+        run: |
+          set -euo pipefail
+          mkdir -p pages-source/dev/harness-e2e
+          cp -R "$SITE_DIR"/. pages-source/dev/harness-e2e/
+          touch pages-source/.nojekyll
+
+          git -C pages-source config user.name github-actions
+          git -C pages-source config user.email github-actions@github.com
+          git -C pages-source add .nojekyll dev/harness-e2e
+          if git -C pages-source diff --cached --quiet; then
+            echo "Dashboard shell already matches the published version."
+            exit 0
+          fi
+          git -C pages-source commit -m "Update Harness E2E benchmark dashboard"
+          git -C pages-source push origin HEAD:gh-pages
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: pages-source
+
+  deploy:
+    name: Deploy benchmark dashboard
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

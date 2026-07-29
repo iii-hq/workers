@@ -63,6 +63,7 @@ jobs:
     with:
       runs: 3
       max_parallel: 2
+      benchmark_lane: nightly
       subjects: ${{ inputs.subjects || vars.HARNESS_E2E_SUBJECTS || '[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]' }}
       judge_model: ${{ inputs.judge_model || vars.HARNESS_E2E_JUDGE_MODEL || 'claude-sonnet-4-6' }}
       judge_provider: ${{ inputs.judge_provider || vars.HARNESS_E2E_JUDGE_PROVIDER || 'anthropic' }}

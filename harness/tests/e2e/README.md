@@ -179,6 +179,7 @@ zero.
 | Pull-request CI | Relevant pull-request changes | 0 | Deterministic integration only |
 | Harness E2E Main | Relevant push to `main` | 1 per subject/scenario | Score advisory; hard gates and technical failures blocking |
 | Harness E2E Nightly | New `main` revision on schedule, or manual dispatch on `main` | 3 per subject/scenario | Median score, two-of-three pass policy, hard gates and technical failures blocking |
+| Harness E2E Release Benchmark | Successful relevant registry release, or manual dispatch | 3 per subject/scenario | Release trend is published even when quality or reliability gates fail |
 
 The reusable workflow itself is guarded to run only from `main`. It installs
 the latest published stable `iii` release with its `iii-init` and `iii-worker`
@@ -226,11 +227,48 @@ and `ZAI_API_KEY`. Subscription-backed `claude-code` and `openai-codex`
 providers require their credential files to be provisioned securely on the
 runner; the current workflow does not inject those files.
 
+### Historical release dashboard
+
+Successful registry publication queues a three-run benchmark when the released
+worker can affect the active Harness stack. This includes Harness, database,
+queue, session manager, context manager, directory, state, cron, LLM router,
+and provider workers selected by the subject or judge configuration. Other
+worker releases are skipped to avoid an expensive data point that cannot change
+the result.
+
+The dashboard is published at
+<https://iii-hq.github.io/workers/dev/harness-e2e/>. It is designed for release
+comparison rather than workflow debugging:
+
+- the overview surfaces pass rate, average score, model cost, scenario runtime,
+  reliability events, and report coverage;
+- the channel filter keeps `experimental` and `next` deployments from
+  distorting the default `latest` trend while still making every deploy visible;
+- the trend chart switches between score, pass rate, cost, and duration;
+- the scenario breakdown makes regressions and missing reports visible;
+- the audit table links every point back to its release, commit, and workflow.
+
+The public `gh-pages` history contains only compact aggregate metrics and
+release metadata. Prompts, transcripts, judge attempts, logs, and credentials
+remain in access-controlled workflow artifacts. Missing reports are stored as
+reliability events; unknown cost is omitted instead of recorded as zero.
+
+The release lane evaluates repository binaries built from the exact tag commit.
+It verifies the same source snapshot that was deployed, but it does not install
+the published registry artifact. Registry installation remains the
+responsibility of the quickstart validator.
+
+Repository administration has one manual prerequisite: under **Settings →
+Pages**, select **GitHub Actions** as the Pages source. The benchmark workflow
+maintains the `gh-pages` data history and deploys that history through the
+official Pages artifact flow.
+
 Each matrix job publishes its result for 14 days; failed jobs also publish
 diagnostics for 14 days. The workflow summary shows subject, judge, and total
-cost per scenario and consolidated by subject. CI currently evaluates fixed
-code-defined thresholds; it does not compare scores automatically with a
-previous run.
+cost per scenario and consolidated by subject. The release dashboard retains
+the latest 100 comparable points for each metric series. Fixed code-defined
+thresholds remain the CI gate; historical deltas are a team-facing signal and
+do not add a second implicit threshold.
 
 The launcher performs a clean first boot with isolated configuration, session,
 queue, state, and log directories. It starts the provider workers named by the

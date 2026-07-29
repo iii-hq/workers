@@ -33,6 +33,41 @@ on:
         required: false
         type: string
         default: anthropic
+      source_ref:
+        description: Git ref or commit to evaluate; defaults to the caller revision
+        required: false
+        type: string
+        default: ''
+      benchmark_lane:
+        description: Stable comparison lane written to benchmark history
+        required: false
+        type: string
+        default: ci
+      release_tag:
+        description: Release tag associated with this run
+        required: false
+        type: string
+        default: ''
+      release_worker:
+        description: Released worker associated with this run
+        required: false
+        type: string
+        default: ''
+      release_version:
+        description: Released worker version associated with this run
+        required: false
+        type: string
+        default: ''
+      release_url:
+        description: GitHub release URL associated with this run
+        required: false
+        type: string
+        default: ''
+      registry_tag:
+        description: Registry artifact tag associated with this run
+        required: false
+        type: string
+        default: ''
     secrets:
       anthropic_api_key:
         required: false
@@ -44,7 +79,7 @@ on:
 jobs:
   build:
     name: harness e2e build
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || inputs.source_ref != ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -53,6 +88,8 @@ jobs:
       engine_revision: ${{ steps.engine.outputs.version }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
 
       # state/build.rs builds its embedded UI when the checked-out assets are
       # stale, so the isolated E2E build needs the same Node/pnpm toolchain as
@@ -231,6 +268,8 @@ jobs:
         subject: ${{ fromJSON(inputs.subjects) }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
 
       - name: Download E2E binaries
         uses: actions/download-artifact@v7
@@ -264,6 +303,26 @@ jobs:
           HARNESS_E2E_QUALITY_ADVISORY: ${{ inputs.quality_advisory }}
           HARNESS_E2E_ENGINE_REVISION: ${{ needs.build.outputs.engine_revision }}
         run: harness/tests/e2e/run-ci.sh
+
+      - name: Write benchmark context
+        if: always()
+        env:
+          SUBJECT_ID: ${{ matrix.subject.id }}
+          SCENARIO_ID: ${{ matrix.scenario }}
+          REQUESTED_RUNS: ${{ inputs.runs }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/harness-e2e/results
+          jq -n \
+            --arg subject_id "$SUBJECT_ID" \
+            --arg scenario_id "$SCENARIO_ID" \
+            --argjson requested_runs "$REQUESTED_RUNS" \
+            '{
+              schema_version: 1,
+              subject_id: $subject_id,
+              scenario_id: $scenario_id,
+              requested_runs: $requested_runs
+            }' > target/harness-e2e/results/benchmark-context.json
 
       - name: Write E2E summary
         if: always()
@@ -306,7 +365,7 @@ jobs:
           name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.scenario }}-results
           path: target/harness-e2e/results/
           retention-days: 14
-          if-no-files-found: ignore
+          if-no-files-found: error
 
       - name: Upload E2E diagnostics
         if: failure()
@@ -320,11 +379,15 @@ jobs:
           if-no-files-found: ignore
 
   summary:
-    name: harness e2e cost summary
-    needs: e2e
-    if: always()
+    name: harness e2e summary
+    needs: [build, e2e]
+    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
+
       - name: Download E2E results
         continue-on-error: true
         uses: actions/download-artifact@v7
@@ -377,3 +440,49 @@ jobs:
                   "| \(.subject) | \(.reports) | \(.subject_usd // "n/a") | \(.judge_usd // "n/a") | \(.total_usd // "n/a") |")
             ' "${reports[@]}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect compact benchmark metrics
+        env:
+          SUBJECTS: ${{ inputs.subjects }}
+          SCENARIOS: ${{ needs.build.outputs.scenarios }}
+          BENCHMARK_LANE: ${{ inputs.benchmark_lane }}
+          REQUESTED_RUNS: ${{ inputs.runs }}
+          SOURCE_SHA: ${{ inputs.source_ref || github.sha }}
+          SOURCE_REF: ${{ inputs.release_tag || inputs.source_ref || github.ref }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_WORKER: ${{ inputs.release_worker }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_URL: ${{ inputs.release_url }}
+          REGISTRY_TAG: ${{ inputs.registry_tag }}
+          JUDGE_MODEL: ${{ inputs.judge_model }}
+          JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/collect_harness_e2e_benchmarks.py \
+            --reports-root target/harness-e2e-results \
+            --output-dir target/harness-e2e-benchmark \
+            --subjects-json "$SUBJECTS" \
+            --scenarios-json "$SCENARIOS" \
+            --lane "$BENCHMARK_LANE" \
+            --requested-runs "$REQUESTED_RUNS" \
+            --source-sha "$SOURCE_SHA" \
+            --source-ref "$SOURCE_REF" \
+            --repository "$REPOSITORY" \
+            --workflow-url "$WORKFLOW_URL" \
+            --release-tag "$RELEASE_TAG" \
+            --release-worker "$RELEASE_WORKER" \
+            --release-version "$RELEASE_VERSION" \
+            --release-url "$RELEASE_URL" \
+            --registry-tag "$REGISTRY_TAG" \
+            --judge-model "$JUDGE_MODEL" \
+            --judge-provider "$JUDGE_PROVIDER"
+
+      - name: Upload compact benchmark metrics
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-benchmark
+          path: target/harness-e2e-benchmark/
+          retention-days: 30
+          if-no-files-found: error
