@@ -68,3 +68,13 @@ for small values).
 - `fp::compact` / `fp::flatten` — drop `null` elements / unnest one level.
 - `fp::sortBy` / `fp::reverse` — stable ascending sort by pointer
   (`""` = the element itself) / reverse.
+- `fp::sum` / `fp::mean` / `fp::min` / `fp::max` — fold an array of numbers to
+  one number; `path` plucks the addend from each element
+  (`fp::sum {path: "/amount"}` over rows). Integer inputs fold to an integer,
+  a non-numeric element errors rather than being skipped, and an empty
+  mean/min/max errors (an empty sum is `0`). `min`/`max` return the NUMBER,
+  not lodash's `…By` element, so a `fp::when` guard can compare it directly.
+- `fp::groupBy` / `fp::countBy` — bucket or count array elements by a plucked
+  key (`""` = the element itself): `{ key: [elements] }` / `{ key: count }`.
+  Per-key totals are `fp::groupBy` then `fp::sum` over a bucket. A null or
+  container key errors rather than collapsing distinct groups into one bucket.

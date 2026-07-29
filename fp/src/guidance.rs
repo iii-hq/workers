@@ -45,12 +45,21 @@ the context window; fetching a whole document "to look at it" floods the context
 `fp::pipe` runs the move in ONE call: each step triggers a function and its result lands
 in the next step's payload at `into` (default "/value"). Pure transforms run inline as steps —
 `fp::{get, pick, omit, take, drop, map, filter, split, join, uniq, size, compact, nth,
-getOr, flatten, sortBy, reverse, when}` with lodash
-semantics — their input arrives at `value`, and what they thread onward is the transformed
-value itself (the `{value}` wrapper appears only on direct calls, never between steps).
+getOr, flatten, sortBy, reverse, sum, mean, min, max, groupBy, countBy}` with lodash
+semantics; `fp::when` is the comparison guard described below. Their input arrives at `value`,
+and what they thread onward is the transformed value itself. The `{value}` wrapper appears only on direct calls,
+never between steps.
 Transform args beyond `value` (no schema lookup needed): get{path} getOr{path,default}
 pick/omit{paths} take/drop{n} nth{n, -1=last} map{path} filter{matches: partial object}
-split/join{separator} sortBy{path} when{path?,op,to?} — the rest take only `value`.
+split/join{separator} sortBy{path} sum/mean/min/max{path?} groupBy/countBy{path}
+when{path?,op,to?} — the rest take only `value`.
+The numeric reductions ARE the arithmetic: `sum`/`mean`/`min`/`max` fold an array to one
+number, and `path` plucks the addend from each element (`sum{path:"/amount"}` over rows).
+Integer inputs fold to an integer, a non-numeric element errors instead of being skipped,
+and an empty mean/min/max errors (an empty sum is 0).
+Per-key aggregates: `countBy{path}` gives `{key: count}` in one step, and `groupBy{path}`
+gives `{key: [rows]}`; it only groups rows (`""` keys by the element itself). A null or
+container key errors rather than collapsing distinct groups into one bucket.
 Producer responses are OBJECTS (search: {content_matches,path_matches}, grep: {matches},
 exec: {stdout,…}, fetch: {content,…}) — `fp::get` the array/string field out before
 reshaping it.
@@ -180,7 +189,25 @@ fn bind(iii: &IIIClient, trigger_type: &str, function_id: &str, config: Value) -
 /// retry. `on_error: fail_open` is MANDATORY: pre_generate defaults
 /// fail-CLOSED, which would abort generation if this hook ever errored/timed
 /// out; a missing guidance section must never block a turn.
+/// Skip the guidance hook entirely when `FP_INJECT_GUIDANCE=0`.
+///
+/// The hook's whole job is to advertise `fp::*` inside the agent's system
+/// prompt. That is right for production and wrong for an evaluation of
+/// whether an agent DISCOVERS fp on its own — an advertised worker cannot be
+/// discovered. Off by absence: unset means inject, as always.
+fn guidance_enabled() -> bool {
+    guidance_enabled_for(std::env::var("FP_INJECT_GUIDANCE").ok().as_deref())
+}
+
+fn guidance_enabled_for(value: Option<&str>) -> bool {
+    !matches!(value, Some("0" | "false" | "off"))
+}
+
 pub fn setup(iii: &Arc<IIIClient>) {
+    if !guidance_enabled() {
+        tracing::info!("FP_INJECT_GUIDANCE disabled; fp::* stays out of the agent system prompt");
+        return;
+    }
     iii.register_function(
         GUIDANCE_HOOK_ID,
         RegisterFunction::new_async(
@@ -248,6 +275,19 @@ mod tests {
     }
 
     #[test]
+    fn guidance_can_be_switched_off_for_discovery_evals() {
+        // Absence and any other value keep the production behaviour.
+        assert!(guidance_enabled_for(None));
+        assert!(guidance_enabled_for(Some("1")));
+        for off in ["0", "false", "off"] {
+            assert!(
+                !guidance_enabled_for(Some(off)),
+                "{off} must disable injection"
+            );
+        }
+    }
+
+    #[test]
     fn guidance_mandates_present() {
         // The HARD RULE and its teachable edges must survive edits — these
         // moved here from the static harness prompts.
@@ -256,7 +296,12 @@ mod tests {
             "fp::pipe",
             "`into` (default \"/value\")",
             "fp::{get, pick, omit, take, drop, map, filter, split, join, uniq, size, compact, nth,",
-            "getOr, flatten, sortBy, reverse, when}",
+            "getOr, flatten, sortBy, reverse, sum, mean, min, max, groupBy, countBy}",
+            "`fp::when` is the comparison guard described below",
+            "gives `{key: [rows]}`; it only groups rows",
+            // The reductions ARE the worker's arithmetic — agents reached for
+            // their own turn to add numbers while the guidance said fp had none.
+            "The numeric reductions ARE the arithmetic",
             "short_circuited",
             "wrapper appears only on direct calls",
             "hands the stored value onward BARE",

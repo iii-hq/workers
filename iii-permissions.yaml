@@ -208,7 +208,7 @@ rules:
   - coder::search
   - coder::list-folder
   - coder::tree
-  # fp: the seventeen pure value transforms are side-effect-free reshapes (no
+  # fp: the twenty-three pure value transforms are side-effect-free reshapes (no
   # I/O, no authority). fp::pipe stays at the needs_approval default ON
   # PURPOSE: its steps run with the fp worker's authority, so the pipe
   # call itself is the surface an approver reviews (the worker statically
@@ -232,6 +232,12 @@ rules:
   - fp::flatten
   - fp::sortBy
   - fp::reverse
+  - fp::sum
+  - fp::mean
+  - fp::min
+  - fp::max
+  - fp::groupBy
+  - fp::countBy
   # github: read-only GitHub queries (list/view/diff/checks/search) are safe
   # reads. Mutations (create/edit/merge/comment/review/close/rerun/cancel/
   # workflow run/release create) and the escape hatches (github::exec —
