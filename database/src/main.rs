@@ -60,11 +60,27 @@ async fn main() -> Result<()> {
         "starting"
     );
 
+    // Identify as `database` in the console's workers view instead of the
+    // SDK's hostname:pid fallback. III_WORKER_NAME still wins — that is the
+    // managed-spawn identity contract (the engine exports it for workers it
+    // owns), and hand-run instances (workers-dev) can use it to tag
+    // themselves per worktree.
+    let mut metadata = iii_sdk::runtime::WorkerMetadata::default();
+    if std::env::var("III_WORKER_NAME").map_or(true, |v| v.is_empty()) {
+        metadata.name = database::worker_name().to_string();
+    }
+    metadata.description = Some(
+        "SQL for PostgreSQL, MySQL, and SQLite: queries, statements, interactive \
+         transactions, and database::row-changed triggers (statements or native capture)."
+            .to_string(),
+    );
+
     // Arc-wrapped for `ui::register` (the console-ui crate clones the client
     // into its hot-reload watcher task); everything else auto-derefs.
     let iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {
+            metadata: Some(metadata),
             otel: Some(OtelConfig::default()),
             ..Default::default()
         },
