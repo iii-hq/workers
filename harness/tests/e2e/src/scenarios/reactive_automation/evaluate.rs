@@ -59,12 +59,11 @@ pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEval
     .iter()
     .all(|name| evidence.existing_tables.contains(*name));
 
-    let orders_complete = evidence.order_summary.as_ref().is_some_and(|summary| {
-        summary.rows_written == Some(EXPECTED_ORDERS)
-            && summary.distinct_ids == Some(EXPECTED_ORDERS)
-            && summary.writer_count == Some(EXPECTED_WRITERS as i64)
-            && summary.missing_created_at == Some(0)
-    });
+    let orders_complete = order_summary_complete(evidence.order_summary.as_ref());
+    let invalid_amounts = evidence
+        .order_summary
+        .as_ref()
+        .and_then(|summary| summary.invalid_amounts);
     let writers_done = evidence.writers.len() == EXPECTED_WRITERS
         && evidence.writers.iter().all(|row| {
             row.writer
@@ -138,7 +137,8 @@ pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEval
                 workload_passed,
                 format!(
                     "tables={all_tables_exist}, parallel_writers={parallel_writers}, \
-                     orders_complete={orders_complete}, writers_done={writers_done}"
+                     orders_complete={orders_complete}, invalid_amounts={invalid_amounts:?}, \
+                     writers_done={writers_done}"
                 ),
             ),
             common::gate(
@@ -190,6 +190,16 @@ pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEval
             ),
         ],
     }
+}
+
+fn order_summary_complete(summary: Option<&super::evidence::OrderSummary>) -> bool {
+    summary.is_some_and(|summary| {
+        summary.rows_written == Some(EXPECTED_ORDERS)
+            && summary.distinct_ids == Some(EXPECTED_ORDERS)
+            && summary.writer_count == Some(EXPECTED_WRITERS as i64)
+            && summary.invalid_amounts == Some(0)
+            && summary.missing_created_at == Some(0)
+    })
 }
 
 fn single_report(reports: &[FinalReport]) -> Option<&FinalReport> {
@@ -262,6 +272,7 @@ mod tests {
                 rows_written: Some(15),
                 distinct_ids: Some(15),
                 writer_count: Some(3),
+                invalid_amounts: Some(0),
                 missing_created_at: Some(0),
             }),
             writers: (1..=3)
@@ -304,6 +315,32 @@ mod tests {
                 .sum::<u16>(),
             100
         );
+    }
+
+    #[test]
+    fn numeric_order_amounts_satisfy_the_order_summary() {
+        let summary = OrderSummary {
+            rows_written: Some(15),
+            distinct_ids: Some(15),
+            writer_count: Some(3),
+            invalid_amounts: Some(0),
+            missing_created_at: Some(0),
+        };
+
+        assert!(order_summary_complete(Some(&summary)));
+    }
+
+    #[test]
+    fn invalid_order_amounts_fail_the_order_summary() {
+        let summary = OrderSummary {
+            rows_written: Some(15),
+            distinct_ids: Some(15),
+            writer_count: Some(3),
+            invalid_amounts: Some(1),
+            missing_created_at: Some(0),
+        };
+
+        assert!(!order_summary_complete(Some(&summary)));
     }
 
     #[test]

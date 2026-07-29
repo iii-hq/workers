@@ -78,6 +78,8 @@ pub(super) async fn collect(
                 &format!(
                     "SELECT COUNT(*) AS rows_written, COUNT(DISTINCT id) AS distinct_ids, \
                          COUNT(DISTINCT writer) AS writer_count, \
+                         SUM(CASE WHEN typeof(amount) IN ('integer', 'real') \
+                             THEN 0 ELSE 1 END) AS invalid_amounts, \
                          SUM(CASE WHEN created_at IS NULL THEN 1 ELSE 0 END) AS missing_created_at \
                          FROM {}",
                     names.orders
