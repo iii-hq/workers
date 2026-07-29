@@ -140,6 +140,11 @@ export interface PlayerState {
   select: (id: string) => void
   /** The selected session, when it is one of the children. */
   activeChild: Conversation | null
+  /** Reader-controlled freeze: the run holds between events until resumed. */
+  paused: boolean
+  togglePause: () => void
+  /** Restart the turn from the top, whatever state it is in. */
+  replay: () => void
 }
 
 export function usePlayer(active: boolean, loop = true): PlayerState {
@@ -161,6 +166,21 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
   // repaint publishes the array alongside the derived waterfall.
   const [spans, setSpans] = useState<readonly StoredSpan[]>([])
   const [spanCount, setSpanCount] = useState(0)
+
+  /* Pause is a ref the running loop polls (state alone would be stale inside
+     the closure) plus state for the button label. */
+  const [paused, setPaused] = useState(false)
+  const pausedRef = useRef(false)
+  const togglePause = useCallback(() => {
+    pausedRef.current = !pausedRef.current
+    setPaused(pausedRef.current)
+  }, [])
+  const [runKey, setRunKey] = useState(0)
+  const replay = useCallback(() => {
+    pausedRef.current = false
+    setPaused(false)
+    setRunKey((k) => k + 1)
+  }, [])
 
   const gateResolveRef = useRef<(() => void) | null>(null)
   const calloutTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
@@ -279,7 +299,8 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
   useEffect(() => {
     if (phase !== 'streaming') return
     const t = setInterval(() => {
-      if (spansRef.current.some((s) => s.pending)) repaintSpans()
+      if (!pausedRef.current && spansRef.current.some((s) => s.pending))
+        repaintSpans()
     }, PENDING_TICK_MS)
     return () => clearInterval(t)
   }, [phase, repaintSpans])
@@ -306,6 +327,10 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
           { once: true },
         )
       })
+
+    const holdWhilePaused = async () => {
+      while (pausedRef.current && !stale()) await wait(150)
+    }
 
     const gate = (_functionTriggerId: string) =>
       new Promise<void>((resolve) => {
@@ -340,6 +365,7 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
       /* type the prompt into the composer */
       await wait(700)
       for (let i = 1; i <= PROMPT.length; i++) {
+        await holdWhilePaused()
         if (stale()) return
         setTyped(PROMPT.slice(0, i))
         await wait(TYPE_MS_PER_CHAR * (0.55 + Math.random() * 0.9))
@@ -368,6 +394,8 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
       let assistantBuffer = ''
 
       for await (const event of runScenario({ signal, gate })) {
+        /* The generator is pull-based: holding here suspends the scenario. */
+        await holdWhilePaused()
         if (stale()) return
         const ev = event as DemoEvent
         switch (ev.kind) {
@@ -571,6 +599,7 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
   }, [
     active,
     loop,
+    runKey,
     append,
     patch,
     repaintSpans,
@@ -629,6 +658,9 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
     activeId,
     select: setActiveId,
     activeChild,
+    paused,
+    togglePause,
+    replay,
   }
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef } from 'react'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import {
@@ -25,6 +25,10 @@ interface MessageListProps {
       when absent. */
   thinkingDetail?: string
   density?: 'route' | 'dock'
+  /** Rendered at the top of the transcript scroller, above the messages, so
+      it scrolls away with them instead of unmounting. When set it replaces
+      the `EmptyState` on an empty transcript (landing demo). */
+  header?: ReactNode
   onResolveApproval?: (
     sessionId: string,
     functionTriggerId: string,
@@ -42,12 +46,6 @@ interface MessageListProps {
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
   workingDir?: string | null
-  /**
-   * Render every function-call card (and group) already expanded. Off in the
-   * product, where a turn's calls collapse to one line each; on for showcase
-   * surfaces whose whole point is the result renderers.
-   */
-  defaultOpenCalls?: boolean
 }
 
 type RenderItem =
@@ -100,12 +98,12 @@ export function MessageList({
   isThinking,
   thinkingDetail,
   density = 'route',
+  header,
   onResolveApproval,
   onAlwaysAllow,
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
   workingDir,
-  defaultOpenCalls,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -173,7 +171,7 @@ export function MessageList({
     })
   }, [messages])
 
-  if (messages.length === 0) {
+  if (messages.length === 0 && !header) {
     return <EmptyState {...resolveEmptyState(ctx, density)} />
   }
 
@@ -182,13 +180,13 @@ export function MessageList({
   return (
     <div ref={containerRef} className={cn('flex-1 overflow-y-auto', listPad)}>
       <div className="mx-auto max-w-[760px] flex flex-col gap-y-8">
+        {header}
         {items.map((item) => {
           if (item.kind === 'fcall-group') {
             return (
               <FunctionTriggerGroup
                 key={item.key}
                 messages={item.messages}
-                defaultOpen={defaultOpenCalls}
                 onResolveApproval={onResolveApproval}
                 onAlwaysAllow={onAlwaysAllow}
                 onResolveFilesystemAccess={onResolveFilesystemAccess}
@@ -213,7 +211,6 @@ export function MessageList({
               key={item.key}
               message={m}
               copyText={copyText}
-              defaultOpenCalls={defaultOpenCalls}
               onResolveApproval={onResolveApproval}
               onAlwaysAllow={onAlwaysAllow}
               onResolveFilesystemAccess={onResolveFilesystemAccess}

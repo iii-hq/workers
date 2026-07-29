@@ -31,6 +31,7 @@ import { WaterfallChart } from '@/pages/TracesV2/components/WaterfallChart'
 import { WorkerBreakdown } from '@/pages/TracesV2/components/WorkerBreakdown'
 import { useTraceFilters } from '@/pages/TracesV2/hooks/useTraceFilters'
 import type { VisualizationSpan } from '@/pages/TracesV2/lib/traceTransform'
+import { DemoEmptyState } from './EmptyState'
 import { MODEL_ID, SESSION_ID, TRACE_ID } from './scenario'
 import { usePlayer } from './usePlayer'
 
@@ -137,7 +138,12 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg text-ink">
-      <DemoChrome working={working} />
+      <DemoChrome
+        working={working}
+        paused={player.paused}
+        onTogglePause={player.togglePause}
+        onReplay={player.replay}
+      />
 
       {/*
         Sidebar, transcript, traces — the console's own three columns, once
@@ -210,6 +216,7 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
           <div ref={listWrapRef} className="flex min-h-0 flex-1 flex-col">
             <MessageList
               messages={player.messages}
+              header={<DemoEmptyState />}
               isThinking={player.isThinking}
               thinkingDetail={
                 player.thinkingDetail ?? `dispatching ${MODEL_LABEL}`
@@ -325,7 +332,19 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
  * The window frame. The real console is a full app with a sidebar and route
  * tabs; the demo keeps just enough of it to read as the same product.
  */
-function DemoChrome({ working }: { working: boolean }) {
+function DemoChrome({
+  working,
+  paused,
+  onTogglePause,
+  onReplay,
+}: {
+  working: boolean
+  paused: boolean
+  onTogglePause: () => void
+  onReplay: () => void
+}) {
+  const controlClass =
+    'flex items-center gap-1.5 border border-rule px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint transition-colors hover:text-ink'
   return (
     <div className="flex items-center gap-3 border-b border-rule bg-panel px-5 py-2">
       <span className="font-mono text-[12px] lowercase tracking-[0.06em] text-ink">
@@ -337,8 +356,14 @@ function DemoChrome({ working }: { working: boolean }) {
       </span>
       <span className="ml-auto flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-ghost">
         <span className="hidden sm:inline">recorded session</span>
-        <StatusDot tone={working ? 'accent' : 'ink'} pulse={working} />
+        <StatusDot tone={working ? 'accent' : 'ink'} pulse={working && !paused} />
       </span>
+      <button type="button" onClick={onTogglePause} className={controlClass}>
+        {paused ? 'play' : 'pause'}
+      </button>
+      <button type="button" onClick={onReplay} className={controlClass}>
+        replay
+      </button>
       {/* Embedded only: the host page listens for iii-demo-close and scrolls
           the console away. Inverted so the way out is unmissable. */}
       {window.self !== window.top && (

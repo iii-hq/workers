@@ -17,48 +17,48 @@
  * generation, and `execute <fn>` for each dispatched call.
  */
 
-import type { StreamEvent } from '@/lib/backend'
-import { sleep, tokenize } from '@/stories/playground/scenarios/helpers'
+import type { StreamEvent } from "@/lib/backend";
+import { sleep, tokenize } from "@/stories/playground/scenarios/helpers";
 
-export const PROMPT = 'build a payments ledger service with a durable db'
+export const PROMPT = "build a payments ledger service with a durable db";
 
-export const MODEL_ID = 'anthropic::claude-opus-4-7'
-export const SESSION_ID = 'console-payments-ledger-demo'
-export const TRACE_ID = 'trace-payments-ledger-0000000001'
+export const MODEL_ID = "anthropic::claude-opus-4-7";
+export const SESSION_ID = "console-payments-ledger-demo";
+export const TRACE_ID = "trace-payments-ledger-0000000001";
 
 /**
  * Global playback rate. `prefers-reduced-motion` sets it near zero so the
  * turn fills in at once and holds, instead of animating for a minute.
  */
-let SPEED = 1
+let SPEED = 1;
 export function setScenarioSpeed(multiplier: number) {
-  SPEED = multiplier
+  SPEED = multiplier;
 }
-const nap = (ms: number, signal?: AbortSignal) => sleep(ms * SPEED, signal)
+const nap = (ms: number, signal?: AbortSignal) => sleep(ms * SPEED, signal);
 
-export type CalloutAnchor = 'transcript' | 'waterfall' | 'composer'
+export type CalloutAnchor = "transcript" | "waterfall" | "composer";
 
 export interface Callout {
-  title: string
-  text: string
-  anchor: CalloutAnchor
+  title: string;
+  text: string;
+  anchor: CalloutAnchor;
 }
 
 export interface DemoSpanInit {
-  id: string
-  parent?: string
-  name: string
-  service: string
-  kind?: string
-  attributes?: Array<[string, unknown]>
+  id: string;
+  parent?: string;
+  name: string;
+  service: string;
+  kind?: string;
+  attributes?: Array<[string, unknown]>;
 }
 
 /** A child session `harness::spawn` created, as the sidebar shows it. */
 export interface DemoSession {
-  id: string
-  title: string
+  id: string;
+  title: string;
   /** The task the parent handed down: the child's seeding user message. */
-  task: string
+  task: string;
 }
 
 /**
@@ -67,58 +67,58 @@ export interface DemoSession {
  * and the three off-screen ones would be animating at nobody.
  */
 export type ChildEntry =
-  | { role: 'thought'; content: string; durationMs: number }
-  | { role: 'assistant'; content: string }
+  | { role: "thought"; content: string; durationMs: number }
+  | { role: "assistant"; content: string }
   | {
-      role: 'function-trigger'
-      functionId: string
+      role: "function-trigger";
+      functionId: string;
       /** Worker that runs it — the child's `execute` span's service name. */
-      worker: string
-      input: unknown
-      output: unknown
-      durationMs: number
-    }
+      worker: string;
+      input: unknown;
+      output: unknown;
+      durationMs: number;
+    };
 
 export type DemoEvent =
   | StreamEvent
-  | { kind: 'demo-span-open'; span: DemoSpanInit }
+  | { kind: "demo-span-open"; span: DemoSpanInit }
   | {
-      kind: 'demo-span-close'
-      id: string
-      status?: 'OK' | 'ERROR'
+      kind: "demo-span-close";
+      id: string;
+      status?: "OK" | "ERROR";
       /** Close the span this long after it opened, rather than now. */
-      durationMs?: number
+      durationMs?: number;
     }
-  | { kind: 'demo-callout'; callout: Callout }
-  | { kind: 'demo-session-open'; session: DemoSession }
-  | { kind: 'demo-session-msg'; id: string; entry: ChildEntry }
-  | { kind: 'demo-session-done'; id: string; result: string }
+  | { kind: "demo-callout"; callout: Callout }
+  | { kind: "demo-session-open"; session: DemoSession }
+  | { kind: "demo-session-msg"; id: string; entry: ChildEntry }
+  | { kind: "demo-session-done"; id: string; result: string };
 
 export interface ScenarioOptions {
-  signal?: AbortSignal
+  signal?: AbortSignal;
   /**
    * Resolves when the gated call is released — by the viewer clicking
    * approve/deny on the real card, or by the demo's own timeout. The demo
    * never denies; a deny resolves the same way so the card can't hang.
    */
-  gate: (functionTriggerId: string) => Promise<void>
+  gate: (functionTriggerId: string) => Promise<void>;
 }
 
 /* ── span bookkeeping ─────────────────────────────────────────────────── */
 
-let spanSeq = 0
+let spanSeq = 0;
 function spanId(prefix: string): string {
-  spanSeq += 1
-  return `${prefix}-${String(spanSeq).padStart(3, '0')}`
+  spanSeq += 1;
+  return `${prefix}-${String(spanSeq).padStart(3, "0")}`;
 }
 
 /** Turn-identity baggage the harness stamps on every span of a step. */
 const TURN_TAGS: Array<[string, unknown]> = [
-  ['iii.session.id', SESSION_ID],
-  ['iii.message.id', 'turn-01'],
-  ['iii.tag.kind', 'harness.turn'],
-  ['iii.tag.message', PROMPT],
-]
+  ["iii.session.id", SESSION_ID],
+  ["iii.message.id", "turn-01"],
+  ["iii.tag.kind", "harness.turn"],
+  ["iii.tag.message", PROMPT],
+];
 
 /* ── stream fragments ─────────────────────────────────────────────────── */
 
@@ -129,7 +129,7 @@ const TURN_TAGS: Array<[string, unknown]> = [
  * read of the closing answer.
  */
 function readingDwellMs(body: string): number {
-  return Math.min(2800, Math.max(600, tokenize(body).length * 10))
+  return Math.min(2800, Math.max(600, tokenize(body).length * 10));
 }
 
 async function* thought(
@@ -137,15 +137,15 @@ async function* thought(
   signal?: AbortSignal,
   meanDelayMs = 38,
 ): AsyncGenerator<DemoEvent> {
-  const startedAt = Date.now()
-  yield { kind: 'thought-start' }
+  const startedAt = Date.now();
+  yield { kind: "thought-start" };
   for (const token of tokenize(body)) {
-    if (signal?.aborted) return
-    if (token) yield { kind: 'thought-token', token }
-    await nap(meanDelayMs * (0.6 + Math.random() * 0.8), signal)
+    if (signal?.aborted) return;
+    if (token) yield { kind: "thought-token", token };
+    await nap(meanDelayMs * (0.6 + Math.random() * 0.8), signal);
   }
-  yield { kind: 'thought-end', durationMs: Date.now() - startedAt }
-  await nap(readingDwellMs(body), signal)
+  yield { kind: "thought-end", durationMs: Date.now() - startedAt };
+  await nap(readingDwellMs(body), signal);
 }
 
 async function* assistant(
@@ -154,12 +154,12 @@ async function* assistant(
   meanDelayMs = 38,
 ): AsyncGenerator<DemoEvent> {
   for (const token of tokenize(body)) {
-    if (signal?.aborted) return
-    if (token) yield { kind: 'assistant-token', token }
-    await nap(meanDelayMs * (0.5 + Math.random()), signal)
+    if (signal?.aborted) return;
+    if (token) yield { kind: "assistant-token", token };
+    await nap(meanDelayMs * (0.5 + Math.random()), signal);
   }
-  yield { kind: 'assistant-end' }
-  await nap(readingDwellMs(body), signal)
+  yield { kind: "assistant-end" };
+  await nap(readingDwellMs(body), signal);
 }
 
 /**
@@ -172,41 +172,41 @@ async function* readPause(
   signal: AbortSignal | undefined,
   holdMs = 2800,
 ): AsyncGenerator<DemoEvent> {
-  const startedAt = Date.now()
-  yield { kind: 'thought-start' }
-  for (const token of tokenize('letting the user read…')) {
-    if (signal?.aborted) return
-    if (token) yield { kind: 'thought-token', token }
-    await nap(55, signal)
+  const startedAt = Date.now();
+  yield { kind: "thought-start" };
+  for (const token of tokenize("letting the user read…")) {
+    if (signal?.aborted) return;
+    if (token) yield { kind: "thought-token", token };
+    await nap(55, signal);
   }
-  await nap(holdMs, signal)
-  if (signal?.aborted) return
-  yield { kind: 'thought-end', durationMs: Date.now() - startedAt }
+  await nap(holdMs, signal);
+  if (signal?.aborted) return;
+  yield { kind: "thought-end", durationMs: Date.now() - startedAt };
 }
 
 interface CallOptions {
-  fn: string
+  fn: string;
   /** Worker that runs it — the `execute` span's service name. */
-  worker: string
-  input: unknown
-  output: unknown
+  worker: string;
+  input: unknown;
+  output: unknown;
   /** How long the demo lingers on the call, so a viewer can see it happen. */
-  runMs: number
+  runMs: number;
   /**
    * What the card and the span report, when that differs from how long the
    * demo dwells. An engine-local call really does finish in microseconds;
    * animating it that fast would make it invisible, and reporting the dwell
    * instead would claim a trigger registration costs a third of a second.
    */
-  reportedMs?: number
-  parentSpan: string
-  signal?: AbortSignal
+  reportedMs?: number;
+  parentSpan: string;
+  signal?: AbortSignal;
   /** Nested spans opened inside the call, as [name, service, share-of-runMs]. */
-  inner?: Array<[string, string, number]>
+  inner?: Array<[string, string, number]>;
   /** Hold the call in the approval gate before it executes. */
-  gate?: (functionTriggerId: string) => Promise<void>
-  functionTriggerId?: string
-  callout?: Callout
+  gate?: (functionTriggerId: string) => Promise<void>;
+  functionTriggerId?: string;
+  callout?: Callout;
 }
 
 async function* call(opts: CallOptions): AsyncGenerator<DemoEvent> {
@@ -223,11 +223,11 @@ async function* call(opts: CallOptions): AsyncGenerator<DemoEvent> {
     gate,
     functionTriggerId,
     callout,
-  } = opts
-  const startedAt = Date.now()
+  } = opts;
+  const startedAt = Date.now();
 
   yield {
-    kind: 'fcall-start',
+    kind: "fcall-start",
     functionId: fn,
     input,
     ...(gate
@@ -237,72 +237,72 @@ async function* call(opts: CallOptions): AsyncGenerator<DemoEvent> {
           sessionId: SESSION_ID,
         }
       : {}),
-  }
-  if (callout) yield { kind: 'demo-callout', callout }
+  };
+  if (callout) yield { kind: "demo-callout", callout };
 
   if (gate && functionTriggerId) {
-    await gate(functionTriggerId)
-    if (signal?.aborted) return
-    yield { kind: 'fcall-approval-cleared', functionTriggerId, running: true }
+    await gate(functionTriggerId);
+    if (signal?.aborted) return;
+    yield { kind: "fcall-approval-cleared", functionTriggerId, running: true };
   }
 
-  const execSpan = spanId('exec')
+  const execSpan = spanId("exec");
   yield {
-    kind: 'demo-span-open',
+    kind: "demo-span-open",
     span: {
       id: execSpan,
       parent: parentSpan,
       name: `execute ${fn}`,
       service: worker,
-      kind: 'internal',
-      attributes: [...TURN_TAGS, ['iii.function.id', fn]],
+      kind: "internal",
+      attributes: [...TURN_TAGS, ["iii.function.id", fn]],
     },
-  }
+  };
 
   if (inner?.length) {
-    let elapsed = 0
+    let elapsed = 0;
     for (const [name, service, share] of inner) {
-      const childSpan = spanId('inner')
+      const childSpan = spanId("inner");
       yield {
-        kind: 'demo-span-open',
+        kind: "demo-span-open",
         span: {
           id: childSpan,
           parent: execSpan,
           name,
           service,
-          kind: 'internal',
+          kind: "internal",
           attributes: TURN_TAGS,
         },
-      }
-      const slice = runMs * share
-      await nap(slice, signal)
-      elapsed += slice
-      if (signal?.aborted) return
+      };
+      const slice = runMs * share;
+      await nap(slice, signal);
+      elapsed += slice;
+      if (signal?.aborted) return;
       yield {
-        kind: 'demo-span-close',
+        kind: "demo-span-close",
         id: childSpan,
         /* Inner work takes its share of the REPORTED time, so a child can
            never outlast the call it happened inside. */
         ...(reportedMs === undefined ? {} : { durationMs: reportedMs * share }),
-      }
+      };
     }
-    await nap(Math.max(0, runMs - elapsed), signal)
+    await nap(Math.max(0, runMs - elapsed), signal);
   } else {
-    await nap(runMs, signal)
+    await nap(runMs, signal);
   }
-  if (signal?.aborted) return
+  if (signal?.aborted) return;
 
   yield {
-    kind: 'demo-span-close',
+    kind: "demo-span-close",
     id: execSpan,
     ...(reportedMs === undefined ? {} : { durationMs: reportedMs }),
-  }
+  };
   yield {
-    kind: 'fcall-end',
+    kind: "fcall-end",
     output,
     durationMs: reportedMs ?? Date.now() - startedAt,
     ...(functionTriggerId ? { functionTriggerId } : {}),
-  }
+  };
 }
 
 /**
@@ -316,53 +316,53 @@ async function* step(
   signal: AbortSignal | undefined,
   after: (stepSpan: string) => AsyncGenerator<DemoEvent>,
 ): AsyncGenerator<DemoEvent> {
-  const stepSpan = spanId('step')
-  const routerSpan = spanId('router')
-  const providerSpan = spanId('provider')
+  const stepSpan = spanId("step");
+  const routerSpan = spanId("router");
+  const providerSpan = spanId("provider");
 
   yield {
-    kind: 'demo-span-open',
+    kind: "demo-span-open",
     span: {
       id: stepSpan,
-      name: 'harness::turn step',
-      service: 'harness',
-      kind: 'internal',
-      attributes: [...TURN_TAGS, ['iii.turn.step', index]],
+      name: "harness::turn step",
+      service: "harness",
+      kind: "internal",
+      attributes: [...TURN_TAGS, ["iii.turn.step", index]],
     },
-  }
+  };
   yield {
-    kind: 'demo-span-open',
+    kind: "demo-span-open",
     span: {
       id: routerSpan,
       parent: stepSpan,
-      name: 'execute router::chat',
-      service: 'llm-router',
-      kind: 'internal',
-      attributes: [...TURN_TAGS, ['gen_ai.request.model', 'claude-opus-4-7']],
+      name: "execute router::chat",
+      service: "llm-router",
+      kind: "internal",
+      attributes: [...TURN_TAGS, ["gen_ai.request.model", "claude-opus-4-7"]],
     },
-  }
+  };
   yield {
-    kind: 'demo-span-open',
+    kind: "demo-span-open",
     span: {
       id: providerSpan,
       parent: routerSpan,
-      name: 'execute provider::anthropic::stream',
-      service: 'llm-provider-anthropic',
-      kind: 'client',
+      name: "execute provider::anthropic::stream",
+      service: "llm-provider-anthropic",
+      kind: "client",
       attributes: TURN_TAGS,
     },
-  }
+  };
 
-  yield* body
-  if (signal?.aborted) return
+  yield* body;
+  if (signal?.aborted) return;
 
-  yield { kind: 'demo-span-close', id: providerSpan }
-  yield { kind: 'demo-span-close', id: routerSpan }
+  yield { kind: "demo-span-close", id: providerSpan };
+  yield { kind: "demo-span-close", id: routerSpan };
 
-  yield* after(stepSpan)
-  if (signal?.aborted) return
+  yield* after(stepSpan);
+  if (signal?.aborted) return;
 
-  yield { kind: 'demo-span-close', id: stepSpan }
+  yield { kind: "demo-span-close", id: stepSpan };
 }
 
 /**
@@ -382,51 +382,51 @@ async function* step(
  */
 async function* spawnFanOut(
   stepSpan: string,
-  gate: ScenarioOptions['gate'],
+  gate: ScenarioOptions["gate"],
   signal: AbortSignal | undefined,
 ): AsyncGenerator<DemoEvent> {
-  const startedAt = Date.now()
-  const spans = new Map<string, string>()
+  const startedAt = Date.now();
+  const spans = new Map<string, string>();
 
   /** Open the child's span pair and its session — it is running now. */
   function* launch(child: ChildSpec): Generator<DemoEvent> {
-    const execSpan = spanId('exec')
-    const childStep = spanId('child')
-    spans.set(child.callId, execSpan)
+    const execSpan = spanId("exec");
+    const childStep = spanId("child");
+    spans.set(child.callId, execSpan);
     yield {
-      kind: 'demo-span-open',
+      kind: "demo-span-open",
       span: {
         id: execSpan,
         parent: stepSpan,
-        name: 'execute harness::spawn',
-        service: 'harness',
-        kind: 'internal',
-        attributes: [...TURN_TAGS, ['iii.child.session_id', child.sessionId]],
+        name: "execute harness::spawn",
+        service: "harness",
+        kind: "internal",
+        attributes: [...TURN_TAGS, ["iii.child.session_id", child.sessionId]],
       },
-    }
+    };
     yield {
-      kind: 'demo-span-open',
+      kind: "demo-span-open",
       span: {
         id: childStep,
         parent: execSpan,
-        name: 'harness::turn step',
-        service: 'harness',
-        kind: 'internal',
+        name: "harness::turn step",
+        service: "harness",
+        kind: "internal",
         attributes: [
-          ['iii.session.id', child.sessionId],
-          ['iii.tag.kind', 'harness.subagent'],
-          ['iii.tag.display_name', `Sub-agent · ${child.title}`],
+          ["iii.session.id", child.sessionId],
+          ["iii.tag.kind", "harness.subagent"],
+          ["iii.tag.display_name", `Sub-agent · ${child.title}`],
         ],
       },
-    }
-    spans.set(`${child.callId}:step`, childStep)
+    };
+    spans.set(`${child.callId}:step`, childStep);
     yield {
-      kind: 'demo-session-open',
+      kind: "demo-session-open",
       session: { id: child.sessionId, title: child.title, task: child.task },
-    }
+    };
     /* Whatever the child has to say the moment it wakes up. */
     for (const beat of child.work) {
-      if (beat.at === 0) yield* childBeat(child, beat.entry)
+      if (beat.at === 0) yield* childBeat(child, beat.entry);
     }
   }
 
@@ -435,76 +435,76 @@ async function* spawnFanOut(
     child: ChildSpec,
     entry: ChildEntry,
   ): Generator<DemoEvent> {
-    yield { kind: 'demo-session-msg', id: child.sessionId, entry }
-    if (entry.role !== 'function-trigger') return
-    const callSpan = spanId('childcall')
+    yield { kind: "demo-session-msg", id: child.sessionId, entry };
+    if (entry.role !== "function-trigger") return;
+    const callSpan = spanId("childcall");
     yield {
-      kind: 'demo-span-open',
+      kind: "demo-span-open",
       span: {
         id: callSpan,
         parent: spans.get(`${child.callId}:step`),
         name: `execute ${entry.functionId}`,
         service: entry.worker,
-        kind: 'internal',
+        kind: "internal",
         attributes: [
-          ['iii.session.id', child.sessionId],
-          ['iii.function.id', entry.functionId],
+          ["iii.session.id", child.sessionId],
+          ["iii.function.id", entry.functionId],
         ],
       },
-    }
+    };
     /* Closed at what the call really costs, like every other call here: the
        child's turn span is the wide one, its dispatches are hairlines. */
     yield {
-      kind: 'demo-span-close',
+      kind: "demo-span-close",
       id: callSpan,
       durationMs: entry.durationMs,
-    }
+    };
   }
 
   /* Every card at once — a parallel tool-call batch is one assistant turn. */
   for (const child of CHILDREN) {
     yield {
-      kind: 'fcall-start',
-      functionId: 'harness::spawn',
+      kind: "fcall-start",
+      functionId: "harness::spawn",
       input: spawnInput(child),
       functionTriggerId: child.callId,
       sessionId: SESSION_ID,
       ...(child.gated ? { pendingApproval: true } : {}),
-    }
+    };
   }
   for (const child of CHILDREN) {
-    if (!child.gated) yield* launch(child)
+    if (!child.gated) yield* launch(child);
   }
 
   yield {
-    kind: 'demo-callout',
+    kind: "demo-callout",
     callout: {
-      anchor: 'transcript',
-      title: 'three sub-agents, one held at the gate',
-      text: 'Each child is its own session with its own budget and its own function policy, listed under this chat as it starts and readable on its own. Only `ledger core` asked for `database::*`, a write scope this session does not hold, so only that one waits for a human. Click approve to release it.',
+      anchor: "transcript",
+      title: "three sub-agents, one held at the gate",
+      text: "Each child is its own session with its own budget and its own function policy, listed under this chat as it starts and readable on its own. Only `ledger core` asked for `database::*`, a write scope this session does not hold, so only that one waits for a human. Click approve to release it.",
     },
-  }
+  };
 
   for (const child of CHILDREN) {
-    if (!child.gated) continue
-    await gate(child.callId)
-    if (signal?.aborted) return
+    if (!child.gated) continue;
+    await gate(child.callId);
+    if (signal?.aborted) return;
     yield {
-      kind: 'fcall-approval-cleared',
+      kind: "fcall-approval-cleared",
       functionTriggerId: child.callId,
       running: true,
-    }
-    yield* launch(child)
+    };
+    yield* launch(child);
   }
 
   yield {
-    kind: 'demo-callout',
+    kind: "demo-callout",
     callout: {
-      anchor: 'transcript',
-      title: 'three sessions, running at once',
-      text: 'Every child is a session of its own, listed in the sidebar. Click one to watch it think and call while the others keep going; whatever it dispatches lands in this same trace, under its own `harness::turn step`.',
+      anchor: "transcript",
+      title: "three sessions, running at once",
+      text: "Every child is a session of its own, listed in the sidebar. Click one to watch it think and call while the others keep going; whatever it dispatches lands in this same trace, under its own `harness::turn step`.",
     },
-  }
+  };
 
   /* One clock over all three: the children interleave, and each reports when
      it is done rather than in dispatch order. */
@@ -519,166 +519,166 @@ async function* spawnFanOut(
       child,
       entry: undefined,
     })),
-  ].sort((a, b) => a.at - b.at)
+  ].sort((a, b) => a.at - b.at);
 
-  let waited = 0
+  let waited = 0;
   for (const beat of beats) {
-    await nap(beat.at - waited, signal)
-    if (signal?.aborted) return
-    waited = beat.at
+    await nap(beat.at - waited, signal);
+    if (signal?.aborted) return;
+    waited = beat.at;
 
     if (beat.entry) {
-      yield* childBeat(beat.child, beat.entry)
-      continue
+      yield* childBeat(beat.child, beat.entry);
+      continue;
     }
 
-    const child = beat.child
-    const childStep = spans.get(`${child.callId}:step`)
-    const execSpan = spans.get(child.callId)
-    if (childStep) yield { kind: 'demo-span-close', id: childStep }
-    if (execSpan) yield { kind: 'demo-span-close', id: execSpan }
+    const child = beat.child;
+    const childStep = spans.get(`${child.callId}:step`);
+    const execSpan = spans.get(child.callId);
+    if (childStep) yield { kind: "demo-span-close", id: childStep };
+    if (execSpan) yield { kind: "demo-span-close", id: execSpan };
     yield {
-      kind: 'demo-session-done',
+      kind: "demo-session-done",
       id: child.sessionId,
       result: child.resultText,
-    }
+    };
     yield {
-      kind: 'fcall-end',
+      kind: "fcall-end",
       output: spawnResult(child),
       durationMs: Date.now() - startedAt,
       functionTriggerId: child.callId,
-    }
+    };
   }
 }
 
 /* ── outputs ──────────────────────────────────────────────────────────── */
 
-const CONNECTED_AT = () => Date.now() - 4 * 60 * 60 * 1000
+const CONNECTED_AT = () => Date.now() - 4 * 60 * 60 * 1000;
 
 const WORKERS_LIST = () => ({
   workers: [
     {
-      id: 'wrk_01hq4m8database',
-      name: 'database',
-      description: 'Durable postgres: tables, queries, migrations.',
-      version: '0.21.0',
-      runtime: 'rust',
-      os: 'linux',
-      status: 'connected',
+      id: "wrk_01hq4m8database",
+      name: "database",
+      description: "Durable postgres: tables, queries, migrations.",
+      version: "0.21.0",
+      runtime: "rust",
+      os: "linux",
+      status: "connected",
       function_count: 9,
       connected_at_ms: CONNECTED_AT(),
       active_invocations: 0,
-      isolation: 'container',
-      tag: 'core',
+      isolation: "container",
+      tag: "core",
     },
     {
-      id: 'wrk_01hq4m8shell00',
-      name: 'shell',
-      description: 'Scoped command execution and filesystem access.',
-      version: '0.21.0',
-      runtime: 'rust',
-      os: 'linux',
-      status: 'connected',
+      id: "wrk_01hq4m8shell00",
+      name: "shell",
+      description: "Scoped command execution and filesystem access.",
+      version: "0.21.0",
+      runtime: "rust",
+      os: "linux",
+      status: "connected",
       function_count: 16,
       connected_at_ms: CONNECTED_AT(),
       active_invocations: 0,
-      isolation: 'container',
+      isolation: "container",
     },
     {
-      id: 'wrk_01hq4m8coder000',
-      name: 'coder',
-      description: 'Reads, writes and patches files in a scoped workspace.',
-      version: '0.21.0',
-      runtime: 'node',
-      os: 'linux',
-      status: 'connected',
+      id: "wrk_01hq4m8coder000",
+      name: "coder",
+      description: "Reads, writes and patches files in a scoped workspace.",
+      version: "0.21.0",
+      runtime: "node",
+      os: "linux",
+      status: "connected",
       function_count: 12,
       connected_at_ms: CONNECTED_AT(),
       active_invocations: 0,
-      isolation: 'container',
+      isolation: "container",
     },
     {
-      id: 'wrk_01hq4m8harness0',
-      name: 'harness',
-      description: 'The durable agent turn loop.',
-      version: '0.21.0',
-      runtime: 'rust',
-      os: 'linux',
-      status: 'connected',
+      id: "wrk_01hq4m8harness0",
+      name: "harness",
+      description: "The durable agent turn loop.",
+      version: "0.21.0",
+      runtime: "rust",
+      os: "linux",
+      status: "connected",
       function_count: 14,
       connected_at_ms: CONNECTED_AT(),
       active_invocations: 1,
-      isolation: 'container',
+      isolation: "container",
     },
     {
-      id: 'wrk_01hq4m8observ00',
-      name: 'observability',
-      description: 'OTel collector: traces, logs and metrics for the engine.',
-      version: '0.21.0',
-      runtime: 'rust',
-      os: 'linux',
-      status: 'connected',
+      id: "wrk_01hq4m8observ00",
+      name: "observability",
+      description: "OTel collector: traces, logs and metrics for the engine.",
+      version: "0.21.0",
+      runtime: "rust",
+      os: "linux",
+      status: "connected",
       function_count: 6,
       connected_at_ms: CONNECTED_AT(),
       active_invocations: 0,
-      isolation: 'container',
+      isolation: "container",
     },
   ],
-})
+});
 
 const DATABASE_INFO = () => ({
   worker: {
-    id: 'wrk_01hq4m8database',
-    name: 'database',
-    description: 'Durable postgres: tables, queries, migrations.',
-    version: '0.21.0',
-    runtime: 'rust',
-    os: 'linux',
-    status: 'connected',
+    id: "wrk_01hq4m8database",
+    name: "database",
+    description: "Durable postgres: tables, queries, migrations.",
+    version: "0.21.0",
+    runtime: "rust",
+    os: "linux",
+    status: "connected",
     function_count: 9,
     connected_at_ms: CONNECTED_AT(),
     active_invocations: 0,
-    isolation: 'container',
+    isolation: "container",
     internal: false,
     pid: 1421,
     latest_metrics: null,
   },
   functions: [
     {
-      function_id: 'database::create_table',
-      worker_name: 'database',
-      description: 'Create a table from a column spec.',
+      function_id: "database::create_table",
+      worker_name: "database",
+      description: "Create a table from a column spec.",
     },
     {
-      function_id: 'database::query',
-      worker_name: 'database',
-      description: 'Run a parameterised read query.',
+      function_id: "database::query",
+      worker_name: "database",
+      description: "Run a parameterised read query.",
     },
     {
-      function_id: 'database::execute',
-      worker_name: 'database',
-      description: 'Run a parameterised write statement.',
+      function_id: "database::execute",
+      worker_name: "database",
+      description: "Run a parameterised write statement.",
     },
     {
-      function_id: 'database::transaction',
-      worker_name: 'database',
-      description: 'Run several statements atomically.',
+      function_id: "database::transaction",
+      worker_name: "database",
+      description: "Run several statements atomically.",
     },
     {
-      function_id: 'database::migrate',
-      worker_name: 'database',
-      description: 'Apply pending migrations.',
+      function_id: "database::migrate",
+      worker_name: "database",
+      description: "Apply pending migrations.",
     },
   ],
   trigger_types: [
     {
-      id: 'database.row_changed',
-      worker_name: 'database',
-      description: 'Fires when a watched table changes.',
+      id: "database.row_changed",
+      worker_name: "database",
+      description: "Fires when a watched table changes.",
     },
   ],
   registered_triggers: [],
-})
+});
 
 /**
  * The fan-out. Three children, dispatched in one step, each its own session
@@ -688,25 +688,25 @@ const DATABASE_INFO = () => ({
  */
 interface ChildSpec {
   /** iii function_call_id, and the key the approval resolves against. */
-  callId: string
-  sessionId: string
-  title: string
-  task: string
-  allow: string[]
+  callId: string;
+  sessionId: string;
+  title: string;
+  task: string;
+  allow: string[];
   /** Held at the gate before it may run. */
-  gated?: boolean
+  gated?: boolean;
   /** The child's own transcript, played out while the parent waits. */
-  work: ChildBeat[]
-  resultText: string
-  resultDetails: Record<string, unknown>
+  work: ChildBeat[];
+  resultText: string;
+  resultDetails: Record<string, unknown>;
   /** Delay after the gate clears before this child reports, in ms. */
-  finishAfterMs: number
+  finishAfterMs: number;
 }
 
 interface ChildBeat {
   /** ms after the gate clears; 0 lands the moment the child starts. */
-  at: number
-  entry: ChildEntry
+  at: number;
+  entry: ChildEntry;
 }
 
 /* The source the children write, shown by the coder card as they write it. */
@@ -740,7 +740,7 @@ pub fn register(iii: &IIIClient) {
         })
         .description("Post a charge to the ledger as a balanced double entry."),
     );
-}`
+}`;
 
 const CHARGE_REFUND_RS = `use crate::types::{Entry, Refund};
 use iii_sdk::{Error, IIIClient, RegisterFunction, TriggerRequest};
@@ -769,7 +769,7 @@ pub fn register(iii: &IIIClient) {
         })
         .description("Reverse a posted charge, in part or in full."),
     );
-}`
+}`;
 
 const WEBHOOK_STRIPE_RS = `use crate::types::{StripeEvent, WebhookAck};
 use iii_sdk::{Error, IIIClient, RegisterFunction, TriggerRequest};
@@ -800,7 +800,7 @@ pub fn register(iii: &IIIClient) {
         })
         .description("Post a Stripe charge event to the ledger, exactly once."),
     );
-}`
+}`;
 
 const RECONCILE_RS = `use crate::types::{ReconcileReport, Window};
 use iii_sdk::{Error, IIIClient, RegisterFunction, TriggerRequest};
@@ -828,7 +828,7 @@ pub fn register(iii: &IIIClient) {
         })
         .description("Check the ledger balances and flag orphaned entries."),
     );
-}`
+}`;
 
 const TESTS_RS = `use crate::support::{ledger, TestEngine};
 
@@ -865,7 +865,7 @@ async fn refund_rejects_over_refund() {
 }
 
 // 8 more: reversal maths, unknown event kinds, orphaned entries, reads of
-// uncommitted rows, concurrent charges on one account, schema drift.`
+// uncommitted rows, concurrent charges on one account, schema drift.`;
 
 /** A `coder::create-file` exchange, as the batch card renders it. */
 function writeFiles(
@@ -873,9 +873,9 @@ function writeFiles(
   durationMs: number,
 ): ChildEntry {
   return {
-    role: 'function-trigger',
-    functionId: 'coder::create-file',
-    worker: 'coder',
+    role: "function-trigger",
+    functionId: "coder::create-file",
+    worker: "coder",
     input: {
       files: files.map(([path, content]) => ({ path, content, parents: true })),
     },
@@ -887,7 +887,7 @@ function writeFiles(
       })),
     },
     durationMs,
-  }
+  };
 }
 
 /** A `database::create_table` exchange. */
@@ -897,9 +897,9 @@ function createTable(
   durationMs: number,
 ): ChildEntry {
   return {
-    role: 'function-trigger',
-    functionId: 'database::create_table',
-    worker: 'database',
+    role: "function-trigger",
+    functionId: "database::create_table",
+    worker: "database",
     input: {
       table,
       if_not_exists: true,
@@ -907,39 +907,39 @@ function createTable(
     },
     output: { table, created: true, columns: columns.length },
     durationMs,
-  }
+  };
 }
 
 const CHILDREN: ChildSpec[] = [
   {
-    callId: 'fc_spawn_ledger_core',
-    sessionId: 'console-sub-ledger-core',
-    title: 'ledger core',
+    callId: "fc_spawn_ledger_core",
+    sessionId: "console-sub-ledger-core",
+    title: "ledger core",
     task: `Write the payments-ledger worker's core against the existing \`database\` worker.
 
 \`payments::charge::record\` and \`payments::charge::refund\`, double-entry rows,
 \`database::transaction\` for anything that writes two rows. Create the
 \`ledger_entries\` and \`ledger_accounts\` tables.`,
-    allow: ['coder::*', 'database::*'],
+    allow: ["coder::*", "database::*"],
     gated: true,
     work: [
       {
         at: 0,
         entry: {
-          role: 'assistant',
+          role: "assistant",
           content:
-            'Double-entry, so a charge is never one row: debit the customer account, credit the house account, both inside one `database::transaction` or neither. That also gives the tests their invariant, every account summing to zero across its entries. Tables first, then the two writers.',
+            "Double-entry, so a charge is never one row: debit the customer account, credit the house account, both inside one `database::transaction` or neither. That also gives the tests their invariant, every account summing to zero across its entries. Tables first, then the two writers.",
         },
       },
       {
         at: 1300,
         entry: createTable(
-          'ledger_accounts',
+          "ledger_accounts",
           [
-            ['id', 'text primary key'],
-            ['owner', 'text not null'],
-            ['currency', 'text not null'],
-            ['balance_minor', 'bigint not null default 0'],
+            ["id", "text primary key"],
+            ["owner", "text not null"],
+            ["currency", "text not null"],
+            ["balance_minor", "bigint not null default 0"],
           ],
           18.7,
         ),
@@ -947,13 +947,13 @@ const CHILDREN: ChildSpec[] = [
       {
         at: 2500,
         entry: createTable(
-          'ledger_entries',
+          "ledger_entries",
           [
-            ['id', 'text primary key'],
-            ['account_id', 'text not null references ledger_accounts(id)'],
-            ['amount_minor', 'bigint not null'],
-            ['provider_event_id', 'text unique'],
-            ['posted_at', 'timestamptz not null default now()'],
+            ["id", "text primary key"],
+            ["account_id", "text not null references ledger_accounts(id)"],
+            ["amount_minor", "bigint not null"],
+            ["provider_event_id", "text unique"],
+            ["posted_at", "timestamptz not null default now()"],
           ],
           22.4,
         ),
@@ -961,9 +961,9 @@ const CHILDREN: ChildSpec[] = [
       {
         at: 3500,
         entry: {
-          role: 'thought',
+          role: "thought",
           content:
-            'Both tables are up, and the foreign key ties every entry to an account. Now the writers. Refund is the one with a rule attached: it reverses a posted entry and can never take out more than is left in it.',
+            "Both tables are up, and the foreign key ties every entry to an account. Now the writers. Refund is the one with a rule attached: it reverses a posted entry and can never take out more than is left in it.",
           durationMs: 2400,
         },
       },
@@ -971,115 +971,115 @@ const CHILDREN: ChildSpec[] = [
         at: 4400,
         entry: writeFiles(
           [
-            ['src/functions/charge_record.rs', CHARGE_RECORD_RS],
-            ['src/functions/charge_refund.rs', CHARGE_REFUND_RS],
+            ["src/functions/charge_record.rs", CHARGE_RECORD_RS],
+            ["src/functions/charge_refund.rs", CHARGE_REFUND_RS],
           ],
           61.5,
         ),
       },
     ],
     resultText:
-      'ledger core done: charge::record + charge::refund over a double-entry schema, 2 tables created.',
+      "ledger core done: charge::record + charge::refund over a double-entry schema, 2 tables created.",
     resultDetails: {
-      functions: ['payments::charge::record', 'payments::charge::refund'],
-      tables: ['ledger_entries', 'ledger_accounts'],
+      functions: ["payments::charge::record", "payments::charge::refund"],
+      tables: ["ledger_entries", "ledger_accounts"],
       turns_used: 7,
     },
     finishAfterMs: 7400,
   },
   {
-    callId: 'fc_spawn_ledger_webhook',
-    sessionId: 'console-sub-ledger-webhook',
-    title: 'stripe webhook',
+    callId: "fc_spawn_ledger_webhook",
+    sessionId: "console-sub-ledger-webhook",
+    title: "stripe webhook",
     task: `Write \`payments::webhook::stripe\` and \`payments::ledger::reconcile\` for the
 payments-ledger worker. Idempotent on the provider event id: a replayed event
 must post nothing and return the original entry.`,
-    allow: ['coder::*', 'web::search'],
+    allow: ["coder::*", "web::search"],
     work: [
       {
         at: 0,
         entry: {
-          role: 'assistant',
+          role: "assistant",
           content:
-            'Stripe retries on any non-2xx, so this has to be idempotent at the ledger rather than at the HTTP layer. The provider event id is the natural key and `charge::record` is already unique on it, so the webhook stays thin: map the event, hand it over, return whatever comes back.',
+            "Stripe retries on any non-2xx, so this has to be idempotent at the ledger rather than at the HTTP layer. The provider event id is the natural key and `charge::record` is already unique on it, so the webhook stays thin: map the event, hand it over, return whatever comes back.",
         },
       },
       {
         at: 1500,
         entry: writeFiles(
-          [['src/functions/webhook_stripe.rs', WEBHOOK_STRIPE_RS]],
+          [["src/functions/webhook_stripe.rs", WEBHOOK_STRIPE_RS]],
           44.6,
         ),
       },
       {
         at: 2500,
         entry: {
-          role: 'thought',
+          role: "thought",
           content:
-            'Reconcile is the other half of trusting the ledger: read-only, so it can run on a cron without taking a lock, and it reports drift rather than repairing it. Silently fixing a payments discrepancy is how you lose the audit trail that made it findable.',
+            "Reconcile is the other half of trusting the ledger: read-only, so it can run on a cron without taking a lock, and it reports drift rather than repairing it. Silently fixing a payments discrepancy is how you lose the audit trail that made it findable.",
           durationMs: 1900,
         },
       },
       {
         at: 3300,
-        entry: writeFiles([['src/functions/reconcile.rs', RECONCILE_RS]], 31.9),
+        entry: writeFiles([["src/functions/reconcile.rs", RECONCILE_RS]], 31.9),
       },
     ],
     resultText:
-      'webhook + reconcile done: dedupe keyed on provider_event_id, replays return the original entry.',
+      "webhook + reconcile done: dedupe keyed on provider_event_id, replays return the original entry.",
     resultDetails: {
-      functions: ['payments::webhook::stripe', 'payments::ledger::reconcile'],
-      idempotency_key: 'provider_event_id',
+      functions: ["payments::webhook::stripe", "payments::ledger::reconcile"],
+      idempotency_key: "provider_event_id",
       turns_used: 5,
     },
     finishAfterMs: 4600,
   },
   {
-    callId: 'fc_spawn_ledger_tests',
-    sessionId: 'console-sub-ledger-tests',
-    title: 'test suite',
+    callId: "fc_spawn_ledger_tests",
+    sessionId: "console-sub-ledger-tests",
+    title: "test suite",
     task: `Write the payments-ledger test suite. Cover double-entry balance, refunds
 over the original amount, webhook replay, concurrent charges on one account,
 and that the schema matches the migration.`,
-    allow: ['coder::*', 'shell::exec'],
+    allow: ["coder::*", "shell::exec"],
     work: [
       {
         at: 0,
         entry: {
-          role: 'assistant',
+          role: "assistant",
           content:
-            'The other two are still writing, so I will test the contract rather than their implementation: call every function through the engine the way a caller would. The suite is then ready the moment the worker installs, and it fails for the same reasons production would.',
+            "The other two are still writing, so I will test the contract rather than their implementation: call every function through the engine the way a caller would. The suite is then ready the moment the worker installs, and it fails for the same reasons production would.",
         },
       },
-      { at: 1100, entry: writeFiles([['tests/ledger.rs', TESTS_RS]], 38.2) },
+      { at: 1100, entry: writeFiles([["tests/ledger.rs", TESTS_RS]], 38.2) },
     ],
     resultText:
-      'test suite done: 11 tests over the ledger, webhook and schema.',
-    resultDetails: { tests: 11, files: ['tests/ledger.rs'], turns_used: 4 },
+      "test suite done: 11 tests over the ledger, webhook and schema.",
+    resultDetails: { tests: 11, files: ["tests/ledger.rs"], turns_used: 4 },
     finishAfterMs: 2600,
   },
-]
+];
 
 function spawnInput(child: ChildSpec) {
   return {
     task: child.task,
-    model: 'claude-opus-4-7',
+    model: "claude-opus-4-7",
     session_id: child.sessionId,
     parent_session_id: SESSION_ID,
     options: {
-      mode: 'agent',
+      mode: "agent",
       max_turns: 12,
-      output: { type: 'text' },
-      functions: { allow: child.allow, deny: ['compose::*', 'worker::remove'] },
+      output: { type: "text" },
+      functions: { allow: child.allow, deny: ["compose::*", "worker::remove"] },
     },
-  }
+  };
 }
 
 function spawnResult(child: ChildSpec) {
   return {
-    content: [{ type: 'text' as const, text: child.resultText }],
+    content: [{ type: "text" as const, text: child.resultText }],
     details: { session_id: child.sessionId, ...child.resultDetails },
-  }
+  };
 }
 
 const TEST_STDOUT = `   Compiling payments-ledger v0.1.0
@@ -1098,14 +1098,14 @@ test balance_reads_committed_only ........ ok
 test concurrent_charges_serialize ........ ok
 test schema_matches_migration ............ ok
 
-test result: ok. 11 passed; 0 failed; finished in 1.83s`
+test result: ok. 11 passed; 0 failed; finished in 1.83s`;
 
 const HTTP_TRIGGERS = [
-  ['payments::charge::record', 'POST', '/payments/charges'],
-  ['payments::charge::refund', 'POST', '/payments/refunds'],
-  ['payments::webhook::stripe', 'POST', '/payments/webhooks/stripe'],
-  ['payments::ledger::reconcile', 'POST', '/payments/reconcile'],
-] as const
+  ["payments::charge::record", "POST", "/payments/charges"],
+  ["payments::charge::refund", "POST", "/payments/refunds"],
+  ["payments::webhook::stripe", "POST", "/payments/webhooks/stripe"],
+  ["payments::ledger::reconcile", "POST", "/payments/reconcile"],
+] as const;
 
 const FINAL_ANSWER = `\`payments-ledger\` is live on the engine and answering.
 
@@ -1116,159 +1116,160 @@ const FINAL_ANSWER = `\`payments-ledger\` is live on the engine and answering.
 | \`payments::webhook::stripe\` | \`POST /payments/webhooks/stripe\` | \`database::execute\` |
 | \`payments::ledger::reconcile\` | \`POST /payments/reconcile\` | \`database::query\` |
 
-Nothing here was scaffolded from a template. The \`database\` worker was already
-connected, so the ledger tables went straight onto it and the new worker joined
+Nothing here needed to be integrated. The \`database\` worker was available on the registry,
+so I installed it like a library. Unlike a library it was immediately ready to use. It joined
 the same engine the rest of your workers are on.
 
-**About those three children.** \`ledger core\`, \`stripe webhook\` and
-\`test suite\` are still listed under this chat. They are real sessions, not log
-lines: each one had its own transcript, its own turn budget and its own
-function policy, and you can open any of them to read what it did. Only
-\`ledger core\` needed a scope this session lacks, so only that one waited on
-you.
+**About those three subagents.** \`ledger core\`, \`stripe webhook\` and
+\`test suite\` are still listed under this chat. They are real sessions
+started in iii's native way: the sandbox worker. Each one had its own transcript,
+its own turn budget and its own function policy, and you can open any of
+them to read what it did. 
 
-**About the pane on the right.** That is not a replay of this chat, it is the
-trace the engine recorded while it happened. Every row above opened a span:
-each \`harness::turn step\` is one durable step of my loop off the queue, the
-three \`harness::spawn\` branches are the children running at the same time, and
+**About the pane on the right.** That is the
+trace the observability worker recorded while the harness worker did its work.
+There was no separate setup, as with any worker if it's added to the iii engine
+it's immediately and completely observable. Every row above opened a span:
+each \`harness::turn step\` is one durable step of my loop running on top of the queue worker, the
+three \`harness::spawn\` branches are the subagents running at the same time, and
 \`execute payments::charge::record\` near the bottom is the function they built
 answering a live request. In the console you would click any bar for its
 arguments, its result, and its logs. If this turn had crashed halfway, the loop
-would have resumed from the last completed step, into the same trace.`
+would have resumed from the last completed step, into the same trace.`;
 
 /* ── the script ───────────────────────────────────────────────────────── */
 
 export async function* runScenario(
   opts: ScenarioOptions,
 ): AsyncGenerator<DemoEvent> {
-  const { signal, gate } = opts
-  spanSeq = 0
+  const { signal, gate } = opts;
+  spanSeq = 0;
 
-  yield { kind: 'turn-status', phase: 'accepted' }
-  await nap(420, signal)
-  yield { kind: 'turn-status', phase: 'started' }
-  await nap(260, signal)
+  yield { kind: "turn-status", phase: "accepted" };
+  await nap(420, signal);
+  yield { kind: "turn-status", phase: "started" };
+  await nap(260, signal);
 
   /* step 1 — look at what is already running */
   yield* step(
     1,
     thought(
-      'The user wants a payments ledger with durable storage. Before I write a line of it I should look at what is already connected to this engine. iii keeps a live catalog of every running worker, so a durable database may already be here. If it is, there is nothing to scaffold and nothing to deploy alongside.',
+      "The user wants a payments ledger with durable storage. Before I write a line of it I should look at what is already connected to this engine. iii keeps a live catalog of every running worker, so a durable database may already be here. If it is, there is nothing to scaffold and nothing to deploy alongside.",
       signal,
     ),
     signal,
     (stepSpan) =>
       call({
-        fn: 'engine::workers::list',
-        worker: 'iii',
-        input: { status: 'connected' },
+        fn: "engine::workers::list",
+        worker: "iii",
+        input: { status: "connected" },
         output: WORKERS_LIST(),
         runMs: 900,
         reportedMs: 2.1,
         parentSpan: stepSpan,
         signal,
         callout: {
-          anchor: 'transcript',
-          title: 'discovery, not scaffolding',
-          text: 'The agent reads the engine’s live worker catalog. Whatever is already running is already callable: no boilerplate, no glue service.',
+          anchor: "transcript",
+          title: "discovery",
+          text: "The agent reads the engine’s live worker catalog. Whatever is already running is already integrated and callable.",
         },
       }),
-  )
-  if (signal?.aborted) return
-  yield* readPause(signal)
+  );
+  if (signal?.aborted) return;
+  yield* readPause(signal);
 
   /* step 2 — read the database worker's contract */
   yield* step(
     2,
     thought(
-      '`database` is right there: durable postgres, nine functions. Let me read its contract so the ledger is written against the real signatures instead of guesses.',
+      "`database` is available: durable postgres, nine functions. Let me read its contract so the ledger is written against the real signatures instead of guesses.",
       signal,
     ),
     signal,
     (stepSpan) =>
       call({
-        fn: 'engine::workers::info',
-        worker: 'iii',
-        input: { name: 'database' },
+        fn: "engine::workers::info",
+        worker: "iii",
+        input: { name: "database" },
         output: DATABASE_INFO(),
         runMs: 700,
         reportedMs: 1.4,
         parentSpan: stepSpan,
         signal,
         callout: {
-          anchor: 'waterfall',
-          title: 'the trace is building itself',
-          text: 'Every call opens a span. This is the console’s own trace view, filling in live. The observability comes with the runtime; nothing here was instrumented by hand.',
+          anchor: "waterfall",
+          title: "every operation is traced",
+          text: "Every call opens a span. This is the console’s own trace view, filling in live. The observability comes with the runtime and is OTel compatible.",
         },
       }),
-  )
-  if (signal?.aborted) return
-  yield* readPause(signal)
+  );
+  if (signal?.aborted) return;
+  yield* readPause(signal);
 
   /* step 3 — fan out to three sub-agents; one of them stops at the gate */
   yield* step(
     3,
     assistant(
-      '`database` gives me durable postgres with transactions, so the ledger can be double-entry without a second datastore. Three pieces here are independent, so I’ll run them as three sub-agents and stay on the wiring myself.',
+      "`database` gives me durable postgres with transactions, so the ledger can be double-entry without a second datastore. Three pieces here are independent, so I’ll run them as three sub-agents and stay on the wiring myself.",
       signal,
     ),
     signal,
     (stepSpan) => spawnFanOut(stepSpan, gate, signal),
-  )
-  if (signal?.aborted) return
-  yield* readPause(signal)
+  );
+  if (signal?.aborted) return;
+  yield* readPause(signal);
 
   /* step 4 — install the worker the children wrote */
   yield* step(
     4,
     thought(
-      'All three children are back: core, webhook and tests. Install the worker so the engine can route to it.',
+      "All three children are back: core, webhook and tests. Install the worker so the engine can route to it.",
       signal,
     ),
     signal,
     (stepSpan) =>
       call({
-        fn: 'worker::add',
-        worker: 'worker-manager',
+        fn: "worker::add",
+        worker: "worker-manager",
         input: {
-          source: { kind: 'local', path: './payments-ledger' },
+          source: { kind: "local", path: "./payments-ledger" },
           wait: true,
         },
         output: {
-          name: 'payments-ledger',
-          version: '0.1.0',
-          status: 'installed',
+          name: "payments-ledger",
+          version: "0.1.0",
+          status: "installed",
           awaited_ready: true,
-          config_path: './config.yaml',
+          config_path: "./config.yaml",
         },
         runMs: 1600,
         parentSpan: stepSpan,
         signal,
       }),
-  )
-  if (signal?.aborted) return
+  );
+  if (signal?.aborted) return;
 
   /* step 5 — one HTTP trigger per function, dispatched in a single step */
   yield* step(
     5,
     thought(
-      'Now the entry points. Each function gets an HTTP trigger; the engine owns the routing, so there is no gateway to write.',
+      "Now the entry points. I can use the http worker and each function gets an HTTP trigger.",
       signal,
     ),
     signal,
     async function* (stepSpan) {
       for (const [fn, method, path] of HTTP_TRIGGERS) {
         yield* call({
-          fn: 'engine::register_trigger',
-          worker: 'iii',
+          fn: "engine::register_trigger",
+          worker: "iii",
           input: {
-            trigger_type: 'http',
+            trigger_type: "http",
             function_id: fn,
             config: { method, path },
           },
           output: {
-            id: `trg_${path.replace(/\W+/g, '_')}`,
-            trigger_type: 'http',
+            id: `trg_${path.replace(/\W+/g, "_")}`,
+            trigger_type: "http",
             function_id: fn,
             registered: true,
           },
@@ -1276,34 +1277,34 @@ export async function* runScenario(
           reportedMs: 0.31,
           parentSpan: stepSpan,
           signal,
-        })
-        if (signal?.aborted) return
+        });
+        if (signal?.aborted) return;
       }
     },
-  )
-  if (signal?.aborted) return
+  );
+  if (signal?.aborted) return;
 
   /* step 6 — run the child's tests against the live worker */
   yield* step(
     6,
     thought(
-      'Run the tests the child wrote against the installed worker.',
+      "Run the tests the subagent wrote against the installed worker.",
       signal,
     ),
     signal,
     (stepSpan) =>
       call({
-        fn: 'shell::exec',
-        worker: 'shell',
+        fn: "shell::exec",
+        worker: "shell",
         input: {
-          command: 'iii test payments-ledger',
-          cwd: '/workspace/payments-ledger',
+          command: "iii test payments-ledger",
+          cwd: "/workspace/payments-ledger",
           timeout_ms: 120000,
         },
         output: {
           exit_code: 0,
           stdout: TEST_STDOUT,
-          stderr: '',
+          stderr: "",
           duration_ms: 6041,
           timed_out: false,
           stdout_truncated: false,
@@ -1314,33 +1315,30 @@ export async function* runScenario(
         parentSpan: stepSpan,
         signal,
       }),
-  )
-  if (signal?.aborted) return
-  yield* readPause(signal)
+  );
+  if (signal?.aborted) return;
+  yield* readPause(signal);
 
   /* step 7 — call the thing it just built */
   yield* step(
     7,
-    thought(
-      'Tests pass. Last check: call the function for real, through the engine, the same way the HTTP trigger will.',
-      signal,
-    ),
+    thought("Tests pass. Last check: call the function for real.", signal),
     signal,
     (stepSpan) =>
       call({
-        fn: 'payments::charge::record',
-        worker: 'payments-ledger',
+        fn: "payments::charge::record",
+        worker: "payments-ledger",
         input: {
           amount: 4200,
-          currency: 'usd',
-          customer_id: 'cus_8Kd2Qw',
-          provider_event_id: 'evt_3PfL2m',
+          currency: "usd",
+          customer_id: "cus_8Kd2Qw",
+          provider_event_id: "evt_3PfL2m",
         },
         output: {
-          entry_id: 'led_01hq5r7t9m',
-          account: 'cus_8Kd2Qw',
+          entry_id: "led_01hq5r7t9m",
+          account: "cus_8Kd2Qw",
           amount: 4200,
-          currency: 'usd',
+          currency: "usd",
           balance: 4200,
           posted_at: new Date().toISOString(),
           idempotent_replay: false,
@@ -1349,16 +1347,16 @@ export async function* runScenario(
         reportedMs: 12.4,
         parentSpan: stepSpan,
         signal,
-        inner: [['execute database::transaction', 'database', 0.6]],
+        inner: [["execute database::transaction", "database", 0.6]],
         callout: {
-          anchor: 'waterfall',
-          title: 'a worker that did not exist a minute ago',
-          text: 'The new worker’s span lands under the same trace, next to the `database` call it makes. Nothing was re-instrumented to get it there.',
+          anchor: "waterfall",
+          title: "a new payments worker, just added to the system",
+          text: "The new worker’s span lands under the same trace, next to the `database` call it makes. Nothing was re-instrumented to get it there.",
         },
       }),
-  )
-  if (signal?.aborted) return
-  yield* readPause(signal)
+  );
+  if (signal?.aborted) return;
+  yield* readPause(signal);
 
   /* step 8 — the answer, and a tour of the pane on the right */
   yield* step(
@@ -1367,13 +1365,13 @@ export async function* runScenario(
     signal,
     async function* () {
       yield {
-        kind: 'demo-callout',
+        kind: "demo-callout",
         callout: {
-          anchor: 'waterfall',
-          title: 'one trace, eight durable steps',
-          text: 'Each `harness::turn step` row is one queue item. A crash mid-turn resumes from the last completed step instead of starting the conversation over.',
+          anchor: "waterfall",
+          title: "one trace, eight durable steps",
+          text: "Each `harness::turn step` row is one queue item. A crash mid-turn resumes from the last completed step. Agentic loops are a normal engineering pattern in iii. They work the same as any programmatic loop would in iii.",
         },
-      }
+      };
     },
-  )
+  );
 }
