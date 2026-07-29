@@ -100,14 +100,7 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
                 });
                 continue;
             }
-            Lifecycle::LandBlocked => {
-                skipped.push(PruneSkip {
-                    id: record.worktree_id,
-                    reason: "land-blocked".into(),
-                });
-                continue;
-            }
-            Lifecycle::Active | Lifecycle::Orphaned => {}
+            Lifecycle::Active | Lifecycle::Orphaned | Lifecycle::LandBlocked => {}
         }
 
         let repo = Path::new(&record.repo_path);
