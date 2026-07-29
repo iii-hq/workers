@@ -47,6 +47,22 @@ fn transforms_cover_the_lodash_surface() {
         json!([{"s": 1}, {"s": 2}])
     );
     assert_eq!(util::reverse(json!([1, 2])).unwrap(), json!([2, 1]));
+    assert_eq!(util::sum(json!([1, 2, 3]), None).unwrap(), json!(6));
+    assert_eq!(
+        util::sum(json!([{"amount": 3}, {"amount": 4}]), Some("/amount")).unwrap(),
+        json!(7)
+    );
+    assert_eq!(util::mean(json!([2, 4, 6]), None).unwrap(), json!(4));
+    assert_eq!(util::min(json!([3, 1, 2]), None).unwrap(), json!(1));
+    assert_eq!(util::max(json!([3, 1, 2]), None).unwrap(), json!(3));
+    assert_eq!(
+        util::count_by(json!([{"w": "a"}, {"w": "b"}, {"w": "a"}]), "/w").unwrap(),
+        json!({ "a": 2, "b": 1 })
+    );
+    assert_eq!(
+        util::group_by(json!([{"w": "a", "n": 1}, {"w": "b", "n": 2}]), "/w").unwrap(),
+        json!({ "a": [{"w": "a", "n": 1}], "b": [{"w": "b", "n": 2}] })
+    );
 
     // misses and type mismatches are teachable errors, never silent garbage
     assert!(util::get(&json!({"a": 1}), "/b").unwrap_err().contains("a"));
