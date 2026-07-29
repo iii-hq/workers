@@ -1,4 +1,3 @@
-import { FunctionMentionPill } from '@/components/chat/lexical/FunctionMentionNode'
 import { CopyCommandButton } from '@/components/chat/sandbox/terminal/CopyCommandButton'
 import { Terminal } from '@/components/chat/sandbox/terminal/Terminal'
 import { Button } from '@/components/ui/Button'
@@ -93,42 +92,25 @@ export function EmptyState({
 
 /* ---------------- ready (welcome hero) ---------------- */
 
-const EXPLORE_FUNCTIONS = [
-  { id: 'engine::functions::list', hint: 'see all callable functions' },
-  { id: 'engine::workers::list', hint: 'check connected workers' },
-  { id: 'engine::triggers::list', hint: 'discover trigger types' },
-] as const
-
 function ReadyBody() {
   return (
     <>
       <h1 className={HEADING_CLASS}>welcome to iii! 👋</h1>
       <div className="flex flex-col gap-2">
         <p className={BODY_CLASS}>
-          You're in an agent-oriented workspace where you can
-          leverage the power of a full-featured agentic system:
+          You're in a 1:1 reproduction of our agent-oriented workspace where you
+          can leverage the power of a full-featured agentic system:
         </p>
         <ul className="font-mono text-[13px] leading-[1.7] text-ink-faint flex flex-col gap-1">
           <li>· trigger functions via the function registry</li>
           <li>· spawn sub-agents for parallel/async work</li>
-          <li>· register triggers for callbacks &amp; automation</li>
-          <li>· query state and subscribe to events</li>
+          <li>· register triggers for loop and graph control</li>
+          <li>
+            · query state, publish to queues, and do everything production
+            systems do
+          </li>
         </ul>
       </div>
-      <div className="flex flex-col gap-2">
-        <p className={BODY_CLASS}>start by exploring what's available:</p>
-        <ul className="font-mono text-[13px] leading-[1.7] text-ink-faint flex flex-col gap-1.5">
-          {EXPLORE_FUNCTIONS.map(({ id, hint }) => (
-            <li key={id}>
-              <FunctionMentionPill functionId={id} /> — {hint}
-            </li>
-          ))}
-        </ul>
-      </div>
-      <p className={BODY_CLASS}>
-        need help? ask away. the agent will discover apis on the fly and show
-        you what's possible.
-      </p>
     </>
   )
 }
