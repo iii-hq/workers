@@ -377,7 +377,308 @@ function tablelessRejectionCase(target: NativeTarget): TestCase {
   }
 }
 
+/**
+ * Commit gating through the real database, not the worker's staging: on a
+ * native handle the worker's own classification path is off, so an
+ * interactive transaction's visibility is decided entirely by the capture
+ * mechanism (pg: NOTIFY is transactional; sqlite: changelog rows ride the
+ * writer's transaction; mysql: only committed transactions reach the
+ * binlog). Rollback must be absolute silence; commit must deliver.
+ */
+function txGatingCase(target: NativeTarget): TestCase {
+  return {
+    name: 'native capture is commit-gated through interactive transactions',
+    applies: [target.applies],
+    async run({ call, iii }) {
+      const table = `e2e_native_tx_${target.applies}`
+      const fnId = `harness::native_tx_${target.applies}`
+      const events: RowChangedEvent[] = []
+      const native = sink(events, 'native tx subscriber')
+      const ph = target.ph
+
+      await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
+      await call('database::execute', {
+        db: target.nativeDb,
+        sql: `CREATE TABLE ${table} (id ${target.idColumnDDL}, n INT NOT NULL)`,
+      })
+      const fnRef = iii.registerFunction(
+        fnId,
+        async (payload: RowChangedEvent) => {
+          events.push(payload)
+          return null
+        },
+        { description: 'Native-capture transaction-gating E2E sink.' },
+      )
+      const triggerRef = iii.registerTrigger({
+        type: 'database::row-changed',
+        function_id: fnId,
+        config: { db: target.nativeDb, table },
+      })
+
+      let activeTransaction: string | undefined
+      try {
+        await waitForCaptureReady(call, iii, target, table)
+
+        // 1. Uncommitted writes are invisible…
+        activeTransaction = (
+          await call('database::beginTransaction', { db: target.nativeDb })
+        ).transaction.id
+        await call('database::transactionExecute', {
+          transaction_id: activeTransaction,
+          sql: `INSERT INTO ${table} (n) VALUES (${ph(1)})`,
+          params: [1],
+        })
+        await sleep(SILENCE_WINDOW_MS)
+        native.expectDrained()
+
+        // …and a rollback erases them for good.
+        await call('database::rollbackTransaction', { transaction_id: activeTransaction })
+        activeTransaction = undefined
+        await sleep(SILENCE_WINDOW_MS)
+        native.expectDrained()
+
+        // 2. A committed transaction delivers — once, after the commit.
+        activeTransaction = (
+          await call('database::beginTransaction', { db: target.nativeDb })
+        ).transaction.id
+        await call('database::transactionExecute', {
+          transaction_id: activeTransaction,
+          sql: `INSERT INTO ${table} (n) VALUES (${ph(1)})`,
+          params: [2],
+        })
+        await call('database::transactionExecute', {
+          transaction_id: activeTransaction,
+          sql: `UPDATE ${table} SET n = n + 1`,
+        })
+        await sleep(SILENCE_WINDOW_MS)
+        native.expectDrained()
+        await call('database::commitTransaction', { transaction_id: activeTransaction })
+        activeTransaction = undefined
+
+        const first = await native.next()
+        expectEqual(first.op, 'insert', 'first committed event op')
+        expectEqual(first.affected_rows, 1, 'first committed event affected_rows')
+        const second = await native.next()
+        expectEqual(second.op, 'update', 'second committed event op')
+        expectEqual(second.affected_rows, 1, 'second committed event affected_rows')
+        await sleep(SILENCE_WINDOW_MS)
+        native.expectDrained()
+      } finally {
+        if (activeTransaction) {
+          try {
+            await call('database::rollbackTransaction', { transaction_id: activeTransaction })
+          } catch {
+            /* transaction may already be finalized */
+          }
+        }
+        triggerRef.unregister()
+        fnRef.unregister()
+        await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
+      }
+    },
+  }
+}
+
+/**
+ * Fan-out and filtering on the native path: an all-ops subscriber and a
+ * delete-only subscriber share one table. Registering the second binding
+ * REINSTALLS the capture DDL (pg/sqlite) — the first subscriber must keep
+ * hearing through it. After both unregister, external writes still succeed
+ * (orphaned triggers are inert, not broken) and deliver to no one.
+ */
+function fanOutOpsCase(target: NativeTarget): TestCase {
+  return {
+    name: 'native capture fans out, filters ops, and survives trigger reinstall',
+    applies: [target.applies],
+    async run({ call, iii }) {
+      const table = `e2e_native_fanout_${target.applies}`
+      const allFnId = `harness::native_fanout_all_${target.applies}`
+      const deletesFnId = `harness::native_fanout_deletes_${target.applies}`
+      const allEvents: RowChangedEvent[] = []
+      const deleteEvents: RowChangedEvent[] = []
+      const all = sink(allEvents, 'all-ops subscriber')
+      const deletes = sink(deleteEvents, 'delete-only subscriber')
+      const ph = target.ph
+
+      await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
+      await call('database::execute', {
+        db: target.nativeDb,
+        sql: `CREATE TABLE ${table} (id ${target.idColumnDDL}, n INT NOT NULL)`,
+      })
+      const allFn = iii.registerFunction(
+        allFnId,
+        async (payload: RowChangedEvent) => {
+          allEvents.push(payload)
+          return null
+        },
+        { description: 'Native-capture fan-out E2E sink (all ops).' },
+      )
+      const allTrigger = iii.registerTrigger({
+        type: 'database::row-changed',
+        function_id: allFnId,
+        config: { db: target.nativeDb, table },
+      })
+      // Second binding on the SAME table: worker-side this re-runs the DDL
+      // install (DROP + CREATE trigger) while the first binding is live.
+      const deletesFn = iii.registerFunction(
+        deletesFnId,
+        async (payload: RowChangedEvent) => {
+          deleteEvents.push(payload)
+          return null
+        },
+        { description: 'Native-capture fan-out E2E sink (deletes only).' },
+      )
+      const deletesTrigger = iii.registerTrigger({
+        type: 'database::row-changed',
+        function_id: deletesFnId,
+        config: { db: target.nativeDb, table, ops: ['delete'] },
+      })
+
+      let bindingsLive = true
+      const unregisterBindings = () => {
+        if (!bindingsLive) return
+        bindingsLive = false
+        allTrigger.unregister()
+        deletesTrigger.unregister()
+      }
+
+      try {
+        const registered = await call('engine::registered-triggers::list', {})
+        for (const fn of [allFnId, deletesFnId]) {
+          expect(
+            registered.registered_triggers.some(
+              (t: { trigger_type: string; function_id: string }) =>
+                t.trigger_type === 'database::row-changed' && t.function_id === fn,
+            ),
+            `trigger registration for ${fn} is visible to the engine`,
+          )
+        }
+        await waitForCaptureReady(call, iii, target, table)
+        // The second registration's reinstall races the engine ack; give the
+        // worker a beat so no write lands mid DROP/CREATE.
+        await sleep(300)
+
+        // Insert (external client): all-ops hears, delete-only does not.
+        await call('database::execute', {
+          db: target.applies,
+          sql: `INSERT INTO ${table} (n) VALUES (${ph(1)})`,
+          params: [10],
+        })
+        expectEqual((await all.next()).op, 'insert', 'all-ops subscriber hears insert')
+        await sleep(SILENCE_WINDOW_MS)
+        deletes.expectDrained()
+
+        // Delete: both hear exactly one event.
+        await call('database::execute', {
+          db: target.applies,
+          sql: `DELETE FROM ${table} WHERE n = ${ph(1)}`,
+          params: [10],
+        })
+        expectEqual((await all.next()).op, 'delete', 'all-ops subscriber hears delete')
+        expectEqual((await deletes.next()).op, 'delete', 'delete-only subscriber hears delete')
+
+        // Unregister both; external writes still succeed and nobody hears.
+        unregisterBindings()
+        await sleep(SILENCE_WINDOW_MS)
+        const r = await call('database::execute', {
+          db: target.applies,
+          sql: `INSERT INTO ${table} (n) VALUES (${ph(1)})`,
+          params: [20],
+        })
+        expectEqual(r.affected_rows, 1, 'write succeeds after unregister (orphan capture is inert)')
+        await sleep(SILENCE_WINDOW_MS)
+        all.expectDrained()
+        deletes.expectDrained()
+      } finally {
+        unregisterBindings()
+        allFn.unregister()
+        deletesFn.unregister()
+        await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
+      }
+    },
+  }
+}
+
+/**
+ * Bulk statements stay single events with true counts: 100 rows inserted,
+ * updated, deleted must arrive as exactly three events with
+ * affected_rows=100 — never one event per row. Each driver earns this a
+ * different way (pg statement-level triggers with transition tables,
+ * sqlite run-length coalescing of changelog rows, mysql merging of chunked
+ * binlog row events), so proving it end-to-end covers all three coalescers.
+ */
+function bulkCoalescingCase(target: NativeTarget): TestCase {
+  return {
+    name: 'native capture coalesces bulk statements into single events',
+    applies: [target.applies],
+    async run({ call, iii }) {
+      const table = `e2e_native_bulk_${target.applies}`
+      const fnId = `harness::native_bulk_${target.applies}`
+      const events: RowChangedEvent[] = []
+      const native = sink(events, 'bulk subscriber')
+      const ROWS = 100
+
+      await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
+      await call('database::execute', {
+        db: target.nativeDb,
+        sql: `CREATE TABLE ${table} (id ${target.idColumnDDL}, n INT NOT NULL)`,
+      })
+      const fnRef = iii.registerFunction(
+        fnId,
+        async (payload: RowChangedEvent) => {
+          events.push(payload)
+          return null
+        },
+        { description: 'Native-capture bulk-coalescing E2E sink.' },
+      )
+      const triggerRef = iii.registerTrigger({
+        type: 'database::row-changed',
+        function_id: fnId,
+        config: { db: target.nativeDb, table },
+      })
+
+      try {
+        await waitForCaptureReady(call, iii, target, table)
+
+        const values = Array.from({ length: ROWS }, (_, i) => `(${i})`).join(', ')
+        await call('database::execute', {
+          db: target.applies,
+          sql: `INSERT INTO ${table} (n) VALUES ${values}`,
+        })
+        const inserted = await native.next()
+        expectEqual(inserted.op, 'insert', 'bulk insert op')
+        expectEqual(inserted.affected_rows, ROWS, 'bulk insert arrives as ONE event')
+
+        await call('database::execute', {
+          db: target.applies,
+          sql: `UPDATE ${table} SET n = n + 1`,
+        })
+        const updated = await native.next()
+        expectEqual(updated.op, 'update', 'bulk update op')
+        expectEqual(updated.affected_rows, ROWS, 'bulk update arrives as ONE event')
+
+        await call('database::execute', { db: target.applies, sql: `DELETE FROM ${table}` })
+        const deleted = await native.next()
+        expectEqual(deleted.op, 'delete', 'bulk delete op')
+        expectEqual(deleted.affected_rows, ROWS, 'bulk delete arrives as ONE event')
+
+        // Exactly three events total — a per-row implementation would have
+        // flooded 300.
+        await sleep(SILENCE_WINDOW_MS)
+        native.expectDrained()
+      } finally {
+        triggerRef.unregister()
+        fnRef.unregister()
+        await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
+      }
+    },
+  }
+}
+
 export const NATIVE_CAPTURE_CASES: TestCase[] = TARGETS.flatMap((target) => [
   crossClientCase(target),
   tablelessRejectionCase(target),
+  txGatingCase(target),
+  fanOutOpsCase(target),
+  bulkCoalescingCase(target),
 ])
