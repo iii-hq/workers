@@ -298,8 +298,9 @@ export type WorkersRegisterResponse = z.infer<
  *  - engine `RegisterTriggerInput` (iii-sdk `protocol.rs`): `{ trigger_type,
  *    function_id, config, metadata? }`.
  *  - harness `SubscribeArgs` (`harness/src/functions/subscribe.rs`):
- *    `{ trigger_type, config?, label?, once?, function_id?, metadata? }` —
- *    `function_id` omitted means "notify this session".
+ *    `{ trigger_type, config?, label?, once?, function_id?, metadata?,
+ *    target? }` — `function_id` omitted means "notify this session", while
+ *    `target` is its explicit long form.
  * Only `trigger_type` is guaranteed; everything else is optional so the view
  * always renders. `config`/`metadata` are opaque JSON parsed per-provider.
  */
@@ -310,6 +311,13 @@ export const registerTriggerRequestSchema = z.object({
   metadata: z.unknown().optional(),
   label: z.string().optional(),
   once: z.boolean().optional(),
+  target: z
+    .object({
+      function_id: z.string(),
+      payload: z.unknown().optional(),
+      event_into: z.string().optional(),
+    })
+    .optional(),
 })
 export type RegisterTriggerRequest = z.infer<
   typeof registerTriggerRequestSchema

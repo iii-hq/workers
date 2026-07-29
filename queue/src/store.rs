@@ -44,6 +44,8 @@ pub trait QueueStore: Send + Sync + 'static {
     async fn dequeue(&self, topic: &str) -> Option<Job>;
     async fn ack(&self, topic: &str, job_id: &str);
     async fn nack(&self, topic: &str, job: Job, max_retries: u32, backoff_ms: u64);
+    /// Remove every queue, in-flight, DLQ, and stats record for one topic.
+    async fn purge(&self, topic: &str) -> anyhow::Result<()>;
     /// Return an in-flight job to the front of its queue without consuming a
     /// retry attempt. Used when a function-queue consumer is replaced or
     /// shut down before it can acknowledge buffered deliveries.
@@ -141,6 +143,10 @@ impl QueueStore for InMemoryStore {
         nack(&self.shared, topic, job, max_retries, backoff_ms).await;
     }
 
+    async fn purge(&self, topic: &str) -> anyhow::Result<()> {
+        purge(&self.shared, topic).await
+    }
+
     async fn requeue(&self, topic: &str, job: Job) -> anyhow::Result<()> {
         requeue(&self.shared, topic, job).await
     }
@@ -190,6 +196,10 @@ impl QueueStore for FileStore {
 
     async fn nack(&self, topic: &str, job: Job, max_retries: u32, backoff_ms: u64) {
         nack(&self.shared, topic, job, max_retries, backoff_ms).await;
+    }
+
+    async fn purge(&self, topic: &str) -> anyhow::Result<()> {
+        purge(&self.shared, topic).await
     }
 
     async fn requeue(&self, topic: &str, job: Job) -> anyhow::Result<()> {
@@ -333,6 +343,22 @@ async fn requeue(shared: &SharedStore, topic: &str, mut job: Job) -> anyhow::Res
         data.clone()
     };
     persist_if_needed(shared, &snapshot).await
+}
+
+async fn purge(shared: &SharedStore, topic: &str) -> anyhow::Result<()> {
+    let mut data = shared.inner.lock().await;
+    let previous = data.clone();
+    data.queues.remove(topic);
+    data.inflight.remove(topic);
+    data.dlqs.remove(topic);
+    data.stats.remove(topic);
+    mark_changed(&mut data);
+    let snapshot = data.clone();
+    if let Err(error) = persist_if_needed(shared, &snapshot).await {
+        *data = previous;
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn remove_inflight(data: &mut StoreData, topic: &str, job_id: &str) {
@@ -557,6 +583,31 @@ mod tests {
                 store.ack("demo", &job.id).await;
                 assert!(store.dequeue("demo").await.is_none());
                 assert_eq!(store.topic_stats("demo").await.delivered, 1);
+                store
+            })
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn purge_removes_ready_inflight_dlq_and_stats_state() {
+        for_each_backend(|store| {
+            Box::pin(async move {
+                store.enqueue("demo", json!("inflight")).await.unwrap();
+                let _inflight = store.dequeue("demo").await.unwrap();
+
+                store.enqueue("demo", json!("dead")).await.unwrap();
+                let dead = store.dequeue("demo").await.unwrap();
+                store.nack("demo", dead, 1, 0).await;
+
+                store.enqueue("demo", json!("ready")).await.unwrap();
+                assert!(store.list_topics().await.contains(&"demo".to_string()));
+
+                store.purge("demo").await.unwrap();
+                assert!(store.dequeue("demo").await.is_none());
+                assert_eq!(store.topic_stats("demo").await, TopicStats::default());
+                assert!(store.dlq_messages("demo", 10).await.is_empty());
+                assert!(!store.list_topics().await.contains(&"demo".to_string()));
                 store
             })
         })

@@ -127,19 +127,21 @@ describe('entrySegments', () => {
     // The exact format spawn.rs produces (single_event_task).
     const content =
       'Present the results.\n\n<event>\n```json\n{"session_id":"reviewer-1","status":"completed"}\n```\n</event>'
-    const [msg] = entrySegments(userItem('e_spawned_1', content))
-    expect(msg).toMatchObject({
-      reaction: true,
-      content: 'Present the results.',
-      reactionEvent: {
-        label: 'event',
-        json: JSON.stringify(
-          { session_id: 'reviewer-1', status: 'completed' },
-          null,
-          2,
-        ),
-      },
-    })
+    for (const entryId of ['e_react_1', 'e_spawned_1']) {
+      const [msg] = entrySegments(userItem(entryId, content))
+      expect(msg).toMatchObject({
+        reaction: true,
+        content: 'Present the results.',
+        reactionEvent: {
+          label: 'event',
+          json: JSON.stringify(
+            { session_id: 'reviewer-1', status: 'completed' },
+            null,
+            2,
+          ),
+        },
+      })
+    }
   })
 
   it('splitReactionTask handles inputs, collapsed whitespace, and bad JSON', () => {

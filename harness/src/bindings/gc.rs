@@ -1,8 +1,8 @@
 //! Binding garbage collection.
 //!
-//! With a durable record there is nothing to RECONCILE at startup — the store
-//! survives the restart that used to wipe the in-memory registry. Three sweeps
-//! remain, all about the world moving on without the binding:
+//! The durable store survives harness restarts, but the configured state
+//! adapter may not. Startup therefore reconciles engine delivery triggers
+//! against their binding records, plus the ordinary lifecycle sweeps below:
 //!
 //! * **Owner gone.** A deleted session leaves bindings that would keep firing
 //!   — waking a session that no longer exists.
@@ -15,6 +15,8 @@
 //!   `harness::spawn`). Those paths are gone, so the bindings can only fire
 //!   into nothing. They are unregistered rather than adapted: a shim would
 //!   have to trust the very metadata the new model exists to stop reading.
+
+use std::collections::HashSet;
 
 use serde_json::{json, Value};
 
@@ -40,8 +42,8 @@ pub fn should_gc(state: OwnerState) -> bool {
 }
 
 /// Startup sweep: drop bindings whose owner is provably gone, loudly retire
-/// records that still target `harness::spawn`, and unregister every engine
-/// binding still pointing at a removed handler.
+/// records that still target `harness::spawn`, unregister delivery triggers
+/// whose record disappeared, and remove bindings aimed at old handlers.
 pub async fn run(deps: &Deps) {
     let store = deps.bindings().await;
     let bindings = match store.list().await {
@@ -51,6 +53,8 @@ pub async fn run(deps: &Deps) {
             return;
         }
     };
+
+    let orphans = reconcile_orphan_delivery_triggers(deps, &bindings).await;
 
     let mut dropped = 0usize;
     let mut stale_spawn = 0usize;
@@ -72,11 +76,12 @@ pub async fn run(deps: &Deps) {
     }
 
     let legacy = retire_legacy(deps).await + retire_engine_spawn_triggers(deps).await;
-    if dropped > 0 || stale_spawn > 0 || legacy > 0 {
+    if dropped > 0 || stale_spawn > 0 || legacy > 0 || orphans > 0 {
         tracing::info!(
             owner_gone = dropped,
             stale_spawn = stale_spawn,
             legacy = legacy,
+            orphan_engine = orphans,
             "swept trigger bindings at startup"
         );
     }
@@ -178,6 +183,55 @@ async fn retire_legacy(deps: &Deps) -> usize {
     retired
 }
 
+/// Engine providers outlive an in-memory state adapter restart. Startup and
+/// the periodic expiry pass both remove delivery triggers whose trusted
+/// `__binding` pointer no longer resolves, so recurring providers do not
+/// invoke a permanent no-op forever.
+pub async fn reconcile_orphan_delivery_triggers(
+    deps: &Deps,
+    bindings: &[crate::bindings::Binding],
+) -> usize {
+    let stored: HashSet<String> = bindings.iter().map(|binding| binding.id.clone()).collect();
+    let Some(ids) = list_binding_ids(deps, crate::functions::trigger_deliver::DELIVER_ID).await
+    else {
+        return 0;
+    };
+    let store = deps.bindings().await;
+    let mut retired = 0usize;
+    for id in ids {
+        let Some(binding_id) = delivery_binding_id(deps, &id).await else {
+            // An unreadable detail response is not proof of orphanhood.
+            continue;
+        };
+        if !is_orphan(binding_id.as_deref(), &stored) {
+            continue;
+        }
+        // The listing is a snapshot. A registration may insert its record
+        // after that snapshot and then arm the engine trigger before this
+        // loop reaches it; a fresh read prevents us from deleting that valid
+        // newcomer.
+        if let Some(binding_id) = binding_id.as_deref() {
+            match store.get(binding_id).await {
+                Ok(Some(_)) | Err(_) => continue,
+                Ok(None) => {}
+            }
+        }
+        if crate::functions::subscribe::unregister_engine_trigger(deps, &id).await {
+            retired += 1;
+            tracing::info!(
+                trigger_id = %id,
+                binding = binding_id.as_deref().unwrap_or("<missing>"),
+                "dropped delivery trigger with no binding record"
+            );
+        }
+    }
+    retired
+}
+
+fn is_orphan(binding_id: Option<&str>, stored: &HashSet<String>) -> bool {
+    binding_id.is_none_or(|id| !stored.contains(id))
+}
+
 /// Every session's bindings, dropped when the session is deleted.
 pub async fn sweep_owner(deps: &Deps, session_id: &str) -> usize {
     let store = deps.bindings().await;
@@ -234,6 +288,30 @@ async fn list_binding_ids(deps: &Deps, function_id: &str) -> Option<Vec<String>>
     )
 }
 
+/// `list` returns summaries without metadata; fetch the detail to read the
+/// trusted pointer. `Some(None)` means the detail was readable but had no
+/// pointer. `None` means lookup failed, so reconciliation leaves it alone.
+async fn delivery_binding_id(deps: &Deps, trigger_id: &str) -> Option<Option<String>> {
+    let resp = deps
+        .iii
+        .trigger(iii_sdk::protocol::TriggerRequest {
+            function_id: "engine::registered-triggers::info".to_string(),
+            payload: json!({ "id": trigger_id, "include_internal": true }),
+            action: None,
+            timeout_ms: Some(deps.cfg().await.dispatch_timeout_ms),
+        })
+        .await
+        .ok()?;
+    let detail = resp.get("registered_trigger").unwrap_or(&resp);
+    Some(
+        detail
+            .get("metadata")
+            .and_then(|metadata| metadata.get("__binding"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +330,13 @@ mod tests {
         assert!(LEGACY_TARGETS.contains(&"harness::trigger-call"));
         // The live hop must never be swept as legacy.
         assert!(!LEGACY_TARGETS.contains(&crate::functions::trigger_deliver::DELIVER_ID));
+    }
+
+    #[test]
+    fn only_delivery_pointers_without_a_record_are_orphans() {
+        let stored = HashSet::from(["sub_live".to_string()]);
+        assert!(!is_orphan(Some("sub_live"), &stored));
+        assert!(is_orphan(Some("sub_missing"), &stored));
+        assert!(is_orphan(None, &stored));
     }
 }

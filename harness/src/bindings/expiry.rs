@@ -61,13 +61,15 @@ pub async fn sweep(deps: &Deps) -> usize {
             return 0;
         }
     };
+    super::gc::reconcile_orphan_delivery_triggers(deps, &bindings).await;
     let now = AgentMessage::now_ms();
     let mut retired = 0usize;
     for binding in bindings.into_iter().filter(|b| b.is_exhausted(now)) {
-        // Delete FIRST — the atomic claim (see module docs). A delete that
-        // fails leaves the binding for the next pass rather than notifying
-        // about a record a racing fire may still claim.
-        if store.delete(&binding.id).await.is_err() {
+        // Delete FIRST, but only while the record still equals the listed
+        // snapshot. A racing real fire increments it with CAS; that makes this
+        // claim lose instead of deleting the delivered record and emitting a
+        // false "expired unfired" notice.
+        if !matches!(store.delete_if_unchanged(&binding).await, Ok(true)) {
             continue;
         }
         if let Some(trigger_id) = binding.trigger_id.as_deref() {

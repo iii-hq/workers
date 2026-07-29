@@ -2,7 +2,10 @@
 
 mod common;
 
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -17,7 +20,7 @@ use lapin::types::{AMQPValue, FieldTable};
 use lapin::{Channel, Connection, ConnectionProperties, ExchangeKind};
 use serde_json::{json, Value};
 use serial_test::serial;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -48,16 +51,16 @@ where
 fn exchange_name(topic: &str) -> String {
     format!("iii.{topic}.exchange")
 }
-fn function_queue_name(topic: &str, function_id: &str) -> String {
-    format!("iii.{topic}.{function_id}.queue")
+fn subscriber_queue_name(topic: &str, subscription_id: &str) -> String {
+    format!("iii.{topic}.{subscription_id}.queue")
 }
-fn function_dlq_name(topic: &str, function_id: &str) -> String {
-    format!("iii.{topic}.{function_id}.dlq")
+fn subscriber_dlq_name(topic: &str, subscription_id: &str) -> String {
+    format!("iii.{topic}.{subscription_id}.dlq")
 }
 
 /// Declares the exact same topology `RabbitMQAdapter::subscribe` would
-/// declare for `(topic, function_id)` -- fanout exchange, per-function DLQ,
-/// per-function priority queue (`x-max-priority`), and the binding -- via a
+/// declare for `(topic, subscription_id)` -- fanout exchange, per-subscriber
+/// DLQ, priority queue (`x-max-priority`), and the binding -- via a
 /// raw `lapin` channel, so messages can be published into the queue BEFORE
 /// any adapter-owned consumer exists. All declarations use identical
 /// arguments to what `topology::TopologyManager` declares, so the later,
@@ -66,7 +69,7 @@ fn function_dlq_name(topic: &str, function_id: &str) -> String {
 async fn predeclare_priority_subscriber_queue(
     channel: &Channel,
     topic: &str,
-    function_id: &str,
+    subscription_id: &str,
     max_priority: i32,
 ) {
     channel
@@ -84,7 +87,7 @@ async fn predeclare_priority_subscriber_queue(
 
     channel
         .queue_declare(
-            &function_dlq_name(topic, function_id),
+            &subscriber_dlq_name(topic, subscription_id),
             QueueDeclareOptions {
                 durable: true,
                 ..Default::default()
@@ -98,7 +101,7 @@ async fn predeclare_priority_subscriber_queue(
     args.insert("x-max-priority".into(), AMQPValue::LongInt(max_priority));
     channel
         .queue_declare(
-            &function_queue_name(topic, function_id),
+            &subscriber_queue_name(topic, subscription_id),
             QueueDeclareOptions {
                 durable: true,
                 ..Default::default()
@@ -110,7 +113,7 @@ async fn predeclare_priority_subscriber_queue(
 
     channel
         .queue_bind(
-            &function_queue_name(topic, function_id),
+            &subscriber_queue_name(topic, subscription_id),
             &exchange_name(topic),
             "",
             QueueBindOptions::default(),
@@ -129,6 +132,69 @@ struct NoopInvoker;
 impl Invoker for NoopInvoker {
     async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
         panic!("NoopInvoker::call should never be invoked in this test")
+    }
+}
+
+#[derive(Default)]
+struct RecordingInvoker {
+    deliveries: Mutex<Vec<(String, Value, Option<Value>)>>,
+}
+
+#[async_trait]
+impl Invoker for RecordingInvoker {
+    async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
+    async fn call_delivery(
+        &self,
+        function_id: &str,
+        payload: Value,
+        metadata: Option<Value>,
+    ) -> Result<Option<Value>, String> {
+        self.deliveries
+            .lock()
+            .await
+            .push((function_id.to_string(), payload, metadata));
+        Ok(None)
+    }
+}
+
+#[derive(Default)]
+struct BlockingInvoker {
+    started: Notify,
+    dropped: AtomicBool,
+    deliveries: Mutex<Vec<(Value, Option<Value>)>>,
+}
+
+struct DropFlag<'a>(&'a AtomicBool);
+
+impl Drop for DropFlag<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl Invoker for BlockingInvoker {
+    async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
+    async fn call_delivery(
+        &self,
+        _function_id: &str,
+        payload: Value,
+        metadata: Option<Value>,
+    ) -> Result<Option<Value>, String> {
+        if payload == json!("old") {
+            let _drop_flag = DropFlag(&self.dropped);
+            self.started.notify_one();
+            std::future::pending::<()>().await;
+            unreachable!();
+        }
+        self.deliveries.lock().await.push((payload, metadata));
+        Ok(None)
     }
 }
 
@@ -196,6 +262,194 @@ async fn basic_delivery_connect_or_skip() {
     iii.shutdown_async().await;
 }
 
+#[tokio::test]
+#[serial]
+async fn same_function_subscriptions_each_receive_their_metadata_connect_or_skip() {
+    let Some(container) = docker::start_rabbitmq().await else {
+        return; // skip: docker not reachable
+    };
+
+    let invoker = Arc::new(RecordingInvoker::default());
+    let adapter = RabbitMQAdapter::from_config(
+        Some(&json!({"amqp_url": container.amqp_url()})),
+        invoker.clone(),
+    )
+    .await
+    .expect("rabbitmq adapter should connect");
+    let topic = format!("e2e-rmq-fanout-{}", Uuid::new_v4());
+
+    adapter
+        .subscribe(
+            &topic,
+            "sub-a",
+            "same-function",
+            Some(json!({"binding": "a"})),
+            None,
+            None,
+        )
+        .await;
+    adapter
+        .subscribe(
+            &topic,
+            "sub-b",
+            "same-function",
+            Some(json!({"binding": "b"})),
+            None,
+            None,
+        )
+        .await;
+    adapter
+        .enqueue(&topic, json!({"event": 1}), None, None)
+        .await;
+
+    wait_until(
+        || {
+            let invoker = invoker.clone();
+            async move { invoker.deliveries.lock().await.len() == 2 }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let deliveries = invoker.deliveries.lock().await;
+    assert!(deliveries
+        .iter()
+        .all(|(function_id, payload, _)| function_id == "same-function"
+            && payload == &json!({"event": 1})));
+    assert!(deliveries
+        .iter()
+        .any(|(_, _, metadata)| metadata == &Some(json!({"binding": "a"}))));
+    assert!(deliveries
+        .iter()
+        .any(|(_, _, metadata)| metadata == &Some(json!({"binding": "b"}))));
+    drop(deliveries);
+
+    // A true unsubscribe deletes its durable queue. If it only cancelled the
+    // consumer, event 2 would remain in that queue and be delivered when the
+    // same subscription id is armed again.
+    adapter.unsubscribe(&topic, "sub-a").await;
+    adapter
+        .enqueue(&topic, json!({"event": 2}), None, None)
+        .await;
+    wait_until(
+        || {
+            let invoker = invoker.clone();
+            async move { invoker.deliveries.lock().await.len() == 3 }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+    adapter
+        .subscribe(
+            &topic,
+            "sub-a",
+            "same-function",
+            Some(json!({"binding": "a-rearmed"})),
+            None,
+            None,
+        )
+        .await;
+    adapter
+        .enqueue(&topic, json!({"event": 3}), None, None)
+        .await;
+    wait_until(
+        || {
+            let invoker = invoker.clone();
+            async move { invoker.deliveries.lock().await.len() == 5 }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+    let deliveries = invoker.deliveries.lock().await;
+    assert_eq!(
+        deliveries
+            .iter()
+            .filter(|(_, payload, _)| payload == &json!({"event": 2}))
+            .count(),
+        1
+    );
+    assert!(deliveries.iter().any(|(_, payload, metadata)| {
+        payload == &json!({"event": 3}) && metadata == &Some(json!({"binding": "a-rearmed"}))
+    }));
+    drop(deliveries);
+
+    adapter.unsubscribe(&topic, "sub-a").await;
+    adapter.unsubscribe(&topic, "sub-b").await;
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn unsubscribe_joins_inflight_delivery_before_queue_delete_and_rearm_connect_or_skip() {
+    let Some(container) = docker::start_rabbitmq().await else {
+        return;
+    };
+
+    let invoker = Arc::new(BlockingInvoker::default());
+    let adapter = RabbitMQAdapter::from_config(
+        Some(&json!({"amqp_url": container.amqp_url()})),
+        invoker.clone(),
+    )
+    .await
+    .expect("rabbitmq adapter should connect");
+    let topic = format!("e2e-rmq-rearm-{}", Uuid::new_v4());
+    let queue_config = Some(SubscriberQueueConfig {
+        queue_mode: Some("standard".to_string()),
+        concurrency: Some(2),
+        ..Default::default()
+    });
+
+    adapter
+        .subscribe(
+            &topic,
+            "sub-1",
+            "backend",
+            Some(json!({"binding": "old"})),
+            None,
+            queue_config.clone(),
+        )
+        .await;
+    adapter.enqueue(&topic, json!("old"), None, None).await;
+    tokio::time::timeout(Duration::from_secs(10), invoker.started.notified())
+        .await
+        .expect("old delivery should start");
+
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        adapter.unsubscribe(&topic, "sub-1"),
+    )
+    .await
+    .expect("unsubscribe should cancel and join the old delivery");
+    assert!(invoker.dropped.load(Ordering::SeqCst));
+
+    adapter
+        .subscribe(
+            &topic,
+            "sub-1",
+            "backend",
+            Some(json!({"binding": "new"})),
+            None,
+            queue_config,
+        )
+        .await;
+    adapter.enqueue(&topic, json!("new"), None, None).await;
+    wait_until(
+        || {
+            let invoker = invoker.clone();
+            async move { invoker.deliveries.lock().await.len() == 1 }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+    assert_eq!(
+        invoker.deliveries.lock().await.as_slice(),
+        [(json!("new"), Some(json!({"binding": "new"})))]
+    );
+
+    adapter.unsubscribe(&topic, "sub-1").await;
+    adapter.shutdown().await;
+}
+
 /// (b) Failing handler retries per `max_attempts`, lands in the DLQ, and
 /// `redrive_dlq` redelivers it so it can succeed.
 ///
@@ -208,8 +462,8 @@ async fn basic_delivery_connect_or_skip() {
 /// resolves a bare (non-`__fn_queue::`) topic to `RabbitNames::dlq()`
 /// (`iii.{topic}.dlq`) -- a queue name that `subscribe`'s
 /// `setup_subscriber_queue` never actually declares (it declares
-/// `RabbitNames::function_dlq(function_id)`, i.e.
-/// `iii.{topic}.{function_id}.dlq`, a *different* name). That mismatch is
+/// `RabbitNames::subscriber_dlq(subscription_id)`, i.e.
+/// `iii.{topic}.{subscription_id}.dlq`, a *different* name). That mismatch is
 /// inherited verbatim from the engine
 /// (`engine/src/workers/queue/adapters/rabbitmq/adapter.rs`) -- the engine's
 /// own `rabbitmq_queue_integration.rs` test suite never calls
@@ -373,7 +627,7 @@ async fn priority_ordering_connect_or_skip() {
         .create_channel()
         .await
         .expect("raw amqp channel");
-    predeclare_priority_subscriber_queue(&raw_channel, &topic, &function_id, 10).await;
+    predeclare_priority_subscriber_queue(&raw_channel, &topic, sub_id, 10).await;
 
     for p in [1u64, 9, 5] {
         adapter

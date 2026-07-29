@@ -22,7 +22,10 @@ use std::sync::Arc;
 use futures::StreamExt;
 use lapin::{message::Delivery, options::*, Channel};
 use serde_json::Value;
-use tokio::sync::Semaphore;
+use tokio::{
+    sync::{oneshot, Semaphore},
+    task::JoinSet,
+};
 
 use crate::trigger::Invoker;
 
@@ -88,11 +91,13 @@ impl Worker {
     pub async fn run(
         self: Arc<Self>,
         topic: String,
+        subscription_id: String,
         function_id: String,
         metadata: Option<Value>,
         condition_function_id: Option<String>,
         consumer_tag: String,
         queue_name: String,
+        mut cancelled: oneshot::Receiver<()>,
     ) {
         // Apply per-consumer prefetch (QoS) so the broker keeps a backlog in the
         // queue instead of shipping everything to this consumer at once. Without
@@ -129,27 +134,42 @@ impl Worker {
             }
         };
 
-        while let Some(delivery_result) = consumer.next().await {
+        let mut tasks = JoinSet::new();
+        let mut explicitly_cancelled = loop {
+            while tasks.try_join_next().is_some() {}
+            let delivery_result = tokio::select! {
+                biased;
+                _ = &mut cancelled => break true,
+                delivery = consumer.next() => match delivery {
+                    Some(delivery) => delivery,
+                    None => break false,
+                },
+            };
+
             match delivery_result {
                 Ok(delivery) => {
                     let worker = Arc::clone(&self);
                     let topic_clone = topic.clone();
+                    let subscription_id_clone = subscription_id.clone();
                     let function_id_clone = function_id.clone();
                     let metadata_clone = metadata.clone();
                     let condition_function_id_clone = condition_function_id.clone();
 
                     match self.queue_mode {
                         QueueMode::Fifo => {
-                            if let Err(e) = worker
-                                .process_delivery(
+                            let result = tokio::select! {
+                                biased;
+                                _ = &mut cancelled => break true,
+                                result = worker.process_delivery(
                                     delivery,
                                     &topic_clone,
+                                    &subscription_id_clone,
                                     &function_id_clone,
                                     metadata_clone.as_ref(),
                                     condition_function_id_clone.as_deref(),
-                                )
-                                .await
-                            {
+                                ) => result,
+                            };
+                            if let Err(e) = result {
                                 tracing::error!(
                                     topic = %topic_clone,
                                     error = ?e,
@@ -159,7 +179,7 @@ impl Worker {
                         }
                         QueueMode::Standard => {
                             let semaphore = self.semaphore.as_ref().map(Arc::clone);
-                            tokio::spawn(async move {
+                            tasks.spawn(async move {
                                 let _permit = if let Some(ref sem) = semaphore {
                                     Some(sem.acquire().await.unwrap())
                                 } else {
@@ -170,6 +190,7 @@ impl Worker {
                                     .process_delivery(
                                         delivery,
                                         &topic_clone,
+                                        &subscription_id_clone,
                                         &function_id_clone,
                                         metadata_clone.as_ref(),
                                         condition_function_id_clone.as_deref(),
@@ -194,15 +215,37 @@ impl Worker {
                     );
                 }
             }
-        }
+        };
 
-        tracing::warn!(topic = %topic, "Consumer stream ended");
+        if explicitly_cancelled {
+            tasks.abort_all();
+        } else {
+            while !tasks.is_empty() {
+                tokio::select! {
+                    biased;
+                    _ = &mut cancelled => {
+                        explicitly_cancelled = true;
+                        tasks.abort_all();
+                        break;
+                    }
+                    _ = tasks.join_next() => {}
+                }
+            }
+        }
+        while tasks.join_next().await.is_some() {}
+
+        if explicitly_cancelled {
+            tracing::debug!(topic = %topic, "Consumer cancelled");
+        } else {
+            tracing::warn!(topic = %topic, "Consumer stream ended");
+        }
     }
 
     async fn process_delivery(
         &self,
         delivery: Delivery,
         topic: &str,
+        subscription_id: &str,
         function_id: &str,
         metadata: Option<&Value>,
         condition_function_id: Option<&str>,
@@ -234,7 +277,7 @@ impl Worker {
                     .map_err(|e| format!("Failed to nack message: {}", e))?;
 
                 self.retry_handler
-                    .handle_failure(topic, &mut job, &format!("{:?}", e), Some(function_id))
+                    .handle_failure(topic, &mut job, &format!("{:?}", e), Some(subscription_id))
                     .await
                     .map_err(|e| format!("Failed to handle failure: {}", e))?;
             }

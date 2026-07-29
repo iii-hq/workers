@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 
 use crate::bindings::Binding;
 use crate::deps::Deps;
+use crate::policy::CompiledPolicy;
 
 /// Why a fire did not deliver. Carried onto the delivery record so "it never
 /// fired" is always answerable.
@@ -80,13 +81,35 @@ pub fn parse_decision(raw: &Value) -> Result<Decision, String> {
 /// Returns the (possibly condition-substituted) event to deliver.
 pub async fn evaluate(deps: &Deps, binding: &Binding, event: Value) -> Result<Value, Skip> {
     let mut event = event;
+    let policy = CompiledPolicy::from(binding.capability.as_ref());
     for condition in &binding.conditions {
+        if let Err(e) = condition_allowed(&policy, &condition.function_id) {
+            return Err(Skip::new(
+                "condition-policy",
+                format!("`{}`: {e}", condition.function_id),
+                false,
+            ));
+        }
         let payload = json!({
             "event": event,
             "condition_config": condition.config.clone().unwrap_or(Value::Null),
             "binding": { "id": binding.id, "fires": binding.fires },
             "context": { "owner_session_id": binding.owner.session_id },
         });
+        if let Err(e) = crate::functions::subscribe::approval_allows_unattended(
+            deps,
+            &condition.function_id,
+            &binding.owner.session_id,
+            &payload,
+        )
+        .await
+        {
+            return Err(Skip::new(
+                "condition-approval",
+                format!("`{}`: {e}", condition.function_id),
+                false,
+            ));
+        }
         let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
         let raw = deps
             .iii
@@ -134,9 +157,23 @@ pub async fn evaluate(deps: &Deps, binding: &Binding, event: Value) -> Result<Va
     Ok(event)
 }
 
+fn condition_allowed(policy: &CompiledPolicy, target: &str) -> Result<(), String> {
+    if target.is_empty() {
+        return Err("condition function id is empty".into());
+    }
+    if target.starts_with("harness::") {
+        return Err("internal harness functions cannot be conditions".into());
+    }
+    if !policy.allows(target) {
+        return Err("outside the policy this binding was registered with".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::turn::FunctionPolicy;
 
     #[test]
     fn decisions_parse_from_the_typed_shape_and_bare_booleans() {
@@ -169,5 +206,20 @@ mod tests {
         assert!(parse_decision(&json!({ "ok": true })).is_err());
         assert!(parse_decision(&json!("yes")).is_err());
         assert!(parse_decision(&json!(null)).is_err());
+    }
+
+    #[test]
+    fn stored_conditions_stay_inside_the_frozen_capability() {
+        let policy = CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec!["state::*".into(), "harness::*".into()],
+            deny: vec!["state::delete".into()],
+            expose: Default::default(),
+        }));
+
+        assert!(condition_allowed(&policy, "state::get").is_ok());
+        assert!(condition_allowed(&policy, "").is_err());
+        assert!(condition_allowed(&policy, "state::delete").is_err());
+        assert!(condition_allowed(&policy, "shell::run").is_err());
+        assert!(condition_allowed(&policy, "harness::state::set").is_err());
     }
 }

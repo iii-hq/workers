@@ -1,3 +1,5 @@
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import {
   coerceJsonObject,
@@ -28,6 +30,7 @@ import {
   workersRegisterRequestSchema,
   workersRegisterResponseSchema,
 } from '../parsers'
+import { RegisterTriggerView } from '../RegisterTriggerView'
 
 function wrap<T>(details: T) {
   return {
@@ -456,6 +459,31 @@ describe('engine::register_trigger', () => {
     expect(req?.trigger_type).toBe('state')
     expect(req?.function_id).toBe('database::execute')
     expect(req?.metadata).toMatchObject({ event_into: '/event' })
+  })
+
+  it('renders an explicit long-form target', () => {
+    const input = {
+      trigger_type: 'state',
+      config: { key: 'build', scope: 'ops' },
+      target: {
+        function_id: 'database::execute',
+        payload: { deployment: 'deploy-42' },
+        event_into: '/args/event',
+      },
+    }
+    const req = safeParseRequest(registerTriggerRequestSchema, input)
+    expect(req?.target).toEqual(input.target)
+
+    const html = renderToStaticMarkup(
+      createElement(RegisterTriggerView, {
+        input,
+        output: { subscription_id: 'sub-1', once: false },
+      }),
+    )
+    expect(html).toContain('database::execute')
+    expect(html).toContain('deploy-42')
+    expect(html).toContain('/args/event')
+    expect(html).not.toContain('this session')
   })
 
   it('parses the harness subscribe variant (no function_id, has label/once)', () => {

@@ -694,7 +694,8 @@ impl StateAdapter for RedisAdapter {
         let script = redis::Script::new(
             r#"
                 local current = redis.call('HGET', KEYS[1], ARGV[1])
-                local absent = (current == false or current == nil)
+                local missing = (current == false or current == nil)
+                local absent = (missing or current == 'null')
                 if (ARGV[2] == ARGV[4]) then
                     if absent then
                         redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])
@@ -702,11 +703,11 @@ impl StateAdapter for RedisAdapter {
                     end
                     return current
                 end
-                if ((not absent) and current == ARGV[2]) then
+                if ((not missing) and current == ARGV[2]) then
                     redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])
                     return nil
                 end
-                if absent then return '' end
+                if missing then return '' end
                 return current
             "#,
         );

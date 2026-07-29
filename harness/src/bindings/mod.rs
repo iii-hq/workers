@@ -18,7 +18,9 @@ pub mod expiry;
 pub mod gc;
 mod store;
 
-pub use store::{BindingStore, ClaimOutcome, MAX_BINDINGS_PER_SESSION};
+pub use store::{
+    AttachOutcome, BindingStore, ClaimOutcome, ReserveOutcome, MAX_BINDINGS_PER_SESSION,
+};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -175,7 +177,7 @@ pub struct Causation {
     pub registered_by_turn: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Binding {
     pub id: String,
     /// The engine's own binding id, once registration returns it. `None` for

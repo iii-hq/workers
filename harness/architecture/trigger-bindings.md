@@ -72,9 +72,10 @@ with the owner notified.
 
 ## The binding record
 
-Durable in the state worker under `harness_binding/<binding_id>` — the same
-pattern as `harness_turn` / `harness_idem` / `harness_queue` (see `src/state.rs`).
-Durability is not new scope: the registry it replaces is an in-memory
+Durable in the state worker under the private
+`harness_binding/<binding_id>` scope (see `src/state.rs`). Public `state::*`
+functions cannot read or mutate this authority record; the harness uses the
+state worker's hidden CAS primitives. The registry it replaces is an in-memory
 `Mutex<HashMap>` wiped on every restart, which is why a startup reconciler has
 to GC the wreckage and why notify bindings silently stop delivering after a
 harness restart.

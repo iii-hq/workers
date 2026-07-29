@@ -3,9 +3,9 @@
 //! 1:1 port of the engine builtin's `RedisAdapter`
 //! (`engine/src/workers/queue/adapters/redis_adapter.rs`, whole file),
 //! including its limitations: this transport is pub/sub only — it has no
-//! DLQ, no retries, no message durability, and delivers each published
-//! message to at most one subscriber connection per topic. Seams applied
-//! for the standalone worker:
+//! DLQ, retries, or message durability. Each `(topic, id)` subscription uses
+//! its own subscriber connection so Redis fans a copy out to every binding.
+//! Seams applied for the standalone worker:
 //! - `Arc<Engine>` + `engine.call(...)` inside the pubsub task ->
 //!   `Arc<dyn crate::trigger::Invoker>` + `invoker.call(function_id, payload)`.
 //! - The engine's `check_condition` helper (`engine/src/condition.rs`) is
@@ -61,12 +61,11 @@ const DLQ_NOT_SUPPORTED: &str = "RedisAdapter does not support DLQ operations (p
 pub struct RedisAdapter {
     publisher: Arc<Mutex<ConnectionManager>>,
     subscriber: Arc<Client>,
-    subscriptions: Arc<RwLock<HashMap<String, SubscriptionInfo>>>,
+    subscriptions: Arc<RwLock<HashMap<(String, String), SubscriptionInfo>>>,
     invoker: Arc<dyn Invoker>,
 }
 
 struct SubscriptionInfo {
-    id: String,
     task_handle: JoinHandle<()>,
 }
 
@@ -145,21 +144,17 @@ async fn check_condition(
     }
 }
 
-/// The unsubscribe decision table, given the already write-locked map.
-/// Extracted so it's unit-testable without a live Redis connection (a
-/// `RedisAdapter` can't be constructed without one). Mirrors
-/// `engine/src/workers/queue/adapters/redis_adapter.rs:314-334`.
-fn unsubscribe_locked(subs: &mut HashMap<String, SubscriptionInfo>, topic: &str, id: &str) {
-    if let Some(sub_info) = subs.remove(topic) {
-        if sub_info.id == id {
-            tracing::debug!(topic = %topic, id = %id, "Unsubscribing from Redis channel");
-            sub_info.task_handle.abort();
-        } else {
-            tracing::warn!(topic = %topic, id = %id, "Subscription ID mismatch, not unsubscribing");
-            subs.insert(topic.to_string(), sub_info);
-        }
+/// Remove one exact `(topic, id)` subscription from an already locked map.
+fn unsubscribe_locked(
+    subs: &mut HashMap<(String, String), SubscriptionInfo>,
+    topic: &str,
+    id: &str,
+) {
+    if let Some(sub_info) = subs.remove(&(topic.to_string(), id.to_string())) {
+        tracing::debug!(topic = %topic, id = %id, "Unsubscribing from Redis channel");
+        sub_info.task_handle.abort();
     } else {
-        tracing::warn!(topic = %topic, id = %id, "No active subscription found for topic");
+        tracing::warn!(topic = %topic, id = %id, "No active subscription found");
     }
 }
 
@@ -220,12 +215,13 @@ impl QueueAdapter for RedisAdapter {
         let subscriber = Arc::clone(&self.subscriber);
         let invoker = Arc::clone(&self.invoker);
         let subscriptions = Arc::clone(&self.subscriptions);
+        let key = (topic.clone(), id.clone());
 
-        // Check if already subscribed — one subscription per topic per
-        // adapter instance, same guard as the engine.
+        // Ignore duplicate trigger ids on one topic. Distinct ids each get
+        // their own pub/sub connection and therefore their own message copy.
         let already_subscribed = {
             let subs = subscriptions.read().await;
-            subs.contains_key(&topic)
+            subs.contains_key(&key)
         };
 
         if already_subscribed {
@@ -361,7 +357,7 @@ impl QueueAdapter for RedisAdapter {
 
         // Store the subscription.
         let mut subs = subscriptions.write().await;
-        subs.insert(topic, SubscriptionInfo { id, task_handle });
+        subs.insert(key, SubscriptionInfo { task_handle });
     }
 
     async fn unsubscribe(&self, topic: &str, id: &str) {
@@ -454,20 +450,18 @@ impl QueueAdapter for RedisAdapter {
     }
 
     async fn list_topics(&self) -> anyhow::Result<Vec<TopicInfo>> {
-        // Redis adapter keys subscriptions by topic name directly, and only
-        // ever allows one subscription per topic (the guard in
-        // `subscribe`), so each present topic contributes exactly one to
-        // its own count. This worker's `TopicInfo` has no
+        // This worker's `TopicInfo` has no
         // `broker_type`/`subscriber_count` fields (unlike the engine's), so
         // the subscriber count is carried in `depth` — the closest
         // available field — for lack of a better one.
         let subs = self.subscriptions.read().await;
-        Ok(subs
-            .keys()
-            .map(|topic| TopicInfo {
-                name: topic.clone(),
-                depth: 1,
-            })
+        let mut topics = HashMap::<String, u64>::new();
+        for (topic, _) in subs.keys() {
+            *topics.entry(topic.clone()).or_default() += 1;
+        }
+        Ok(topics
+            .into_iter()
+            .map(|(name, depth)| TopicInfo { name, depth })
             .collect())
     }
 
@@ -519,18 +513,17 @@ mod tests {
 
     #[tokio::test]
     async fn unsubscribe_unknown_topic_is_a_noop() {
-        let mut subs: HashMap<String, SubscriptionInfo> = HashMap::new();
+        let mut subs: HashMap<(String, String), SubscriptionInfo> = HashMap::new();
         unsubscribe_locked(&mut subs, "missing-topic", "some-id");
         assert!(subs.is_empty());
     }
 
     #[tokio::test]
-    async fn unsubscribe_mismatched_id_keeps_subscription() {
-        let mut subs: HashMap<String, SubscriptionInfo> = HashMap::new();
+    async fn unsubscribe_other_id_keeps_subscription() {
+        let mut subs: HashMap<(String, String), SubscriptionInfo> = HashMap::new();
         subs.insert(
-            "demo".to_string(),
+            ("demo".to_string(), "owner".to_string()),
             SubscriptionInfo {
-                id: "owner".to_string(),
                 task_handle: tokio::spawn(async {
                     std::future::pending::<()>().await;
                 }),
@@ -538,25 +531,27 @@ mod tests {
         );
         unsubscribe_locked(&mut subs, "demo", "someone-else");
         assert!(
-            subs.contains_key("demo"),
-            "mismatched id must not remove the subscription"
+            subs.contains_key(&("demo".to_string(), "owner".to_string())),
+            "another id must not remove the subscription"
         );
-        subs.remove("demo").unwrap().task_handle.abort();
+        subs.remove(&("demo".to_string(), "owner".to_string()))
+            .unwrap()
+            .task_handle
+            .abort();
     }
 
     #[tokio::test]
     async fn unsubscribe_matching_id_removes_and_aborts() {
-        let mut subs: HashMap<String, SubscriptionInfo> = HashMap::new();
+        let mut subs: HashMap<(String, String), SubscriptionInfo> = HashMap::new();
         subs.insert(
-            "demo".to_string(),
+            ("demo".to_string(), "owner".to_string()),
             SubscriptionInfo {
-                id: "owner".to_string(),
                 task_handle: tokio::spawn(async {
                     std::future::pending::<()>().await;
                 }),
             },
         );
         unsubscribe_locked(&mut subs, "demo", "owner");
-        assert!(!subs.contains_key("demo"));
+        assert!(!subs.contains_key(&("demo".to_string(), "owner".to_string())));
     }
 }

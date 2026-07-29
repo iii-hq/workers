@@ -48,6 +48,9 @@ export function RegisterTriggerView({
       )
   const regId = resp?.id ?? resp?.subscription_id
   const once = resp?.once ?? req.once
+  const target =
+    req.target ??
+    (req.function_id ? { function_id: req.function_id } : undefined)
 
   // Cron schedules read as WHEN content, not as an opaque config dump: the
   // expression chip plus (for the common shapes) a human reading of it.
@@ -121,20 +124,29 @@ export function RegisterTriggerView({
       <div className="px-3 py-2 border-b border-rule-2 bg-bg flex flex-col gap-1.5">
         <div className="flex items-baseline gap-2 flex-wrap">
           <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-            {req.function_id ? 'call' : 'notify'}
+            {target ? 'call' : 'notify'}
           </span>
-          {req.function_id ? (
+          {target ? (
             <span className="font-mono text-[12.5px] text-accent break-all">
-              {req.function_id}
+              {target.function_id}
             </span>
           ) : (
             <span className="font-mono text-[12.5px] text-ink-faint italic">
               this session
             </span>
           )}
+          {target?.event_into !== undefined ? (
+            <FilterChip
+              label="event into"
+              value={target.event_into || '(root)'}
+            />
+          ) : null}
         </div>
       </div>
 
+      {target?.payload !== undefined ? (
+        <LabeledJson label="payload" value={target.payload} />
+      ) : null}
       {req.metadata !== undefined && !isEmpty(req.metadata) ? (
         <LabeledJson label="metadata" value={req.metadata} />
       ) : null}

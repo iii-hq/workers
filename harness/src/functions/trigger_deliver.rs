@@ -295,7 +295,7 @@ pub async fn handle(
             subscription_id: &binding.id,
             trigger_id: binding.trigger_id.as_deref(),
             target: &binding.target.function_id,
-            label: None,
+            label: binding_label(&binding),
             once: binding.lifecycle.once,
             retired: retiring,
             scope: fired::event_state_watch(&event).0,
@@ -391,6 +391,11 @@ async fn wake_target(deps: &Deps, binding: &Binding, event: &Value) -> Result<()
 /// the target is checked against what the registrant could call WHEN IT
 /// REGISTERED — never the owner's policy now, which may have widened since.
 fn call_allowed(binding: &Binding, target: &str) -> Result<(), String> {
+    if target.starts_with("harness::") {
+        return Err(format!(
+            "`{target}` is an internal harness function and cannot be a deferred call target"
+        ));
+    }
     if !CompiledPolicy::from(binding.capability.as_ref()).allows(target) {
         return Err(format!(
             "`{target}` is outside the policy this binding was registered with"
@@ -405,9 +410,43 @@ async fn call_target(
     deps: &Deps,
     binding: &Binding,
     target: &str,
-    payload: Value,
+    mut payload: Value,
 ) -> Result<(), String> {
     call_allowed(binding, target)?;
+    let cfg = deps.cfg().await;
+    let turn = crate::state::get_turn(&deps.iii, &binding.owner.session_id, cfg.session_timeout_ms)
+        .await
+        .map_err(|e| e.to_string())?;
+    let grants = if turn.is_some() {
+        crate::filesystem_grants::roots(
+            &deps.iii,
+            &binding.owner.session_id,
+            cfg.session_timeout_ms,
+        )
+        .await
+        .map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let root = turn
+        .as_ref()
+        .and_then(|record| record.options.filesystem_root());
+    payload = crate::filesystem_scope::inject(
+        target,
+        payload,
+        root,
+        &grants,
+        deps.hooks.filesystem_boundary(target),
+    );
+    // Argument-constrained approval rules must see the payload that will
+    // actually run, after event projection and trusted filesystem stamping.
+    crate::functions::subscribe::approval_allows_unattended(
+        deps,
+        target,
+        &binding.owner.session_id,
+        &payload,
+    )
+    .await?;
     // AWAITED, not fire-and-forget. A void dispatch reports success the moment
     // the engine accepts it, so a target that then fails — a bad statement, a
     // rejected payload — is recorded as delivered and "why did nothing
@@ -440,8 +479,26 @@ fn notification_text(binding: &Binding, event: &Value) -> String {
     } else {
         rendered
     };
-    let _ = binding;
-    format!("[notification] {summary}")
+    match binding_label(binding) {
+        Some(label) => format!("[notification] {label}: {summary}"),
+        None => format!("[notification] {summary}"),
+    }
+}
+
+fn binding_label(binding: &Binding) -> Option<&str> {
+    binding
+        .dedup_key
+        .as_ref()
+        .and_then(|key| key.get("label"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            binding
+                .target
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("label"))
+                .and_then(Value::as_str)
+        })
 }
 
 /// Deterministic per-fire transcript id: a redelivered fire with the same
@@ -462,16 +519,49 @@ fn record_entry_id(binding_id: &str, ordinal: u64) -> String {
     format!("e_trigfired_{binding_id}_{ordinal}")
 }
 
-/// Tear a binding down on both sides — engine first, then the record, so a
-/// failure between them leaves a binding that still resolves rather than one
-/// that fires into nothing.
+/// Tear a binding down on both sides. A placeholder with no provider id is
+/// compare-deleted first so a concurrent registrar either loses its attach
+/// and unregisters the returned id, or wins the attach and lets us retry
+/// against that exact id-only update.
 async fn retire(deps: &Deps, binding: &Binding) {
+    let store = deps.bindings().await;
     if let Some(trigger_id) = binding.trigger_id.as_deref() {
         crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
+        if !matches!(store.delete_if_unchanged(binding).await, Ok(true)) {
+            tracing::warn!(binding = %binding.id, "binding changed while retiring");
+        }
+        return;
     }
-    if let Err(e) = deps.bindings().await.delete(&binding.id).await {
-        tracing::warn!(binding = %binding.id, error = %e, "binding record delete failed");
+
+    match store.delete_if_unchanged(binding).await {
+        Ok(true) => return,
+        Err(error) => {
+            tracing::warn!(binding = %binding.id, %error, "binding record delete failed");
+            return;
+        }
+        Ok(false) => {}
     }
+
+    let current = match store.get(&binding.id).await {
+        Ok(Some(current)) if differs_only_by_trigger_id(binding, &current) => current,
+        Ok(_) => return,
+        Err(error) => {
+            tracing::warn!(binding = %binding.id, %error, "binding re-read failed during retirement");
+            return;
+        }
+    };
+    if let Some(trigger_id) = current.trigger_id.as_deref() {
+        crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
+    }
+    if !matches!(store.delete_if_unchanged(&current).await, Ok(true)) {
+        tracing::warn!(binding = %binding.id, "binding changed after trigger-id attach during retirement");
+    }
+}
+
+fn differs_only_by_trigger_id(expected: &Binding, current: &Binding) -> bool {
+    let mut normalized = current.clone();
+    normalized.trigger_id = expected.trigger_id.clone();
+    &normalized == expected && current.trigger_id != expected.trigger_id
 }
 
 /// Record a non-delivery in the owner's timeline. This is the half today's
@@ -483,16 +573,12 @@ async fn record_stop(deps: &Deps, binding: &Binding, event: &Value, skip: Skip) 
     fired::emit(
         &deps.session().await,
         &binding.owner.session_id,
-        &format!(
-            "{}_{}",
-            fire_entry_id(&binding.id, binding.fires),
-            skip.gate
-        ),
+        &skip_record_entry_id(&binding.id, skip.gate),
         fired::TriggerFired {
             subscription_id: &binding.id,
             trigger_id: binding.trigger_id.as_deref(),
             target: &binding.target.function_id,
-            label: None,
+            label: binding_label(binding),
             once: binding.lifecycle.once,
             retired: skip.retire,
             scope,
@@ -503,6 +589,13 @@ async fn record_stop(deps: &Deps, binding: &Binding, event: &Value, skip: Skip) 
     )
     .await;
     DeliverResult::stopped(skip.gate, skip.reason)
+}
+
+fn skip_record_entry_id(binding_id: &str, gate: &str) -> String {
+    format!(
+        "e_trigskip_{binding_id}_{gate}_{}",
+        uuid::Uuid::new_v4().simple()
+    )
 }
 
 #[cfg(test)]
@@ -567,6 +660,36 @@ mod tests {
         assert!(text.starts_with("[notification] "));
         assert!(text.contains("…(truncated)"));
         assert!(text.chars().count() < 700);
+    }
+
+    #[test]
+    fn notification_text_and_records_preserve_the_label() {
+        let mut b = wake_binding("state");
+        b.target.payload = Some(json!({ "session_id": "s_owner", "label": "orders-ready" }));
+        b.dedup_key.as_mut().unwrap()["label"] = json!("orders-ready");
+        assert_eq!(binding_label(&b), Some("orders-ready"));
+        assert!(notification_text(&b, &json!({ "count": 3 }))
+            .starts_with("[notification] orders-ready:"));
+    }
+
+    #[test]
+    fn every_skipped_attempt_gets_a_distinct_record_id() {
+        let first = skip_record_entry_id("sub_1", "condition");
+        let second = skip_record_entry_id("sub_1", "condition");
+        assert_ne!(first, second);
+        assert!(first.starts_with("e_trigskip_sub_1_condition_"));
+    }
+
+    #[test]
+    fn retirement_retries_only_an_id_only_attach() {
+        let expected = wake_binding("state");
+        let mut attached = expected.clone();
+        attached.trigger_id = Some("trig_1".into());
+        assert!(differs_only_by_trigger_id(&expected, &attached));
+
+        let mut fired = attached.clone();
+        fired.fires += 1;
+        assert!(!differs_only_by_trigger_id(&expected, &fired));
     }
 
     #[test]
@@ -652,6 +775,7 @@ mod tests {
         });
         assert!(call_allowed(&b, "run::record").is_ok());
         assert!(call_allowed(&b, "state::get").is_ok());
+        assert!(call_allowed(&b, "harness::spawn").is_err());
         let err = call_allowed(&b, "shell::run").unwrap_err();
         assert!(
             err.contains("outside the policy this binding was registered with"),

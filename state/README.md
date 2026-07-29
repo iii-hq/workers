@@ -34,6 +34,10 @@ iii worker add state
 | `state::list_groups` | `{}` | `{ groups }` — sorted, deduplicated scope names | — |
 | `state::ui-content` | `{ path }` | `{ content, content_type }` — content function for the injected console UI (internal; see [Console UI](#console-ui)) | — |
 
+The `harness_binding` and `harness_binding_owner` scopes are reserved
+control-plane state: public functions reject direct access, omit them from
+group listings, and never emit their bookkeeping writes as state events.
+
 ## Console UI
 
 The worker ships its console UI into any running console (the injectable-UI

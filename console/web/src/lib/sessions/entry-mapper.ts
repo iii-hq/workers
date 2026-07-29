@@ -410,10 +410,12 @@ export function entrySegments(
         | undefined
       const isNotif =
         origin?.notification === true || item.entry_id.startsWith('e_notify_')
-      // A react-fired task delivered into this session (origin on events,
-      // `e_spawned_` prefix on reads — session::messages carries no origin).
+      // A react-fired task delivered into this session (origin on events;
+      // persisted reads carry no origin, so recognize both entry formats).
       const isReaction =
-        origin?.reaction === true || item.entry_id.startsWith('e_spawned_')
+        origin?.reaction === true ||
+        item.entry_id.startsWith('e_spawned_') ||
+        item.entry_id.startsWith('e_react_')
       // A direct `harness::spawn` seed task — same pattern, `e_spawn_` prefix.
       const isSpawn =
         origin?.spawn === true || item.entry_id.startsWith('e_spawn_')

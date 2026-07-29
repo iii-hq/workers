@@ -5,9 +5,9 @@
 //! `harness_idem/<idempotency_key>` holds the webhook-dedupe row,
 //! `harness_queue/<session_id>:<id>` holds one [`QueuedMessage`] per message
 //! that arrived while a step was streaming (drained by the loop), and
-//! `harness_binding/<binding_id>` holds one [`crate::bindings::Binding`]. `state::get`
-//! returns the stored value directly (null when absent); `state::delete`
-//! returns the prior value.
+//! `harness_binding/<binding_id>` holds one [`crate::bindings::Binding`].
+//! Binding scopes use the state worker's hidden harness API; ordinary
+//! bookkeeping keeps the public `state::*` compatibility surface.
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
@@ -26,6 +26,17 @@ pub const QUEUE_SCOPE: &str = "harness_queue";
 /// One durable trigger binding per key (`bindings::Binding`). The engine-side
 /// trigger metadata holds only this key; everything the fire needs is here.
 pub const BINDING_SCOPE: &str = "harness_binding";
+/// Per-owner binding ids. Updated with CAS so capacity reservation and binding
+/// insertion are one logical operation across concurrent harness workers.
+pub const BINDING_OWNER_SCOPE: &str = "harness_binding_owner";
+
+const STATE_GET_ID: &str = "state::get";
+const STATE_SET_ID: &str = "state::set";
+const STATE_DELETE_ID: &str = "state::delete";
+const STATE_LIST_ID: &str = "state::list";
+const PRIVATE_STATE_GET_ID: &str = "harness::state::get";
+const PRIVATE_STATE_LIST_ID: &str = "harness::state::list";
+const STATE_CAS_ID: &str = "harness::state::compare-and-set";
 
 /// Every `state::*` call below is loop bookkeeping that fires several times
 /// per turn step — tagged `iii.tag.hidden` so trace UIs stack the spans into
@@ -38,17 +49,22 @@ pub(crate) async fn state_get(
     key: &str,
     timeout_ms: u64,
 ) -> Result<Value, HarnessError> {
+    let function_id = if is_binding_scope(scope) {
+        PRIVATE_STATE_GET_ID
+    } else {
+        STATE_GET_ID
+    };
     run_hidden(
         HIDDEN_FAMILY,
         iii.trigger(TriggerRequest {
-            function_id: "state::get".into(),
+            function_id: function_id.into(),
             payload: json!({ "scope": scope, "key": key }),
             action: None,
             timeout_ms: Some(timeout_ms),
         }),
     )
     .await
-    .map_err(|e| HarnessError::State(format!("state::get {scope}/{key}: {e}")))
+    .map_err(|e| HarnessError::State(format!("{function_id} {scope}/{key}: {e}")))
 }
 
 pub(crate) async fn state_set(
@@ -61,7 +77,7 @@ pub(crate) async fn state_set(
     run_hidden(
         HIDDEN_FAMILY,
         iii.trigger(TriggerRequest {
-            function_id: "state::set".into(),
+            function_id: STATE_SET_ID.into(),
             payload: json!({ "scope": scope, "key": key, "value": value }),
             action: None,
             timeout_ms: Some(timeout_ms),
@@ -69,7 +85,7 @@ pub(crate) async fn state_set(
     )
     .await
     .map(|_| ())
-    .map_err(|e| HarnessError::State(format!("state::set {scope}/{key}: {e}")))
+    .map_err(|e| HarnessError::State(format!("{STATE_SET_ID} {scope}/{key}: {e}")))
 }
 
 pub(crate) async fn state_delete(
@@ -81,7 +97,7 @@ pub(crate) async fn state_delete(
     run_hidden(
         HIDDEN_FAMILY,
         iii.trigger(TriggerRequest {
-            function_id: "state::delete".into(),
+            function_id: STATE_DELETE_ID.into(),
             payload: json!({ "scope": scope, "key": key }),
             action: None,
             timeout_ms: Some(timeout_ms),
@@ -89,7 +105,7 @@ pub(crate) async fn state_delete(
     )
     .await
     .map(|_| ())
-    .map_err(|e| HarnessError::State(format!("state::delete {scope}/{key}: {e}")))
+    .map_err(|e| HarnessError::State(format!("{STATE_DELETE_ID} {scope}/{key}: {e}")))
 }
 
 /// Read the turn record for a session (`None` when absent or null).
@@ -148,16 +164,6 @@ pub async fn get_binding(
         .map_err(|e| HarnessError::State(format!("binding parse: {e}")))
 }
 
-pub async fn put_binding(
-    iii: &IIIClient,
-    binding: &crate::bindings::Binding,
-    timeout_ms: u64,
-) -> Result<(), HarnessError> {
-    let value = serde_json::to_value(binding)
-        .map_err(|e| HarnessError::State(format!("binding serialize: {e}")))?;
-    state_set(iii, BINDING_SCOPE, &binding.id, value, timeout_ms).await
-}
-
 /// Swap a binding record only if it still holds `expected`. `Ok(None)` means
 /// the swap happened; `Ok(Some(current))` means someone else moved it first
 /// and `current` is what is there now.
@@ -180,38 +186,65 @@ pub async fn cas_binding(
     };
     let value = serde_json::to_value(next)
         .map_err(|e| HarnessError::State(format!("binding serialize: {e}")))?;
-    let mut payload = json!({
-        "scope": BINDING_SCOPE,
-        "key": next.id,
-        "value": value,
-    });
-    if let Some(e) = expected_value {
-        payload["expected"] = e;
+    cas_value(
+        iii,
+        BINDING_SCOPE,
+        &next.id,
+        expected_value,
+        value,
+        timeout_ms,
+    )
+    .await
+}
+
+/// Delete a binding only while it still equals the caller's snapshot.
+pub async fn cas_delete_binding(
+    iii: &IIIClient,
+    expected: &crate::bindings::Binding,
+    timeout_ms: u64,
+) -> Result<bool, HarnessError> {
+    let expected_value = serde_json::to_value(expected)
+        .map_err(|e| HarnessError::State(format!("binding serialize: {e}")))?;
+    Ok(cas_value(
+        iii,
+        BINDING_SCOPE,
+        &expected.id,
+        Some(expected_value),
+        Value::Null,
+        timeout_ms,
+    )
+    .await?
+    .is_none())
+}
+
+pub(crate) async fn cas_value(
+    iii: &IIIClient,
+    scope: &str,
+    key: &str,
+    expected: Option<Value>,
+    value: Value,
+    timeout_ms: u64,
+) -> Result<Option<Value>, HarnessError> {
+    let mut payload = json!({ "scope": scope, "key": key, "value": value });
+    if let Some(expected) = expected {
+        payload["expected"] = expected;
     }
     let resp = run_hidden(
         HIDDEN_FAMILY,
         iii.trigger(TriggerRequest {
-            function_id: "state::compare-and-set".into(),
+            function_id: STATE_CAS_ID.into(),
             payload,
             action: None,
             timeout_ms: Some(timeout_ms),
         }),
     )
     .await
-    .map_err(|e| HarnessError::State(format!("state::compare-and-set {}: {e}", next.id)))?;
-
+    .map_err(|e| HarnessError::State(format!("{STATE_CAS_ID} {scope}/{key}: {e}")))?;
     if resp.get("swapped").and_then(Value::as_bool) == Some(true) {
-        return Ok(None);
+        Ok(None)
+    } else {
+        Ok(Some(resp.get("current").cloned().unwrap_or(Value::Null)))
     }
-    Ok(Some(resp.get("current").cloned().unwrap_or(Value::Null)))
-}
-
-pub async fn delete_binding(
-    iii: &IIIClient,
-    id: &str,
-    timeout_ms: u64,
-) -> Result<(), HarnessError> {
-    state_delete(iii, BINDING_SCOPE, id, timeout_ms).await
 }
 
 /// Every live binding — the owner-gone sweep and the per-owner cap read this.
@@ -225,17 +258,26 @@ pub async fn list_bindings(
 }
 
 async fn state_list(iii: &IIIClient, scope: &str, timeout_ms: u64) -> Result<Value, HarnessError> {
+    let function_id = if is_binding_scope(scope) {
+        PRIVATE_STATE_LIST_ID
+    } else {
+        STATE_LIST_ID
+    };
     run_hidden(
         HIDDEN_FAMILY,
         iii.trigger(TriggerRequest {
-            function_id: "state::list".into(),
+            function_id: function_id.into(),
             payload: json!({ "scope": scope }),
             action: None,
             timeout_ms: Some(timeout_ms),
         }),
     )
     .await
-    .map_err(|e| HarnessError::State(format!("state::list {scope}: {e}")))
+    .map_err(|e| HarnessError::State(format!("{function_id} {scope}: {e}")))
+}
+
+fn is_binding_scope(scope: &str) -> bool {
+    matches!(scope, BINDING_SCOPE | BINDING_OWNER_SCOPE)
 }
 
 /// Tolerate the two `state::list` shapes seen across engines: a bare array of

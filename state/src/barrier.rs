@@ -19,6 +19,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use std::collections::HashSet;
 
 /// Where a barrier's accumulated arrivals live. One key per barrier id.
 pub const BARRIER_SCOPE: &str = "state_barrier";
@@ -125,6 +126,16 @@ pub fn arrive(
     cfg: &BarrierConfig,
     event: &Value,
 ) -> Result<(BarrierState, Decision), String> {
+    if let Expect::Keys(keys) = &cfg.expect {
+        let mut seen = HashSet::with_capacity(keys.len());
+        if let Some(duplicate) = keys.iter().find(|key| !seen.insert(key.as_str())) {
+            return Err(format!(
+                "barrier `{}`: duplicate expected arrival key `{duplicate}`",
+                cfg.id
+            ));
+        }
+    }
+
     let mut state: BarrierState = match current {
         Some(Value::Null) | None => BarrierState::default(),
         Some(v) => serde_json::from_value(v.clone())
@@ -288,6 +299,13 @@ mod tests {
         }
         let (_, d2) = arrive(Some(&state_value(&s1)), &c, &event("b", json!(2))).unwrap();
         assert!(matches!(d2, Decision::Allow { .. }));
+    }
+
+    #[test]
+    fn duplicate_named_expectations_are_rejected() {
+        let c = cfg(Expect::Keys(vec!["a".into(), "a".into()]));
+        let err = arrive(None, &c, &event("a", json!(1))).unwrap_err();
+        assert!(err.contains("duplicate expected arrival key `a`"), "{err}");
     }
 
     #[test]

@@ -14,7 +14,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::bindings::{Binding, BindingTarget, Causation, ConditionSpec, Lifecycle, OwnerScope};
+use crate::bindings::{
+    Binding, BindingTarget, Causation, ConditionSpec, Lifecycle, OwnerScope, ReserveOutcome,
+};
 use crate::clients::EngineClient;
 use crate::deps::Deps;
 use crate::error::HarnessError;
@@ -96,6 +98,10 @@ pub struct SubscribeRequest {
 /// The caller-settable half of a binding's lifecycle.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct LifecycleRequest {
+    /// Auto-unsubscribe after the first delivered fire. The top-level `once`
+    /// field remains accepted as shorthand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub once: Option<bool>,
     /// Lifetime delivery budget; the binding retires on its Nth delivery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_fires: Option<u64>,
@@ -223,26 +229,22 @@ pub async fn invoke(
         UNREGISTER_TRIGGER_ID => intercept_unregister(deps, arguments, session_id).await,
         crate::functions::triggers_list::TRIGGERS_LIST_ID
         | crate::functions::triggers_list::TRIGGERS_UNREGISTER_ID => {
-            // Trusted default: an in-turn call that names no session targets
-            // its own. An explicit session_id passes through untouched (the
-            // ownership check still applies).
-            let args = with_default_session_id(arguments, session_id);
+            // In-turn controls always target their caller. External console
+            // calls bypass this chokepoint and continue supplying session_id.
+            let args = with_caller_session_id(arguments, session_id);
             trigger::invoke_target(engine, policy, function_id, &args).await
         }
+        internal if internal.starts_with("harness::state::") => trigger::denied_result(internal),
         _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
     }
 }
 
-/// Fill `session_id` with the calling session when the args omit it (or set
-/// it null). Non-object args pass through untouched — the target's own
-/// deserialization owns that rejection.
-fn with_default_session_id(arguments: &Value, session_id: &str) -> Value {
+/// Stamp `session_id` with the calling session. Non-object args pass through
+/// untouched — the target's own deserialization owns that rejection.
+fn with_caller_session_id(arguments: &Value, session_id: &str) -> Value {
     let mut args = arguments.clone();
     if let Some(map) = args.as_object_mut() {
-        let absent = map.get("session_id").is_none_or(Value::is_null);
-        if absent {
-            map.insert("session_id".into(), Value::String(session_id.to_string()));
-        }
+        map.insert("session_id".into(), Value::String(session_id.to_string()));
     }
     args
 }
@@ -263,7 +265,10 @@ fn with_default_session_id(arguments: &Value, session_id: &str) -> Value {
 /// The standing default is not silent either: `standing_binding_advisory`
 /// tells the registrant it is standing and to bound or retire it.
 fn effective_once(req: &SubscribeRequest) -> bool {
-    if let Some(once) = req.once {
+    if let Some(once) = req
+        .once
+        .or_else(|| req.lifecycle.as_ref().and_then(|l| l.once))
+    {
         return once;
     }
     match req.trigger_type.as_str() {
@@ -289,7 +294,7 @@ fn resolve_timer_request(req: &mut SubscribeRequest) -> Result<(), HarnessError>
     if req.trigger_type != crate::timer::TIMER_TYPE {
         return Ok(());
     }
-    if req.once == Some(false) {
+    if !effective_once(req) {
         return Err(HarnessError::InvalidRequest(
             "a timer fires exactly once — for recurrence use `cron` (with a lifecycle bound)"
                 .into(),
@@ -513,15 +518,22 @@ async fn handle(
         ));
     }
 
+    validate_lifecycle(
+        req.lifecycle.as_ref(),
+        crate::types::message::AgentMessage::now_ms(),
+    )?;
+    let once = effective_once(&req);
+    // Timer idempotency is based on the caller's relative request. Resolving
+    // `in_ms` first would mint a different absolute deadline on every retry.
+    let dedup = registration_dedup_key(&req, once);
     resolve_timer_request(&mut req)?;
 
     let target = resolve_target(deps, &req, session_id, policy).await?;
-    let once = effective_once(&req);
+    authorize_conditions(deps, &req.conditions, session_id, policy).await?;
 
     // Idempotency: an identical re-registration (a model retry, a re-run
     // prompt in the same session) returns the standing binding instead of
     // wiring a twin that double-delivers forever.
-    let dedup = registration_dedup_key(&req, once);
     let store = deps.bindings().await;
     if let Some(existing) = store.find_duplicate(session_id, &dedup).await? {
         return Ok(SubscribeResponse {
@@ -530,13 +542,6 @@ async fn handle(
             note: None,
         });
     }
-    if !store.has_capacity(session_id).await? {
-        return Err(HarnessError::InvalidRequest(format!(
-            "binding cap reached ({} active for this session); unregister first",
-            crate::bindings::MAX_BINDINGS_PER_SESSION
-        )));
-    }
-
     let mut binding = Binding {
         id: format!("sub_{}", uuid::Uuid::new_v4().simple()),
         trigger_id: None,
@@ -561,8 +566,13 @@ async fn handle(
         created_at: crate::types::message::AgentMessage::now_ms(),
     };
     // Durable BEFORE the engine knows about it: a fire that arrives before the
-    // engine's answer must still resolve its record.
-    store.put(&binding).await?;
+    // engine's answer must still resolve its record. The reservation and
+    // per-owner capacity check are one CAS-backed operation.
+    validate_lifecycle(
+        req.lifecycle.as_ref(),
+        crate::types::message::AgentMessage::now_ms(),
+    )?;
+    require_reserved(store.reserve(&binding).await?)?;
 
     let resp = deps
         .iii
@@ -581,8 +591,23 @@ async fn handle(
 
     match resp.map(|v| v.get("id").and_then(Value::as_str).map(str::to_string)) {
         Ok(Some(trigger_id)) => {
-            binding.trigger_id = Some(trigger_id);
-            store.put(&binding).await?;
+            match store.attach_trigger_id(&binding, &trigger_id).await {
+                Ok(crate::bindings::AttachOutcome::Attached(current)) => {
+                    binding = *current;
+                }
+                Ok(crate::bindings::AttachOutcome::Gone) => {
+                    // A fast one-shot fired and retired before registration
+                    // returned. Its provider id still needs explicit teardown.
+                    unregister_engine_trigger(deps, &trigger_id).await;
+                }
+                Err(error) => {
+                    // The caller must never observe a failed registration
+                    // while its provider trigger remains live.
+                    unregister_engine_trigger(deps, &trigger_id).await;
+                    let _ = store.delete(&binding.id).await;
+                    return Err(error);
+                }
+            }
         }
         // Carry the engine's rejection reason (e.g. an unknown config key for
         // this trigger type) — an opaque "failed" sends the agent guess-looping.
@@ -622,6 +647,42 @@ async fn handle(
         once,
         note: compose_note(notes),
     })
+}
+
+fn validate_lifecycle(
+    lifecycle: Option<&LifecycleRequest>,
+    now_ms: i64,
+) -> Result<(), HarnessError> {
+    let Some(lifecycle) = lifecycle else {
+        return Ok(());
+    };
+    if lifecycle.max_fires == Some(0) {
+        return Err(HarnessError::InvalidRequest(
+            "`lifecycle.max_fires` must be at least 1".into(),
+        ));
+    }
+    if lifecycle
+        .expires_at
+        .is_some_and(|expires_at| expires_at <= now_ms)
+    {
+        return Err(HarnessError::InvalidRequest(
+            "`lifecycle.expires_at` must be in the future".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn require_reserved(outcome: ReserveOutcome) -> Result<(), HarnessError> {
+    match outcome {
+        ReserveOutcome::Reserved => Ok(()),
+        ReserveOutcome::Capacity => Err(HarnessError::InvalidRequest(format!(
+            "binding cap reached ({} active for this session); unregister first",
+            crate::bindings::MAX_BINDINGS_PER_SESSION
+        ))),
+        ReserveOutcome::Exhausted => Err(HarnessError::InvalidRequest(
+            "binding lifecycle expired before it could be reserved".into(),
+        )),
+    }
 }
 
 /// Join the advisories under one header that says the outcome FIRST.
@@ -688,11 +749,11 @@ async fn resolve_target(
         Some(id) => {
             let id = id.to_string();
             validate_call_target(&id, policy).map_err(HarnessError::InvalidRequest)?;
-            approval_allows_unattended(deps, &id, session_id)
-                .await
-                .map_err(HarnessError::InvalidRequest)?;
             let (payload, event_into) = match req.target.as_ref() {
-                Some(t) => (t.payload.clone(), t.event_into.clone()),
+                Some(t) => {
+                    validate_event_into(t.event_into.as_deref())?;
+                    (t.payload.clone(), t.event_into.clone())
+                }
                 None => {
                     let m = req.metadata.clone().unwrap_or(Value::Null);
                     validate_call_template(&m)?;
@@ -704,13 +765,42 @@ async fn resolve_target(
                     )
                 }
             };
-            Ok(BindingTarget {
+            let target = BindingTarget {
                 function_id: id,
                 payload,
                 event_into,
-            })
+            };
+            let arguments = target.payload.clone().unwrap_or_else(|| json!({}));
+            approval_allows_unattended(deps, &target.function_id, session_id, &arguments)
+                .await
+                .map_err(HarnessError::InvalidRequest)?;
+            Ok(target)
         }
     }
+}
+
+/// Conditions execute with worker authority too, so they cross the same
+/// registration boundary as the delivery target.
+async fn authorize_conditions(
+    deps: &Deps,
+    conditions: &[ConditionSpec],
+    session_id: &str,
+    policy: &CompiledPolicy,
+) -> Result<(), HarnessError> {
+    for condition in conditions {
+        validate_call_target(&condition.function_id, policy)
+            .map_err(HarnessError::InvalidRequest)?;
+        let arguments = json!({
+            "event": null,
+            "condition_config": condition.config.clone().unwrap_or(Value::Null),
+            "binding": { "id": null, "fires": 0 },
+            "context": { "owner_session_id": session_id },
+        });
+        approval_allows_unattended(deps, &condition.function_id, session_id, &arguments)
+            .await
+            .map_err(HarnessError::InvalidRequest)?;
+    }
+    Ok(())
 }
 
 /// A call binding's shorthand `metadata` takes only `{ payload?, event_into? }`.
@@ -730,12 +820,15 @@ fn validate_call_template(metadata: &Value) -> Result<(), HarnessError> {
              binding: spawn children directly from a turn."
         )));
     }
-    if let Some(pointer) = map.get("event_into").and_then(Value::as_str) {
-        if !pointer.is_empty() && !pointer.starts_with('/') {
-            return Err(HarnessError::InvalidRequest(format!(
-                "`event_into` must be a JSON pointer starting with `/`, got `{pointer}`"
-            )));
-        }
+    validate_event_into(map.get("event_into").and_then(Value::as_str))
+}
+
+fn validate_event_into(pointer: Option<&str>) -> Result<(), HarnessError> {
+    if pointer.is_some_and(|p| !p.is_empty() && !p.starts_with('/')) {
+        return Err(HarnessError::InvalidRequest(format!(
+            "`event_into` must be a JSON pointer starting with `/`, got `{}`",
+            pointer.unwrap_or_default()
+        )));
     }
     Ok(())
 }
@@ -781,7 +874,11 @@ fn registration_dedup_key(req: &SubscribeRequest, once: bool) -> Value {
         "trigger_type": req.trigger_type,
         "config": req.config,
         "label": req.label,
-        "once": once,
+        "lifecycle": {
+            "once": once,
+            "max_fires": req.lifecycle.as_ref().and_then(|l| l.max_fires),
+            "expires_at": req.lifecycle.as_ref().and_then(|l| l.expires_at),
+        },
         "function_id": req.function_id,
         "metadata": req.metadata,
         "target": req.target,
@@ -830,16 +927,17 @@ fn validate_call_target(target: &str, policy: &CompiledPolicy) -> Result<(), Str
 /// a direct call needs no approval either, so the reaction grants nothing the
 /// session did not already have. Any other failure fails CLOSED — an
 /// undetermined verdict must not become a standing unattended call.
-async fn approval_allows_unattended(
+pub(crate) async fn approval_allows_unattended(
     deps: &Deps,
     target: &str,
     session_id: &str,
+    arguments: &Value,
 ) -> Result<(), String> {
     let resp = deps
         .iii
         .trigger(TriggerRequest {
             function_id: APPROVAL_EVALUATE_ID.to_string(),
-            payload: json!({ "session_id": session_id, "function_id": target }),
+            payload: approval_probe_payload(session_id, target, arguments),
             action: None,
             timeout_ms: Some(deps.cfg().await.dispatch_timeout_ms),
         })
@@ -882,6 +980,14 @@ async fn approval_allows_unattended(
              that would run unattended"
         )),
     }
+}
+
+fn approval_probe_payload(session_id: &str, target: &str, arguments: &Value) -> Value {
+    json!({
+        "session_id": session_id,
+        "function_id": target,
+        "arguments": arguments,
+    })
 }
 
 /// Distinguish "no approval worker registered" from a real failure. The engine
@@ -1222,23 +1328,86 @@ mod tests {
             "function_id": "state::set",
             "once": true,
         }))));
+        assert!(effective_once(&mk(json!({
+            "trigger_type": "state",
+            "function_id": "state::set",
+            "lifecycle": { "once": true },
+        }))));
+        assert!(!effective_once(&mk(json!({
+            "trigger_type": "state",
+            "lifecycle": { "once": false },
+        }))));
+    }
+
+    #[test]
+    fn lifecycle_must_have_a_future_delivery_slot() {
+        assert!(validate_lifecycle(None, 100).is_ok());
+        assert!(validate_lifecycle(
+            Some(&LifecycleRequest {
+                max_fires: Some(0),
+                ..Default::default()
+            }),
+            100,
+        )
+        .is_err());
+        assert!(validate_lifecycle(
+            Some(&LifecycleRequest {
+                expires_at: Some(100),
+                ..Default::default()
+            }),
+            100,
+        )
+        .is_err());
+        assert!(validate_lifecycle(
+            Some(&LifecycleRequest {
+                max_fires: Some(1),
+                expires_at: Some(101),
+                ..Default::default()
+            }),
+            100,
+        )
+        .is_ok());
+
+        // A deadline that passed during target/approval resolution must fail
+        // the reservation-boundary recheck, not masquerade as a full owner.
+        let expiring = LifecycleRequest {
+            expires_at: Some(101),
+            ..Default::default()
+        };
+        assert!(validate_lifecycle(Some(&expiring), 100).is_ok());
+        assert!(validate_lifecycle(Some(&expiring), 101).is_err());
+    }
+
+    #[test]
+    fn an_expired_reservation_is_not_reported_as_capacity() {
+        assert!(require_reserved(ReserveOutcome::Reserved).is_ok());
+        let full = require_reserved(ReserveOutcome::Capacity)
+            .unwrap_err()
+            .to_string();
+        assert!(full.contains("binding cap reached"));
+
+        let expired = require_reserved(ReserveOutcome::Exhausted)
+            .unwrap_err()
+            .to_string();
+        assert!(expired.contains("lifecycle expired"));
+        assert!(!expired.contains("cap reached"));
     }
 
     /// The intercepted controls never reach the engine registry, so native
     /// exposure must publish their contracts itself — but only when the
     /// turn's policy allows them (a leaf child sees neither).
     #[test]
-    fn in_turn_triggers_calls_default_to_the_calling_session() {
-        // Absent and null both take the caller; explicit passes through.
-        let filled = with_default_session_id(&json!({}), "s_me");
+    fn in_turn_triggers_calls_are_forced_to_the_calling_session() {
+        // Absent, null, and forged explicit ids all take the caller.
+        let filled = with_caller_session_id(&json!({}), "s_me");
         assert_eq!(filled["session_id"], "s_me");
-        let filled = with_default_session_id(&json!({ "session_id": null }), "s_me");
+        let filled = with_caller_session_id(&json!({ "session_id": null }), "s_me");
         assert_eq!(filled["session_id"], "s_me");
-        let kept = with_default_session_id(&json!({ "session_id": "s_other" }), "s_me");
-        assert_eq!(kept["session_id"], "s_other");
+        let replaced = with_caller_session_id(&json!({ "session_id": "s_other" }), "s_me");
+        assert_eq!(replaced["session_id"], "s_me");
         // Non-object args pass through for the target to reject.
         assert_eq!(
-            with_default_session_id(&json!("nope"), "s_me"),
+            with_caller_session_id(&json!("nope"), "s_me"),
             json!("nope")
         );
     }
@@ -1372,6 +1541,13 @@ mod tests {
         assert!(validate_call_template(&json!({ "event_into": "/args/event" })).is_ok());
         assert!(validate_call_template(&json!({ "event_into": "" })).is_ok());
         assert!(validate_call_template(&Value::Null).is_ok());
+
+        let explicit: BindingTarget = serde_json::from_value(json!({
+            "function_id": "state::set",
+            "event_into": "not/a/pointer",
+        }))
+        .unwrap();
+        assert!(validate_event_into(explicit.event_into.as_deref()).is_err());
     }
 
     #[test]
@@ -1393,6 +1569,38 @@ mod tests {
             registration_dedup_key(&a, true),
             registration_dedup_key(&a, true)
         );
+    }
+
+    #[test]
+    fn the_dedup_key_uses_raw_timers_and_normalized_lifecycle() {
+        let req: SubscribeRequest = serde_json::from_value(json!({
+            "trigger_type": "timer",
+            "config": { "in_ms": 250 },
+            "lifecycle": { "once": true, "max_fires": 1, "expires_at": 1234 },
+        }))
+        .unwrap();
+        let key = registration_dedup_key(&req, effective_once(&req));
+        assert_eq!(key["config"], json!({ "in_ms": 250 }));
+        assert_eq!(
+            key["lifecycle"],
+            json!({ "once": true, "max_fires": 1, "expires_at": 1234 })
+        );
+
+        let mut different = req.clone();
+        different.lifecycle.as_mut().unwrap().expires_at = Some(5678);
+        assert_ne!(
+            registration_dedup_key(&req, true),
+            registration_dedup_key(&different, true)
+        );
+    }
+
+    #[test]
+    fn approval_probe_carries_the_arguments_it_authorizes() {
+        let arguments = json!({ "command": "rm", "path": "/tmp/x" });
+        let payload = approval_probe_payload("s_1", "shell::exec", &arguments);
+        assert_eq!(payload["session_id"], "s_1");
+        assert_eq!(payload["function_id"], "shell::exec");
+        assert_eq!(payload["arguments"], arguments);
     }
 
     #[test]
