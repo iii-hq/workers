@@ -14,8 +14,8 @@ use crate::types::frames::{
 };
 use crate::types::probe::ControlledTargetV1;
 use crate::types::scenario::{
-    CompiledFunctionExposureV1, CompiledFunctionPolicyV1, CompiledScenarioV1,
-    CompiledSendOptionsV1, CompiledSendV1, DeadlinesV1,
+    CompiledFaultV1, CompiledFunctionExposureV1, CompiledFunctionPolicyV1, CompiledScenarioV1,
+    CompiledSendOptionsV1, CompiledSendV1, DeadlinesV1, FaultKind,
 };
 use crate::types::script::{
     GenerationMatchV1, JsonMatcherV1, JsonNormalizerV1, ModelFixtureV1, NormalizerOperation,
@@ -52,6 +52,8 @@ pub(super) struct Scenario {
     model: ModelFixtureV1,
     send: Option<Send>,
     target: Option<ControlledTargetV1>,
+    fault: Option<CompiledFaultV1>,
+    deadlines: DeadlinesV1,
     generations: Vec<Generation>,
     expected_turn_statuses: Vec<String>,
     verify: Option<VerifyFn>,
@@ -77,6 +79,8 @@ impl Scenario {
             model,
             send: None,
             target: None,
+            fault: None,
+            deadlines: DeadlinesV1::default(),
             generations: Vec::new(),
             expected_turn_statuses: vec!["completed".to_string()],
             verify: None,
@@ -94,6 +98,31 @@ impl Scenario {
 
     pub(super) fn function(mut self, function: ControlledFunction) -> Self {
         self.target = Some(function.target);
+        self
+    }
+
+    pub(super) fn engine_sigkill(
+        mut self,
+        function: &ControlledFunction,
+        after_target_calls: u64,
+        restart_delay_ms: u64,
+    ) -> Self {
+        assert!(
+            after_target_calls > 0,
+            "fault target call count must be positive"
+        );
+        self.fault = Some(CompiledFaultV1 {
+            kind: FaultKind::EngineSigkill,
+            function_id: function.id().to_string(),
+            after_target_calls,
+            restart_delay_ms,
+        });
+        self
+    }
+
+    pub(super) fn scenario_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        assert!(timeout_ms > 0, "scenario timeout must be positive");
+        self.deadlines.scenario_ms = timeout_ms;
         self
     }
 
@@ -212,7 +241,8 @@ impl Scenario {
                 description: self.description,
                 send: compiled_send,
                 target: self.target,
-                deadlines: DeadlinesV1::default(),
+                fault: self.fault,
+                deadlines: self.deadlines,
             },
             script: RouterScriptV1 {
                 schema_version: SchemaVersion1::V1,
@@ -308,6 +338,7 @@ impl ControlledFunction {
                 description: description.to_string(),
                 request_schema: serde_json::Map::new(),
                 response: Value::Null,
+                hold_response: false,
             },
         }
     }
@@ -328,6 +359,11 @@ impl ControlledFunction {
         self
     }
 
+    pub(super) fn hold_response(mut self) -> Self {
+        self.target.hold_response = true;
+        self
+    }
+
     pub(super) fn id(&self) -> &str {
         &self.target.function_id
     }
@@ -345,6 +381,7 @@ impl ControlledFunction {
 pub(super) struct Request {
     turn_request: bool,
     turn_step: Option<u64>,
+    any_turn_step: bool,
     system_prompt: Option<JsonMatcherV1>,
     messages: Option<JsonMatcherV1>,
     tools: Option<JsonMatcherV1>,
@@ -355,6 +392,7 @@ impl Request {
         Self {
             turn_request: false,
             turn_step: None,
+            any_turn_step: false,
             system_prompt: None,
             messages: None,
             tools: None,
@@ -369,6 +407,26 @@ impl Request {
     pub(super) fn turn_request_step(mut self, step: u64) -> Self {
         self.turn_request = true;
         self.turn_step = Some(step);
+        self
+    }
+
+    /// Match only the stable envelope at a restart boundary. The recovered
+    /// turn record may legitimately use a different step and reconstructed
+    /// prompt/history, so the durable outcome is the contract here.
+    pub(super) fn recovery_boundary(mut self) -> Self {
+        self.turn_request = true;
+        self.any_turn_step = true;
+        self.system_prompt = Some(JsonMatcherV1::Regex {
+            pattern: "(?s).*".to_string(),
+        });
+        self.messages = Some(JsonMatcherV1::Subset {
+            expected: json!([]),
+            normalize: None,
+        });
+        self.tools = Some(JsonMatcherV1::Subset {
+            expected: json!([]),
+            normalize: None,
+        });
         self
     }
 
@@ -473,16 +531,20 @@ impl Request {
                 normalize: None,
             },
             request_id: JsonMatcherV1::Regex {
-                pattern: self.turn_step.map_or_else(
-                    || {
-                        if ordinal == 1 {
-                            "^t_[0-9a-f]{32}:[0-9]+$".to_string()
-                        } else {
-                            format!("^t_[0-9a-f]{{32}}:{}$", ordinal - 1)
-                        }
-                    },
-                    |step| format!("^t_[0-9a-f]{{32}}:{step}$"),
-                ),
+                pattern: if self.any_turn_step {
+                    "^t_[0-9a-f]{32}:[0-9]+$".to_string()
+                } else {
+                    self.turn_step.map_or_else(
+                        || {
+                            if ordinal == 1 {
+                                "^t_[0-9a-f]{32}:[0-9]+$".to_string()
+                            } else {
+                                format!("^t_[0-9a-f]{{32}}:{}$", ordinal - 1)
+                            }
+                        },
+                        |step| format!("^t_[0-9a-f]{{32}}:{step}$"),
+                    )
+                },
             },
             model: exact(json!(model.id)),
             provider: exact(json!(model.provider)),

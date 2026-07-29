@@ -56,6 +56,8 @@ pub struct ScenarioProbe {
     /// collection cannot.
     target_calls: Arc<Mutex<Vec<Value>>>,
     target_notify: Arc<tokio::sync::Notify>,
+    target_response_released: Arc<AtomicBool>,
+    target_response_notify: Arc<tokio::sync::Notify>,
 }
 
 impl ScenarioProbe {
@@ -71,6 +73,8 @@ impl ScenarioProbe {
             bindings: Mutex::new(Vec::new()),
             target_calls: Arc::new(Mutex::new(Vec::new())),
             target_notify: Arc::new(tokio::sync::Notify::new()),
+            target_response_released: Arc::new(AtomicBool::new(false)),
+            target_response_notify: Arc::new(tokio::sync::Notify::new()),
         };
         probe.register_sinks();
         Ok(probe)
@@ -168,6 +172,8 @@ impl ScenarioProbe {
             target,
             Arc::clone(&self.target_calls),
             Arc::clone(&self.target_notify),
+            Arc::clone(&self.target_response_released),
+            Arc::clone(&self.target_response_notify),
         );
         Ok(())
     }
@@ -201,6 +207,23 @@ impl ScenarioProbe {
                 .timeout("controlled-function call count", notified)
                 .await?;
         }
+    }
+
+    /// Release a controlled target held at the response boundary. Idempotent
+    /// so fault-error cleanup and normal cleanup can both call it safely.
+    pub fn release_target_response(&self) {
+        self.target_response_released.store(true, Ordering::Release);
+        self.target_response_notify.notify_waiters();
+    }
+
+    /// Trigger ids are engine-local. Once that process restarts, discard the
+    /// stale ids before registering fresh observer bindings.
+    pub fn forget_observer_bindings(&self) -> anyhow::Result<()> {
+        self.bindings
+            .lock()
+            .map_err(|_| anyhow::anyhow!("integration/bindings_lock_poisoned"))?
+            .clear();
+        Ok(())
     }
 
     /// Bind every observer through acknowledged engine RPCs. Because these
@@ -388,6 +411,7 @@ impl ScenarioProbe {
     }
 
     pub async fn shutdown(&self) {
+        self.release_target_response();
         let bindings = self
             .bindings
             .lock()
@@ -480,14 +504,19 @@ fn register_controlled_function(
     target: &ControlledTargetV1,
     calls: Arc<Mutex<Vec<Value>>>,
     notify: Arc<tokio::sync::Notify>,
+    response_released: Arc<AtomicBool>,
+    response_notify: Arc<tokio::sync::Notify>,
 ) {
     let response = target.response.clone();
+    let hold_response = target.hold_response;
     iii.register_function(
         &target.function_id,
         RegisterFunction::new_async(move |mut payload: Value| {
             let response = response.clone();
             let calls = Arc::clone(&calls);
             let notify = Arc::clone(&notify);
+            let response_released = Arc::clone(&response_released);
+            let response_notify = Arc::clone(&response_notify);
             async move {
                 strip_engine_fields(&mut payload);
                 calls
@@ -495,6 +524,13 @@ fn register_controlled_function(
                     .map_err(|_| Error::Handler("integration/target_calls_lock_poisoned".into()))?
                     .push(payload);
                 notify.notify_waiters();
+                while hold_response && !response_released.load(Ordering::Acquire) {
+                    let released = response_notify.notified();
+                    if response_released.load(Ordering::Acquire) {
+                        break;
+                    }
+                    released.await;
+                }
                 Ok::<Value, Error>(response)
             }
         })

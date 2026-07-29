@@ -20,6 +20,7 @@ No provider key or network access is required.
 | INT-007 | `coalesced-fire` | direct | a burst past the fire-rate cap coalesces: cap + 1 dispatches, the trailing one stamped `__coalesced_fires` (shrunken gate via harness env; probe-side whole-run call evidence) |
 | INT-008 | `reaction-unregisters-run` | direct | a reaction session in the registrant's lineage unregisters the registrant's subscription (serve-time capture of the runtime sub id; probe-side call await) |
 | INT-009 | `late-join-predecessor-replay` | direct | a join predecessor registered after its watched session completed receives a catch-up completion fire (level-triggered join barrier; `probe_after_calls` gating) |
+| INT-010 | `crash-recovery-507` | direct | SIGKILL and restart the engine while a controlled function is in flight; the side effect runs once, the interrupted call closes, and the turn completes |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 
@@ -101,8 +102,8 @@ cargo clippy --manifest-path harness/Cargo.toml \
 ```
 
 `validate --scenario all` checks every fixture. `run --scenario all` executes
-the direct scenarios (INT-001, INT-002, INT-003); UI-001 and UI-002 must use
-`playground`. INT-003 produces two terminal turns from one send: generation 1
+all direct scenarios; UI-001 and UI-002 must use `playground`. INT-003 produces
+two terminal turns from one send: generation 1
 steers a message into the running session (it parks durably) and then fails,
 so the harness's failed finalize drains the parked row and reseeds a turn to
 react to it. The failed route is deliberate — a park during a *completing*
@@ -118,6 +119,7 @@ The fixture tests pin:
 
 - the streamed frame sequence and terminal response agreement;
 - function-call and function-result history for INT-002;
+- fault timing, held-response wiring, and restart deadlines for INT-010;
 - the Console-specific system-prompt and `agent_trigger` tool matchers;
 - serialization round trips and the authoritative `harness::send` schema.
 

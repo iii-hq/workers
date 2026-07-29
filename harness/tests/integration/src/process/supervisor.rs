@@ -62,7 +62,6 @@ impl ProcessSupervisor {
         Ok(pid)
     }
 
-    #[cfg(test)]
     pub fn remove(&mut self, name: &str) -> Option<SupervisedChild> {
         let index = self
             .children

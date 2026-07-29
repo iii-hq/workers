@@ -117,6 +117,15 @@ pub struct TurnStepResult {
     pub skipped: bool,
 }
 
+/// Bounded in-place retry for the enqueue that follows a persisted step
+/// advance: `queue::enqueue` can be briefly unregistered while the queue
+/// worker replays its registrations against a restarted engine, and failing
+/// the turn in that window (or worse, wedging it Running with the step
+/// persisted but never enqueued) turns a recoverable restart into a dead
+/// session (iii-hq/workers#507).
+const ENQUEUE_ATTEMPTS: u32 = 5;
+const ENQUEUE_RETRY_BACKOFF_MS: u64 = 500;
+
 /// Enqueue the next durable loop step onto the dedicated `harness-turn` queue.
 pub async fn enqueue_step(
     iii: &IIIClient,
@@ -131,17 +140,40 @@ pub async fn enqueue_step(
     if let Some(preview) = message_preview {
         payload["message_preview"] = json!(preview);
     }
-    iii.trigger(TriggerRequest {
-        function_id: "harness::turn".to_string(),
-        payload,
-        action: Some(TriggerAction::Enqueue {
-            queue: TURN_QUEUE.to_string(),
-        }),
-        timeout_ms: None,
-    })
-    .await
-    .map(|_| ())
-    .map_err(|e| HarnessError::Dependency(format!("enqueue harness::turn: {e}")))
+    let mut last_error = String::new();
+    for attempt in 1..=ENQUEUE_ATTEMPTS {
+        match iii
+            .trigger(TriggerRequest {
+                function_id: "harness::turn".to_string(),
+                payload: payload.clone(),
+                action: Some(TriggerAction::Enqueue {
+                    queue: TURN_QUEUE.to_string(),
+                }),
+                timeout_ms: None,
+            })
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                last_error = e.to_string();
+                if attempt < ENQUEUE_ATTEMPTS {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        turn_id = %turn_id,
+                        step,
+                        attempt,
+                        error = %last_error,
+                        "enqueue harness::turn failed; retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(ENQUEUE_RETRY_BACKOFF_MS))
+                        .await;
+                }
+            }
+        }
+    }
+    Err(HarnessError::Dependency(format!(
+        "enqueue harness::turn: {last_error}"
+    )))
 }
 
 fn origin(turn_id: &str) -> Value {
@@ -190,7 +222,12 @@ pub async fn run_step(
         match crate::state::get_turn(&deps.iii, &payload.session_id, cfg.session_timeout_ms).await?
         {
             Some(r) => r,
-            None => return Ok(skipped(&payload.session_id)),
+            // No durable record: either a stale redelivery of a finished,
+            // expired turn (ack and drop, as ever) or an engine restart that
+            // lost the in-memory turn state mid-step (iii-hq/workers#507).
+            // The transcript outlives the engine; a dangling function_call
+            // there marks the interrupted-turn case, which is recoverable.
+            None => return recover_lost_turn(deps, &session, &cfg, &payload).await,
         };
 
     // Stale guards: wrong turn or an old step is acked and dropped.
@@ -1812,6 +1849,229 @@ fn skipped(session_id: &str) -> TurnStepResult {
     }
 }
 
+/// A `harness::turn` step arrived for a session with NO turn record. Before
+/// iii-hq/workers#507 this was always treated as a stale redelivery and
+/// dropped — but an engine restart loses the in-memory turn state while the
+/// transcript and the durable queue job both survive, so the drop left the
+/// interrupted `function_call` dangling forever: `pending_function_calls`
+/// kept listing it and every later generation on the session carried an
+/// unclosed call. Recover instead: close each dangling call with a
+/// synthesized error `function_result` (the target ran at most once; its
+/// result is unknown), rebuild a minimal record under the payload's turn id,
+/// and re-enter the loop so the model can react — completing, retrying, or
+/// reporting the interruption. Entry ids stay deterministic under the
+/// ORIGINAL turn id, so a second recovery attempt (or the surviving
+/// in-flight step's own dispatch-interrupt path) converges idempotently.
+async fn recover_lost_turn(
+    deps: &Deps,
+    session: &SessionClient,
+    cfg: &crate::config::WorkerConfig,
+    payload: &TurnStepPayload,
+) -> Result<TurnStepResult, HarnessError> {
+    let entries = session.messages(&payload.session_id, true).await?;
+    let dangling = dangling_transcript_calls(&entries);
+    if dangling.is_empty() {
+        // No interrupted call — indistinguishable from a stale redelivery of
+        // an expired turn; keep the historical ack-and-drop.
+        return Ok(skipped(&payload.session_id));
+    }
+    // The last assistant entry carries the model/provider the lost turn was
+    // generating with; a dangling call implies at least one assistant entry.
+    let Some((model, provider)) = last_assistant_identity(&entries) else {
+        return Ok(skipped(&payload.session_id));
+    };
+
+    tracing::warn!(
+        session_id = %payload.session_id,
+        turn_id = %payload.turn_id,
+        dangling = dangling.len(),
+        "turn record lost (engine restart) with dangling function_calls; synthesizing error results and resuming the turn"
+    );
+
+    let mut calls: std::collections::BTreeMap<String, CallCheckpoint> = Default::default();
+    for (call_id, function_id) in &dangling {
+        let entry_id = ids::function_result_entry_id(&payload.turn_id, call_id);
+        let message = AgentMessage::FunctionResult(crate::types::message::FunctionResultMessage {
+            role: crate::types::message::FunctionResultRoleTag::FunctionResult,
+            function_call_id: call_id.clone(),
+            function_id: function_id.clone(),
+            content: vec![ContentBlock::text(
+                crate::clients::engine::ENGINE_RESTART_INTERRUPTED.to_string(),
+            )],
+            details: json!({ "error": "engine_restart" }),
+            is_error: true,
+            timestamp: AgentMessage::now_ms(),
+        });
+        session
+            .append(
+                &payload.session_id,
+                &message,
+                Some(&entry_id),
+                None,
+                Some(&origin(&payload.turn_id)),
+            )
+            .await?;
+        calls.insert(
+            call_id.clone(),
+            CallCheckpoint {
+                state: CallState::Done,
+                function_id: Some(function_id.clone()),
+                entry_id: Some(entry_id),
+                child_session_id: None,
+                child_turn_id: None,
+                held_by: None,
+                held_arguments: None,
+                pending_timeout_ms: None,
+                pending_at: None,
+            },
+        );
+    }
+
+    // Audit trail, mirroring the transient-recovery entries the loop writes
+    // for mid-stream provider failures.
+    let _ = session
+        .append_custom(
+            &payload.session_id,
+            "recovery",
+            json!({
+                "status": "recovering",
+                "summary": "Engine restarted mid-call; closed the interrupted function call(s) with synthesized error results and resumed the turn.",
+                "reason": "execution interrupted by engine restart",
+                "phase": "function_dispatch",
+                "dangling_calls_closed": dangling.len(),
+                "timestamp": AgentMessage::now_ms(),
+            }),
+            &format!("e_{}_restart_recovery", payload.turn_id),
+            Some(&origin(&payload.turn_id)),
+        )
+        .await;
+
+    let mut record = placeholder_record(payload, cfg, &model, provider);
+    record.calls = calls;
+    // advance() persists step+1 under the payload's turn id and re-enqueues,
+    // so the next step generates over the now-closed calls.
+    advance(deps, &mut record).await
+}
+
+/// The minimal turn record a lost turn is rebuilt from. The original
+/// per-send options died with the engine: model/provider are recovered from
+/// the transcript, everything else falls back to worker defaults — notably
+/// `functions: None`, which fail-closes dispatch for the remainder of the
+/// turn (the model still sees the synthesized results and can finish or
+/// report; it can never silently re-run the interrupted side effect).
+fn placeholder_record(
+    payload: &TurnStepPayload,
+    cfg: &crate::config::WorkerConfig,
+    model: &str,
+    provider: Option<String>,
+) -> TurnRecord {
+    let now = AgentMessage::now_ms();
+    TurnRecord {
+        turn_id: payload.turn_id.clone(),
+        session_id: payload.session_id.clone(),
+        status: TurnStatus::Running,
+        step: payload.step,
+        // At least the generation that produced the dangling call ran.
+        turn_count: 1,
+        depth: payload.depth,
+        message_preview: payload.message_preview.clone(),
+        abort: false,
+        watermark_entry_id: None,
+        stream_request_id: None,
+        options: crate::types::turn::TurnOptions {
+            model: model.to_string(),
+            provider,
+            system_prompt: crate::prompt::resolve_system_prompt(
+                None,
+                Default::default(),
+                None,
+                None,
+            ),
+            mode: None,
+            max_turns: cfg.default_max_turns,
+            max_output_tokens: None,
+            max_total_tokens: None,
+            max_cost_usd: None,
+            budget_root_session_id: None,
+            thinking_level: None,
+            provider_options: None,
+            output: Default::default(),
+            functions: None,
+            metadata: None,
+            max_validation_retries: cfg.max_validation_retries,
+            max_transient_resumes: cfg.max_transient_resumes,
+        },
+        calls: Default::default(),
+        parent: None,
+        display_parent_session_id: None,
+        spawned_by_subscription_id: None,
+        reactive_depth: None,
+        reactive_owner_session_id: None,
+        functions_generation: None,
+        result: None,
+        result_error: None,
+        validation_retries: 0,
+        transient_resumes: 0,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+/// `(call_id, function_id)` for every assistant `function_call` in the
+/// loaded transcript with no `function_result` closing it — message-level
+/// results and embedded result blocks both count, mirroring
+/// [`patch_orphaned_calls`] over the typed transcript shape.
+fn dangling_transcript_calls(entries: &[LoadedEntry]) -> Vec<(String, String)> {
+    let mut resolved: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for entry in entries {
+        match &entry.message {
+            Some(AgentMessage::FunctionResult(result)) => {
+                resolved.insert(result.function_call_id.as_str());
+            }
+            Some(AgentMessage::User(user)) => {
+                for block in &user.content {
+                    if let ContentBlock::FunctionResult {
+                        function_call_id, ..
+                    } = block
+                    {
+                        resolved.insert(function_call_id.as_str());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut dangling = Vec::new();
+    for entry in entries {
+        if let Some(AgentMessage::Assistant(assistant)) = &entry.message {
+            for block in &assistant.content {
+                if let ContentBlock::FunctionCall {
+                    id, function_id, ..
+                } = block
+                {
+                    if !resolved.contains(id.as_str()) {
+                        dangling.push((id.clone(), function_id.clone()));
+                    }
+                }
+            }
+        }
+    }
+    dangling
+}
+
+/// model/provider of the LAST assistant entry — the identity the lost turn
+/// was generating with. An empty provider string maps to `None` (the record
+/// treats provider as optional).
+fn last_assistant_identity(entries: &[LoadedEntry]) -> Option<(String, Option<String>)> {
+    entries.iter().rev().find_map(|entry| match &entry.message {
+        Some(AgentMessage::Assistant(a)) => Some((
+            a.model.clone(),
+            (!a.provider.is_empty()).then(|| a.provider.clone()),
+        )),
+        _ => None,
+    })
+}
+
 fn checkpoint_pending(
     record: &mut TurnRecord,
     call_id: &str,
@@ -2584,6 +2844,89 @@ mod tests {
         assert!(!super::is_context_overflow_error(
             "context::assemble: request overflowed while parsing"
         ));
+    }
+
+    mod lost_turn_recovery {
+        use crate::clients::LoadedEntry;
+        use crate::types::content::ContentBlock;
+        use crate::types::message::{
+            empty_assistant, AgentMessage, FunctionResultMessage, FunctionResultRoleTag,
+        };
+
+        fn entry(entry_id: &str, message: AgentMessage) -> LoadedEntry {
+            LoadedEntry {
+                entry_id: entry_id.to_string(),
+                message: Some(message),
+                custom: None,
+            }
+        }
+
+        fn assistant_with_call(call_id: &str, function_id: &str) -> AgentMessage {
+            let mut assistant = empty_assistant("scripted", "fixture-model");
+            assistant.content = vec![ContentBlock::FunctionCall {
+                id: call_id.to_string(),
+                function_id: function_id.to_string(),
+                arguments: serde_json::json!({}),
+            }];
+            AgentMessage::Assistant(assistant)
+        }
+
+        fn result_for(call_id: &str) -> AgentMessage {
+            AgentMessage::FunctionResult(FunctionResultMessage {
+                role: FunctionResultRoleTag::FunctionResult,
+                function_call_id: call_id.to_string(),
+                function_id: "f".to_string(),
+                content: vec![],
+                details: serde_json::Value::Null,
+                is_error: false,
+                timestamp: 1,
+            })
+        }
+
+        #[test]
+        fn dangling_calls_are_those_without_a_closing_result() {
+            let entries = vec![
+                entry("e_1", AgentMessage::user_text("hi")),
+                entry("e_2", assistant_with_call("call-0", "run::done")),
+                entry("e_3", result_for("call-0")),
+                entry("e_4", assistant_with_call("call-1", "run::record")),
+            ];
+            assert_eq!(
+                super::super::dangling_transcript_calls(&entries),
+                vec![("call-1".to_string(), "run::record".to_string())]
+            );
+        }
+
+        #[test]
+        fn fully_paired_transcript_has_no_dangling_calls() {
+            let entries = vec![
+                entry("e_1", AgentMessage::user_text("hi")),
+                entry("e_2", assistant_with_call("call-0", "run::record")),
+                entry("e_3", result_for("call-0")),
+            ];
+            assert!(super::super::dangling_transcript_calls(&entries).is_empty());
+        }
+
+        #[test]
+        fn last_assistant_identity_recovers_model_and_provider() {
+            let entries = vec![
+                entry("e_1", AgentMessage::user_text("hi")),
+                entry("e_2", assistant_with_call("call-1", "run::record")),
+            ];
+            assert_eq!(
+                super::super::last_assistant_identity(&entries),
+                Some(("fixture-model".to_string(), Some("scripted".to_string())))
+            );
+            // Empty provider maps to None (record field is optional).
+            let mut bare = empty_assistant("", "m");
+            bare.content = vec![];
+            let entries = vec![entry("e_1", AgentMessage::Assistant(bare))];
+            assert_eq!(
+                super::super::last_assistant_identity(&entries),
+                Some(("m".to_string(), None))
+            );
+            assert_eq!(super::super::last_assistant_identity(&[]), None);
+        }
     }
 
     #[test]

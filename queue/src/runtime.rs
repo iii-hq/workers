@@ -959,7 +959,15 @@ async fn process_standard_message(
     let Ok(_permit) = active.acquire_owned().await else {
         return;
     };
-    let result = invoke_message(queue, &invoker, &message, message.attempt, timeout_ms).await;
+    let result = invoke_message_across_engine_restarts(
+        queue,
+        &invoker,
+        &message,
+        message.attempt,
+        timeout_ms,
+        poll_interval_ms,
+    )
+    .await;
     let operation = if result.is_ok() {
         adapter.ack_function_queue(queue, message.delivery_id).await
     } else {
@@ -990,9 +998,16 @@ async fn process_fifo_message(
         let Ok(permit) = active.clone().acquire_owned().await else {
             return;
         };
-        let succeeded = invoke_message(queue, &invoker, &message, attempt, timeout_ms)
-            .await
-            .is_ok();
+        let succeeded = invoke_message_across_engine_restarts(
+            queue,
+            &invoker,
+            &message,
+            attempt,
+            timeout_ms,
+            poll_interval_ms,
+        )
+        .await
+        .is_ok();
         drop(permit);
         if succeeded {
             if let Err(err) = adapter.ack_function_queue(queue, message.delivery_id).await {
@@ -1021,6 +1036,38 @@ async fn process_fifo_message(
             "FIFO function queue invocation failed; retrying in place"
         );
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+    }
+}
+
+/// Invoke one delivery, treating an engine connection loss as a mid-flight
+/// interruption instead of waiting out the full invocation timeout. The
+/// engine's invocation routing dies with it, so the in-flight call's result
+/// can never arrive; before this the crash left the delivery (and its whole
+/// FIFO group) stranded for the 30-minute `harness-turn` budget
+/// (iii-hq/workers#507). On loss, hold until the target function is
+/// registered again — the same gate a freshly restored durable job passes
+/// through — then re-invoke WITHOUT consuming a retry attempt: redelivered
+/// turn steps are checkpointed and tolerate duplicate delivery (MOT-3944).
+async fn invoke_message_across_engine_restarts(
+    queue: &str,
+    invoker: &Arc<dyn Invoker>,
+    message: &QueueMessage,
+    attempt: u32,
+    timeout_ms: u64,
+    poll_interval_ms: u64,
+) -> Result<Option<Value>, String> {
+    loop {
+        tokio::select! {
+            result = invoke_message(queue, invoker, message, attempt, timeout_ms) => return result,
+            () = invoker.connection_lost() => {
+                tracing::warn!(
+                    queue = %queue,
+                    function_id = %message.function_id,
+                    "engine connection lost with the invocation in flight; holding until the target re-registers, then re-invoking"
+                );
+                wait_for_function(invoker, queue, &message.function_id, poll_interval_ms).await;
+            }
+        }
     }
 }
 
@@ -1336,6 +1383,37 @@ mod tests {
         }
     }
 
+    /// First call pends forever (the invocation stranded by an engine crash);
+    /// `connection_lost` resolves exactly once, after that call has started;
+    /// every later call succeeds. Mirrors the issue-507 SIGKILL-and-respawn
+    /// window as seen by the consumer loop.
+    #[derive(Default)]
+    struct CrashOnceInvoker {
+        calls: AtomicUsize,
+        lost_fired: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl Invoker for CrashOnceInvoker {
+        async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                std::future::pending::<()>().await;
+            }
+            Ok(None)
+        }
+
+        async fn connection_lost(&self) {
+            loop {
+                if self.calls.load(Ordering::SeqCst) == 1
+                    && !self.lost_fired.swap(true, Ordering::SeqCst)
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        }
+    }
+
     #[derive(Default)]
     struct TimeoutRecordingInvoker {
         timeout_ms: AtomicU64,
@@ -1566,6 +1644,61 @@ mod tests {
             expected_timeout_ms
         );
         assert_eq!(*adapter.acked.lock().unwrap(), vec![7]);
+    }
+
+    #[tokio::test]
+    async fn fifo_reinvokes_after_engine_connection_loss_without_burning_attempts() {
+        let adapter = Arc::new(RecordingAdapter::default());
+        let invoker = Arc::new(CrashOnceInvoker::default());
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            process_fifo_message(
+                "harness-turn",
+                3,
+                1,
+                1,
+                1_800_000,
+                Arc::new(Semaphore::new(1)),
+                adapter.clone(),
+                invoker.clone(),
+                message(13, "s1", 1, 0),
+            ),
+        )
+        .await
+        .expect("interrupted delivery must be re-invoked, not stranded");
+
+        // The stranded first invocation is replaced by exactly one re-invoke;
+        // it succeeds and acks with no nack (no retry attempt consumed).
+        assert_eq!(invoker.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(*adapter.acked.lock().unwrap(), vec![13]);
+        assert!(adapter.nacked.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn standard_delivery_reinvokes_after_engine_connection_loss() {
+        let adapter = Arc::new(RecordingAdapter::default());
+        let invoker = Arc::new(CrashOnceInvoker::default());
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            process_standard_message(
+                "turns",
+                3,
+                1,
+                1_800_000,
+                Arc::new(Semaphore::new(1)),
+                adapter.clone(),
+                invoker.clone(),
+                message(17, "s1", 1, 0),
+            ),
+        )
+        .await
+        .expect("interrupted delivery must be re-invoked, not stranded");
+
+        assert_eq!(invoker.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(*adapter.acked.lock().unwrap(), vec![17]);
+        assert!(adapter.nacked.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
