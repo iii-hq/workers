@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -11,6 +12,11 @@ from typing import Literal
 SemverKey = tuple[tuple[int, ...], int, str]
 BumpKind = Literal["patch", "minor", "major"]
 ManifestKind = Literal["cargo", "node", "python"]
+
+# Pre-release suffixes offered by the Create Tag workflow. `stable` is not a
+# suffix but the promotion path (drop the pre-release, keep the base version),
+# so it lives in the same input.
+PRERELEASE_SUFFIXES = ("alpha", "beta", "rc")
 
 
 def parse_semver(v: str) -> SemverKey:
@@ -50,6 +56,45 @@ def bump(current: str, kind: BumpKind) -> str:
     else:
         raise ValueError(f"unknown bump kind: {kind!r}")
     return f"{major}.{minor}.{patch}"
+
+
+def core_version(v: str) -> str:
+    """Returns `v` without its pre-release / build suffix (1.2.3-rc.1 -> 1.2.3)."""
+    return v.partition("-")[0].partition("+")[0]
+
+
+def next_prerelease(base: str, suffix: str, existing: Iterable[str]) -> str:
+    """Returns `base-suffix.N`, one past the highest N already released.
+
+    `existing` is every version already tagged for the worker; only entries
+    matching this exact base and suffix count, so alpha and beta lines at the
+    same base advance independently.
+    """
+    pattern = re.compile(rf"^{re.escape(base)}-{re.escape(suffix)}\.(\d+)$")
+    highest = 0
+    for version in existing:
+        m = pattern.match(version.strip())
+        if m:
+            highest = max(highest, int(m.group(1)))
+    return f"{base}-{suffix}.{highest + 1}"
+
+
+def list_tagged_versions(worker: str) -> list[str]:
+    """Versions already tagged for `worker`, from git tags `<worker>/v<version>`.
+
+    Returns [] when git is unavailable or the worker has no tags yet, so a
+    first pre-release starts its counter at 1.
+    """
+    prefix = f"{worker}/v"
+    try:
+        out = subprocess.check_output(
+            ["git", "tag", "--list", f"{prefix}*"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return []
+    return [line[len(prefix):] for line in out.splitlines() if line.startswith(prefix)]
 
 
 def detect_kind(manifest_path: Path) -> ManifestKind:

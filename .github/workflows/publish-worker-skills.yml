@@ -14,6 +14,7 @@ on:
         options:
           - latest
           - next
+          - experimental
         default: latest
 
 concurrency:
