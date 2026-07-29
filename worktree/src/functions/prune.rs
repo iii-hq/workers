@@ -100,9 +100,6 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
                 });
                 continue;
             }
-            // LandBlocked joins the expiry sweep: block() unlocks the worktree,
-            // and the clean/ahead checks below preserve any that still hold
-            // unlanded work — only clean, integrated, expired ones are reaped.
             Lifecycle::Active | Lifecycle::Orphaned | Lifecycle::LandBlocked => {}
         }
 

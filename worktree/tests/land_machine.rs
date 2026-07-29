@@ -153,7 +153,6 @@ async fn dirty_checked_out_primary_blocks_with_w413() {
         .unwrap();
     assert_eq!(record.lifecycle, Lifecycle::LandBlocked);
     assert!(s.wt_path.is_dir(), "worktree kept for another attempt");
-    // A blocked land releases the git lock; the worktree is no longer locked.
     let porcelain = git(&s.repo, &["worktree", "list", "--porcelain"]);
     assert!(
         !porcelain.contains(&format!("locked iii:worktree {}", s.worktree_id)),
@@ -165,12 +164,10 @@ async fn dirty_checked_out_primary_blocks_with_w413() {
 async fn prune_preserves_blocked_with_unmerged_then_reaps_integrated() {
     let tmp = tempfile::tempdir().unwrap();
     let mut cfg = test_config(tmp.path());
-    cfg.prune_expire_hours = 0; // everything is age-eligible
+    cfg.prune_expire_hours = 0;
     let s = setup(make_env(tmp.path(), cfg), tmp.path()).await;
     let feature_sha = head_sha(&s.wt_path);
 
-    // Reach LandBlocked via W413 (dirty primary): the worktree itself stays
-    // clean, one commit ahead of main, and main is untouched (not integrated).
     std::fs::write(s.repo.join("README.md"), "local edits\n").unwrap();
     let job_id = enqueue_land(&s, "main", LandOverrides::default()).await;
     let deps = land_deps(&s.env).await;
@@ -181,7 +178,6 @@ async fn prune_preserves_blocked_with_unmerged_then_reaps_integrated() {
         .unwrap();
     assert_eq!(rec.lifecycle, Lifecycle::LandBlocked);
 
-    // Unmerged work must be preserved, not reaped.
     let out = prune::handle(
         &s.env.deps,
         prune::Request {
@@ -201,7 +197,6 @@ async fn prune_preserves_blocked_with_unmerged_then_reaps_integrated() {
         .any(|k| k.id == s.worktree_id && k.reason == "unmerged work"));
     assert!(s.wt_path.is_dir());
 
-    // Once the work is integrated, prune reaps it.
     let _ = git(&s.repo, &["merge", "--ff-only", &feature_sha]);
     let out2 = prune::handle(
         &s.env.deps,

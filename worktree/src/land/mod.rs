@@ -460,10 +460,6 @@ async fn block(
     }
     state::clear_active_job_id(deps.state.as_ref(), &job.worktree_id).await?;
 
-    // Release the creation-time git lock so a blocked land does not leak a
-    // permanently locked worktree. The directory stays in place for inspection;
-    // the expiry prune sweep reaps it once clean, and manual removal no longer
-    // fights the lock.
     {
         let repo = Path::new(&job.repo_path);
         let wt = Path::new(&job.worktree_path);
