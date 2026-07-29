@@ -16,6 +16,7 @@ pub fn scenario(_run_id: &str) -> ScenarioSpec {
 
 For each snippet, identify the vulnerability, explain its impact, and recommend a practical remediation. Keep the review concise and do not perform any external action."#
             .into(),
+        filesystem_root: None,
         execution: ExecutionPolicy {
             max_turns: 2,
             max_output_tokens: Some(4_096),

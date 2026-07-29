@@ -283,6 +283,12 @@ jobs:
       - name: Extract E2E binaries
         run: tar -xzf target/harness-e2e-stack.tar.gz
 
+      - name: Prepare KVM for sandbox scenario
+        if: matrix.scenario == 'shell_coder_sandbox'
+        run: |
+          test -c /dev/kvm
+          sudo chmod 0666 /dev/kvm
+
       - name: Run real-stack quality scenario
         env:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}

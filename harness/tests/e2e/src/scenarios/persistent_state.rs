@@ -20,6 +20,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             "Store this JSON value for later use in scope `{scope}` under key `{KEY}`: {}. Confirm briefly after it has been stored.",
             serde_json::to_string(&expected).expect("serialize static scenario value")
         ),
+        filesystem_root: None,
         execution: ExecutionPolicy {
             max_turns: 12,
             max_output_tokens: Some(8_192),

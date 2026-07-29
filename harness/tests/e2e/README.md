@@ -48,6 +48,12 @@ scenario through one global `allow: ["*"]` policy:
   the namespaced `state`-trigger fallback. The evaluator queries the resulting
   tables, verifies trigger provenance from session metadata, and checks that all
   run-owned triggers were removed.
+- `shell_coder_sandbox`: performs 12 required operations across worker setup,
+  `coder`, `shell`, and `sandbox`. It adds both registry workers; inspects,
+  creates, updates, moves, and reads an exact Python file; executes it on the
+  host; then creates, executes in, lists, and stops an isolated microVM. The
+  evaluator verifies every effect, exact stdout from both environments,
+  operation ordering, shutdown, and scenario-owned cleanup.
 
 List the code-defined ids used by CI:
 
@@ -226,10 +232,11 @@ previous run.
 
 The launcher performs a clean first boot with isolated configuration, session,
 queue, state, and log directories. It starts the provider workers named by the
-subject and judge configuration. It executes repository binaries directly; it
-does not test registry installation or `iii worker add`. Those paths are covered
-by the nightly/manual [Harness quickstart validator](../quickstart/README.md),
-which runs without provider credentials or model calls.
+subject and judge configuration. It executes repository binaries directly. The
+`shell_coder_sandbox` scenario tests engine-side registry installation through
+`worker::add`; the `iii worker add` CLI path remains covered by the nightly/manual
+[Harness quickstart validator](../quickstart/README.md), which runs without
+provider credentials or model calls.
 
 ## Adding a scenario
 

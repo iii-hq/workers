@@ -27,6 +27,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     ScenarioSpec {
         id: ID,
         prompt: prompt::build(&names, STUCK_WATCHDOG_SECONDS),
+        filesystem_root: None,
         execution: ExecutionPolicy {
             max_turns: 64,
             max_output_tokens: None,
