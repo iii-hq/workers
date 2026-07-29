@@ -60,6 +60,9 @@ rustls-webpki = { version = "0.103", default-features = false, features = ["std"
 rusqlite = { version = "0.31", features = ["bundled", "chrono", "column_decltype"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
+# Filesystem watch for sqlite native capture (inotify wake-up; the changelog
+# table is the source of truth, fs events only decide when to look).
+notify = "8"
 
 [dev-dependencies]
 tempfile = "3"

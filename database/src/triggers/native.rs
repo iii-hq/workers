@@ -72,7 +72,8 @@ CREATE TRIGGER iii_row_changed_del AFTER DELETE ON {target}
 /// Quote a `table` or `schema.table` reference so it is only ever an
 /// identifier — binding config is a trust boundary and this string lands in
 /// DDL. A name that does not exist fails loudly at CREATE TRIGGER.
-fn quote_table(t: &str) -> Result<String, String> {
+/// Shared with the sqlite watcher: `"…"` quoting is valid in both dialects.
+pub(crate) fn quote_table(t: &str) -> Result<String, String> {
     let t = t.trim();
     if t.is_empty() {
         return Err("table name is empty".into());
@@ -125,14 +126,35 @@ pub(crate) fn parse_notification(db: &str, payload: &str) -> Option<RowChangedEv
     })
 }
 
+enum TaskHandle {
+    /// Postgres LISTEN task — a tokio task, aborted on removal.
+    Async(tokio::task::JoinHandle<()>),
+    /// Sqlite watcher — a dedicated OS thread (rusqlite is sync and the
+    /// connection must stay put); told to stop via flag, not joined: it
+    /// notices within one fallback tick and exits on its own.
+    Thread {
+        stop: Arc<std::sync::atomic::AtomicBool>,
+    },
+}
+
+impl TaskHandle {
+    fn stop(&self) {
+        match self {
+            TaskHandle::Async(handle) => handle.abort(),
+            TaskHandle::Thread { stop } => stop.store(true, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
 struct ListenerTask {
     /// Serialized DatabaseConfig; a reload that changes url/tls restarts the
     /// listener, one that leaves the db untouched does not.
     fingerprint: String,
-    handle: tokio::task::JoinHandle<()>,
+    handle: TaskHandle,
 }
 
-/// One LISTEN task per `capture: native` database, reconciled against the
+/// One capture task per `capture: native` database — a LISTEN connection for
+/// postgres, a changelog watcher thread for sqlite — reconciled against the
 /// live config at startup and on every hot reload.
 pub struct NativeListeners {
     bus: Arc<RowChangeBus>,
@@ -150,13 +172,13 @@ impl NativeListeners {
     /// Start missing listeners, stop removed ones, restart changed ones.
     /// Must run inside a tokio runtime.
     pub fn sync(&self, cfg: &WorkerConfig) {
-        let desired: HashMap<String, (String, TlsConfig, String)> = cfg
+        let desired: HashMap<String, (crate::config::DatabaseConfig, String)> = cfg
             .databases
             .iter()
             .filter(|(_, db)| db.capture == CaptureMode::Native)
             .map(|(name, db)| {
                 let fingerprint = serde_json::to_string(db).unwrap_or_default();
-                (name.clone(), (db.url.clone(), db.tls.clone(), fingerprint))
+                (name.clone(), (db.clone(), fingerprint))
             })
             .collect();
 
@@ -164,24 +186,60 @@ impl NativeListeners {
         tasks.retain(|name, task| {
             let keep = desired
                 .get(name)
-                .is_some_and(|(_, _, fp)| *fp == task.fingerprint);
+                .is_some_and(|(_, fp)| *fp == task.fingerprint);
             if !keep {
-                task.handle.abort();
+                task.handle.stop();
                 tracing::info!(db = %name, "native capture listener stopped");
             }
             keep
         });
-        for (name, (url, tls, fingerprint)) in desired {
+        for (name, (db, fingerprint)) in desired {
             if tasks.contains_key(&name) {
                 continue;
             }
-            let handle = tokio::spawn(run_listener(
-                name.clone(),
-                url,
-                tls,
-                Arc::clone(&self.bus),
-            ));
+            let Some(handle) = self.spawn(&name, &db) else {
+                continue;
+            };
             tasks.insert(name, ListenerTask { fingerprint, handle });
+        }
+    }
+
+    fn spawn(&self, name: &str, db: &crate::config::DatabaseConfig) -> Option<TaskHandle> {
+        match db.driver {
+            crate::config::DriverKind::Postgres => Some(TaskHandle::Async(tokio::spawn(
+                run_listener(
+                    name.to_string(),
+                    db.url.clone(),
+                    db.tls.clone(),
+                    Arc::clone(&self.bus),
+                ),
+            ))),
+            crate::config::DriverKind::Sqlite => {
+                let Some(path) = super::sqlite_watch::sqlite_file_path(&db.url) else {
+                    // Config validation rejects `:memory:`; reaching this
+                    // means drift — fail visible, not silent.
+                    tracing::warn!(db = %name, "native capture needs a file-backed sqlite url");
+                    return None;
+                };
+                let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let bus = Arc::clone(&self.bus);
+                let rt = tokio::runtime::Handle::current();
+                let db_name = name.to_string();
+                let thread_stop = Arc::clone(&stop);
+                std::thread::Builder::new()
+                    .name(format!("sqlite-capture-{name}"))
+                    .spawn(move || {
+                        super::sqlite_watch::run_watcher(&db_name, &path, &thread_stop, |event| {
+                            // Bridge sync → async: the watcher thread parks on
+                            // the runtime while the bus fans out.
+                            rt.block_on(bus.emit_event(event));
+                            true
+                        });
+                    })
+                    .ok()?;
+                Some(TaskHandle::Thread { stop })
+            }
+            crate::config::DriverKind::Mysql => None, // rejected by config validation
         }
     }
 

@@ -11,7 +11,7 @@
           "type": "string"
         },
         {
-          "description": "Database triggers + LISTEN/NOTIFY on a dedicated connection. Captures writes from any client, including other processes. Postgres only; requires DDL privileges on watched tables and table-scoped bindings.",
+          "description": "Database triggers capture writes from any client, including other processes. Postgres (LISTEN/NOTIFY on a dedicated connection) and file-backed sqlite (changelog table + filesystem watch); requires DDL privileges on watched tables and table-scoped bindings.",
           "enum": [
             "native"
           ],
@@ -28,7 +28,7 @@
               "$ref": "#/definitions/CaptureMode"
             }
           ],
-          "description": "How `database::row-changed` events are captured for this database. `statements` (default) classifies the SQL this worker executes; `native` (postgres only) installs database triggers + LISTEN/NOTIFY, so writes from ANY client — psql, other processes — fire too."
+          "description": "How `database::row-changed` events are captured for this database. `statements` (default) classifies the SQL this worker executes; `native` (postgres and file-backed sqlite) installs database triggers so writes from ANY client — psql, other processes — fire too. Postgres delivers via LISTEN/NOTIFY; sqlite via a changelog table drained on filesystem wake-up."
         },
         "pool": {
           "allOf": [

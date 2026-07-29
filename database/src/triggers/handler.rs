@@ -92,26 +92,46 @@ impl RowChangedHandler {
                 cfg.db
             )));
         };
-        let sql = native::install_sql(table).map_err(config_error)?;
         let pool = self.pools.read().await.get(&cfg.db).cloned();
-        let Some(Pool::Postgres(pg)) = pool else {
-            // finalize() enforces native ⇒ postgres; missing pool means the
-            // config and pools drifted, which apply_config forbids.
-            return Err(config_error(format!(
-                "db `{}`: no postgres pool available for native capture",
-                cfg.db
-            )));
-        };
-        let client = pg.acquire().await.map_err(|e| {
-            config_error(format!("db `{}`: acquiring connection: {e}", cfg.db))
-        })?;
-        client.batch_execute(&sql).await.map_err(|e| {
-            config_error(format!(
-                "installing native capture triggers on `{table}`: {e}. The \
-                 configured role needs TRIGGER privilege on the table (or \
-                 ownership) and CREATE on its schema"
-            ))
-        })?;
+        match pool {
+            Some(Pool::Postgres(pg)) => {
+                let sql = native::install_sql(table).map_err(config_error)?;
+                let client = pg.acquire().await.map_err(|e| {
+                    config_error(format!("db `{}`: acquiring connection: {e}", cfg.db))
+                })?;
+                client.batch_execute(&sql).await.map_err(|e| {
+                    config_error(format!(
+                        "installing native capture triggers on `{table}`: {e}. The \
+                         configured role needs TRIGGER privilege on the table (or \
+                         ownership) and CREATE on its schema"
+                    ))
+                })?;
+            }
+            Some(Pool::Sqlite(sq)) => {
+                let sql = super::sqlite_watch::install_sql(table).map_err(config_error)?;
+                let conn = sq.acquire().await.map_err(|e| {
+                    config_error(format!("db `{}`: acquiring connection: {e}", cfg.db))
+                })?;
+                let table_for_err = table.to_string();
+                tokio::task::spawn_blocking(move || conn.with(|c| c.execute_batch(&sql)))
+                    .await
+                    .map_err(|e| config_error(format!("sqlite DDL join: {e}")))?
+                    .map_err(|e| {
+                        config_error(format!(
+                            "installing native capture triggers on `{table_for_err}`: {e}"
+                        ))
+                    })?;
+            }
+            _ => {
+                // finalize() enforces native ⇒ postgres|sqlite; a missing
+                // pool means config and pools drifted, which apply_config
+                // forbids.
+                return Err(config_error(format!(
+                    "db `{}`: no pool available for native capture",
+                    cfg.db
+                )));
+            }
+        }
         tracing::info!(db = %cfg.db, table = %table, "native capture triggers installed");
         Ok(())
     }
@@ -159,7 +179,7 @@ mod tests {
         let mut with_table = trigger("i2", "p");
         with_table.config = serde_json::json!({ "db": "p", "table": "orders" });
         let err = handler.register_trigger(with_table).await.unwrap_err();
-        assert!(err.to_string().contains("no postgres pool"), "{err}");
+        assert!(err.to_string().contains("no pool"), "{err}");
         assert_eq!(handler.bus.subscriber_count(), 0);
     }
 

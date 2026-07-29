@@ -19,6 +19,7 @@ pub mod bus;
 pub mod handler;
 pub mod native;
 pub mod sql;
+pub mod sqlite_watch;
 
 pub use bus::{RowChangeBus, RowChangedConfig, RowChangedEvent, ROW_CHANGED_TYPE};
 pub use handler::RowChangedHandler;

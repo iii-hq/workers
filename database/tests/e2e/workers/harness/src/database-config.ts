@@ -34,6 +34,12 @@ export const DATABASE_CONFIG_VALUE = {
       tls: { mode: 'disable' as const },
       capture: 'native' as const,
     },
+    // Same file as sqlite_db, native capture via changelog + fs watch.
+    sqlite_native_db: {
+      url: 'sqlite:./data/iii.db',
+      pool: { ...DEFAULT_POOL },
+      capture: 'native' as const,
+    },
     mysql_db: {
       url: process.env.TEST_MYSQL_URL ?? 'mysql://iii:iii@127.0.0.1:53306/iii_test',
       pool: { ...DEFAULT_POOL },
