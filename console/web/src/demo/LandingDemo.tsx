@@ -147,12 +147,11 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
 
       {/*
         Sidebar, transcript, traces — the console's own three columns, once
-        there is room for them. Narrower than that the sidebar drops (a
-        session tree is not worth a phone's width) and the two panes stack,
-        each with a height of its own and the pair scrolling: a 58/42 split
-        of a phone screen leaves the transcript with no room to be one.
+        there is room for them. Narrower than that only the chat survives:
+        the sidebar and the traces pane hide, and the transcript takes the
+        whole frame.
       */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
         <div className="hidden lg:flex">
           <ConversationSidebar
             conversations={player.conversations}
@@ -166,7 +165,7 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
         </div>
 
         {/* ── transcript ─────────────────────────────────────────────── */}
-        <section className="relative flex h-[72vh] shrink-0 flex-col lg:h-auto lg:min-h-0 lg:w-[46%]">
+        <section className="relative flex min-h-0 flex-1 flex-col lg:flex-none lg:w-[46%]">
           <header className="flex items-center justify-between gap-3 whitespace-nowrap border-b border-rule px-5 py-3 lg:px-9">
             <div className="flex min-w-0 flex-1 items-center gap-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
               <span className="flex-shrink-0 text-accent" aria-hidden>
@@ -240,7 +239,7 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
         </section>
 
         {/* ── traces ─────────────────────────────────────────────────── */}
-        <aside className="relative flex h-[68vh] shrink-0 flex-col border-t border-rule bg-panel lg:h-auto lg:min-h-0 lg:flex-1 lg:border-l lg:border-t-0">
+        <aside className="relative hidden min-h-0 flex-1 flex-col border-l border-rule bg-panel lg:flex">
           <header className="flex items-center justify-between gap-3 border-b border-rule px-5 py-3">
             <div className="flex min-w-0 items-center gap-2 font-mono text-[11px] uppercase tracking-[0.06em]">
               <span className="text-ink">traces</span>
