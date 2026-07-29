@@ -2,8 +2,8 @@
 
 mod coalesced_fire;
 mod console_streamed_text;
-mod crash_recovery_507;
 mod dsl;
+mod engine_restart_recovery;
 mod exactly_once_function;
 mod join_spec_mismatch;
 mod late_join_replay;
@@ -31,7 +31,7 @@ pub fn all() -> Vec<ScenarioFixture> {
     vec![
         coalesced_fire::scenario(),
         console_streamed_text::scenario(),
-        crash_recovery_507::scenario(),
+        engine_restart_recovery::scenario(),
         exactly_once_function::scenario(),
         join_spec_mismatch::scenario(),
         late_join_replay::scenario(),

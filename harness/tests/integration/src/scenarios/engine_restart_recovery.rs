@@ -1,4 +1,4 @@
-//! INT-010 — an engine crash cannot strand an interrupted function call.
+//! INT-010 — an engine restart cannot strand an interrupted function call.
 //!
 //! Deterministic regression coverage for
 //! <https://github.com/iii-hq/workers/issues/507>.
