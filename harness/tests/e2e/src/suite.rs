@@ -350,8 +350,7 @@ async fn execute(
         spec,
         progress_interval,
     } = request;
-    let scenario_timeout = Duration::from_secs(spec.execution.timeout_seconds);
-    let scenario_deadline = tokio::time::Instant::now() + scenario_timeout;
+    let stuck_timeout = Duration::from_secs(spec.execution.stuck_timeout_seconds);
     let response: SendResponse = context
         .trigger(
             "harness::send",
@@ -391,19 +390,29 @@ async fn execute(
         ));
     }
 
-    context
+    if let Err(error) = context
         .wait_for_turn(
+            spec.id,
             session_id,
             &response.turn_id,
-            remaining(scenario_deadline),
+            stuck_timeout,
             progress_interval,
         )
         .await
-        .map_err(|error| subject_failure(FailurePhase::Execute, error.to_string()))?;
-    let metrics = context
-        .wait_for_complete_metrics(session_id, remaining(scenario_deadline), progress_interval)
+    {
+        capture_partial_observation(context, session_id, report).await;
+        return Err(subject_failure(FailurePhase::Execute, error.to_string()));
+    }
+    let metrics = match context
+        .wait_for_complete_metrics(spec.id, session_id, stuck_timeout, progress_interval)
         .await
-        .map_err(|error| collection_failure(FailurePhase::Collect, error.to_string()))?;
+    {
+        Ok(metrics) => metrics,
+        Err(error) => {
+            capture_partial_observation(context, session_id, report).await;
+            return Err(collection_failure(FailurePhase::Collect, error.to_string()));
+        }
+    };
     let transcript = context.transcript(session_id).await.map_err(|error| {
         RunFailure::new(
             RunStatus::InfrastructureError,
@@ -467,8 +476,27 @@ async fn execute(
     Ok(())
 }
 
-fn remaining(deadline: tokio::time::Instant) -> Duration {
-    deadline.saturating_duration_since(tokio::time::Instant::now())
+async fn capture_partial_observation(
+    context: &E2eContext,
+    session_id: &str,
+    report: &mut E2eRunReport,
+) {
+    match context.metrics(session_id).await {
+        Ok(metrics) => report.metrics = Some(metrics),
+        Err(error) => tracing::warn!(
+            session_id,
+            %error,
+            "could not capture partial E2E metrics"
+        ),
+    }
+    match context.transcript(session_id).await {
+        Ok(transcript) => report.transcript = Some(transcript),
+        Err(error) => tracing::warn!(
+            session_id,
+            %error,
+            "could not capture partial E2E transcript"
+        ),
+    }
 }
 
 fn is_resource_limit(message: &str) -> bool {
@@ -479,6 +507,7 @@ fn is_resource_limit(message: &str) -> bool {
         "max_total_tokens",
         "cost budget",
         "scenario exceeded",
+        "no observable progress",
         "maximum turn",
         "turn limit",
         "context length",
@@ -634,7 +663,7 @@ mod tests {
                 max_turns: 1,
                 max_output_tokens: Some(1),
                 max_total_tokens: 1,
-                timeout_seconds: 1,
+                stuck_timeout_seconds: 1,
             },
             threshold: 80,
             criteria: vec![CriterionSpec {

@@ -349,6 +349,24 @@ class TestHarnessSelection:
         assert data["integration_changed"] is True
         assert data["e2e_changed"] is False
 
+    def test_quickstart_change_does_not_run_e2e(self, tmp_path):
+        repo = make_repo_with_harness(tmp_path)
+        path = repo / "harness" / "tests" / "quickstart" / "run-ci.sh"
+        path.parent.mkdir(parents=True)
+        path.write_text("#!/usr/bin/env bash\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "quickstart"],
+            cwd=repo,
+            check=True,
+            env=GIT_HERMETIC_ENV,
+        )
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["integration_changed"] is False
+        assert data["e2e_changed"] is False
+
     def test_integration_workflow_change_runs_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
         workflow = repo / ".github" / "workflows" / "ci.yml"

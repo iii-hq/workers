@@ -1,6 +1,6 @@
 //! `harness::metrics` — aggregate durable model usage and function outcomes
-//! plus trace/span observability over one complete root-and-descendant session
-//! tree.
+//! plus trace/span observability over a root-and-descendant session tree.
+//! `complete=false` means the returned aggregates are a live partial snapshot.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -126,25 +126,24 @@ pub async fn handle(
     req: SessionMetricsRequestV1,
 ) -> Result<SessionMetricsResponseV1, HarnessError> {
     let tree = session_tree::collect(deps, &req.root_session_id).await?;
-    if !tree.complete {
-        return Ok(incomplete(&req.root_session_id));
-    }
-
     let session = deps.session().await;
     let cfg = deps.cfg().await;
+    let mut complete = tree.complete;
     let mut total = UsageAccumulator::default();
     let mut by_session = Vec::with_capacity(tree.sessions.len());
     for node in &tree.sessions {
         if !session.exists(&node.session_id).await? {
-            return Ok(incomplete(&req.root_session_id));
+            complete = false;
+            continue;
         }
         let Some(turn) =
             crate::state::get_turn(&deps.iii, &node.session_id, cfg.session_timeout_ms).await?
         else {
-            return Ok(incomplete(&req.root_session_id));
+            complete = false;
+            continue;
         };
         if !terminal_status(Some(turn.status)) {
-            return Ok(incomplete(&req.root_session_id));
+            complete = false;
         }
         let entries = session.messages_strict(&node.session_id).await?;
         let mut current = UsageAccumulator::default();
@@ -156,11 +155,18 @@ pub async fn handle(
         }
         by_session.push(current.finish_session(node));
     }
-    let traces = collect_trace_metrics(deps, &tree.sessions, &req.root_session_id).await;
+    // Partial snapshots are polled as progress signals. Trace aggregation is
+    // comparatively expensive and does not help the watchdog decide whether
+    // work advanced, so collect it only for the final complete response.
+    let traces = if complete {
+        collect_trace_metrics(deps, &tree.sessions, &req.root_session_id).await
+    } else {
+        None
+    };
 
     Ok(SessionMetricsResponseV1 {
         root_session_id: req.root_session_id,
-        complete: true,
+        complete,
         totals: total.finish_totals(tree.sessions.len() as u64),
         by_session,
         traces,
@@ -169,16 +175,6 @@ pub async fn handle(
 
 fn terminal_status(status: Option<crate::types::turn::TurnStatus>) -> bool {
     status.is_some_and(crate::types::turn::TurnStatus::is_terminal)
-}
-
-fn incomplete(root_session_id: &str) -> SessionMetricsResponseV1 {
-    SessionMetricsResponseV1 {
-        root_session_id: root_session_id.to_string(),
-        complete: false,
-        totals: SessionUsageTotalsV1::default(),
-        by_session: Vec::new(),
-        traces: None,
-    }
 }
 
 async fn collect_trace_metrics(
@@ -486,11 +482,33 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_metrics_never_contain_partial_values() {
-        let response = incomplete("root");
+    fn incomplete_metrics_can_preserve_observed_values() {
+        let mut usage = UsageAccumulator::default();
+        usage.observe(&message(json!({
+            "role": "assistant",
+            "content": [{
+                "type": "function_call",
+                "id": "call-1",
+                "function_id": "state::get",
+                "arguments": {}
+            }],
+            "stop_reason": "function_call",
+            "usage": {"input": 10, "output": 2},
+            "model": "model",
+            "provider": "provider",
+            "timestamp": 1
+        })));
+        let response = SessionMetricsResponseV1 {
+            root_session_id: "root".into(),
+            complete: false,
+            totals: usage.finish_totals(1),
+            by_session: Vec::new(),
+            traces: None,
+        };
         assert!(!response.complete);
         assert!(response.by_session.is_empty());
-        assert_eq!(response.totals, SessionUsageTotalsV1::default());
+        assert_eq!(response.totals.function_calls, 1);
+        assert_eq!(response.totals.input_tokens, Some(10));
         assert_eq!(response.traces, None);
     }
 

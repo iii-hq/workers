@@ -37,7 +37,9 @@ pub struct ExecutionPolicy {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
     pub max_total_tokens: u64,
-    pub timeout_seconds: u64,
+    /// Stop only after this many seconds without observable useful progress.
+    /// Large scenarios have no fixed wall-clock deadline.
+    pub stuck_timeout_seconds: u64,
 }
 
 impl ExecutionPolicy {
@@ -45,7 +47,7 @@ impl ExecutionPolicy {
         if self.max_turns == 0
             || self.max_output_tokens == Some(0)
             || self.max_total_tokens == 0
-            || self.timeout_seconds == 0
+            || self.stuck_timeout_seconds == 0
         {
             bail!("scenario {scenario_id} has an invalid execution policy");
         }

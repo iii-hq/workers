@@ -13,6 +13,50 @@ use serde_json::{json, Value};
 
 pub const INVOCATION_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+const METRICS_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const PROGRESS_SAMPLE_INTERVAL: Duration = Duration::from_secs(15);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RootProgress {
+    turn_id: Option<String>,
+    status: TurnStatus,
+    step: u64,
+    pending_function_calls: usize,
+    children: usize,
+    queued_messages: usize,
+    expects_wake: bool,
+}
+
+impl From<&StatusReport> for RootProgress {
+    fn from(status: &StatusReport) -> Self {
+        Self {
+            turn_id: status.turn_id.clone(),
+            status: status.status,
+            step: status.step,
+            pending_function_calls: status.pending_function_calls.len(),
+            children: status.children.len(),
+            queued_messages: status.queued.len(),
+            expects_wake: status.expects_wake,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MetricsProgress {
+    sessions: u64,
+    function_calls: u64,
+    function_call_errors: u64,
+}
+
+impl From<&SessionMetricsResponseV1> for MetricsProgress {
+    fn from(metrics: &SessionMetricsResponseV1) -> Self {
+        Self {
+            sessions: metrics.totals.sessions,
+            function_calls: metrics.totals.function_calls,
+            function_call_errors: metrics.totals.function_call_errors,
+        }
+    }
+}
 
 pub struct E2eContext {
     client: IIIClient,
@@ -70,15 +114,19 @@ impl E2eContext {
 
     pub async fn wait_for_turn(
         &self,
+        scenario_id: &str,
         session_id: &str,
         initial_turn_id: &str,
-        timeout: Duration,
+        stuck_timeout: Duration,
         progress_interval: Option<Duration>,
     ) -> Result<StatusReport> {
         let started = tokio::time::Instant::now();
-        let deadline = started + timeout;
+        let mut last_progress = started;
+        let mut next_sample = started;
         let mut next_progress = progress_interval.map(|interval| started + interval);
         let mut active_turn_id = initial_turn_id.to_string();
+        let mut root_progress = None;
+        let mut metrics_progress = None;
         loop {
             let status: Option<StatusReport> = self
                 .trigger("harness::status", json!({ "session_id": session_id }))
@@ -90,10 +138,17 @@ impl E2eContext {
                 if session_is_terminal(&status)? {
                     return Ok(status);
                 }
+                let observed = RootProgress::from(&status);
+                if root_progress.as_ref() != Some(&observed) {
+                    root_progress = Some(observed);
+                    last_progress = tokio::time::Instant::now();
+                }
                 if progress_due(&mut next_progress, progress_interval) {
                     tracing::info!(
+                        scenario = scenario_id,
                         session_id,
                         elapsed_seconds = started.elapsed().as_secs(),
+                        inactive_seconds = last_progress.elapsed().as_secs(),
                         status = ?status.status,
                         step = status.step,
                         turns = status.turn_count,
@@ -106,13 +161,31 @@ impl E2eContext {
                     );
                 }
             }
-            if tokio::time::Instant::now() >= deadline {
-                let _ = self
-                    .stop_session(session_id, Some(active_turn_id.as_str()))
-                    .await;
+            let now = tokio::time::Instant::now();
+            if now >= next_sample {
+                match self.metrics(session_id).await {
+                    Ok(metrics) => {
+                        let observed = MetricsProgress::from(&metrics);
+                        if metrics_progress.as_ref() != Some(&observed) {
+                            metrics_progress = Some(observed);
+                            last_progress = tokio::time::Instant::now();
+                        }
+                    }
+                    Err(error) => tracing::debug!(
+                        scenario = scenario_id,
+                        session_id,
+                        %error,
+                        "could not sample E2E progress metrics"
+                    ),
+                }
+                next_sample = tokio::time::Instant::now() + PROGRESS_SAMPLE_INTERVAL;
+            }
+            if last_progress.elapsed() >= stuck_timeout {
+                self.stop_session_tree(session_id).await;
                 bail!(
-                    "scenario exceeded {}s while waiting for session {session_id}",
-                    timeout.as_secs()
+                    "scenario {scenario_id} made no observable progress for {}s while waiting for \
+                     session {session_id} (last active turn {active_turn_id})",
+                    stuck_timeout.as_secs()
                 );
             }
             tokio::time::sleep(POLL_INTERVAL).await;
@@ -126,20 +199,23 @@ impl E2eContext {
 
     pub async fn wait_for_complete_metrics(
         &self,
+        scenario_id: &str,
         session_id: &str,
-        timeout: Duration,
+        stuck_timeout: Duration,
         progress_interval: Option<Duration>,
     ) -> Result<SessionMetricsResponseV1> {
         let started = tokio::time::Instant::now();
-        let deadline = started + timeout;
+        let mut last_progress = started;
+        let mut metrics_progress = None;
         let mut next_progress = progress_interval.map(|interval| started + interval);
         loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let remaining = stuck_timeout.saturating_sub(last_progress.elapsed());
             if remaining.is_zero() {
                 self.stop_session_tree(session_id).await;
                 bail!(
-                    "scenario exceeded {}s while waiting for the complete session tree {session_id}",
-                    timeout.as_secs()
+                    "scenario {scenario_id} made no observable progress for {}s while waiting \
+                     for the complete session tree {session_id}",
+                    stuck_timeout.as_secs()
                 );
             }
             let metrics = match tokio::time::timeout(remaining, self.metrics(session_id)).await {
@@ -147,13 +223,19 @@ impl E2eContext {
                 Err(_) => {
                     self.stop_session_tree(session_id).await;
                     bail!(
-                        "scenario exceeded {}s while waiting for the complete session tree {session_id}",
-                        timeout.as_secs()
+                        "scenario {scenario_id} made no observable progress for {}s while waiting \
+                         for the complete session tree {session_id}",
+                        stuck_timeout.as_secs()
                     );
                 }
             };
             if metrics.complete {
                 return Ok(metrics);
+            }
+            let observed = MetricsProgress::from(&metrics);
+            if metrics_progress.as_ref() != Some(&observed) {
+                metrics_progress = Some(observed);
+                last_progress = tokio::time::Instant::now();
             }
             if progress_due(&mut next_progress, progress_interval) {
                 let tree = self
@@ -164,20 +246,23 @@ impl E2eContext {
                     .await;
                 match tree {
                     Ok(tree) => tracing::info!(
+                        scenario = scenario_id,
                         session_id,
                         elapsed_seconds = started.elapsed().as_secs(),
+                        inactive_seconds = last_progress.elapsed().as_secs(),
                         sessions = tree.sessions.len(),
                         tree_complete = tree.complete,
                         "waiting for descendant sessions to finish"
                     ),
                     Err(error) => tracing::debug!(
+                        scenario = scenario_id,
                         session_id,
                         %error,
                         "could not collect progress for descendant sessions"
                     ),
                 }
             }
-            tokio::time::sleep(POLL_INTERVAL.min(remaining)).await;
+            tokio::time::sleep(METRICS_POLL_INTERVAL.min(remaining)).await;
         }
     }
 
