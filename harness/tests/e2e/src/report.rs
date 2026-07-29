@@ -459,7 +459,7 @@ mod tests {
                 max_turns: 1,
                 max_output_tokens: Some(1),
                 max_total_tokens: 1,
-                timeout_seconds: 1,
+                stuck_timeout_seconds: 1,
             },
             runs,
         )

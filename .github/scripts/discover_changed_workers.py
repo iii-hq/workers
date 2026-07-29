@@ -89,8 +89,14 @@ E2E_INFRA_PATHS = {
     ".github/workflows/harness-e2e-main.yml",
     ".github/workflows/harness-e2e-nightly.yml",
 }
-INTEGRATION_EXCLUDED_PREFIXES = ("harness/tests/e2e/",)
-E2E_EXCLUDED_PREFIXES = ("harness/tests/integration/",)
+INTEGRATION_EXCLUDED_PREFIXES = (
+    "harness/tests/e2e/",
+    "harness/tests/quickstart/",
+)
+E2E_EXCLUDED_PREFIXES = (
+    "harness/tests/integration/",
+    "harness/tests/quickstart/",
+)
 
 # Shared Rust crates live under crates/<name>/ (no iii.worker.yaml — not
 # workers). A source change there (1) reports the crate in the `crates`

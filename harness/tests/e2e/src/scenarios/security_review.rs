@@ -20,7 +20,7 @@ For each snippet, identify the vulnerability, explain its impact, and recommend 
             max_turns: 2,
             max_output_tokens: Some(4_096),
             max_total_tokens: 49_152,
-            timeout_seconds: 120,
+            stuck_timeout_seconds: 120,
         },
         threshold: 80,
         criteria: vec![

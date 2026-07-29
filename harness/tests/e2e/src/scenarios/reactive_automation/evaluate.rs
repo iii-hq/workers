@@ -99,16 +99,7 @@ pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEval
         .iter()
         .all(|check| *check == Some(true))
     });
-    let fallback_documented = report.is_some_and(|report| {
-        report
-            .watch_mechanism
-            .as_deref()
-            .is_some_and(|mechanism| mechanism.to_ascii_lowercase().contains("state"))
-            && report
-                .fallback_reason
-                .as_deref()
-                .is_some_and(|reason| !reason.trim().is_empty())
-    });
+    let fallback_documented = fallback_documented(report);
     let report_identity_matches = report.is_some_and(|report| {
         report.run_id.as_deref() == Some(names.run_label.as_str())
             && report.finalizer_session_id.as_deref() == Some(names.finalizer_session.as_str())
@@ -202,6 +193,26 @@ pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEval
 
 fn single_report(reports: &[FinalReport]) -> Option<&FinalReport> {
     reports.first().filter(|_| reports.len() == 1)
+}
+
+fn fallback_documented(report: Option<&FinalReport>) -> bool {
+    let Some(report) = report else {
+        return false;
+    };
+    let contains = |value: Option<&str>, needle: &str| {
+        value.is_some_and(|value| value.to_ascii_lowercase().contains(needle))
+    };
+    let state_fallback_used = contains(report.watch_mechanism.as_deref(), "state")
+        || contains(report.spawning_event.as_deref(), "state")
+        || contains(report.reactor_session_id.as_deref(), "fallback");
+    if !state_fallback_used {
+        return contains(report.watch_mechanism.as_deref(), "database");
+    }
+    contains(report.watch_mechanism.as_deref(), "state")
+        && report
+            .fallback_reason
+            .as_deref()
+            .is_some_and(|reason| !reason.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -308,5 +319,45 @@ mod tests {
                 .sum::<u16>(),
             0
         );
+    }
+
+    #[test]
+    fn database_watch_does_not_require_an_unused_fallback_reason() {
+        let report = FinalReport {
+            watch_mechanism: Some("database::row-changed".to_string()),
+            reactor_session_id: Some("rctest-aB19-reactor".to_string()),
+            spawning_event: Some("database::row-changed".to_string()),
+            ..Default::default()
+        };
+
+        assert!(fallback_documented(Some(&report)));
+    }
+
+    #[test]
+    fn unrecognized_watch_mechanism_is_rejected() {
+        let report = FinalReport {
+            watch_mechanism: Some("custom watcher".to_string()),
+            reactor_session_id: Some("rctest-aB19-reactor".to_string()),
+            spawning_event: Some("custom event".to_string()),
+            ..Default::default()
+        };
+
+        assert!(!fallback_documented(Some(&report)));
+    }
+
+    #[test]
+    fn state_fallback_requires_matching_mechanism_and_reason() {
+        let mut report = FinalReport {
+            watch_mechanism: Some("database::row-changed".to_string()),
+            reactor_session_id: Some("rctest-aB19-reactor-fallback".to_string()),
+            spawning_event: Some("state:order_signal".to_string()),
+            ..Default::default()
+        };
+
+        assert!(!fallback_documented(Some(&report)));
+        report.watch_mechanism = Some("state".to_string());
+        assert!(!fallback_documented(Some(&report)));
+        report.fallback_reason = Some("database trigger did not fire".to_string());
+        assert!(fallback_documented(Some(&report)));
     }
 }

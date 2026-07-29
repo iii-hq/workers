@@ -13,7 +13,7 @@ pub fn scenario(_run_id: &str) -> ScenarioSpec {
             max_turns: 2,
             max_output_tokens: Some(2_048),
             max_total_tokens: 32_768,
-            timeout_seconds: 120,
+            stuck_timeout_seconds: 120,
         },
         threshold: 80,
         criteria: vec![

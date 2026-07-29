@@ -16,7 +16,6 @@ pub(super) const ORDERS_PER_WRITER: i64 = 5;
 pub(super) const EXPECTED_ORDERS: i64 = EXPECTED_WRITERS as i64 * ORDERS_PER_WRITER;
 
 const STUCK_WATCHDOG_SECONDS: u64 = 600;
-const SCENARIO_TIMEOUT_SECONDS: u64 = 1_800;
 const SCENARIO_MAX_TOTAL_TOKENS: u64 = 1_000_000;
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
@@ -28,7 +27,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             max_turns: 64,
             max_output_tokens: None,
             max_total_tokens: SCENARIO_MAX_TOTAL_TOKENS,
-            timeout_seconds: SCENARIO_TIMEOUT_SECONDS,
+            stuck_timeout_seconds: STUCK_WATCHDOG_SECONDS,
         },
         threshold: 90,
         criteria: vec![
