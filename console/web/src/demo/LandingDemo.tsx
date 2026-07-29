@@ -166,6 +166,7 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
 
         {/* ── transcript ─────────────────────────────────────────────── */}
         <section className="relative flex min-h-0 flex-1 flex-col lg:flex-none lg:w-[46%]">
+          <MobileNotice />
           <header className="flex items-center justify-between gap-3 whitespace-nowrap border-b border-rule px-5 py-3 lg:px-9">
             <div className="flex min-w-0 flex-1 items-center gap-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
               <span className="flex-shrink-0 text-accent" aria-hidden>
@@ -376,6 +377,28 @@ function DemoChrome({
           close <span className="opacity-60">esc</span>
         </button>
       )}
+    </div>
+  )
+}
+
+/** Phone-width only: drops in from the top, over the transcript header. */
+function MobileNotice() {
+  const [shown, setShown] = useState(false)
+  useEffect(() => {
+    const t = setTimeout(() => setShown(true), 400)
+    return () => clearTimeout(t)
+  }, [])
+  return (
+    <div
+      className={cn(
+        'pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center transition-all duration-500 lg:hidden',
+        shown ? 'translate-y-0 opacity-100' : '-translate-y-3 opacity-0',
+      )}
+    >
+      <div className="border-x border-b border-rule bg-panel px-3 py-2 text-center font-mono text-[10px] uppercase tracking-[0.08em] text-ink-faint">
+        this is a simplified view. the iii console is best viewed on larger
+        screens.
+      </div>
     </div>
   )
 }
