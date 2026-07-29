@@ -115,6 +115,7 @@ accepted; outside-tx COUNT=1`).
 | `workers/harness/` | TypeScript smoke-test worker (runs as a host process) |
 | `workers/harness/src/cases-interactive-tx.ts` | Interactive-transaction lifecycle cases |
 | `workers/harness/src/cases-row-changed.ts` | Row-change trigger delivery cases |
+| `workers/harness/src/cases-native-capture.ts` | `capture: native` (postgres LISTEN/NOTIFY) cases — cross-client delivery via the `pg_native_db` handle, no double-fire on own writes, table-less binding rejection |
 | `workers/harness/src/cases-tx-control-bypass.ts` | Side-channel-finalization repros |
 | `reports/report.json` | Per-case results (latest run) |
 

@@ -1,8 +1,35 @@
 {
   "definitions": {
+    "CaptureMode": {
+      "description": "How row-change events are captured for one database.",
+      "oneOf": [
+        {
+          "description": "Classify the SQL this worker executes. Writes from other clients are invisible. Works on every driver. The default.",
+          "enum": [
+            "statements"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Database triggers + LISTEN/NOTIFY on a dedicated connection. Captures writes from any client, including other processes. Postgres only; requires DDL privileges on watched tables and table-scoped bindings.",
+          "enum": [
+            "native"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "DatabaseConfig": {
       "description": "Per-database connection settings. The URL scheme selects the driver; `pool` and `tls` are optional and default when omitted.",
       "properties": {
+        "capture": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/CaptureMode"
+            }
+          ],
+          "description": "How `database::row-changed` events are captured for this database. `statements` (default) classifies the SQL this worker executes; `native` (postgres only) installs database triggers + LISTEN/NOTIFY, so writes from ANY client — psql, other processes — fire too."
+        },
         "pool": {
           "allOf": [
             {
