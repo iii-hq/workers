@@ -35,7 +35,9 @@ import { DemoEmptyState } from './EmptyState'
 import { MODEL_ID, SESSION_ID, TRACE_ID } from './scenario'
 import { usePlayer } from './usePlayer'
 
-const MODEL_LABEL = 'claude opus 4.7'
+const MODEL_LABEL = 'claude sonnet 5'
+const CTA_TEXT = 'click here to try the harness for yourself'
+const CTA_HREF = 'https://workers.iii.dev/workers/harness#quickstart'
 const CONTEXT_WINDOW = 1_000_000
 
 /** The sidebar's write actions are wired to nothing: this is a recording. */
@@ -122,6 +124,33 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
     setSelectedSpanId((prev) => (prev === span.span_id ? null : span.span_id))
   }, [])
 
+  /* ~8s into the replay the composer types out an invitation to run the
+     harness yourself — the type-out is the attention cue, and the typed text
+     is a live link. Hidden whenever the player owns the composer (the loop
+     retyping the scenario prompt). */
+  const started = player.phase !== 'idle'
+  const [ctaChars, setCtaChars] = useState(0)
+  useEffect(() => {
+    if (!started) return
+    let interval: ReturnType<typeof setInterval> | undefined
+    const delay = setTimeout(() => {
+      interval = setInterval(() => {
+        setCtaChars((c) => {
+          if (c >= CTA_TEXT.length) {
+            clearInterval(interval)
+            return c
+          }
+          return c + 1
+        })
+      }, 55)
+    }, 8000)
+    return () => {
+      clearTimeout(delay)
+      clearInterval(interval)
+    }
+  }, [started])
+  const cta = player.typed ? '' : CTA_TEXT.slice(0, ctaChars)
+
   const pinTranscript = useTailFollow(listWrapRef)
   const pinTrace = useTailFollow(traceWrapRef)
 
@@ -166,7 +195,9 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
 
         {/* ── transcript ─────────────────────────────────────────────── */}
         <section className="relative flex min-h-0 flex-1 flex-col lg:flex-none lg:w-[46%]">
-          <MobileNotice />
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex flex-col items-center">
+            <MobileNotice />
+          </div>
           <header className="flex items-center justify-between gap-3 whitespace-nowrap border-b border-rule px-5 py-3 lg:px-9">
             <div className="flex min-w-0 flex-1 items-center gap-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
               <span className="flex-shrink-0 text-accent" aria-hidden>
@@ -234,7 +265,7 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
 
           <footer className="px-5 pb-6 pt-2 lg:px-9">
             <div className="mx-auto max-w-[760px]">
-              <FakeComposer typed={player.typed} streaming={working} />
+              <FakeComposer typed={player.typed} streaming={working} cta={cta} />
             </div>
           </footer>
         </section>
@@ -391,39 +422,56 @@ function MobileNotice() {
   return (
     <div
       className={cn(
-        'pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center transition-all duration-500 lg:hidden',
+        'border-x border-b border-rule bg-panel px-3 py-2 text-center font-mono text-[10px] uppercase tracking-[0.08em] text-ink-faint transition-all duration-500 lg:hidden',
         shown ? 'translate-y-0 opacity-100' : '-translate-y-3 opacity-0',
       )}
     >
-      <div className="border-x border-b border-rule bg-panel px-3 py-2 text-center font-mono text-[10px] uppercase tracking-[0.08em] text-ink-faint">
-        this is a simplified view. the iii console is best viewed on larger
-        screens.
-      </div>
+      this is a simplified view. the iii console is best viewed on larger
+      screens.
     </div>
   )
 }
 
-/** Composer lookalike: same frame as `Composer`, types instead of editing. */
+/** Composer lookalike: same frame as `Composer`, types instead of editing.
+    `cta` types out an invitation in the editor when the player isn't using
+    it; the typed text is a live link and the frame glows accent while it
+    has something to say. */
 function FakeComposer({
   typed,
   streaming,
+  cta = '',
 }: {
   typed: string
   streaming: boolean
+  cta?: string
 }) {
-  const showPlaceholder = typed.length === 0
   return (
-    <div className="border border-rule bg-panel">
+    <div
+      className={cn(
+        'border bg-panel transition-colors duration-700',
+        cta ? 'border-accent' : 'border-rule',
+      )}
+    >
       <div className="px-1 pt-1">
         <div className="composer-editor min-h-[2.5rem] px-3 py-2 text-[14px] leading-[1.5]">
-          {showPlaceholder ? (
-            <span className="text-ink-ghost">
-              {streaming ? 'streaming response…' : 'send a message…'}
-            </span>
-          ) : (
+          {typed.length > 0 ? (
             <span className="whitespace-pre-wrap break-words">
               {typed}
               <span className="ml-px inline-block h-[1.05em] w-[1px] translate-y-[3px] animate-pulse bg-ink" />
+            </span>
+          ) : cta ? (
+            <a
+              href={CTA_HREF}
+              target="_blank"
+              rel="noreferrer"
+              className="whitespace-pre-wrap break-words text-accent underline decoration-accent/50 underline-offset-4 hover:decoration-accent"
+            >
+              {cta}
+              <span className="ml-px inline-block h-[1.05em] w-[1px] translate-y-[3px] animate-pulse bg-accent" />
+            </a>
+          ) : (
+            <span className="text-ink-ghost">
+              {streaming ? 'streaming response…' : 'send a message…'}
             </span>
           )}
         </div>

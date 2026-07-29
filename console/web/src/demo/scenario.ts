@@ -22,7 +22,7 @@ import { sleep, tokenize } from "@/stories/playground/scenarios/helpers";
 
 export const PROMPT = "build a payments ledger service with a durable db";
 
-export const MODEL_ID = "anthropic::claude-opus-4-7";
+export const MODEL_ID = "anthropic::claude-sonnet-5";
 export const SESSION_ID = "console-payments-ledger-demo";
 export const TRACE_ID = "trace-payments-ledger-0000000001";
 
@@ -338,7 +338,7 @@ async function* step(
       name: "execute router::chat",
       service: "llm-router",
       kind: "internal",
-      attributes: [...TURN_TAGS, ["gen_ai.request.model", "claude-opus-4-7"]],
+      attributes: [...TURN_TAGS, ["gen_ai.request.model", "claude-sonnet-5"]],
     },
   };
   yield {
@@ -1063,7 +1063,7 @@ and that the schema matches the migration.`,
 function spawnInput(child: ChildSpec) {
   return {
     task: child.task,
-    model: "claude-opus-4-7",
+    model: "claude-sonnet-5",
     session_id: child.sessionId,
     parent_session_id: SESSION_ID,
     options: {
