@@ -6,16 +6,12 @@ name: Alpha Release
 #
 # The regular release workflow handles this tag normally, producing a GitHub
 # prerelease and publishing the worker to the isolated `experimental` channel.
-# Run this workflow from main and provide the feature branch or pull-request
-# ref to release. That lets it test PRs created before this workflow existed.
+# Run this workflow from the feature branch to release. GitHub Actions' branch
+# selector chooses the source; the only workflow input is the worker to publish.
 
 on:
   workflow_dispatch:
     inputs:
-      source_ref:
-        description: 'Feature branch or pull-request ref (e.g. feat/my-worker or refs/pull/123/head)'
-        required: true
-        type: string
       worker:
         description: 'Worker module to publish from this branch'
         required: true
@@ -69,16 +65,6 @@ on:
           - scrapling
           - web
           - worktree
-      bump:
-        description: 'Base version for the alpha (none = use the manifest version as its base)'
-        required: true
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
-          - none
-        default: patch
 
 permissions:
   contents: write
@@ -94,17 +80,21 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Checkout source ref
+      - name: Checkout selected branch
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: ${{ inputs.source_ref }}
 
       - name: Refuse to release main
         env:
-          SOURCE_REF: ${{ inputs.source_ref }}
+          REF_TYPE: ${{ github.ref_type }}
+          SOURCE_BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          if [[ "$REF_TYPE" != "branch" ]]; then
+            echo "::error::Alpha Release must run from a feature branch"
+            exit 1
+          fi
           git fetch origin main
           source_sha=$(git rev-parse HEAD)
           main_sha=$(git rev-parse origin/main)
@@ -112,7 +102,7 @@ jobs:
             echo "::error::Alpha Release is for feature branches; use Create Tag for main releases"
             exit 1
           fi
-          echo "::notice::Preparing alpha release from $SOURCE_REF at $source_sha"
+          echo "::notice::Preparing alpha release from $SOURCE_BRANCH at $source_sha"
 
       - name: Discover manifest
         id: meta
@@ -135,12 +125,11 @@ jobs:
         id: version
         env:
           WORKER: ${{ inputs.worker }}
-          BUMP: ${{ inputs.bump }}
           MANIFEST: ${{ steps.meta.outputs.manifest }}
         run: |
           set -euo pipefail
           version=$(python3 .github/scripts/manifest_version.py bump "$WORKER/$MANIFEST" \
-            --kind "$BUMP" --suffix alpha --worker "$WORKER")
+            --kind none --suffix alpha --worker "$WORKER")
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=${WORKER}/v${version}" >> "$GITHUB_OUTPUT"
           echo "::notice::${WORKER}: alpha ${version}@experimental"
