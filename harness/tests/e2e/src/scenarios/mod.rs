@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 
 use anyhow::{bail, Result};
@@ -16,6 +17,7 @@ pub mod direct_answer;
 pub mod persistent_state;
 pub mod reactive_automation;
 pub mod security_review;
+pub mod shell_coder_sandbox;
 
 pub type EvaluationFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ObjectiveEvaluation>> + Send + 'a>>;
@@ -67,6 +69,7 @@ impl ExecutionPolicy {
 pub struct ScenarioSpec {
     pub id: &'static str,
     pub prompt: String,
+    pub filesystem_root: Option<PathBuf>,
     pub execution: ExecutionPolicy,
     pub threshold: u8,
     pub criteria: Vec<CriterionSpec>,
@@ -139,14 +142,17 @@ pub enum ScenarioId {
     SecurityReview,
     #[value(name = "reactive_automation")]
     ReactiveAutomation,
+    #[value(name = "shell_coder_sandbox")]
+    ShellCoderSandbox,
 }
 
 impl ScenarioId {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::DirectAnswer,
         Self::PersistentState,
         Self::SecurityReview,
         Self::ReactiveAutomation,
+        Self::ShellCoderSandbox,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -155,6 +161,7 @@ impl ScenarioId {
             Self::PersistentState => persistent_state::ID,
             Self::SecurityReview => security_review::ID,
             Self::ReactiveAutomation => reactive_automation::ID,
+            Self::ShellCoderSandbox => shell_coder_sandbox::ID,
         }
     }
 
@@ -164,6 +171,7 @@ impl ScenarioId {
             Self::PersistentState => persistent_state::scenario(run_id),
             Self::SecurityReview => security_review::scenario(run_id),
             Self::ReactiveAutomation => reactive_automation::scenario(run_id),
+            Self::ShellCoderSandbox => shell_coder_sandbox::scenario(run_id),
         }
     }
 }
@@ -184,13 +192,13 @@ pub fn selected(requested: &[ScenarioId]) -> Vec<ScenarioId> {
 mod tests {
     use super::*;
     #[test]
-    fn registry_contains_four_unique_valid_scenarios() {
+    fn registry_contains_five_unique_valid_scenarios() {
         let mut ids = HashSet::new();
         for scenario in ScenarioId::ALL {
             assert!(ids.insert(scenario.as_str()));
             scenario.spec("run").validate().unwrap();
         }
-        assert_eq!(ids.len(), 4);
+        assert_eq!(ids.len(), 5);
     }
 
     #[test]

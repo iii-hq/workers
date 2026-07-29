@@ -351,6 +351,7 @@ async fn execute(
         progress_interval,
     } = request;
     let stuck_timeout = Duration::from_secs(spec.execution.stuck_timeout_seconds);
+    let filesystem_metadata = prepare_filesystem_root(spec)?;
     let response: SendResponse = context
         .trigger(
             "harness::send",
@@ -372,6 +373,7 @@ async fn execute(
                     max_output_tokens: spec.execution.max_output_tokens,
                     max_total_tokens: Some(spec.execution.max_total_tokens),
                     functions: Some(e2e_function_policy()),
+                    metadata: filesystem_metadata,
                     ..SendOptions::default()
                 }),
             },
@@ -474,6 +476,46 @@ async fn execute(
     report.criteria = criterion_reports(spec, awards);
     update_score(report);
     Ok(())
+}
+
+fn prepare_filesystem_root(spec: &ScenarioSpec) -> Result<Option<serde_json::Value>, RunFailure> {
+    let Some(root) = spec.filesystem_root.as_ref() else {
+        return Ok(None);
+    };
+    if !root.is_absolute() {
+        return Err(RunFailure::new(
+            RunStatus::InfrastructureError,
+            FailurePhase::Execute,
+            format!(
+                "scenario {} filesystem root must be absolute: {}",
+                spec.id,
+                root.display()
+            ),
+        ));
+    }
+    std::fs::create_dir_all(root).map_err(|error| {
+        RunFailure::new(
+            RunStatus::InfrastructureError,
+            FailurePhase::Execute,
+            format!(
+                "create scenario {} filesystem root {}: {error}",
+                spec.id,
+                root.display()
+            ),
+        )
+    })?;
+    let root = root.to_str().ok_or_else(|| {
+        RunFailure::new(
+            RunStatus::InfrastructureError,
+            FailurePhase::Execute,
+            format!(
+                "scenario {} filesystem root is not valid UTF-8: {}",
+                spec.id,
+                root.display()
+            ),
+        )
+    })?;
+    Ok(Some(json!({ "fs_scope": { "root": root } })))
 }
 
 async fn capture_partial_observation(
@@ -659,6 +701,7 @@ mod tests {
         ScenarioSpec {
             id: "case",
             prompt: "prompt".into(),
+            filesystem_root: None,
             execution: ExecutionPolicy {
                 max_turns: 1,
                 max_output_tokens: Some(1),
