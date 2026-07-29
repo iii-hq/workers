@@ -84,6 +84,18 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Whether `db` announces its writes via SQL classification. A
+    /// `capture: native` database hears its own commits through NOTIFY like
+    /// every other client — classifying here too would fire everything twice.
+    async fn classifies_own_writes(&self, db: &str) -> bool {
+        self.config
+            .read()
+            .await
+            .databases
+            .get(db)
+            .is_none_or(|d| d.capture.is_statements())
+    }
+
     /// Announce a committed change, if anything is listening. Every mutating
     /// handler ends with this; the bus decides whether the statement changed
     /// rows and who cares.
@@ -95,12 +107,14 @@ impl AppState {
         returning: Option<&[serde_json::Map<String, serde_json::Value>]>,
     ) {
         if let Some(bus) = &self.row_changes {
-            bus.emit(db, sql, affected_rows, returning).await;
+            if self.classifies_own_writes(db).await {
+                bus.emit(db, sql, affected_rows, returning).await;
+            }
         }
     }
 
     /// Buffer a change made inside an interactive transaction until its commit.
-    pub fn stage_row_change(
+    pub async fn stage_row_change(
         &self,
         transaction_id: &str,
         db: &str,
@@ -109,7 +123,9 @@ impl AppState {
         returning: Option<&[serde_json::Map<String, serde_json::Value>]>,
     ) {
         if let Some(bus) = &self.row_changes {
-            bus.stage(transaction_id, db, sql, affected_rows, returning);
+            if self.classifies_own_writes(db).await {
+                bus.stage(transaction_id, db, sql, affected_rows, returning);
+            }
         }
     }
 

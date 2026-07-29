@@ -5,16 +5,21 @@
 //! events, so a coordinator had to be told out-of-band (a state key written
 //! alongside the row) or poll.
 //!
-//! This is deliberately NOT change data capture. It reports mutations THIS
-//! worker performed, on commit, by classifying the SQL it was given. A write
-//! applied by psql, another worker, or a database-side trigger is invisible
-//! here. That covers the case it exists for — agents whose only writer is this
-//! worker — and nothing more, which is why it needs no logical replication, no
-//! driver-specific setup, and works identically on SQLite, Postgres and MySQL.
+//! Two capture modes, chosen per database in the worker config:
+//!
+//! * `statements` (default): report mutations THIS worker performed, on
+//!   commit, by classifying the SQL it was given. A write applied by psql,
+//!   another worker, or a database-side trigger is invisible. No database
+//!   setup, works identically on SQLite, Postgres and MySQL.
+//! * `native` (postgres only, `native.rs`): database triggers + LISTEN/NOTIFY
+//!   on a dedicated connection. Committed writes from ANY client fire events;
+//!   requires DDL privileges and table-scoped bindings.
 
 pub mod bus;
 pub mod handler;
+pub mod native;
 pub mod sql;
 
 pub use bus::{RowChangeBus, RowChangedConfig, RowChangedEvent, ROW_CHANGED_TYPE};
 pub use handler::RowChangedHandler;
+pub use native::NativeListeners;

@@ -172,7 +172,7 @@ async fn apply_config_updates_list_snapshot() {
     let new_cfg = WorkerConfig::from_yaml(new_yaml).unwrap();
 
     // Act
-    configuration::apply_config(&st, new_cfg).await.unwrap();
+    configuration::apply_config(&st, new_cfg, None).await.unwrap();
     let resp = list_databases::handle(&st, ListDatabasesReq::default())
         .await
         .unwrap();

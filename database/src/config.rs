@@ -67,6 +67,12 @@ pub struct DatabaseConfig {
     pub pool: PoolConfig,
     #[serde(default)]
     pub tls: TlsConfig,
+    /// How `database::row-changed` events are captured for this database.
+    /// `statements` (default) classifies the SQL this worker executes;
+    /// `native` (postgres only) installs database triggers + LISTEN/NOTIFY,
+    /// so writes from ANY client — psql, other processes — fire too.
+    #[serde(default, skip_serializing_if = "CaptureMode::is_statements")]
+    pub capture: CaptureMode,
     /// Populated by [`WorkerConfig::finalize`] from the URL scheme.
     /// Do not construct `DatabaseConfig` directly without calling
     /// `finalize` — the default `Sqlite` value will silently mismatch
@@ -149,6 +155,26 @@ pub enum DriverKind {
     Sqlite,
 }
 
+/// How row-change events are captured for one database.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureMode {
+    /// Classify the SQL this worker executes. Writes from other clients are
+    /// invisible. Works on every driver. The default.
+    #[default]
+    Statements,
+    /// Database triggers + LISTEN/NOTIFY on a dedicated connection. Captures
+    /// writes from any client, including other processes. Postgres only;
+    /// requires DDL privileges on watched tables and table-scoped bindings.
+    Native,
+}
+
+impl CaptureMode {
+    pub fn is_statements(&self) -> bool {
+        *self == CaptureMode::Statements
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct PoolConfig {
     /// Maximum number of open connections in the pool.
@@ -197,6 +223,7 @@ impl WorkerConfig {
                     url: DEFAULT_SQLITE_URL.to_string(),
                     pool: PoolConfig::default(),
                     tls: TlsConfig::default(),
+                    capture: CaptureMode::default(),
                     driver: DriverKind::default(),
                 },
             )]),
@@ -267,6 +294,12 @@ impl WorkerConfig {
                     redact_url(&db.url)
                 )
             })?;
+            if db.capture == CaptureMode::Native && db.driver != DriverKind::Postgres {
+                return Err(format!(
+                    "db `{name}`: `capture: native` requires postgres; \
+                     sqlite and mysql have no LISTEN/NOTIFY equivalent"
+                ));
+            }
         }
         Ok(cfg)
     }
@@ -406,6 +439,22 @@ mod tests {
         assert!(json["databases"]["p"].get("driver").is_none());
         let back = WorkerConfig::from_json(&json).unwrap();
         assert!(matches!(back.databases["p"].driver, DriverKind::Sqlite));
+    }
+
+    #[test]
+    fn capture_native_requires_postgres() {
+        let err =
+            WorkerConfig::from_yaml("databases:\n  p:\n    url: \"sqlite::memory:\"\n    capture: native\n")
+                .unwrap_err();
+        assert!(err.contains("requires postgres"), "got: {err}");
+
+        let c = cfg("databases:\n  p:\n    url: postgres://u@h/db\n    capture: native\n");
+        assert_eq!(c.databases["p"].capture, CaptureMode::Native);
+        // Default stays statements and stays out of the serialized form —
+        // existing configs round-trip byte-identical.
+        let d = cfg("databases:\n  p:\n    url: postgres://u@h/db\n");
+        assert_eq!(d.databases["p"].capture, CaptureMode::Statements);
+        assert!(d.to_json()["databases"]["p"].get("capture").is_none());
     }
 
     #[test]

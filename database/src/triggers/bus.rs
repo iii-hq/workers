@@ -227,6 +227,12 @@ impl RowChangeBus {
         self.lock().pending.get(transaction_id).map_or(0, Vec::len)
     }
 
+    /// Announce an already-shaped event — the native capture path, where the
+    /// database told us table/op/count and there is no SQL to classify.
+    pub async fn emit_event(&self, event: RowChangedEvent) {
+        self.fan_out(event).await;
+    }
+
     /// Announce a committed change. `sql` is classified here so callers stay
     /// one line; a statement that changes no rows fires nothing.
     pub async fn emit(
@@ -328,7 +334,7 @@ impl RowChangeBus {
     }
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -110,6 +110,10 @@ async fn main() -> Result<()> {
         iii.clone(),
         ROW_CHANGE_DISPATCH_TIMEOUT_MS,
     ));
+    // One LISTEN task per `capture: native` postgres database, live from
+    // startup — external writes must be heard before any binding registers.
+    let native_listeners = Arc::new(database::triggers::NativeListeners::new(row_changes.clone()));
+    native_listeners.sync(&cfg);
     let state = AppState {
         pools: Arc::new(RwLock::new(pools)),
         config: Arc::new(RwLock::new(cfg)),
@@ -327,13 +331,14 @@ async fn main() -> Result<()> {
             database::triggers::RowChangedHandler {
                 bus: row_changes.clone(),
                 config: state.config.clone(),
+                pools: state.pools.clone(),
             },
         )
         .trigger_request_format::<database::triggers::RowChangedConfig>()
         .call_request_format::<database::triggers::RowChangedEvent>(),
     );
 
-    configuration::register_config_trigger(&iii, state.clone())
+    configuration::register_config_trigger(&iii, state.clone(), Some(native_listeners.clone()))
         .context("registering configuration change trigger")?;
 
     // Injectable console UI (function-trigger renderer) — after the

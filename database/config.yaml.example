@@ -16,3 +16,11 @@ databases:
       max: 10
       idle_timeout_ms: 30000
       acquire_timeout_ms: 5000
+  # Postgres example with native change capture: `database::row-changed`
+  # fires for committed writes from ANY client (psql, other processes), via
+  # database triggers + LISTEN/NOTIFY. Postgres only; bindings must name a
+  # table; the role needs TRIGGER privilege on watched tables. Default
+  # (`capture: statements`) only reports writes made through this worker.
+  # analytics:
+  #   url: postgres://user:pass@localhost:5432/analytics
+  #   capture: native

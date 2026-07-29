@@ -126,7 +126,8 @@ pub async fn handle(state: &AppState, req: TxExecuteReq) -> Result<TxExecuteResp
                 &req.sql,
                 er.affected_rows,
                 Some(&returned_rows),
-            );
+            )
+            .await;
             Ok(TxExecuteResp {
                 affected_rows: er.affected_rows,
                 last_insert_id: er.last_insert_id,

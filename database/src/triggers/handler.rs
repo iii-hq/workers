@@ -5,6 +5,7 @@
 //! emitting. Registration fails loudly for a database that is not configured —
 //! a binding on a typo'd handle would otherwise sit there listening to nothing.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -12,12 +13,17 @@ use iii_sdk::errors::Error;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
 
 use super::bus::{RowChangeBus, RowChangedConfig};
-use crate::config::WorkerConfig;
+use super::native;
+use crate::config::{CaptureMode, WorkerConfig};
+use crate::pool::Pool;
 
 pub struct RowChangedHandler {
     pub bus: Arc<RowChangeBus>,
     /// Live configuration, swapped together with the pools on hot reload.
     pub config: Arc<tokio::sync::RwLock<WorkerConfig>>,
+    /// Live pools — a `capture: native` binding installs its database
+    /// triggers through the bound database's pool at registration time.
+    pub pools: Arc<tokio::sync::RwLock<HashMap<String, Pool>>>,
 }
 
 fn config_error(message: String) -> Error {
@@ -31,7 +37,7 @@ impl TriggerHandler for RowChangedHandler {
             .map_err(|e| config_error(format!("row-changed config: {e}")))?;
 
         let live = self.config.read().await;
-        if !live.databases.contains_key(&cfg.db) {
+        let Some(db_cfg) = live.databases.get(&cfg.db) else {
             let mut known = live.databases.keys().cloned().collect::<Vec<_>>();
             known.sort();
             return Err(config_error(format!(
@@ -39,8 +45,13 @@ impl TriggerHandler for RowChangedHandler {
                 cfg.db,
                 known.join(", ")
             )));
-        }
+        };
+        let native = db_cfg.capture == CaptureMode::Native;
         drop(live);
+
+        if native {
+            self.install_native_triggers(&cfg).await?;
+        }
 
         let table = cfg.table.clone();
         self.bus.register(
@@ -59,8 +70,49 @@ impl TriggerHandler for RowChangedHandler {
     }
 
     async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        // ponytail: native-capture triggers stay installed on unregister —
+        // an orphan pg_notify per write statement is near-free and idempotent
+        // to reinstall; add DDL teardown when someone actually needs it.
         self.bus.unregister(&config.id);
         tracing::info!(instance = %config.id, "row-changed trigger unregistered");
+        Ok(())
+    }
+}
+
+impl RowChangedHandler {
+    /// Install the NOTIFY function and per-table triggers for a native
+    /// binding. Fails loudly — a binding whose DDL did not land would sit
+    /// there hearing nothing, which is the failure mode this worker refuses.
+    async fn install_native_triggers(&self, cfg: &RowChangedConfig) -> Result<(), Error> {
+        let Some(table) = cfg.table.as_deref() else {
+            return Err(config_error(format!(
+                "db `{}` uses `capture: native`, which requires this binding to \
+                 name a `table` — per-table database triggers are what make \
+                 external writes visible",
+                cfg.db
+            )));
+        };
+        let sql = native::install_sql(table).map_err(config_error)?;
+        let pool = self.pools.read().await.get(&cfg.db).cloned();
+        let Some(Pool::Postgres(pg)) = pool else {
+            // finalize() enforces native ⇒ postgres; missing pool means the
+            // config and pools drifted, which apply_config forbids.
+            return Err(config_error(format!(
+                "db `{}`: no postgres pool available for native capture",
+                cfg.db
+            )));
+        };
+        let client = pg.acquire().await.map_err(|e| {
+            config_error(format!("db `{}`: acquiring connection: {e}", cfg.db))
+        })?;
+        client.batch_execute(&sql).await.map_err(|e| {
+            config_error(format!(
+                "installing native capture triggers on `{table}`: {e}. The \
+                 configured role needs TRIGGER privilege on the table (or \
+                 ownership) and CREATE on its schema"
+            ))
+        })?;
+        tracing::info!(db = %cfg.db, table = %table, "native capture triggers installed");
         Ok(())
     }
 }
@@ -78,17 +130,42 @@ mod tests {
         }
     }
 
+    fn handler_with(config: WorkerConfig) -> (RowChangedHandler, Arc<tokio::sync::RwLock<WorkerConfig>>) {
+        let config = Arc::new(tokio::sync::RwLock::new(config));
+        let handler = RowChangedHandler {
+            bus: Arc::new(RowChangeBus::new(
+                Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:9")),
+                100,
+            )),
+            config: config.clone(),
+            pools: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        };
+        (handler, config)
+    }
+
+    #[tokio::test]
+    async fn native_bindings_must_name_a_table() {
+        let cfg = WorkerConfig::from_yaml(
+            "databases:\n  p:\n    url: postgres://u@h/db\n    capture: native\n",
+        )
+        .unwrap();
+        let (handler, _) = handler_with(cfg);
+
+        let err = handler.register_trigger(trigger("i1", "p")).await.unwrap_err();
+        assert!(err.to_string().contains("name a `table`"), "{err}");
+
+        // With a table but no live pool the DDL cannot land; registration
+        // still fails loudly instead of listening to nothing.
+        let mut with_table = trigger("i2", "p");
+        with_table.config = serde_json::json!({ "db": "p", "table": "orders" });
+        let err = handler.register_trigger(with_table).await.unwrap_err();
+        assert!(err.to_string().contains("no postgres pool"), "{err}");
+        assert_eq!(handler.bus.subscriber_count(), 0);
+    }
+
     #[tokio::test]
     async fn registration_uses_the_live_database_config() {
-        let config = Arc::new(tokio::sync::RwLock::new(WorkerConfig::default()));
-        let bus = Arc::new(RowChangeBus::new(
-            Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:9")),
-            100,
-        ));
-        let handler = RowChangedHandler {
-            bus,
-            config: config.clone(),
-        };
+        let (handler, config) = handler_with(WorkerConfig::default());
 
         handler
             .register_trigger(trigger("initial", "primary"))
