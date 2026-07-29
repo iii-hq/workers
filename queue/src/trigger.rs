@@ -41,6 +41,22 @@ pub trait Invoker: Send + Sync + 'static {
         self.call(function_id, payload).await
     }
 
+    /// Invoke `function_id` in `namespace`, or the engine default when `None`.
+    ///
+    /// Defaults to the namespace-blind [`Invoker::call_with_timeout`] so test
+    /// and embedded invokers need no namespace plumbing; the real iii-backed
+    /// invoker overrides it to address the target namespace.
+    async fn call_in_namespace(
+        &self,
+        function_id: &str,
+        payload: Value,
+        timeout_ms: u64,
+        _namespace: Option<&str>,
+    ) -> Result<Option<Value>, String> {
+        self.call_with_timeout(function_id, payload, timeout_ms)
+            .await
+    }
+
     /// Whether the target is currently registered with the engine.
     ///
     /// Adapters used in unit tests and embedded deployments can keep the
@@ -91,6 +107,32 @@ impl Invoker for IiiInvoker {
                 action: None,
                 timeout_ms: Some(timeout_ms),
             })
+            .await
+            .map(Some)
+            .map_err(|e| e.to_string())
+    }
+
+    async fn call_in_namespace(
+        &self,
+        function_id: &str,
+        payload: Value,
+        timeout_ms: u64,
+        namespace: Option<&str>,
+    ) -> Result<Option<Value>, String> {
+        let request = TriggerRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        };
+        // `.namespace()` sets `InvokeFunction.namespace`; leave it unset when the
+        // job carries none so the engine keeps routing in its default.
+        let request = match namespace {
+            Some(ns) => request.namespace(ns),
+            None => request.into(),
+        };
+        self.iii
+            .trigger(request)
             .await
             .map(Some)
             .map_err(|e| e.to_string())

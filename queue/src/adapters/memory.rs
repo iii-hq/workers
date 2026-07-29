@@ -120,6 +120,7 @@ impl QueueAdapter for MemoryAdapter {
         traceparent: Option<String>,
         baggage: Option<String>,
         priority: Option<u8>,
+        namespace: Option<String>,
     ) -> anyhow::Result<()> {
         self.inner
             .publish_to_function_queue(
@@ -132,6 +133,7 @@ impl QueueAdapter for MemoryAdapter {
                 traceparent,
                 baggage,
                 priority,
+                namespace,
             )
             .await
     }

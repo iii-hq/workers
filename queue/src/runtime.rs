@@ -51,6 +51,11 @@ pub struct EnqueueInput {
     pub traceparent: Option<String>,
     #[serde(default)]
     pub baggage: Option<String>,
+    /// Namespace the enqueued invocation is addressed to, sent by the engine
+    /// when the trigger names one. Persisted with the job so the delivery lands
+    /// in the same namespace; `None` routes in the engine's default.
+    #[serde(default)]
+    pub namespace: Option<String>,
     /// Internal metadata injected by the engine; see [`DefineQueueInput`].
     #[serde(rename = "_caller_worker_id", default, skip_serializing)]
     #[schemars(skip)]
@@ -360,6 +365,7 @@ impl FunctionQueueRuntime {
                 input.traceparent,
                 input.baggage,
                 priority,
+                input.namespace,
             )
             .await
             .map_err(|err| Error::Handler(format!("enqueue to '{queue}' failed: {err}")))?;
@@ -1054,7 +1060,12 @@ async fn invoke_message(
         }
     }
     invoker
-        .call_with_timeout(&message.function_id, message.data.clone(), timeout_ms)
+        .call_in_namespace(
+            &message.function_id,
+            message.data.clone(),
+            timeout_ms,
+            message.namespace.as_deref(),
+        )
         .instrument(span)
         .await
 }
@@ -1262,6 +1273,7 @@ mod tests {
             traceparent: Option<String>,
             baggage: Option<String>,
             _priority: Option<u8>,
+            _namespace: Option<String>,
         ) -> anyhow::Result<()> {
             self.published.lock().unwrap().push((
                 queue_name.to_string(),
@@ -1370,6 +1382,7 @@ mod tests {
             attempt: 0,
             message_id: Some(format!("receipt-{delivery_id}")),
             traceparent: None,
+            namespace: None,
             baggage: None,
         }
     }
@@ -1475,6 +1488,7 @@ mod tests {
                     "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".to_string(),
                 ),
                 baggage: Some("iii.session.id=s1,iii.function.id=harness%3A%3Aturn".to_string()),
+                namespace: None,
                 _caller_worker_id: Some("engine-worker".to_string()),
             })
             .await

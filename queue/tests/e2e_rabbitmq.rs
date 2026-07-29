@@ -260,6 +260,7 @@ async fn function_queue_retry_then_dlq_then_redrive_connect_or_skip() {
             None,
             None,
             None,
+            None,
         )
         .await
         .expect("publish_to_function_queue should succeed");

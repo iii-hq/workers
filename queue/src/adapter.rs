@@ -49,6 +49,8 @@ pub struct QueueMessage {
     pub traceparent: Option<String>,
     /// W3C baggage header for context propagation.
     pub baggage: Option<String>,
+    /// Namespace to invoke `function_id` in; `None` uses the engine default.
+    pub namespace: Option<String>,
 }
 
 pub const DEFAULT_FUNCTION_QUEUE_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
@@ -272,6 +274,9 @@ pub trait QueueAdapter: Send + Sync + 'static {
         // AMQP message priority (`None` = default). Honored by adapters whose
         // queues are declared as priority queues; others ignore it.
         _priority: Option<u8>,
+        // Namespace the delivery must be invoked in. Adapters persist it with
+        // the message so it survives a restart; `None` means the default.
+        _namespace: Option<String>,
     ) -> anyhow::Result<()> {
         anyhow::bail!("function queue publishing is not supported by this adapter")
     }
@@ -450,6 +455,7 @@ impl QueueAdapter for SwappableAdapter {
         traceparent: Option<String>,
         baggage: Option<String>,
         priority: Option<u8>,
+        namespace: Option<String>,
     ) -> anyhow::Result<()> {
         self.current()
             .await
@@ -463,6 +469,7 @@ impl QueueAdapter for SwappableAdapter {
                 traceparent,
                 baggage,
                 priority,
+                namespace,
             )
             .await
     }
@@ -593,6 +600,7 @@ mod tests {
             _traceparent: Option<String>,
             _baggage: Option<String>,
             _priority: Option<u8>,
+            _namespace: Option<String>,
         ) -> anyhow::Result<()> {
             self.function_publish_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -658,6 +666,7 @@ mod tests {
                 "receipt-1",
                 3,
                 1_000,
+                None,
                 None,
                 None,
                 None,
