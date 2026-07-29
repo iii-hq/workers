@@ -13,7 +13,7 @@ use support::{
     branch_sha, commit_file, create_request, git, head_sha, init_repo, make_env,
     make_env_with_runner, test_config, FailingStore, ScriptedTestRunner, TestEnv,
 };
-use worktree::functions::{create, land};
+use worktree::functions::{create, land, prune};
 use worktree::land::{run_step, LandDeps};
 use worktree::state;
 use worktree::types::{LandPhase, Lifecycle};
@@ -158,6 +158,63 @@ async fn dirty_checked_out_primary_blocks_with_w413() {
     assert!(
         !porcelain.contains(&format!("locked iii:worktree {}", s.worktree_id)),
         "blocked worktree must be unlocked, got:\n{porcelain}"
+    );
+}
+
+#[tokio::test]
+async fn prune_preserves_blocked_with_unmerged_then_reaps_integrated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = test_config(tmp.path());
+    cfg.prune_expire_hours = 0; // everything is age-eligible
+    let s = setup(make_env(tmp.path(), cfg), tmp.path()).await;
+    let feature_sha = head_sha(&s.wt_path);
+
+    // Reach LandBlocked via W413 (dirty primary): the worktree itself stays
+    // clean, one commit ahead of main, and main is untouched (not integrated).
+    std::fs::write(s.repo.join("README.md"), "local edits\n").unwrap();
+    let job_id = enqueue_land(&s, "main", LandOverrides::default()).await;
+    let deps = land_deps(&s.env).await;
+    run_step(&deps, &job_id).await.unwrap();
+    let rec = state::get_record(s.env.state.as_ref(), &s.worktree_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rec.lifecycle, Lifecycle::LandBlocked);
+
+    // Unmerged work must be preserved, not reaped.
+    let out = prune::handle(
+        &s.env.deps,
+        prune::Request {
+            repo_path: None,
+            dry_run: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        !out.pruned.contains(&s.worktree_id),
+        "must not prune unmerged: {out:?}"
+    );
+    assert!(out
+        .skipped
+        .iter()
+        .any(|k| k.id == s.worktree_id && k.reason == "unmerged work"));
+    assert!(s.wt_path.is_dir());
+
+    // Once the work is integrated, prune reaps it.
+    let _ = git(&s.repo, &["merge", "--ff-only", &feature_sha]);
+    let out2 = prune::handle(
+        &s.env.deps,
+        prune::Request {
+            repo_path: None,
+            dry_run: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        out2.pruned.contains(&s.worktree_id),
+        "must reap integrated: {out2:?}"
     );
 }
 
