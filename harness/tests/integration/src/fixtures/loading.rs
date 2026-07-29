@@ -144,6 +144,26 @@ impl ScenarioFixture {
                 target.function_id
             );
         }
+        if let Some(fault) = &self.scenario.fault {
+            let target =
+                self.scenario.target.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("fault injection needs a controlled function")
+                })?;
+            anyhow::ensure!(
+                fault.after_target_calls > 0,
+                "fault after_target_calls must be positive"
+            );
+            anyhow::ensure!(
+                fault.function_id == target.function_id,
+                "fault function {:?} does not match controlled target {:?}",
+                fault.function_id,
+                target.function_id
+            );
+            anyhow::ensure!(
+                target.hold_response,
+                "engine fault target must hold its response until SIGKILL"
+            );
+        }
         anyhow::ensure!(
             !self.script.generations.is_empty(),
             "router script has no generations"

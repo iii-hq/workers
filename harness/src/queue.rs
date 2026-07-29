@@ -69,7 +69,8 @@ fn turn_queue_definition() -> Value {
             "concurrency": 10,
             "max_retries": 3,
             "backoff_ms": 1_000,
-            "poll_interval_ms": 100
+            "poll_interval_ms": 100,
+            "redeliver_on_engine_restart": true
         }
     })
 }
@@ -90,7 +91,8 @@ mod tests {
                     "concurrency": 10,
                     "max_retries": 3,
                     "backoff_ms": 1_000,
-                    "poll_interval_ms": 100
+                    "poll_interval_ms": 100,
+                    "redeliver_on_engine_restart": true
                 }
             })
         );

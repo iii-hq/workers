@@ -28,6 +28,8 @@ pub struct CompiledScenarioV1 {
     pub send: CompiledSendV1,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<ControlledTargetV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<CompiledFaultV1>,
     pub deadlines: DeadlinesV1,
 }
 
@@ -63,6 +65,22 @@ pub struct CompiledFunctionPolicyV1 {
 #[serde(rename_all = "snake_case")]
 pub enum CompiledFunctionExposureV1 {
     Native,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CompiledFaultV1 {
+    pub kind: FaultKind,
+    pub function_id: String,
+    #[schemars(range(min = 1))]
+    pub after_target_calls: u64,
+    pub restart_delay_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FaultKind {
+    EngineSigkill,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

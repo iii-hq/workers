@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::process::{ProcessSpec, ProcessSupervisor, TeardownReport, DEFAULT_TEARDOWN_BUDGET};
@@ -14,6 +14,10 @@ pub struct Stack {
     pub ws_url: String,
     pub paths: RunLayout,
     processes: ProcessSupervisor,
+    /// Engine spawn recipe retained for deterministic fault-injection
+    /// restarts: binary, arguments, and working directory.
+    engine_recipe: Option<(PathBuf, Vec<String>, PathBuf)>,
+    engine_restarts: u32,
 }
 
 #[derive(Debug)]
@@ -68,6 +72,12 @@ impl Stack {
             ws_url,
             paths: paths.clone(),
             processes: ProcessSupervisor::default(),
+            engine_recipe: Some((
+                bins.engine.clone(),
+                engine_args.clone(),
+                paths.engine_dir.clone(),
+            )),
+            engine_restarts: 0,
         };
 
         if let Err(error) =
@@ -151,6 +161,29 @@ impl Stack {
         Ok(format!("http://127.0.0.1:{port}"))
     }
 
+    pub async fn kill_engine(&mut self) -> anyhow::Result<()> {
+        let mut engine = self
+            .processes
+            .remove("engine")
+            .ok_or_else(|| anyhow::anyhow!("no live engine child to kill"))?;
+        engine.kill_now().await?;
+        tracing::info!(
+            target: "harness_integration::stack",
+            "engine SIGKILLed for fault injection"
+        );
+        Ok(())
+    }
+
+    pub fn respawn_engine(&mut self) -> anyhow::Result<()> {
+        let (bin, args, cwd) = self
+            .engine_recipe
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("stack has no engine recipe"))?;
+        self.engine_restarts += 1;
+        let log_name = format!("engine.restart{}", self.engine_restarts);
+        self.spawn_child_logged_with_env("engine", &log_name, &bin, &args, &cwd, &[])
+    }
+
     fn spawn_worker(&mut self, worker: &str, bin: &Path) -> anyhow::Result<()> {
         self.spawn_worker_with_env(worker, bin, &[])
     }
@@ -176,6 +209,8 @@ impl Stack {
             ws_url: "ws://127.0.0.1:0".to_string(),
             paths,
             processes: ProcessSupervisor::new(DEFAULT_TEARDOWN_BUDGET),
+            engine_recipe: None,
+            engine_restarts: 0,
         }
     }
 
@@ -209,8 +244,20 @@ impl Stack {
         cwd: &Path,
         extra_env: &[(String, String)],
     ) -> anyhow::Result<()> {
-        let stdout_log = self.paths.log_path(name, "out")?;
-        let stderr_log = self.paths.log_path(name, "err")?;
+        self.spawn_child_logged_with_env(name, name, bin, args, cwd, extra_env)
+    }
+
+    fn spawn_child_logged_with_env(
+        &mut self,
+        name: &str,
+        log_name: &str,
+        bin: &Path,
+        args: &[String],
+        cwd: &Path,
+        extra_env: &[(String, String)],
+    ) -> anyhow::Result<()> {
+        let stdout_log = self.paths.log_path(log_name, "out")?;
+        let stderr_log = self.paths.log_path(log_name, "err")?;
         let mut spec =
             ProcessSpec::new(name, bin, cwd, stdout_log, stderr_log).args(args.iter().cloned());
         for key in ENV_ALLOWLIST {

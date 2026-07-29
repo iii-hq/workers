@@ -14,8 +14,8 @@ use crate::types::frames::{
 };
 use crate::types::probe::ControlledTargetV1;
 use crate::types::scenario::{
-    CompiledFunctionExposureV1, CompiledFunctionPolicyV1, CompiledScenarioV1,
-    CompiledSendOptionsV1, CompiledSendV1, DeadlinesV1,
+    CompiledFaultV1, CompiledFunctionExposureV1, CompiledFunctionPolicyV1, CompiledScenarioV1,
+    CompiledSendOptionsV1, CompiledSendV1, DeadlinesV1, FaultKind,
 };
 use crate::types::script::{
     GenerationMatchV1, JsonMatcherV1, JsonNormalizerV1, ModelFixtureV1, NormalizerOperation,
@@ -52,6 +52,8 @@ pub(super) struct Scenario {
     model: ModelFixtureV1,
     send: Option<Send>,
     target: Option<ControlledTargetV1>,
+    fault: Option<CompiledFaultV1>,
+    deadlines: DeadlinesV1,
     generations: Vec<Generation>,
     expected_turn_statuses: Vec<String>,
     verify: Option<VerifyFn>,
@@ -77,6 +79,8 @@ impl Scenario {
             model,
             send: None,
             target: None,
+            fault: None,
+            deadlines: DeadlinesV1::default(),
             generations: Vec::new(),
             expected_turn_statuses: vec!["completed".to_string()],
             verify: None,
@@ -94,6 +98,31 @@ impl Scenario {
 
     pub(super) fn function(mut self, function: ControlledFunction) -> Self {
         self.target = Some(function.target);
+        self
+    }
+
+    pub(super) fn engine_sigkill(
+        mut self,
+        function: &ControlledFunction,
+        after_target_calls: u64,
+        restart_delay_ms: u64,
+    ) -> Self {
+        assert!(
+            after_target_calls > 0,
+            "fault target call count must be positive"
+        );
+        self.fault = Some(CompiledFaultV1 {
+            kind: FaultKind::EngineSigkill,
+            function_id: function.id().to_string(),
+            after_target_calls,
+            restart_delay_ms,
+        });
+        self
+    }
+
+    pub(super) fn scenario_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        assert!(timeout_ms > 0, "scenario timeout must be positive");
+        self.deadlines.scenario_ms = timeout_ms;
         self
     }
 
@@ -212,7 +241,8 @@ impl Scenario {
                 description: self.description,
                 send: compiled_send,
                 target: self.target,
-                deadlines: DeadlinesV1::default(),
+                fault: self.fault,
+                deadlines: self.deadlines,
             },
             script: RouterScriptV1 {
                 schema_version: SchemaVersion1::V1,
@@ -308,6 +338,7 @@ impl ControlledFunction {
                 description: description.to_string(),
                 request_schema: serde_json::Map::new(),
                 response: Value::Null,
+                hold_response: false,
             },
         }
     }
@@ -325,6 +356,11 @@ impl ControlledFunction {
             "content": [{ "type": "text", "text": text }],
             "is_error": false
         });
+        self
+    }
+
+    pub(super) fn hold_response(mut self) -> Self {
+        self.target.hold_response = true;
         self
     }
 
