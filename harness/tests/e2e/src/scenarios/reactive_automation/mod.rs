@@ -16,7 +16,11 @@ pub(super) const ORDERS_PER_WRITER: i64 = 5;
 pub(super) const EXPECTED_ORDERS: i64 = EXPECTED_WRITERS as i64 * ORDERS_PER_WRITER;
 
 const STUCK_WATCHDOG_SECONDS: u64 = 600;
-const SCENARIO_MAX_TOTAL_TOKENS: u64 = 1_000_000;
+// Shared across the long-lived root and every writer/reactor/finalizer turn.
+// Discovery alone can approach one million input tokens on large-context
+// models before the three writers start, so retain enough room for the actual
+// workload without relaxing any behavioral gate.
+const SCENARIO_MAX_TOTAL_TOKENS: u64 = 2_000_000;
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = ScenarioNames::new(run_id);
