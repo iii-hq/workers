@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Context;
 use serde_json::{json, Value};
@@ -43,6 +43,9 @@ pub(super) async fn collect(
             })
             .collect(),
         max_parallel_calls: max_parallel_calls(&observation.transcript, "harness::spawn"),
+        max_concurrent_sessions: max_concurrent_sessions(
+            &writer_activity_windows(context, &names.writer_sessions).await?,
+        ),
         sessions_in_tree,
     };
 
@@ -308,6 +311,67 @@ fn max_parallel_calls(transcript: &Value, function_id: &str) -> usize {
         .unwrap_or(0)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActivityWindow {
+    started_at: i64,
+    finished_at: i64,
+}
+
+async fn writer_activity_windows(
+    context: &E2eContext,
+    session_ids: &[String],
+) -> anyhow::Result<BTreeMap<String, ActivityWindow>> {
+    let mut windows = BTreeMap::new();
+    for session_id in session_ids {
+        let transcript = context.transcript(session_id).await?;
+        if let Some(window) = activity_window(&transcript) {
+            windows.insert(session_id.clone(), window);
+        }
+    }
+    Ok(windows)
+}
+
+fn activity_window(transcript: &Value) -> Option<ActivityWindow> {
+    let mut timestamps = transcript
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("message"))
+        .filter(|message| {
+            matches!(
+                message.get("role").and_then(Value::as_str),
+                Some("assistant" | "function_result")
+            )
+        })
+        .filter_map(|message| message.get("timestamp").and_then(Value::as_i64));
+    let first = timestamps.next()?;
+    let (started_at, finished_at) =
+        timestamps.fold((first, first), |(started_at, finished_at), timestamp| {
+            (started_at.min(timestamp), finished_at.max(timestamp))
+        });
+    Some(ActivityWindow {
+        started_at,
+        finished_at,
+    })
+}
+
+fn max_concurrent_sessions(windows: &BTreeMap<String, ActivityWindow>) -> usize {
+    windows
+        .values()
+        .map(|candidate| {
+            windows
+                .values()
+                .filter(|window| {
+                    window.started_at <= candidate.started_at
+                        && candidate.started_at < window.finished_at
+                })
+                .count()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +403,83 @@ mod tests {
             }]
         });
         assert_eq!(max_parallel_calls(&transcript, "harness::spawn"), 3);
+    }
+
+    #[test]
+    fn activity_window_uses_model_execution_messages() {
+        let transcript = json!({
+            "messages": [
+                {"message": {"role": "user", "timestamp": 1}},
+                {"message": {"role": "assistant", "timestamp": 10}},
+                {"message": {"role": "function_result", "timestamp": 20}},
+                {"message": {"role": "assistant", "timestamp": 30}}
+            ]
+        });
+
+        assert_eq!(
+            activity_window(&transcript),
+            Some(ActivityWindow {
+                started_at: 10,
+                finished_at: 30,
+            })
+        );
+    }
+
+    #[test]
+    fn concurrent_session_detection_accepts_overlapping_writer_activity() {
+        let windows = BTreeMap::from([
+            (
+                "writer-1".to_string(),
+                ActivityWindow {
+                    started_at: 10,
+                    finished_at: 40,
+                },
+            ),
+            (
+                "writer-2".to_string(),
+                ActivityWindow {
+                    started_at: 20,
+                    finished_at: 50,
+                },
+            ),
+            (
+                "writer-3".to_string(),
+                ActivityWindow {
+                    started_at: 30,
+                    finished_at: 60,
+                },
+            ),
+        ]);
+
+        assert_eq!(max_concurrent_sessions(&windows), 3);
+    }
+
+    #[test]
+    fn concurrent_session_detection_rejects_non_overlapping_writer_activity() {
+        let windows = BTreeMap::from([
+            (
+                "writer-1".to_string(),
+                ActivityWindow {
+                    started_at: 10,
+                    finished_at: 20,
+                },
+            ),
+            (
+                "writer-2".to_string(),
+                ActivityWindow {
+                    started_at: 20,
+                    finished_at: 30,
+                },
+            ),
+            (
+                "writer-3".to_string(),
+                ActivityWindow {
+                    started_at: 30,
+                    finished_at: 40,
+                },
+            ),
+        ]);
+
+        assert_eq!(max_concurrent_sessions(&windows), 1);
     }
 }
