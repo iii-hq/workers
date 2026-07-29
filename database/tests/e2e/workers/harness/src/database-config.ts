@@ -40,6 +40,15 @@ export const DATABASE_CONFIG_VALUE = {
       pool: { ...DEFAULT_POOL },
       capture: 'native' as const,
     },
+    // Same mysql instance as mysql_db, native capture via the binlog
+    // replication stream. Requires the replication grants installed by
+    // mysql-init/grant-replication.sql on first compose volume init.
+    mysql_native_db: {
+      url: process.env.TEST_MYSQL_URL ?? 'mysql://iii:iii@127.0.0.1:53306/iii_test',
+      pool: { ...DEFAULT_POOL },
+      tls: { mode: 'disable' as const },
+      capture: 'native' as const,
+    },
     mysql_db: {
       url: process.env.TEST_MYSQL_URL ?? 'mysql://iii:iii@127.0.0.1:53306/iii_test',
       pool: { ...DEFAULT_POOL },

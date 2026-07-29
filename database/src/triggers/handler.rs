@@ -122,6 +122,41 @@ impl RowChangedHandler {
                         ))
                     })?;
             }
+            Some(Pool::Mysql(my)) => {
+                // Binlog capture installs nothing — but a binding on a server
+                // that cannot be streamed would sit silent forever. Verify
+                // the prerequisites here, where the failure is actionable.
+                use mysql_async::prelude::Queryable as _;
+                let mut conn = my.acquire().await.map_err(|e| {
+                    config_error(format!("db `{}`: acquiring connection: {e}", cfg.db))
+                })?;
+                let settings: Option<(i64, String)> = conn
+                    .query_first("SELECT @@log_bin, @@binlog_format")
+                    .await
+                    .map_err(|e| config_error(format!("db `{}`: {e}", cfg.db)))?;
+                match settings {
+                    Some((1, format)) if format.eq_ignore_ascii_case("ROW") => {}
+                    Some((1, format)) => {
+                        return Err(config_error(format!(
+                            "db `{}`: binlog_format is {format}; native capture needs ROW \
+                             (SET GLOBAL binlog_format = 'ROW', the 8.x default)",
+                            cfg.db
+                        )));
+                    }
+                    _ => {
+                        return Err(config_error(format!(
+                            "db `{}`: the server runs without a binary log (log_bin=OFF); \
+                             native capture reads the binlog and cannot work here",
+                            cfg.db
+                        )));
+                    }
+                }
+                // Doubles as the privilege probe: needs REPLICATION CLIENT,
+                // and the stream itself needs REPLICATION SLAVE.
+                super::mysql_binlog::binlog_position(&mut conn)
+                    .await
+                    .map_err(|e| config_error(format!("db `{}`: {e}", cfg.db)))?;
+            }
             _ => {
                 // finalize() enforces native ⇒ postgres|sqlite; a missing
                 // pool means config and pools drifted, which apply_config

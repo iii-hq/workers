@@ -239,7 +239,14 @@ impl NativeListeners {
                     .ok()?;
                 Some(TaskHandle::Thread { stop })
             }
-            crate::config::DriverKind::Mysql => None, // rejected by config validation
+            crate::config::DriverKind::Mysql => Some(TaskHandle::Async(tokio::spawn(
+                super::mysql_binlog::run_binlog(
+                    name.to_string(),
+                    db.url.clone(),
+                    db.tls.clone(),
+                    Arc::clone(&self.bus),
+                ),
+            ))),
         }
     }
 

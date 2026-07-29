@@ -69,10 +69,10 @@ pub struct DatabaseConfig {
     pub tls: TlsConfig,
     /// How `database::row-changed` events are captured for this database.
     /// `statements` (default) classifies the SQL this worker executes;
-    /// `native` (postgres and file-backed sqlite) installs database triggers
-    /// so writes from ANY client — psql, other processes — fire too.
-    /// Postgres delivers via LISTEN/NOTIFY; sqlite via a changelog table
-    /// drained on filesystem wake-up.
+    /// `native` makes writes from ANY client — psql, other processes — fire
+    /// too. Postgres: triggers + LISTEN/NOTIFY. File-backed sqlite: triggers
+    /// + changelog drained on filesystem wake-up. MySQL: the binlog
+    /// replication stream (needs REPLICATION SLAVE + REPLICATION CLIENT).
     #[serde(default, skip_serializing_if = "CaptureMode::is_statements")]
     pub capture: CaptureMode,
     /// Populated by [`WorkerConfig::finalize`] from the URL scheme.
@@ -165,10 +165,11 @@ pub enum CaptureMode {
     /// invisible. Works on every driver. The default.
     #[default]
     Statements,
-    /// Database triggers capture writes from any client, including other
-    /// processes. Postgres (LISTEN/NOTIFY on a dedicated connection) and
-    /// file-backed sqlite (changelog table + filesystem watch); requires DDL
-    /// privileges on watched tables and table-scoped bindings.
+    /// Capture writes from any client, including other processes.
+    /// Table-scoped bindings only. Postgres: triggers + LISTEN/NOTIFY on a
+    /// dedicated connection (needs DDL rights). File-backed sqlite:
+    /// triggers + changelog table + filesystem watch. MySQL: the binlog
+    /// replication stream (needs replication grants, nothing installed).
     Native,
 }
 
@@ -299,7 +300,11 @@ impl WorkerConfig {
             })?;
             if db.capture == CaptureMode::Native {
                 match db.driver {
-                    DriverKind::Postgres => {}
+                    // Postgres captures via LISTEN/NOTIFY, mysql via the
+                    // binlog replication stream — server-side prerequisites
+                    // (ROW binlog, replication grants) are checked at
+                    // binding registration, where failures are actionable.
+                    DriverKind::Postgres | DriverKind::Mysql => {}
                     DriverKind::Sqlite => {
                         // A `:memory:` database exists per connection — a
                         // watcher connection would open a different database
@@ -311,13 +316,6 @@ impl WorkerConfig {
                                  cannot be observed"
                             ));
                         }
-                    }
-                    DriverKind::Mysql => {
-                        return Err(format!(
-                            "db `{name}`: `capture: native` supports postgres and \
-                             sqlite; mysql has no notification equivalent (binlog \
-                             capture is not implemented)"
-                        ));
                     }
                 }
             }
@@ -463,21 +461,17 @@ mod tests {
     }
 
     #[test]
-    fn capture_native_allows_postgres_and_file_sqlite_only() {
-        let c = cfg("databases:\n  p:\n    url: postgres://u@h/db\n    capture: native\n");
-        assert_eq!(c.databases["p"].capture, CaptureMode::Native);
-        let c = cfg("databases:\n  p:\n    url: sqlite:./data/iii.db\n    capture: native\n");
-        assert_eq!(c.databases["p"].capture, CaptureMode::Native);
+    fn capture_native_allows_all_drivers_except_memory_sqlite() {
+        for url in ["postgres://u@h/db", "sqlite:./data/iii.db", "mysql://u@h/db"] {
+            let c = cfg(&format!("databases:\n  p:\n    url: {url}\n    capture: native\n"));
+            assert_eq!(c.databases["p"].capture, CaptureMode::Native, "{url}");
+        }
 
         // A per-connection `:memory:` database cannot be observed.
         let err =
             WorkerConfig::from_yaml("databases:\n  p:\n    url: \"sqlite::memory:\"\n    capture: native\n")
                 .unwrap_err();
         assert!(err.contains("file-backed"), "got: {err}");
-        let err =
-            WorkerConfig::from_yaml("databases:\n  p:\n    url: mysql://u@h/db\n    capture: native\n")
-                .unwrap_err();
-        assert!(err.contains("mysql has no notification equivalent"), "got: {err}");
 
         // Default stays statements and stays out of the serialized form —
         // existing configs round-trip byte-identical.

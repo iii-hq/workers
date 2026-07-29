@@ -30,7 +30,7 @@ interface RowChangedEvent {
   at: number
 }
 
-/** Everything that differs between the postgres and sqlite native targets. */
+/** Everything that differs between the native targets. */
 interface NativeTarget {
   /** Driver loop that hosts these cases (the statements-path sibling). */
   applies: DriverKey
@@ -40,8 +40,12 @@ interface NativeTarget {
   ph: (i: number) => string
   /** How the database reports the table in events (pg schema-qualifies). */
   eventTable: (table: string) => string
-  /** Catalog probe returning the number of installed capture triggers. */
-  triggerCountSql: (table: string) => { sql: string; params: unknown[] }
+  /**
+   * Catalog probe returning the number of installed capture triggers.
+   * Absent for binlog capture (mysql), which installs nothing — readiness
+   * is proven by the warmup write loop instead.
+   */
+  triggerCountSql?: (table: string) => { sql: string; params: unknown[] }
 }
 
 const TARGETS: NativeTarget[] = [
@@ -70,6 +74,14 @@ const TARGETS: NativeTarget[] = [
       params: [table],
     }),
   },
+  {
+    applies: 'mysql_db',
+    nativeDb: 'mysql_native_db',
+    idColumnDDL: 'BIGINT AUTO_INCREMENT PRIMARY KEY',
+    ph: () => '?',
+    eventTable: (table) => table,
+    // Binlog capture installs nothing to probe for.
+  },
 ]
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -90,25 +102,73 @@ function sink(events: RowChangedEvent[], label: string) {
 }
 
 /**
- * Wait until the worker has installed the capture triggers for `table`.
- * Registration acks race the first write otherwise: delivery starts only
- * once the triggers exist, so a write committed before CREATE TRIGGER lands
- * is silently unheard. The catalog is queried through the worker itself.
+ * Wait until native capture is actually delivering for this target.
+ * Registration acks race the first write otherwise — and delivery is
+ * at-most-once, so a racing write is silently unheard.
+ *
+ * Trigger-based targets (pg, sqlite): poll the catalog through the worker
+ * until the three capture triggers exist. Binlog capture (mysql) installs
+ * nothing to probe, so prove the stream is attached empirically: a warmup
+ * table with its own binding is poked until an event comes back.
  */
-async function waitForCaptureTriggers(
+async function waitForCaptureReady(
   call: (functionId: string, payload: unknown) => Promise<any>,
+  iii: any,
   target: NativeTarget,
   table: string,
 ): Promise<void> {
-  const probe = target.triggerCountSql(table)
-  const deadline = Date.now() + EVENT_TIMEOUT_MS
-  for (;;) {
-    const r = await call('database::query', { db: target.applies, ...probe })
-    if (Number(r.rows?.[0]?.n) === 3) return
-    if (Date.now() > deadline) {
-      throw new Error(`capture triggers for ${table} were not installed within ${EVENT_TIMEOUT_MS}ms`)
+  if (target.triggerCountSql) {
+    const probe = target.triggerCountSql(table)
+    const deadline = Date.now() + EVENT_TIMEOUT_MS
+    for (;;) {
+      const r = await call('database::query', { db: target.applies, ...probe })
+      if (Number(r.rows?.[0]?.n) === 3) return
+      if (Date.now() > deadline) {
+        throw new Error(`capture triggers for ${table} were not installed within ${EVENT_TIMEOUT_MS}ms`)
+      }
+      await sleep(50)
     }
-    await sleep(50)
+  }
+
+  const warmupTable = `e2e_native_warmup_${target.applies}`
+  const fnId = `harness::native_warmup_${target.applies}`
+  const events: RowChangedEvent[] = []
+  await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${warmupTable}` })
+  await call('database::execute', {
+    db: target.nativeDb,
+    sql: `CREATE TABLE ${warmupTable} (id ${target.idColumnDDL}, n INT NOT NULL)`,
+  })
+  const fnRef = iii.registerFunction(
+    fnId,
+    async (payload: RowChangedEvent) => {
+      events.push(payload)
+      return null
+    },
+    { description: 'Warmup sink proving the capture stream is attached.' },
+  )
+  const triggerRef = iii.registerTrigger({
+    type: 'database::row-changed',
+    function_id: fnId,
+    config: { db: target.nativeDb, table: warmupTable },
+  })
+  try {
+    const deadline = Date.now() + 15_000
+    while (events.length === 0) {
+      if (Date.now() > deadline) {
+        throw new Error(`capture stream for ${target.nativeDb} did not deliver within 15s`)
+      }
+      await call('database::execute', {
+        db: target.nativeDb,
+        sql: `INSERT INTO ${warmupTable} (n) VALUES (${target.ph(1)})`,
+        params: [1],
+      })
+      const poked = Date.now()
+      while (events.length === 0 && Date.now() - poked < 700) await sleep(20)
+    }
+  } finally {
+    triggerRef.unregister()
+    fnRef.unregister()
+    await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${warmupTable}` })
   }
 }
 
@@ -186,7 +246,7 @@ function crossClientCase(target: NativeTarget): TestCase {
           )
         }
         // …and until the worker's DDL install has landed in the database.
-        await waitForCaptureTriggers(call, target, table)
+        await waitForCaptureReady(call, iii, target, table)
 
         // 1. External write: enters through the sibling pool. The native
         // subscriber must hear it via the database; the classified
@@ -295,7 +355,7 @@ function tablelessRejectionCase(target: NativeTarget): TestCase {
       })
 
       try {
-        await waitForCaptureTriggers(call, target, table)
+        await waitForCaptureReady(call, iii, target, table)
         await sleep(SILENCE_WINDOW_MS) // let the table-less registration settle too
         await call('database::execute', {
           db: target.nativeDb,

@@ -11,12 +11,15 @@
 //!   commit, by classifying the SQL it was given. A write applied by psql,
 //!   another worker, or a database-side trigger is invisible. No database
 //!   setup, works identically on SQLite, Postgres and MySQL.
-//! * `native` (postgres only, `native.rs`): database triggers + LISTEN/NOTIFY
-//!   on a dedicated connection. Committed writes from ANY client fire events;
-//!   requires DDL privileges and table-scoped bindings.
+//! * `native`: committed writes from ANY client fire events; table-scoped
+//!   bindings only. Postgres (`native.rs`): triggers + LISTEN/NOTIFY on a
+//!   dedicated connection. File-backed sqlite (`sqlite_watch.rs`): triggers →
+//!   changelog table → fs-watch drain. MySQL (`mysql_binlog.rs`): the binlog
+//!   replication stream — nothing installed in the schema at all.
 
 pub mod bus;
 pub mod handler;
+pub mod mysql_binlog;
 pub mod native;
 pub mod sql;
 pub mod sqlite_watch;

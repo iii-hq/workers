@@ -17,14 +17,19 @@ databases:
       idle_timeout_ms: 30000
       acquire_timeout_ms: 5000
   # Native change capture: `database::row-changed` fires for committed writes
-  # from ANY client (psql, other processes), via database triggers. Postgres
-  # delivers over LISTEN/NOTIFY; file-backed sqlite over a changelog table
-  # drained on filesystem wake-up (`:memory:` cannot be captured). Bindings
-  # must name a table; the role needs DDL rights on watched tables. Default
-  # (`capture: statements`) only reports writes made through this worker.
+  # from ANY client (psql, other processes), not just this worker. Bindings
+  # must name a table. Default (`capture: statements`) only reports writes
+  # made through this worker.
+  #   - postgres: triggers + LISTEN/NOTIFY (role needs DDL on watched tables)
+  #   - sqlite (file-backed only): triggers + changelog, fs-watch wake-up
+  #   - mysql: binlog replication stream; nothing installed, but the user
+  #     needs: GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.*
   # analytics:
   #   url: postgres://user:pass@localhost:5432/analytics
   #   capture: native
   # events:
   #   url: sqlite:./data/events.db
+  #   capture: native
+  # orders:
+  #   url: mysql://user:pass@localhost:3306/orders
   #   capture: native
