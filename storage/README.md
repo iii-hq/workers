@@ -12,8 +12,8 @@ iii worker add storage
 ```
 
 `iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker on the next
-`iii start`.
+`~/.iii/config.yaml`, and the engine starts the worker the next time it
+boots.
 
 ## Quickstart
 
@@ -282,7 +282,7 @@ up on first boot — zero cloud credentials required.
 
 ```bash
 # In one terminal: start the engine (must include the configuration worker)
-iii start
+iii --config config.yaml
 
 # In another: build & run the worker, seeding config.yaml on first registration
 cargo run --release -- --url ws://127.0.0.1:49134 --config ./config.yaml
