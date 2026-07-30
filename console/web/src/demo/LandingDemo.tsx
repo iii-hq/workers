@@ -127,11 +127,15 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
   /* ~8s into the replay the composer types out an invitation to run the
      harness yourself — the type-out is the attention cue, and the typed text
      is a live link. Hidden whenever the player owns the composer (the loop
-     retyping the scenario prompt). */
+     retyping the scenario prompt). Keyed on the run, so a replay types it out
+     again instead of revealing the finished line the moment the composer
+     frees up. */
   const started = player.phase !== 'idle'
   const [ctaChars, setCtaChars] = useState(0)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runKey is the restart trigger, not a value read here.
   useEffect(() => {
     if (!started) return
+    setCtaChars(0)
     let interval: ReturnType<typeof setInterval> | undefined
     const delay = setTimeout(() => {
       interval = setInterval(() => {
@@ -148,7 +152,7 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
       clearTimeout(delay)
       clearInterval(interval)
     }
-  }, [started])
+  }, [started, player.runKey])
   const cta = player.typed ? '' : CTA_TEXT.slice(0, ctaChars)
 
   const pinTranscript = useTailFollow(listWrapRef)

@@ -10,7 +10,7 @@
   background: linear-gradient(
     100deg,
     transparent 30%,
-    currentColor 50%,
+    currentcolor 50%,
     transparent 70%
   );
   background-size: 250% 100%;
@@ -38,8 +38,8 @@
 }
 .demo-tilt {
   box-shadow:
-    0 2px 0 color-mix(in srgb, currentColor 40%, transparent),
-    0 6px 14px color-mix(in srgb, currentColor 22%, transparent);
+    0 2px 0 color-mix(in srgb, currentcolor 40%, transparent),
+    0 6px 14px color-mix(in srgb, currentcolor 22%, transparent);
   animation: demo-tilt 7s ease-in-out infinite;
 }
 @keyframes demo-tilt {

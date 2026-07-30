@@ -8,7 +8,7 @@
  *
  * URL params:
  *   ?theme=dark|light   follow the host page's theme (default light)
- *   ?loop=0             play once instead of looping
+ *   ?loop=1             replay forever instead of holding the finished turn
  *   ?paused=1           mount paused; the host posts `{type:'iii-demo',
  *                       active:true}` when the frame is actually on screen
  */

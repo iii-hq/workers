@@ -145,6 +145,8 @@ export interface PlayerState {
   togglePause: () => void
   /** Restart the turn from the top, whatever state it is in. */
   replay: () => void
+  /** Bumped by every restart, for anything outside that plays along. */
+  runKey: number
 }
 
 export function usePlayer(active: boolean, loop = true): PlayerState {
@@ -315,17 +317,18 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
 
     const stale = () => signal.aborted || runIdRef.current !== runId
 
+    /* The listener is dropped when the timer wins too: one controller serves a
+       whole looping run, and the paused-hold polls every 150ms, so leaving
+       them attached grows the list for as long as the demo is on screen. */
     const wait = (ms: number) =>
       new Promise<void>((resolve) => {
-        const t = setTimeout(resolve, ms)
-        signal.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(t)
-            resolve()
-          },
-          { once: true },
-        )
+        const done = () => {
+          clearTimeout(t)
+          signal.removeEventListener('abort', done)
+          resolve()
+        }
+        const t = setTimeout(done, ms)
+        signal.addEventListener('abort', done, { once: true })
       })
 
     const holdWhilePaused = async () => {
@@ -661,6 +664,7 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
     paused,
     togglePause,
     replay,
+    runKey,
   }
 }
 
