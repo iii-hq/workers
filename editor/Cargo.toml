@@ -19,6 +19,9 @@ path = "src/lib.rs"
 # `IIIClient` types.
 iii-sdk = "=0.21.6"
 iii-console-ui = { path = "../crates/console-ui" }
+# Shared observability: the observer fires inside a harness turn, so its span
+# has to hang off that turn rather than dangle as its own trace root.
+iii-helpers = "=0.21.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

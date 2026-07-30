@@ -139,6 +139,7 @@ impl ChangedEmitter {
     pub async fn emit(&self, mut event: ChangedEvent) {
         let targets = self.subscribers.function_ids();
         if targets.is_empty() {
+            tracing::debug!(path = %event.path, "editor::changed: nobody subscribed, dropping");
             return;
         }
         if event.patch.len() > MAX_PATCH_BYTES {
@@ -168,6 +169,15 @@ impl ChangedEmitter {
                 .await
             {
                 tracing::warn!(function_id = %function_id, error = %e, "editor::changed fan-out failed");
+            } else {
+                tracing::info!(
+                    function_id = %function_id,
+                    path = %event.path,
+                    kind = %event.kind,
+                    added = event.added,
+                    removed = event.removed,
+                    "editor::changed delivered"
+                );
             }
         }
     }

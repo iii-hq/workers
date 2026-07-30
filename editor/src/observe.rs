@@ -33,7 +33,7 @@ use crate::bus::Bus;
 use crate::config::WorkerConfig;
 use crate::configuration::ConfigCell;
 use crate::events::{ChangedEmitter, ChangedEvent};
-use crate::{diff, lang, workspace};
+use crate::{diff, workspace};
 
 pub const HOOK_FN_ID: &str = "editor::on-file-change";
 /// The two families that touch files. Matching broadly and filtering on the
@@ -151,9 +151,21 @@ pub fn bind(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>, emitter: Cha
             let emitter = emitter.clone();
             async move {
                 // Nobody watching means nothing to compute.
+                if !emitter.has_subscribers() {
+                    tracing::debug!("observer: no subscribers, skipping");
+                }
                 if emitter.has_subscribers() {
                     let snapshot = cfg.read().await.clone();
-                    report(&bus, &snapshot, &emitter, input).await;
+                    // Named span under the caller's trace: this fires inside an
+                    // agent turn, and an observed edit that dangled as its own
+                    // root would be unreadable in the traces view — the whole
+                    // point is seeing the write and the event as one chain.
+                    iii_helpers::observability::run_in_span(
+                        "editor::observe file change",
+                        None,
+                        || report(&bus, &snapshot, &emitter, input),
+                    )
+                    .await;
                 }
                 Ok::<HookOutput, Error>(HookOutput::default())
             }
@@ -186,8 +198,14 @@ pub fn bind(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>, emitter: Cha
 
 /// Build and emit the event for one observed call.
 async fn report(bus: &Bus, cfg: &WorkerConfig, emitter: &ChangedEmitter, input: HookInput) {
-    let Some(call) = input.call else { return };
-    let Some(touch) = touched(&call) else { return };
+    let Some(call) = input.call else {
+        tracing::debug!("observer: hook fired with no call payload");
+        return;
+    };
+    let Some(touch) = touched(&call) else {
+        tracing::debug!(function_id = %call.function_id, "observer: not a write, ignoring");
+        return;
+    };
 
     // Prefer the session's own workspace: it is where the agent is actually
     // working, which is not necessarily where the editor was last pointed.
@@ -202,6 +220,25 @@ async fn report(bus: &Bus, cfg: &WorkerConfig, emitter: &ChangedEmitter, input: 
             .unwrap_or_else(|| ".".to_string()),
     };
     let rel = relative(&touch.path, &root);
+    // `bus.read` resolves through shell, whose jail/working_dir is its own, NOT
+    // this root. Handing it the root-relative path made every read outside
+    // shell's cwd fail into an empty patch — silently, because the fallback
+    // swallows the error. Reads therefore go out absolute; only the reported
+    // path stays relative.
+    let absolute = if touch.path.starts_with('/') {
+        touch.path.clone()
+    } else if root == "." {
+        rel.clone()
+    } else {
+        format!("{}/{}", root.trim_end_matches('/'), rel)
+    };
+    tracing::debug!(
+        function_id = %call.function_id,
+        kind = touch.kind,
+        path = %rel,
+        root = %root,
+        "observer: reporting a change"
+    );
 
     // A deleted file has nothing to read; everything else gets a patch against
     // HEAD when the folder is a repo, and none when it is not. Either way the
@@ -223,7 +260,7 @@ async fn report(bus: &Bus, cfg: &WorkerConfig, emitter: &ChangedEmitter, input: 
             }
             // Not a repo, or a brand-new file git cannot diff: fall back to
             // counting the file as added so the row still says something.
-            _ => match bus.read(&rel, cfg.max_file_bytes).await {
+            _ => match bus.read(&absolute, cfg.max_file_bytes).await {
                 Ok(file) => {
                     let d = diff::diff(
                         "",
@@ -239,7 +276,6 @@ async fn report(bus: &Bus, cfg: &WorkerConfig, emitter: &ChangedEmitter, input: 
         }
     };
 
-    let _ = lang::for_path(&rel);
     emitter
         .emit(ChangedEvent {
             path: rel,
