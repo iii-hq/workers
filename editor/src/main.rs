@@ -80,12 +80,43 @@ async fn main() -> Result<()> {
     // The configuration worker is a required boot dependency: without it
     // there is no authoritative config, and guessing one silently would mean
     // running with limits nobody chose.
-    configuration::register_config(&iii, seed.as_ref())
-        .await
-        .map_err(|e| anyhow::anyhow!("registering editor configuration: {e}"))?;
-    let cfg = configuration::fetch_config(&iii)
-        .await
-        .map_err(|e| anyhow::anyhow!("loading editor configuration: {e}"))?;
+    //
+    // Required is not the same as first-try, though. A loaded engine answers
+    // the registration late, and dying on that timeout is worse than waiting:
+    // the source watcher restarts the worker straight back into the same race,
+    // so a slow boot turns into a crash loop that never converges. Retry, and
+    // only then fail with the last error rather than a generic one.
+    const CONFIG_BOOT_ATTEMPTS: u32 = 5;
+    let mut loaded = None;
+    let mut last_err = None;
+    for attempt in 1..=CONFIG_BOOT_ATTEMPTS {
+        match configuration::register_config(&iii, seed.as_ref()).await {
+            Ok(()) => match configuration::fetch_config(&iii).await {
+                Ok(cfg) => {
+                    loaded = Some(cfg);
+                    break;
+                }
+                Err(e) => last_err = Some(format!("loading editor configuration: {e}")),
+            },
+            Err(e) => last_err = Some(format!("registering editor configuration: {e}")),
+        }
+        if attempt < CONFIG_BOOT_ATTEMPTS {
+            let backoff = std::time::Duration::from_millis(400 * u64::from(attempt));
+            tracing::warn!(
+                attempt,
+                backoff_ms = backoff.as_millis() as u64,
+                error = last_err.as_deref().unwrap_or("unknown"),
+                "editor configuration not ready; retrying"
+            );
+            tokio::time::sleep(backoff).await;
+        }
+    }
+    let cfg = loaded.ok_or_else(|| {
+        anyhow::anyhow!(
+            "{}",
+            last_err.unwrap_or_else(|| "editor configuration unavailable".to_string())
+        )
+    })?;
     let git_timeout_ms = Arc::new(std::sync::atomic::AtomicU64::new(cfg.git_timeout_ms));
     let cfg = configuration::cell(cfg);
 
