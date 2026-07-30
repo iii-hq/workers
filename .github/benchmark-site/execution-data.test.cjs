@@ -68,6 +68,7 @@ test("merges manifest executions and finds a retained detail", () => {
   const history = mergeExecutionHistory(
     {
       schema_version: 2,
+      mode: "local",
       last_update: "2026-07-29T06:10:00Z",
       executions: [execution()],
     },
@@ -75,7 +76,15 @@ test("merges manifest executions and finds a retained detail", () => {
   );
 
   assert.equal(history.executions.length, 1);
+  assert.equal(history.mode, "local");
   assert.equal(findExecution(history, "123-1").detail_path, "runs/123-1.json");
+});
+
+test("defaults execution history to published mode", () => {
+  assert.equal(
+    mergeExecutionHistory({ executions: [] }, { snapshots: [] }).mode,
+    "published",
+  );
 });
 
 test("keeps workflow attempts distinct and newest first", () => {

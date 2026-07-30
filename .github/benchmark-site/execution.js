@@ -181,6 +181,7 @@
     document.title = `Run ${runLabel} · Harness E2E`;
 
     const workflowUrl = safeUrl(execution.workflow_url);
+    elements.workflowLink.hidden = !workflowUrl;
     if (workflowUrl) elements.workflowLink.href = workflowUrl;
     const commit = execution.source?.sha || "";
     const repo = history.repoUrl.replace(/\/$/, "");

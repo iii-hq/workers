@@ -5,7 +5,27 @@ This static shell replaces the generic benchmark-action index at
 for metric trends. `executions.js` indexes workflow attempts, and
 `runs/<execution-id>.json` supplies the complete retained reports.
 
-Open a local preview from the repository root:
+Import the default local report and serve the real dashboard from the repository
+root:
+
+```bash
+python3 .github/scripts/serve_harness_e2e_dashboard.py
+```
+
+Pass files or directories to import other local executions:
+
+```bash
+python3 .github/scripts/serve_harness_e2e_dashboard.py \
+  harness/target/e2e-reactive-fix/results.json \
+  target/harness-e2e-glm-5.2
+```
+
+Imports accumulate in `target/harness-e2e-dashboard-local`. Reimporting the same
+report is idempotent. Use `--reset` to start a new local history, or `--host`
+and `--port` to change the default `127.0.0.1:4173` listener. The command only
+reads existing reports; it does not run E2E scenarios.
+
+To preview the sample fixtures instead, serve `.github/benchmark-site` directly:
 
 ```bash
 python3 -m http.server 4173 --directory .github/benchmark-site
