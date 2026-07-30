@@ -203,6 +203,9 @@ importers:
       '@iii-dev/console-ui':
         specifier: workspace:*
         version: link:../../packages/console-ui
+      '@pierre/diffs':
+        specifier: ^1.2.7
+        version: 1.2.12(@shikijs/themes@4.3.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
     devDependencies:
       '@types/react':
         specifier: ^19.2.14

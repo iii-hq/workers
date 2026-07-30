@@ -1,5 +1,5 @@
 /**
- * The `#/ext/editor` page: a file tree, tabs, and the shared Monaco editor.
+ * The `#/ext/editor` page: a file tree, tabs, a reader and an editor.
  *
  * A **folder** is the unit, not a repository — tree, tabs, editor and search
  * all work in a plain directory, and git only adds a branch label, change
@@ -15,11 +15,20 @@
  * collapsible — at these widths, every pixel spent on chrome is taken from the
  * code.
  *
- * Chrome note: the shared `CodeEditor` is intentionally bare (no line numbers,
- * no glyph margin, no minimap), and the SOP forbids bundling another editor.
- * So the page carries the chrome instead — the status line below the editor is
- * where the language, size and git deltas live, which is the honest substitute
- * for a gutter we cannot paint.
+ * Reading and writing are different jobs, so they use different surfaces:
+ *
+ * - **read** renders `@pierre/diffs`' `File` — real line numbers, a real
+ *   syntax theme, and a file header. Render-only, which is exactly right for
+ *   the job a file spends most of its time doing.
+ * - **edit** keeps the console's shared Monaco `CodeEditor`. It is
+ *   intentionally bare (no line numbers, no glyph margin, no minimap) because
+ *   it is built to be a form field, and the SOP forbids bundling a second
+ *   editor to get the chrome back. It is still the only surface here that can
+ *   accept a keystroke.
+ *
+ * Diffs are pierre's too: `editor::diff` and `editor::git::hunks` both return
+ * unified patch text, and pierre parses that into a real diff with its own
+ * add/delete colouring rather than the banded rows this page used to paint.
  */
 
 import {
@@ -36,6 +45,8 @@ import {
   Input,
   StatusDot,
 } from '@iii-dev/console-ui'
+import { DEFAULT_THEMES, parsePatchFiles } from '@pierre/diffs'
+import { File, FileDiff } from '@pierre/diffs/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
@@ -58,6 +69,26 @@ import { type ChangedEvent, useWorkspaceEvents } from '../lib/events'
 /** How long a row keeps its "just changed" accent after an edit lands. */
 const FLASH_MS = 12_000
 
+/**
+ * pierre renders into its own shadow root and injects its stylesheet there
+ * from the resolved theme, so there is no CSS asset to ship for it and no
+ * `console:style` entry to add. What it does need is the theme *names* and
+ * which of the pair is live, which is why `themeType` is threaded down from
+ * the console's own light/dark state rather than left on 'system' — the page
+ * is inside the console's theme, not the OS's.
+ *
+ * `disableWorkerPool` is not a performance choice so much as an honest one:
+ * pierre's worker pool needs a `workerFactory` returning a real `Worker`, and
+ * a worker script would have to be a second URL the console serves. It only
+ * serves assets a worker registers as `console:script`, and its loader
+ * requires each of those to export a `default` setup function — a worker
+ * script has none. So highlighting runs on the main thread. For the file
+ * sizes this worker will open (bounded by `max_file_bytes`) that is a
+ * non-issue; a 10k-line file is where it would start to show.
+ */
+const READ_OPTIONS = { theme: DEFAULT_THEMES, overflow: 'scroll' } as const
+const DIFF_OPTIONS = { theme: DEFAULT_THEMES, diffStyle: 'unified', overflow: 'scroll' } as const
+
 /** Editor contents per open path. The worker owns *which* paths are open; the
  *  text being typed is the one thing genuinely local until it is saved. */
 interface Draft {
@@ -76,6 +107,8 @@ interface Delta {
 
 export function EditorPage({ host }: { host: Host }) {
   const api = useMemo(() => createApi(host), [host])
+  // Follows the console's own light/dark toggle, not the OS preference.
+  const themeType = host.useTheme()
 
   const [root, setRoot] = useState('')
   const [rootInput, setRootInput] = useState('')
@@ -86,7 +119,9 @@ export function EditorPage({ host }: { host: Host }) {
   const [treeRoot, setTreeRoot] = useState<TreeNode | null>(null)
   const [drafts, setDrafts] = useState<Record<string, Draft>>({})
   const [activePath, setActivePath] = useState<string | null>(null)
-  const [view, setView] = useState<'edit' | 'diff' | 'git'>('edit')
+  // Reading is the default: opening a file should show you the file, not put
+  // a cursor in it.
+  const [view, setView] = useState<'read' | 'edit' | 'diff' | 'git'>('read')
   const [mode, setMode] = useState<'files' | 'search'>('files')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<string[]>([])
@@ -196,7 +231,7 @@ export function EditorPage({ host }: { host: Host }) {
         }))
         applyWorkspace(await api.workspace())
         setActivePath(path)
-        setView('edit')
+        setView('read')
       } catch (e) {
         setError(errorText(e))
       }
@@ -647,6 +682,9 @@ export function EditorPage({ host }: { host: Host }) {
                 <>
                   <div className="ed-bar">
                     <div className="ed-seg">
+                      <button type="button" data-active={view === 'read'} onClick={() => setView('read')}>
+                        read
+                      </button>
                       <button type="button" data-active={view === 'edit'} onClick={() => setView('edit')}>
                         edit
                       </button>
@@ -670,7 +708,9 @@ export function EditorPage({ host }: { host: Host }) {
                     </div>
                   )}
 
-                  {view === 'edit' ? (
+                  {view === 'read' ? (
+                    <FileView path={activePath} contents={activeDraft.draft} themeType={themeType} />
+                  ) : view === 'edit' ? (
                     <div className="ed-surface">
                       <CodeEditor
                         value={activeDraft.draft}
@@ -686,9 +726,15 @@ export function EditorPage({ host }: { host: Host }) {
                       />
                     </div>
                   ) : view === 'diff' ? (
-                    <LocalDiff host={host} path={activePath} base={activeDraft.base} draft={activeDraft.draft} />
+                    <LocalDiff
+                      host={host}
+                      path={activePath}
+                      base={activeDraft.base}
+                      draft={activeDraft.draft}
+                      themeType={themeType}
+                    />
                   ) : (
-                    <DiffPane path={activePath} patch={delta?.patch ?? ''} />
+                    <PatchView patch={delta?.patch ?? ''} themeType={themeType} />
                   )}
 
                   <div className="ed-status">
@@ -794,6 +840,10 @@ export function EditorPage({ host }: { host: Host }) {
           <DialogDescription>
             Nothing was written. Below is the difference between what is on disk now and what you tried to save.
           </DialogDescription>
+          {/* The one patch still shown as highlighted source rather than as a
+              pierre diff. pierre sizes itself against a flex parent it can
+              scroll inside; a dialog is neither, and a diff that grows past
+              the dialog instead of scrolling in it is worse than this. */}
           <CodeHighlight code={conflict?.conflict_patch ?? ''} language="diff" />
           <div className="ed-bar">
             <Button variant="ghost" onClick={() => setConflict(null)}>
@@ -814,77 +864,73 @@ export function EditorPage({ host }: { host: Host }) {
   )
 }
 
-/** Rendered lines a patch may contribute before it is cut short. */
-const MAX_PATCH_LINES = 600
+/**
+ * One file, read-only, with the chrome a reader wants.
+ *
+ * `cacheKey` is the memo key pierre hands its render cache, so it has to move
+ * whenever the text or the name does or the pane keeps showing the previous
+ * file. Length is in it deliberately: `path` alone would not change when a
+ * file is edited in place, and hashing the whole buffer on every keystroke is
+ * a cost with no reader on the other end of it.
+ */
+function FileView({ path, contents, themeType }: { path: string; contents: string; themeType: 'light' | 'dark' }) {
+  const file = useMemo(() => ({ name: path, contents, cacheKey: `${path}:${contents.length}` }), [contents, path])
+  return (
+    <div className="ed-reader">
+      <File file={file} options={{ ...READ_OPTIONS, themeType }} disableWorkerPool />
+    </div>
+  )
+}
 
 /**
- * A unified patch, rendered in the worker.
+ * A unified patch, rendered by pierre.
  *
- * Deliberately hand-rolled rather than borrowed from the console. The console's
- * own diff cards are backed by a library that weighs megabytes; a worker asset
- * is capped at 8 MiB and bundling a second copy of it measured at 10.3 MB, so
- * the only way to share it would be to widen `@iii-dev/console-ui`. This page
- * is not worth changing the shared contract for.
+ * Parsed here rather than handed to pierre's `PatchDiff`, which throws unless
+ * the text yields exactly one file with exactly one diff — an empty patch (a
+ * clean file) and a multi-file patch both take the page down with it.
+ * `parsePatchFiles` does not throw (`throwOnError` defaults false), so the
+ * empty case is a hint and the multi-file case is a `FileDiff` per file.
  *
- * What it gives up is syntax highlighting inside the diff. What it keeps is the
- * part that makes a diff readable: one row per line, added and removed lines
- * banded rather than marked by a leading character, hunk headers separating
- * them, and the file's real line numbers down the left — taken from the `@@`
- * headers, not counted off the patch rows.
+ * The `cacheKeyPrefix` argument gives every parsed file a cache key derived
+ * from the prefix and its position, which is what keeps pierre from re-reading
+ * an unchanged hunk on each render.
  */
-function DiffPane({ path, patch }: { path: string; patch: string }) {
-  if (patch.trim() === '') return <div className="ed-hint">no changes</div>
+function PatchView({ patch, themeType }: { patch: string; themeType: 'light' | 'dark' }) {
+  const files = useMemo(
+    () => (patch.trim() === '' ? [] : parsePatchFiles(patch, `p${patch.length}`).flatMap((p) => p.files)),
+    [patch],
+  )
 
-  const all = patch.split('\n')
-  const shown = all.slice(0, MAX_PATCH_LINES)
-  const overflow = all.length - shown.length
-
-  let lineNo = 0
-  const rows = shown.map((line, index) => {
-    let kind = 'ctx'
-    let num: number | null = null
-    if (line.startsWith('@@')) {
-      kind = 'hunk'
-      const m = /\+(\d+)/.exec(line.split('@@')[1] ?? '')
-      lineNo = m ? Number(m[1]) : lineNo
-    } else if (
-      line.startsWith('+++') ||
-      line.startsWith('---') ||
-      line.startsWith('diff ') ||
-      line.startsWith('index ')
-    ) {
-      kind = 'meta'
-    } else if (line.startsWith('+')) {
-      kind = 'add'
-      num = lineNo++
-    } else if (line.startsWith('-')) {
-      kind = 'del'
-    } else {
-      num = lineNo++
-    }
-    return { line, kind, num, key: `${index}` }
-  })
+  if (files.length === 0) return <div className="ed-hint">no changes</div>
 
   return (
-    <div className="ed-patch">
-      <div className="ed-patch-head">
-        <span className="ed-card-path">{path}</span>
-      </div>
-      <div className="ed-patch-body">
-        {rows.map((row) => (
-          <div key={row.key} className="ed-dline" data-k={row.kind}>
-            <span className="ed-dnum">{row.num ?? ''}</span>
-            <span className="ed-dtext">{row.line || ' '}</span>
-          </div>
-        ))}
-        {overflow > 0 && <div className="ed-hint">… {overflow} more lines (truncated)</div>}
-      </div>
+    <div className="ed-reader">
+      {files.map((file, index) => (
+        <FileDiff
+          key={file.cacheKey ?? `${file.name}-${index}`}
+          fileDiff={file}
+          options={{ ...DIFF_OPTIONS, themeType }}
+          disableWorkerPool
+        />
+      ))}
     </div>
   )
 }
 
 /** The buffer against its last read: what saving would write. */
-function LocalDiff({ host, path, base, draft }: { host: Host; path: string; base: string; draft: string }) {
+function LocalDiff({
+  host,
+  path,
+  base,
+  draft,
+  themeType,
+}: {
+  host: Host
+  path: string
+  base: string
+  draft: string
+  themeType: 'light' | 'dark'
+}) {
   const api = useMemo(() => createApi(host), [host])
   const [patch, setPatch] = useState<string | null>(null)
 
@@ -904,5 +950,5 @@ function LocalDiff({ host, path, base, draft }: { host: Host; path: string; base
   }, [api, base, draft, path])
 
   if (patch === null) return <div className="ed-hint">computing…</div>
-  return <DiffPane path={path} patch={patch} />
+  return <PatchView patch={patch} themeType={themeType} />
 }

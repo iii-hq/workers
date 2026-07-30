@@ -347,18 +347,25 @@
   overflow: hidden;
 }
 
-[data-iii-ui='editor'] .ed-patch {
+/* The scroll pane for everything @pierre/diffs renders — the read view and
+   both diff views. Only the box is ours: pierre paints inside a shadow root
+   and injects its own stylesheet there from the theme it was handed, so there
+   is nothing here to colour and no CSS asset to ship for it. The gap is for
+   the multi-file case, where each file is its own element. */
+[data-iii-ui='editor'] .ed-reader {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   flex: 1;
   min-height: 0;
   overflow: auto;
   margin: 0 8px;
-  border: 1px solid var(--color-rule);
-  border-radius: 4px;
 }
 
-/* The status line carries what a gutter would have: the shared CodeEditor is
-   deliberately chrome-less (no line numbers, no glyph margin), so the file's
-   language, size and git deltas are surfaced here instead. */
+/* The status line carries what the *edit* surface cannot: the console's shared
+   CodeEditor is deliberately chrome-less (no line numbers, no glyph margin),
+   so the file's language, size and git deltas are surfaced here instead. The
+   read view has pierre's own gutter, and this line still agrees with it. */
 [data-iii-ui='editor'] .ed-status {
   display: flex;
   align-items: center;
@@ -540,62 +547,10 @@
   color: var(--color-ink-faint);
 }
 
-/* ------------------------------------------------------------ patch view */
-
-[data-iii-ui='editor'] .ed-patch-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--color-rule);
-  background: var(--color-panel);
-}
-
-[data-iii-ui='editor'] .ed-patch-body {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
-  line-height: 1.5;
-}
-
-[data-iii-ui='editor'] .ed-dline {
-  display: flex;
-  gap: 8px;
-  padding: 0 8px;
-  white-space: pre;
-}
-
-[data-iii-ui='editor'] .ed-dnum {
-  flex: none;
-  width: 3ch;
-  text-align: right;
-  color: var(--color-ink-ghost);
-  user-select: none;
-}
-
-[data-iii-ui='editor'] .ed-dtext {
-  flex: 1;
-  min-width: 0;
-  overflow-x: auto;
-}
-
-/* Banded rows, not a coloured leading character — colour-blind readers get the
-   +/- glyph, everyone else gets the band. */
-[data-iii-ui='editor'] .ed-dline[data-k='add'] {
-  background: color-mix(in srgb, var(--color-ok) 16%, transparent);
-}
-
-[data-iii-ui='editor'] .ed-dline[data-k='del'] {
-  background: color-mix(in srgb, var(--color-alert) 14%, transparent);
-}
-
-[data-iii-ui='editor'] .ed-dline[data-k='hunk'] {
-  color: var(--color-ink-faint);
-  background: var(--color-panel);
-}
-
-[data-iii-ui='editor'] .ed-dline[data-k='meta'] {
-  color: var(--color-ink-ghost);
-}
+/* The rows this page used to paint for a patch — a banded `.ed-dline` per
+   line, with numbers counted off the `@@` headers — are gone. @pierre/diffs
+   owns diff presentation now, including the add and delete colours, and it
+   paints them inside its own shadow root where none of these tokens reach. */
 
 /* The most recent observed edit. Pushed by `editor::changed`, so this updates
    as an agent works rather than on a timer. */

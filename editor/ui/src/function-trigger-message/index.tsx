@@ -11,13 +11,10 @@
  * through to the console's default card rather than rendering wrong.
  */
 
-import {
-  Badge,
-  CodeHighlight,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
-  type Host,
-} from '@iii-dev/console-ui'
+import { Badge, type FunctionTriggerMessage, type FunctionTriggerRenderer, type Host } from '@iii-dev/console-ui'
+import { DEFAULT_THEMES, parsePatchFiles } from '@pierre/diffs'
+import { FileDiff } from '@pierre/diffs/react'
+import { useMemo } from 'react'
 
 const HANDLED = new Set([
   'editor::workspace::open',
@@ -33,8 +30,15 @@ const HANDLED = new Set([
   'editor::git::hunks',
 ])
 
-/** Patches are bounded before they reach the DOM; a feed row is not a viewer. */
-const MAX_PATCH_LINES = 400
+/**
+ * Files a patch may show in a feed row before it is cut short. A feed row is
+ * not a viewer: the page's `head` and `unsaved` views are where a long change
+ * gets read in full.
+ */
+const MAX_PATCH_FILES = 8
+
+/** Threaded down so pierre renders inside its own shadow root. */
+const DIFF_OPTIONS = { theme: DEFAULT_THEMES, diffStyle: 'unified', overflow: 'scroll' } as const
 
 function record(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null
@@ -48,12 +52,6 @@ function num(value: unknown): number | null {
   return typeof value === 'number' ? value : null
 }
 
-function clampPatch(patch: string): { text: string; clipped: boolean } {
-  const lines = patch.split('\n')
-  if (lines.length <= MAX_PATCH_LINES) return { text: patch, clipped: false }
-  return { text: lines.slice(0, MAX_PATCH_LINES).join('\n'), clipped: true }
-}
-
 function Stat({ added, removed }: { added: number | null; removed: number | null }) {
   if (added === null && removed === null) return null
   return (
@@ -65,13 +63,40 @@ function Stat({ added, removed }: { added: number | null; removed: number | null
   )
 }
 
-function Patch({ patch }: { patch: string }) {
-  const { text, clipped } = clampPatch(patch)
+/**
+ * A unified patch, rendered as a diff.
+ *
+ * Shown through `@pierre/diffs` rather than as diff-highlighted source: an
+ * agent's edit is the thing you most need to read at a glance, and a real diff
+ * gives it real add and delete colouring, hunk separation and the file's own
+ * line numbers.
+ *
+ * Parsed here rather than handed to pierre's `PatchDiff`, which throws unless
+ * the text yields exactly one file with one diff — that would take the whole
+ * chat message down. `parsePatchFiles` does not throw, so an unparseable
+ * patch degrades to nothing rendered instead.
+ */
+function Patch({ host, patch }: { host: Host; patch: string }) {
+  const themeType = host.useTheme()
+  const files = useMemo(() => parsePatchFiles(patch, `p${patch.length}`).flatMap((p) => p.files), [patch])
+  if (files.length === 0) return null
+
+  const shown = files.slice(0, MAX_PATCH_FILES)
   return (
     <div className="ed-card-patch">
-      <CodeHighlight code={text} language="diff" />
-      {clipped && (
-        <div className="ed-muted">shown to the first {MAX_PATCH_LINES} lines — open the file to see the rest</div>
+      {shown.map((file, index) => (
+        <FileDiff
+          key={file.cacheKey ?? `${file.name}-${index}`}
+          fileDiff={file}
+          options={{ ...DIFF_OPTIONS, themeType }}
+          disableWorkerPool
+        />
+      ))}
+      {files.length > shown.length && (
+        <div className="ed-muted">
+          +{files.length - shown.length} more file{files.length - shown.length === 1 ? '' : 's'} — open the file to see
+          the rest
+        </div>
       )}
     </div>
   )
@@ -122,7 +147,7 @@ function renderMove(output: Record<string, unknown>) {
   )
 }
 
-function renderDiff(output: Record<string, unknown>) {
+function renderDiff(output: Record<string, unknown>, host: Host) {
   if (output.identical === true) {
     return (
       <div className="ed-card">
@@ -142,12 +167,12 @@ function renderDiff(output: Record<string, unknown>) {
   return (
     <div className="ed-card">
       <Stat added={num(output.added)} removed={num(output.removed)} />
-      <Patch patch={patch} />
+      <Patch host={host} patch={patch} />
     </div>
   )
 }
 
-function renderSave(output: Record<string, unknown>) {
+function renderSave(output: Record<string, unknown>, host: Host) {
   const path = str(output.path)
   if (path === null) return null
   if (output.conflict === true) {
@@ -159,7 +184,7 @@ function renderSave(output: Record<string, unknown>) {
           <span className="ed-card-path">{path}</span>
         </div>
         <div className="ed-muted">Not written — the file changed since it was opened.</div>
-        {patch !== null && <Patch patch={patch} />}
+        {patch !== null && <Patch host={host} patch={patch} />}
       </div>
     )
   }
@@ -273,7 +298,7 @@ function renderHunks(output: Record<string, unknown>) {
   )
 }
 
-export function createEditorTriggerRenderer(_host: Host): FunctionTriggerRenderer {
+export function createEditorTriggerRenderer(host: Host): FunctionTriggerRenderer {
   return {
     id: 'editor',
     isMatch: (functionId: string) => HANDLED.has(functionId),
@@ -292,9 +317,9 @@ export function createEditorTriggerRenderer(_host: Host): FunctionTriggerRendere
         case 'editor::move':
           return renderMove(output)
         case 'editor::diff':
-          return renderDiff(output)
+          return renderDiff(output, host)
         case 'editor::save':
-          return renderSave(output)
+          return renderSave(output, host)
         case 'editor::open':
           return renderOpen(output)
         case 'editor::find':
