@@ -20,9 +20,9 @@ import { MessageList } from '@/components/chat/MessageList'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
+import { TraceFilters } from '@/pages/TracesV2/components/TraceFilters'
 import { TimelineStrip } from '@/pages/TracesV2/components/timeline/TimelineStrip'
 import { TraceTimeline } from '@/pages/TracesV2/components/timeline/TraceTimeline'
-import { TraceFilters } from '@/pages/TracesV2/components/TraceFilters'
 import {
   ViewSwitcher,
   type ViewType,
@@ -265,7 +265,11 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
 
           <footer className="px-5 pb-6 pt-2 lg:px-9">
             <div className="mx-auto max-w-[760px]">
-              <FakeComposer typed={player.typed} streaming={working} cta={cta} />
+              <FakeComposer
+                typed={player.typed}
+                streaming={working}
+                cta={cta}
+              />
             </div>
           </footer>
         </section>
@@ -377,17 +381,21 @@ function DemoChrome({
   const controlClass =
     'flex items-center gap-1.5 border border-rule px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint transition-colors hover:text-ink'
   return (
-    <div className="flex items-center gap-3 border-b border-rule bg-panel px-5 py-2">
+    <div className="relative flex items-center gap-3 border-b border-rule bg-panel px-5 py-2">
       <span className="font-mono text-[12px] lowercase tracking-[0.06em] text-ink">
         iii console
       </span>
+      <TryItCta />
       <span className="text-ink-ghost">·</span>
       <span className="min-w-0 truncate font-mono text-[12px] text-ink-faint">
         payments ledger
       </span>
       <span className="ml-auto flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-ghost">
         <span className="hidden sm:inline">recorded session</span>
-        <StatusDot tone={working ? 'accent' : 'ink'} pulse={working && !paused} />
+        <StatusDot
+          tone={working ? 'accent' : 'ink'}
+          pulse={working && !paused}
+        />
       </span>
       <button type="button" onClick={onTogglePause} className={controlClass}>
         {paused ? 'play' : 'pause'}
@@ -409,6 +417,37 @@ function DemoChrome({
         </button>
       )}
     </div>
+  )
+}
+
+/**
+ * Centered in the window chrome: the one thing in the frame that leads out of
+ * the recording and into the reader's own terminal. A shine sweep and a slow
+ * 3D tilt carry the attention; the colors are the page's accent tokens, so it
+ * reads as part of whichever theme the host is in. Centered absolutely so it
+ * stays mid-bar regardless of what the controls on either side measure, and
+ * dropped below `md` where there is no room between them.
+ */
+function TryItCta() {
+  return (
+    <span className="demo-3d absolute left-1/2 hidden -translate-x-1/2 md:block">
+      <a
+        href={CTA_HREF}
+        target="_blank"
+        rel="noreferrer"
+        className={cn(
+          'demo-shine demo-tilt flex items-center gap-1.5 overflow-hidden',
+          'border border-accent bg-accent/10 px-3 py-1 font-mono text-[10px]',
+          'uppercase tracking-[0.14em] text-accent transition-colors',
+          'hover:bg-accent hover:text-accent-fg',
+        )}
+      >
+        try it for yourself
+        <span aria-hidden className="text-[11px]">
+          👩‍💻
+        </span>
+      </a>
+    </span>
   )
 }
 

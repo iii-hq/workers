@@ -1,0 +1,64 @@
+/* Demo-only decoration. Kept out of the console's index.css so the product
+   stylesheet stays the product's. Colors come from the theme tokens; only
+   the motion lives here. */
+
+/* Shine sweeping across the CTA pill, in the pill's own text color. */
+.demo-shine::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    currentColor 50%,
+    transparent 70%
+  );
+  background-size: 250% 100%;
+  background-repeat: no-repeat;
+  opacity: 0.35;
+  animation: demo-shine 3.2s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes demo-shine {
+  0%,
+  20% {
+    background-position: 200% 0;
+  }
+  60%,
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+/* The pill as a physical chip: a lip and a cast shadow in its own text color,
+   tumbling slowly through a shallow perspective. Rotation lives on the inner
+   element so the wrapper keeps owning the centering transform. */
+.demo-3d {
+  perspective: 420px;
+}
+.demo-tilt {
+  box-shadow:
+    0 2px 0 color-mix(in srgb, currentColor 40%, transparent),
+    0 6px 14px color-mix(in srgb, currentColor 22%, transparent);
+  animation: demo-tilt 7s ease-in-out infinite;
+}
+@keyframes demo-tilt {
+  0%,
+  100% {
+    transform: rotateX(7deg) rotateZ(-1.4deg);
+  }
+  50% {
+    transform: rotateX(-7deg) rotateZ(1.4deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .demo-shine::after {
+    animation: none;
+    opacity: 0;
+  }
+  .demo-tilt {
+    animation: none;
+    transform: none;
+  }
+}

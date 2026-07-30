@@ -19,6 +19,7 @@ import { TooltipProvider } from '@/components/ui/Tooltip'
 import { LandingDemo } from './LandingDemo'
 import { setScenarioSpeed } from './scenario'
 import '../index.css'
+import './demo.css'
 
 const params = new URLSearchParams(window.location.search)
 document.documentElement.dataset.theme =
