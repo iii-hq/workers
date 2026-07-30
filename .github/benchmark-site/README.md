@@ -35,7 +35,17 @@ credentials remain in access-controlled Actions artifacts.
 
 Each full execution summary also carries compact per-scenario averages for
 tokens, wall time, cost, function calls, function-call errors, sessions, and
-turns. The execution home plots those values as one point per workflow attempt
-across the rolling last 30 days. Selecting a scenario shows all seven metrics at
-once, each in its own chart and scale. Tokens mean input plus output; cache-read
-tokens are already represented in input usage and are not added again.
+turns. Tokens mean input plus output; cache-read tokens are already represented
+in input usage and are not added again. The execution table also exposes exact
+total tokens and function calls for every retained full report.
+
+Efficiency is the primary overview. Its cards show the current operational suite
+totals, while deltas use only successful scenarios with the same subject,
+scenario id, and behavioral contract fingerprint. New and changed scenarios
+collect five comparable executions before receiving a trend verdict. Removed
+scenarios remain visible as historical rows and never count as an efficiency
+gain. Contract changes start a new baseline instead of joining incompatible data.
+Select any scenario in the efficiency table to compare that scenario execution
+by execution. The modal switches between cost, tokens, duration, function calls,
+and function errors, marks contract boundaries, and links each point to its full
+execution details.

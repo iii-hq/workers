@@ -57,6 +57,83 @@
       </section>
 
       <div id="overview-content">
+        <section
+          class="panel efficiency-overview"
+          aria-labelledby="efficiency-overview-heading"
+        >
+          <div class="panel-heading efficiency-heading">
+            <div>
+              <div class="section-kicker">Primary view</div>
+              <h2 id="efficiency-overview-heading">Efficiency overview</h2>
+              <p class="trend-description">
+                Current suite workload with deltas calculated only from unchanged,
+                successful scenarios.
+              </p>
+            </div>
+            <div class="efficiency-baseline">
+              <span>Baseline</span>
+              <strong>Median of up to 7 previous runs</strong>
+              <small id="efficiency-run-label">Waiting for data</small>
+            </div>
+          </div>
+
+          <div class="efficiency-card-grid" aria-label="Latest efficiency totals">
+            <article class="efficiency-card" data-efficiency-metric="cost_usd">
+              <div class="efficiency-card-label">Suite cost</div>
+              <strong id="efficiency-cost">—</strong>
+              <span id="efficiency-cost-delta" class="efficiency-delta">—</span>
+              <div id="efficiency-cost-sparkline" class="efficiency-sparkline"></div>
+            </article>
+            <article class="efficiency-card" data-efficiency-metric="tokens">
+              <div class="efficiency-card-label">Tokens</div>
+              <strong id="efficiency-tokens">—</strong>
+              <span id="efficiency-tokens-delta" class="efficiency-delta">—</span>
+              <div id="efficiency-tokens-sparkline" class="efficiency-sparkline"></div>
+            </article>
+            <article class="efficiency-card" data-efficiency-metric="duration_seconds">
+              <div class="efficiency-card-label">Scenario time</div>
+              <strong id="efficiency-duration">—</strong>
+              <span id="efficiency-duration-delta" class="efficiency-delta">—</span>
+              <div id="efficiency-duration-sparkline" class="efficiency-sparkline"></div>
+            </article>
+            <article class="efficiency-card" data-efficiency-metric="function_call_errors">
+              <div class="efficiency-card-label">Function errors</div>
+              <strong id="efficiency-errors">—</strong>
+              <span id="efficiency-errors-delta" class="efficiency-delta">—</span>
+              <div id="efficiency-errors-sparkline" class="efficiency-sparkline"></div>
+            </article>
+          </div>
+
+          <div id="efficiency-guardrail" class="efficiency-guardrail">
+            <span class="guardrail-status">Waiting for comparable scenarios</span>
+          </div>
+
+          <div class="table-wrap efficiency-table-wrap">
+            <table class="efficiency-table">
+              <thead>
+                <tr>
+                  <th scope="col">Scenario</th>
+                  <th scope="col">Cost</th>
+                  <th scope="col">Tokens</th>
+                  <th scope="col">Duration</th>
+                  <th scope="col">Calls</th>
+                  <th scope="col">Errors</th>
+                  <th scope="col">Trend</th>
+                </tr>
+              </thead>
+              <tbody id="efficiency-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <div class="section-divider-heading">
+          <div>
+            <div class="section-kicker">Outcome guardrails</div>
+            <h2>Latest execution health</h2>
+          </div>
+          <p>Efficiency improvements remain advisory when outcomes regress.</p>
+        </div>
+
         <section class="kpi-grid execution-kpis" aria-label="Latest execution summary">
           <article class="kpi-card kpi-primary">
             <div class="kpi-label">Latest result</div>
@@ -84,37 +161,6 @@
             <div id="kpi-cost" class="kpi-value">—</div>
             <div id="kpi-runtime" class="kpi-delta">—</div>
           </article>
-        </section>
-
-        <section
-          class="panel scenario-metric-panel"
-          aria-labelledby="scenario-metric-heading"
-        >
-          <div class="panel-heading scenario-metric-heading">
-            <div>
-              <div class="section-kicker">Execution history · last 30 days</div>
-              <h2 id="scenario-metric-heading">Scenario metrics over time</h2>
-              <p id="scenario-metric-description" class="trend-description">
-                Select one scenario to compare all of its metrics execution by
-                execution.
-              </p>
-            </div>
-            <div class="trend-controls">
-              <label class="chart-filter">
-                <span>Scenario</span>
-                <select id="scenario-metric-scenario"></select>
-              </label>
-            </div>
-          </div>
-          <div class="scenario-metric-meta">
-            <strong id="scenario-metric-title">Scenario metrics</strong>
-            <span id="scenario-metric-context">Waiting for complete reports</span>
-          </div>
-          <div
-            id="scenario-metric-chart"
-            class="scenario-metric-grid"
-            aria-live="polite"
-          ></div>
         </section>
 
         <section class="panel health-panel" aria-labelledby="health-heading">
@@ -183,6 +229,8 @@
                   <th scope="col">Pass rate</th>
                   <th scope="col">Score</th>
                   <th scope="col">Failures</th>
+                  <th scope="col">Total tokens</th>
+                  <th scope="col">Function calls</th>
                   <th scope="col">Cost</th>
                   <th scope="col">Runtime</th>
                   <th scope="col">Data</th>
@@ -198,6 +246,74 @@
           </div>
         </section>
       </div>
+
+      <dialog id="scenario-history-dialog" class="scenario-history-dialog">
+        <div class="scenario-history-shell">
+          <header class="scenario-history-header">
+            <div>
+              <div class="section-kicker">Scenario history</div>
+              <h2 id="scenario-history-title">Scenario</h2>
+              <p id="scenario-history-context">Execution-by-execution efficiency.</p>
+            </div>
+            <button
+              id="scenario-history-close"
+              class="scenario-history-close"
+              type="button"
+              aria-label="Close scenario history"
+            >×</button>
+          </header>
+
+          <div
+            class="scenario-history-tabs"
+            role="tablist"
+            aria-label="Scenario metric"
+          >
+            <button type="button" role="tab" data-history-metric="cost_usd">
+              Cost
+            </button>
+            <button type="button" role="tab" data-history-metric="tokens">
+              Tokens
+            </button>
+            <button type="button" role="tab" data-history-metric="duration_seconds">
+              Duration
+            </button>
+            <button type="button" role="tab" data-history-metric="function_calls">
+              Function calls
+            </button>
+            <button
+              type="button"
+              role="tab"
+              data-history-metric="function_call_errors"
+            >
+              Function errors
+            </button>
+          </div>
+          <p
+            id="scenario-history-description"
+            class="scenario-history-description"
+          ></p>
+          <div
+            id="scenario-history-chart"
+            class="scenario-history-chart"
+            aria-live="polite"
+          ></div>
+
+          <div class="table-wrap scenario-history-table-wrap">
+            <table class="scenario-history-table">
+              <thead>
+                <tr>
+                  <th scope="col">Execution</th>
+                  <th scope="col">Value</th>
+                  <th scope="col">Delta</th>
+                  <th scope="col">Outcome</th>
+                  <th scope="col">Contract</th>
+                </tr>
+              </thead>
+              <tbody id="scenario-history-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </dialog>
     </main>
 
     <footer>

@@ -2,6 +2,9 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  buildEfficiencyOverview,
+  contractFingerprint,
+  executionEfficiencyTotalsFromDetail,
   executionsWithinDays,
   filterExecutions,
   findExecution,
@@ -13,6 +16,7 @@ const {
   scenarioMetricSeries,
   scenarioMetricRows,
   scenarioMetricsFromDetail,
+  scenarioContract,
 } = require("./execution-data.js");
 
 function execution(overrides = {}) {
@@ -204,17 +208,26 @@ test("derives aggregate legacy entries from benchmark snapshots", () => {
 });
 
 test("derives per-scenario run averages from a full execution detail", () => {
-  const metrics = scenarioMetricsFromDetail({
+  const detail = {
     reports: [
       {
         available: true,
+        subject_id: "glm",
         scenario_id: "direct_answer",
         report: {
           scenarios: [
             {
               scenario_id: "direct_answer",
+              scenario_version: 1,
+              threshold: 50,
+              execution_policy: {
+                max_turns: 2,
+                max_total_tokens: 32768,
+              },
               runs: [
                 {
+                  run_id: "first",
+                  prompt: "answer for first",
                   wall_time_ms: 10_000,
                   cost: { total_usd: 0.2 },
                   metrics: {
@@ -229,6 +242,8 @@ test("derives per-scenario run averages from a full execution detail", () => {
                   },
                 },
                 {
+                  run_id: "second",
+                  prompt: "answer for second",
                   wall_time_ms: 20_000,
                   cost: { total_usd: 0.6 },
                   metrics: {
@@ -248,11 +263,23 @@ test("derives per-scenario run averages from a full execution detail", () => {
         },
       },
     ],
+  };
+  const metrics = scenarioMetricsFromDetail(detail);
+  const scenario = detail.reports[0].report.scenarios[0];
+
+  assert.deepEqual(executionEfficiencyTotalsFromDetail(detail), {
+    total_tokens: 360,
+    function_calls: 6,
   });
 
   assert.deepEqual(metrics, [
     {
+      subject_id: "glm",
       scenario_id: "direct_answer",
+      scenario_version: 1,
+      contract_fingerprint: contractFingerprint(
+        scenarioContract(scenario, "direct_answer", scenario.runs),
+      ),
       run_count: 2,
       averages: {
         tokens: 180,
@@ -375,4 +402,106 @@ test("keeps scenario metrics as one point per workflow execution", () => {
     ).length,
     0,
   );
+});
+
+test("compares efficiency only within the same scenario contract", () => {
+  const metric = (
+    scenarioId,
+    fingerprint,
+    tokens,
+    cost,
+    duration,
+    errors = 0,
+  ) => ({
+    subject_id: "glm",
+    scenario_id: scenarioId,
+    scenario_version: fingerprint === "v2" ? 2 : 1,
+    contract_fingerprint: fingerprint,
+    run_count: 3,
+    averages: {
+      tokens,
+      cost_usd: cost,
+      duration_seconds: duration,
+      function_calls: 2,
+      function_call_errors: errors,
+      sessions: 1,
+      turns: 2,
+    },
+    samples: {},
+  });
+  const withScenarios = (id, scenarioMetrics, scenarios) =>
+    execution({
+      id,
+      completed_at:
+        id === "latest" ? "2026-07-30T12:00:00Z" : "2026-07-29T12:00:00Z",
+      scenario_metrics: scenarioMetrics,
+      subjects: [
+        {
+          id: "glm",
+          model: "glm-5.2",
+          provider: "zai",
+          scenarios: scenarios.map(([scenarioId, passed]) => ({
+            id: scenarioId,
+            passed,
+            status: passed ? "passed" : "hard_gate_failed",
+            hard_gate_failures: passed ? 0 : 1,
+            technical_failures: 0,
+          })),
+        },
+      ],
+    });
+
+  const overview = buildEfficiencyOverview(
+    [
+      withScenarios(
+      "latest",
+      [
+        metric("stable", "v1", 90, 0.9, 8),
+        metric("changed", "v2", 80, 0.8, 7),
+        metric("new_case", "v1", 20, 0.2, 2),
+        metric("failed", "v1", 30, 0.3, 3, 1),
+      ],
+      [
+        ["stable", true],
+        ["changed", true],
+        ["new_case", true],
+        ["failed", false],
+      ],
+    ),
+      withScenarios(
+      "previous",
+      [
+        metric("stable", "v1", 100, 1, 10),
+        metric("changed", "v1", 70, 0.7, 6),
+        metric("retired", "v1", 40, 0.4, 4),
+        metric("failed", "v1", 40, 0.4, 4),
+      ],
+      [
+        ["stable", true],
+        ["changed", true],
+        ["retired", true],
+        ["failed", true],
+      ],
+      ),
+    ],
+    { minimumHistory: 1 },
+  );
+
+  assert.equal(overview.rows.find((row) => row.scenarioId === "stable").trend, "improving");
+  assert.equal(overview.rows.find((row) => row.scenarioId === "changed").lifecycle, "changed");
+  assert.equal(overview.rows.find((row) => row.scenarioId === "new_case").lifecycle, "new");
+  assert.equal(overview.rows.find((row) => row.scenarioId === "retired").lifecycle, "retired");
+  assert.equal(
+    overview.rows.find((row) => row.scenarioId === "failed").trend,
+    "non_comparable",
+  );
+  assert.equal(overview.counts.comparable, 1);
+  assert.equal(overview.counts.new, 1);
+  assert.equal(overview.counts.changed, 1);
+  assert.equal(overview.counts.retired, 1);
+  assert.equal(overview.counts.nonComparable, 1);
+  assert.equal(overview.metrics.tokens.operational, 220);
+  assert.equal(overview.metrics.tokens.comparableCurrent, 90);
+  assert.equal(overview.metrics.tokens.comparableBaseline, 100);
+  assert.equal(overview.metrics.tokens.delta, -10);
 });

@@ -72,6 +72,9 @@ impl ExecutionPolicy {
 #[derive(Debug)]
 pub struct ScenarioSpec {
     pub id: &'static str,
+    /// Increment when the scenario's behavioral contract changes. Structural
+    /// refactors that preserve prompts, gates, criteria, and policy keep it.
+    pub version: u32,
     pub prompt: String,
     pub filesystem_root: Option<PathBuf>,
     pub execution: ExecutionPolicy,
@@ -86,6 +89,9 @@ impl ScenarioSpec {
     pub fn validate(&self) -> Result<()> {
         if self.prompt.trim().is_empty() {
             bail!("scenario {} has an empty prompt", self.id);
+        }
+        if self.version == 0 {
+            bail!("scenario {} version must be positive", self.id);
         }
         self.execution.validate(self.id)?;
         if !(1..=100).contains(&self.threshold) {
@@ -251,6 +257,17 @@ mod tests {
         assert_eq!(
             spec.validate().unwrap_err().to_string(),
             "judge-backed scenario direct_answer threshold must be 50"
+        );
+    }
+
+    #[test]
+    fn validation_rejects_a_zero_contract_version() {
+        let mut spec = ScenarioId::PersistentState.spec("run");
+        spec.version = 0;
+
+        assert_eq!(
+            spec.validate().unwrap_err().to_string(),
+            "scenario persistent_state version must be positive"
         );
     }
 }

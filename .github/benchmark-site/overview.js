@@ -15,7 +15,8 @@
     query: "",
     status: "all",
     event: "all",
-    scenarioMetricScenario: "",
+    scenarioHistoryRow: null,
+    scenarioHistoryMetric: "cost_usd",
   };
   const palette = [
     "#c7ff4a",
@@ -25,6 +26,13 @@
     "#a78bfa",
     "#69e3c2",
     "#ff786f",
+  ];
+  const scenarioHistoryMetricIds = [
+    "cost_usd",
+    "tokens",
+    "duration_seconds",
+    "function_calls",
+    "function_call_errors",
   ];
   const scenarioMetricDefinitions = {
     tokens: {
@@ -71,6 +79,27 @@
     content: document.querySelector("#overview-content"),
     count: document.querySelector("#execution-count"),
     empty: document.querySelector("#empty-state"),
+    efficiencyBody: document.querySelector("#efficiency-body"),
+    efficiencyCost: document.querySelector("#efficiency-cost"),
+    efficiencyCostDelta: document.querySelector("#efficiency-cost-delta"),
+    efficiencyCostSparkline: document.querySelector("#efficiency-cost-sparkline"),
+    efficiencyDuration: document.querySelector("#efficiency-duration"),
+    efficiencyDurationDelta: document.querySelector("#efficiency-duration-delta"),
+    efficiencyDurationSparkline: document.querySelector(
+      "#efficiency-duration-sparkline",
+    ),
+    efficiencyErrors: document.querySelector("#efficiency-errors"),
+    efficiencyErrorsDelta: document.querySelector("#efficiency-errors-delta"),
+    efficiencyErrorsSparkline: document.querySelector(
+      "#efficiency-errors-sparkline",
+    ),
+    efficiencyGuardrail: document.querySelector("#efficiency-guardrail"),
+    efficiencyRunLabel: document.querySelector("#efficiency-run-label"),
+    efficiencyTokens: document.querySelector("#efficiency-tokens"),
+    efficiencyTokensDelta: document.querySelector("#efficiency-tokens-delta"),
+    efficiencyTokensSparkline: document.querySelector(
+      "#efficiency-tokens-sparkline",
+    ),
     event: document.querySelector("#event-filter"),
     kpiCost: document.querySelector("#kpi-cost"),
     kpiCoverage: document.querySelector("#kpi-coverage"),
@@ -86,14 +115,16 @@
     pageLabel: document.querySelector("#page-label"),
     preview: document.querySelector("#preview-badge"),
     previous: document.querySelector("#previous-page"),
-    scenarioMetricChart: document.querySelector("#scenario-metric-chart"),
-    scenarioMetricContext: document.querySelector("#scenario-metric-context"),
-    scenarioMetricDescription: document.querySelector(
-      "#scenario-metric-description",
-    ),
-    scenarioMetricScenario: document.querySelector("#scenario-metric-scenario"),
-    scenarioMetricTitle: document.querySelector("#scenario-metric-title"),
     search: document.querySelector("#execution-search"),
+    scenarioHistoryBody: document.querySelector("#scenario-history-body"),
+    scenarioHistoryChart: document.querySelector("#scenario-history-chart"),
+    scenarioHistoryClose: document.querySelector("#scenario-history-close"),
+    scenarioHistoryContext: document.querySelector("#scenario-history-context"),
+    scenarioHistoryDescription: document.querySelector(
+      "#scenario-history-description",
+    ),
+    scenarioHistoryDialog: document.querySelector("#scenario-history-dialog"),
+    scenarioHistoryTitle: document.querySelector("#scenario-history-title"),
     status: document.querySelector("#status-filter"),
   };
 
@@ -163,6 +194,24 @@
     const remainder = Math.round(seconds % 60);
     return `${minutes}m ${String(remainder).padStart(2, "0")}s`;
   }
+  function formatScenarioHistoryValue(metricId, value) {
+    if (metricId === "cost_usd" && typeof value === "number") {
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: 4,
+        maximumFractionDigits: 4,
+      }).format(value);
+    }
+    if (
+      metricId === "duration_seconds" &&
+      typeof value === "number" &&
+      value < 60
+    ) {
+      return `${compactNumber(value, 1)}s`;
+    }
+    return scenarioMetricDefinitions[metricId].format(value);
+  }
 
   function formatDate(timestamp, withTime = false) {
     if (!timestamp || Number.isNaN(Date.parse(timestamp))) return "Unknown date";
@@ -214,11 +263,248 @@
       `${formatDuration(latest.totals?.wall_time_seconds)} model runtime`;
   }
 
-  async function hydrateScenarioMetrics() {
+  function deltaMeta(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return { label: "Collecting comparable baseline", css: "neutral" };
+    }
+    const absolute = Math.abs(value);
+    if (absolute < 0.05) {
+      return { label: "No change in comparable cohort", css: "neutral" };
+    }
+    return {
+      label: `${value < 0 ? "↓" : "↑"} ${compactNumber(absolute, 1)}% comparable cohort`,
+      css: value < 0 ? "improved" : "regressed",
+    };
+  }
+
+  function renderEfficiencySparkline(element, metricId, color) {
+    const values = history.executions
+      .filter((execution) => (execution.scenario_metrics || []).length)
+      .slice(0, 14)
+      .reverse()
+      .map((execution) =>
+        (execution.scenario_metrics || []).reduce(
+          (total, scenario) =>
+            total + (Number(scenario?.averages?.[metricId]) || 0),
+          0,
+        ),
+      );
+    if (!values.length) {
+      element.replaceChildren();
+      return;
+    }
+    const width = 180;
+    const height = 42;
+    const minimum = Math.min(...values);
+    const maximum = Math.max(...values);
+    const range = maximum - minimum || 1;
+    const x = (index) =>
+      values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
+    const y = (value) => 5 + (1 - (value - minimum) / range) * (height - 10);
+    const svg = svgElement("svg", {
+      viewBox: `0 0 ${width} ${height}`,
+      role: "img",
+      "aria-label": `${scenarioMetricDefinitions[metricId].label} operational trend`,
+    });
+    const areaPoints = [
+      `0,${height}`,
+      ...values.map((value, index) => `${x(index)},${y(value)}`),
+      `${width},${height}`,
+    ].join(" ");
+    svg.append(
+      svgElement("polygon", {
+        points: areaPoints,
+        fill: color,
+        class: "efficiency-sparkline-area",
+      }),
+      svgElement("polyline", {
+        points: values
+          .map((value, index) => `${x(index)},${y(value)}`)
+          .join(" "),
+        stroke: color,
+        class: "efficiency-sparkline-line",
+      }),
+      svgElement("circle", {
+        cx: x(values.length - 1),
+        cy: y(values.at(-1)),
+        r: 3,
+        fill: color,
+      }),
+    );
+    element.replaceChildren(svg);
+  }
+
+  function efficiencyCell(row, metricId, formatter) {
+    const current = row.current?.averages?.[metricId];
+    if (typeof current !== "number") {
+      const previous = row.baseline?.[metricId];
+      return typeof previous === "number"
+        ? `<span class="efficiency-cell-muted">${escapeHtml(
+            formatter(previous),
+          )}<small>last observed</small></span>`
+        : "—";
+    }
+    const delta =
+      row.lifecycle === "comparable" && row.outcome.passed
+        ? row.deltas?.[metricId]
+        : null;
+    const meta = deltaMeta(delta);
+    const deltaLabel =
+      typeof delta === "number"
+        ? `<small class="efficiency-cell-delta delta-${meta.css}">${escapeHtml(
+            `${delta < 0 ? "↓" : delta > 0 ? "↑" : ""}${compactNumber(
+              Math.abs(delta),
+              1,
+            )}%`,
+          )}</small>`
+        : "";
+    return `<span>${escapeHtml(formatter(current))}${deltaLabel}</span>`;
+  }
+
+  function efficiencyTrendMeta(row) {
+    const values = {
+      improving: ["Improving", "improved"],
+      stable: ["Stable", "stable"],
+      regressed: ["Regressed", "regressed"],
+      mixed: ["Mixed", "mixed"],
+      collecting: [
+        `Baseline ${row.historyCount}/${row.established ? row.historyCount : 5}`,
+        "collecting",
+      ],
+      new: ["New", "new"],
+      changed: [`Changed · v${row.scenarioVersion}`, "changed"],
+      retired: ["Removed", "retired"],
+      non_comparable: ["Non-comparable", "non-comparable"],
+    };
+    const [label, css] = values[row.trend] || ["Unknown", "collecting"];
+    return { label, css };
+  }
+
+  function renderEfficiency() {
+    const overview = executionApi.buildEfficiencyOverview(history.executions);
+    if (!overview.latest) {
+      elements.efficiencyBody.innerHTML =
+        '<tr><td colspan="7" class="table-empty">Waiting for complete efficiency reports.</td></tr>';
+      return;
+    }
+    elements.efficiencyRunLabel.textContent =
+      `Run ${overview.latest.run_id || overview.latest.id} · ${formatDate(
+        overview.latest.completed_at,
+        true,
+      )}`;
+    const cards = [
+      {
+        metricId: "cost_usd",
+        value: elements.efficiencyCost,
+        delta: elements.efficiencyCostDelta,
+        sparkline: elements.efficiencyCostSparkline,
+        format: formatCurrency,
+        color: palette[0],
+      },
+      {
+        metricId: "tokens",
+        value: elements.efficiencyTokens,
+        delta: elements.efficiencyTokensDelta,
+        sparkline: elements.efficiencyTokensSparkline,
+        format: (value) => compactNumber(value, 0),
+        color: palette[1],
+      },
+      {
+        metricId: "duration_seconds",
+        value: elements.efficiencyDuration,
+        delta: elements.efficiencyDurationDelta,
+        sparkline: elements.efficiencyDurationSparkline,
+        format: formatDuration,
+        color: palette[3],
+      },
+      {
+        metricId: "function_call_errors",
+        value: elements.efficiencyErrors,
+        delta: elements.efficiencyErrorsDelta,
+        sparkline: elements.efficiencyErrorsSparkline,
+        format: (value) => compactNumber(value, 1),
+        color: palette[6],
+      },
+    ];
+    cards.forEach((card) => {
+      const metric = overview.metrics[card.metricId];
+      card.value.textContent = card.format(metric?.operational);
+      const meta = deltaMeta(metric?.delta);
+      card.delta.textContent = meta.label;
+      card.delta.className = `efficiency-delta delta-${meta.css}`;
+      renderEfficiencySparkline(card.sparkline, card.metricId, card.color);
+    });
+
+    const passed = Number(overview.latest.totals?.passed_scenarios) || 0;
+    const expected = Number(overview.latest.totals?.expected_reports) || 0;
+    const countParts = [
+      `${passed}/${expected} scenarios passed`,
+      `${overview.counts.comparable} comparable`,
+    ];
+    if (overview.counts.new) countParts.push(`${overview.counts.new} new`);
+    if (overview.counts.changed) countParts.push(`${overview.counts.changed} changed`);
+    if (overview.counts.retired) countParts.push(`${overview.counts.retired} removed`);
+    if (overview.counts.nonComparable) {
+      countParts.push(`${overview.counts.nonComparable} non-comparable`);
+    }
+    const guardrailAlert =
+      overview.counts.nonComparable ||
+      overview.counts.changed ||
+      passed < expected;
+    elements.efficiencyGuardrail.className =
+      `efficiency-guardrail${guardrailAlert ? " efficiency-guardrail-alert" : ""}`;
+    elements.efficiencyGuardrail.innerHTML = `
+      <span class="guardrail-status">${
+        guardrailAlert ? "Outcome attention" : "Outcome guardrail passed"
+      }</span>
+      <span>${escapeHtml(countParts.join(" · "))}</span>
+      <small>Lower efficiency totals are positive only for the comparable cohort.</small>
+    `;
+
+    elements.efficiencyBody.replaceChildren();
+    overview.rows.forEach((row) => {
+      const trend = efficiencyTrendMeta(row);
+      const tableRow = document.createElement("tr");
+      tableRow.className = `efficiency-row efficiency-row-${trend.css}`;
+      tableRow.innerHTML = `
+        <th scope="row">
+          <button class="scenario-history-button" type="button">
+            <span>${escapeHtml(titleCase(row.scenarioId))}</span>
+            <small>${escapeHtml(row.subjectId || "default subject")} · v${escapeHtml(
+            row.scenarioVersion,
+          )}</small></button>
+        </th>
+        <td>${efficiencyCell(row, "cost_usd", formatCurrency)}</td>
+        <td>${efficiencyCell(row, "tokens", (value) =>
+          compactNumber(value, 0),
+        )}</td>
+        <td>${efficiencyCell(row, "duration_seconds", formatDuration)}</td>
+        <td>${efficiencyCell(row, "function_calls", (value) =>
+          compactNumber(value, 1),
+        )}</td>
+        <td>${efficiencyCell(row, "function_call_errors", (value) =>
+          compactNumber(value, 1),
+        )}</td>
+        <td><span class="efficiency-trend trend-${trend.css}">${escapeHtml(
+          trend.label,
+        )}</span></td>
+      `;
+      tableRow
+        .querySelector(".scenario-history-button")
+        .addEventListener("click", () => openScenarioHistory(row));
+      elements.efficiencyBody.append(tableRow);
+    });
+  }
+
+  async function hydrateExecutionMetrics() {
     await Promise.all(
       history.executions.map(async (execution) => {
+        const hasScenarioMetrics = (execution.scenario_metrics || []).length > 0;
+        const hasEfficiencyTotals =
+          typeof execution.totals?.total_tokens === "number" &&
+          typeof execution.totals?.function_calls === "number";
         if (
-          (execution.scenario_metrics || []).length ||
+          (hasScenarioMetrics && hasEfficiencyTotals) ||
           execution.availability !== "full" ||
           typeof execution.detail_path !== "string" ||
           execution.detail_path.includes("..") ||
@@ -242,10 +528,16 @@
             if (!response.ok) return;
             detail = await response.json();
           }
-          execution.scenario_metrics =
-            executionApi.scenarioMetricsFromDetail(detail);
+          if (!hasScenarioMetrics) {
+            execution.scenario_metrics =
+              executionApi.scenarioMetricsFromDetail(detail);
+          }
+          execution.totals = {
+            ...execution.totals,
+            ...executionApi.executionEfficiencyTotalsFromDetail(detail),
+          };
         } catch (_error) {
-          execution.scenario_metrics = [];
+          if (!hasScenarioMetrics) execution.scenario_metrics = [];
         }
       }),
     );
@@ -259,339 +551,357 @@
     return element;
   }
 
-  function metricAxisValue(metricId, value) {
-    if (metricId === "cost_usd") {
-      return value < 1 ? `$${compactNumber(value, 2)}` : `$${compactNumber(value, 1)}`;
-    }
-    if (metricId === "duration_seconds") return formatDuration(value);
-    return compactNumber(value, value < 10 ? 1 : 0);
+  function scenarioHistoryEntries(row) {
+    return history.executions
+      .map((execution) => {
+        const metric = (execution.scenario_metrics || []).find(
+          (candidate) =>
+            String(candidate.subject_id || "") === row.subjectId &&
+            candidate.scenario_id === row.scenarioId,
+        );
+        if (!metric) return null;
+        const subject = row.subjectId
+          ? (execution.subjects || []).find(
+              (candidate) => String(candidate.id || "") === row.subjectId,
+            )
+          : (execution.subjects || []).find((candidate) =>
+              (candidate.scenarios || []).some(
+                (scenario) => scenario.id === row.scenarioId,
+              ),
+            );
+        const scenario = (subject?.scenarios || []).find(
+          (candidate) => candidate.id === row.scenarioId,
+        );
+        const status =
+          execution.status === "cancelled"
+            ? "cancelled"
+            : !scenario || scenario.status === "missing_report"
+              ? "incomplete"
+              : scenario.passed
+                ? "passed"
+                : "failed";
+        return { execution, metric, scenario, status };
+      })
+      .filter(Boolean)
+      .reverse();
   }
 
-  function pointStatus(point, scenarioId) {
-    const scenario = (point.execution?.subjects || [])
-      .flatMap((subject) =>
-        (subject.scenarios || []).map((item) => ({ ...item, subjectId: subject.id })),
-      )
-      .find((item) => item.id === scenarioId);
-    if (!scenario || scenario.status === "missing_report") return "incomplete";
-    return scenario.passed ? "pass" : "fail";
-  }
-
-  function pointUrl(point, scenarioId) {
-    const subject = (point.execution?.subjects || []).find((item) =>
-      (item.scenarios || []).some((scenario) => scenario.id === scenarioId),
+  function renderScenarioHistoryTooltip(svg, point, entry, definition, metricId, bounds) {
+    svg.querySelector(".scenario-history-tooltip")?.remove();
+    const width = 212;
+    const height = 70;
+    const x = Math.min(Math.max(point.x - width / 2, 8), bounds.width - width - 8);
+    const y = point.y > 92 ? point.y - height - 15 : point.y + 15;
+    const meta = statusMeta(entry.status);
+    const group = svgElement("g", { class: "scenario-history-tooltip" });
+    group.append(
+      svgElement("rect", {
+        x,
+        y,
+        width,
+        height,
+        rx: 8,
+        class: "chart-tooltip-box",
+      }),
     );
-    return detailUrl(
-      point.execution,
-      subject ? { subjectId: subject.id, scenarioId } : null,
-    );
+    const heading = svgElement("text", {
+      x: x + 12,
+      y: y + 18,
+      class: "chart-tooltip-heading",
+    });
+    heading.textContent = `${formatDate(entry.execution.completed_at, true)} · run ${
+      entry.execution.run_id || entry.execution.id
+    }`;
+    const value = svgElement("text", {
+      x: x + 12,
+      y: y + 40,
+      class: "chart-tooltip-value",
+    });
+    value.textContent = formatScenarioHistoryValue(metricId, point.value);
+    const outcome = svgElement("text", {
+      x: x + 12,
+      y: y + 58,
+      class: `chart-tooltip-status chart-tooltip-status-${meta.css}`,
+    });
+    outcome.textContent = `${meta.label} · v${entry.metric.scenario_version || 1}`;
+    group.append(heading, value, outcome);
+    svg.append(group);
   }
 
-  function renderScenarioMetricFilter(metricExecutions) {
-    const scenarioIds = [
-      ...new Set(
-        metricExecutions.flatMap((execution) =>
-          (execution.scenario_metrics || []).map((scenario) => scenario.scenario_id),
-        ),
-      ),
-    ].filter(Boolean).sort();
-    if (!scenarioIds.includes(state.scenarioMetricScenario)) {
-      state.scenarioMetricScenario = scenarioIds[0] || "";
-    }
-    elements.scenarioMetricScenario.replaceChildren(
-      ...scenarioIds.map((scenarioId) =>
-        new Option(titleCase(scenarioId), scenarioId),
-      ),
-    );
-    elements.scenarioMetricScenario.value = state.scenarioMetricScenario;
-    elements.scenarioMetricScenario.disabled = scenarioIds.length === 0;
-    return scenarioIds;
-  }
-
-  function renderScenarioMetricChart(
-    metricId,
-    scenarioId,
-    metricExecutions,
-    color,
-  ) {
+  function renderScenarioHistoryChart(entries, metricId, row) {
     const definition = scenarioMetricDefinitions[metricId];
-    const item = executionApi.scenarioMetricSeries(
-      metricExecutions,
-      metricId,
-      scenarioId,
-    )[0];
-    const points = item?.points || [];
-    const values = points.map((point) => point.value);
-    const card = document.createElement("article");
-    card.className = "scenario-metric-card";
-    const heading = document.createElement("div");
-    heading.className = "scenario-metric-card-heading";
-    const label = document.createElement("h3");
-    const swatch = document.createElement("i");
-    swatch.style.background = color;
-    label.append(swatch, document.createTextNode(definition.label));
-    const latest = document.createElement("span");
-    latest.textContent = points.length
-      ? `Latest ${definition.format(points.at(-1).value)}`
-      : "No data";
-    heading.append(label, latest);
-    const description = document.createElement("p");
-    description.textContent = definition.description;
-    const chart = document.createElement("div");
-    chart.className = "scenario-metric-mini-chart";
-    card.append(heading, description, chart);
-
-    if (!values.length) {
-      chart.innerHTML =
-        '<div class="chart-empty">No execution-level points are available.</div>';
-      return card;
+    const points = entries
+      .map((entry) => ({
+        ...entry,
+        value: entry.metric?.averages?.[metricId],
+      }))
+      .filter(
+        (entry) =>
+          typeof entry.value === "number" && Number.isFinite(entry.value),
+      );
+    if (!points.length) {
+      elements.scenarioHistoryChart.innerHTML =
+        '<div class="chart-empty">No values were collected for this metric.</div>';
+      return;
     }
 
-    const compactViewport = window.matchMedia("(max-width: 560px)").matches;
-    const width = compactViewport ? 620 : 520;
-    const height = compactViewport ? 290 : 250;
-    const margin = compactViewport
-      ? { top: 18, right: 18, bottom: 50, left: 54 }
-      : { top: 18, right: 18, bottom: 46, left: 54 };
-    const innerWidth = width - margin.left - margin.right;
-    const innerHeight = height - margin.top - margin.bottom;
-    const domainMin = 0;
-    const domainMax = Math.max(...values) * 1.14 || 1;
-    const xIndex = new Map(
-      metricExecutions.map((execution, index) => [execution.id, index]),
-    );
-    const x = (executionId) => {
-      const index = xIndex.get(executionId) || 0;
-      if (metricExecutions.length === 1) return margin.left + innerWidth / 2;
-      return margin.left + (index / (metricExecutions.length - 1)) * innerWidth;
-    };
+    const width = 960;
+    const height = 330;
+    const margin = { top: 28, right: 24, bottom: 48, left: 74 };
+    const plotWidth = width - margin.left - margin.right;
+    const plotHeight = height - margin.top - margin.bottom;
+    const baseline = row.baseline?.[metricId];
+    const domain = points.map((point) => point.value);
+    if (typeof baseline === "number") domain.push(baseline);
+    let minimum = Math.min(...domain);
+    let maximum = Math.max(...domain);
+    const padding =
+      maximum === minimum
+        ? Math.max(Math.abs(maximum) * 0.15, 1)
+        : (maximum - minimum) * 0.15;
+    minimum = Math.max(0, minimum - padding);
+    maximum += padding;
+    if (maximum === minimum) maximum = minimum + 1;
+    const x = (index) =>
+      margin.left +
+      (points.length === 1 ? plotWidth / 2 : (index / (points.length - 1)) * plotWidth);
     const y = (value) =>
-      margin.top +
-      innerHeight -
-      ((value - domainMin) / (domainMax - domainMin || 1)) * innerHeight;
-
+      margin.top + (1 - (value - minimum) / (maximum - minimum)) * plotHeight;
     const svg = svgElement("svg", {
       viewBox: `0 0 ${width} ${height}`,
       role: "img",
-      "aria-label": `${definition.label} by workflow execution for ${titleCase(scenarioId)}`,
+      "aria-label": `${definition.label} history for ${titleCase(row.scenarioId)}`,
     });
-    const svgDescription = svgElement("desc");
-    svgDescription.textContent =
-      `Line chart comparing ${definition.label.toLowerCase()} across ${metricExecutions.length} workflow executions.`;
-    svg.append(svgDescription);
 
-    for (let index = 0; index <= 3; index += 1) {
-      const value = domainMin + ((domainMax - domainMin) * index) / 3;
-      const yPosition = y(value);
+    for (let index = 0; index <= 4; index += 1) {
+      const value = minimum + ((maximum - minimum) * index) / 4;
+      const pointY = y(value);
       svg.append(
         svgElement("line", {
           x1: margin.left,
+          y1: pointY,
           x2: width - margin.right,
-          y1: yPosition,
-          y2: yPosition,
+          y2: pointY,
           class: "chart-grid-line",
         }),
       );
       const label = svgElement("text", {
         x: margin.left - 12,
-        y: yPosition + 4,
+        y: pointY + 4,
         "text-anchor": "end",
         class: "chart-axis-label",
       });
-      label.textContent = metricAxisValue(metricId, value);
+      label.textContent = formatScenarioHistoryValue(metricId, value);
       svg.append(label);
     }
 
-    const labelStep = Math.max(1, Math.ceil(metricExecutions.length / 4));
-    metricExecutions.forEach((execution, index) => {
-      if (index % labelStep !== 0 && index !== metricExecutions.length - 1) return;
+    if (typeof baseline === "number") {
+      const baselineY = y(baseline);
+      svg.append(
+        svgElement("line", {
+          x1: margin.left,
+          y1: baselineY,
+          x2: width - margin.right,
+          y2: baselineY,
+          class: "chart-target",
+        }),
+      );
+      const baselineLabel = svgElement("text", {
+        x: width - margin.right,
+        y: baselineY - 7,
+        "text-anchor": "end",
+        class: "chart-target-label",
+      });
+      baselineLabel.textContent = `Comparable baseline ${formatScenarioHistoryValue(
+        metricId,
+        baseline,
+      )}`;
+      svg.append(baselineLabel);
+    }
+
+    let segment = [];
+    const appendSegment = () => {
+      if (segment.length > 1) {
+        svg.append(
+          svgElement("polyline", {
+            points: segment.map((point) => `${point.x},${point.y}`).join(" "),
+            stroke: palette[0],
+            class: "chart-path",
+          }),
+        );
+      }
+      segment = [];
+    };
+    points.forEach((entry, index) => {
+      const point = { x: x(index), y: y(entry.value), value: entry.value };
+      const previous = points[index - 1];
+      if (
+        previous &&
+        previous.metric.contract_fingerprint !== entry.metric.contract_fingerprint
+      ) {
+        appendSegment();
+        const boundaryX = (x(index - 1) + x(index)) / 2;
+        svg.append(
+          svgElement("line", {
+            x1: boundaryX,
+            y1: margin.top,
+            x2: boundaryX,
+            y2: height - margin.bottom,
+            class: "chart-contract-boundary",
+          }),
+        );
+        const label = svgElement("text", {
+          x: boundaryX + 5,
+          y: margin.top + 10,
+          class: "chart-contract-label",
+        });
+        label.textContent = `v${entry.metric.scenario_version || 1}`;
+        svg.append(label);
+      }
+      segment.push(point);
+      if (index === points.length - 1) appendSegment();
+
+      const link = svgElement("a", {
+        href: detailUrl(entry.execution, row),
+        "aria-label": `${definition.label} ${definition.format(entry.value)}, ${
+          statusMeta(entry.status).label
+        }, ${formatDate(entry.execution.completed_at, true)}`,
+      });
+      const circle = svgElement("circle", {
+        cx: point.x,
+        cy: point.y,
+        r: 4.5,
+        fill: palette[0],
+        class: `chart-point chart-point-${statusMeta(entry.status).css}`,
+      });
+      link.append(circle);
+      const showTooltip = () =>
+        renderScenarioHistoryTooltip(
+          svg,
+          point,
+          entry,
+          definition,
+          metricId,
+          { width, height },
+        );
+      link.addEventListener("mouseenter", showTooltip);
+      link.addEventListener("focus", showTooltip);
+      link.addEventListener("mouseleave", () =>
+        svg.querySelector(".scenario-history-tooltip")?.remove(),
+      );
+      link.addEventListener("blur", () =>
+        svg.querySelector(".scenario-history-tooltip")?.remove(),
+      );
+      svg.append(link);
+    });
+
+    const labelIndexes = [
+      ...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1]),
+    ];
+    labelIndexes.forEach((index) => {
       const label = svgElement("text", {
-        x: x(execution.id),
-        y: height - 20,
-        "text-anchor": "middle",
+        x: x(index),
+        y: height - 16,
+        "text-anchor":
+          index === 0
+            ? "start"
+            : index === points.length - 1
+              ? "end"
+              : "middle",
         class: "chart-x-label",
       });
-      label.textContent = `…${String(execution.run_id || execution.id).slice(-6)}`;
+      label.textContent = formatDate(points[index].execution.completed_at, true);
       svg.append(label);
     });
-
-    let activeTooltip = null;
-    function hideTooltip() {
-      activeTooltip?.remove();
-      activeTooltip = null;
-    }
-
-    function showTooltip(point) {
-      hideTooltip();
-      const pointX = x(point.executionId);
-      const pointY = y(point.value);
-      const boxWidth = 224;
-      const boxHeight = 58;
-      const boxX =
-        pointX + boxWidth + 16 > width - margin.right
-          ? pointX - boxWidth - 14
-          : pointX + 14;
-      const boxY = Math.max(
-        margin.top,
-        Math.min(pointY - boxHeight - 12, height - margin.bottom - boxHeight),
-      );
-      const statusName = pointStatus(point, scenarioId);
-      const tooltip = svgElement("g", {
-        class: "chart-tooltip",
-        "aria-hidden": "true",
-      });
-      tooltip.append(
-        svgElement("line", {
-          x1: pointX,
-          x2: pointX,
-          y1: margin.top,
-          y2: height - margin.bottom,
-          class: "chart-tooltip-guide",
-        }),
-        svgElement("circle", {
-          cx: pointX,
-          cy: pointY,
-          r: 7,
-          fill: color,
-          class: "chart-tooltip-point",
-        }),
-        svgElement("rect", {
-          x: boxX,
-          y: boxY,
-          width: boxWidth,
-          height: boxHeight,
-          rx: 8,
-          class: "chart-tooltip-box",
-        }),
-      );
-      const heading = svgElement("text", {
-        x: boxX + 12,
-        y: boxY + 19,
-        class: "chart-tooltip-heading",
-      });
-      heading.textContent =
-        `${definition.label} · run ${point.runId}`;
-      const value = svgElement("text", {
-        x: boxX + 12,
-        y: boxY + 40,
-        class: "chart-tooltip-value",
-      });
-      value.textContent = definition.format(point.value);
-      const status = svgElement("text", {
-        x: boxX + boxWidth - 12,
-        y: boxY + 40,
-        "text-anchor": "end",
-        class: `chart-tooltip-status chart-tooltip-status-${statusName}`,
-      });
-      status.textContent =
-        statusName === "pass"
-          ? "Passed"
-          : statusName === "fail"
-            ? "Attention"
-            : "Incomplete";
-      tooltip.append(heading, value, status);
-      svg.append(tooltip);
-      activeTooltip = tooltip;
-    }
-
-    const polylinePoints = points
-      .map((point) => `${x(point.executionId)},${y(point.value)}`)
-      .join(" ");
-    const hitPath = svgElement("polyline", {
-      points: polylinePoints,
-      class: "chart-hit-path",
-    });
-    hitPath.addEventListener("mousemove", (event) => {
-      const bounds = svg.getBoundingClientRect();
-      const cursorX = ((event.clientX - bounds.left) / bounds.width) * width;
-      const nearest = points.reduce((candidate, point) =>
-        Math.abs(x(point.executionId) - cursorX) <
-        Math.abs(x(candidate.executionId) - cursorX)
-          ? point
-          : candidate,
-      );
-      showTooltip(nearest);
-    });
-    hitPath.addEventListener("mouseleave", hideTooltip);
-    svg.append(hitPath);
-    svg.append(
-      svgElement("polyline", {
-        points: polylinePoints,
-        stroke: color,
-        class: "chart-path",
-      }),
-    );
-    points.forEach((point) => {
-      const statusName = pointStatus(point, scenarioId);
-      const circle = svgElement("circle", {
-        cx: x(point.executionId),
-        cy: y(point.value),
-        r: 4,
-        fill: color,
-        class: `chart-point chart-point-${statusName}`,
-        tabindex: 0,
-        role: "link",
-      });
-      const url = pointUrl(point, scenarioId);
-      circle.setAttribute(
-        "aria-label",
-        `${titleCase(scenarioId)}, run ${point.runId}, ${definition.label} ${definition.format(point.value)}, ${statusName}. Open execution.`,
-      );
-      circle.addEventListener("click", () => window.location.assign(url));
-      circle.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          window.location.assign(url);
-        }
-      });
-      circle.addEventListener("mouseenter", () => showTooltip(point));
-      circle.addEventListener("mouseleave", hideTooltip);
-      circle.addEventListener("focus", () => showTooltip(point));
-      circle.addEventListener("blur", hideTooltip);
-      const title = svgElement("title");
-      title.textContent =
-        `${titleCase(scenarioId)} · ${formatDate(point.timestamp, true)} · ${definition.format(point.value)}`;
-      circle.append(title);
-      svg.append(circle);
-    });
-
-    chart.replaceChildren(svg);
-    return card;
+    elements.scenarioHistoryChart.replaceChildren(svg);
   }
 
-  function renderScenarioMetrics() {
-    const metricExecutions = executionApi.executionsWithinDays(
-      history.executions,
-      30,
-    ).reverse();
-    const scenarioIds = renderScenarioMetricFilter(metricExecutions);
-    const scenarioId = state.scenarioMetricScenario;
-    elements.scenarioMetricTitle.textContent = scenarioId
-      ? titleCase(scenarioId)
-      : "Scenario metrics";
-    elements.scenarioMetricDescription.textContent =
-      "Each chart uses its own scale. Hover a point to inspect the workflow attempt or select it to open the complete report.";
-    elements.scenarioMetricContext.textContent =
-      `${metricExecutions.length} retained execution${
-        metricExecutions.length === 1 ? "" : "s"
-      } · ${Object.keys(scenarioMetricDefinitions).length} metrics · one point per workflow attempt`;
+  function renderScenarioHistoryTable(entries, metricId, row) {
+    const definition = scenarioMetricDefinitions[metricId];
+    let previousComparable = null;
+    const prepared = entries.map((entry, index) => {
+      const value = entry.metric?.averages?.[metricId];
+      const comparable =
+        entry.status === "passed" &&
+        previousComparable &&
+        previousComparable.metric.contract_fingerprint ===
+          entry.metric.contract_fingerprint;
+      const delta = comparable
+        ? ((value - previousComparable.value) / Math.abs(previousComparable.value)) * 100
+        : null;
+      const previous = entries[index - 1];
+      const contractChanged = Boolean(
+        previous &&
+          previous.metric.contract_fingerprint !== entry.metric.contract_fingerprint,
+      );
+      if (entry.status === "passed" && typeof value === "number" && value !== 0) {
+        previousComparable = { metric: entry.metric, value };
+      }
+      return { ...entry, value, delta, contractChanged };
+    });
+    elements.scenarioHistoryBody.replaceChildren();
+    prepared.reverse().forEach((entry) => {
+      const meta = statusMeta(entry.status);
+      const tableRow = document.createElement("tr");
+      const delta =
+        typeof entry.delta === "number" && Number.isFinite(entry.delta)
+          ? `${entry.delta < 0 ? "↓" : entry.delta > 0 ? "↑" : ""}${compactNumber(
+              Math.abs(entry.delta),
+              1,
+            )}%`
+          : "—";
+      tableRow.innerHTML = `
+        <td><div class="release-cell"><a href="${escapeHtml(
+          detailUrl(entry.execution, row),
+        )}">${escapeHtml(formatDate(entry.execution.completed_at, true))}</a><span>run ${escapeHtml(
+          entry.execution.run_id || entry.execution.id,
+        )}</span></div></td>
+        <td>${escapeHtml(definition.format(entry.value))}</td>
+        <td class="${entry.delta < 0 ? "text-pass" : entry.delta > 0 ? "text-fail" : ""}">${escapeHtml(
+          delta,
+        )}</td>
+        <td><span class="table-status status-${meta.css}">${escapeHtml(meta.label)}</span></td>
+        <td><span class="scenario-history-contract">v${escapeHtml(
+          entry.metric.scenario_version || 1,
+        )}${entry.contractChanged ? " · changed" : ""}</span></td>
+      `;
+      elements.scenarioHistoryBody.append(tableRow);
+    });
+  }
 
-    if (!scenarioIds.length || !scenarioId) {
-      elements.scenarioMetricChart.innerHTML =
-        '<div class="chart-empty">No execution-level scenario metrics are available.</div>';
-      return;
+  function renderScenarioHistory() {
+    const row = state.scenarioHistoryRow;
+    if (!row) return;
+    const entries = scenarioHistoryEntries(row);
+    const metricId = state.scenarioHistoryMetric;
+    const definition = scenarioMetricDefinitions[metricId];
+    elements.scenarioHistoryTitle.textContent = titleCase(row.scenarioId);
+    elements.scenarioHistoryContext.textContent = `${row.subjectId || "default subject"} · ${
+      entries.length
+    } execution${entries.length === 1 ? "" : "s"} · ${
+      row.lifecycle === "retired"
+        ? "removed from current suite"
+        : `current contract v${row.scenarioVersion}`
+    }`;
+    elements.scenarioHistoryDescription.textContent =
+      `${definition.description} Lines break when the scenario contract changes.`;
+    document.querySelectorAll("[data-history-metric]").forEach((button) => {
+      const active = button.dataset.historyMetric === metricId;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", String(active));
+      button.tabIndex = active ? 0 : -1;
+    });
+    renderScenarioHistoryChart(entries, metricId, row);
+    renderScenarioHistoryTable(entries, metricId, row);
+  }
+
+  function openScenarioHistory(row) {
+    state.scenarioHistoryRow = row;
+    state.scenarioHistoryMetric = "cost_usd";
+    renderScenarioHistory();
+    if (!elements.scenarioHistoryDialog.open) {
+      elements.scenarioHistoryDialog.showModal();
     }
-
-    elements.scenarioMetricChart.replaceChildren(
-      ...Object.keys(scenarioMetricDefinitions).map((metricId, index) =>
-        renderScenarioMetricChart(
-          metricId,
-          scenarioId,
-          metricExecutions,
-          palette[index % palette.length],
-        ),
-      ),
-    );
   }
 
   function matrixTooltip(execution, row, cell) {
@@ -741,6 +1051,8 @@
         <td>${formatPercent(execution.totals?.scenario_pass_rate)}</td>
         <td>${compactNumber(execution.totals?.average_score, 1)}</td>
         <td class="${failures ? "text-fail" : ""}">${compactNumber(failures, 0)}</td>
+        <td>${compactNumber(execution.totals?.total_tokens, 0)}</td>
+        <td>${compactNumber(execution.totals?.function_calls, 0)}</td>
         <td>${formatCurrency(execution.totals?.total_cost_usd)}</td>
         <td>${formatDuration(execution.totals?.wall_time_seconds)}</td>
         <td><span class="data-badge data-${escapeHtml(
@@ -752,7 +1064,7 @@
     if (!page.length) {
       const row = document.createElement("tr");
       row.innerHTML =
-        '<td class="table-empty" colspan="10">No executions match these filters.</td>';
+        '<td class="table-empty" colspan="12">No executions match these filters.</td>';
       elements.body.append(row);
     }
     elements.count.textContent =
@@ -768,7 +1080,7 @@
     elements.content.hidden = !hasData;
     if (!hasData) return;
     renderKpis();
-    renderScenarioMetrics();
+    renderEfficiency();
     renderMatrix();
     renderTable();
   }
@@ -787,6 +1099,25 @@
           `${repo.replace(/\/$/, "")}/actions/workflows/harness-e2e-daily.yml`;
       }
     }
+    elements.scenarioHistoryClose.addEventListener("click", () => {
+      elements.scenarioHistoryDialog.close();
+    });
+    elements.scenarioHistoryDialog.addEventListener("click", (event) => {
+      if (event.target === elements.scenarioHistoryDialog) {
+        elements.scenarioHistoryDialog.close();
+      }
+    });
+    elements.scenarioHistoryDialog.addEventListener("close", () => {
+      state.scenarioHistoryRow = null;
+    });
+    document.querySelectorAll("[data-history-metric]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const metricId = button.dataset.historyMetric;
+        if (!scenarioHistoryMetricIds.includes(metricId)) return;
+        state.scenarioHistoryMetric = metricId;
+        renderScenarioHistory();
+      });
+    });
     document.querySelectorAll(".range-button").forEach((button) => {
       button.addEventListener("click", () => {
         state.matrixCount = Number(button.dataset.count);
@@ -795,10 +1126,6 @@
         });
         renderMatrix();
       });
-    });
-    elements.scenarioMetricScenario.addEventListener("change", () => {
-      state.scenarioMetricScenario = elements.scenarioMetricScenario.value;
-      renderScenarioMetrics();
     });
     elements.search.addEventListener("input", () => {
       state.query = elements.search.value;
@@ -824,8 +1151,9 @@
       renderTable();
     });
     render();
-    await hydrateScenarioMetrics();
-    renderScenarioMetrics();
+    await hydrateExecutionMetrics();
+    renderEfficiency();
+    renderTable();
   }
 
   initialize();

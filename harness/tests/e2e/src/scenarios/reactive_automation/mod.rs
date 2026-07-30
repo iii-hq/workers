@@ -26,6 +26,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = ScenarioNames::new(run_id);
     ScenarioSpec {
         id: ID,
+        version: 1,
         prompt: prompt::build(&names, STUCK_WATCHDOG_SECONDS),
         filesystem_root: None,
         execution: ExecutionPolicy {

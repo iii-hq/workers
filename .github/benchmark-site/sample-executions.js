@@ -315,6 +315,7 @@
             scenarios: [
               {
                 scenario_id: scenario.id,
+                scenario_version: scenario.scenario_version || 1,
                 threshold: scenario.threshold,
                 execution_policy: {
                   max_turns: scenario.id === "reactive_automation" ? 64 : 16,

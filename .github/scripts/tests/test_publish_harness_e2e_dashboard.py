@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from publish_harness_e2e_dashboard import load_manifest, publish
+from publish_harness_e2e_dashboard import (
+    build_execution_efficiency_totals,
+    contract_fingerprint,
+    load_manifest,
+    publish,
+    scenario_contract,
+)
 
 
 def write_json(path: Path, value: dict) -> Path:
@@ -93,6 +99,14 @@ def detail(run_id: str, attempt: int = 1) -> dict:
                 "scenarios": [
                     {
                         "scenario_id": "direct_answer",
+                        "scenario_version": 1,
+                        "threshold": 80,
+                        "execution_policy": {
+                            "max_turns": 2,
+                            "max_output_tokens": 2048,
+                            "max_total_tokens": 32768,
+                            "stuck_timeout_seconds": 120,
+                        },
                         "runs": [
                             {
                                 "prompt": "public prompt",
@@ -243,10 +257,24 @@ def test_duplicate_event_does_not_downgrade_existing_full_report(
 
 def test_publishes_average_run_metrics_by_scenario(tmp_path: Path) -> None:
     manifest = publish_run(tmp_path, "10000000008")
+    scenario = detail("10000000008")["reports"][0]["report"]["scenarios"][0]
+    fingerprint = contract_fingerprint(
+        scenario_contract(scenario, "direct_answer", scenario["runs"])
+    )
+
+    assert build_execution_efficiency_totals(detail("10000000008")) == {
+        "total_tokens": 360,
+        "function_calls": 6,
+    }
+    assert manifest["executions"][0]["totals"]["total_tokens"] == 360
+    assert manifest["executions"][0]["totals"]["function_calls"] == 6
 
     assert manifest["executions"][0]["scenario_metrics"] == [
         {
+            "subject_id": "glm",
             "scenario_id": "direct_answer",
+            "scenario_version": 1,
+            "contract_fingerprint": fingerprint,
             "run_count": 2,
             "averages": {
                 "tokens": 180,

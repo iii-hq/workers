@@ -298,6 +298,9 @@ provider credentials or model calls.
 Add a module returning `ScenarioSpec` and register its `ScenarioId`. Keep these
 rules:
 
+- start `ScenarioSpec::version` at `1`; increment it when prompts, hard gates,
+  criteria, thresholds, execution policy, setup, or evaluation behavior changes,
+  while structural refactors that preserve the behavioral contract keep it;
 - prompts describe user intent and never prescribe function ids;
 - declare a scenario-sized execution policy;
 - objective effects are hard gates, not judge opinions;
