@@ -80,9 +80,18 @@ struct RunArgs {
     )]
     progress_interval_seconds: u64,
 
-    /// Keep score-only regressions advisory while still failing hard gates and errors.
+    /// Keep degraded results above the CI score floor advisory; technical errors still fail.
     #[arg(long, env = "HARNESS_E2E_QUALITY_ADVISORY", default_value_t = false)]
     quality_advisory: bool,
+
+    /// Minimum median score allowed when the CI quality policy is advisory.
+    #[arg(
+        long,
+        env = "HARNESS_E2E_CI_SCORE_FLOOR",
+        default_value_t = 50,
+        value_parser = clap::value_parser!(u8).range(1..=100)
+    )]
+    ci_score_floor: u8,
 
     /// Run only the selected scenario. Repeat to select more than one.
     #[arg(long, value_enum)]
@@ -142,6 +151,7 @@ fn report(args: ReportArgs) -> Result<()> {
 
 async fn run(args: RunArgs) -> Result<()> {
     let quality_advisory = args.quality_advisory;
+    let ci_score_floor = args.ci_score_floor;
     let selected_scenarios = scenarios::selected(&args.scenario);
     let subject = SubjectConfig {
         model: args.model,
@@ -171,13 +181,16 @@ async fn run(args: RunArgs) -> Result<()> {
 
     print!("{}", outcome.report.summary(false));
     println!("report: {}", outcome.report_path.display());
-    if !outcome.report.passed && !(quality_advisory && !outcome.report.has_non_quality_failure()) {
+    if !outcome.report.passed
+        && !(quality_advisory && !outcome.report.fails_ci_gate(ci_score_floor))
+    {
         bail!("E2E suite failed");
     }
     if !outcome.report.passed {
         tracing::warn!(
             path = %outcome.report_path.display(),
-            "E2E score is below threshold; quality gate is advisory"
+            ci_score_floor,
+            "E2E result is degraded but remains above the advisory CI score floor"
         );
         return Ok(());
     }

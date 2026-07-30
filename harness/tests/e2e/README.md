@@ -106,8 +106,11 @@ cargo run -p harness-e2e -- run \
 `HARNESS_E2E_OUTPUT` are accepted as environment variables. `--runs` accepts
 values from 1 through 20.
 
-`--quality-advisory` or `HARNESS_E2E_QUALITY_ADVISORY=true` makes score-only
-failures non-blocking. Hard-gate and technical failures remain blocking.
+`--quality-advisory` or `HARNESS_E2E_QUALITY_ADVISORY=true` keeps degraded
+quality and hard-gate results visible without failing CI when the median score
+is at least 50. Scores below that floor and technical failures remain blocking.
+Override the floor with `--ci-score-floor` or
+`HARNESS_E2E_CI_SCORE_FLOOR`.
 
 The runner emits a progress heartbeat every 15 seconds with the active turn,
 step, pending function count, child-session count, and descendant-tree size.
