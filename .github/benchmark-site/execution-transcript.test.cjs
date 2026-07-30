@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  displayFunctionArguments,
   displayFunctionId,
   filterTranscript,
   messageText,
@@ -10,13 +11,21 @@ const {
 } = require("./execution-transcript.js");
 
 test("shows the wrapped function name instead of agent_trigger", () => {
+  const wrappedArguments = {
+    function: "database::query",
+    payload: { db: "primary", sql: "SELECT 1" },
+  };
   assert.equal(
-    displayFunctionId("agent_trigger", {
-      function: "database::query",
-      payload: { db: "primary" },
-    }),
+    displayFunctionId("agent_trigger", wrappedArguments),
     "database::query",
   );
+  assert.deepEqual(displayFunctionArguments("agent_trigger", wrappedArguments), {
+    db: "primary",
+    sql: "SELECT 1",
+  });
+  assert.deepEqual(displayFunctionArguments("state::get", { scope: "test" }), {
+    scope: "test",
+  });
   assert.equal(displayFunctionId("state::get", { scope: "test" }), "state::get");
   assert.equal(displayFunctionId("agent_trigger", { payload: {} }), "agent_trigger");
 });
@@ -101,6 +110,7 @@ test("pairs function results with calls and marks recovered errors", () => {
     ],
   );
   assert.equal(events[2].result.details.value, "ready");
+  assert.deepEqual(events[2].arguments, { key: "status" });
   assert.equal(events[2].status, "completed");
   assert.equal(events[3].isError, true);
   assert.equal(events[3].result.details.error, "command failed");

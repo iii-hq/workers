@@ -38,6 +38,17 @@
     return wrappedFunction || functionId || "unknown function";
   }
 
+  function displayFunctionArguments(functionId, argumentsValue) {
+    if (
+      functionId === "agent_trigger" &&
+      argumentsValue &&
+      typeof argumentsValue === "object"
+    ) {
+      return argumentsValue.payload ?? null;
+    }
+    return argumentsValue ?? null;
+  }
+
   function normalizeTranscript(messages) {
     const events = [];
     const calls = new Map();
@@ -73,7 +84,7 @@
               kind: "tool",
               callId,
               functionId: displayFunctionId(block.function_id, block.arguments),
-              arguments: block.arguments ?? null,
+              arguments: displayFunctionArguments(block.function_id, block.arguments),
               timestamp: message.timestamp || null,
               result: null,
               isError: false,
@@ -171,6 +182,7 @@
 
   return {
     contentBlocks,
+    displayFunctionArguments,
     displayFunctionId,
     filterTranscript,
     messageText,
