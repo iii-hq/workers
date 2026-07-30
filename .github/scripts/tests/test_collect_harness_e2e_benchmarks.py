@@ -85,10 +85,52 @@ def write_report(
                         "passed": passed,
                         "runs": [
                             {
+                                "run_id": "run-1",
+                                "session_id": "session-1",
+                                "prompt": "Complete the E2E task.",
                                 "wall_time_ms": wall_time_ms,
                                 "score": median_score,
                                 "status": "passed" if passed else "quality_failed",
+                                "hard_gates": [
+                                    {
+                                        "id": "state_present",
+                                        "passed": passed,
+                                        "reason": "fixture evidence",
+                                    }
+                                ],
+                                "criteria": [
+                                    {
+                                        "id": "completion",
+                                        "possible": 100,
+                                        "awarded": median_score,
+                                        "reason": "fixture score",
+                                    }
+                                ],
+                                "transcript": {
+                                    "messages": [
+                                        {
+                                            "entry_id": "message-1",
+                                            "message": {
+                                                "role": "assistant",
+                                                "content": "Done.",
+                                            },
+                                        }
+                                    ]
+                                },
+                                "metrics": {
+                                    "complete": True,
+                                    "root_session_id": "session-1",
+                                    "totals": {"input_tokens": 100},
+                                    "by_session": [],
+                                    "traces": {"trace_count": 1},
+                                },
+                                "cost": {
+                                    "subject_usd": total_cost,
+                                    "judge_usd": 0,
+                                    "total_usd": total_cost,
+                                },
                                 "retry_attempts": retry_attempts,
+                                "failures": [],
                             }
                         ],
                     }
@@ -117,6 +159,10 @@ def config(root: Path, scenarios: list[str]) -> CollectionConfig:
         registry_tag="latest",
         judge_model="glm-5.2",
         judge_provider="zai",
+        execution_run_id="12345",
+        execution_attempt=2,
+        execution_event="workflow_dispatch",
+        execution_actor="octocat",
         generated_at="2026-07-29T12:00:00+00:00",
     )
 
@@ -144,7 +190,7 @@ def test_collects_quality_reliability_and_efficiency(tmp_path: Path) -> None:
         wall_time_ms=28_000,
     )
 
-    quality, efficiency, snapshot = collect(
+    quality, efficiency, snapshot, execution = collect(
         config(tmp_path, ["direct_answer", "security_review"])
     )
     quality_by_name = by_name(quality)
@@ -172,6 +218,13 @@ def test_collects_quality_reliability_and_efficiency(tmp_path: Path) -> None:
     assert subject["passed"] is True
     assert subject["total_cost_usd"] == 1
     assert subject["engine_revision"] == "a" * 40
+    assert snapshot["execution"]["id"] == "12345-2"
+    assert execution["reports"][0]["report"]["scenarios"][0]["runs"][0]["prompt"] == (
+        "Complete the E2E task."
+    )
+    assert execution["reports"][0]["report"]["scenarios"][0]["runs"][0][
+        "transcript"
+    ]["messages"][0]["message"]["content"] == "Done."
 
 
 def test_missing_report_is_visible_and_totals_are_not_fabricated(
@@ -179,7 +232,7 @@ def test_missing_report_is_visible_and_totals_are_not_fabricated(
 ) -> None:
     write_report(tmp_path, subject_id="glm", scenario_id="direct_answer")
 
-    quality, efficiency, snapshot = collect(
+    quality, efficiency, snapshot, execution = collect(
         config(tmp_path, ["direct_answer", "security_review"])
     )
     quality_by_name = by_name(quality)
@@ -197,6 +250,12 @@ def test_missing_report_is_visible_and_totals_are_not_fabricated(
     assert subject["passed"] is False
     assert subject["total_cost_usd"] is None
     assert subject["scenarios"][1]["status"] == "missing_report"
+    assert execution["reports"][1] == {
+        "subject_id": "glm",
+        "scenario_id": "security_review",
+        "available": False,
+        "report": None,
+    }
 
 
 def test_unknown_cost_is_omitted_instead_of_recorded_as_zero(
@@ -209,7 +268,7 @@ def test_unknown_cost_is_omitted_instead_of_recorded_as_zero(
         total_cost=None,
     )
 
-    _, efficiency, snapshot = collect(config(tmp_path, ["direct_answer"]))
+    _, efficiency, snapshot, _ = collect(config(tmp_path, ["direct_answer"]))
     efficiency_by_name = by_name(efficiency)
 
     assert "efficiency::glm::direct_answer::total_cost_usd" not in efficiency_by_name

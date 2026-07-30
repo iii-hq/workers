@@ -458,6 +458,10 @@ jobs:
           REGISTRY_TAG: ${{ inputs.registry_tag }}
           JUDGE_MODEL: ${{ inputs.judge_model }}
           JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+          EXECUTION_RUN_ID: ${{ github.run_id }}
+          EXECUTION_ATTEMPT: ${{ github.run_attempt }}
+          EXECUTION_EVENT: ${{ github.event_name }}
+          EXECUTION_ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
           python3 .github/scripts/collect_harness_e2e_benchmarks.py \
@@ -477,12 +481,27 @@ jobs:
             --release-url "$RELEASE_URL" \
             --registry-tag "$REGISTRY_TAG" \
             --judge-model "$JUDGE_MODEL" \
-            --judge-provider "$JUDGE_PROVIDER"
+            --judge-provider "$JUDGE_PROVIDER" \
+            --execution-run-id "$EXECUTION_RUN_ID" \
+            --execution-attempt "$EXECUTION_ATTEMPT" \
+            --execution-event "$EXECUTION_EVENT" \
+            --execution-actor "$EXECUTION_ACTOR"
 
       - name: Upload compact benchmark metrics
         uses: actions/upload-artifact@v6
         with:
           name: harness-e2e-benchmark
-          path: target/harness-e2e-benchmark/
+          path: |
+            target/harness-e2e-benchmark/quality.json
+            target/harness-e2e-benchmark/efficiency.json
+            target/harness-e2e-benchmark/snapshot.json
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload dashboard execution detail
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-dashboard
+          path: target/harness-e2e-benchmark/execution.json
           retention-days: 30
           if-no-files-found: error

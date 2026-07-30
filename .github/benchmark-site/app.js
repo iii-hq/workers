@@ -4,12 +4,9 @@
   const api = window.HarnessBenchmarkData;
   const data = api.normalizeBenchmarkData(window.BENCHMARK_DATA);
   const state = {
-    channel: data.channels.includes("latest")
-      ? "latest"
-      : data.channels[0] || "all",
     subjectId: data.subjects[0] || "",
     scenarioId: "all",
-    limit: 20,
+    windowDays: 30,
     trendMetric: "score",
   };
   const palette = ["#c7ff4a", "#7bc7ff", "#ff9ee2", "#ffd166", "#a78bfa", "#69e3c2"];
@@ -45,7 +42,6 @@
 
   const elements = {
     actionsLink: document.querySelector("#actions-link"),
-    channel: document.querySelector("#channel-filter"),
     content: document.querySelector("#dashboard-content"),
     coverageNote: document.querySelector("#coverage-note"),
     dataHealth: document.querySelector("#data-health"),
@@ -96,6 +92,16 @@
     } catch (_error) {
       return "";
     }
+  }
+
+  function executionUrl(snapshot, scenarioId = "") {
+    if (!snapshot?.id) return "";
+    const id = snapshot.execution?.id || snapshot.id;
+    const base = `./execution.html?id=${encodeURIComponent(id)}`;
+    if (!scenarioId) return base;
+    const subjectId = state.subjectId.replace(/[^a-zA-Z0-9_-]/g, "-");
+    const scenario = scenarioId.replace(/[^a-zA-Z0-9_-]/g, "-");
+    return `${base}#scenario-${subjectId}-${scenario}`;
   }
 
   function compactNumber(value, digits = 1) {
@@ -163,26 +169,6 @@
     return { previous, subject: previous?.subjects?.[state.subjectId] || null };
   }
 
-  function scopedSummary(subject) {
-    if (state.scenarioId === "all") return api.subjectSummary(subject);
-    const scenario = api.scenarioSummary(subject, state.scenarioId);
-    if (!scenario) return null;
-    return {
-      passed: scenario.passed,
-      status: scenario.status,
-      averageScore: scenario.medianScore,
-      scenarioPassRate: scenario.passRate,
-      reportCoverage: scenario.missingReports > 0 ? 0 : 100,
-      totalCost: scenario.totalCost,
-      wallTime: scenario.wallTime,
-      hardGateFailures: scenario.hardGateFailures,
-      technicalFailures: scenario.technicalFailures,
-      missingReports: scenario.missingReports,
-      retries: scenario.retries,
-      scenarios: [state.scenarioId],
-    };
-  }
-
   function availableScenarios() {
     return [
       ...new Set(
@@ -215,7 +201,13 @@
   function applyStatus(element, summary, compact = false) {
     const kind = statusKind(summary);
     const text =
-      kind === "pass" ? "Passed" : kind === "incomplete" ? "Incomplete" : "Needs attention";
+      kind === "pass"
+        ? "Passed"
+        : kind === "incomplete"
+          ? "Incomplete"
+          : compact
+            ? "Attention"
+            : "Needs attention";
     element.className = `${compact ? "table-status" : "status-pill"} status-${kind}`;
     element.textContent = text;
   }
@@ -227,17 +219,17 @@
       previous === null ||
       previous === undefined
     ) {
-      return { text: "No prior comparable release", className: "delta-neutral" };
+      return { text: "No previous daily run", className: "delta-neutral" };
     }
     const delta = current - previous;
     if (Math.abs(delta) < (options.tolerance || 0.0001)) {
-      return { text: "No change from prior release", className: "delta-neutral" };
+      return { text: "No change from yesterday", className: "delta-neutral" };
     }
     const lowerIsBetter = Boolean(options.lowerIsBetter);
     const improved = lowerIsBetter ? delta < 0 : delta > 0;
     const formatter = options.formatter || ((value) => compactNumber(value, 1));
     return {
-      text: `${delta > 0 ? "↑" : "↓"} ${formatter(Math.abs(delta))} vs prior release`,
+      text: `${delta > 0 ? "↑" : "↓"} ${formatter(Math.abs(delta))} vs previous run`,
       className: improved ? "delta-good" : "delta-bad",
     };
   }
@@ -281,11 +273,8 @@
   }
 
   function renderFailureCallout(latest, subject) {
-    const scenarioIds =
-      state.scenarioId === "all"
-        ? api.listScenarios(subject)
-        : [state.scenarioId];
-    const failures = scenarioIds
+    const failures = api
+      .listScenarios(subject)
       .map((scenarioId) => ({
         scenarioId,
         summary: api.scenarioSummary(subject, scenarioId),
@@ -305,36 +294,26 @@
           `${titleCase(scenarioId)}: ${failureReason(summary)}`,
       )
       .join(" · ");
-    const workflowUrl = safeUrl(latest.workflowUrl);
-    elements.failureLink.href = workflowUrl || "#";
-    elements.failureLink.hidden = !workflowUrl;
+    const detailUrl = executionUrl(latest);
+    elements.failureLink.href = detailUrl || "#";
+    elements.failureLink.hidden = !detailUrl;
   }
 
   function renderLatest(snapshots) {
     const { latest, subject } = latestSubject(snapshots);
     const { subject: priorSubject } = previousSubject(snapshots);
-    const summary = scopedSummary(subject);
-    const prior = scopedSummary(priorSubject);
+    const summary = api.subjectSummary(subject);
+    const prior = api.subjectSummary(priorSubject);
     if (!latest || !summary) return;
 
-    const releaseName =
-      latest.release?.tag || latest.commit?.id?.slice(0, 7) || "Unnamed release";
-    elements.latestHeading.textContent = releaseName;
+    elements.latestHeading.textContent = formatDate(latest.date, { year: true });
     applyStatus(elements.releaseStatus, summary);
-    const releaseUrl = safeUrl(
-      latest.release?.url || latest.commit?.url || latest.workflowUrl,
-    );
+    const releaseUrl = executionUrl(latest);
     elements.releaseLink.href = releaseUrl || "#";
     elements.releaseLink.hidden = !releaseUrl;
     elements.meta.replaceChildren(
-      metaChip("worker", latest.release?.worker || "manual"),
-      metaChip("channel", latest.release?.registry_tag || "manual"),
-      metaChip(
-        "scope",
-        state.scenarioId === "all"
-          ? "all scenarios"
-          : titleCase(state.scenarioId),
-      ),
+      metaChip("cadence", "daily"),
+      metaChip("commit", latest.commit?.id?.slice(0, 9) || "unknown"),
       metaChip("subject", `${subject.provider}/${subject.model}`),
       metaChip(
         "judge",
@@ -417,7 +396,7 @@
 
   function renderTrend(snapshots) {
     const definition = metricDefinitions[state.trendMetric];
-    elements.trendHeading.textContent = definition.title;
+    elements.trendHeading.textContent = `${definition.title} over time`;
     const series = api.metricSeries(
       snapshots,
       state.subjectId,
@@ -457,13 +436,16 @@
       0,
       Math.max(...values) * 1.14 || 1,
     ];
-    const xIndex = new Map(
-      snapshots.map((snapshot, index) => [snapshot.id, index]),
+    const dateBySnapshot = new Map(
+      snapshots.map((snapshot) => [snapshot.id, Number(snapshot.date) || 0]),
     );
+    const dates = [...dateBySnapshot.values()];
+    const firstDate = Math.min(...dates);
+    const lastDate = Math.max(...dates);
     const x = (snapshotId) => {
-      const index = xIndex.get(snapshotId) || 0;
-      if (snapshots.length <= 1) return margin.left + innerWidth / 2;
-      return margin.left + (index / (snapshots.length - 1)) * innerWidth;
+      const date = dateBySnapshot.get(snapshotId) || firstDate;
+      if (firstDate === lastDate) return margin.left + innerWidth / 2;
+      return margin.left + ((date - firstDate) / (lastDate - firstDate)) * innerWidth;
     };
     const y = (value) =>
       margin.top +
@@ -473,10 +455,10 @@
     const svg = svgElement("svg", {
       viewBox: `0 0 ${width} ${height}`,
       role: "img",
-      "aria-label": `${definition.title} by release and scenario`,
+      "aria-label": `Daily ${definition.title.toLowerCase()} by scenario`,
     });
     const description = svgElement("desc");
-    description.textContent = `Line chart showing ${definition.title.toLowerCase()} for ${series.length} scenarios across ${snapshots.length} releases.`;
+    description.textContent = `Line chart showing ${definition.title.toLowerCase()} for ${series.length} scenarios across ${snapshots.length} daily runs.`;
     svg.append(description);
 
     for (let index = 0; index <= 4; index += 1) {
@@ -549,19 +531,119 @@
         "text-anchor": "middle",
         class: "chart-x-label",
       });
-      label.textContent =
-        snapshot.release?.version ||
-        snapshot.release?.tag?.split("/").at(-1) ||
-        snapshot.commit?.id?.slice(0, 7) ||
-        "—";
+      label.textContent = formatDate(snapshot.date);
       svg.append(label);
     });
+
+    let activeTooltip = null;
+    function hideTooltip() {
+      activeTooltip?.remove();
+      activeTooltip = null;
+    }
+
+    function chartPointStatus(item, point) {
+      const pointSummary = api.scenarioSummary(
+        point.snapshot?.subjects?.[state.subjectId],
+        item.scenarioId,
+      );
+      return pointSummary ? scenarioStatus(pointSummary) : "incomplete";
+    }
+
+    function showTooltip(item, point, color) {
+      hideTooltip();
+      const pointX = x(point.snapshotId);
+      const pointY = y(point.value);
+      const boxWidth = 214;
+      const boxHeight = 50;
+      const boxX =
+        pointX + boxWidth + 16 > width - margin.right
+          ? pointX - boxWidth - 14
+          : pointX + 14;
+      const boxY = Math.max(
+        margin.top,
+        Math.min(pointY - boxHeight - 12, height - margin.bottom - boxHeight),
+      );
+      const tooltip = svgElement("g", {
+        class: "chart-tooltip",
+        "aria-hidden": "true",
+      });
+      tooltip.append(
+        svgElement("line", {
+          x1: pointX,
+          x2: pointX,
+          y1: margin.top,
+          y2: height - margin.bottom,
+          class: "chart-tooltip-guide",
+        }),
+        svgElement("circle", {
+          cx: pointX,
+          cy: pointY,
+          r: 7,
+          fill: color,
+          class: "chart-tooltip-point",
+        }),
+        svgElement("rect", {
+          x: boxX,
+          y: boxY,
+          width: boxWidth,
+          height: boxHeight,
+          rx: 8,
+          class: "chart-tooltip-box",
+        }),
+      );
+      const heading = svgElement("text", {
+        x: boxX + 12,
+        y: boxY + 18,
+        class: "chart-tooltip-heading",
+      });
+      heading.textContent =
+        `${titleCase(item.scenarioId)} · ${formatDate(point.date)}`;
+      const value = svgElement("text", {
+        x: boxX + 12,
+        y: boxY + 37,
+        class: "chart-tooltip-value",
+      });
+      value.textContent = chartValue(point.value, definition);
+      const pointStatus = chartPointStatus(item, point);
+      const status = svgElement("text", {
+        x: boxX + boxWidth - 12,
+        y: boxY + 37,
+        "text-anchor": "end",
+        class: `chart-tooltip-status chart-tooltip-status-${pointStatus}`,
+      });
+      status.textContent =
+        pointStatus === "pass"
+          ? "Passed"
+          : pointStatus === "fail"
+            ? "Attention"
+            : "Incomplete";
+      tooltip.append(heading, value, status);
+      svg.append(tooltip);
+      activeTooltip = tooltip;
+    }
 
     series.forEach((item, seriesIndex) => {
       const color = palette[seriesIndex % palette.length];
       const points = item.points
         .map((point) => `${x(point.snapshotId)},${y(point.value)}`)
         .join(" ");
+      const hitPath = svgElement("polyline", {
+        points,
+        class: "chart-hit-path",
+      });
+      hitPath.addEventListener("mousemove", (event) => {
+        const bounds = svg.getBoundingClientRect();
+        const cursorX = ((event.clientX - bounds.left) / bounds.width) * width;
+        const nearest = item.points.reduce((candidate, point) =>
+          Math.abs(x(point.snapshotId) - cursorX) <
+          Math.abs(x(candidate.snapshotId) - cursorX)
+            ? point
+            : candidate,
+        );
+        showTooltip(item, nearest, color);
+      });
+      hitPath.addEventListener("mouseleave", hideTooltip);
+      svg.append(hitPath);
       svg.append(
         svgElement("polyline", {
           points,
@@ -570,16 +652,42 @@
         }),
       );
       item.points.forEach((point) => {
+        const pointStatus = chartPointStatus(item, point);
         const circle = svgElement("circle", {
           cx: x(point.snapshotId),
           cy: y(point.value),
           r: 4,
           fill: color,
-          class: "chart-point",
+          class: `chart-point chart-point-${pointStatus}`,
           tabindex: 0,
         });
+        const pointUrl = executionUrl(point.snapshot, item.scenarioId);
+        if (pointUrl) {
+          circle.setAttribute("role", "link");
+          circle.setAttribute(
+            "aria-label",
+            `${titleCase(item.scenarioId)}, ${formatDate(point.date, { year: true })}, ${chartValue(point.value, definition)}, ${pointStatus}. Open workflow.`,
+          );
+          circle.addEventListener("click", () => {
+            window.open(pointUrl, "_blank", "noopener");
+          });
+          circle.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              window.open(pointUrl, "_blank", "noopener");
+            }
+          });
+        }
+        circle.addEventListener("mouseenter", () => {
+          showTooltip(item, point, color);
+        });
+        circle.addEventListener("mouseleave", hideTooltip);
+        circle.addEventListener("focus", () => {
+          showTooltip(item, point, color);
+        });
+        circle.addEventListener("blur", hideTooltip);
         const title = svgElement("title");
-        title.textContent = `${titleCase(item.scenarioId)} · ${point.label} · ${chartValue(point.value, definition)}`;
+        title.textContent = `${titleCase(item.scenarioId)} · ${formatDate(point.date, { year: true })} · ${chartValue(point.value, definition)} · ${pointStatus}`;
         circle.append(title);
         svg.append(circle);
       });
@@ -596,16 +704,12 @@
     const { latest, subject } = latestSubject(snapshots);
     const { subject: priorSubject } = previousSubject(snapshots);
     elements.scenarioGrid.replaceChildren();
-    const scenarioIds =
-      state.scenarioId === "all"
-        ? api.listScenarios(subject)
-        : [state.scenarioId];
-    scenarioIds.forEach((scenarioId, index) => {
+    api.listScenarios(subject).forEach((scenarioId, index) => {
       const summary = api.scenarioSummary(subject, scenarioId);
       if (!summary) return;
       const prior = api.scenarioSummary(priorSubject, scenarioId);
       const card = document.createElement("article");
-      card.className = "scenario-card";
+      card.className = `scenario-card scenario-card-${scenarioStatus(summary)}`;
       const status = scenarioStatus(summary);
       const scoreDelta = deltaText(summary.medianScore, prior?.medianScore, {
         formatter: (value) => `${compactNumber(value, 1)} pts`,
@@ -614,7 +718,7 @@
         summary.hardGateFailures +
         summary.technicalFailures +
         summary.missingReports;
-      const workflowUrl = safeUrl(latest?.workflowUrl);
+      const workflowUrl = executionUrl(latest, scenarioId);
       card.innerHTML = `
         <div class="scenario-card-head">
           <div class="scenario-name">
@@ -639,7 +743,7 @@
             <strong>${formatCurrency(summary.totalCost)}</strong>
           </div>
           <div class="scenario-stat">
-            <span>Duration</span>
+            <span>Runtime</span>
             <strong>${formatDuration(summary.wallTime)}</strong>
           </div>
         </div>
@@ -657,23 +761,19 @@
     elements.historyBody.replaceChildren();
     [...snapshots].reverse().forEach((snapshot) => {
       const subject = snapshot.subjects[state.subjectId];
-      const summary = scopedSummary(subject);
+      const summary = api.subjectSummary(subject);
       if (!summary) return;
       const row = document.createElement("tr");
-      const releaseName =
-        snapshot.release?.tag || snapshot.commit?.id?.slice(0, 7) || "Unknown";
-      const releaseUrl =
-        safeUrl(
-          snapshot.release?.url || snapshot.commit?.url || snapshot.workflowUrl,
-        ) || "#";
+      const runName = formatDate(snapshot.date, { year: true });
+      const runUrl = executionUrl(snapshot) || "#";
       const commitUrl = safeUrl(snapshot.commit?.url) || "#";
       const status = document.createElement("span");
       applyStatus(status, summary, true);
       row.innerHTML = `
         <td>
           <div class="release-cell">
-            <a href="${escapeHtml(releaseUrl)}">${escapeHtml(releaseName)}</a>
-            <span>${escapeHtml(snapshot.release?.worker || snapshot.lane)} · ${escapeHtml(snapshot.release?.registry_tag || "manual")} · ${escapeHtml(formatDate(snapshot.date, { year: true }))}</span>
+            <a href="${escapeHtml(runUrl)}">${escapeHtml(runName)}</a>
+            <span>daily run · ${escapeHtml(snapshot.commit?.id?.slice(0, 7) || "unknown")}</span>
           </div>
         </td>
         <td class="status-cell"></td>
@@ -690,27 +790,22 @@
 
   function render() {
     const snapshots = api.filterSnapshots(data, {
-      channel: state.channel,
       subjectId: state.subjectId,
-      scenarioId: state.scenarioId,
-      limit: state.limit,
+      days: state.windowDays,
     });
     const hasData = snapshots.length > 0;
     elements.empty.hidden = hasData;
     elements.content.hidden = !hasData;
-    elements.releaseCount.textContent = `${snapshots.length} release${snapshots.length === 1 ? "" : "s"}`;
+    elements.releaseCount.textContent =
+      `${snapshots.length} daily run${snapshots.length === 1 ? "" : "s"}`;
     const latest = snapshots.at(-1);
     const subject = latest?.subjects?.[state.subjectId];
     elements.subjectContext.textContent = subject
-      ? `${subject.provider}/${subject.model} · ${
-          state.scenarioId === "all"
-            ? "all scenarios"
-            : titleCase(state.scenarioId)
-        }`
+      ? `${subject.provider}/${subject.model}`
       : "No subject";
     if (!hasData) return;
-    renderLatest(snapshots);
     renderTrend(snapshots);
+    renderLatest(snapshots);
     renderScenarios(snapshots);
     renderHistory(snapshots);
   }
@@ -730,15 +825,9 @@
       if (repositoryUrl) {
         elements.actionsLink.href =
           `${repositoryUrl.replace(/\/$/, "")}/actions/workflows/` +
-          "harness-e2e-benchmark.yml";
+          "harness-e2e-daily.yml";
       }
     }
-    setOptions(
-      elements.channel,
-      ["all", ...data.channels],
-      state.channel,
-      (channel) => (channel === "all" ? "All channels" : titleCase(channel)),
-    );
     setOptions(elements.subject, data.subjects, state.subjectId, (subjectId) => {
       const snapshot = [...data.snapshots]
         .reverse()
@@ -747,11 +836,7 @@
       return subject ? `${subject.provider}/${subject.model}` : subjectId;
     });
     refreshScenarioOptions();
-    elements.window.value = String(state.limit);
-    elements.channel.addEventListener("change", () => {
-      state.channel = elements.channel.value;
-      render();
-    });
+    elements.window.value = String(state.windowDays);
     elements.subject.addEventListener("change", () => {
       state.subjectId = elements.subject.value;
       refreshScenarioOptions();
@@ -762,7 +847,7 @@
       render();
     });
     elements.window.addEventListener("change", () => {
-      state.limit = Number(elements.window.value);
+      state.windowDays = Number(elements.window.value);
       render();
     });
     document.querySelectorAll(".metric-tab").forEach((button) => {

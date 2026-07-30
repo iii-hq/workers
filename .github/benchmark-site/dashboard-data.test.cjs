@@ -72,6 +72,25 @@ test("merges quality and efficiency records for the same release", () => {
   assert.equal(scenario.passed, true);
 });
 
+test("keeps workflow attempts distinct even when they share a daily release tag", () => {
+  const first = record(1, 90, "quality::glm::direct_answer::median_score", {
+    execution: { id: "123-1", run_id: "123", attempt: 1 },
+    release: { tag: "daily/2026-07-29", registry_tag: "daily" },
+  });
+  const second = record(2, 92, "quality::glm::direct_answer::median_score", {
+    execution: { id: "123-2", run_id: "123", attempt: 2 },
+    release: { tag: "daily/2026-07-29", registry_tag: "daily" },
+  });
+
+  const data = normalizeBenchmarkData({ entries: { quality: [first, second] } });
+
+  assert.equal(data.snapshots.length, 2);
+  assert.deepEqual(
+    data.snapshots.map((snapshot) => snapshot.execution.id),
+    ["123-1", "123-2"],
+  );
+});
+
 test("filters release channels and returns ordered scenario series", () => {
   const raw = {
     entries: {
@@ -105,5 +124,44 @@ test("filters release channels and returns ordered scenario series", () => {
       scenarioId: "missing_scenario",
     }).length,
     0,
+  );
+});
+
+test("filters snapshots by UTC calendar-day window", () => {
+  const day = 24 * 60 * 60 * 1000;
+  const raw = {
+    entries: {
+      quality: [
+        record(
+          Date.UTC(2026, 6, 1, 6),
+          80,
+          "quality::glm::direct_answer::median_score",
+        ),
+        record(
+          Date.UTC(2026, 6, 15, 6),
+          90,
+          "quality::glm::direct_answer::median_score",
+        ),
+        record(
+          Date.UTC(2026, 6, 30, 6),
+          95,
+          "quality::glm::direct_answer::median_score",
+        ),
+      ],
+    },
+  };
+  const data = normalizeBenchmarkData(raw);
+  const snapshots = filterSnapshots(data, {
+    subjectId: "glm",
+    days: 16,
+  });
+
+  assert.deepEqual(
+    snapshots.map((snapshot) => snapshot.date),
+    [Date.UTC(2026, 6, 15, 6), Date.UTC(2026, 6, 30, 6)],
+  );
+  assert.equal(
+    Math.floor((snapshots[1].date - snapshots[0].date) / day),
+    15,
   );
 });

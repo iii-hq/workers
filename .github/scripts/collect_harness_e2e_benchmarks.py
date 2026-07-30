@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class CollectionError(ValueError):
@@ -37,6 +37,10 @@ class CollectionConfig:
     registry_tag: str
     judge_model: str
     judge_provider: str
+    execution_run_id: str
+    execution_attempt: int
+    execution_event: str
+    execution_actor: str
     generated_at: str
 
 
@@ -192,11 +196,28 @@ def validate_report(
     return report, scenario
 
 
-def collect(config: CollectionConfig) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+def collect(
+    config: CollectionConfig,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, Any],
+    dict[str, Any],
+]:
     contexts = discover_contexts(config.reports_root)
     quality: list[dict[str, Any]] = []
     efficiency: list[dict[str, Any]] = []
     snapshot_subjects: list[dict[str, Any]] = []
+    execution_reports: list[dict[str, Any]] = []
+    execution_id = f"{config.execution_run_id}-{config.execution_attempt}"
+    execution = {
+        "id": execution_id,
+        "run_id": config.execution_run_id,
+        "attempt": config.execution_attempt,
+        "event": config.execution_event,
+        "actor": config.execution_actor,
+        "workflow_url": config.workflow_url,
+    }
 
     for subject in config.subjects:
         scenario_snapshots: list[dict[str, Any]] = []
@@ -217,6 +238,7 @@ def collect(config: CollectionConfig) -> tuple[list[dict[str, Any]], list[dict[s
             )
             base_extra: dict[str, Any] = {
                 "schema_version": SCHEMA_VERSION,
+                "execution": execution,
                 "lane": config.lane,
                 "generated_at": config.generated_at,
                 "source": {
@@ -242,6 +264,14 @@ def collect(config: CollectionConfig) -> tuple[list[dict[str, Any]], list[dict[s
             }
 
             if report_path is None or not report_path.is_file():
+                execution_reports.append(
+                    {
+                        "subject_id": subject["id"],
+                        "scenario_id": scenario_id,
+                        "available": False,
+                        "report": None,
+                    }
+                )
                 scenario_snapshot = {
                     "id": scenario_id,
                     "status": "missing_report",
@@ -277,6 +307,14 @@ def collect(config: CollectionConfig) -> tuple[list[dict[str, Any]], list[dict[s
                 subject=subject,
                 scenario_id=scenario_id,
                 path=report_path,
+            )
+            execution_reports.append(
+                {
+                    "subject_id": subject["id"],
+                    "scenario_id": scenario_id,
+                    "available": True,
+                    "report": report,
+                }
             )
             report_count += 1
             report_passed = bool(scenario.get("passed"))
@@ -513,6 +551,7 @@ def collect(config: CollectionConfig) -> tuple[list[dict[str, Any]], list[dict[s
         )
         suite_extra = {
             "schema_version": SCHEMA_VERSION,
+            "execution": execution,
             "lane": config.lane,
             "generated_at": config.generated_at,
             "source": {
@@ -647,6 +686,7 @@ def collect(config: CollectionConfig) -> tuple[list[dict[str, Any]], list[dict[s
 
     snapshot = {
         "schema_version": SCHEMA_VERSION,
+        "execution": execution,
         "generated_at": config.generated_at,
         "lane": config.lane,
         "source": {
@@ -665,7 +705,11 @@ def collect(config: CollectionConfig) -> tuple[list[dict[str, Any]], list[dict[s
         "requested_runs": config.requested_runs,
         "subjects": snapshot_subjects,
     }
-    return quality, efficiency, snapshot
+    execution_detail = {
+        **snapshot,
+        "reports": execution_reports,
+    }
+    return quality, efficiency, snapshot, execution_detail
 
 
 def write_outputs(
@@ -673,12 +717,14 @@ def write_outputs(
     quality: list[dict[str, Any]],
     efficiency: list[dict[str, Any]],
     snapshot: dict[str, Any],
+    execution: dict[str, Any],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for name, payload in (
         ("quality.json", quality),
         ("efficiency.json", efficiency),
         ("snapshot.json", snapshot),
+        ("execution.json", execution),
     ):
         (output_dir / name).write_text(
             json.dumps(payload, indent=2, sort_keys=True) + "\n"
@@ -704,6 +750,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--registry-tag", default="")
     parser.add_argument("--judge-model", required=True)
     parser.add_argument("--judge-provider", required=True)
+    parser.add_argument("--execution-run-id", required=True)
+    parser.add_argument("--execution-attempt", type=int, required=True)
+    parser.add_argument("--execution-event", default="")
+    parser.add_argument("--execution-actor", default="")
     parser.add_argument("--generated-at")
     return parser
 
@@ -712,6 +762,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.requested_runs < 1:
         raise CollectionError("requested runs must be positive")
+    if args.execution_attempt < 1:
+        raise CollectionError("execution attempt must be positive")
     generated_at = args.generated_at or datetime.now(timezone.utc).isoformat()
     config = CollectionConfig(
         reports_root=args.reports_root,
@@ -731,10 +783,14 @@ def main(argv: list[str] | None = None) -> int:
         registry_tag=args.registry_tag,
         judge_model=require_string(args.judge_model, "judge model"),
         judge_provider=require_string(args.judge_provider, "judge provider"),
+        execution_run_id=require_string(args.execution_run_id, "execution run id"),
+        execution_attempt=args.execution_attempt,
+        execution_event=args.execution_event,
+        execution_actor=args.execution_actor,
         generated_at=generated_at,
     )
-    quality, efficiency, snapshot = collect(config)
-    write_outputs(args.output_dir, quality, efficiency, snapshot)
+    quality, efficiency, snapshot, execution = collect(config)
+    write_outputs(args.output_dir, quality, efficiency, snapshot, execution)
     print(
         json.dumps(
             {

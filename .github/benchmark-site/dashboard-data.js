@@ -31,7 +31,8 @@
     const lane = extra.lane || "unknown";
     const commitId = record.commit?.id || extra.source?.sha || "unknown";
     const releaseTag = extra.release?.tag || "";
-    return `${lane}${METRIC_SEPARATOR}${releaseTag || commitId}`;
+    const executionId = extra.execution?.id || "";
+    return `${lane}${METRIC_SEPARATOR}${executionId || releaseTag || commitId}`;
   }
 
   function emptyMetricTree() {
@@ -72,6 +73,7 @@
               commit: record.commit || {},
               release: extra.release || {},
               source: extra.source || {},
+              execution: extra.execution || {},
               workflowUrl: extra.workflow_url || "",
               generatedAt: extra.generated_at || "",
               subjects: {},
@@ -185,6 +187,18 @@
         listScenarios(snapshot.subjects[filters.subjectId]).includes(
           filters.scenarioId,
         ),
+      );
+    }
+    const days = Number(filters.days);
+    if (Number.isFinite(days) && days > 0 && snapshots.length > 0) {
+      const millisecondsPerDay = 24 * 60 * 60 * 1000;
+      const latestDay = Math.floor(
+        snapshots.at(-1).date / millisecondsPerDay,
+      );
+      const firstIncludedDay = latestDay - days + 1;
+      snapshots = snapshots.filter(
+        (snapshot) =>
+          Math.floor(snapshot.date / millisecondsPerDay) >= firstIncludedDay,
       );
     }
     const limit = Number(filters.limit);

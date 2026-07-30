@@ -88,7 +88,6 @@ jobs:
       targets: ${{ steps.meta.outputs.targets }}
       web_bundle: ${{ steps.web.outputs.needed }}
       interface_smoke: ${{ steps.smoke.outputs.interface_smoke }}
-      source_sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -103,16 +102,6 @@ jobs:
           if [[ -n "$RAW_TAG" ]]; then
             git fetch origin "+refs/tags/${RAW_TAG}:refs/tags/${RAW_TAG}"
           fi
-
-      - name: Resolve release source commit
-        id: source
-        env:
-          RAW_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          set -euo pipefail
-          source_sha=$(git rev-parse "${RAW_TAG}^{commit}")
-          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
-          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
 
       - name: Parse tag + worker manifest
         id: meta
@@ -247,53 +236,6 @@ jobs:
       bin: ${{ needs.setup.outputs.bin }}
       image_tag: ${{ needs.container-build.outputs.image_tag }}
     secrets: inherit
-
-  # Notify the historical Harness benchmark after registry publication.
-  # The benchmark workflow routes only workers used by the active E2E stack.
-  dispatch-harness-benchmark:
-    name: Queue Harness E2E benchmark
-    needs: [setup, publish]
-    if: ${{ always() && needs.publish.result == 'success' && needs.setup.outputs.dry_run != 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Dispatch release metadata
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.setup.outputs.tag }}
-          RELEASE_WORKER: ${{ needs.setup.outputs.worker }}
-          RELEASE_VERSION: ${{ needs.setup.outputs.version }}
-          SOURCE_SHA: ${{ needs.setup.outputs.source_sha }}
-          REGISTRY_TAG: ${{ needs.setup.outputs.registry_tag }}
-          IS_PRERELEASE: ${{ needs.setup.outputs.is_prerelease }}
-          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.setup.outputs.tag }}
-        run: |
-          set -euo pipefail
-          jq -n \
-            --arg release_tag "$RELEASE_TAG" \
-            --arg release_worker "$RELEASE_WORKER" \
-            --arg release_version "$RELEASE_VERSION" \
-            --arg source_sha "$SOURCE_SHA" \
-            --arg release_url "$RELEASE_URL" \
-            --arg registry_tag "$REGISTRY_TAG" \
-            --argjson is_prerelease "$IS_PRERELEASE" \
-            '{
-              event_type: "harness-e2e-release",
-              client_payload: {
-                release_tag: $release_tag,
-                release_worker: $release_worker,
-                release_version: $release_version,
-                source_sha: $source_sha,
-                release_url: $release_url,
-                registry_tag: $registry_tag,
-                is_prerelease: $is_prerelease
-              }
-            }' |
-            gh api \
-              --method POST \
-              "repos/${GITHUB_REPOSITORY}/dispatches" \
-              --input -
 
   # ──────────────────────────────────────────────────────────────
   # Announce the release in Slack (#worker-releases). Terminal job:

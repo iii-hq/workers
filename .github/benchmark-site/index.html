@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta
       name="description"
-      content="Harness E2E quality, reliability, cost, and latency trends by release."
+      content="Harness E2E execution health, benchmark results, and workflow history."
     >
     <meta name="color-scheme" content="dark light">
-    <title>Harness release benchmarks</title>
+    <title>Harness E2E executions</title>
     <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
-    <a class="skip-link" href="#main">Skip to benchmark content</a>
+    <a class="skip-link" href="#main">Skip to execution dashboard</a>
     <div class="ambient ambient-one" aria-hidden="true"></div>
     <div class="ambient ambient-two" aria-hidden="true"></div>
 
@@ -26,211 +26,163 @@
           <span>Harness benchmarks</span>
         </span>
       </a>
+      <nav class="primary-nav" aria-label="Benchmark pages">
+        <a href="./index.html" aria-current="page">Executions</a>
+        <a href="./trends.html">Trends</a>
+      </nav>
       <nav class="topbar-actions" aria-label="Dashboard actions">
         <span id="preview-badge" class="badge badge-preview" hidden>Preview data</span>
-        <a class="text-link" href="./data.js" download>Raw data</a>
-        <a
-          id="actions-link"
-          class="button button-secondary"
-          href="https://github.com/iii-hq/workers/actions"
-        >
-          View runs
-          <span aria-hidden="true">↗</span>
+        <a id="actions-link" class="button button-secondary" href="https://github.com/iii-hq/workers/actions">
+          View Actions <span aria-hidden="true">↗</span>
         </a>
       </nav>
     </header>
 
-    <main id="main" class="page-shell">
-      <section class="hero" aria-labelledby="page-title">
-        <div class="hero-copy">
+    <main id="main" class="page-shell overview-shell">
+      <section class="page-heading" aria-labelledby="page-title">
+        <div>
           <div class="eyebrow">
             <span class="live-dot" aria-hidden="true"></span>
-            Release intelligence
+            Harness E2E
           </div>
-          <h1 id="page-title">Quality you can trace,<br>release by release.</h1>
-          <p>
-            A durable view of agent quality, reliability, cost, and scenario runtime
-            across every relevant Harness deployment.
-          </p>
+          <h1 id="page-title">Execution dashboard</h1>
+          <p>Workflow-level health with scenario results and complete run diagnostics.</p>
         </div>
-        <div class="hero-aside">
-          <div class="sync-label">Last benchmark sync</div>
+        <div class="sync-block">
+          <span>Last published</span>
           <time id="last-update" datetime="">Waiting for data</time>
-          <div id="data-health" class="data-health">
-            <span class="data-health-dot" aria-hidden="true"></span>
-            Historical data connected
-          </div>
-        </div>
-      </section>
-
-      <section class="control-bar" aria-label="Benchmark filters">
-        <label>
-          <span>Channel</span>
-          <select id="channel-filter"></select>
-        </label>
-        <label>
-          <span>Subject</span>
-          <select id="subject-filter"></select>
-        </label>
-        <label>
-          <span>Scenario</span>
-          <select id="scenario-filter"></select>
-        </label>
-        <label>
-          <span>Window</span>
-          <select id="window-filter">
-            <option value="8">Last 8</option>
-            <option value="20" selected>Last 20</option>
-            <option value="50">Last 50</option>
-            <option value="0">All releases</option>
-          </select>
-        </label>
-        <div class="control-context" aria-live="polite">
-          <span id="release-count">0 releases</span>
-          <span class="divider" aria-hidden="true"></span>
-          <span id="subject-context">No subject</span>
         </div>
       </section>
 
       <section id="empty-state" class="empty-state" hidden>
         <div class="empty-icon" aria-hidden="true">⌁</div>
-        <h2>No benchmark history yet</h2>
-        <p>
-          Run the release benchmark workflow to create the first comparable data
-          point.
-        </p>
+        <h2>No executions published</h2>
+        <p>The next scheduled Harness E2E workflow will appear here.</p>
       </section>
 
-      <div id="dashboard-content">
-        <section class="latest-release" aria-labelledby="latest-heading">
-          <div class="release-heading">
-            <div>
-              <div class="section-kicker">Latest evaluated release</div>
-              <div class="release-title-row">
-                <h2 id="latest-heading">—</h2>
-                <span id="release-status" class="status-pill">Pending</span>
-              </div>
-            </div>
-            <a id="release-link" class="release-link" href="#">
-              Release details <span aria-hidden="true">↗</span>
-            </a>
-          </div>
-          <div id="release-meta" class="meta-list"></div>
-          <div id="failure-callout" class="failure-callout" hidden>
-            <div>
-              <strong id="failure-title">Failures need attention</strong>
-              <span id="failure-detail"></span>
-            </div>
-            <a id="failure-link" href="#">
-              Inspect workflow <span aria-hidden="true">↗</span>
-            </a>
-          </div>
-        </section>
-
-        <section class="kpi-grid" aria-label="Latest release summary">
+      <div id="overview-content">
+        <section class="kpi-grid execution-kpis" aria-label="Latest execution summary">
           <article class="kpi-card kpi-primary">
-            <div class="kpi-label">Pass rate</div>
-            <div id="kpi-pass-rate" class="kpi-value">—</div>
-            <div id="kpi-pass-delta" class="kpi-delta">No prior release</div>
+            <div class="kpi-label">Latest result</div>
+            <div id="kpi-status" class="kpi-value kpi-status-value">—</div>
+            <div id="kpi-status-caption" class="kpi-delta">No execution</div>
             <div class="kpi-orbit" aria-hidden="true"></div>
+          </article>
+          <article class="kpi-card">
+            <div class="kpi-label">Scenario pass rate</div>
+            <div id="kpi-pass-rate" class="kpi-value">—</div>
+            <div id="kpi-coverage" class="kpi-delta">—</div>
           </article>
           <article class="kpi-card">
             <div class="kpi-label">Quality score</div>
             <div id="kpi-score" class="kpi-value">—</div>
-            <div id="kpi-score-delta" class="kpi-delta">No prior release</div>
+            <div class="kpi-delta">Mean of scenario medians</div>
+          </article>
+          <article class="kpi-card">
+            <div class="kpi-label">Reliability events</div>
+            <div id="kpi-failures" class="kpi-value">—</div>
+            <div class="kpi-delta">Gates, technical failures, and missing reports</div>
           </article>
           <article class="kpi-card">
             <div class="kpi-label">Model cost</div>
             <div id="kpi-cost" class="kpi-value">—</div>
-            <div id="kpi-cost-delta" class="kpi-delta">No prior release</div>
-          </article>
-          <article class="kpi-card">
-            <div class="kpi-label">Scenario runtime</div>
-            <div id="kpi-duration" class="kpi-value">—</div>
-            <div id="kpi-duration-delta" class="kpi-delta">No prior release</div>
-          </article>
-          <article class="kpi-card">
-            <div class="kpi-label">Reliability events</div>
-            <div id="kpi-reliability" class="kpi-value">—</div>
-            <div id="kpi-reliability-caption" class="kpi-delta">
-              Hard gates, technical failures, and missing reports
-            </div>
+            <div id="kpi-runtime" class="kpi-delta">—</div>
           </article>
         </section>
 
-        <section class="panel trend-panel" aria-labelledby="trend-heading">
+        <section class="panel health-panel" aria-labelledby="health-heading">
           <div class="panel-heading">
             <div>
-              <div class="section-kicker">Release trend</div>
-              <h2 id="trend-heading">Quality score</h2>
+              <div class="section-kicker">Execution by execution</div>
+              <h2 id="health-heading">Scenario health matrix</h2>
+              <p class="trend-description">
+                Columns are workflow attempts. Select a cell to inspect that execution and scenario.
+              </p>
             </div>
-            <div class="metric-tabs" role="group" aria-label="Trend metric">
-              <button class="metric-tab active" data-metric="score" type="button">
-                Score
-              </button>
-              <button class="metric-tab" data-metric="pass_rate" type="button">
-                Pass rate
-              </button>
-              <button class="metric-tab" data-metric="cost" type="button">
-                Cost
-              </button>
-              <button class="metric-tab" data-metric="duration" type="button">
-                Duration
-              </button>
+            <div class="range-toggle" role="group" aria-label="Matrix execution count">
+              <button class="range-button active" type="button" data-count="14">14 runs</button>
+              <button class="range-button" type="button" data-count="30">30 runs</button>
             </div>
           </div>
-          <div id="trend-legend" class="chart-legend"></div>
-          <div id="trend-chart" class="chart-container" aria-live="polite"></div>
-        </section>
-
-        <section class="scenario-section" aria-labelledby="scenario-heading">
-          <div class="section-heading">
-            <div>
-              <div class="section-kicker">Scenario health</div>
-              <h2 id="scenario-heading">Latest scenario breakdown</h2>
-            </div>
-            <p>Quality and operating cost, with change from the prior release.</p>
+          <div class="matrix-legend" aria-label="Result legend">
+            <span><i class="matrix-key matrix-passed matrix-key-score" aria-hidden="true">92%</i> Score reached</span>
+            <span><i class="matrix-key matrix-failed" aria-hidden="true">×</i> Failed</span>
+            <span><i class="matrix-key matrix-incomplete" aria-hidden="true">–</i> Incomplete</span>
+            <span><i class="matrix-key matrix-cancelled" aria-hidden="true">○</i> Cancelled</span>
           </div>
-          <div id="scenario-grid" class="scenario-grid"></div>
+          <div id="health-matrix" class="health-matrix-wrap" aria-live="polite"></div>
         </section>
 
-        <section class="panel history-panel" aria-labelledby="history-heading">
-          <div class="panel-heading">
+        <section class="panel executions-panel" aria-labelledby="executions-heading">
+          <div class="panel-heading executions-heading">
             <div>
               <div class="section-kicker">Audit trail</div>
-              <h2 id="history-heading">Release history</h2>
+              <h2 id="executions-heading">All executions</h2>
             </div>
-            <span id="coverage-note" class="coverage-note">100% report coverage</span>
+            <span id="execution-count" class="coverage-note">0 executions</span>
+          </div>
+          <div class="table-filters" aria-label="Execution filters">
+            <label class="search-field">
+              <span class="visually-hidden">Search executions</span>
+              <input id="execution-search" type="search" placeholder="Search run, commit, or date">
+            </label>
+            <label>
+              <span class="visually-hidden">Filter by status</span>
+              <select id="status-filter">
+                <option value="all">All statuses</option>
+                <option value="passed">Passed</option>
+                <option value="failed">Failed</option>
+                <option value="incomplete">Incomplete</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+            </label>
+            <label>
+              <span class="visually-hidden">Filter by trigger</span>
+              <select id="event-filter">
+                <option value="all">All triggers</option>
+                <option value="schedule">Scheduled</option>
+                <option value="workflow_dispatch">Manual</option>
+              </select>
+            </label>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="execution-table">
               <thead>
                 <tr>
-                  <th scope="col">Release</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Pass rate</th>
-                  <th scope="col">Quality score</th>
-                  <th scope="col">Cost</th>
-                  <th scope="col">Duration</th>
+                  <th scope="col">Execution</th>
+                  <th scope="col">Result</th>
                   <th scope="col">Commit</th>
+                  <th scope="col">Subjects</th>
+                  <th scope="col">Pass rate</th>
+                  <th scope="col">Score</th>
+                  <th scope="col">Failures</th>
+                  <th scope="col">Cost</th>
+                  <th scope="col">Runtime</th>
+                  <th scope="col">Data</th>
                 </tr>
               </thead>
-              <tbody id="history-body"></tbody>
+              <tbody id="execution-body"></tbody>
             </table>
+          </div>
+          <div class="pagination" aria-label="Execution table pagination">
+            <button id="previous-page" type="button">Previous</button>
+            <span id="page-label" aria-live="polite">Page 1</span>
+            <button id="next-page" type="button">Next</button>
           </div>
         </section>
       </div>
     </main>
 
     <footer>
-      <span>Harness E2E · compact public metrics only</span>
+      <span>Harness E2E · 100 summaries · 30 complete reports</span>
       <a href="https://github.com/iii-hq/workers/tree/main/harness/tests/e2e">
-        How the suite works <span aria-hidden="true">↗</span>
+        Suite documentation <span aria-hidden="true">↗</span>
       </a>
     </footer>
 
     <script>
       window.BENCHMARK_DATA = window.BENCHMARK_DATA || null;
+      window.HARNESS_EXECUTIONS = window.HARNESS_EXECUTIONS || null;
     </script>
     <script src="./data.js"></script>
     <script>
@@ -239,6 +191,13 @@
       }
     </script>
     <script src="./dashboard-data.js"></script>
-    <script src="./app.js"></script>
+    <script src="./execution-data.js"></script>
+    <script src="./executions.js"></script>
+    <script>
+      if (!window.HARNESS_EXECUTIONS) {
+        document.write('<script src="./sample-executions.js"><\/script>');
+      }
+    </script>
+    <script src="./overview.js"></script>
   </body>
 </html>
