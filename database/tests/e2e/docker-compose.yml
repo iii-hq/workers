@@ -26,6 +26,9 @@ services:
       - "53306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+      # Native capture streams the binlog as a replica; the app user needs
+      # the global replication grants. Runs once on first volume init.
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uiii", "-piii"]
       interval: 2s

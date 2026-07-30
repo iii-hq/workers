@@ -81,8 +81,16 @@ pub async fn build_pools(cfg: &WorkerConfig) -> Result<HashMap<String, Pool>, St
     Ok(pools)
 }
 
-pub async fn apply_config(state: &AppState, cfg: WorkerConfig) -> Result<(), String> {
+pub async fn apply_config(
+    state: &AppState,
+    cfg: WorkerConfig,
+    listeners: Option<&crate::triggers::NativeListeners>,
+) -> Result<(), String> {
     let new_pools = build_pools(&cfg).await?;
+    // A failed pool build leaves everything untouched, listeners included.
+    if let Some(listeners) = listeners {
+        listeners.sync(&cfg);
+    }
     // Swap pools and the config snapshot inside one critical section (pools
     // lock first, then config) so a concurrent reader never observes new
     // pools paired with the old config or vice-versa. A failed build above
@@ -113,7 +121,11 @@ pub struct OnConfigChangeResponse {
 }
 
 /// Register the internal config-change handler and bind a `configuration` trigger.
-pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), Error> {
+pub fn register_config_trigger(
+    iii: &IIIClient,
+    state: AppState,
+    listeners: Option<std::sync::Arc<crate::triggers::NativeListeners>>,
+) -> Result<(), Error> {
     let st = state.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -121,8 +133,9 @@ pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), E
         RegisterFunction::new_async(move |_event: OnConfigChangeEvent| {
             let st = st.clone();
             let engine = engine.clone();
+            let listeners = listeners.clone();
             async move {
-                on_config_change(&engine, &st).await;
+                on_config_change(&engine, &st, listeners.as_deref()).await;
                 Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
@@ -150,7 +163,11 @@ pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), E
 /// `payload.new_value` would let any caller replace the live connection pools
 /// (e.g. point them at an attacker-controlled database) without updating
 /// persisted state. Re-fetch the stored value via `configuration::get` instead.
-async fn on_config_change(iii: &IIIClient, state: &AppState) {
+async fn on_config_change(
+    iii: &IIIClient,
+    state: &AppState,
+    listeners: Option<&crate::triggers::NativeListeners>,
+) {
     let cfg = match fetch_config(iii).await {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -161,7 +178,7 @@ async fn on_config_change(iii: &IIIClient, state: &AppState) {
             return;
         }
     };
-    match apply_config(state, cfg).await {
+    match apply_config(state, cfg, listeners).await {
         Ok(()) => tracing::info!("database pools reloaded after configuration change"),
         Err(e) => tracing::error!(
             error = %e,

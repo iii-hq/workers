@@ -115,6 +115,8 @@ accepted; outside-tx COUNT=1`).
 | `workers/harness/` | TypeScript smoke-test worker (runs as a host process) |
 | `workers/harness/src/cases-interactive-tx.ts` | Interactive-transaction lifecycle cases |
 | `workers/harness/src/cases-row-changed.ts` | Row-change trigger delivery cases |
+| `workers/harness/src/cases-native-capture.ts` | `capture: native` cases for postgres (LISTEN/NOTIFY, `pg_native_db`), sqlite (changelog + fs watch, `sqlite_native_db`), and mysql (binlog stream, `mysql_native_db`) — cross-client delivery, no double-fire on own writes, table-less binding rejection, commit/rollback gating through interactive transactions, multi-subscriber fan-out with ops filters across trigger reinstall, bulk-statement coalescing (100 rows = 1 event) |
+| `mysql-init/grant-replication.sql` | Replication grants for the `iii` mysql user (binlog capture streams as a replica). Applied on first volume init only — on an older volume run `docker compose down -v` once |
 | `workers/harness/src/cases-tx-control-bypass.ts` | Side-channel-finalization repros |
 | `reports/report.json` | Per-case results (latest run) |
 

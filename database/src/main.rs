@@ -13,6 +13,7 @@ use database::handlers::{
     query::{self, QueryReq},
     rollback_transaction::{self, RollbackTxReq},
     run_statement::{self, RunReq},
+    test_connection::{self, TestConnectionReq},
     transaction::{self, TxReq},
     transaction_execute::{self, TxExecuteReq},
     transaction_query::{self, TxQueryReq},
@@ -60,11 +61,27 @@ async fn main() -> Result<()> {
         "starting"
     );
 
+    // Identify as `database` in the console's workers view instead of the
+    // SDK's hostname:pid fallback. III_WORKER_NAME still wins — that is the
+    // managed-spawn identity contract (the engine exports it for workers it
+    // owns), and hand-run instances (workers-dev) can use it to tag
+    // themselves per worktree.
+    let mut metadata = iii_sdk::runtime::WorkerMetadata::default();
+    if std::env::var("III_WORKER_NAME").map_or(true, |v| v.is_empty()) {
+        metadata.name = database::worker_name().to_string();
+    }
+    metadata.description = Some(
+        "SQL for PostgreSQL, MySQL, and SQLite: queries, statements, interactive \
+         transactions, and database::row-changed triggers (statements or native capture)."
+            .to_string(),
+    );
+
     // Arc-wrapped for `ui::register` (the console-ui crate clones the client
     // into its hot-reload watcher task); everything else auto-derefs.
     let iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {
+            metadata: Some(metadata),
             otel: Some(OtelConfig::default()),
             ..Default::default()
         },
@@ -110,6 +127,12 @@ async fn main() -> Result<()> {
         iii.clone(),
         ROW_CHANGE_DISPATCH_TIMEOUT_MS,
     ));
+    // One LISTEN task per `capture: native` postgres database, live from
+    // startup — external writes must be heard before any binding registers.
+    let native_listeners = Arc::new(database::triggers::NativeListeners::new(
+        row_changes.clone(),
+    ));
+    native_listeners.sync(&cfg);
     let state = AppState {
         pools: Arc::new(RwLock::new(pools)),
         config: Arc::new(RwLock::new(cfg)),
@@ -297,6 +320,21 @@ async fn main() -> Result<()> {
         );
     }
     {
+        iii.register_function(
+            "database::testConnection",
+            RegisterFunction::new_async(move |req: TestConnectionReq| async move {
+                test_connection::handle(req)
+                    .await
+                    .map_err(iii_sdk::errors::Error::from)
+            })
+            .description(
+                "Probe a candidate database config (url + optional tls) with one \
+                 throwaway connection, without touching configured pools. Reports \
+                 ok/driver/latency/server version; failures are data, not errors.",
+            ),
+        );
+    }
+    {
         let st = state.clone();
         iii.register_function(
             "database::listDatabases",
@@ -327,13 +365,14 @@ async fn main() -> Result<()> {
             database::triggers::RowChangedHandler {
                 bus: row_changes.clone(),
                 config: state.config.clone(),
+                pools: state.pools.clone(),
             },
         )
         .trigger_request_format::<database::triggers::RowChangedConfig>()
         .call_request_format::<database::triggers::RowChangedEvent>(),
     );
 
-    configuration::register_config_trigger(&iii, state.clone())
+    configuration::register_config_trigger(&iii, state.clone(), Some(native_listeners.clone()))
         .context("registering configuration change trigger")?;
 
     // Injectable console UI (function-trigger renderer) — after the
@@ -341,7 +380,7 @@ async fn main() -> Result<()> {
     database::ui::register(&iii);
 
     tracing::info!(
-        "database worker registered 13 functions and 1 trigger type, waiting for invocations"
+        "database worker registered 14 functions and 1 trigger type, waiting for invocations"
     );
     wait_for_shutdown_signal().await?;
     tracing::info!("database worker shutting down");

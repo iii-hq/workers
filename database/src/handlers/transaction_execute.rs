@@ -120,13 +120,15 @@ pub async fn handle(state: &AppState, req: TxExecuteReq) -> Result<TxExecuteResp
             // Staged, not announced: an interactive transaction's write is
             // invisible to everyone else until COMMIT, and announcing it here
             // would advertise rows a ROLLBACK is about to erase.
-            state.stage_row_change(
-                &req.transaction_id,
-                &db_name,
-                &req.sql,
-                er.affected_rows,
-                Some(&returned_rows),
-            );
+            state
+                .stage_row_change(
+                    &req.transaction_id,
+                    &db_name,
+                    &req.sql,
+                    er.affected_rows,
+                    Some(&returned_rows),
+                )
+                .await;
             Ok(TxExecuteResp {
                 affected_rows: er.affected_rows,
                 last_insert_id: er.last_insert_id,

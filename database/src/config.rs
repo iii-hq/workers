@@ -67,6 +67,14 @@ pub struct DatabaseConfig {
     pub pool: PoolConfig,
     #[serde(default)]
     pub tls: TlsConfig,
+    /// How `database::row-changed` events are captured for this database.
+    /// `statements` (default) classifies the SQL this worker executes;
+    /// `native` makes writes from ANY client — psql, other processes — fire
+    /// too. Postgres: triggers + LISTEN/NOTIFY. File-backed sqlite: a
+    /// trigger-fed changelog drained on filesystem wake-up. MySQL: the
+    /// binlog replication stream (needs REPLICATION SLAVE + CLIENT).
+    #[serde(default, skip_serializing_if = "CaptureMode::is_statements")]
+    pub capture: CaptureMode,
     /// Populated by [`WorkerConfig::finalize`] from the URL scheme.
     /// Do not construct `DatabaseConfig` directly without calling
     /// `finalize` — the default `Sqlite` value will silently mismatch
@@ -149,6 +157,28 @@ pub enum DriverKind {
     Sqlite,
 }
 
+/// How row-change events are captured for one database.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureMode {
+    /// Classify the SQL this worker executes. Writes from other clients are
+    /// invisible. Works on every driver. The default.
+    #[default]
+    Statements,
+    /// Capture writes from any client, including other processes.
+    /// Table-scoped bindings only. Postgres: triggers + LISTEN/NOTIFY on a
+    /// dedicated connection (needs DDL rights). File-backed sqlite:
+    /// triggers + changelog table + filesystem watch. MySQL: the binlog
+    /// replication stream (needs replication grants, nothing installed).
+    Native,
+}
+
+impl CaptureMode {
+    pub fn is_statements(&self) -> bool {
+        *self == CaptureMode::Statements
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct PoolConfig {
     /// Maximum number of open connections in the pool.
@@ -197,6 +227,7 @@ impl WorkerConfig {
                     url: DEFAULT_SQLITE_URL.to_string(),
                     pool: PoolConfig::default(),
                     tls: TlsConfig::default(),
+                    capture: CaptureMode::default(),
                     driver: DriverKind::default(),
                 },
             )]),
@@ -267,6 +298,42 @@ impl WorkerConfig {
                     redact_url(&db.url)
                 )
             })?;
+            if db.capture == CaptureMode::Native {
+                match db.driver {
+                    // Postgres captures via LISTEN/NOTIFY; server-side
+                    // prerequisites are checked at binding registration,
+                    // where failures are actionable.
+                    DriverKind::Postgres => {}
+                    DriverKind::Mysql => {
+                        // Binlog events are filtered to the url's schema; a
+                        // url without one would capture every database on
+                        // the server — table names and change volumes from
+                        // schemas this handle was never meant to see.
+                        let has_schema = url::Url::parse(&db.url)
+                            .map(|u| !u.path().trim_start_matches('/').is_empty())
+                            .unwrap_or(false);
+                        if !has_schema {
+                            return Err(format!(
+                                "db `{name}`: `capture: native` on mysql requires the \
+                                 url to name a database (mysql://host/dbname) — binlog \
+                                 events are filtered to that schema"
+                            ));
+                        }
+                    }
+                    DriverKind::Sqlite => {
+                        // A `:memory:` database exists per connection — a
+                        // watcher connection would open a different database
+                        // and hear nothing, ever.
+                        if db.url.contains(":memory:") {
+                            return Err(format!(
+                                "db `{name}`: `capture: native` requires a file-backed \
+                                 sqlite database; `:memory:` is per-connection and \
+                                 cannot be observed"
+                            ));
+                        }
+                    }
+                }
+            }
         }
         Ok(cfg)
     }
@@ -326,7 +393,7 @@ pub fn validate_sql_identifier(s: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn detect_driver(url: &str) -> Option<DriverKind> {
+pub(crate) fn detect_driver(url: &str) -> Option<DriverKind> {
     let lower = url.to_ascii_lowercase();
     if lower.starts_with("postgres://") || lower.starts_with("postgresql://") {
         Some(DriverKind::Postgres)
@@ -406,6 +473,45 @@ mod tests {
         assert!(json["databases"]["p"].get("driver").is_none());
         let back = WorkerConfig::from_json(&json).unwrap();
         assert!(matches!(back.databases["p"].driver, DriverKind::Sqlite));
+    }
+
+    #[test]
+    fn capture_native_allows_all_drivers_except_memory_sqlite() {
+        for url in [
+            "postgres://u@h/db",
+            "sqlite:./data/iii.db",
+            "mysql://u@h/db",
+        ] {
+            let c = cfg(&format!(
+                "databases:\n  p:\n    url: {url}\n    capture: native\n"
+            ));
+            assert_eq!(c.databases["p"].capture, CaptureMode::Native, "{url}");
+        }
+
+        // A per-connection `:memory:` database cannot be observed.
+        let err = WorkerConfig::from_yaml(
+            "databases:\n  p:\n    url: \"sqlite::memory:\"\n    capture: native\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("file-backed"), "got: {err}");
+
+        // A schema-less mysql url would capture every database on the server.
+        let err = WorkerConfig::from_yaml(
+            "databases:\n  p:\n    url: mysql://u@h\n    capture: native\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("name a database"), "got: {err}");
+        let err = WorkerConfig::from_yaml(
+            "databases:\n  p:\n    url: mysql://u@h/\n    capture: native\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("name a database"), "got: {err}");
+
+        // Default stays statements and stays out of the serialized form —
+        // existing configs round-trip byte-identical.
+        let d = cfg("databases:\n  p:\n    url: postgres://u@h/db\n");
+        assert_eq!(d.databases["p"].capture, CaptureMode::Statements);
+        assert!(d.to_json()["databases"]["p"].get("capture").is_none());
     }
 
     #[test]

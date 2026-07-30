@@ -449,3 +449,180 @@
   [data-iii-ui="database"] .db-data { flex-direction: column; }
   [data-iii-ui="database"] .db-rowdetail { width: auto; border-left: 0; border-top: 1px solid var(--color-rule); }
 }
+
+/* --- configuration form (Workers tab, `database` entry) --------------- */
+[data-iii-ui="database"] .db-cfg {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+[data-iii-ui="database"] .db-cfg-caption {
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="database"] .db-cfg-empty {
+  padding: 16px;
+  border: 1px dashed var(--color-rule);
+  border-radius: 8px;
+  color: var(--color-ink-faint);
+  font-size: 13px;
+}
+[data-iii-ui="database"] .db-cfg-card {
+  border: 1px solid var(--color-rule);
+  border-radius: 8px;
+  background: var(--color-panel);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+[data-iii-ui="database"] .db-cfg-card:focus {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 1px;
+}
+[data-iii-ui="database"] .db-cfg-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui="database"] .db-cfg-name {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-ink);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 2px 6px;
+  width: 12ch;
+}
+[data-iii-ui="database"] .db-cfg-name:hover,
+[data-iii-ui="database"] .db-cfg-name:focus {
+  border-color: var(--color-rule);
+  background: var(--color-bg);
+}
+[data-iii-ui="database"] .db-cfg-driver {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-rule-2);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-cfg-driver-postgres,
+[data-iii-ui="database"] .db-cfg-driver-mysql,
+[data-iii-ui="database"] .db-cfg-driver-sqlite {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+[data-iii-ui="database"] .db-cfg-capture-pill {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-ok);
+  color: var(--color-ok);
+}
+[data-iii-ui="database"] .db-cfg-spacer { flex: 1; }
+[data-iii-ui="database"] .db-cfg-remove,
+[data-iii-ui="database"] .db-cfg-add {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  background: transparent;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-cfg-remove:hover { color: var(--color-alert); border-color: var(--color-alert); }
+[data-iii-ui="database"] .db-cfg-add { align-self: flex-start; }
+[data-iii-ui="database"] .db-cfg-add:hover { color: var(--color-accent); border-color: var(--color-accent); }
+[data-iii-ui="database"] .db-cfg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+[data-iii-ui="database"] .db-cfg-field > label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-cfg-input,
+[data-iii-ui="database"] .db-cfg-select {
+  font-size: 13px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink);
+  background: var(--color-bg);
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 6px 8px;
+  min-width: 0;
+}
+[data-iii-ui="database"] .db-cfg-input:focus,
+[data-iii-ui="database"] .db-cfg-select:focus,
+[data-iii-ui="database"] .db-cfg-name:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: -1px;
+}
+[data-iii-ui="database"] .db-cfg-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="database"] .db-cfg-row > .db-cfg-field { flex: 1 1 160px; }
+[data-iii-ui="database"] .db-cfg-grow { flex: 2 1 240px; }
+[data-iii-ui="database"] .db-cfg-hint,
+[data-iii-ui="database"] .db-cfg-warn {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  line-height: 1.4;
+}
+[data-iii-ui="database"] .db-cfg-warn { color: var(--color-alert); }
+[data-iii-ui="database"] .db-cfg-pool > summary {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-cfg-pool[open] > summary { margin-bottom: 8px; }
+[data-iii-ui="database"] .db-cfg-errors {
+  border: 1px solid var(--color-alert);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--color-alert);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="database"] .db-cfg-url-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+[data-iii-ui="database"] .db-cfg-test {
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--color-ink-faint);
+  background: transparent;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-cfg-test:hover:not(:disabled) {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+[data-iii-ui="database"] .db-cfg-test:disabled { opacity: 0.6; cursor: default; }
+[data-iii-ui="database"] .db-cfg-test-ok,
+[data-iii-ui="database"] .db-cfg-test-fail {
+  font-size: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  line-height: 1.4;
+}
+[data-iii-ui="database"] .db-cfg-test-ok { color: var(--color-ok); }
+[data-iii-ui="database"] .db-cfg-test-fail { color: var(--color-alert); }

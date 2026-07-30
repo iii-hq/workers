@@ -47,7 +47,7 @@ tokio-postgres-rustls = "0.13"
 rust_decimal = { version = "1", features = ["db-tokio-postgres"] }
 
 # MySQL — `rustls-tls` adds rustls-backed TLS without pulling in OpenSSL.
-mysql_async = { version = "0.34", default-features = false, features = ["minimal-rust", "rustls-tls"] }
+mysql_async = { version = "0.34", default-features = false, features = ["minimal-rust", "rustls-tls", "binlog"] }
 
 # TLS (shared between postgres and mysql)
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "tls12", "logging"] }
@@ -60,6 +60,11 @@ rustls-webpki = { version = "0.103", default-features = false, features = ["std"
 rusqlite = { version = "0.31", features = ["bundled", "chrono", "column_decltype"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
+# Filesystem watch for sqlite native capture (inotify wake-up; the changelog
+# table is the source of truth, fs events only decide when to look).
+notify = "8"
+# StreamExt for the mysql binlog stream (already in the tree via mysql_async).
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 
 [dev-dependencies]
 tempfile = "3"
