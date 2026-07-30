@@ -20,12 +20,37 @@ pub enum Pool {
     Sqlite(SqlitePool),
 }
 
+/// Live pool occupancy, for `database::health`.
+///
+/// `size` and `idle` are `None` where the underlying pool does not expose
+/// them — `mysql_async` keeps its counters private. Reporting `None` rather
+/// than zero matters: "unknown" and "no idle connections" are different
+/// answers, and a health panel that conflates them is actively misleading.
+#[derive(Debug, Clone, Copy, serde::Serialize, schemars::JsonSchema)]
+pub struct PoolStats {
+    pub max: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<u32>,
+}
+
 impl Pool {
     pub fn driver(&self) -> DriverKind {
         match self {
             Pool::Postgres(_) => DriverKind::Postgres,
             Pool::Mysql(_) => DriverKind::Mysql,
             Pool::Sqlite(_) => DriverKind::Sqlite,
+        }
+    }
+
+    pub fn stats(&self) -> PoolStats {
+        match self {
+            Pool::Postgres(p) => p.stats(),
+            Pool::Mysql(p) => p.stats(),
+            Pool::Sqlite(p) => p.stats(),
         }
     }
 }

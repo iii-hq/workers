@@ -91,6 +91,23 @@ export function Eye(props: IconProps) {
   )
 }
 
+export function EyeOff(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M10.7 5.1A10 10 0 0 1 12 5c7 0 10 7 10 7a17 17 0 0 1-2.2 3.2M6.6 6.6A17 17 0 0 0 2 12s3 7 10 7a10 10 0 0 0 4.4-1" />
+      <path d="m2 2 20 20" />
+    </Svg>
+  )
+}
+
+export function Plus(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 5v14M5 12h14" />
+    </Svg>
+  )
+}
+
 export function ChevronRight(props: IconProps) {
   return (
     <Svg {...props}>

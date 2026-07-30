@@ -18,6 +18,19 @@ pub struct PostgresPool {
 pub type PgClient = deadpool_postgres::Object;
 
 impl PostgresPool {
+    /// Live occupancy from deadpool's own counters.
+    pub fn stats(&self) -> crate::pool::PoolStats {
+        let st = self.inner.status();
+        crate::pool::PoolStats {
+            max: st.max_size as u32,
+            size: Some(st.size as u32),
+            // deadpool counts `available` as idle-or-creatable, so it can
+            // exceed the number of connections actually open.
+            idle: Some(st.available as u32),
+            waiting: Some(st.waiting as u32),
+        }
+    }
+
     pub async fn new(
         url: &str,
         pool_cfg: &PoolConfig,

@@ -14,42 +14,41 @@ interface RowDetailProps {
   row: Record<string, unknown>
   columns: ColumnInfo[]
   onClose: () => void
+  /**
+   * Rendered inside the shared tabbed slot rather than as its own panel: the
+   * container and the close button belong to the parent then, and repeating
+   * them would nest two headers.
+   */
+  embedded?: boolean
 }
 
-export function RowDetail({ table, row, columns, onClose }: RowDetailProps) {
+export function RowDetail({ table, row, columns, onClose, embedded }: RowDetailProps) {
   const { copied, copy } = useCopyFeedback()
-  const names =
-    columns.length > 0 ? columns.map((c) => c.name) : Object.keys(row)
+  const names = columns.length > 0 ? columns.map((c) => c.name) : Object.keys(row)
   const byName = new Map(columns.map((c) => [c.name, c]))
 
+  const Wrapper = embedded ? 'div' : 'aside'
+
   return (
-    <aside className="db-rowdetail">
-      <div className="db-rowdetail-head">
-        <span className="cap">row · {table}</span>
-        <Button
-          variant="icon"
-          size="icon"
-          onClick={onClose}
-          aria-label="close row detail"
-        >
-          <X size={14} />
-        </Button>
-      </div>
+    <Wrapper className={embedded ? 'db-rowdetail-body' : 'db-rowdetail'}>
+      {embedded ? null : (
+        <div className="db-rowdetail-head">
+          <span className="cap">row · {table}</span>
+          <Button variant="icon" size="icon" onClick={onClose} aria-label="close row detail">
+            <X size={14} />
+          </Button>
+        </div>
+      )}
       {names.map((name) => {
         const col = byName.get(name)
         const value = row[name]
-        const isJson =
-          value !== null && value !== undefined && typeof value === 'object'
+        const isJson = value !== null && value !== undefined && typeof value === 'object'
         return (
           <div key={name} className="db-field">
             <div className="db-field-head">
-              {col?.pk ? (
-                <KeyRound size={10} style={{ color: 'var(--color-accent)' }} />
-              ) : null}
+              {col?.pk ? <KeyRound size={10} style={{ color: 'var(--color-accent)' }} /> : null}
               <span className="db-field-name">{name}</span>
-              {col?.type ? (
-                <span className="db-field-type">{col.type}</span>
-              ) : null}
+              {col?.type ? <span className="db-field-type">{col.type}</span> : null}
               <button
                 type="button"
                 className={`db-field-copy${copied === name ? ' copied' : ''}`}
@@ -65,19 +64,15 @@ export function RowDetail({ table, row, columns, onClose }: RowDetailProps) {
               ) : isJson ? (
                 <JsonHighlight code={JSON.stringify(value, null, 2)} />
               ) : typeof value === 'boolean' ? (
-                <span className={value ? 'bool-true' : 'bool-false'}>
-                  {String(value)}
-                </span>
+                <span className={value ? 'bool-true' : 'bool-false'}>{String(value)}</span>
               ) : (
                 <span className="plain">{String(value)}</span>
               )}
             </div>
-            {col?.fkTarget ? (
-              <div className="db-field-fk">references {col.fkTarget}</div>
-            ) : null}
+            {col?.fkTarget ? <div className="db-field-fk">references {col.fkTarget}</div> : null}
           </div>
         )
       })}
-    </aside>
+    </Wrapper>
   )
 }

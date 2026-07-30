@@ -12,11 +12,26 @@ pub struct MysqlPool {
     inner: Arc<MyPool>,
     db_name: Arc<str>,
     acquire_timeout: Duration,
+    /// Configured ceiling. `mysql_async` exposes no live counters, so this is
+    /// the only pool figure `database::health` can report for mysql.
+    max_size: u32,
 }
 
 pub type MysqlConn = mysql_async::Conn;
 
 impl MysqlPool {
+    /// `mysql_async` does not expose live pool counters, so only the
+    /// configured ceiling is known. The rest stay `None` rather than being
+    /// reported as zero.
+    pub fn stats(&self) -> crate::pool::PoolStats {
+        crate::pool::PoolStats {
+            max: self.max_size,
+            size: None,
+            idle: None,
+            waiting: None,
+        }
+    }
+
     pub fn new(url: &str, pool_cfg: &PoolConfig, tls_cfg: &TlsConfig) -> Result<Self, DbError> {
         let constraints =
             PoolConstraints::new(0, pool_cfg.max as usize).ok_or_else(|| DbError::ConfigError {
@@ -45,6 +60,7 @@ impl MysqlPool {
             inner: Arc::new(pool),
             db_name: Arc::from("(unset)"),
             acquire_timeout: Duration::from_millis(pool_cfg.acquire_timeout_ms),
+            max_size: pool_cfg.max,
         })
     }
 

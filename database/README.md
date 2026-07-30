@@ -4,7 +4,6 @@
 
 | field | value |
 |-------|-------|
-| version | 1.0.0 |
 | type | binary |
 | supported_targets | x86_64-apple-darwin, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu |
 | author | iii |
@@ -12,7 +11,7 @@
 ## Install
 
 ```sh
-iii worker add database@1.0.0
+iii worker add database
 ```
 
 ## Skills
@@ -192,6 +191,41 @@ const { rows } = await iii.trigger({
 | `database::commitTransaction` | Commit and finalize an interactive transaction. Subsequent calls against the same id return `TRANSACTION_NOT_FOUND`. |
 | `database::rollbackTransaction` | Rollback and finalize an interactive transaction. Subsequent calls against the same id return `TRANSACTION_NOT_FOUND`. |
 | `database::listDatabases` | List configured databases. Returns `{ databases, count }`; each entry has `name`, `driver`, credential-redacted `url`, `pool` settings, and `tls` (`mode`, `ca_cert_present`, `trust_native`). Config only — no health checks or live pool stats. |
+
+### Reading the schema
+
+| Function | Description |
+|---|---|
+| `database::listTables` | Every table and view, with its kind and (postgres) its schema. |
+| `database::describeTable` | One table: columns with type, nullability, default, primary-key membership and foreign-key target; plus indexes and a planner row estimate. Foreign keys are structured `{ schema, table, column }`, not a joined string. |
+| `database::describeSchema` | The same shape for every table at once. One catalog query per aspect across the whole database rather than one call per table, so a 200-table schema costs a handful of queries. `include_indexes` is off by default. |
+| `database::schemaDiagram` | Positioned table nodes and routed foreign-key edges, plus each table's hub `degree`, the `isolated` tables, and remaining edge `crossings`. Layout runs server-side, so a renderer only draws. |
+
+### Reading data
+
+| Function | Description |
+|---|---|
+| `database::browseTable` | Paged, sorted, filtered table read — no SQL from the caller. Filters are structured (`{ column, op, value }`) and compile to a parameterised `WHERE` for the driver in hand; `total` honours the same filters. Sorts accept a `mode` (`natural`, `length`, `absolute_value`, `random`) applied across the whole table, not just the page. To follow a foreign key, filter on equality with `page_size: 1`. |
+| `database::explain` | The query plan as a tree with per-node cost, row estimates and warnings, instead of the driver's raw text. `analyze` collects real timings by **running** the statement, so it defaults to `false` and is refused for anything that is not a single read. |
+| `database::columnStats` | Profile a table's columns. Reads the planner's own statistics by default — free and approximate, labelled `source: planner`. `exact: true` runs real aggregates and scans the table; it is refused above a row-count ceiling. To profile rows you already hold, pipe a `browseTable` result through the `fp` worker instead. |
+
+### Operations
+
+| Function | Description |
+|---|---|
+| `database::health` | Live pool occupancy plus active queries, table sizes, blocking locks and cache hit ratio. Each section reports separately as `available`, `unsupported` or `denied`, so a driver gap or a restricted role is never mistaken for an empty result. |
+| `database::terminateQuery` | Terminate a backend session, or cancel just its statement with `cancel_only`. Takes an id from `health`. Separate from `health` because it is a write. |
+
+### Saved queries and history
+
+Stored in the [`state`](https://github.com/iii-hq/workers/tree/main/state) worker, scoped per database, so they survive restarts and any agent can read them.
+
+| Function | Description |
+|---|---|
+| `database::saveQuery` | Save a named query. Saving under an existing name replaces it. |
+| `database::listSavedQueries` | Saved queries for a database, sorted by name. |
+| `database::deleteSavedQuery` | Delete by id or by name. |
+| `database::history` | Recent queries, newest first. Best effort — recording never blocks or fails a query, so this is a convenience rather than an audit log. For an audit trail bind `database::row-changed`. |
 
 ## Triggers
 

@@ -1,100 +1,40 @@
 /**
- * Read-only RPC surface for the injected database page, built entirely on
- * `database::query` + `database::listDatabases` — the worker has no
- * dedicated introspection functions, so table discovery issues the
- * driver-native catalog query (sqlite_master / information_schema).
- * Mutations stay in agent flows behind the approval gate.
+ * The page's data layer — now a thin adapter over the worker's own functions.
  *
- * Ported from the console's `lib/database.ts`: the catalog SQL and zod
- * parsing are verbatim; only the transport changed — every call now takes
- * the tab's `host` and routes through `host.iii.trigger(...)` instead of a
- * console-internal iii client.
+ * This file used to carry ~520 lines of per-driver catalog SQL: three
+ * spellings of a table list, three of a column list, `PRAGMA table_info`,
+ * `information_schema` correlated subqueries, `pg_indexes`, `GROUP_CONCAT`
+ * over `STATISTICS`. All of it now lives in the worker as
+ * `database::listTables` / `describeTable` / `describeSchema` / `browseTable`,
+ * where it is written once, tested against all three drivers in CI, and
+ * callable by any agent rather than only by this page.
+ *
+ * What remains is shape translation for the existing components, plus the two
+ * client-side SQL affordances (`isReadOnlySql`, `explainPrefix`) that exist to
+ * grey out a button before a round trip. The worker enforces both for real;
+ * neither is trusted.
  */
 
 import type { Host } from '@iii-dev/console-ui'
-import { z } from 'zod'
+import type { DbDriver, ForeignKeyRef, QueryResponse } from '../lib/rpc'
+import * as rpc from '../lib/rpc'
 
-/* ---------------------------------------------------------------------- *
- * Response schemas — inlined from the console's `database::*` parsers so
- * this page carries no dependency on console-internal modules.
- * ---------------------------------------------------------------------- */
-
-export const columnMetaSchema = z.object({
-  name: z.string(),
-  type: z.string().optional(),
-})
-export type ColumnMeta = z.infer<typeof columnMetaSchema>
-
-export const queryResponseSchema = z.object({
-  rows: z.array(z.record(z.string(), z.unknown())),
-  row_count: z.number(),
-  columns: z.array(columnMetaSchema).optional(),
-})
-export type QueryResponse = z.infer<typeof queryResponseSchema>
-
-export const listDatabasesResponseSchema = z.object({
-  databases: z.array(
-    z.object({
-      name: z.string(),
-      driver: z.string().optional(),
-      url: z.string().optional(),
-      pool: z
-        .object({
-          max: z.number().optional(),
-          idle_timeout_ms: z.number().optional(),
-          acquire_timeout_ms: z.number().optional(),
-        })
-        .optional(),
-      tls: z.object({ mode: z.string().optional() }).optional(),
-    }),
-  ),
-  count: z.number().optional(),
-})
-export type ListDatabasesResponse = z.infer<typeof listDatabasesResponseSchema>
+export type {
+  ColumnMeta,
+  DbDriver,
+  DbInfo,
+  FilterOp,
+  FilterSpec,
+  ForeignKeyRef,
+  QueryResponse,
+  SortSpec,
+  TypeCategory,
+} from '../lib/rpc'
+export { isComplete, listDbs, opsFor, PAGE_SIZE, typeCategory } from '../lib/rpc'
 
 export interface TableSort {
   column: string
   dir: 'asc' | 'desc'
-}
-
-export type TypeCategory =
-  | 'numeric'
-  | 'text'
-  | 'bool'
-  | 'date'
-  | 'json'
-  | 'binary'
-  | 'other'
-
-/** Coarse category for a driver-reported column type. */
-export function typeCategory(type: string | undefined): TypeCategory {
-  if (!type) return 'other'
-  const t = type.toLowerCase()
-  if (/bool/.test(t)) return 'bool'
-  if (/int|real|float|double|decimal|numeric|serial|money/.test(t)) {
-    return 'numeric'
-  }
-  if (/date|time|year/.test(t)) return 'date'
-  if (/json/.test(t)) return 'json'
-  if (/blob|bytea|binary/.test(t)) return 'binary'
-  if (/char|text|clob|uuid|enum/.test(t)) return 'text'
-  return 'other'
-}
-
-/* ---------------------------------------------------------------------- */
-
-const DATABASE_QUERY_FN = 'database::query'
-const DATABASE_LIST_FN = 'database::listDatabases'
-
-export const PAGE_SIZE = 50
-
-export type DbDriver = 'sqlite' | 'postgres' | 'mysql' | 'unknown'
-
-export interface DbInfo {
-  name: string
-  driver: DbDriver
-  url?: string
-  poolMax?: number
 }
 
 export interface DbTable {
@@ -103,235 +43,37 @@ export interface DbTable {
   kind: 'table' | 'view'
 }
 
-function parseDriver(raw: string | undefined): DbDriver {
-  if (raw === 'sqlite' || raw === 'postgres' || raw === 'mysql') return raw
-  return 'unknown'
+export interface ColumnInfo {
+  name: string
+  type: string
+  nullable: boolean
+  pk: boolean
+  /**
+   * Structured reference. Prefer this over `fkTarget` — a joined
+   * `"table.column"` string cannot express a schema qualifier unambiguously,
+   * and breaks outright on a table whose name contains a dot.
+   */
+  fk?: ForeignKeyRef
+  /** Display-only rendering of `fk`. */
+  fkTarget?: string
 }
-
-async function triggerRaw(
-  host: Host,
-  fnId: string,
-  payload: Record<string, unknown>,
-): Promise<unknown> {
-  return host.iii.trigger<unknown>(fnId, payload)
-}
-
-export async function listDbs(host: Host): Promise<DbInfo[]> {
-  const res = listDatabasesResponseSchema.safeParse(
-    await triggerRaw(host, DATABASE_LIST_FN, {}),
-  )
-  if (!res.success) {
-    throw new Error('unexpected response shape from database::listDatabases')
-  }
-  return res.data.databases.map((db) => ({
-    name: db.name,
-    driver: parseDriver(db.driver),
-    url: db.url,
-    poolMax: db.pool?.max,
-  }))
-}
-
-async function runQuery(
-  host: Host,
-  db: string,
-  sql: string,
-  params: unknown[] = [],
-): Promise<QueryResponse> {
-  const res = queryResponseSchema.safeParse(
-    await triggerRaw(host, DATABASE_QUERY_FN, { db, sql, params }),
-  )
-  if (!res.success) {
-    throw new Error('unexpected response shape from database::query')
-  }
-  return res.data
-}
-
-/* ---- identifier quoting ---- */
-
-/**
- * Quote one identifier for the driver. Table names come from the driver's
- * own catalog, but quoting is still mandatory — names may contain
- * uppercase, spaces, or reserved words.
- */
-export function quoteIdent(driver: DbDriver, ident: string): string {
-  if (driver === 'mysql') {
-    return `\`${ident.replaceAll('`', '``')}\``
-  }
-  return `"${ident.replaceAll('"', '""')}"`
-}
-
-/** Quote a possibly schema-qualified table reference (`schema.table`). */
-export function quoteTableRef(driver: DbDriver, table: string): string {
-  if (driver === 'postgres' && table.includes('.')) {
-    const [schema, ...rest] = table.split('.')
-    return `${quoteIdent(driver, schema)}.${quoteIdent(driver, rest.join('.'))}`
-  }
-  return quoteIdent(driver, table)
-}
-
-/* ---- catalog queries ---- */
-
-const TABLE_LIST_SQL: Record<Exclude<DbDriver, 'unknown'>, string> = {
-  sqlite:
-    "SELECT name, CASE type WHEN 'view' THEN 'view' ELSE 'table' END AS kind FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY kind, name",
-  postgres:
-    "SELECT CASE WHEN table_schema = 'public' THEN table_name ELSE table_schema || '.' || table_name END AS name, CASE table_type WHEN 'VIEW' THEN 'view' ELSE 'table' END AS kind FROM information_schema.tables WHERE table_type IN ('BASE TABLE', 'VIEW') AND table_schema NOT IN ('pg_catalog', 'information_schema') ORDER BY 2, 1",
-  mysql:
-    "SELECT table_name AS name, CASE TABLE_TYPE WHEN 'VIEW' THEN 'view' ELSE 'table' END AS kind FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY 2, 1",
-}
-
-const tableRowSchema = z.object({
-  name: z.string(),
-  kind: z.string().optional(),
-})
-
-export async function listTables(
-  host: Host,
-  db: string,
-  driver: DbDriver,
-): Promise<DbTable[]> {
-  if (driver === 'unknown') {
-    throw new Error(`cannot introspect tables for an unknown driver`)
-  }
-  const res = await runQuery(host, db, TABLE_LIST_SQL[driver])
-  return res.rows
-    .map((row) => tableRowSchema.safeParse(row))
-    .filter((p) => p.success)
-    .map((p) => ({
-      name: p.data.name,
-      kind: p.data.kind === 'view' ? ('view' as const) : ('table' as const),
-    }))
-}
-
-/* ---- indexes ---- */
 
 export interface IndexInfo {
   name: string
   unique: boolean
-  /** Column list or full definition, driver-dependent. */
+  /** Column list, joined for display. */
   detail: string
 }
 
-const sqliteIndexSchema = z.object({
-  name: z.string(),
-  unique: z.number(),
-  origin: z.string().optional(),
-})
-
-const pgIndexSchema = z.object({
-  name: z.string(),
-  definition: z.string(),
-})
-
-const mysqlIndexSchema = z.object({
-  name: z.string(),
-  unique: z.number(),
-  columns: z.string(),
-})
-
-export async function tableIndexes(
-  host: Host,
-  db: string,
-  driver: DbDriver,
-  table: string,
-): Promise<IndexInfo[]> {
-  if (driver === 'sqlite') {
-    const res = await runQuery(
-      host,
-      db,
-      `PRAGMA index_list(${quoteIdent(driver, table)})`,
-    )
-    return res.rows
-      .map((row) => sqliteIndexSchema.safeParse(row))
-      .filter((p) => p.success)
-      .map((p) => ({
-        name: p.data.name,
-        unique: p.data.unique === 1,
-        detail: p.data.origin === 'pk' ? 'primary key' : '',
-      }))
-  }
-  if (driver === 'postgres') {
-    const { schema, name } = splitTableRef(table)
-    const res = await runQuery(
-      host,
-      db,
-      `SELECT indexname AS name, indexdef AS definition FROM pg_indexes WHERE schemaname = $1 AND tablename = $2 ORDER BY indexname`,
-      [schema ?? 'public', name],
-    )
-    return res.rows
-      .map((row) => pgIndexSchema.safeParse(row))
-      .filter((p) => p.success)
-      .map((p) => ({
-        name: p.data.name,
-        unique: /\bUNIQUE\b/i.test(p.data.definition),
-        detail: p.data.definition.replace(/^.*USING /i, ''),
-      }))
-  }
-  if (driver === 'mysql') {
-    const res = await runQuery(
-      host,
-      db,
-      `SELECT INDEX_NAME AS name, MIN(NON_UNIQUE) = 0 AS \`unique\`, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? GROUP BY INDEX_NAME ORDER BY INDEX_NAME`,
-      [splitTableRef(table).name],
-    )
-    return res.rows
-      .map((row) => mysqlIndexSchema.safeParse(row))
-      .filter((p) => p.success)
-      .map((p) => ({
-        name: p.data.name,
-        unique: p.data.unique === 1,
-        detail: `(${p.data.columns})`,
-      }))
-  }
-  return []
-}
-
-/* ---- ad-hoc read-only queries ---- */
-
-/** Strip comments and quoted text (strings + delimited identifiers) so the
-    single-statement and write-form checks never trip on a `;`, `=`, or keyword
-    that lives inside a literal. */
-function stripSqlNoise(sql: string): string {
-  return sql
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/--[^\n]*/g, ' ')
-    .replace(/'(?:''|[^'])*'/g, "''")
-    .replace(/"(?:""|[^"])*"/g, '""')
-    .replace(/`(?:``|[^`])*`/g, '``')
-}
-
-const READ_ONLY_KEYWORDS = new Set([
-  'SELECT',
-  'WITH',
-  'EXPLAIN',
-  'PRAGMA',
-  'SHOW',
-  'DESCRIBE',
-  'VALUES',
-])
-
-/** Write / DDL / maintenance keywords that must not appear anywhere in a
-    read-only statement — catches mutating CTEs (`WITH x AS (DELETE …)`) and
-    `EXPLAIN ANALYZE <write>`, which the leading keyword alone waves through. */
-const WRITE_KEYWORD =
-  /\b(INSERT|UPDATE|DELETE|REPLACE|MERGE|UPSERT|DROP|CREATE|ALTER|TRUNCATE|GRANT|REVOKE|ATTACH|DETACH|REINDEX|VACUUM|ANALYZE|COMMIT|ROLLBACK|BEGIN)\b/i
-
-/**
- * Console-side gate: the page issues a SINGLE read statement. Defense in depth
- * (the worker is the real boundary): rejects any statement after the first `;`,
- * a non-read leading keyword, any write/DDL keyword anywhere (so mutating CTEs
- * and `EXPLAIN ANALYZE` cannot slip through), and writable `PRAGMA foo = bar`
- * forms while keeping read PRAGMAs (`PRAGMA table_info(x)`).
- */
-export function isReadOnlySql(sql: string): boolean {
-  const stripped = stripSqlNoise(sql).trim()
-  const semi = stripped.indexOf(';')
-  if (semi !== -1 && stripped.slice(semi + 1).trim() !== '') return false
-  const keyword = (stripped.split(/[^a-zA-Z_]+/, 1)[0] ?? '').toUpperCase()
-  if (!READ_ONLY_KEYWORDS.has(keyword)) return false
-  if (WRITE_KEYWORD.test(stripped)) return false
-  if (keyword === 'PRAGMA' && stripped.includes('=')) return false
-  return true
+export interface TablePage {
+  result: QueryResponse
+  page: number
+  pageSize: number
+  /** A further page exists. Derived from a sentinel row by the worker, so it
+      is correct even when the caller skipped the count. */
+  hasMore: boolean
+  /** Rows matching the same filters, when the caller asked for it. */
+  total?: number | null
 }
 
 export interface AdhocResult {
@@ -339,249 +81,160 @@ export interface AdhocResult {
   durationMs: number
 }
 
-/**
- * Run one read-only statement from the SQL panel. Write verbs are rejected
- * before they reach the worker — mutations stay in agent flows behind the
- * approval gate.
- */
-export async function runReadOnlySql(
-  host: Host,
-  db: string,
-  sql: string,
-): Promise<AdhocResult> {
-  if (!isReadOnlySql(sql)) {
-    throw new Error(
-      'read-only console: only SELECT / WITH / EXPLAIN / PRAGMA / SHOW run here. write statements go through agent flows and the approval gate.',
-    )
-  }
-  const started = performance.now()
-  const result = await runQuery(host, db, sql)
-  return { result, durationMs: Math.round(performance.now() - started) }
-}
-
-/** Driver-native EXPLAIN prefix for the SQL panel's explain toggle. */
-export function explainPrefix(driver: DbDriver): string {
-  if (driver === 'sqlite') return 'EXPLAIN QUERY PLAN '
-  return 'EXPLAIN '
-}
-
-export async function countTableRows(
-  host: Host,
-  db: string,
-  driver: DbDriver,
-  table: string,
-): Promise<number | null> {
-  const ref = quoteTableRef(driver, table)
-  const res = await runQuery(host, db, `SELECT COUNT(*) AS n FROM ${ref}`)
-  const n = res.rows[0]?.n
-  if (typeof n === 'number') return n
-  if (typeof n === 'string' && /^\d+$/.test(n)) return Number(n)
-  return null
-}
-
-/* ---- column introspection ---- */
-
-export interface ColumnInfo {
-  name: string
-  type: string
-  nullable: boolean
-  pk: boolean
-  /** Referenced `table.column` when this column is a foreign key. */
-  fkTarget?: string
-}
-
-/** Split a possibly schema-qualified table into schema + bare name. */
-function splitTableRef(table: string): { schema: string | null; name: string } {
+/** Split a schema-qualified name for the worker, which takes them apart. */
+function splitRef(table: string): { schema: string | null; name: string } {
   if (!table.includes('.')) return { schema: null, name: table }
   const [schema, ...rest] = table.split('.')
   return { schema, name: rest.join('.') }
 }
 
-const sqlitePragmaColumnSchema = z.object({
-  name: z.string(),
-  type: z.string(),
-  notnull: z.number(),
-  pk: z.number(),
-})
+/** Rebuild the qualified display name the page uses as a table identifier. */
+function qualify(schema: string | null | undefined, name: string): string {
+  return schema ? `${schema}.${name}` : name
+}
 
-const sqlitePragmaFkSchema = z.object({
-  table: z.string(),
-  from: z.string(),
-  to: z.string().nullable(),
-})
+export async function listTables(host: Host, db: string, _driver: DbDriver): Promise<DbTable[]> {
+  const tables = await rpc.listTables(host, db)
+  return tables.map((t) => ({ name: qualify(t.schema, t.name), kind: t.kind }))
+}
 
-async function sqliteColumns(
+/**
+ * Browse a table by its page identifier.
+ *
+ * The identifier is schema-qualified (`public.users` on postgres), and the
+ * worker takes schema and name apart. Calling `rpc.browseTable` directly with
+ * the qualified string and a null schema looks up a table literally named
+ * `public.users` — invisible on sqlite, which has no schemas, and broken on
+ * postgres. Every other read in this file splits first; so does this.
+ */
+export async function browseTableRef(
   host: Host,
   db: string,
   table: string,
-): Promise<ColumnInfo[]> {
-  const ref = quoteIdent('sqlite', table)
-  const cols = await runQuery(host, db, `PRAGMA table_info(${ref})`)
-  let fks: Map<string, string> = new Map()
-  try {
-    const fkRes = await runQuery(host, db, `PRAGMA foreign_key_list(${ref})`)
-    fks = new Map(
-      fkRes.rows
-        .map((row) => sqlitePragmaFkSchema.safeParse(row))
-        .filter((p) => p.success)
-        .map((p) => [p.data.from, `${p.data.table}.${p.data.to ?? 'rowid'}`]),
-    )
-  } catch {
-    // foreign_key_list errors on tables without FKs in some builds; treat
-    // as "no foreign keys" rather than failing the whole column read.
-  }
-  return cols.rows
-    .map((row) => sqlitePragmaColumnSchema.safeParse(row))
-    .filter((p) => p.success)
-    .map((p) => ({
-      name: p.data.name,
-      type: p.data.type || 'any',
-      nullable: p.data.notnull === 0,
-      pk: p.data.pk > 0,
-      fkTarget: fks.get(p.data.name),
-    }))
+  opts: rpc.BrowseOptions,
+): Promise<rpc.BrowseResult> {
+  const { schema, name } = splitRef(table)
+  return rpc.browseTable(host, db, name, schema, opts)
 }
 
-const infoSchemaColumnSchema = z.object({
-  name: z.string(),
-  type: z.string(),
-  nullable: z.string(),
-  key_kind: z.string().nullable().optional(),
-  fk_target: z.string().nullable().optional(),
-})
-
-async function postgresColumns(
-  host: Host,
-  db: string,
-  table: string,
-): Promise<ColumnInfo[]> {
-  const { schema, name } = splitTableRef(table)
-  const res = await runQuery(
-    host,
-    db,
-    `SELECT c.column_name AS name, c.data_type AS type, c.is_nullable AS nullable,
-       (SELECT tc.constraint_type FROM information_schema.table_constraints tc
-          JOIN information_schema.key_column_usage kcu
-            ON kcu.constraint_name = tc.constraint_name
-           AND kcu.table_schema = tc.table_schema
-         WHERE tc.table_schema = c.table_schema AND tc.table_name = c.table_name
-           AND kcu.column_name = c.column_name AND tc.constraint_type = 'PRIMARY KEY'
-         LIMIT 1) AS key_kind,
-       (SELECT ccu.table_name || '.' || ccu.column_name
-          FROM information_schema.table_constraints tc
-          JOIN information_schema.key_column_usage kcu
-            ON kcu.constraint_name = tc.constraint_name
-           AND kcu.table_schema = tc.table_schema
-          JOIN information_schema.constraint_column_usage ccu
-            ON ccu.constraint_name = tc.constraint_name
-         WHERE tc.table_schema = c.table_schema AND tc.table_name = c.table_name
-           AND kcu.column_name = c.column_name AND tc.constraint_type = 'FOREIGN KEY'
-         LIMIT 1) AS fk_target
-     FROM information_schema.columns c
-     WHERE c.table_schema = $1 AND c.table_name = $2
-     ORDER BY c.ordinal_position`,
-    [schema ?? 'public', name],
-  )
-  return res.rows
-    .map((row) => infoSchemaColumnSchema.safeParse(row))
-    .filter((p) => p.success)
-    .map((p) => ({
-      name: p.data.name,
-      type: p.data.type,
-      nullable: p.data.nullable === 'YES',
-      pk: p.data.key_kind === 'PRIMARY KEY',
-      fkTarget: p.data.fk_target ?? undefined,
-    }))
+export async function tableColumns(host: Host, db: string, _driver: DbDriver, table: string): Promise<ColumnInfo[]> {
+  const { schema, name } = splitRef(table)
+  const d = await rpc.describeTable(host, db, name, schema)
+  return d.columns.map((c) => ({
+    name: c.name,
+    type: c.type,
+    nullable: c.nullable,
+    pk: c.primary_key,
+    fk: c.foreign_key ?? undefined,
+    fkTarget: c.foreign_key
+      ? `${qualify(c.foreign_key.schema, c.foreign_key.table)}.${c.foreign_key.column}`
+      : undefined,
+  }))
 }
 
-async function mysqlColumns(
-  host: Host,
-  db: string,
-  table: string,
-): Promise<ColumnInfo[]> {
-  const { name } = splitTableRef(table)
-  const res = await runQuery(
-    host,
-    db,
-    `SELECT c.COLUMN_NAME AS name, c.COLUMN_TYPE AS type, c.IS_NULLABLE AS nullable,
-       c.COLUMN_KEY AS key_kind,
-       (SELECT CONCAT(kcu.REFERENCED_TABLE_NAME, '.', kcu.REFERENCED_COLUMN_NAME)
-          FROM information_schema.KEY_COLUMN_USAGE kcu
-         WHERE kcu.TABLE_SCHEMA = c.TABLE_SCHEMA AND kcu.TABLE_NAME = c.TABLE_NAME
-           AND kcu.COLUMN_NAME = c.COLUMN_NAME
-           AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
-         LIMIT 1) AS fk_target
-     FROM information_schema.COLUMNS c
-     WHERE c.TABLE_SCHEMA = DATABASE() AND c.TABLE_NAME = ?
-     ORDER BY c.ORDINAL_POSITION`,
-    [name],
-  )
-  return res.rows
-    .map((row) => infoSchemaColumnSchema.safeParse(row))
-    .filter((p) => p.success)
-    .map((p) => ({
-      name: p.data.name,
-      type: p.data.type,
-      nullable: p.data.nullable === 'YES',
-      pk: p.data.key_kind === 'PRI',
-      fkTarget: p.data.fk_target ?? undefined,
-    }))
-}
-
-export async function tableColumns(
-  host: Host,
-  db: string,
-  driver: DbDriver,
-  table: string,
-): Promise<ColumnInfo[]> {
-  if (driver === 'sqlite') return sqliteColumns(host, db, table)
-  if (driver === 'postgres') return postgresColumns(host, db, table)
-  if (driver === 'mysql') return mysqlColumns(host, db, table)
-  return []
-}
-
-/* ---- paged reads ---- */
-
-export interface TablePage {
-  result: QueryResponse
-  page: number
-  pageSize: number
-  /** True when a `pageSize + 1` sentinel row came back — a next page exists.
-      Lets pagination stay bounded when the total row count is unknown. */
-  hasMore: boolean
+export async function tableIndexes(host: Host, db: string, _driver: DbDriver, table: string): Promise<IndexInfo[]> {
+  const { schema, name } = splitRef(table)
+  const d = await rpc.describeTable(host, db, name, schema)
+  return d.indexes.map((i) => ({
+    name: i.name,
+    unique: i.unique,
+    detail: i.columns.join(', '),
+  }))
 }
 
 export async function fetchTablePage(
   host: Host,
   db: string,
-  driver: DbDriver,
+  _driver: DbDriver,
   table: string,
   page: number,
-  pageSize: number = PAGE_SIZE,
+  pageSize: number = rpc.PAGE_SIZE,
   sort?: TableSort | null,
+  filters?: rpc.FilterSpec[],
 ): Promise<TablePage> {
-  const ref = quoteTableRef(driver, table)
-  // Normalize to non-negative integers before interpolating — a fractional or
-  // non-finite page/size would otherwise yield broken or unbounded SQL.
-  const size = Math.max(1, Math.trunc(pageSize) || PAGE_SIZE)
-  const safePage = Math.max(0, Math.trunc(page) || 0)
-  const offset = safePage * size
-  const orderBy = sort
-    ? ` ORDER BY ${quoteIdent(driver, sort.column)} ${sort.dir === 'desc' ? 'DESC' : 'ASC'}`
-    : ''
-  // Fetch one extra sentinel row: its presence means a next page exists, so
-  // navigation stays bounded even when the total count is unknown.
-  const result = await runQuery(
-    host,
-    db,
-    `SELECT * FROM ${ref}${orderBy} LIMIT ${size + 1} OFFSET ${offset}`,
-  )
-  const hasMore = result.rows.length > size
-  const rows = result.rows.slice(0, size)
+  const { schema, name } = splitRef(table)
+  const res = await rpc.browseTable(host, db, name, schema, {
+    page,
+    pageSize,
+    sort: sort ? [{ column: sort.column, direction: sort.dir }] : [],
+    filters,
+  })
   return {
-    result: { ...result, rows, row_count: rows.length },
-    page: safePage,
-    pageSize: size,
-    hasMore,
+    result: { rows: res.rows, row_count: res.rows.length, columns: res.columns },
+    page: res.page,
+    pageSize: res.page_size,
+    hasMore: res.has_more,
+    total: res.total,
   }
+}
+
+/**
+ * Row count matching the current filters.
+ *
+ * `browseTable` already returns this alongside the page, so prefer
+ * `TablePage.total`. Kept for callers that ask on their own.
+ */
+export async function countTableRows(
+  host: Host,
+  db: string,
+  _driver: DbDriver,
+  table: string,
+  filters?: rpc.FilterSpec[],
+): Promise<number | null> {
+  const { schema, name } = splitRef(table)
+  const res = await rpc.browseTable(host, db, name, schema, { pageSize: 1, filters })
+  return res.total ?? null
+}
+
+/* ---- ad-hoc SQL ---- */
+
+const READ_ONLY_LEAD = /^(select|with|explain|pragma|show|describe|desc|values|table)\b/i
+const WRITE_ANYWHERE =
+  /\b(insert|update|delete|replace|merge|upsert|drop|create|alter|truncate|grant|revoke|attach|detach|reindex|vacuum)\b/i
+
+/**
+ * Best-effort read check, used only to grey out the run button before a round
+ * trip. The worker re-checks every statement and is the actual authority —
+ * this is a UX affordance, not a security boundary.
+ */
+export function isReadOnlySql(sql: string): boolean {
+  const stripped = sql
+    .replace(/--[^\n]*/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .trim()
+  if (!stripped) return false
+  if (stripped.replace(/;+\s*$/, '').includes(';')) return false
+  if (!READ_ONLY_LEAD.test(stripped)) return false
+  if (/^pragma\b/i.test(stripped) && stripped.includes('=')) return false
+  return !WRITE_ANYWHERE.test(stripped)
+}
+
+export async function runReadOnlySql(host: Host, db: string, sql: string): Promise<AdhocResult> {
+  if (!isReadOnlySql(sql)) {
+    throw new Error('only read-only statements can be run from this panel')
+  }
+  const started = performance.now()
+  const result = await rpc.runSql(host, db, sql)
+  return { result, durationMs: Math.round(performance.now() - started) }
+}
+
+/**
+ * Kept so the SQL panel can prefix a statement itself. Prefer
+ * `database::explain`, which returns a plan tree rather than a grid of text.
+ */
+export function explainPrefix(driver: DbDriver): string {
+  return driver === 'sqlite' ? 'EXPLAIN QUERY PLAN ' : 'EXPLAIN '
+}
+
+/* ---- identifier quoting, for display only ---- */
+
+export function quoteIdent(driver: DbDriver, ident: string): string {
+  return driver === 'mysql' ? `\`${ident.replace(/`/g, '``')}\`` : `"${ident.replace(/"/g, '""')}"`
+}
+
+export function quoteTableRef(driver: DbDriver, table: string): string {
+  const { schema, name } = splitRef(table)
+  return driver === 'postgres' && schema
+    ? `${quoteIdent(driver, schema)}.${quoteIdent(driver, name)}`
+    : quoteIdent(driver, name)
 }
