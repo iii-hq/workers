@@ -16,6 +16,17 @@ export interface Buffer {
   path: string
   mtime: number
   language: string
+  /**
+   * Opaque content version, and the reason it exists: `mtime` is Unix
+   * *seconds*, so two writes inside the same second are indistinguishable and
+   * a stale `expected_mtime` still matches, letting a save overwrite an edit
+   * it never saw. This carries the same fact in a form that survives that.
+   *
+   * Empty means unknown, which is what a session persisted before this field
+   * existed deserialises to. Callers fall back to `mtime` then, so an old
+   * workspace keeps working exactly as it did.
+   */
+  version: string
 }
 
 export interface WorkspaceView {
@@ -69,6 +80,7 @@ export interface OpenResult {
   language: string
   size: number
   mtime: number
+  version: string
   truncated: boolean
 }
 
@@ -77,7 +89,9 @@ export interface SaveResult {
   saved: boolean
   conflict: boolean
   mtime: number
+  version: string
   disk_mtime: number | null
+  disk_version: string | null
   conflict_patch: string | null
   added: number
   removed: number
@@ -157,10 +171,21 @@ export function createApi(host: Host) {
         path,
       }),
     open: (path: string) => call<OpenResult>('editor::open', { path }, 30_000),
-    save: (path: string, content: string, expectedMtime: number | null) =>
+    // Both guards go out together, and the worker prefers the version when it
+    // has one. Sending `expected_mtime` as well is what keeps this page working
+    // against a worker built before `expected_version` existed: that worker
+    // ignores the field it does not know and compares mtimes, exactly as
+    // before. An empty version means the buffer predates the field, so it is
+    // omitted rather than sent as a value that would never match.
+    save: (path: string, content: string, expectedMtime: number | null, expectedVersion?: string | null) =>
       call<SaveResult>(
         'editor::save',
-        { path, content, ...(expectedMtime === null ? {} : { expected_mtime: expectedMtime }) },
+        {
+          path,
+          content,
+          ...(expectedMtime === null ? {} : { expected_mtime: expectedMtime }),
+          ...(expectedVersion ? { expected_version: expectedVersion } : {}),
+        },
         30_000,
       ),
     find: (query: string, limit: number) => call<FindResult>('editor::find', { query, limit }),

@@ -16,6 +16,8 @@ import { DEFAULT_THEMES, parsePatchFiles } from '@pierre/diffs'
 import { FileDiff } from '@pierre/diffs/react'
 import { useMemo } from 'react'
 
+import { contentHash } from '../lib/cache-key'
+
 const HANDLED = new Set([
   'editor::workspace::open',
   'editor::workspace::get',
@@ -78,7 +80,7 @@ function Stat({ added, removed }: { added: number | null; removed: number | null
  */
 function Patch({ host, patch }: { host: Host; patch: string }) {
   const themeType = host.useTheme()
-  const files = useMemo(() => parsePatchFiles(patch, `p${patch.length}`).flatMap((p) => p.files), [patch])
+  const files = useMemo(() => parsePatchFiles(patch, `p${contentHash(patch)}`).flatMap((p) => p.files), [patch])
   if (files.length === 0) return null
 
   const shown = files.slice(0, MAX_PATCH_FILES)

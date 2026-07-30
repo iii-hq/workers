@@ -338,17 +338,42 @@
   flex: 1;
 }
 
-[data-iii-ui='editor'] .ed-surface {
+/* One scroll contract for all four views.
+ *
+ * `read`, `edit`, `unsaved` and `head` render into the same slot, and every one
+ * of them hands that slot content taller than the pane: pierre grows
+ * vertically (its own `[data-code]` scrolls sideways and *clips* vertically),
+ * and the console's CodeEditor is documented as growing with its content with
+ * Monaco's own scrollbars switched off — "put it inside an `overflow-auto`
+ * pane". Neither one scrolls itself, so the pane has to, and there is no
+ * reason for four versions of that.
+ *
+ * `min-height: 0` is the other half and is not optional: a flex item defaults
+ * to `min-height: auto`, which refuses to shrink below its content, so the pane
+ * would grow to the height of the file and overflow the window instead of
+ * scrolling. It has to hold all the way up — .ed-root, .ed-body, .ed-main and
+ * here — because one ancestor without it defeats every descendant.
+ *
+ * Exactly one scrollbar comes out of this. Monaco's are configured off, and
+ * pierre's element stretches to the pane's width so its horizontal scroller
+ * never makes the pane overflow sideways as well.
+ */
+[data-iii-ui='editor'] .ed-pane {
   flex: 1;
   min-height: 0;
+  overflow: auto;
   margin: 0 8px;
-  border: 1px solid var(--color-rule);
-  border-radius: 4px;
-  overflow: hidden;
 }
 
-/* The scroll pane for everything @pierre/diffs renders — the read view and
-   both diff views. Only the box is ours: pierre paints inside a shadow root
+/* The edit view's box, on top of `.ed-pane`. Monaco is chrome-less, so the
+   border is what separates the code from the page. */
+[data-iii-ui='editor'] .ed-surface {
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+}
+
+/* Everything @pierre/diffs renders — the read view and both diff views — on
+   top of `.ed-pane`. Only the box is ours: pierre paints inside a shadow root
    and injects its own stylesheet there from the theme it was handed, so there
    is nothing here to colour and no CSS asset to ship for it. The gap is for
    the multi-file case, where each file is its own element. */
@@ -356,10 +381,6 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  margin: 0 8px;
 }
 
 /* The status line carries what the *edit* surface cannot: the console's shared

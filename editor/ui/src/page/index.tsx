@@ -43,6 +43,7 @@ import {
   EmptyState,
   type Host,
   Input,
+  MarkdownPreview,
   StatusDot,
 } from '@iii-dev/console-ui'
 import { DEFAULT_THEMES, parsePatchFiles } from '@pierre/diffs'
@@ -50,6 +51,7 @@ import { File, FileDiff } from '@pierre/diffs/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
+  type Api,
   type Buffer,
   createApi,
   errorText,
@@ -64,10 +66,33 @@ import {
   type TreeNode,
   visibleRows,
 } from '../lib/api'
+import { contentHash } from '../lib/cache-key'
 import { type ChangedEvent, useWorkspaceEvents } from '../lib/events'
 
 /** How long a row keeps its "just changed" accent after an edit lands. */
 const FLASH_MS = 12_000
+
+/**
+ * Trailing-edge window for folding pushed events into one refresh, in ms.
+ *
+ * Events arrive one per write, and the case this page exists for — an agent
+ * editing a directory in a loop — delivers them in bursts. A refresh per event
+ * costs a workspace read, a git status and a file read each time, and lets a
+ * slow pass overlap the next.
+ *
+ * 100ms is short on purpose. The push rewrite exists so that you watch the
+ * agent work, so an isolated event has to land immediately rather than
+ * eventually, and 100ms is inside the window where a UI still reads as
+ * immediate. Nothing user-visible waits on it either: the row accent and the
+ * status line are set straight from the event payload, before the timer is
+ * armed. Raising this buys fewer round trips at the cost of the one property
+ * the feature exists for.
+ */
+const COALESCE_MS = 100
+
+/** A cancellable pause, so a sustained stream of events gets a window between
+ *  passes instead of back-to-back round trips. */
+const settle = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 /**
  * pierre renders into its own shadow root and injects its stylesheet there
@@ -94,6 +119,17 @@ const DIFF_OPTIONS = { theme: DEFAULT_THEMES, diffStyle: 'unified', overflow: 's
 interface Draft {
   base: string
   draft: string
+  /**
+   * The mtime the file had when `base` was read.
+   *
+   * Per draft rather than in a map of its own so it cannot drift from the text
+   * it describes: it is set wherever `base` is and dropped with the tab. Its
+   * one job is the gate in `syncWorkspace` — a workspace buffer whose recorded
+   * mtime still matches this one has not been written *through the worker*
+   * since this page read it, so re-reading it would spend a file body for
+   * nothing.
+   */
+  mtime: number
   truncated: boolean
   stale: boolean
 }
@@ -121,7 +157,7 @@ export function EditorPage({ host }: { host: Host }) {
   const [activePath, setActivePath] = useState<string | null>(null)
   // Reading is the default: opening a file should show you the file, not put
   // a cursor in it.
-  const [view, setView] = useState<'read' | 'edit' | 'diff' | 'git'>('read')
+  const [view, setView] = useState<'read' | 'edit' | 'preview' | 'diff' | 'git'>('read')
   const [mode, setMode] = useState<'files' | 'search'>('files')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<string[]>([])
@@ -137,8 +173,9 @@ export function EditorPage({ host }: { host: Host }) {
   const [busy, setBusy] = useState(false)
   const [lastChange, setLastChange] = useState<ChangedEvent | null>(null)
 
-  // Read inside the poll without making it a dependency — rebuilding the
-  // interval on every keystroke would reset the timer and stall the feed.
+  // Read inside a refresh without making it a dependency — rebuilding the
+  // refresh callbacks on every keystroke would re-run the effects that bind
+  // them and churn the subscriptions.
   const draftsRef = useRef(drafts)
   draftsRef.current = drafts
   const seenRef = useRef<Record<string, string>>({})
@@ -146,6 +183,19 @@ export function EditorPage({ host }: { host: Host }) {
   const activeBuffer = buffers.find((b) => b.path === activePath) ?? null
   const activeDraft = activePath ? (drafts[activePath] ?? null) : null
   const dirty = activeDraft !== null && activeDraft.draft !== activeDraft.base
+  // The worker classifies the language, so the extension check is only a
+  // fallback for a file it did not recognise.
+  const markdown = activeBuffer?.language === 'markdown' || /\.(md|markdown|mdx)$/i.test(activePath ?? '')
+
+  // Two of the tabs only exist for some files: `unsaved` while something is
+  // unsaved, `preview` on markdown. Saving, undoing back to the original, or
+  // switching to a tab of another kind all take a button away, and leaving the
+  // view pointed at it would strand the user somewhere with no way back and
+  // nothing in it. Fall back to `read`, which every file has.
+  useEffect(() => {
+    if (view === 'diff' && !dirty) setView('read')
+    if (view === 'preview' && !markdown) setView('read')
+  }, [view, dirty, markdown])
 
   const applyWorkspace = useCallback((ws: { root: string; buffers: Buffer[]; expanded: string[] }) => {
     setRoot(ws.root)
@@ -199,6 +249,7 @@ export function EditorPage({ host }: { host: Host }) {
             [buffer.path]: {
               base: file.content,
               draft: file.content,
+              mtime: file.mtime,
               truncated: file.truncated,
               stale: false,
             },
@@ -225,6 +276,7 @@ export function EditorPage({ host }: { host: Host }) {
           [path]: {
             base: file.content,
             draft: file.content,
+            mtime: file.mtime,
             truncated: file.truncated,
             stale: false,
           },
@@ -276,29 +328,163 @@ export function EditorPage({ host }: { host: Host }) {
     }
   }, [api])
 
-  /** Pull open tabs forward when their file moved on disk. */
-  const refreshBuffers = useCallback(async () => {
+  /**
+   * Pull one open tab forward from disk.
+   *
+   * An untouched buffer adopts the new text. An edited one keeps the edit and
+   * gains `stale`, which raises the "disk moved" badge and leaves the save
+   * guard to refuse the write rather than overwriting silently.
+   *
+   * The mtime is recorded even when the content came back identical, and that
+   * is not tidiness: `editor::open` upserts the buffer into the shared
+   * workspace, so this read moves the *record's* mtime. A local copy left
+   * behind would make the gate in `syncWorkspace` re-read the same file on the
+   * state event this very call is about to emit, which re-opens it, which emits
+   * another — a loop with no exit.
+   */
+  const reread = useCallback(
+    async (path: string) => {
+      const local = draftsRef.current[path]
+      if (!local) return
+      try {
+        const file = await api.open(path)
+        const moved = file.content !== local.base
+        let next: Draft = { ...local, mtime: file.mtime }
+        if (moved) {
+          next =
+            local.draft === local.base
+              ? {
+                  base: file.content,
+                  draft: file.content,
+                  mtime: file.mtime,
+                  truncated: file.truncated,
+                  stale: false,
+                }
+              : { ...next, stale: true }
+        }
+        // Closed while the read was in flight: do not resurrect the tab.
+        setDrafts((prev) => (prev[path] ? { ...prev, [path]: next } : prev))
+        if (moved) setFlashed((prev) => ({ ...prev, [path]: Date.now() }))
+      } catch {
+        // A file that cannot be read keeps the text we already have; the error
+        // surfaces when the user selects the tab.
+      }
+    },
+    [api],
+  )
+
+  /**
+   * Re-read the shared workspace and pull forward only the tabs that moved.
+   *
+   * `mtime` on a workspace buffer is the mtime the *worker* last read that file
+   * at — it advances on `editor::open` and `editor::save` and nowhere else — so
+   * comparing it against the mtime this page recorded when it read the file
+   * identifies exactly which tabs were saved through the worker by another
+   * surface or an agent. The rest keep the text they have instead of costing a
+   * full file body each, which is what makes this affordable per event rather
+   * than per timer tick.
+   *
+   * The gate is only sound *here*. A write that never went through this worker
+   * (`shell::fs::write`) does not move the record's mtime at all; those arrive
+   * as `editor::changed` with the path in the payload and are re-read
+   * unconditionally, which is why the changed path is passed to `reread`
+   * directly instead of being looked for here.
+   *
+   * Residual: mtime is Unix *seconds*, so a save made through the worker inside
+   * the same second as this page's last read of that file is indistinguishable
+   * from no change and waits for the next event touching it. Reading
+   * unconditionally instead is not an option — see `reread`, it does not
+   * terminate. The worker's buffer record carries an opaque `version` that is
+   * the same fact without the one-second floor; when the save path starts
+   * sending it, this gate should compare that in preference to the mtime and
+   * the residual goes away.
+   */
+  const syncWorkspace = useCallback(async () => {
     try {
       const ws = await api.workspace()
       setBuffers(ws.buffers)
       for (const buffer of ws.buffers) {
         const local = draftsRef.current[buffer.path]
-        if (!local) continue
-        const file = await api.open(buffer.path)
-        if (file.content === local.base) continue
-        const edited = local.draft !== local.base
-        setDrafts((prev) => ({
-          ...prev,
-          [buffer.path]: edited
-            ? { ...local, stale: true }
-            : { base: file.content, draft: file.content, truncated: file.truncated, stale: false },
-        }))
-        setFlashed((prev) => ({ ...prev, [buffer.path]: Date.now() }))
+        if (!local || buffer.mtime === local.mtime) continue
+        await reread(buffer.path)
       }
     } catch {
-      // Transient; the next tick tries again.
+      // Transient; the next event tries again.
     }
-  }, [api])
+  }, [api, reread])
+
+  /** Work accumulated since the last pass: paths whose file needs re-reading,
+   *  and whether the git overlay is stale. */
+  const pendingRef = useRef<{ paths: Set<string>; git: boolean }>({ paths: new Set(), git: false })
+  /** Set by every event, cleared as a pass takes the work. */
+  const wantedRef = useRef(false)
+  const runningRef = useRef(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  /**
+   * Drain the accumulated work, one pass at a time.
+   *
+   * Exactly one pass is ever in flight. The guard **defers rather than drops**:
+   * an event that lands mid-pass stays in `pendingRef` and the loop picks it up
+   * on its next turn, so the last event of a burst is always the one the page
+   * settles on. Discarding it instead would leave the UI showing content that
+   * is merely old, which is worse than the burst being fixed here.
+   */
+  const flush = useCallback(async () => {
+    if (runningRef.current) return
+    runningRef.current = true
+    try {
+      while (wantedRef.current) {
+        wantedRef.current = false
+        const work = pendingRef.current
+        pendingRef.current = { paths: new Set(), git: false }
+
+        await syncWorkspace()
+        // One read per changed path. The event carries a patch, not the new
+        // content, and reconstructing the file from a patch here is the hand
+        // parsing this page deliberately no longer does.
+        for (const path of work.paths) await reread(path)
+        if (work.git) await refreshGit()
+
+        // Anything that arrived during the pass gets its own window rather than
+        // an immediate re-run, so a sustained stream costs one pass per window
+        // instead of one pass per bus round trip.
+        if (wantedRef.current) await settle(COALESCE_MS)
+      }
+    } finally {
+      runningRef.current = false
+    }
+  }, [refreshGit, reread, syncWorkspace])
+
+  /**
+   * Record what an event implies and arm the window.
+   *
+   * The timer is deliberately *not* restarted per event: a stream arriving
+   * faster than `COALESCE_MS` would then postpone the refresh for as long as it
+   * lasted, which is the one failure this cannot have. Arming once per window
+   * makes the window a floor on refresh spacing rather than a ceiling on how
+   * long a change can stay invisible.
+   */
+  const schedule = useCallback(
+    (path?: string, git = false) => {
+      if (path !== undefined) pendingRef.current.paths.add(path)
+      if (git) pendingRef.current.git = true
+      wantedRef.current = true
+      if (timerRef.current !== null) return
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null
+        void flush()
+      }, COALESCE_MS)
+    },
+    [flush],
+  )
+
+  useEffect(
+    () => () => {
+      if (timerRef.current !== null) clearTimeout(timerRef.current)
+    },
+    [],
+  )
 
   const { onState, onChanged } = useWorkspaceEvents(host)
 
@@ -310,27 +496,21 @@ export function EditorPage({ host }: { host: Host }) {
   }, [refreshGit])
 
   // A change to this worker's `state` scope means the shared workspace moved:
-  // an agent opened or closed something, or saved. Re-read it once per event
-  // rather than on a timer.
-  useEffect(
-    () =>
-      onState(() => {
-        void refreshBuffers()
-      }),
-    [onState, refreshBuffers],
-  )
+  // an agent opened or closed something, or saved. The record itself says which
+  // buffers moved, so no path is named here.
+  useEffect(() => onState(() => schedule()), [onState, schedule])
 
-  // A file changed, however it changed. The event carries enough to light the
-  // row up immediately; the git overlay is refreshed for the marks.
+  // A file changed, however it changed. The accent and the status line are set
+  // straight from the payload so the page reacts within the frame; only the
+  // re-read and the git marks wait for the window.
   useEffect(
     () =>
       onChanged((event: ChangedEvent) => {
         setFlashed((prev) => ({ ...prev, [event.path]: Date.now() }))
         setLastChange(event)
-        void refreshBuffers()
-        void refreshGit()
+        schedule(event.path, true)
       }),
-    [onChanged, refreshBuffers, refreshGit],
+    [onChanged, schedule],
   )
 
   useEffect(() => {
@@ -410,13 +590,16 @@ export function EditorPage({ host }: { host: Host }) {
     if (!activePath || !activeBuffer || !activeDraft) return
     setBusy(true)
     try {
-      const result = await api.save(activePath, activeDraft.draft, activeBuffer.mtime)
+      const result = await api.save(activePath, activeDraft.draft, activeBuffer.mtime, activeBuffer.version)
       if (result.conflict) {
         setConflict(result)
       } else {
         setDrafts((prev) => ({
           ...prev,
-          [activePath]: { ...activeDraft, base: activeDraft.draft, stale: false },
+          // `result.mtime` is what the file now has on disk. Recording it keeps
+          // the `syncWorkspace` gate quiet about the buffer this save just
+          // upserted into the shared workspace.
+          [activePath]: { ...activeDraft, base: activeDraft.draft, mtime: result.mtime, stale: false },
         }))
         applyWorkspace(await api.workspace())
         void refreshGit()
@@ -688,9 +871,34 @@ export function EditorPage({ host }: { host: Host }) {
                       <button type="button" data-active={view === 'edit'} onClick={() => setView('edit')}>
                         edit
                       </button>
-                      <button type="button" data-active={view === 'diff'} onClick={() => setView('diff')}>
-                        unsaved
-                      </button>
+                      {/*
+                        Markdown only. `MarkdownPreview` is the console's own
+                        component, the documented preview counterpart to
+                        `CodeEditor`, and iii-directory already renders skills,
+                        prompts and registry READMEs through it. Reusing it
+                        keeps this page consistent with those and costs nothing
+                        in the bundle, since console-ui resolves at runtime.
+                      */}
+                      {markdown && (
+                        <button type="button" data-active={view === 'preview'} onClick={() => setView('preview')}>
+                          preview
+                        </button>
+                      )}
+                      {/*
+                        Only while there is something unsaved. This view diffs
+                        the draft against what was last read, so on a clean file
+                        it is guaranteed empty, and it was showing that empty
+                        state most of the time. Note it never carries an agent's
+                        edits either: those are written to disk, so they arrive
+                        under `head`. Its one real job is reviewing your own
+                        typing before you commit to it, which only exists while
+                        you are mid-edit.
+                      */}
+                      {dirty && (
+                        <button type="button" data-active={view === 'diff'} onClick={() => setView('diff')}>
+                          unsaved
+                        </button>
+                      )}
                       <button type="button" data-active={view === 'git'} onClick={() => setView('git')}>
                         head
                       </button>
@@ -710,8 +918,14 @@ export function EditorPage({ host }: { host: Host }) {
 
                   {view === 'read' ? (
                     <FileView path={activePath} contents={activeDraft.draft} themeType={themeType} />
+                  ) : view === 'preview' ? (
+                    // The draft, not the saved file, so the preview tracks what
+                    // is being typed rather than what was last written.
+                    <div className="ed-pane">
+                      <MarkdownPreview markdown={activeDraft.draft} />
+                    </div>
                   ) : view === 'edit' ? (
-                    <div className="ed-surface">
+                    <div className="ed-pane ed-surface">
                       <CodeEditor
                         value={activeDraft.draft}
                         language={activeBuffer?.language ?? 'plaintext'}
@@ -727,7 +941,7 @@ export function EditorPage({ host }: { host: Host }) {
                     </div>
                   ) : view === 'diff' ? (
                     <LocalDiff
-                      host={host}
+                      api={api}
                       path={activePath}
                       base={activeDraft.base}
                       draft={activeDraft.draft}
@@ -869,14 +1083,14 @@ export function EditorPage({ host }: { host: Host }) {
  *
  * `cacheKey` is the memo key pierre hands its render cache, so it has to move
  * whenever the text or the name does or the pane keeps showing the previous
- * file. Length is in it deliberately: `path` alone would not change when a
- * file is edited in place, and hashing the whole buffer on every keystroke is
- * a cost with no reader on the other end of it.
+ * file. `path` alone does not move when a file is edited in place, so the
+ * contents are hashed — see `contentHash`, which is where the earlier
+ * length-only key and what it got wrong are written down.
  */
 function FileView({ path, contents, themeType }: { path: string; contents: string; themeType: 'light' | 'dark' }) {
-  const file = useMemo(() => ({ name: path, contents, cacheKey: `${path}:${contents.length}` }), [contents, path])
+  const file = useMemo(() => ({ name: path, contents, cacheKey: `${path}:${contentHash(contents)}` }), [contents, path])
   return (
-    <div className="ed-reader">
+    <div className="ed-pane ed-reader">
       <File file={file} options={{ ...READ_OPTIONS, themeType }} disableWorkerPool />
     </div>
   )
@@ -897,14 +1111,14 @@ function FileView({ path, contents, themeType }: { path: string; contents: strin
  */
 function PatchView({ patch, themeType }: { patch: string; themeType: 'light' | 'dark' }) {
   const files = useMemo(
-    () => (patch.trim() === '' ? [] : parsePatchFiles(patch, `p${patch.length}`).flatMap((p) => p.files)),
+    () => (patch.trim() === '' ? [] : parsePatchFiles(patch, `p${contentHash(patch)}`).flatMap((p) => p.files)),
     [patch],
   )
 
   if (files.length === 0) return <div className="ed-hint">no changes</div>
 
   return (
-    <div className="ed-reader">
+    <div className="ed-pane ed-reader">
       {files.map((file, index) => (
         <FileDiff
           key={file.cacheKey ?? `${file.name}-${index}`}
@@ -919,19 +1133,18 @@ function PatchView({ patch, themeType }: { patch: string; themeType: 'light' | '
 
 /** The buffer against its last read: what saving would write. */
 function LocalDiff({
-  host,
+  api,
   path,
   base,
   draft,
   themeType,
 }: {
-  host: Host
+  api: Api
   path: string
   base: string
   draft: string
   themeType: 'light' | 'dark'
 }) {
-  const api = useMemo(() => createApi(host), [host])
   const [patch, setPatch] = useState<string | null>(null)
 
   useEffect(() => {
