@@ -99,6 +99,7 @@ pub async fn run_suite(config: SuiteRunConfig) -> Result<SuiteRunOutcome> {
         }
         scenario_reports.push(E2eScenarioReport::aggregate(
             definition.id,
+            definition.version,
             definition.threshold,
             definition.execution,
             runs,
@@ -700,6 +701,7 @@ mod tests {
     fn spec() -> ScenarioSpec {
         ScenarioSpec {
             id: "case",
+            version: 1,
             prompt: "prompt".into(),
             filesystem_root: None,
             execution: ExecutionPolicy {

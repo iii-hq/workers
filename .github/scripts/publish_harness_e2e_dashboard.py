@@ -56,6 +56,169 @@ def sum_complete(values: list[float | None]) -> float | None:
     ) else None
 
 
+def mean_available(values: list[float | None]) -> tuple[float | None, int]:
+    available = [value for value in values if value is not None]
+    if not available:
+        return None, 0
+    return sum(available) / len(available), len(available)
+
+
+def run_metric(run: dict[str, Any], metric_id: str) -> float | None:
+    metrics = run.get("metrics", {})
+    totals = metrics.get("totals", {}) if isinstance(metrics, dict) else {}
+    if not isinstance(totals, dict):
+        totals = {}
+    if metric_id == "tokens":
+        input_tokens = optional_number(totals.get("input_tokens"))
+        output_tokens = optional_number(totals.get("output_tokens"))
+        if input_tokens is None or output_tokens is None:
+            return None
+        return input_tokens + output_tokens
+    if metric_id == "duration_seconds":
+        wall_time_ms = optional_number(run.get("wall_time_ms"))
+        return wall_time_ms / 1000 if wall_time_ms is not None else None
+    if metric_id == "cost_usd":
+        cost = run.get("cost", {})
+        return (
+            optional_number(cost.get("total_usd"))
+            if isinstance(cost, dict)
+            else None
+        )
+    return optional_number(totals.get(metric_id))
+
+
+def scenario_contract(
+    scenario: dict[str, Any],
+    scenario_id: str,
+    runs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    execution_policy = scenario.get("execution_policy", {})
+    if not isinstance(execution_policy, dict):
+        execution_policy = {}
+    threshold = optional_number(scenario.get("threshold"))
+    return {
+        "execution_policy": execution_policy,
+        "scenario_id": scenario_id,
+        "scenario_version": int(
+            optional_number(scenario.get("scenario_version")) or 1
+        ),
+        "threshold": int(threshold) if threshold is not None else None,
+    }
+
+
+def contract_fingerprint(contract: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        contract,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    value = 2_166_136_261
+    for byte in canonical:
+        value ^= byte
+        value = (value * 16_777_619) & 0xFFFF_FFFF
+    return f"fnv1a32:{value:08x}"
+
+
+def build_scenario_metrics(detail: dict[str, Any]) -> list[dict[str, Any]]:
+    metric_ids = (
+        "tokens",
+        "duration_seconds",
+        "cost_usd",
+        "function_calls",
+        "function_call_errors",
+        "sessions",
+        "turns",
+    )
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    reports = detail.get("reports", [])
+    if not isinstance(reports, list):
+        return []
+    for report_entry in reports:
+        if not isinstance(report_entry, dict) or not report_entry.get("available"):
+            continue
+        report = report_entry.get("report", {})
+        report_scenarios = report.get("scenarios", []) if isinstance(report, dict) else []
+        if not isinstance(report_scenarios, list):
+            continue
+        for scenario in report_scenarios:
+            if not isinstance(scenario, dict):
+                continue
+            scenario_id = str(
+                scenario.get("scenario_id")
+                or report_entry.get("scenario_id")
+                or ""
+            )
+            if not scenario_id:
+                continue
+            subject_id = str(report_entry.get("subject_id") or "")
+            runs = scenario.get("runs", [])
+            if not isinstance(runs, list):
+                continue
+            key = (subject_id, scenario_id)
+            entry = grouped.setdefault(
+                key,
+                {
+                    "runs": [],
+                    "scenario": scenario,
+                },
+            )
+            entry["runs"].extend(run for run in runs if isinstance(run, dict))
+
+    result = []
+    for (subject_id, scenario_id), entry in sorted(grouped.items()):
+        runs = entry["runs"]
+        contract = scenario_contract(entry["scenario"], scenario_id, runs)
+        averages: dict[str, float | None] = {}
+        samples: dict[str, int] = {}
+        for metric_id in metric_ids:
+            average, sample_count = mean_available(
+                [run_metric(run, metric_id) for run in runs]
+            )
+            averages[metric_id] = average
+            samples[metric_id] = sample_count
+        result.append(
+            {
+                "subject_id": subject_id,
+                "scenario_id": scenario_id,
+                "scenario_version": contract["scenario_version"],
+                "contract_fingerprint": contract_fingerprint(contract),
+                "run_count": len(runs),
+                "averages": averages,
+                "samples": samples,
+            }
+        )
+    return result
+
+
+def build_execution_efficiency_totals(detail: dict[str, Any]) -> dict[str, float | None]:
+    tokens: list[float | None] = []
+    function_calls: list[float | None] = []
+    reports = detail.get("reports", [])
+    if not isinstance(reports, list):
+        reports = []
+    for report_entry in reports:
+        if not isinstance(report_entry, dict) or not report_entry.get("available"):
+            continue
+        report = report_entry.get("report", {})
+        scenarios = report.get("scenarios", []) if isinstance(report, dict) else []
+        if not isinstance(scenarios, list):
+            continue
+        for scenario in scenarios:
+            runs = scenario.get("runs", []) if isinstance(scenario, dict) else []
+            if not isinstance(runs, list):
+                continue
+            for run in runs:
+                if not isinstance(run, dict):
+                    continue
+                tokens.append(run_metric(run, "tokens"))
+                function_calls.append(run_metric(run, "function_calls"))
+    return {
+        "total_tokens": sum_complete(tokens),
+        "function_calls": sum_complete(function_calls),
+    }
+
+
 def elapsed_seconds(started_at: str, completed_at: str) -> float | None:
     if not started_at or not completed_at:
         return None
@@ -263,6 +426,8 @@ def publish(
         )
         summary["availability"] = "full"
         summary["detail_path"] = relative_detail_path
+        summary["scenario_metrics"] = build_scenario_metrics(detail)
+        summary["totals"].update(build_execution_efficiency_totals(detail))
 
     existing_by_id[metadata["id"]] = summary
     executions = sorted(existing_by_id.values(), key=sort_key, reverse=True)

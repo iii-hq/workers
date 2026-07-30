@@ -26,6 +26,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let sandbox_name = sandbox_name(run_id);
     ScenarioSpec {
         id: ID,
+        version: 1,
         prompt: format!(
             "Perform this verification entirely in the current workspace and in the stated order.\n\n\
              1. Add the `shell` worker from the public registry and wait for that add operation to \

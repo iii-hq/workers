@@ -8,6 +8,7 @@ pub const ID: &str = "direct_answer";
 pub fn scenario(_run_id: &str) -> ScenarioSpec {
     ScenarioSpec {
         id: ID,
+        version: 1,
         prompt: "Explain to a non-technical reader, in at most two sentences, the difference between authentication and authorization. Do not perform any external action.".into(),
         filesystem_root: None,
         execution: ExecutionPolicy {

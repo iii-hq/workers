@@ -255,9 +255,15 @@ pub struct ScenarioAggregate {
     pub cost: CostReport,
 }
 
+fn default_scenario_version() -> u32 {
+    1
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct E2eScenarioReport {
     pub scenario_id: String,
+    #[serde(default = "default_scenario_version")]
+    pub scenario_version: u32,
     pub threshold: u8,
     pub execution_policy: ExecutionPolicy,
     pub aggregate: ScenarioAggregate,
@@ -268,6 +274,7 @@ pub struct E2eScenarioReport {
 impl E2eScenarioReport {
     pub fn aggregate(
         scenario_id: impl Into<String>,
+        scenario_version: u32,
         threshold: u8,
         execution_policy: ExecutionPolicy,
         runs: Vec<E2eRunReport>,
@@ -300,6 +307,7 @@ impl E2eScenarioReport {
             && median_score.is_some_and(|score| score >= f64::from(threshold));
         Self {
             scenario_id: scenario_id.into(),
+            scenario_version,
             threshold,
             execution_policy,
             aggregate: ScenarioAggregate {
@@ -454,6 +462,7 @@ mod tests {
     fn aggregate(runs: Vec<E2eRunReport>) -> E2eScenarioReport {
         E2eScenarioReport::aggregate(
             "case",
+            1,
             80,
             ExecutionPolicy {
                 max_turns: 1,

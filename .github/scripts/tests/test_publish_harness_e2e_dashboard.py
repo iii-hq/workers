@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from publish_harness_e2e_dashboard import load_manifest, publish
+from publish_harness_e2e_dashboard import (
+    build_execution_efficiency_totals,
+    contract_fingerprint,
+    load_manifest,
+    publish,
+    scenario_contract,
+)
 
 
 def write_json(path: Path, value: dict) -> Path:
@@ -93,11 +99,47 @@ def detail(run_id: str, attempt: int = 1) -> dict:
                 "scenarios": [
                     {
                         "scenario_id": "direct_answer",
+                        "scenario_version": 1,
+                        "threshold": 80,
+                        "execution_policy": {
+                            "max_turns": 2,
+                            "max_output_tokens": 2048,
+                            "max_total_tokens": 32768,
+                            "stuck_timeout_seconds": 120,
+                        },
                         "runs": [
                             {
                                 "prompt": "public prompt",
                                 "transcript": {"messages": []},
-                            }
+                                "wall_time_ms": 10_000,
+                                "cost": {"total_usd": 0.2},
+                                "metrics": {
+                                    "totals": {
+                                        "input_tokens": 100,
+                                        "output_tokens": 20,
+                                        "function_calls": 2,
+                                        "function_call_errors": 0,
+                                        "sessions": 1,
+                                        "turns": 4,
+                                    }
+                                },
+                            },
+                            {
+                                "prompt": "public prompt",
+                                "transcript": {"messages": []},
+                                "wall_time_ms": 20_000,
+                                "cost": {"total_usd": 0.6},
+                                "metrics": {
+                                    "totals": {
+                                        "input_tokens": 200,
+                                        "output_tokens": 40,
+                                        "function_calls": 4,
+                                        "function_call_errors": 2,
+                                        "sessions": 3,
+                                        "turns": 8,
+                                    }
+                                },
+                            },
                         ],
                     }
                 ],
@@ -211,3 +253,46 @@ def test_duplicate_event_does_not_downgrade_existing_full_report(
 
     assert manifest["executions"][0]["availability"] == "full"
     assert (tmp_path / "site/runs/10000000007-1.json").is_file()
+
+
+def test_publishes_average_run_metrics_by_scenario(tmp_path: Path) -> None:
+    manifest = publish_run(tmp_path, "10000000008")
+    scenario = detail("10000000008")["reports"][0]["report"]["scenarios"][0]
+    fingerprint = contract_fingerprint(
+        scenario_contract(scenario, "direct_answer", scenario["runs"])
+    )
+
+    assert build_execution_efficiency_totals(detail("10000000008")) == {
+        "total_tokens": 360,
+        "function_calls": 6,
+    }
+    assert manifest["executions"][0]["totals"]["total_tokens"] == 360
+    assert manifest["executions"][0]["totals"]["function_calls"] == 6
+
+    assert manifest["executions"][0]["scenario_metrics"] == [
+        {
+            "subject_id": "glm",
+            "scenario_id": "direct_answer",
+            "scenario_version": 1,
+            "contract_fingerprint": fingerprint,
+            "run_count": 2,
+            "averages": {
+                "tokens": 180,
+                "duration_seconds": 15,
+                "cost_usd": 0.4,
+                "function_calls": 3,
+                "function_call_errors": 1,
+                "sessions": 2,
+                "turns": 6,
+            },
+            "samples": {
+                "tokens": 2,
+                "duration_seconds": 2,
+                "cost_usd": 2,
+                "function_calls": 2,
+                "function_call_errors": 2,
+                "sessions": 2,
+                "turns": 2,
+            },
+        }
+    ]

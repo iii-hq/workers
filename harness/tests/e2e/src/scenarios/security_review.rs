@@ -8,6 +8,7 @@ pub const ID: &str = "security_review";
 pub fn scenario(_run_id: &str) -> ScenarioSpec {
     ScenarioSpec {
         id: ID,
+        version: 1,
         prompt: r#"Review these independent snippets for security vulnerabilities:
 
 1. `const API_KEY = "sk-live-example";`

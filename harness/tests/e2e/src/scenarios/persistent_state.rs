@@ -16,6 +16,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let expected = expected(run_id);
     ScenarioSpec {
         id: ID,
+        version: 1,
         prompt: format!(
             "Store this JSON value for later use in scope `{scope}` under key `{KEY}`: {}. Confirm briefly after it has been stored.",
             serde_json::to_string(&expected).expect("serialize static scenario value")

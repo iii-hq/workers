@@ -1,10 +1,11 @@
 (function loadHarnessExecutionPreview() {
   "use strict";
 
+  const executionApi = window.HarnessExecutionData;
   const benchmark = window.HarnessBenchmarkData.normalizeBenchmarkData(
     window.BENCHMARK_DATA,
   );
-  const derived = window.HarnessExecutionData.mergeExecutionHistory(null, benchmark);
+  const derived = executionApi.mergeExecutionHistory(null, benchmark);
   const executions = derived.executions.map((execution, index) => {
     const runId = execution.run_id || String(30490000000 - index * 731);
     const id = execution.id || `${runId}-1`;
@@ -55,6 +56,8 @@
         ? "hard_gate_failed"
         : "quality_failed";
     const runId = `${execution.run_id.slice(-4)}-${scenario.id}-${runIndex + 1}`;
+    const recoveredError =
+      scenario.id === "reactive_automation" && runIndex === 1;
     return {
       run_id: runId,
       session_id: `e2e_${runId}`,
@@ -94,10 +97,15 @@
         messages: [
           {
             entry_id: "message-1",
-            origin: "user",
             message: {
               role: "user",
-              content: "Complete the benchmark task and record verifiable evidence.",
+              timestamp: "2026-07-30T12:00:00Z",
+              content: [
+                {
+                  type: "text",
+                  text: "Complete the benchmark task and record verifiable evidence.",
+                },
+              ],
             },
           },
           {
@@ -105,16 +113,102 @@
             origin: "assistant",
             message: {
               role: "assistant",
-              content:
-                "I will inspect the available functions, execute the scenario, and verify the resulting state.",
+              model: subject.model,
+              provider: subject.provider,
+              timestamp: "2026-07-30T12:00:01Z",
+              content: [
+                {
+                  type: "text",
+                  text: "I will inspect the available functions, execute the scenario, and verify the resulting state.",
+                },
+                {
+                  type: "function_call",
+                  id: "call-worker-add",
+                  function_id: "worker::add",
+                  arguments: {
+                    source: { kind: "registry", name: "state" },
+                  },
+                },
+              ],
             },
           },
           {
-            entry_id: "function-1",
-            custom: {
-              type: "function_call",
-              name: "state::set",
-              status: scenario.passed ? "completed" : "failed",
+            entry_id: "result-1",
+            origin: "function",
+            message: {
+              role: "function_result",
+              function_call_id: "call-worker-add",
+              function_id: "worker::add",
+              is_error: false,
+              timestamp: "2026-07-30T12:00:02Z",
+              details: { name: "state", status: "ready", version: "0.8.1" },
+              content: [
+                {
+                  type: "text",
+                  text: "{\"name\":\"state\",\"status\":\"ready\",\"version\":\"0.8.1\"}",
+                },
+              ],
+            },
+          },
+          {
+            entry_id: "message-3",
+            origin: "assistant",
+            message: {
+              role: "assistant",
+              model: subject.model,
+              provider: subject.provider,
+              timestamp: "2026-07-30T12:00:03Z",
+              content: [
+                {
+                  type: "function_call",
+                  id: "call-state-read",
+                  function_id: "state::get",
+                  arguments: { key: `benchmark:${scenario.id}:result` },
+                },
+              ],
+            },
+          },
+          {
+            entry_id: "result-2",
+            origin: "function",
+            message: {
+              role: "function_result",
+              function_call_id: "call-state-read",
+              function_id: "state::get",
+              is_error: recoveredError,
+              timestamp: "2026-07-30T12:00:04Z",
+              details: recoveredError
+                ? {
+                    error:
+                      "State was not available on the first read. The agent recovered and verified it on the next step.",
+                  }
+                : { value: { status: "verified", scenario: scenario.id } },
+              content: [
+                {
+                  type: "text",
+                  text: recoveredError
+                    ? "State was not available on the first read."
+                    : `{\"value\":{\"status\":\"verified\",\"scenario\":\"${scenario.id}\"}}`,
+                },
+              ],
+            },
+          },
+          {
+            entry_id: "message-4",
+            origin: "assistant",
+            message: {
+              role: "assistant",
+              model: subject.model,
+              provider: subject.provider,
+              timestamp: "2026-07-30T12:00:05Z",
+              content: [
+                {
+                  type: "text",
+                  text: recoveredError
+                    ? "The initial read failed, but the final state and required effects were independently verified."
+                    : "The final state and all required effects were verified successfully.",
+                },
+              ],
             },
           },
         ],
@@ -126,7 +220,8 @@
           sessions: scenario.id === "reactive_automation" ? 7 : 1,
           turns: scenario.id === "reactive_automation" ? 122 : 9,
           function_calls: scenario.id === "reactive_automation" ? 151 : 6,
-          function_call_errors: scenario.hard_gate_failures || 0,
+          function_call_errors:
+            Number(scenario.hard_gate_failures || 0) + Number(recoveredError),
           input_tokens: scenario.id === "reactive_automation" ? 1136424 : 18420,
           output_tokens: scenario.id === "reactive_automation" ? 22648 : 2180,
           cache_read_tokens: scenario.id === "reactive_automation" ? 1042368 : 12000,
@@ -141,7 +236,8 @@
             depth: 0,
             turns: 9,
             function_calls: 6,
-            function_call_errors: scenario.hard_gate_failures || 0,
+            function_call_errors:
+              Number(scenario.hard_gate_failures || 0) + Number(recoveredError),
             input_tokens: 18420,
             output_tokens: 2180,
             cache_read_tokens: 12000,
@@ -219,6 +315,7 @@
             scenarios: [
               {
                 scenario_id: scenario.id,
+                scenario_version: scenario.scenario_version || 1,
                 threshold: scenario.threshold,
                 execution_policy: {
                   max_turns: scenario.id === "reactive_automation" ? 64 : 16,
@@ -263,6 +360,16 @@
     };
   }
 
+  const details = Object.fromEntries(
+    executions
+      .filter((execution) => execution.availability === "full")
+      .map((execution) => {
+        const detail = previewDetail(execution);
+        execution.scenario_metrics = executionApi.scenarioMetricsFromDetail(detail);
+        return [execution.id, detail];
+      }),
+  );
+
   window.HARNESS_EXECUTIONS = {
     schema_version: 2,
     last_update: executions[0]?.completed_at,
@@ -270,9 +377,5 @@
     retention: { summaries: 100, details: 30 },
     executions,
   };
-  window.HARNESS_EXECUTION_DETAILS = Object.fromEntries(
-    executions
-      .filter((execution) => execution.availability === "full")
-      .map((execution) => [execution.id, previewDetail(execution)]),
-  );
+  window.HARNESS_EXECUTION_DETAILS = details;
 })();
