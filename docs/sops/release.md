@@ -36,12 +36,13 @@ Actions → **Create Tag**:
 | Worker | Folder name (must be in workflow options) |
 | Bump | `patch` / `minor` / `major` / `none` — picks the base version |
 | Suffix | `none` / `alpha` / `beta` / `rc` / `stable` — pre-release line on that base |
-| Registry tag | `latest` / `next` / `experimental` — channel the version publishes to; alpha always resolves to `experimental` |
+| Registry tag | `latest` / `next` / `experimental` — channel the version publishes to |
 
-The suffix lives in the version (`1.2.3-rc.1`); the channel is where that
-version is published (`@next`). They are independent except for `alpha`, which
-is always published as `@experimental` so it cannot advance `latest`. See
-[Version suffixes](#version-suffixes) and [Registry tag semantics](#4-registry-tag-semantics).
+**Suffix and Registry tag are independent axes.** The suffix lives in the
+version (`1.2.3-rc.1`); the channel is where that version is published
+(`@next`). Any combination is valid — a release is `<version>@<channel>`, e.g.
+`1.2.3-rc.1@next`. See [Version suffixes](#version-suffixes) and
+[Registry tag semantics](#4-registry-tag-semantics).
 
 The workflow:
 
@@ -123,14 +124,13 @@ a dead channel that nothing resolves.
 
 ### Version suffixes
 
-A suffix is *what the version is*, written into the version itself. The
-channel is normally chosen independently, except that alpha releases are
-always isolated on `experimental`.
+A suffix is *what the version is*, written into the version itself. It is
+orthogonal to the channel — pick both independently.
 
 | Suffix | Result from `1.2.3` | Meaning |
 |---|---|---|
 | `none` | `1.2.4` | Stable release (default) |
-| `alpha` | `1.2.4-alpha.1` | Earliest, expected to break; always `@experimental` |
+| `alpha` | `1.2.4-alpha.1` | Earliest, expected to break |
 | `beta` | `1.2.4-beta.1` | Feature-complete but unstable |
 | `rc` | `1.2.4-rc.1` | Release candidate |
 | `stable` | `1.2.3` | Promote a pre-release to its base, no bump |
@@ -142,9 +142,6 @@ colliding. Each suffix line advances independently at the same base.
 Bump and suffix compose: **Bump** picks the base version, **Suffix** decides
 whether that base ships as a pre-release. `Bump: none` keeps the current base,
 which is how you iterate a pre-release without walking the version forward.
-
-Create Tag overrides the selected registry channel to `experimental` for an
-`alpha` suffix, so a test build can never advance the stable `latest` pointer.
 
 A typical `rc` cycle, all on `@next`, then promoted:
 

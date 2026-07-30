@@ -81,7 +81,7 @@ on:
           - stable
         default: none
       tag:
-        description: 'Registry channel (alpha releases are always published to experimental)'
+        description: 'Registry channel the version is published under (passed to POST /publish; not part of the git tag name)'
         required: true
         type: choice
         options:
@@ -159,7 +159,6 @@ jobs:
           WORKER: ${{ inputs.worker }}
           BUMP: ${{ inputs.bump }}
           SUFFIX: ${{ inputs.suffix }}
-          REQUESTED_REGISTRY_TAG: ${{ inputs.tag }}
           MANIFEST: ${{ steps.meta.outputs.manifest }}
         run: |
           set -euo pipefail
@@ -168,18 +167,10 @@ jobs:
           # (checkout above is fetch-depth 0, so they are all present).
           new_ver=$(python3 .github/scripts/manifest_version.py bump "$WORKER/$MANIFEST" \
             --kind "$BUMP" --suffix "$SUFFIX" --worker "$WORKER")
-          registry_tag="$REQUESTED_REGISTRY_TAG"
-          if [[ "$SUFFIX" == "alpha" ]]; then
-            registry_tag="experimental"
-            echo "::notice::alpha releases always publish to the experimental channel"
-          fi
-          {
-            echo "current=$current"
-            echo "version=$new_ver"
-            echo "tag=${WORKER}/v${new_ver}"
-            echo "registry_tag=$registry_tag"
-          } >> "$GITHUB_OUTPUT"
-          echo "::notice::${WORKER}: ${current} -> ${new_ver} (channel: $registry_tag)"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "version=$new_ver" >> "$GITHUB_OUTPUT"
+          echo "tag=${WORKER}/v${new_ver}" >> "$GITHUB_OUTPUT"
+          echo "::notice::${WORKER}: ${current} -> ${new_ver} (channel: ${{ inputs.tag }})"
 
       - name: Validate manifest update
         env:
@@ -235,7 +226,7 @@ jobs:
       - name: Create and push annotated tag
         env:
           TAG: ${{ steps.versions.outputs.tag }}
-          REGISTRY_TAG: ${{ steps.versions.outputs.registry_tag }}
+          REGISTRY_TAG: ${{ inputs.tag }}
           WORKER: ${{ inputs.worker }}
           NEW_VERSION: ${{ steps.versions.outputs.version }}
         run: |
