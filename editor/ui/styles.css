@@ -596,3 +596,13 @@
 [data-iii-ui='editor'] .ed-dline[data-k='meta'] {
   color: var(--color-ink-ghost);
 }
+
+/* The most recent observed edit. Pushed by `editor::changed`, so this updates
+   as an agent works rather than on a timer. */
+[data-iii-ui='editor'] .ed-live {
+  color: var(--color-accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 22ch;
+}

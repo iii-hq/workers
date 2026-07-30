@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use editor::{bus::Bus, config, configuration, functions, manifest, ui};
+use editor::{bus::Bus, config, configuration, events, functions, manifest, observe, ui};
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 use std::sync::Arc;
@@ -97,8 +97,16 @@ async fn main() -> Result<()> {
         git_timeout_ms.clone(),
     ));
 
+    // Custom trigger types go up before the functions that emit on them, so a
+    // handler can never fire against a half-built subscriber set.
+    let changed = events::register_changed_trigger(&iii);
+
     functions::register_all(&iii, &cfg, &bus);
     ui::register(&iii);
+
+    // The observer is what makes the workspace see edits made by anything, not
+    // just by callers of this worker.
+    observe::bind(&iii, &cfg, &bus, changed);
 
     // Bound last, so the handler closes over fully-built state. A failure here
     // is fatal rather than a warning: the worker would keep serving with limits

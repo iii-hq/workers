@@ -53,8 +53,8 @@ import {
   type TreeNode,
   visibleRows,
 } from '../lib/api'
+import { type ChangedEvent, useWorkspaceEvents } from '../lib/events'
 
-const POLL_MS = 3_000
 /** How long a row keeps its "just changed" accent after an edit lands. */
 const FLASH_MS = 12_000
 
@@ -100,6 +100,7 @@ export function EditorPage({ host }: { host: Host }) {
   const [gitNote, setGitNote] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [lastChange, setLastChange] = useState<ChangedEvent | null>(null)
 
   // Read inside the poll without making it a dependency — rebuilding the
   // interval on every keystroke would reset the timer and stall the feed.
@@ -264,14 +265,38 @@ export function EditorPage({ host }: { host: Host }) {
     }
   }, [api])
 
+  const { onState, onChanged } = useWorkspaceEvents(host)
+
+  // The workspace record lives in `state`, so every buffer and expansion change
+  // arrives as an event. One read on mount seeds the git overlay; after that
+  // nothing is polled.
   useEffect(() => {
-    const id = setInterval(() => {
-      void refreshGit()
-      void refreshBuffers()
-    }, POLL_MS)
     void refreshGit()
-    return () => clearInterval(id)
-  }, [refreshGit, refreshBuffers])
+  }, [refreshGit])
+
+  // A change to this worker's `state` scope means the shared workspace moved:
+  // an agent opened or closed something, or saved. Re-read it once per event
+  // rather than on a timer.
+  useEffect(
+    () =>
+      onState(() => {
+        void refreshBuffers()
+      }),
+    [onState, refreshBuffers],
+  )
+
+  // A file changed, however it changed. The event carries enough to light the
+  // row up immediately; the git overlay is refreshed for the marks.
+  useEffect(
+    () =>
+      onChanged((event: ChangedEvent) => {
+        setFlashed((prev) => ({ ...prev, [event.path]: Date.now() }))
+        setLastChange(event)
+        void refreshBuffers()
+        void refreshGit()
+      }),
+    [onChanged, refreshBuffers, refreshGit],
+  )
 
   useEffect(() => {
     if (Object.keys(flashed).length === 0) return
@@ -684,6 +709,11 @@ export function EditorPage({ host }: { host: Host }) {
                         )
                       ))}
                     <span className={dirty ? 'ed-unsaved' : undefined}>{dirty ? 'unsaved' : 'saved'}</span>
+                    {lastChange && (
+                      <span className="ed-live" title={`${lastChange.cause} → ${lastChange.path}`}>
+                        {lastChange.kind} {lastChange.path.split('/').pop()}
+                      </span>
+                    )}
                   </div>
                 </>
               )}

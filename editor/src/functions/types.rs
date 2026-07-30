@@ -342,6 +342,10 @@ pub enum Against {
     Index,
     /// Everything since the last commit: working tree vs HEAD.
     Head,
+    /// Everything not yet pushed: working tree vs the branch's upstream
+    /// (`@{upstream}`). Fails when the branch has no upstream configured,
+    /// which is a real answer rather than an error to swallow.
+    Upstream,
 }
 
 impl Against {
@@ -350,6 +354,7 @@ impl Against {
             Against::Worktree => "worktree",
             Against::Index => "index",
             Against::Head => "head",
+            Against::Upstream => "upstream",
         }
     }
 }

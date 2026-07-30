@@ -28,6 +28,8 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
+# Custom trigger types: the SDK's TriggerHandler trait is async.
+async-trait = "0.1"
 # Myers line diff. `editor::diff` is a pure function over two strings, so the
 # only thing this pulls in is the algorithm itself.
 similar = "2"

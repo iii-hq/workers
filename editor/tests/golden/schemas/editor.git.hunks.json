@@ -27,6 +27,13 @@
               "head"
             ],
             "type": "string"
+          },
+          {
+            "description": "Everything not yet pushed: working tree vs the branch's upstream (`@{upstream}`). Fails when the branch has no upstream configured, which is a real answer rather than an error to swallow.",
+            "enum": [
+              "upstream"
+            ],
+            "type": "string"
           }
         ]
       }
@@ -94,6 +101,13 @@
             "description": "Everything since the last commit: working tree vs HEAD.",
             "enum": [
               "head"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Everything not yet pushed: working tree vs the branch's upstream (`@{upstream}`). Fails when the branch has no upstream configured, which is a real answer rather than an error to swallow.",
+            "enum": [
+              "upstream"
             ],
             "type": "string"
           }

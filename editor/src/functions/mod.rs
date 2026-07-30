@@ -662,6 +662,10 @@ fn register_git_hunks(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>) {
                     Against::Worktree => {}
                     Against::Index => args.push("--cached"),
                     Against::Head => args.push("HEAD"),
+                    // `@{upstream}` is git's own name for it, so this works on
+                    // any branch without the caller knowing the remote or the
+                    // branch name.
+                    Against::Upstream => args.push("@{upstream}"),
                 }
                 args.push("--");
                 args.push(&req.path);
