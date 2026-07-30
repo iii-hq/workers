@@ -292,6 +292,78 @@ mod tests {
         assert_eq!(r.entries[0].index, "renamed");
     }
 
+    /// A copy is the other half of the `2 ` line type, and it carries a source
+    /// path exactly like a rename does.
+    #[test]
+    fn a_copy_carries_its_source_path() {
+        let out = "2 C. N... 100644 100644 100644 aaa bbb C75 copy/of.rs\toriginal.rs\n";
+        let r = parse_status(out);
+        assert_eq!(r.entries[0].path, "copy/of.rs");
+        assert_eq!(r.entries[0].index, "copied");
+        assert_eq!(r.entries[0].renamed_from.as_deref(), Some("original.rs"));
+        assert!(r.entries[0].staged);
+    }
+
+    /// The path pair is tab-separated precisely so a filename containing
+    /// spaces survives on either side of it.
+    #[test]
+    fn a_rename_with_spaces_on_both_sides_survives() {
+        let out =
+            "2 R. N... 100644 100644 100644 aaa bbb R100 new dir/new name.md\told dir/old name.md\n";
+        let r = parse_status(out);
+        assert_eq!(r.entries[0].path, "new dir/new name.md");
+        assert_eq!(
+            r.entries[0].renamed_from.as_deref(),
+            Some("old dir/old name.md")
+        );
+    }
+
+    /// The unmerged path is the tenth field, so it is the remainder of the
+    /// line. A split that stopped counting one field early cut this in half —
+    /// and, at the index the original code used, dropped the entry entirely.
+    #[test]
+    fn an_unmerged_path_with_spaces_is_not_split() {
+        let out = "u UU N... 100644 100644 100644 100644 aaa bbb ccc my docs/notes v2.md\n";
+        let r = parse_status(out);
+        assert_eq!(r.entries.len(), 1, "an unmerged entry must not be dropped");
+        assert_eq!(r.entries[0].path, "my docs/notes v2.md");
+        assert_eq!(r.entries[0].index, "conflicted");
+    }
+
+    /// Every unmerged sub-state git can report reads as one conflict, and none
+    /// of them may go missing.
+    #[test]
+    fn every_unmerged_sub_state_is_reported() {
+        for xy in ["DD", "AU", "UD", "UA", "DU", "AA", "UU"] {
+            let line =
+                format!("u {xy} N... 100644 100644 100644 100644 aaa bbb ccc src/conflict.rs\n");
+            let r = parse_status(&line);
+            assert_eq!(r.entries.len(), 1, "{xy} produced no entry");
+            assert_eq!(r.entries[0].index, "conflicted", "{xy}");
+            assert!(!r.clean, "{xy} is not a clean tree");
+        }
+    }
+
+    /// Every status letter an ordinary line can carry, plus the fallback for
+    /// one this worker has not been taught.
+    #[test]
+    fn every_status_letter_maps_to_a_word() {
+        for (xy, index, worktree) in [
+            ("A.", "added", "unchanged"),
+            ("D.", "deleted", "unchanged"),
+            (".D", "unchanged", "deleted"),
+            ("MM", "modified", "modified"),
+            (".T", "unchanged", "typechange"),
+            ("Z.", "unknown", "unchanged"),
+        ] {
+            let line = format!("1 {xy} N... 100644 100644 100644 aaa bbb f.rs\n");
+            let r = parse_status(&line);
+            assert_eq!(r.entries.len(), 1, "{xy} produced no entry");
+            assert_eq!(r.entries[0].index, index, "{xy} index half");
+            assert_eq!(r.entries[0].worktree, worktree, "{xy} worktree half");
+        }
+    }
+
     #[test]
     fn untracked_and_ignored_are_distinguished() {
         let r = parse_status("? new.rs\n! target/\n");
@@ -324,6 +396,29 @@ mod tests {
         assert_eq!(r.entries[0].path, "real.rs");
     }
 
+    /// git said nothing at all — a repository with no changes, or a directory
+    /// that is not one. Either way an empty report, never a parse failure.
+    #[test]
+    fn empty_output_is_an_empty_clean_report() {
+        let r = parse_status("");
+        assert!(r.entries.is_empty());
+        assert!(r.branch.is_none());
+        assert!(r.upstream.is_none());
+        assert_eq!((r.ahead, r.behind), (0, 0));
+        assert!(r.clean);
+    }
+
+    /// A branch with no upstream configured: no `# branch.upstream` and no
+    /// `# branch.ab` line at all, which must read as "not tracking" rather than
+    /// as "in sync with something".
+    #[test]
+    fn a_branch_without_an_upstream_reports_none_and_zero() {
+        let r = parse_status("# branch.oid abc\n# branch.head feature/x\n");
+        assert_eq!(r.branch.as_deref(), Some("feature/x"));
+        assert!(r.upstream.is_none());
+        assert_eq!((r.ahead, r.behind), (0, 0));
+    }
+
     #[test]
     fn hunk_headers_parse_with_and_without_counts() {
         let d = "@@ -1,3 +1,4 @@\n context\n+added\n@@ -20 +21,2 @@\n-gone\n+new\n+more\n";
@@ -345,5 +440,70 @@ mod tests {
         let hunks = parse_hunk_headers(d);
         assert_eq!(hunks.len(), 1);
         assert_eq!((hunks[0].added, hunks[0].removed), (1, 1));
+    }
+
+    /// git appends the enclosing function after the closing `@@`. The range
+    /// parser has to stop there rather than try to read it as a third range.
+    #[test]
+    fn a_hunk_header_with_a_function_context_still_parses() {
+        let d = "@@ -10,2 +10,3 @@ fn main() {\n context\n+added\n";
+        let hunks = parse_hunk_headers(d);
+        assert_eq!(hunks.len(), 1);
+        assert_eq!((hunks[0].old_start, hunks[0].old_lines), (10, 2));
+        assert_eq!((hunks[0].new_start, hunks[0].new_lines), (10, 3));
+        assert_eq!((hunks[0].added, hunks[0].removed), (1, 0));
+    }
+
+    /// A diff spanning several files: the second file's own `---`/`+++` header
+    /// falls inside the first file's open hunk, and counting it would report a
+    /// phantom edit on every file but the last.
+    #[test]
+    fn a_multi_file_diff_keeps_its_hunks_separate() {
+        let d = concat!(
+            "diff --git a/one.rs b/one.rs\n",
+            "--- a/one.rs\n+++ b/one.rs\n",
+            "@@ -1 +1 @@\n-a\n+b\n",
+            "diff --git a/two.rs b/two.rs\n",
+            "--- a/two.rs\n+++ b/two.rs\n",
+            "@@ -5,0 +6,2 @@\n+x\n+y\n",
+        );
+        let hunks = parse_hunk_headers(d);
+        assert_eq!(hunks.len(), 2);
+        assert_eq!((hunks[0].added, hunks[0].removed), (1, 1));
+        assert_eq!((hunks[1].added, hunks[1].removed), (2, 0));
+        assert_eq!(
+            (hunks[1].old_start, hunks[1].old_lines),
+            (5, 0),
+            "a pure insertion spans no lines on the before side"
+        );
+    }
+
+    /// The no-newline marker is neither an addition nor a removal. Counting it
+    /// would inflate the totals of every file that lacks a trailing newline.
+    #[test]
+    fn the_no_newline_marker_is_not_an_edit() {
+        let d = "@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n\\ No newline at end of file\n";
+        let hunks = parse_hunk_headers(d);
+        assert_eq!(hunks.len(), 1);
+        assert_eq!((hunks[0].added, hunks[0].removed), (1, 1));
+    }
+
+    /// One header this parser cannot read must cost that hunk and nothing
+    /// else — the same rule the status parser follows.
+    #[test]
+    fn a_malformed_hunk_header_does_not_discard_the_hunks_around_it() {
+        let d = "@@ -1 +1 @@\n-a\n+b\n@@ nonsense @@\n@@ -9,1 +9,1 @@\n-c\n+d\n";
+        let hunks = parse_hunk_headers(d);
+        assert_eq!(hunks.len(), 2, "the readable hunks survive the bad header");
+        assert_eq!(hunks[0].old_start, 1);
+        assert_eq!(hunks[1].old_start, 9);
+    }
+
+    /// An unchanged file, or a path git does not track: no output, no hunks,
+    /// and `editor::git::hunks` reads that emptiness as its untracked probe.
+    #[test]
+    fn no_diff_output_means_no_hunks() {
+        assert!(parse_hunk_headers("").is_empty());
+        assert!(parse_hunk_headers("diff --git a/x b/x\nsimilarity index 100%\n").is_empty());
     }
 }

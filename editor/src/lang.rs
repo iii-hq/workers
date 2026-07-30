@@ -90,6 +90,48 @@ mod tests {
         assert_eq!(for_path(".gitignore"), "plaintext");
     }
 
+    /// The whole extensionless table, and each entry under a folder — the
+    /// filename lookup runs on the last segment, not on the path.
+    #[test]
+    fn every_whole_filename_resolves_bare_and_nested() {
+        for (name, expected) in [
+            ("Dockerfile", "dockerfile"),
+            ("Containerfile", "dockerfile"),
+            ("Makefile", "makefile"),
+            ("makefile", "makefile"),
+            ("GNUmakefile", "makefile"),
+            ("CMakeLists.txt", "cmake"),
+            ("go.mod", "go"),
+            ("go.sum", "go"),
+            ("Cargo.lock", "toml"),
+        ] {
+            assert_eq!(for_path(name), expected, "{name}");
+            assert_eq!(
+                for_path(&format!("nested/dir/{name}")),
+                expected,
+                "{name} under a folder"
+            );
+        }
+    }
+
+    /// A backslash separates path segments too, so a Windows-shaped path has
+    /// to resolve on its filename rather than on the whole string.
+    #[test]
+    fn a_backslash_separated_path_resolves_on_its_filename() {
+        assert_eq!(for_path(r"src\main.rs"), "rust");
+        assert_eq!(for_path(r"docker\Dockerfile"), "dockerfile");
+    }
+
+    /// The dotfile prefixes match on a prefix, so their suffixed variants have
+    /// to land in the same place rather than falling through to an extension.
+    #[test]
+    fn suffixed_dotfiles_follow_their_prefix() {
+        assert_eq!(for_path(".envrc"), "shell");
+        assert_eq!(for_path(".env.production"), "shell");
+        assert_eq!(for_path(".gitignore.local"), "plaintext");
+        assert_eq!(for_path(".dockerignore"), "plaintext");
+    }
+
     #[test]
     fn unknown_falls_back_to_plaintext() {
         assert_eq!(for_path("data.qqq"), "plaintext");

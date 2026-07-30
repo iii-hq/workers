@@ -177,6 +177,15 @@ mod tests {
         }
     }
 
+    /// Nodes below `node`, i.e. exactly what the walk spends a visit on — a
+    /// directory costs one just like a file does.
+    fn count_visits(node: &Value) -> usize {
+        match node.get("children").and_then(Value::as_array) {
+            Some(children) => children.iter().map(|c| 1 + count_visits(c)).sum(),
+            None => 0,
+        }
+    }
+
     #[test]
     fn paths_are_joined_from_the_root_down() {
         let walked = walk(&sample(), 100);
@@ -196,12 +205,20 @@ mod tests {
     /// The visit budget must not cost a real tree any of its files.
     #[test]
     fn a_repository_shaped_tree_comes_back_whole() {
-        // 3 levels × 4 folders each = 84 directories, 5 files in every one:
-        // 425 files, ~509 visits. Well past MIN_VISIT_BUDGET's reach at a small
-        // limit, and nowhere near the budget a real `editor::find` call gets.
-        let tree = repository_shaped(3, 4, 5);
-        let total = count_files(tree.get("root").expect("a root"));
+        // 4 levels × 4 folders each = 340 directories, 5 files in every one:
+        // 1,705 files and 2,045 visits. The visit count is the load-bearing
+        // number — a fixture that fits inside MIN_VISIT_BUDGET would come back
+        // whole however badly the budget regressed, so it is asserted below.
+        let tree = repository_shaped(4, 4, 5);
+        let root = tree.get("root").expect("a root");
+        let total = count_files(root);
+        let visits = count_visits(root);
         assert!(total > 400, "fixture is meant to be repository-sized");
+        assert!(
+            visits > MIN_VISIT_BUDGET,
+            "a fixture needing only {visits} visits sits inside the floor budget, so it \
+             could not fail this test even if the budget stopped scaling with the limit"
+        );
 
         // The shipped `max_find_candidates`, i.e. what `editor::find` passes.
         let walked = walk(&tree, 50_000);
@@ -214,6 +231,33 @@ mod tests {
             !walked.truncated,
             "a complete walk must not claim to be partial"
         );
+    }
+
+    /// The budget is eight visits per file asked for. Both sides of that
+    /// multiplier matter: too tight and an ordinary listing comes back short,
+    /// too loose and a directory-only tree is walked without bound.
+    #[test]
+    fn the_visit_budget_scales_with_the_limit() {
+        // 4,200 empty folders, then one file: 4,201 visits to reach it, which
+        // is past MIN_VISIT_BUDGET so only the scaled budget can decide.
+        let mut children: Vec<Value> = (0..4_200)
+            .map(|i| json!({ "name": format!("d{i}"), "kind": "dir", "children": [] }))
+            .collect();
+        children.push(json!({ "name": "last.rs", "kind": "file" }));
+        let tree = json!({ "root": { "name": "r", "kind": "dir", "children": children } });
+
+        // 500 × 8 = 4,000 visits: stops short of the file.
+        let tight = walk(&tree, 500);
+        assert!(
+            tight.paths.is_empty(),
+            "4,000 visits cannot reach node 4,201"
+        );
+        assert!(tight.truncated, "a walk cut short must not look complete");
+
+        // 1,000 × 8 = 8,000 visits: comfortably past it.
+        let roomy = walk(&tree, 1_000);
+        assert_eq!(roomy.paths, vec!["last.rs"]);
+        assert!(!roomy.truncated);
     }
 
     /// Pins shell's real vocabulary. Reading `dir` as a file is what made
@@ -230,6 +274,42 @@ mod tests {
             }
         });
         assert_eq!(walk(&tree, 10).paths, vec!["src/a.rs"]);
+    }
+
+    /// `folder` is the spelling accepted alongside shell's own `dir`, so a
+    /// rename on that side degrades to a wrong-looking tree rather than to
+    /// directories being listed as openable files.
+    #[test]
+    fn a_folder_spelled_node_is_descended_too() {
+        let tree = json!({
+            "root": {
+                "name": "r", "kind": "dir",
+                "children": [{
+                    "name": "src", "kind": "folder",
+                    "children": [{ "name": "a.rs", "kind": "file" }]
+                }]
+            }
+        });
+        assert_eq!(walk(&tree, 10).paths, vec!["src/a.rs"]);
+    }
+
+    /// A node carrying children is a directory whatever it calls itself. This
+    /// is the fallback that keeps an unrecognised `kind` from being emitted as
+    /// a file the picker would then try to open.
+    #[test]
+    fn a_node_with_children_and_an_unknown_kind_is_still_a_directory() {
+        let tree = json!({
+            "root": {
+                "name": "r", "kind": "dir",
+                "children": [{
+                    "name": "src", "kind": "something-new",
+                    "children": [{ "name": "a.rs", "kind": "file" }]
+                }]
+            }
+        });
+        let walked = walk(&tree, 10);
+        assert_eq!(walked.paths, vec!["src/a.rs"]);
+        assert!(!walked.paths.iter().any(|p| p == "src"));
     }
 
     #[test]

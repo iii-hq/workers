@@ -917,6 +917,70 @@ mod tests {
         ));
     }
 
+    /// A buffer persisted before versions existed loads with an empty one, and
+    /// an empty version is not the same as no version: it matches nothing on
+    /// disk, so it refuses. That is the safe direction — the caller who has no
+    /// version to offer must omit the field, which is what puts it back on the
+    /// mtime guard, and it is what the console page does.
+    #[test]
+    fn an_empty_version_refuses_rather_than_overwrites() {
+        let on_disk = content_version("whatever is there now\n");
+        assert!(
+            conflicted(Some(""), Some(42), &on_disk, 42),
+            "an unknown version must never be read as a matching one"
+        );
+        assert!(
+            !conflicted(None, Some(42), &on_disk, 42),
+            "omitting the version is what falls back to the mtime"
+        );
+    }
+
+    /// The four request shapes `editor::save` branches on, at the one function
+    /// that decides between them.
+    #[test]
+    fn the_guard_matrix_is_exhaustive() {
+        let started_from = content_version("as read\n");
+        let unchanged = content_version("as read\n");
+        let moved_on = content_version("edited elsewhere\n");
+
+        // (expected_version, expected_mtime, disk_version, disk_mtime) → refused?
+        for (label, refused, ev, em, dv, dm) in [
+            (
+                "version matches",
+                false,
+                Some(&started_from),
+                None,
+                &unchanged,
+                10,
+            ),
+            (
+                "version differs",
+                true,
+                Some(&started_from),
+                None,
+                &moved_on,
+                10,
+            ),
+            (
+                "version matches, mtime moved",
+                false,
+                Some(&started_from),
+                Some(1),
+                &unchanged,
+                99,
+            ),
+            ("mtime only, matches", false, None, Some(10), &moved_on, 10),
+            ("mtime only, differs", true, None, Some(9), &moved_on, 10),
+            ("neither armed", false, None, None, &moved_on, 10),
+        ] {
+            assert_eq!(
+                conflicted(ev.map(String::as_str), em, dv, dm),
+                refused,
+                "{label}"
+            );
+        }
+    }
+
     /// The catalog is what ships to the registry; a function registered but
     /// left out of it would have no published schema.
     #[test]
@@ -1088,15 +1152,10 @@ fn group_matches(raw: &serde_json::Value, root: &str) -> SearchOutput {
 /// Strip the workspace root from an absolute path, leaving anything that does
 /// not sit under it untouched.
 fn relative_to(path: &str, root: &str) -> String {
-    if root == "." {
-        return path.to_string();
-    }
-    let trimmed = root.trim_end_matches('/');
-    path.strip_prefix(trimmed)
-        .map(|rest| rest.trim_start_matches('/'))
-        .filter(|rest| !rest.is_empty())
-        .unwrap_or(path)
-        .to_string()
+    // One implementation, because there were two and they carried the same bug:
+    // a root that ends mid-segment is not a parent. `observe::relative` also
+    // handles an empty root, which this copy did not.
+    crate::observe::relative(path, root)
 }
 
 /// Cut a string to at most `max_bytes`, never mid-codepoint.
@@ -1352,6 +1411,32 @@ mod parity_tests {
         );
     }
 
+    #[test]
+    fn a_root_with_a_trailing_slash_still_strips() {
+        let raw = json!({
+            "matches": [ { "path": "/repo/src/a.rs", "line": 1, "content": "x" } ]
+        });
+        assert_eq!(group_matches(&raw, "/repo/").files[0].path, "src/a.rs");
+    }
+
+    /// A hit on the root itself must not come back as an empty path — nothing
+    /// downstream can open one.
+    #[test]
+    fn a_path_that_is_the_root_is_left_alone() {
+        let raw = json!({ "matches": [ { "path": "/repo", "line": 1, "content": "x" } ] });
+        assert_eq!(group_matches(&raw, "/repo").files[0].path, "/repo");
+    }
+
+    /// shell answering with no `matches` key at all: an empty result, not a
+    /// panic and not a phantom row.
+    #[test]
+    fn a_response_without_matches_is_an_empty_result() {
+        let out = group_matches(&json!({}), "/repo");
+        assert!(out.files.is_empty());
+        assert_eq!(out.total, 0);
+        assert!(!out.truncated, "an absent flag reads as not truncated");
+    }
+
     /// The case that used to panic: a cap landing inside a multibyte char.
     #[test]
     fn truncate_never_splits_a_codepoint() {
@@ -1381,6 +1466,38 @@ mod parity_tests {
         }
     }
 
+    /// Four bytes is the widest a character gets, so it is the widest the
+    /// back-off has to walk: every one of the three interior offsets must land
+    /// on the same boundary rather than panic.
+    #[test]
+    fn truncate_backs_off_every_byte_of_a_four_byte_character() {
+        // U+1D11E MUSICAL SYMBOL G CLEF: four bytes, behind one ASCII byte.
+        let text = "a𝄞".to_string();
+        assert_eq!(text.len(), 5);
+        for cap in 1..=4 {
+            assert_eq!(
+                truncate_on_boundary(text.clone(), cap),
+                "a",
+                "a cap of {cap} lands inside the codepoint and must cut back before it"
+            );
+        }
+        assert_eq!(truncate_on_boundary(text, 5), "a𝄞");
+    }
+
+    /// The same sweep over a string that is entirely four-byte characters:
+    /// every cut has to land on a multiple of four.
+    #[test]
+    fn truncate_survives_an_all_four_byte_string() {
+        let text = "𝄞𝄞𝄞".to_string();
+        assert_eq!(text.len(), 12);
+        for cap in 0..=text.len() {
+            let cut = truncate_on_boundary(text.clone(), cap);
+            assert!(cut.len() <= cap, "cap {cap} overshot");
+            assert!(text.starts_with(&cut), "cap {cap} produced a non-prefix");
+            assert_eq!(cut.len() % 4, 0, "cap {cap} cut inside a codepoint");
+        }
+    }
+
     #[test]
     fn summarize_keeps_stderr_when_stdout_is_empty() {
         let out = crate::bus::ExecOutcome {
@@ -1403,6 +1520,23 @@ mod parity_tests {
             stdout_truncated: false,
         };
         assert_eq!(summarize(&out), "out\nerr");
+    }
+
+    /// The other half of the pair: a commit says everything on stdout, and a
+    /// whitespace-only stderr must not add a trailing blank line to it.
+    #[test]
+    fn summarize_keeps_stdout_when_stderr_is_blank() {
+        let out = crate::bus::ExecOutcome {
+            stdout: "  [main abc1234] a message\n".to_string(),
+            stderr: "   \n".to_string(),
+            ..crate::bus::ExecOutcome::default()
+        };
+        assert_eq!(summarize(&out), "[main abc1234] a message");
+    }
+
+    #[test]
+    fn summarize_of_two_silent_streams_is_empty() {
+        assert_eq!(summarize(&crate::bus::ExecOutcome::default()), "");
     }
 }
 

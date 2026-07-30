@@ -26,7 +26,9 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_diff_bytes")]
     pub max_diff_bytes: usize,
 
-    /// Unchanged lines kept around each hunk when a caller does not say.
+    /// Unchanged lines `editor::diff` keeps around each hunk when the caller
+    /// does not say. `editor::git::hunks` is not covered: it defaults to 0, so
+    /// its ranges stay exactly the lines that changed.
     #[serde(default = "default_diff_context_lines")]
     pub diff_context_lines: usize,
 
@@ -214,7 +216,53 @@ mod tests {
     }
 
     #[test]
+    fn several_placeholders_expand_in_one_pass() {
+        std::env::set_var("EDITOR_TEST_FIND_LIMIT", "11");
+        std::env::set_var("EDITOR_TEST_CONTEXT", "22");
+        let cfg = WorkerConfig::from_yaml(
+            "find_limit: ${EDITOR_TEST_FIND_LIMIT}\ndiff_context_lines: ${EDITOR_TEST_CONTEXT}\n",
+        )
+        .expect("both placeholders resolve");
+        assert_eq!((cfg.find_limit, cfg.diff_context_lines), (11, 22));
+    }
+
+    /// An unset variable expands to nothing, which leaves the key with no
+    /// value at all. That must fail the parse rather than land as a zero — a
+    /// `find_limit` of 0 returns nothing and a `max_file_bytes` of 0 truncates
+    /// every open, and both would look like the worker was working.
+    #[test]
+    fn an_unset_variable_fails_the_parse_rather_than_zeroing_a_limit() {
+        assert!(
+            std::env::var("EDITOR_TEST_DEFINITELY_UNSET").is_err(),
+            "the fixture depends on this name being unset"
+        );
+        assert!(WorkerConfig::from_yaml("find_limit: ${EDITOR_TEST_DEFINITELY_UNSET}").is_err());
+    }
+
+    #[test]
     fn an_unterminated_placeholder_is_left_alone() {
         assert_eq!(expand_env("a ${UNCLOSED"), "a ${UNCLOSED");
+    }
+
+    /// Every shipped default has to be usable as it stands. A bound of zero
+    /// does not mean "unbounded" anywhere in this worker — it means the feature
+    /// it bounds returns nothing.
+    #[test]
+    fn no_shipped_default_is_zero() {
+        let d = WorkerConfig::default();
+        for (name, value) in [
+            ("max_diff_bytes", d.max_diff_bytes as u64),
+            ("diff_context_lines", d.diff_context_lines as u64),
+            ("find_limit", d.find_limit as u64),
+            ("max_find_candidates", d.max_find_candidates as u64),
+            ("max_file_bytes", d.max_file_bytes as u64),
+            ("search_max_matches", d.search_max_matches),
+            ("git_timeout_ms", d.git_timeout_ms),
+        ] {
+            assert!(
+                value > 0,
+                "{name} ships as zero, which disables what it bounds"
+            );
+        }
     }
 }

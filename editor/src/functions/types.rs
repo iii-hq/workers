@@ -421,6 +421,188 @@ pub struct GitShowOutput {
     pub exists: bool,
 }
 
+#[cfg(test)]
+mod request_tests {
+    //! What a caller actually gets when it leaves a field out, and what
+    //! spellings the wire accepts. The golden schemas pin the *shape* of these
+    //! requests; these pin what deserializing one does — a default that flipped
+    //! would change behaviour without moving a single line of the schema's
+    //! `type`/`required` structure.
+
+    use super::*;
+    use serde_json::json;
+
+    /// Defaults are behaviour, not decoration: `stage_all` decides whether a
+    /// commit sweeps up unstaged work, and `include_untracked` decides whether
+    /// the file an agent just wrote is findable at all.
+    #[test]
+    fn omitted_fields_take_their_documented_defaults() {
+        let commit: GitCommitInput =
+            serde_json::from_value(json!({ "message": "m" })).expect("a message is enough");
+        assert!(
+            commit.stage_all,
+            "a commit stages everything unless told not to"
+        );
+        assert!(commit.cwd.is_none());
+
+        let find: FindInput =
+            serde_json::from_value(json!({ "query": "q" })).expect("a query is enough");
+        assert!(
+            find.include_untracked,
+            "a just-created file has to be findable"
+        );
+        assert!(find.limit.is_none());
+
+        let create: CreateInput =
+            serde_json::from_value(json!({ "path": "a.rs" })).expect("a path is enough");
+        assert!(matches!(create.kind, EntryKind::File), "a file by default");
+        assert!(create.content.is_none());
+
+        let hunks: GitHunksInput =
+            serde_json::from_value(json!({ "path": "a.rs" })).expect("a path is enough");
+        assert!(matches!(hunks.against, Against::Worktree));
+        assert_eq!(
+            hunks.context_lines, None,
+            "the handler reads absent as -U0; any context here widens every gutter range"
+        );
+
+        let tree: TreeInput = serde_json::from_value(json!({})).expect("tree takes no arguments");
+        assert!(tree.path.is_none() && tree.max_depth.is_none());
+        assert!(tree.expand.is_empty() && tree.collapse.is_empty());
+
+        let search: SearchInput =
+            serde_json::from_value(json!({ "pattern": "x" })).expect("a pattern is enough");
+        assert!(!search.ignore_case);
+        assert!(search.include_glob.is_empty());
+        assert_eq!(search.max_matches, None);
+
+        let delete: DeleteInput =
+            serde_json::from_value(json!({ "path": "a" })).expect("a path is enough");
+        assert!(!delete.recursive, "a recursive delete has to be asked for");
+
+        let _: EmptyInput = serde_json::from_value(json!({})).expect("{} is the whole request");
+    }
+
+    /// Neither guard, one guard, or both: the four shapes `editor::save`
+    /// branches on all have to survive the wire, including the legacy caller
+    /// that has never heard of a version.
+    #[test]
+    fn a_save_carries_whichever_guard_the_caller_holds() {
+        let bare: SaveInput = serde_json::from_value(json!({ "path": "a.rs", "content": "x" }))
+            .expect("an unguarded overwrite is a legal request");
+        assert!(bare.expected_mtime.is_none() && bare.expected_version.is_none());
+
+        let legacy: SaveInput =
+            serde_json::from_value(json!({ "path": "a.rs", "content": "x", "expected_mtime": 7 }))
+                .expect("the pre-version request shape still parses");
+        assert_eq!(legacy.expected_mtime, Some(7));
+        assert!(legacy.expected_version.is_none());
+
+        let versioned: SaveInput = serde_json::from_value(
+            json!({ "path": "a.rs", "content": "x", "expected_version": "b-000000000000000a" }),
+        )
+        .expect("a version-only request parses");
+        assert_eq!(
+            versioned.expected_version.as_deref(),
+            Some("b-000000000000000a")
+        );
+        assert!(versioned.expected_mtime.is_none());
+
+        let both: SaveInput = serde_json::from_value(json!({
+            "path": "a.rs", "content": "x", "expected_mtime": 7, "expected_version": "v"
+        }))
+        .expect("sending both is legal; the version decides");
+        assert_eq!(both.expected_mtime, Some(7));
+        assert_eq!(both.expected_version.as_deref(), Some("v"));
+    }
+
+    /// The enum spellings are the wire. An agent sends these strings, so a
+    /// rename breaks every stored call without touching a single signature.
+    #[test]
+    fn enum_variants_keep_their_wire_spellings() {
+        for (text, variant) in [
+            ("worktree", Against::Worktree),
+            ("index", Against::Index),
+            ("head", Against::Head),
+            ("upstream", Against::Upstream),
+        ] {
+            assert_eq!(
+                serde_json::to_value(variant).expect("serializes"),
+                json!(text)
+            );
+            let parsed: Against = serde_json::from_value(json!(text)).expect("a known comparison");
+            assert_eq!(
+                serde_json::to_value(parsed).expect("serializes"),
+                json!(text)
+            );
+            assert_eq!(
+                variant.as_str(),
+                text,
+                "as_str drifted from the serialized name"
+            );
+        }
+        for (text, variant) in [
+            ("fetch", SyncAction::Fetch),
+            ("pull", SyncAction::Pull),
+            ("push", SyncAction::Push),
+        ] {
+            assert_eq!(
+                serde_json::to_value(variant).expect("serializes"),
+                json!(text)
+            );
+            let parsed: SyncAction = serde_json::from_value(json!(text)).expect("a known action");
+            assert_eq!(
+                serde_json::to_value(parsed).expect("serializes"),
+                json!(text)
+            );
+        }
+        for (text, variant) in [("push", StashAction::Push), ("pop", StashAction::Pop)] {
+            assert_eq!(
+                serde_json::to_value(variant).expect("serializes"),
+                json!(text)
+            );
+            let parsed: StashAction = serde_json::from_value(json!(text)).expect("a known action");
+            assert_eq!(
+                serde_json::to_value(parsed).expect("serializes"),
+                json!(text)
+            );
+        }
+        for (text, variant) in [("file", EntryKind::File), ("folder", EntryKind::Folder)] {
+            assert_eq!(
+                serde_json::to_value(variant).expect("serializes"),
+                json!(text)
+            );
+            let parsed: EntryKind = serde_json::from_value(json!(text)).expect("a known kind");
+            assert_eq!(
+                serde_json::to_value(parsed).expect("serializes"),
+                json!(text)
+            );
+        }
+    }
+
+    /// A spelling this worker does not know must be refused, not defaulted:
+    /// `editor::git::sync` quietly fetching because it could not read `pusj`
+    /// would be a silent no-op where the caller asked to publish work.
+    #[test]
+    fn an_unknown_enum_spelling_is_refused() {
+        assert!(serde_json::from_value::<SyncAction>(json!("pusj")).is_err());
+        assert!(serde_json::from_value::<Against>(json!("HEAD")).is_err());
+        assert!(serde_json::from_value::<StashAction>(json!("drop")).is_err());
+        assert!(serde_json::from_value::<EntryKind>(json!("directory")).is_err());
+    }
+
+    /// A required field is required. A save with no content must be refused at
+    /// the door rather than written as an empty file.
+    #[test]
+    fn a_request_missing_a_required_field_is_refused() {
+        assert!(serde_json::from_value::<SaveInput>(json!({ "path": "a.rs" })).is_err());
+        assert!(serde_json::from_value::<MoveInput>(json!({ "from": "a" })).is_err());
+        assert!(serde_json::from_value::<WorkspaceOpenInput>(json!({})).is_err());
+        assert!(serde_json::from_value::<SearchInput>(json!({})).is_err());
+        assert!(serde_json::from_value::<GitShowInput>(json!({ "rev": "HEAD" })).is_err());
+    }
+}
+
 // ---------------------------------------------------------------- editor::find
 
 #[derive(Debug, Deserialize, JsonSchema)]

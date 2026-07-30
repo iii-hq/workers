@@ -96,8 +96,16 @@ fn no_single_wait_outlives_the_budget() {
     );
 }
 
+/// `None` when this machine cannot host an isolated engine, having said which
+/// of the two reasons applies. Both messages live here rather than being split
+/// with the caller: printing "iii is not on PATH" for a skip that was actually
+/// "your rig is running" is how a permanently-skipped test gets read as passing
+/// coverage.
 async fn boot() -> Option<Harness> {
-    let iii_bin = which::which("iii").ok()?;
+    let Some(iii_bin) = which::which("iii").ok() else {
+        eprintln!("skipping: the `iii` binary is not on PATH");
+        return None;
+    };
 
     if engine_already_running() {
         eprintln!(
@@ -186,8 +194,8 @@ async fn await_function(
 
 #[tokio::test]
 async fn diff_round_trips_over_the_bus() {
+    // `boot` reports which of the two skip conditions applied.
     let Some(_h) = boot().await else {
-        eprintln!("skipping: `iii` binary not on PATH");
         return;
     };
 

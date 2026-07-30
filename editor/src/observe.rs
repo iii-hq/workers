@@ -132,6 +132,13 @@ pub fn relative(path: &str, root: &str) -> String {
     }
     let trimmed = root.trim_end_matches('/');
     path.strip_prefix(trimmed)
+        // Whole segments only. A raw `strip_prefix` treats the root as a string
+        // rather than a path, so root `/srv/app` turned `/srv/application/a.rs`
+        // into `lication/a.rs` — a plausible-looking path pointing nowhere,
+        // reported as the file that changed. This is the same invariant
+        // `Session::remap` is built on, for the same reason: a prefix that ends
+        // mid-segment is not a parent.
+        .filter(|rest| rest.is_empty() || rest.starts_with('/'))
         .map(|rest| rest.trim_start_matches('/'))
         .filter(|rest| !rest.is_empty())
         .unwrap_or(path)
@@ -326,6 +333,55 @@ mod tests {
         assert_eq!(t.kind, "moved");
     }
 
+    /// The whole write whitelist in one place. A verb dropped from the table
+    /// stops producing events silently, which is exactly the blindness this
+    /// module exists to fix — and only three of the eight were pinned.
+    #[test]
+    fn every_watched_verb_maps_to_its_kind() {
+        for (id, kind) in [
+            ("shell::fs::write", "modified"),
+            ("shell::fs::sed", "modified"),
+            ("coder::update-file", "modified"),
+            ("coder::create-file", "created"),
+            ("shell::fs::rm", "deleted"),
+            ("coder::delete-file", "deleted"),
+            ("shell::fs::mv", "moved"),
+            ("coder::move", "moved"),
+        ] {
+            let t = touched(&call(id, json!({ "path": "a.rs" })))
+                .unwrap_or_else(|| panic!("{id} produced no touch"));
+            assert_eq!(t.kind, kind, "{id} reported the wrong kind");
+            assert_eq!(t.path, "a.rs", "{id} lost its path");
+        }
+    }
+
+    /// A move carries both ends. The destination is the one a surface opens,
+    /// so it has to win even when the source is present under `path`.
+    #[test]
+    fn a_destination_outranks_the_source_path() {
+        let t = touched(&call(
+            "coder::move",
+            json!({ "path": "old.rs", "dst": "new.rs" }),
+        ))
+        .unwrap();
+        assert_eq!(t.path, "new.rs");
+    }
+
+    #[test]
+    fn a_batch_move_reports_its_destination() {
+        let t = touched(&call(
+            "coder::move",
+            json!({ "files": [{ "dst": "new.rs" }] }),
+        ))
+        .unwrap();
+        assert_eq!(t.path, "new.rs");
+    }
+
+    #[test]
+    fn an_empty_batch_is_skipped() {
+        assert!(touched(&call("coder::create-file", json!({ "files": [] }))).is_none());
+    }
+
     #[test]
     fn a_batch_shape_reports_its_first_path() {
         let t = touched(&call(
@@ -376,9 +432,50 @@ mod tests {
         assert_eq!(relative("/elsewhere/a.rs", "/srv/app"), "/elsewhere/a.rs");
     }
 
+    /// A sibling whose name merely starts with the root's is not inside it.
+    /// Stripping by string rather than by segment turned
+    /// `/srv/application/a.rs` into `lication/a.rs`: a path that looks real,
+    /// resolves nowhere, and would be reported as the file that changed.
+    #[test]
+    fn a_sibling_sharing_the_roots_prefix_is_not_inside_it() {
+        assert_eq!(
+            relative("/srv/application/a.rs", "/srv/app"),
+            "/srv/application/a.rs"
+        );
+        assert_eq!(relative("/srv/app-2/a.rs", "/srv/app"), "/srv/app-2/a.rs");
+        assert_eq!(relative("/srv/appendix", "/srv/app"), "/srv/appendix");
+        // The genuine child still resolves, so the guard did not overshoot.
+        assert_eq!(relative("/srv/app/a.rs", "/srv/app"), "a.rs");
+    }
+
+    /// The harness stamps `fs_scope` with whatever the session had; anything
+    /// that is not a string root is no root at all, and the observer falls back
+    /// to the workspace's own.
+    #[test]
+    fn a_root_that_is_not_a_string_is_not_a_session_root() {
+        assert!(session_root(Some(&json!({ "fs_scope": { "root": 7 } }))).is_none());
+        assert!(session_root(Some(&json!({ "fs_scope": {} }))).is_none());
+        assert!(session_root(Some(&json!({ "fs_scope": null }))).is_none());
+    }
+
     #[test]
     fn a_dot_root_leaves_the_path_alone() {
         assert_eq!(relative("src/a.rs", "."), "src/a.rs");
+    }
+
+    /// No root stamped and none stored: the path is already the best answer.
+    #[test]
+    fn an_empty_root_leaves_the_path_alone() {
+        assert_eq!(relative("src/a.rs", ""), "src/a.rs");
+        assert_eq!(relative("/srv/app/a.rs", ""), "/srv/app/a.rs");
+    }
+
+    /// A write reported against the root itself must not collapse to an empty
+    /// path, which no surface can render and no read can resolve.
+    #[test]
+    fn a_path_equal_to_the_root_is_left_alone() {
+        assert_eq!(relative("/srv/app", "/srv/app"), "/srv/app");
+        assert_eq!(relative("/srv/app/", "/srv/app"), "/srv/app/");
     }
 
     #[test]

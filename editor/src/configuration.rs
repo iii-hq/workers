@@ -141,9 +141,9 @@ async fn trigger_with_retry(
 
 /// What to serve when the boot handshake never completed.
 ///
-/// The seed, whenever there is one. `config.yaml` is where an operator wrote
-/// their intent, and falling back to `WorkerConfig::default()` while a seed
-/// exists would silently loosen every limit they had tightened — a safety
+/// The seed, whenever there is one. The `--config` file is where an operator
+/// wrote their intent, and falling back to `WorkerConfig::default()` while a
+/// seed exists would silently loosen every limit they had tightened — a safety
 /// regression dressed as a resilience fix. With no seed at all nothing was
 /// configured on this side, so the shipped baseline genuinely is the operator's
 /// choice.
@@ -358,6 +358,69 @@ mod tests {
         let (cfg, source) = fallback_config(None);
         assert_eq!(cfg, WorkerConfig::default());
         assert_eq!(source, SOURCE_DEFAULTS);
+    }
+
+    /// A reload has to publish BOTH halves of the snapshot. The bus reads the
+    /// git timeout off an atomic, on a path with no access to the cell, so a
+    /// swap that updated only the cell would leave every git invocation on the
+    /// boot-time timeout — the one field a reload silently skipped.
+    #[tokio::test]
+    async fn applying_a_config_publishes_the_snapshot_and_the_git_timeout() {
+        let boot = WorkerConfig::default();
+        let git_timeout = Arc::new(AtomicU64::new(boot.git_timeout_ms));
+        let live = cell(boot.clone());
+
+        let next = WorkerConfig {
+            git_timeout_ms: boot.git_timeout_ms + 1_000,
+            max_file_bytes: 123,
+            ..WorkerConfig::default()
+        };
+        assert_ne!(next, boot, "the fixture has to differ to prove anything");
+
+        apply_config(&live, &git_timeout, next.clone()).await;
+
+        assert_eq!(
+            **live.read().await,
+            next,
+            "the next call of every handler reads the new snapshot"
+        );
+        assert_eq!(
+            git_timeout.load(Ordering::Relaxed),
+            next.git_timeout_ms,
+            "the bus takes its timeout from the atomic, not from the cell"
+        );
+    }
+
+    /// The boot fallback is a stopgap, not a ceiling. Once the handshake
+    /// recovers, the authoritative values replace the seed through exactly the
+    /// path a hot reload uses — including the timeout the seed had set.
+    #[tokio::test]
+    async fn the_authoritative_config_replaces_a_boot_fallback() {
+        let seed = WorkerConfig {
+            max_file_bytes: 64_000,
+            git_timeout_ms: 3_000,
+            ..WorkerConfig::default()
+        };
+        let (booted, source) = fallback_config(Some(&seed));
+        assert_eq!(source, SOURCE_SEED);
+
+        let git_timeout = Arc::new(AtomicU64::new(booted.git_timeout_ms));
+        let live = cell(booted);
+        assert_eq!(git_timeout.load(Ordering::Relaxed), 3_000);
+
+        let authoritative = WorkerConfig {
+            max_file_bytes: 9_000_000,
+            git_timeout_ms: 45_000,
+            ..WorkerConfig::default()
+        };
+        apply_config(&live, &git_timeout, authoritative.clone()).await;
+
+        assert_eq!(**live.read().await, authoritative);
+        assert_eq!(
+            git_timeout.load(Ordering::Relaxed),
+            45_000,
+            "the seed's timeout must not outlive the recovery"
+        );
     }
 
     #[test]

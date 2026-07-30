@@ -200,12 +200,45 @@ mod tests {
         assert_eq!(s.expanded, vec!["tests".to_string()]);
     }
 
+    /// Collapsing takes descendants with it, and only descendants. `src/app`
+    /// must not collapse `src/application` — the same whole-segment rule the
+    /// remap has, and the same silent wrongness when it is missing.
+    #[test]
+    fn collapse_matches_whole_segments_only() {
+        let mut s = Session::default();
+        s.expand("src/app");
+        s.expand("src/app/deep");
+        s.expand("src/application");
+        s.collapse("src/app");
+        assert_eq!(s.expanded, vec!["src/application".to_string()]);
+    }
+
     #[test]
     fn expand_is_idempotent() {
         let mut s = Session::default();
         s.expand("src");
         s.expand("src");
         assert_eq!(s.expanded.len(), 1);
+    }
+
+    /// Re-opening a file must not move its tab: a surface renders buffers in
+    /// this order, so an upsert that pushed the re-read file to the end would
+    /// shuffle the tab bar on every save.
+    #[test]
+    fn upsert_replaces_in_place_and_keeps_the_order() {
+        let mut s = Session::default();
+        s.upsert(buf("a.rs"));
+        s.upsert(buf("b.rs"));
+        let mut again = buf("a.rs");
+        again.mtime = 42;
+        s.upsert(again);
+
+        let paths: Vec<&str> = s.buffers.iter().map(|b| b.path.as_str()).collect();
+        assert_eq!(paths, vec!["a.rs", "b.rs"]);
+        assert_eq!(
+            s.buffers[0].mtime, 42,
+            "the newer read replaced the older one"
+        );
     }
 
     #[test]
@@ -225,7 +258,11 @@ mod tests {
         s.expand("src/app");
         s.expand("src/app/deep");
 
-        s.remap("src/app", "src/ui");
+        assert_eq!(
+            s.remap("src/app", "src/ui"),
+            4,
+            "two buffers and two expanded folders were rewritten"
+        );
 
         let paths: Vec<&str> = s.buffers.iter().map(|b| b.path.as_str()).collect();
         assert_eq!(paths, vec!["src/ui/a.rs", "src/ui/deep/b.rs", "other.rs"]);
@@ -234,13 +271,22 @@ mod tests {
 
     #[test]
     fn remap_matches_whole_segments_only() {
-        // `src/app` must not swallow `src/application.rs`.
+        // `src/app` must not swallow `src/application.rs`, in either list: a
+        // plain `starts_with` rewrites both into nonsense.
         let mut s = Session::default();
         s.upsert(buf("src/application.rs"));
         s.upsert(buf("src/app/x.rs"));
-        s.remap("src/app", "src/ui");
+        s.expand("src/application");
+        s.expand("src/app");
+
+        assert_eq!(
+            s.remap("src/app", "src/ui"),
+            2,
+            "only the buffer and the folder actually under src/app move"
+        );
         let paths: Vec<&str> = s.buffers.iter().map(|b| b.path.as_str()).collect();
         assert_eq!(paths, vec!["src/application.rs", "src/ui/x.rs"]);
+        assert_eq!(s.expanded, vec!["src/application", "src/ui"]);
     }
 
     #[test]

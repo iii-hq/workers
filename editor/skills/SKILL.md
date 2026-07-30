@@ -42,7 +42,8 @@ tell the user what you are doing.
   their editor, which is better than pasting the file into the conversation.
 - You need to know what they are looking at (`editor::workspace::get`).
 - You are editing across several turns and must not clobber a concurrent edit
-  (`editor::open` for the mtime, then `editor::save` with `expected_mtime`).
+  (`editor::open` for the `version`, then `editor::save` with
+  `expected_version`).
 - You are renaming or moving something (`editor::move` — never `shell::fs::mv`
   when buffers may be open; see below).
 - You know roughly what a file is called but not where it lives
@@ -61,8 +62,9 @@ tell the user what you are doing.
 
 - `editor::find` matches **paths**; `editor::search` matches **contents**.
   Listing a directory outside the workspace is still `shell::fs::ls`.
-- Not a full git client. Status, hunks, tracked paths, commit, fetch/pull/push,
-  stash and undo-last-commit are covered. Anything else — branch, checkout,
+- Not a full git client. Status, hunks, a file at a revision, tracked paths,
+  commit, fetch/pull/push, stash and undo-last-commit are covered. Anything
+  else — branch, checkout,
   rebase, cherry-pick, remote management — goes through `shell::exec`.
   `editor::git::sync` pulls `--ff-only`; a merge is deliberately not offered,
   because a conflicted tree under open buffers is a mess an editor cannot
@@ -73,19 +75,59 @@ tell the user what you are doing.
   the complete new content, then save it.
 - Binary files are refused, not mangled.
 
+## Functions
+
+- `editor::workspace::open` — point the workspace at a folder; returns the
+  buffers and expanded folders remembered for it.
+- `editor::workspace::get` — the active root, open buffers and expanded
+  folders, as every surface sees them.
+- `editor::tree` — list a folder, carrying and persisting expansion state.
+- `editor::open` — read a text file and record it as an open buffer.
+- `editor::save` — whole-file write, guarded against a concurrent change.
+- `editor::buffers::list` — the tab set.
+- `editor::buffers::close` — close one buffer; the file on disk is untouched.
+- `editor::move` — move or rename, rewriting every buffer and expanded folder
+  at or under the path.
+- `editor::create` — create a file or folder, parents included.
+- `editor::delete` — remove a path and close any buffer it held.
+- `editor::find` — fuzzy file finder over paths, ranked basename-first.
+- `editor::search` — search file contents, grouped by file.
+- `editor::diff` — unified patch between two texts; pure, nothing is read.
+- `editor::git::status` — branch, upstream, ahead/behind, one row per changed
+  path.
+- `editor::git::hunks` — what changed in one file, as ranges plus a patch.
+- `editor::git::show` — a file's contents at a revision, HEAD by default.
+- `editor::git::commit` — stage and commit.
+- `editor::git::sync` — fetch, fast-forward pull, or push.
+- `editor::git::stash` — stash the working tree, or pop the most recent stash.
+- `editor::git::undo-commit` — undo the last commit, keeping its changes
+  staged.
+
+Every path is root-relative unless it is absolute. The `editor::git::*`
+functions fail outside a repository, which is an absent overlay rather than a
+broken workspace.
+
 ## The two rules that prevent data loss
 
-**Save against the mtime you opened at.**
+**Save against the version you opened at.**
 
-1. `editor::open` returns `mtime`.
-2. Pass it back as `expected_mtime` on `editor::save`.
-3. If the file changed in between, **nothing is written**: the response carries
-   `conflict: true`, the current `disk_mtime`, and `conflict_patch` — a diff
-   from what is on disk now to what you tried to write.
+1. `editor::open` returns `version` (an opaque version of the content) and
+   `mtime`.
+2. Pass `version` back as `expected_version` on `editor::save`. Prefer it to
+   `expected_mtime`: mtime resolution is one second, so two writes inside the
+   same second are indistinguishable and the later one wins silently.
+   `expected_mtime` still works and is honoured when `expected_version` is
+   absent; when both are sent, `expected_version` is the guard.
+3. If the content changed in between, **nothing is written**: the response
+   carries `conflict: true`, the current `disk_version` and `disk_mtime`, and
+   `conflict_patch` — a diff from what is on disk now to what you tried to
+   write.
 
-Re-open, reconcile against that patch, save again with the fresh mtime. Do not
-retry with `expected_mtime` omitted to force it through; that is exactly the
-clobber the guard exists to prevent. Omit it only when creating a new file.
+Re-open, reconcile against that patch, and save again with the fresh version —
+or use the `version` a successful `editor::save` returns as the guard for the
+next one, without re-opening. Do not retry with the guard omitted to force it
+through; that is exactly the clobber it exists to prevent. Omit it only when
+creating a new file.
 
 **Move through `editor::move`, not `shell::fs::mv`.**
 
@@ -117,3 +159,37 @@ was just moved.
 - `editor::git::show` — `exists: false` with empty content means the path is
   absent at that revision, which is what a newly added file looks like. It
   is not an error.
+
+## Reactive triggers
+
+The worker publishes one custom trigger type, `editor::changed`, which fires
+after a file in the workspace changes — whoever changed it. It does not require
+the writer to have called this worker: a `harness::hook::post-trigger` hook on
+the `shell::*` and `coder::*` write paths turns any filesystem call into an
+event. The hook is advisory and fail-open, so it never delays or denies the
+write that produced it.
+
+Bind it when a *different* worker or surface should follow edits as they land:
+mirroring the workspace into a viewer, reacting to an agent's writes without
+polling `editor::git::status`, or annotating a file the moment it moves.
+
+Do not bind when you made the write yourself — `editor::save` already returns
+`added`, `removed` and the new `version`.
+
+### How to bind
+
+1. Register a handler: `registerFunction('my-worker::on-edit', handler)`.
+2. Register the trigger:
+
+```typescript
+iii.registerTrigger({
+  type: 'editor::changed',
+  function_id: 'my-worker::on-edit',
+})
+```
+
+Bindings take no config, and every subscriber gets every event. Delivery is
+fire-and-forget: a slow or absent subscriber is logged and skipped rather than
+retried. The event's `patch` is capped and sets `truncated` when it was cut —
+call `editor::git::hunks` when you need the whole diff. For the payload shape,
+call `get function info` on the trigger type.

@@ -239,6 +239,64 @@ mod tests {
         assert!(r.patch.is_empty());
     }
 
+    /// The mirror of the pure-insertion case, and the other half of the
+    /// start-at-zero branch: an emptied file numbers its "after" side from 0.
+    #[test]
+    fn deleting_every_line_starts_the_new_side_at_zero() {
+        let r = diff("hello\nworld\n", "", None, 3, MAX);
+        assert_eq!(r.hunks.len(), 1);
+        assert_eq!(r.hunks[0].new_start, 0);
+        assert_eq!(r.hunks[0].new_lines, 0);
+        assert_eq!(r.hunks[0].old_start, 1);
+        assert_eq!((r.added, r.removed), (0, 2));
+        assert!(!r.identical);
+    }
+
+    /// `max_bytes` is a ceiling, not an exclusive bound. Pinning both sides of
+    /// it keeps a refactor from turning "as big as allowed" into "too big".
+    #[test]
+    fn input_exactly_at_the_cap_is_still_diffed() {
+        let r = diff("abcd\n", "abce\n", None, 3, 5);
+        assert!(!r.truncated, "five bytes must pass a five-byte cap");
+        assert_eq!((r.added, r.removed), (1, 1));
+
+        let over = diff("abcde\n", "abce\n", None, 3, 5);
+        assert!(over.truncated, "six bytes must not");
+    }
+
+    /// `None` renders the documented placeholder label rather than an empty
+    /// header, so the patch stays readable and applyable.
+    #[test]
+    fn a_missing_path_renders_the_placeholder_label() {
+        let r = diff("a\n", "b\n", None, 3, MAX);
+        assert!(r.patch.contains("--- a/file"));
+        assert!(r.patch.contains("+++ b/file"));
+    }
+
+    /// The patch body is assembled by pushing bytes; multibyte content must
+    /// come through it intact rather than sliced.
+    #[test]
+    fn multibyte_content_survives_the_patch_body() {
+        let r = diff(
+            "héllo → wörld\n",
+            "héllo ← wörld\n",
+            Some("i18n.txt"),
+            3,
+            MAX,
+        );
+        assert_eq!((r.added, r.removed), (1, 1));
+        assert!(r.patch.contains("+héllo ← wörld"));
+        assert!(r.patch.contains("-héllo → wörld"));
+    }
+
+    #[test]
+    fn two_empty_texts_are_identical() {
+        let r = diff("", "", None, 3, MAX);
+        assert!(r.identical);
+        assert!(!r.truncated);
+        assert!(r.patch.is_empty());
+    }
+
     #[test]
     fn context_zero_yields_tight_hunks() {
         let before = "a\nb\nc\nd\ne\n";

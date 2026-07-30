@@ -87,6 +87,11 @@ rules:
   - '!session::on-config-change'
   # (coder::on-config-change retired: the code surface folded into the shell
   # worker, whose shell::on-config-change is already denied above.)
+  # editor's file-change observer: a harness post-trigger hook target, fired
+  # engine-side (bypassing this gate) after a shell/coder write. Calling it
+  # directly would let an agent forge an `editor::changed` event — path, cause
+  # and patch are taken from the payload — into every subscribed console tab.
+  - '!editor::on-file-change'
   # harness: deny-by-default for in-run agents (harness.md § Agent exposure).
   # send/run let a model start arbitrary turns outside any max_turns guard;
   # turn is the internal loop step; function::trigger/resolve forge call ids
@@ -222,6 +227,7 @@ rules:
   - editor::buffers::list
   - editor::git::status
   - editor::git::hunks
+  - editor::git::show
   # Read-only code surface (coder::*, now served by the shell worker).
   # Mutating ops (create/update/move/delete-file) stay approval-gated.
   - coder::info

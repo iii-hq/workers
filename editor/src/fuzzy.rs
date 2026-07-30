@@ -169,20 +169,80 @@ mod tests {
         assert_eq!(ranked[0].0, "src/editor.rs");
     }
 
+    /// Ranking the same slice twice proves nothing — `rank` is pure, so the
+    /// two runs cannot differ. What is worth pinning is the documented
+    /// tie-break itself: shorter path first, then alphabetically, and never
+    /// dependent on the order the candidates arrived in.
     #[test]
-    fn ranking_is_stable_for_equal_scores() {
-        let candidates = ["b/x.rs", "a/x.rs"];
-        let first = rank("x", &candidates, 10);
-        let second = rank("x", &candidates, 10);
+    fn equal_scores_break_on_length_then_alphabetically() {
+        // An empty query scores every candidate 0, which is the only way to get
+        // an exact tie across paths of different lengths.
+        let ordered: Vec<&str> = rank("", &["bbb.rs", "cc.rs", "a.rs"], 10)
+            .iter()
+            .map(|r| r.0)
+            .collect();
+        assert_eq!(ordered, vec!["a.rs", "cc.rs", "bbb.rs"]);
+
+        let shuffled: Vec<&str> = rank("", &["a.rs", "bbb.rs", "cc.rs"], 10)
+            .iter()
+            .map(|r| r.0)
+            .collect();
         assert_eq!(
-            first.iter().map(|r| r.0).collect::<Vec<_>>(),
-            second.iter().map(|r| r.0).collect::<Vec<_>>()
+            ordered, shuffled,
+            "a picker that reshuffles equal rows by input order is unusable"
         );
+    }
+
+    #[test]
+    fn equal_length_ties_break_alphabetically() {
+        let ranked = rank("x", &["b/x.rs", "a/x.rs"], 10);
+        assert_eq!(
+            ranked[0].1.score, ranked[1].1.score,
+            "the fixture only exercises the tie-break if it is actually a tie"
+        );
+        assert_eq!(
+            ranked.iter().map(|r| r.0).collect::<Vec<_>>(),
+            vec!["a/x.rs", "b/x.rs"]
+        );
+    }
+
+    #[test]
+    fn a_candidate_that_does_not_match_is_dropped_from_the_ranking() {
+        let ranked = rank("mod", &["src/mod.rs", "README"], 10);
+        assert_eq!(
+            ranked.len(),
+            1,
+            "a non-subsequence must not be ranked at all"
+        );
+        assert_eq!(ranked[0].0, "src/mod.rs");
+    }
+
+    /// `positions` are byte offsets a UI slices the path with. An index that is
+    /// not a char boundary panics the consumer, so a path with multibyte
+    /// characters has to come back with boundaries.
+    #[test]
+    fn positions_are_char_boundaries_on_a_multibyte_path() {
+        let path = "src/café/main.rs";
+        let m = score("cm", path).expect("subsequence");
+        for &i in &m.positions {
+            assert!(path.is_char_boundary(i), "byte {i} splits a codepoint");
+        }
+        let matched: String = m
+            .positions
+            .iter()
+            .map(|&i| path[i..].chars().next().expect("a character"))
+            .collect();
+        assert_eq!(matched, "cm");
     }
 
     #[test]
     fn limit_is_respected() {
         let candidates = ["a.rs", "ab.rs", "abc.rs", "abcd.rs"];
         assert_eq!(rank("a", &candidates, 2).len(), 2);
+    }
+
+    #[test]
+    fn a_limit_past_the_end_of_the_list_is_not_an_error() {
+        assert_eq!(rank("a", &["a.rs"], 100).len(), 1);
     }
 }
