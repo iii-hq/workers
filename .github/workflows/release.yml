@@ -87,6 +87,7 @@ jobs:
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
       dry_run: ${{ steps.meta.outputs.dry_run }}
       targets: ${{ steps.meta.outputs.targets }}
+      experimental: ${{ steps.meta.outputs.experimental }}
       web_bundle: ${{ steps.web.outputs.needed }}
       interface_smoke: ${{ steps.smoke.outputs.interface_smoke }}
     steps:
@@ -236,6 +237,7 @@ jobs:
       tag: ${{ needs.setup.outputs.tag }}
       bin: ${{ needs.setup.outputs.bin }}
       image_tag: ${{ needs.container-build.outputs.image_tag }}
+      experimental: ${{ needs.setup.outputs.experimental }}
     secrets: inherit
 
   # ──────────────────────────────────────────────────────────────
