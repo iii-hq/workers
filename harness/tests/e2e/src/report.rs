@@ -409,13 +409,14 @@ impl E2eReport {
         Ok((report, path))
     }
 
-    pub fn has_non_quality_failure(&self) -> bool {
+    pub fn fails_ci_gate(&self, score_floor: u8) -> bool {
         self.scenarios.is_empty()
             || self.scenarios.iter().any(|scenario| {
-                scenario
-                    .runs
-                    .iter()
-                    .any(|run| !matches!(run.status, RunStatus::Passed | RunStatus::QualityFailed))
+                scenario.aggregate.technical_failures > 0
+                    || scenario
+                        .aggregate
+                        .median_score
+                        .is_none_or(|score| score < f64::from(score_floor))
             })
     }
 }
@@ -629,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn advisory_mode_only_tolerates_quality_failures() {
+    fn advisory_ci_gate_uses_the_score_floor_for_quality_and_hard_gate_failures() {
         let quality = E2eReport::new(
             model(),
             None,
@@ -637,12 +638,29 @@ mod tests {
             None,
             vec![aggregate(vec![run(70, false)])],
         );
-        assert!(!quality.has_non_quality_failure());
+        assert!(!quality.fails_ci_gate(50));
 
-        let mut hard_gate = run(100, true);
+        let below_floor = E2eReport::new(
+            model(),
+            None,
+            None,
+            None,
+            vec![aggregate(vec![run(49, false)])],
+        );
+        assert!(below_floor.fails_ci_gate(50));
+
+        let mut hard_gate = run(80, true);
         hard_gate.status = RunStatus::HardGateFailed;
         let hard_gate = E2eReport::new(model(), None, None, None, vec![aggregate(vec![hard_gate])]);
-        assert!(hard_gate.has_non_quality_failure());
+        assert!(!hard_gate.fails_ci_gate(50));
+    }
+
+    #[test]
+    fn advisory_ci_gate_keeps_technical_failures_blocking() {
+        let mut technical = run(80, true);
+        technical.status = RunStatus::InfrastructureError;
+        let report = E2eReport::new(model(), None, None, None, vec![aggregate(vec![technical])]);
+        assert!(report.fails_ci_gate(50));
     }
 
     fn model() -> ModelArtifact {
