@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Parse a release tag and emit setup outputs for release.yml.
 
-Writes 10 keys to $GITHUB_OUTPUT:
-    tag, worker, version, deploy, language,
-    bin, manifest, registry_tag, is_prerelease, dry_run
+Writes 12 keys to $GITHUB_OUTPUT:
+    tag, worker, version, deploy, language, bin, manifest,
+    registry_tag, is_prerelease, dry_run, targets, experimental
 """
 from __future__ import annotations
 
@@ -55,7 +55,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    registry_tag = _lib.read_tag_annotation(raw).get("registry-tag", "latest") or "latest"
+    annotation = _lib.read_tag_annotation(raw)
+    registry_tag = annotation.get("registry-tag", "latest") or "latest"
+
+    # Anything but a literal `true` is false: a lightweight tag, a missing
+    # line, or a typo publishes as stable. Marking a worker experimental is
+    # the deliberate choice, so it takes the exact word.
+    experimental = "true" if annotation.get("experimental", "").strip().lower() == "true" else "false"
 
     # `targets` is an optional iii.worker.yaml field that can be either a
     # list (`- aarch64-apple-darwin\n- x86_64-unknown-linux-gnu`) or a comma
@@ -80,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         ("is_prerelease", is_pre),
         ("dry_run", dry_run),
         ("targets", targets),
+        ("experimental", experimental),
     ]
 
     gh_out = os.environ.get("GITHUB_OUTPUT")
@@ -90,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"::notice::release {worker} v{version} deploy={wm.deploy} "
-        f"registry-tag={registry_tag}"
+        f"registry-tag={registry_tag} experimental={experimental}"
     )
     return 0
 

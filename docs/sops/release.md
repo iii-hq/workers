@@ -36,13 +36,15 @@ Actions → **Create Tag**:
 | Worker | Folder name (must be in workflow options) |
 | Bump | `patch` / `minor` / `major` |
 | Registry tag | `latest` or `next` — channel for `iii worker add` resolution |
+| Experimental | Checkbox. Marks the worker experimental in the registry — see [Experimental releases](#experimental-releases) |
 
 The workflow:
 
 1. Bumps version in the worker manifest (`Cargo.toml`, `package.json`, …).
 2. Commits `chore(<worker>): bump to vX.Y.Z` to `main`.
 3. Creates and pushes an **annotated** tag `<worker>/vX.Y.Z` with
-   `registry-tag: <latest|next>` in the tag message.
+   `registry-tag: <latest|next>` and `experimental: <true|false>` in the tag
+   message.
 
 ### 2. Release pipeline
 
@@ -100,6 +102,28 @@ Workers with `interface_smoke: false` skip the entire publish job.
 The channel is stored in the **annotated tag message** (`registry-tag:`).
 `release.yml` refetches the annotated tag for this reason. Lightweight tags
 lose the channel and default to `latest`.
+
+## Experimental releases
+
+Tick **Experimental** on Create Tag to mark the worker unstable in the
+registry. It is a badge and nothing else — the version publishes to the
+channel you picked, installs normally, and resolves normally. Nobody has to
+opt in to see it, and nothing has to be promoted later.
+
+It travels the same way the channel does: `experimental: true` in the
+annotated tag message, read by `parse_release_tag.py`, forwarded through
+`release.yml` to the publish payload. Anything but the literal `true` — a
+missing line, a lightweight tag, a typo — publishes as stable.
+
+**Leave it unticked once the worker settles.** The registry treats a release
+without the flag as the promotion signal and drops the badge, so there is no
+separate "make it stable" step. Re-releasing while still experimental keeps
+the original mark, so the badge records when the worker first shipped
+experimental.
+
+For what the registry does with the flag, see
+[`EXPERIMENTAL_WORKERS.md`](https://github.com/iii-hq/registry/blob/main/docs/EXPERIMENTAL_WORKERS.md)
+in the registry repo.
 
 ## Variants
 

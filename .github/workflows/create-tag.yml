@@ -77,6 +77,11 @@ on:
           - latest
           - next
         default: latest
+      experimental:
+        description: 'Mark the worker experimental in the registry (badge only — it still installs and resolves normally). Leave unchecked once it is stable: releasing without this clears the badge.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -213,12 +218,17 @@ jobs:
           REGISTRY_TAG: ${{ inputs.tag }}
           WORKER: ${{ inputs.worker }}
           NEW_VERSION: ${{ steps.versions.outputs.version }}
+          EXPERIMENTAL: ${{ inputs.experimental }}
         run: |
+          # `experimental` rides the annotation like `registry-tag`: the tag is
+          # the only thing the Release workflow receives, so anything the
+          # publish needs has to be written here.
           git tag -a "$TAG" -m "Release $TAG
 
           worker: $WORKER
           version: $NEW_VERSION
           registry-tag: $REGISTRY_TAG
+          experimental: $EXPERIMENTAL
           "
           git push origin "$TAG"
-          echo "::notice::Created tag: $TAG (registry-tag=$REGISTRY_TAG)"
+          echo "::notice::Created tag: $TAG (registry-tag=$REGISTRY_TAG, experimental=$EXPERIMENTAL)"

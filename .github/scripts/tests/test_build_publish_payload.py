@@ -5,7 +5,7 @@ import pytest
 from build_publish_payload import build_payload
 
 
-def build_binary_payload(tmp_path: Path, manifest: str) -> dict[str, object]:
+def build_binary_payload(tmp_path: Path, manifest: str, **kwargs) -> dict[str, object]:
     worker_dir = tmp_path / "smoke"
     worker_dir.mkdir(parents=True)
     (worker_dir / "iii.worker.yaml").write_text(manifest)
@@ -20,6 +20,7 @@ def build_binary_payload(tmp_path: Path, manifest: str) -> dict[str, object]:
         interface={"functions": [], "triggers": []},
         binaries={"x86_64-unknown-linux-gnu": {"url": "https://example.test/smoke.tgz"}},
         image_tag="",
+        **kwargs,
     )
 
 
@@ -53,3 +54,13 @@ def test_manifest_tags_are_normalized_validated_and_optional(tmp_path: Path) -> 
     invalid = tmp_path / "invalid"
     with pytest.raises(ValueError, match="tags entries must be strings"):
         build_binary_payload(invalid, "name: smoke\ntags:\n  - sql\n  - 7\n")
+
+
+def test_experimental_is_always_sent_as_a_bool(tmp_path: Path) -> None:
+    # The registry clears the badge when the key is missing and 422s on a
+    # string, so the payload must always carry a real boolean.
+    default = build_binary_payload(tmp_path / "default", "name: smoke\n")
+    assert default["experimental"] is False
+
+    marked = build_binary_payload(tmp_path / "marked", "name: smoke\n", experimental=True)
+    assert marked["experimental"] is True

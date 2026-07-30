@@ -39,6 +39,11 @@ on:
         required: false
         type: string
         default: 'https://api.workers.iii.dev'
+      experimental:
+        description: "'true' marks the worker experimental in the registry (badge only)"
+        required: false
+        type: string
+        default: 'false'
 
 jobs:
   publish:
@@ -322,11 +327,13 @@ jobs:
           REGISTRY_TAG: ${{ inputs.registry_tag }}
           IMAGE_TAG: ${{ inputs.image_tag }}
           REPO_URL: ${{ format('https://github.com/{0}', github.repository) }}
+          EXPERIMENTAL: ${{ inputs.experimental }}
         run: |
           python3 .github/scripts/build_publish_payload.py \
             --worker "$WORKER" \
             --version "$VERSION" \
             --registry-tag "$REGISTRY_TAG" \
+            --experimental "$EXPERIMENTAL" \
             --deploy "$DEPLOY" \
             --repo-url "$REPO_URL" \
             --interface-json worker-interface.json \

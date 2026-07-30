@@ -114,3 +114,40 @@ class TestParseReleaseTag:
         out_path.touch()
         r = run_script(repo, "missing/v1.0.0", out_path)
         assert r.returncode != 0
+
+
+class TestExperimentalAnnotation:
+    """`experimental:` rides the annotated tag message next to `registry-tag:`."""
+
+    def _run(self, tmp_path, registry_tag_line):
+        repo = make_repo_with_tagged_worker(
+            tmp_path, "smoke/v1.0.0", "1.0.0", registry_tag_line=registry_tag_line
+        )
+        out_path = tmp_path / "gh_output"
+        out_path.touch()
+        r = run_script(repo, "smoke/v1.0.0", out_path)
+        assert r.returncode == 0, r.stderr
+        return parse_outputs(out_path)
+
+    def test_absent_line_is_false(self, tmp_path):
+        out = self._run(tmp_path, "registry-tag: latest")
+        assert out["experimental"] == "false"
+
+    def test_true_marks_experimental(self, tmp_path):
+        out = self._run(tmp_path, "registry-tag: latest\nexperimental: true")
+        assert out["experimental"] == "true"
+        assert out["registry_tag"] == "latest"
+
+    def test_false_stays_false(self, tmp_path):
+        out = self._run(tmp_path, "registry-tag: latest\nexperimental: false")
+        assert out["experimental"] == "false"
+
+    def test_casing_and_padding_tolerated(self, tmp_path):
+        out = self._run(tmp_path, "registry-tag: latest\nexperimental:   TRUE  ")
+        assert out["experimental"] == "true"
+
+    # A typo must not mark a stable worker experimental — anything but the
+    # exact word is false, and the release still publishes.
+    def test_typo_falls_back_to_false(self, tmp_path):
+        out = self._run(tmp_path, "registry-tag: latest\nexperimental: yes")
+        assert out["experimental"] == "false"
