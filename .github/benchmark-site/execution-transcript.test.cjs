@@ -2,11 +2,24 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  displayFunctionId,
   filterTranscript,
   messageText,
   normalizeTranscript,
   summarizeTranscript,
 } = require("./execution-transcript.js");
+
+test("shows the wrapped function name instead of agent_trigger", () => {
+  assert.equal(
+    displayFunctionId("agent_trigger", {
+      function: "database::query",
+      payload: { db: "primary" },
+    }),
+    "database::query",
+  );
+  assert.equal(displayFunctionId("state::get", { scope: "test" }), "state::get");
+  assert.equal(displayFunctionId("agent_trigger", { payload: {} }), "agent_trigger");
+});
 
 test("extracts readable text from current and legacy message content", () => {
   assert.equal(messageText(" Legacy response. "), " Legacy response. ");
@@ -39,8 +52,11 @@ test("pairs function results with calls and marks recovered errors", () => {
           {
             type: "function_call",
             id: "call-ok",
-            function_id: "state::get",
-            arguments: { key: "status" },
+            function_id: "agent_trigger",
+            arguments: {
+              function: "state::get",
+              payload: { key: "status" },
+            },
           },
           {
             type: "function_call",

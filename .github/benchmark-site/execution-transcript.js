@@ -27,6 +27,17 @@
     return String(entry?.entry_id || fallback).replace(/[^a-zA-Z0-9_-]/g, "-");
   }
 
+  function displayFunctionId(functionId, argumentsValue) {
+    const wrappedFunction =
+      functionId === "agent_trigger" &&
+      argumentsValue &&
+      typeof argumentsValue === "object" &&
+      typeof argumentsValue.function === "string"
+        ? argumentsValue.function.trim()
+        : "";
+    return wrappedFunction || functionId || "unknown function";
+  }
+
   function normalizeTranscript(messages) {
     const events = [];
     const calls = new Map();
@@ -61,7 +72,7 @@
               ),
               kind: "tool",
               callId,
-              functionId: block.function_id || "unknown function",
+              functionId: displayFunctionId(block.function_id, block.arguments),
               arguments: block.arguments ?? null,
               timestamp: message.timestamp || null,
               result: null,
@@ -160,6 +171,7 @@
 
   return {
     contentBlocks,
+    displayFunctionId,
     filterTranscript,
     messageText,
     normalizeTranscript,
