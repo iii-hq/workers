@@ -7,8 +7,25 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function executionDataFactory() {
   "use strict";
 
+  const SCENARIO_METRIC_IDS = [
+    "tokens",
+    "duration_seconds",
+    "cost_usd",
+    "function_calls",
+    "function_call_errors",
+    "sessions",
+    "turns",
+  ];
+
   function numberOrNull(value) {
     return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+
+  function mean(values) {
+    const available = values.filter((value) => numberOrNull(value) !== null);
+    return available.length
+      ? available.reduce((total, value) => total + value, 0) / available.length
+      : null;
   }
 
   function metricValue(subject, category, scenarioId, metricId) {
@@ -62,6 +79,11 @@
         ? execution.release
         : {},
       subjects,
+      scenario_metrics: Array.isArray(execution.scenario_metrics)
+        ? execution.scenario_metrics.filter(
+            (item) => item && typeof item === "object",
+          )
+        : [],
       totals: execution.totals && typeof execution.totals === "object"
         ? execution.totals
         : {},
@@ -245,6 +267,19 @@
     });
   }
 
+  function executionsWithinDays(executions, days, now = Date.now()) {
+    const windowDays = Number(days);
+    if (!Number.isFinite(windowDays) || windowDays <= 0) return [...(executions || [])];
+    const windowEnd = Number(now);
+    const windowStart = windowEnd - windowDays * 24 * 60 * 60 * 1000;
+    return (executions || []).filter((execution) => {
+      const timestamp = Date.parse(
+        execution?.completed_at || execution?.started_at || "",
+      );
+      return Number.isFinite(timestamp) && timestamp >= windowStart && timestamp <= windowEnd;
+    });
+  }
+
   function matrixRows(executions) {
     const rows = new Map();
     for (const execution of executions || []) {
@@ -301,11 +336,160 @@
     })}%`;
   }
 
+  function runMetric(run, metricId) {
+    const totals = run?.metrics?.totals || {};
+    if (metricId === "tokens") {
+      const input = numberOrNull(totals.input_tokens);
+      const output = numberOrNull(totals.output_tokens);
+      return input === null || output === null ? null : input + output;
+    }
+    if (metricId === "duration_seconds") {
+      const wallTime = numberOrNull(run?.wall_time_ms);
+      return wallTime === null ? null : wallTime / 1000;
+    }
+    if (metricId === "cost_usd") {
+      return numberOrNull(run?.cost?.total_usd);
+    }
+    return numberOrNull(totals[metricId]);
+  }
+
+  function scenarioMetricsFromDetail(detail) {
+    const groupedRuns = new Map();
+    for (const reportEntry of detail?.reports || []) {
+      if (!reportEntry?.available) continue;
+      for (const scenario of reportEntry?.report?.scenarios || []) {
+        const scenarioId = String(
+          scenario?.scenario_id || reportEntry?.scenario_id || "",
+        );
+        if (!scenarioId) continue;
+        const runs = Array.isArray(scenario?.runs)
+          ? scenario.runs.filter((run) => run && typeof run === "object")
+          : [];
+        if (!groupedRuns.has(scenarioId)) groupedRuns.set(scenarioId, []);
+        groupedRuns.get(scenarioId).push(...runs);
+      }
+    }
+    return [...groupedRuns.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([scenarioId, runs]) => {
+        const averages = {};
+        const samples = {};
+        SCENARIO_METRIC_IDS.forEach((metricId) => {
+          const values = runs
+            .map((run) => runMetric(run, metricId))
+            .filter((value) => value !== null);
+          averages[metricId] = mean(values);
+          samples[metricId] = values.length;
+        });
+        return {
+          scenario_id: scenarioId,
+          run_count: runs.length,
+          averages,
+          samples,
+        };
+      });
+  }
+
+  function scenarioMetricSeries(executions, metricId, scenarioId = "all") {
+    const series = new Map();
+    const orderedExecutions = [...(executions || [])].sort((left, right) => {
+      const leftDate = Date.parse(left?.completed_at || left?.started_at || "") || 0;
+      const rightDate =
+        Date.parse(right?.completed_at || right?.started_at || "") || 0;
+      return leftDate - rightDate;
+    });
+
+    for (const execution of orderedExecutions) {
+      for (const scenario of execution?.scenario_metrics || []) {
+        const currentScenarioId = String(scenario?.scenario_id || "");
+        if (
+          !currentScenarioId ||
+          (scenarioId !== "all" && currentScenarioId !== scenarioId)
+        ) {
+          continue;
+        }
+        const value = numberOrNull(scenario?.averages?.[metricId]);
+        if (value === null) continue;
+        if (!series.has(currentScenarioId)) {
+          series.set(currentScenarioId, {
+            scenarioId: currentScenarioId,
+            points: [],
+          });
+        }
+        series.get(currentScenarioId).points.push({
+          executionId: execution.id,
+          runId: execution.run_id || execution.id,
+          attempt: execution.attempt || 1,
+          timestamp: execution.completed_at || execution.started_at || "",
+          value,
+          runSamples: Number(scenario?.samples?.[metricId]) || 0,
+          execution,
+        });
+      }
+    }
+
+    return [...series.values()].sort((left, right) =>
+      left.scenarioId.localeCompare(right.scenarioId),
+    );
+  }
+
+  function scenarioMetricRows(executions) {
+    const grouped = new Map();
+    for (const execution of executions || []) {
+      for (const scenario of execution?.scenario_metrics || []) {
+        const scenarioId = String(scenario?.scenario_id || "");
+        if (!scenarioId) continue;
+        if (!grouped.has(scenarioId)) {
+          grouped.set(scenarioId, {
+            scenarioId,
+            executionIds: new Set(),
+            runCount: 0,
+            values: Object.fromEntries(
+              SCENARIO_METRIC_IDS.map((metricId) => [metricId, []]),
+            ),
+            runSamples: Object.fromEntries(
+              SCENARIO_METRIC_IDS.map((metricId) => [metricId, 0]),
+            ),
+          });
+        }
+        const row = grouped.get(scenarioId);
+        row.executionIds.add(execution.id);
+        row.runCount += Number(scenario.run_count) || 0;
+        SCENARIO_METRIC_IDS.forEach((metricId) => {
+          const value = numberOrNull(scenario?.averages?.[metricId]);
+          if (value !== null) row.values[metricId].push(value);
+          row.runSamples[metricId] += Number(scenario?.samples?.[metricId]) || 0;
+        });
+      }
+    }
+    return [...grouped.values()]
+      .sort((left, right) => left.scenarioId.localeCompare(right.scenarioId))
+      .map((row) => ({
+        scenarioId: row.scenarioId,
+        executionCount: row.executionIds.size,
+        runCount: row.runCount,
+        averages: Object.fromEntries(
+          SCENARIO_METRIC_IDS.map((metricId) => [
+            metricId,
+            mean(row.values[metricId]),
+          ]),
+        ),
+        executionSamples: Object.fromEntries(
+          SCENARIO_METRIC_IDS.map((metricId) => [
+            metricId,
+            row.values[metricId].length,
+          ]),
+        ),
+        runSamples: row.runSamples,
+      }));
+  }
+
   function findExecution(history, id) {
     return history?.executions?.find((execution) => execution.id === id) || null;
   }
 
   return {
+    executionsWithinDays,
     filterExecutions,
     findExecution,
     legacyExecution,
@@ -315,5 +499,8 @@
     mergeExecutionHistory,
     normalizeExecution,
     normalizeStatus,
+    scenarioMetricSeries,
+    scenarioMetricRows,
+    scenarioMetricsFromDetail,
   };
 });

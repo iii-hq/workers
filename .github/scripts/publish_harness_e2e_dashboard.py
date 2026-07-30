@@ -56,6 +56,96 @@ def sum_complete(values: list[float | None]) -> float | None:
     ) else None
 
 
+def mean_available(values: list[float | None]) -> tuple[float | None, int]:
+    available = [value for value in values if value is not None]
+    if not available:
+        return None, 0
+    return sum(available) / len(available), len(available)
+
+
+def run_metric(run: dict[str, Any], metric_id: str) -> float | None:
+    metrics = run.get("metrics", {})
+    totals = metrics.get("totals", {}) if isinstance(metrics, dict) else {}
+    if not isinstance(totals, dict):
+        totals = {}
+    if metric_id == "tokens":
+        input_tokens = optional_number(totals.get("input_tokens"))
+        output_tokens = optional_number(totals.get("output_tokens"))
+        if input_tokens is None or output_tokens is None:
+            return None
+        return input_tokens + output_tokens
+    if metric_id == "duration_seconds":
+        wall_time_ms = optional_number(run.get("wall_time_ms"))
+        return wall_time_ms / 1000 if wall_time_ms is not None else None
+    if metric_id == "cost_usd":
+        cost = run.get("cost", {})
+        return (
+            optional_number(cost.get("total_usd"))
+            if isinstance(cost, dict)
+            else None
+        )
+    return optional_number(totals.get(metric_id))
+
+
+def build_scenario_metrics(detail: dict[str, Any]) -> list[dict[str, Any]]:
+    metric_ids = (
+        "tokens",
+        "duration_seconds",
+        "cost_usd",
+        "function_calls",
+        "function_call_errors",
+        "sessions",
+        "turns",
+    )
+    grouped_runs: dict[str, list[dict[str, Any]]] = {}
+    reports = detail.get("reports", [])
+    if not isinstance(reports, list):
+        return []
+    for report_entry in reports:
+        if not isinstance(report_entry, dict) or not report_entry.get("available"):
+            continue
+        report = report_entry.get("report", {})
+        report_scenarios = report.get("scenarios", []) if isinstance(report, dict) else []
+        if not isinstance(report_scenarios, list):
+            continue
+        for scenario in report_scenarios:
+            if not isinstance(scenario, dict):
+                continue
+            scenario_id = str(
+                scenario.get("scenario_id")
+                or report_entry.get("scenario_id")
+                or ""
+            )
+            if not scenario_id:
+                continue
+            runs = scenario.get("runs", [])
+            if not isinstance(runs, list):
+                continue
+            grouped_runs.setdefault(scenario_id, []).extend(
+                run for run in runs if isinstance(run, dict)
+            )
+
+    result = []
+    for scenario_id, runs in sorted(grouped_runs.items()):
+        averages: dict[str, float | None] = {}
+        samples: dict[str, int] = {}
+        for metric_id in metric_ids:
+            average, sample_count = mean_available(
+                [run_metric(run, metric_id) for run in runs]
+            )
+            averages[metric_id] = average
+            samples[metric_id] = sample_count
+        result.append(
+            {
+                "scenario_id": scenario_id,
+                "run_count": len(runs),
+                "averages": averages,
+                "samples": samples,
+            }
+        )
+    return result
+
+
 def elapsed_seconds(started_at: str, completed_at: str) -> float | None:
     if not started_at or not completed_at:
         return None
@@ -263,6 +353,7 @@ def publish(
         )
         summary["availability"] = "full"
         summary["detail_path"] = relative_detail_path
+        summary["scenario_metrics"] = build_scenario_metrics(detail)
 
     existing_by_id[metadata["id"]] = summary
     executions = sorted(existing_by_id.values(), key=sort_key, reverse=True)

@@ -26,10 +26,6 @@
           <span>Harness benchmarks</span>
         </span>
       </a>
-      <nav class="primary-nav" aria-label="Benchmark pages">
-        <a href="./index.html" aria-current="page">Executions</a>
-        <a href="./trends.html">Trends</a>
-      </nav>
       <nav class="topbar-actions" aria-label="Dashboard actions">
         <span id="preview-badge" class="badge badge-preview" hidden>Preview data</span>
         <a id="actions-link" class="button button-secondary" href="https://github.com/iii-hq/workers/actions">
@@ -88,6 +84,37 @@
             <div id="kpi-cost" class="kpi-value">—</div>
             <div id="kpi-runtime" class="kpi-delta">—</div>
           </article>
+        </section>
+
+        <section
+          class="panel scenario-metric-panel"
+          aria-labelledby="scenario-metric-heading"
+        >
+          <div class="panel-heading scenario-metric-heading">
+            <div>
+              <div class="section-kicker">Execution history · last 30 days</div>
+              <h2 id="scenario-metric-heading">Scenario metrics over time</h2>
+              <p id="scenario-metric-description" class="trend-description">
+                Select one scenario to compare all of its metrics execution by
+                execution.
+              </p>
+            </div>
+            <div class="trend-controls">
+              <label class="chart-filter">
+                <span>Scenario</span>
+                <select id="scenario-metric-scenario"></select>
+              </label>
+            </div>
+          </div>
+          <div class="scenario-metric-meta">
+            <strong id="scenario-metric-title">Scenario metrics</strong>
+            <span id="scenario-metric-context">Waiting for complete reports</span>
+          </div>
+          <div
+            id="scenario-metric-chart"
+            class="scenario-metric-grid"
+            aria-live="polite"
+          ></div>
         </section>
 
         <section class="panel health-panel" aria-labelledby="health-heading">

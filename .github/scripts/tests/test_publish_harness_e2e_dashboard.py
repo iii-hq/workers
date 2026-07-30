@@ -97,7 +97,35 @@ def detail(run_id: str, attempt: int = 1) -> dict:
                             {
                                 "prompt": "public prompt",
                                 "transcript": {"messages": []},
-                            }
+                                "wall_time_ms": 10_000,
+                                "cost": {"total_usd": 0.2},
+                                "metrics": {
+                                    "totals": {
+                                        "input_tokens": 100,
+                                        "output_tokens": 20,
+                                        "function_calls": 2,
+                                        "function_call_errors": 0,
+                                        "sessions": 1,
+                                        "turns": 4,
+                                    }
+                                },
+                            },
+                            {
+                                "prompt": "public prompt",
+                                "transcript": {"messages": []},
+                                "wall_time_ms": 20_000,
+                                "cost": {"total_usd": 0.6},
+                                "metrics": {
+                                    "totals": {
+                                        "input_tokens": 200,
+                                        "output_tokens": 40,
+                                        "function_calls": 4,
+                                        "function_call_errors": 2,
+                                        "sessions": 3,
+                                        "turns": 8,
+                                    }
+                                },
+                            },
                         ],
                     }
                 ],
@@ -211,3 +239,32 @@ def test_duplicate_event_does_not_downgrade_existing_full_report(
 
     assert manifest["executions"][0]["availability"] == "full"
     assert (tmp_path / "site/runs/10000000007-1.json").is_file()
+
+
+def test_publishes_average_run_metrics_by_scenario(tmp_path: Path) -> None:
+    manifest = publish_run(tmp_path, "10000000008")
+
+    assert manifest["executions"][0]["scenario_metrics"] == [
+        {
+            "scenario_id": "direct_answer",
+            "run_count": 2,
+            "averages": {
+                "tokens": 180,
+                "duration_seconds": 15,
+                "cost_usd": 0.4,
+                "function_calls": 3,
+                "function_call_errors": 1,
+                "sessions": 2,
+                "turns": 6,
+            },
+            "samples": {
+                "tokens": 2,
+                "duration_seconds": 2,
+                "cost_usd": 2,
+                "function_calls": 2,
+                "function_call_errors": 2,
+                "sessions": 2,
+                "turns": 2,
+            },
+        }
+    ]

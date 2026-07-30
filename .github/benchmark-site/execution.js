@@ -462,27 +462,187 @@
       .join("");
   }
 
-  function transcriptEntry(entry, index) {
-    const message = entry?.message;
-    const role =
-      entry?.origin || message?.role || entry?.custom?.type || `Entry ${index + 1}`;
-    let content;
-    if (typeof message?.content === "string") {
-      content = `<pre>${escapeHtml(message.content)}</pre>`;
-    } else if (message !== undefined) {
-      content = `<pre>${escapeHtml(JSON.stringify(message, null, 2))}</pre>`;
-    } else {
-      content = `<pre>${escapeHtml(JSON.stringify(entry?.custom ?? entry, null, 2))}</pre>`;
+  function formatEventTime(timestamp) {
+    if (!timestamp || Number.isNaN(Date.parse(timestamp))) return "";
+    return new Intl.DateTimeFormat("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(new Date(timestamp));
+  }
+
+  function formatPayload(value) {
+    if (typeof value === "string") return value;
+    if (value === undefined || value === null) return "No payload recorded.";
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch (_error) {
+      return String(value);
     }
+  }
+
+  function conversationMessage(event) {
+    const isAssistant = event.role === "assistant";
+    const label = isAssistant ? "Agent" : "User";
+    const context = [event.provider, event.model].filter(Boolean).join("/");
+    const time = formatEventTime(event.timestamp);
+    const metadata = [context, time].filter(Boolean).join(" · ");
     return `
-      <article class="transcript-entry">
-        <header>
-          <strong>${escapeHtml(titleCase(role))}</strong>
-          <span class="mono">${escapeHtml(entry?.entry_id || `entry-${index + 1}`)}</span>
-        </header>
-        ${content}
+      <article
+        id="${escapeHtml(event.id)}"
+        class="conversation-event conversation-message conversation-${escapeHtml(event.role)}"
+        data-kind="message"
+      >
+        <div class="conversation-rail-mark" aria-hidden="true">${isAssistant ? "A" : "U"}</div>
+        <div class="conversation-card">
+          <header>
+            <strong>${label}</strong>
+            <span>${escapeHtml(metadata)}</span>
+          </header>
+          <div class="conversation-copy">${escapeHtml(event.text)}</div>
+        </div>
       </article>
     `;
+  }
+
+  function conversationTool(event) {
+    const status = event.isError
+      ? "Error"
+      : event.status === "pending"
+        ? "No result"
+        : "Completed";
+    const resultPayload =
+      event.result?.details !== null && event.result?.details !== undefined
+        ? event.result.details
+        : event.result?.text;
+    const time = formatEventTime(event.timestamp);
+    return `
+      <details
+        id="${escapeHtml(event.id)}"
+        class="conversation-event conversation-tool${event.isError ? " conversation-tool-error" : ""}"
+        data-kind="tool"
+        data-error="${event.isError ? "true" : "false"}"
+        ${event.isError ? "open" : ""}
+      >
+        <summary>
+          <span class="conversation-tool-icon" aria-hidden="true">${event.isError ? "!" : "↳"}</span>
+          <span class="conversation-tool-name">
+            <small>Function${time ? ` · ${escapeHtml(time)}` : ""}</small>
+            <strong class="mono">${escapeHtml(event.functionId)}</strong>
+          </span>
+          <span class="conversation-tool-status">${status}</span>
+          <span class="conversation-chevron" aria-hidden="true">⌄</span>
+        </summary>
+        <div class="conversation-tool-body">
+          ${
+            event.arguments !== null && event.arguments !== undefined
+              ? `<div class="conversation-payload">
+                  <span>Request</span>
+                  <pre>${escapeHtml(formatPayload(event.arguments))}</pre>
+                </div>`
+              : ""
+          }
+          <div class="conversation-payload${event.isError ? " conversation-payload-error" : ""}">
+            <span>${event.isError ? "Error result" : "Result"}</span>
+            <pre>${escapeHtml(formatPayload(resultPayload))}</pre>
+          </div>
+        </div>
+      </details>
+    `;
+  }
+
+  function renderConversation(messages) {
+    const transcript = window.HarnessExecutionTranscript;
+    const events = transcript.normalizeTranscript(messages);
+    if (!events.length) {
+      return '<div class="clean-state">No readable conversation events were recorded.</div>';
+    }
+    const summary = transcript.summarizeTranscript(events);
+    return `
+      <div class="conversation-shell" data-filter="all" data-error-cursor="-1">
+        <div class="conversation-toolbar">
+          <div class="conversation-stats" aria-label="Conversation summary">
+            <span><strong>${summary.messages}</strong> messages</span>
+            <span><strong>${summary.calls}</strong> calls</span>
+            <span class="${summary.errors ? "has-errors" : ""}"><strong>${summary.errors}</strong> errors</span>
+          </div>
+          <div class="conversation-actions">
+            <div class="conversation-filters" aria-label="Filter conversation">
+              <button type="button" class="conversation-filter is-active" data-filter="all" aria-pressed="true">All</button>
+              <button type="button" class="conversation-filter" data-filter="messages" aria-pressed="false">Messages</button>
+              <button type="button" class="conversation-filter" data-filter="errors" aria-pressed="false">Errors only</button>
+            </div>
+            <button
+              type="button"
+              class="conversation-next-error"
+              ${summary.errors ? "" : "disabled"}
+            >
+              Next error
+            </button>
+          </div>
+        </div>
+        <div class="conversation-error-position" aria-live="polite"></div>
+        <div class="conversation-list">
+          ${events
+            .map((event) =>
+              event.kind === "message"
+                ? conversationMessage(event)
+                : conversationTool(event),
+            )
+            .join("")}
+          <div class="conversation-empty-filter">No events match this filter.</div>
+        </div>
+      </div>
+    `;
+  }
+
+  function attachConversationControls(container) {
+    container.querySelectorAll(".conversation-shell").forEach((shell) => {
+      const filters = [...shell.querySelectorAll(".conversation-filter")];
+      const position = shell.querySelector(".conversation-error-position");
+      filters.forEach((button) => {
+        button.addEventListener("click", () => {
+          const filter = button.dataset.filter || "all";
+          shell.dataset.filter = filter;
+          filters.forEach((candidate) => {
+            const active = candidate === button;
+            candidate.classList.toggle("is-active", active);
+            candidate.setAttribute("aria-pressed", String(active));
+          });
+          const visibleEvents = [
+            ...shell.querySelectorAll(".conversation-event"),
+          ].filter((event) => {
+            if (filter === "messages") return event.dataset.kind === "message";
+            if (filter === "errors") return event.dataset.error === "true";
+            return true;
+          });
+          shell.classList.toggle(
+            "conversation-filter-empty",
+            visibleEvents.length === 0,
+          );
+          position.textContent = "";
+        });
+      });
+
+      const nextError = shell.querySelector(".conversation-next-error");
+      nextError?.addEventListener("click", () => {
+        const errors = [
+          ...shell.querySelectorAll('.conversation-event[data-error="true"]'),
+        ];
+        if (!errors.length) return;
+        const nextIndex = (Number(shell.dataset.errorCursor || -1) + 1) % errors.length;
+        shell.dataset.errorCursor = String(nextIndex);
+        const error = errors[nextIndex];
+        error.open = true;
+        error.scrollIntoView({ behavior: "smooth", block: "center" });
+        error.classList.add("conversation-focus-error");
+        position.textContent = `Error ${nextIndex + 1} of ${errors.length}`;
+        window.setTimeout(
+          () => error.classList.remove("conversation-focus-error"),
+          1600,
+        );
+      });
+    });
   }
 
   function sessionTable(metrics) {
@@ -551,18 +711,16 @@
       </div>
       <div class="run-sections">
         ${runSection("Failures", renderFailureList(run.failures))}
+        ${runSection(
+          "Execution conversation",
+          renderConversation(messages),
+          { wide: true },
+        )}
         ${runSection("Hard gates", renderGateTable(run.hard_gates), { wide: true })}
         ${runSection("Scored criteria", renderCriteriaTable(run.criteria), { wide: true })}
         ${runSection("Usage and cost", usageBlocks(run), { wide: true })}
         ${runSection("Retry attempts", renderRetries(run.retry_attempts), { wide: true })}
         ${runSection("Prompt", `<pre class="prompt-block">${escapeHtml(run.prompt || "No prompt recorded.")}</pre>`, { wide: true })}
-        ${runSection(
-          `Transcript · ${messages.length} entries`,
-          messages.length
-            ? `<div class="transcript">${messages.map(transcriptEntry).join("")}</div>`
-            : '<div class="clean-state">No transcript recorded.</div>',
-          { wide: true },
-        )}
         ${runSection("Sessions and traces", sessionTable(run.metrics), { wide: true })}
         ${runSection(
           "Complete run record",
@@ -573,6 +731,7 @@
         )}
       </div>
     `;
+    attachConversationControls(container);
   }
 
   function renderFullScenario(record) {
@@ -612,13 +771,23 @@
             .map((run, index) => {
               const runMeta = statusMeta(run.status);
               const runId = runAnchor(subjectId, scenario.scenario_id, index);
+              const functionErrors = Number(
+                run.metrics?.totals?.function_call_errors || 0,
+              );
               return `
                 <details id="${escapeHtml(runId)}" class="run-detail" data-run-index="${index}">
                   <summary>
                     <span class="run-number">${String(index + 1).padStart(2, "0")}</span>
                     <span class="run-summary-copy">
                       <strong>Run ${index + 1}</strong>
-                      <small class="mono">${escapeHtml(run.run_id || "unknown")}</small>
+                      <small>
+                        <span class="mono">${escapeHtml(run.run_id || "unknown")}</span>
+                        ${
+                          functionErrors
+                            ? `<span class="run-summary-error">${functionErrors} function error${functionErrors === 1 ? "" : "s"}</span>`
+                            : ""
+                        }
+                      </small>
                     </span>
                     <span>Score ${compactNumber(run.score, 1)}</span>
                     <span>${formatDuration((run.wall_time_ms || 0) / 1000)}</span>
@@ -817,7 +986,10 @@
     elements.content.hidden = false;
     requestAnimationFrame(() => {
       const anchor = window.location.hash.slice(1);
-      if (anchor) document.getElementById(anchor)?.scrollIntoView();
+      if (!anchor) return;
+      const target = document.getElementById(anchor);
+      if (target?.tagName === "DETAILS") target.open = true;
+      requestAnimationFrame(() => target?.scrollIntoView());
     });
   }
 
