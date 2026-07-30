@@ -21,6 +21,7 @@ on:
           - context-manager
           - cron
           - database
+          - editor
           - email
           - eval
           - harness

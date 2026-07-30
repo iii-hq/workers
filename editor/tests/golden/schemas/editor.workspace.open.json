@@ -1,0 +1,79 @@
+{
+  "description": "Set the directory the editor works in. Any folder will do — a git repository is an overlay, not a requirement. Returns the buffers and expanded folders remembered for it.",
+  "function_id": "editor::workspace::open",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "root": {
+        "description": "Directory to work in. Jail-relative when shell's `fs.host_roots` are set, else absolute. A plain folder is enough — a git repository is an overlay, never a requirement.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "root"
+    ],
+    "title": "WorkspaceOpenInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Buffer": {
+        "description": "One open file. `mtime` is what the conflict guard compares against, so it is part of the shared record rather than per-surface bookkeeping — two surfaces editing one file must agree on which version they started from.",
+        "properties": {
+          "language": {
+            "description": "Monaco language id for the path.",
+            "type": "string"
+          },
+          "mtime": {
+            "description": "Last-modified time this buffer was read at, Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "path": {
+            "description": "Path relative to the workspace root.",
+            "type": "string"
+          },
+          "version": {
+            "default": "",
+            "description": "Opaque version of the content this buffer was read at — the same fact `mtime` carries, in the form that survives two writes inside one second. A surface saves against it by sending it as `expected_version`.\n\nDefaulted so a session persisted before this field existed still loads. Empty means \"unknown\": a surface holding an empty version has only the mtime to save against, which is the behaviour it had all along.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "language",
+          "mtime",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "buffers": {
+        "description": "Files currently open against this root, shared by every surface.",
+        "items": {
+          "$ref": "#/definitions/Buffer"
+        },
+        "type": "array"
+      },
+      "expanded": {
+        "description": "Folders expanded in the tree, root-relative.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "root": {
+        "description": "The active root every other path in this response is relative to.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "buffers",
+      "expanded",
+      "root"
+    ],
+    "title": "WorkspaceView",
+    "type": "object"
+  }
+}

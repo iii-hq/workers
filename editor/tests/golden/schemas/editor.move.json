@@ -1,0 +1,89 @@
+{
+  "description": "Move or rename a path and rewrite every open buffer and expanded folder at or under it. Moving a folder with `shell::fs::mv` alone leaves buffers pointing at the old location, which silently recreates it on the next save.",
+  "function_id": "editor::move",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "from": {
+        "description": "Existing root-relative path.",
+        "type": "string"
+      },
+      "to": {
+        "description": "Destination root-relative path.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "from",
+      "to"
+    ],
+    "title": "MoveInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Buffer": {
+        "description": "One open file. `mtime` is what the conflict guard compares against, so it is part of the shared record rather than per-surface bookkeeping — two surfaces editing one file must agree on which version they started from.",
+        "properties": {
+          "language": {
+            "description": "Monaco language id for the path.",
+            "type": "string"
+          },
+          "mtime": {
+            "description": "Last-modified time this buffer was read at, Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "path": {
+            "description": "Path relative to the workspace root.",
+            "type": "string"
+          },
+          "version": {
+            "default": "",
+            "description": "Opaque version of the content this buffer was read at — the same fact `mtime` carries, in the form that survives two writes inside one second. A surface saves against it by sending it as `expected_version`.\n\nDefaulted so a session persisted before this field existed still loads. Empty means \"unknown\": a surface holding an empty version has only the mtime to save against, which is the behaviour it had all along.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "language",
+          "mtime",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "buffers": {
+        "items": {
+          "$ref": "#/definitions/Buffer"
+        },
+        "type": "array"
+      },
+      "from": {
+        "type": "string"
+      },
+      "remapped": {
+        "description": "Open buffers and expanded folders rewritten to the new location. A folder move rewrites everything beneath it, which is the whole reason moves go through this function instead of `shell::fs::mv` directly.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "root": {
+        "type": "string"
+      },
+      "to": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "buffers",
+      "from",
+      "remapped",
+      "root",
+      "to"
+    ],
+    "title": "MoveOutput",
+    "type": "object"
+  }
+}

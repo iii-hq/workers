@@ -1,0 +1,57 @@
+{
+  "description": "Stage and commit. Returns the new SHA, or committed:false when there was nothing staged.",
+  "function_id": "editor::git::commit",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "cwd": {
+        "default": null,
+        "description": "Repository to run in. Defaults to the workspace root.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "message": {
+        "description": "Commit message. Passed as a single `-m` argument.",
+        "type": "string"
+      },
+      "stage_all": {
+        "default": true,
+        "description": "Stage every change first (`git add -A`). On by default, matching what an editor's commit command does; pass false to commit only the index.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "message"
+    ],
+    "title": "GitCommitInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "committed": {
+        "description": "False when there was nothing staged to commit.",
+        "type": "boolean"
+      },
+      "sha": {
+        "description": "Full SHA of the new commit, when one was made.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "summary": {
+        "description": "git's own summary line, verbatim.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "committed",
+      "summary"
+    ],
+    "title": "GitCommitOutput",
+    "type": "object"
+  }
+}

@@ -11,6 +11,7 @@ packages:
   - console/ui
   - browser/ui
   - database/ui
+  - editor/ui
   - eval/ui
   - memory/ui
   - state/ui
