@@ -165,6 +165,17 @@ cargo run -p harness-e2e -- report target/e2e
 cargo run -p harness-e2e -- report target/e2e/results.json --verbose
 ```
 
+From the repository root, import that report into the benchmark dashboard and
+serve it locally:
+
+```bash
+python3 .github/scripts/serve_harness_e2e_dashboard.py
+```
+
+The page is available at <http://127.0.0.1:4173/index.html>. Pass additional
+`results.json` files or directories to build a local execution history. The
+generated site stays under `target/` and is not committed.
+
 The runner writes `results.json` with:
 
 - exact catalog-resolved subject and judge model identity and capabilities;

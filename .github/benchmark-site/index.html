@@ -42,15 +42,15 @@
           <p>Workflow-level health with scenario results and complete run diagnostics.</p>
         </div>
         <div class="sync-block">
-          <span>Last published</span>
+          <span id="sync-label">Last published</span>
           <time id="last-update" datetime="">Waiting for data</time>
         </div>
       </section>
 
       <section id="empty-state" class="empty-state" hidden>
         <div class="empty-icon" aria-hidden="true">⌁</div>
-        <h2>No executions published</h2>
-        <p>The next scheduled Harness E2E workflow will appear here.</p>
+        <h2 id="empty-title">No executions published</h2>
+        <p id="empty-description">The next scheduled Harness E2E workflow will appear here.</p>
       </section>
 
       <div id="overview-content">
@@ -212,6 +212,7 @@
                 <option value="all">All triggers</option>
                 <option value="schedule">Scheduled</option>
                 <option value="workflow_dispatch">Manual</option>
+                <option value="local">Local</option>
               </select>
             </label>
           </div>
