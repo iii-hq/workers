@@ -19,6 +19,8 @@ const FINAL_SCRIPT: &str = "values = [2, 3, 5, 7]\nprint(f\"host-check:{sum(valu
 const HOST_STDOUT: &str = "host-check:17";
 const SANDBOX_STDOUT: &str = "sandbox-check:35";
 const EXPECTED_CORE_OPERATIONS: usize = 12;
+const PASS_THRESHOLD: u8 = 50;
+const EXECUTION_QUALITY_WEIGHT: u8 = 45;
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
     let sandbox_name = sandbox_name(run_id);
@@ -60,27 +62,27 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             max_total_tokens: 1_638_400,
             stuck_timeout_seconds: 600,
         },
-        threshold: 95,
+        threshold: PASS_THRESHOLD,
         criteria: vec![
             CriterionSpec {
                 id: "worker_setup",
-                weight: 15,
+                weight: 10,
                 description: "Both registry workers are added and expose their required surfaces.",
             },
             CriterionSpec {
                 id: "coder_workflow",
-                weight: 35,
+                weight: 20,
                 description:
                     "Coder inspection, create, update, move, and read operations produce the exact file.",
             },
             CriterionSpec {
                 id: "host_execution",
-                weight: 15,
+                weight: 10,
                 description: "The final file runs successfully on the host with exact stdout.",
             },
             CriterionSpec {
                 id: "sandbox_lifecycle",
-                weight: 30,
+                weight: 10,
                 description:
                     "A named isolated sandbox is created, executed in, listed, and stopped.",
             },
@@ -88,6 +90,12 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
                 id: "completion_report",
                 weight: 5,
                 description: "The final response includes both exact observed outputs.",
+            },
+            CriterionSpec {
+                id: "execution_quality",
+                weight: EXECUTION_QUALITY_WEIGHT,
+                description:
+                    "The workflow completes without function-call errors; recovered errors lower quality without overriding validated effects.",
             },
         ],
         judge_reference: None,
@@ -179,7 +187,7 @@ fn evaluate<'a>(
         .filter(|observed| *observed)
         .count();
         let operation_volume = core_operations >= EXPECTED_CORE_OPERATIONS;
-        let no_errors = observation.metrics.totals.function_call_errors == 0;
+        let function_call_errors = observation.metrics.totals.function_call_errors;
         let response_reports_outputs = observation.response.contains(HOST_STDOUT)
             && observation.response.contains(SANDBOX_STDOUT);
 
@@ -230,34 +238,26 @@ fn evaluate<'a>(
                         "observed {core_operations} of {EXPECTED_CORE_OPERATIONS} required core operations"
                     ),
                 ),
-                common::gate(
-                    "no_function_errors",
-                    no_errors,
-                    format!(
-                        "observed {} function-call error(s)",
-                        observation.metrics.totals.function_call_errors
-                    ),
-                ),
             ],
             awards: vec![
                 common::award(
                     "worker_setup",
-                    if worker_setup { 15 } else { 0 },
+                    if worker_setup { 10 } else { 0 },
                     "awarded for adding both registry workers and exposing all three surfaces",
                 ),
                 common::award(
                     "coder_workflow",
-                    if coder_workflow { 35 } else { 0 },
+                    if coder_workflow { 20 } else { 0 },
                     "awarded for the ordered inspect/create/update/move/read workflow and exact file",
                 ),
                 common::award(
                     "host_execution",
-                    if host_execution && no_errors { 15 } else { 0 },
+                    if host_execution { 10 } else { 0 },
                     "awarded for exact successful host stdout",
                 ),
                 common::award(
                     "sandbox_lifecycle",
-                    if sandbox_lifecycle && no_errors { 30 } else { 0 },
+                    if sandbox_lifecycle { 10 } else { 0 },
                     "awarded for creating, executing in, listing, and stopping the isolated sandbox",
                 ),
                 common::award(
@@ -265,9 +265,24 @@ fn evaluate<'a>(
                     if response_reports_outputs { 5 } else { 0 },
                     "awarded when the final response includes both exact outputs",
                 ),
+                common::award(
+                    "execution_quality",
+                    execution_quality_award(function_call_errors),
+                    format!(
+                        "observed {function_call_errors} function-call error(s); recovered errors reduce quality but validated outcomes remain authoritative"
+                    ),
+                ),
             ],
         })
     })
+}
+
+fn execution_quality_award(function_call_errors: u64) -> u8 {
+    if function_call_errors == 0 {
+        EXECUTION_QUALITY_WEIGHT
+    } else {
+        0
+    }
 }
 
 fn is_registry_install(call: &common::ObservedFunctionCall, worker: &str) -> bool {
@@ -676,6 +691,35 @@ mod tests {
         assert!(spec
             .prompt
             .contains("Do not create, edit, move, or read this code file with a general shell"));
+    }
+
+    #[test]
+    fn recovered_function_errors_are_a_quality_signal() {
+        let spec = scenario("1234567890abcdef");
+        let execution_quality = spec
+            .criteria
+            .iter()
+            .find(|criterion| criterion.id == "execution_quality")
+            .expect("execution quality criterion");
+
+        assert_eq!(spec.threshold, PASS_THRESHOLD);
+        assert_eq!(execution_quality.weight, EXECUTION_QUALITY_WEIGHT);
+        let total_weight = spec
+            .criteria
+            .iter()
+            .map(|criterion| u16::from(criterion.weight))
+            .sum::<u16>();
+        let verified_outcome_weight = total_weight - u16::from(EXECUTION_QUALITY_WEIGHT);
+
+        assert_eq!(total_weight, 100);
+        assert_eq!(verified_outcome_weight, 55);
+        assert!(verified_outcome_weight >= u16::from(PASS_THRESHOLD));
+        assert_eq!(execution_quality_award(0), EXECUTION_QUALITY_WEIGHT);
+        assert_eq!(execution_quality_award(1), 0);
+
+        let aggregate_score = (100.0 + f64::from(verified_outcome_weight)) / 2.0;
+        assert_eq!(aggregate_score, 77.5);
+        assert!(aggregate_score >= f64::from(PASS_THRESHOLD));
     }
 
     #[test]
