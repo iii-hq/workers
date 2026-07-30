@@ -17,6 +17,52 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export const ROW_CHANGED_CASES: TestCase[] = [
   {
+    // A subscriber should not have to guess how the writer spells the
+    // table: bindings match case-insensitively (and ignoring any schema
+    // qualifier) on the statements path.
+    name: 'row-changed table filter matches case-insensitively',
+    async run({ driver, dialect, call, iii }) {
+      const table = 'e2e_row_changed_case'
+      const functionId = `harness::row_changed_case_${driver}`
+      const events: RowChangedEvent[] = []
+
+      await call('database::execute', { db: driver, sql: `DROP TABLE IF EXISTS ${table}` })
+      await call('database::execute', {
+        db: driver,
+        sql: `CREATE TABLE ${table} (id ${dialect.idColumnDDL()}, n INT NOT NULL)`,
+      })
+      const fnRef = iii.registerFunction(
+        functionId,
+        async (payload: RowChangedEvent) => {
+          events.push(payload)
+          return null
+        },
+        { description: 'Case-insensitive table filter E2E sink.' },
+      )
+      const triggerRef = iii.registerTrigger({
+        type: 'database::row-changed',
+        function_id: functionId,
+        config: { db: driver, table: table.toUpperCase() },
+      })
+
+      try {
+        await call('database::execute', {
+          db: driver,
+          sql: `INSERT INTO ${table} (n) VALUES (${dialect.placeholder(1)})`,
+          params: [1],
+        })
+        const deadline = Date.now() + EVENT_TIMEOUT_MS
+        while (events.length === 0 && Date.now() < deadline) await sleep(20)
+        expectEqual(events.length, 1, 'uppercase binding hears the lowercase table')
+        expectEqual(events[0].op, 'insert', 'case-insensitive match op')
+      } finally {
+        triggerRef.unregister()
+        fnRef.unregister()
+        await call('database::execute', { db: driver, sql: `DROP TABLE IF EXISTS ${table}` })
+      }
+    },
+  },
+  {
     name: 'row-changed filters ops and emits committed mutations only',
     async run({ driver, dialect, call, iii }) {
       const table = 'e2e_row_changed'

@@ -30,6 +30,27 @@ fn config_error(message: String) -> Error {
     Error::Handler(serde_json::json!({ "code": "CONFIG_ERROR", "message": message }).to_string())
 }
 
+/// Pick the guidance appended to a postgres trigger-install failure. The
+/// hint must match the actual failure: dressing a `does not exist` error in
+/// privilege advice sent a real operator chasing grants when the problem
+/// was table-name casing (native bindings quote the name verbatim, and
+/// quoted postgres identifiers are case-sensitive).
+fn pg_install_hint(error_text: &str, table: &str) -> String {
+    if error_text.contains("does not exist") {
+        format!(
+            ". Note: the binding's table name is quoted verbatim into DDL and \
+             quoted postgres identifiers are case-sensitive — `{table}` must \
+             match the table's actual spelling"
+        )
+    } else if error_text.contains("permission denied") || error_text.contains("must be owner") {
+        ". The configured role needs TRIGGER privilege on the table (or ownership) \
+         and CREATE on its schema"
+            .to_string()
+    } else {
+        String::new()
+    }
+}
+
 #[async_trait]
 impl TriggerHandler for RowChangedHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
@@ -100,10 +121,10 @@ impl RowChangedHandler {
                     config_error(format!("db `{}`: acquiring connection: {e}", cfg.db))
                 })?;
                 client.batch_execute(&sql).await.map_err(|e| {
+                    let text = e.to_string();
                     config_error(format!(
-                        "installing native capture triggers on `{table}`: {e}. The \
-                         configured role needs TRIGGER privilege on the table (or \
-                         ownership) and CREATE on its schema"
+                        "installing native capture triggers on `{table}`: {text}{}",
+                        pg_install_hint(&text, table)
                     ))
                 })?;
             }
@@ -196,6 +217,23 @@ mod tests {
             pools: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         };
         (handler, config)
+    }
+
+    #[test]
+    fn pg_install_hint_matches_the_failure_shape() {
+        // The bug this pins: a `does not exist` failure wrapped in privilege
+        // advice reads as a grants problem and hides the real cause (casing).
+        let hint = pg_install_hint(r#"relation "III_TRIGGER_TEST" does not exist"#, "III_TRIGGER_TEST");
+        assert!(hint.contains("case-sensitive"), "{hint}");
+        assert!(!hint.contains("TRIGGER privilege"), "{hint}");
+
+        let hint = pg_install_hint("permission denied for table orders", "orders");
+        assert!(hint.contains("TRIGGER privilege"), "{hint}");
+        let hint = pg_install_hint("must be owner of relation orders", "orders");
+        assert!(hint.contains("TRIGGER privilege"), "{hint}");
+
+        // Anything else gets the raw error only — no guessed guidance.
+        assert_eq!(pg_install_hint("connection reset by peer", "orders"), "");
     }
 
     #[tokio::test]
