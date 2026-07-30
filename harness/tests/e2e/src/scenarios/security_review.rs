@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::common;
-use super::{CriterionSpec, ExecutionPolicy, ScenarioSpec};
+use super::{CriterionSpec, ExecutionPolicy, ScenarioSpec, JUDGE_BACKED_PASS_THRESHOLD};
 
 pub const ID: &str = "security_review";
 
@@ -23,7 +23,7 @@ For each snippet, identify the vulnerability, explain its impact, and recommend 
             max_total_tokens: 49_152,
             stuck_timeout_seconds: 120,
         },
-        threshold: 80,
+        threshold: JUDGE_BACKED_PASS_THRESHOLD,
         criteria: vec![
             CriterionSpec {
                 id: "coverage",

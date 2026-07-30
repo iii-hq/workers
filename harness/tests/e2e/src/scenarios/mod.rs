@@ -19,6 +19,10 @@ pub mod reactive_automation;
 pub mod security_review;
 pub mod shell_coder_sandbox;
 
+/// Judge-backed scenarios keep a low semantic floor while exposing the full
+/// score as a quality signal. Objective contract violations remain hard gates.
+pub(super) const JUDGE_BACKED_PASS_THRESHOLD: u8 = 50;
+
 pub type EvaluationFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ObjectiveEvaluation>> + Send + 'a>>;
 pub type CleanupFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
@@ -86,6 +90,12 @@ impl ScenarioSpec {
         self.execution.validate(self.id)?;
         if !(1..=100).contains(&self.threshold) {
             bail!("scenario {} threshold must be between 1 and 100", self.id);
+        }
+        if self.needs_judge() && self.threshold != JUDGE_BACKED_PASS_THRESHOLD {
+            bail!(
+                "judge-backed scenario {} threshold must be {JUDGE_BACKED_PASS_THRESHOLD}",
+                self.id
+            );
         }
         let total: u16 = self
             .criteria
@@ -221,6 +231,26 @@ mod tests {
                 .execution
                 .max_output_tokens,
             None
+        );
+    }
+
+    #[test]
+    fn judge_backed_scenarios_use_the_quality_signal_floor() {
+        for scenario in [ScenarioId::DirectAnswer, ScenarioId::SecurityReview] {
+            let spec = scenario.spec("run");
+            assert!(spec.needs_judge());
+            assert_eq!(spec.threshold, JUDGE_BACKED_PASS_THRESHOLD);
+        }
+    }
+
+    #[test]
+    fn validation_rejects_a_different_judge_backed_threshold() {
+        let mut spec = ScenarioId::DirectAnswer.spec("run");
+        spec.threshold = JUDGE_BACKED_PASS_THRESHOLD + 1;
+
+        assert_eq!(
+            spec.validate().unwrap_err().to_string(),
+            "judge-backed scenario direct_answer threshold must be 50"
         );
     }
 }
