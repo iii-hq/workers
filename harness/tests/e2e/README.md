@@ -53,7 +53,8 @@ scenario through one global `allow: ["*"]` policy:
   creates, updates, moves, and reads an exact Python file; executes it on the
   host; then creates, executes in, lists, and stops an isolated microVM. The
   evaluator verifies every effect, exact stdout from both environments,
-  operation ordering, shutdown, and scenario-owned cleanup.
+  operation ordering, shutdown, and scenario-owned cleanup. Recovered function
+  errors reduce its quality score without overriding those validated effects.
 
 List the code-defined ids used by CI:
 
@@ -137,7 +138,11 @@ Scenarios without one award every criterion objectively in code. Mechanical
 effects remain hard gates in both cases. Judge-backed scenarios use a 50-point
 pass floor so a mediocre but usable answer remains a passing execution while
 its full score still exposes the quality gap in reports and historical trends.
-Scores below 50 continue to fail as semantically inadequate.
+Scores below 50 continue to fail as semantically inadequate. The
+`shell_coder_sandbox` scenario also uses a 50-point floor because its required
+effects remain hard gates; an error-free execution earns 45 additional quality
+points, while a recovered function error stays visible without failing an
+otherwise verified result.
 
 Every run has one explicit status:
 
