@@ -23,9 +23,10 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
+          package-manager-cache: false
       - run: pip install --quiet pytest pyyaml
       - run: pytest .github/scripts/tests/ -v
-      - run: node --test .github/benchmark-site/dashboard-data.test.cjs
+      - run: node --test .github/benchmark-site/*.test.cjs
 
   # ──────────────────────────────────────────────────────────────
   # Discover: enumerate changed workers, read their iii.worker.yaml,
