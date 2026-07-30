@@ -44,7 +44,8 @@ pub const DESC_TREE: &str =
      The walk, the noise-folder excludes and the jail are the shell worker's.";
 pub const DESC_OPEN: &str =
     "Read a text file and record it as an open buffer, with the metadata needed to write \
-     it back safely: its language id and the mtime to hand to editor::save.";
+     it back safely: its language id, and the mtime and content version to hand to \
+     editor::save.";
 pub const DESC_SAVE: &str =
     "Write a file, refusing the write when it changed underneath since the editor::open it \
      started from. On refusal the divergence comes back as a patch.";
@@ -371,6 +372,11 @@ fn register_open(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>) {
                     .await?;
                 let language = lang::for_path(&req.path).to_string();
 
+                // Over the content actually returned, so the version and the
+                // bytes the caller holds always describe each other — a
+                // truncated read is versioned as the prefix it is.
+                let version = content_version(&file.content);
+
                 // A truncated read must not become a buffer: saving it back
                 // would delete the rest of the file, and the guard for that
                 // belongs at the door rather than in every caller.
@@ -379,6 +385,7 @@ fn register_open(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>) {
                     session.upsert(Buffer {
                         path: req.path.clone(),
                         mtime: file.mtime,
+                        version: version.clone(),
                         language: language.clone(),
                     });
                     save_session(&bus, &root, &session).await?;
@@ -390,6 +397,7 @@ fn register_open(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>) {
                     language,
                     size: file.size,
                     mtime: file.mtime,
+                    version,
                     truncated: file.truncated,
                 })
             }
@@ -415,21 +423,89 @@ fn register_save(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>) {
     );
 }
 
+/// Opaque content version: byte length and a 64-bit FNV-1a digest of the bytes.
+///
+/// Deliberately not a cryptographic hash. This answers "is this still the
+/// content I read", a question whose worst outcome is a refused save, and it is
+/// not an authorization decision — the filesystem boundary is `shell`'s jail.
+/// Qualifying the digest with the length makes an accidental collision
+/// implausible for the sizes an editor deals in, and computing it costs nothing
+/// extra because `save` has already read the file to count the lines it
+/// changed. No hashing dependency is added for it.
+///
+/// The encoding is private: callers compare for equality and never parse it.
+fn content_version(content: &str) -> String {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for byte in content.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{:x}-{:016x}", content.len(), hash)
+}
+
+/// Whether the file on disk diverged from the copy this save started from.
+///
+/// Two guards, and the caller picks which by the field it sends.
+///
+/// `expected_version` is the strong one. An mtime cannot see a write that
+/// landed inside the same second, and a same-second write is exactly how one
+/// agent silently overwrites another. A nanosecond mtime would fix that too,
+/// but this worker cannot get one: the timestamps it sees come from
+/// `shell::fs::stat`, which reports whole seconds, and `editor` owns no
+/// filesystem access to look closer. A content version also survives what a
+/// timestamp does not — a clock stepping backwards, a checkout or a restore
+/// rewriting mtimes, a filesystem with coarse granularity — and here it is the
+/// cheaper of the two, because the read it needs has already happened.
+///
+/// `expected_mtime` is the original guard, kept bit for bit: a caller that
+/// knows nothing about versions behaves exactly as it did before.
+fn conflicted(
+    expected_version: Option<&str>,
+    expected_mtime: Option<i64>,
+    disk_version: &str,
+    disk_mtime: i64,
+) -> bool {
+    match (expected_version, expected_mtime) {
+        (Some(expected), _) => expected != disk_version,
+        (None, Some(expected)) => expected != disk_mtime,
+        // Neither guard armed: an overwrite the caller asked for.
+        (None, None) => false,
+    }
+}
+
 /// The conflict guard, split out so its branches stay readable.
 ///
 /// Ordering matters: the pre-write read happens *before* the write, because it
-/// is what the response's `added`/`removed` describe. Doing it after would diff
-/// the file against itself and report every save as a no-op.
+/// is what the response's `added`/`removed` describe and what the content
+/// version is taken over. Doing it after would diff the file against itself and
+/// report every save as a no-op.
 async fn save(bus: &Bus, cfg: &WorkerConfig, req: SaveInput) -> Result<SaveOutput, Error> {
     let root = active_root(bus).await;
     let full = joined(&root, &req.path);
     let existing = bus.stat(&full).await.ok();
 
-    if let (Some(expected), Some(stat)) = (req.expected_mtime, existing.as_ref()) {
-        if stat.mtime != expected {
-            let on_disk = bus.read(&full, cfg.max_file_bytes).await?;
+    // One read, shared by the guard and the line counts. Every save of an
+    // existing file already had to read it once; reading here rather than in
+    // each branch keeps it at once now that the guard needs the bytes too.
+    let on_disk = match existing.as_ref() {
+        Some(_) => Some(bus.read(&full, cfg.max_file_bytes).await?),
+        None => None,
+    };
+    let disk_version = on_disk.as_ref().map(|f| content_version(&f.content));
+
+    if let (Some(stat), Some(disk), Some(version)) =
+        (existing.as_ref(), on_disk.as_ref(), disk_version.as_deref())
+    {
+        if conflicted(
+            req.expected_version.as_deref(),
+            req.expected_mtime,
+            version,
+            stat.mtime,
+        ) {
             let divergence = diff::diff(
-                &on_disk.content,
+                &disk.content,
                 &req.content,
                 Some(&req.path),
                 cfg.diff_context_lines,
@@ -440,7 +516,9 @@ async fn save(bus: &Bus, cfg: &WorkerConfig, req: SaveInput) -> Result<SaveOutpu
                 saved: false,
                 conflict: true,
                 mtime: stat.mtime,
+                version: version.to_string(),
                 disk_mtime: Some(stat.mtime),
+                disk_version: Some(version.to_string()),
                 conflict_patch: Some(divergence.patch),
                 added: divergence.added,
                 removed: divergence.removed,
@@ -449,18 +527,17 @@ async fn save(bus: &Bus, cfg: &WorkerConfig, req: SaveInput) -> Result<SaveOutpu
         }
     }
 
-    // An expected mtime for a file that is not there means it was deleted under
-    // the editor. Recreating it silently would undo that deletion.
-    if req.expected_mtime.is_some() && existing.is_none() {
+    // A guard token for a file that is not there means it was deleted under the
+    // editor. Recreating it silently would undo that deletion.
+    if (req.expected_mtime.is_some() || req.expected_version.is_some()) && existing.is_none() {
         return Err(Error::Handler(format!(
             "{} no longer exists; re-open it before saving",
             req.path
         )));
     }
 
-    let previous: Option<DiffResult> = match existing.as_ref() {
-        Some(_) => {
-            let before = bus.read(&full, cfg.max_file_bytes).await?;
+    let previous: Option<DiffResult> = match on_disk.as_ref() {
+        Some(before) => {
             if before.truncated {
                 return Err(Error::Handler(format!(
                     "{} is larger than max_file_bytes; saving would truncate it",
@@ -480,13 +557,16 @@ async fn save(bus: &Bus, cfg: &WorkerConfig, req: SaveInput) -> Result<SaveOutpu
 
     bus.write(&full, &req.content).await?;
     let after = bus.stat(&full).await?;
+    let version = content_version(&req.content);
 
-    // The buffer's mtime is now stale everywhere else; refreshing it here is
-    // what lets a second surface save next without a spurious conflict.
+    // The buffer's mtime and version are now stale everywhere else; refreshing
+    // them here is what lets a second surface save next without a spurious
+    // conflict.
     let mut session = load_session(bus, &root).await;
     session.upsert(Buffer {
         path: req.path.clone(),
         mtime: after.mtime,
+        version: version.clone(),
         language: lang::for_path(&req.path).to_string(),
     });
     save_session(bus, &root, &session).await?;
@@ -503,7 +583,9 @@ async fn save(bus: &Bus, cfg: &WorkerConfig, req: SaveInput) -> Result<SaveOutpu
         saved: true,
         conflict: false,
         mtime: after.mtime,
+        version,
         disk_mtime: None,
+        disk_version: None,
         conflict_patch: None,
         created: existing.is_none(),
     })
@@ -522,8 +604,8 @@ fn register_find(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>) {
             async move {
                 let cfg = cfg.read().await.clone();
                 let root = active_root(&bus).await;
-                let (candidates, from_git) = candidates(&bus, &root, &req, &cfg).await?;
-                let refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
+                let found = candidates(&bus, &root, &req, &cfg).await?;
+                let refs: Vec<&str> = found.paths.iter().map(String::as_str).collect();
                 let limit = req.limit.map(|l| l as usize).unwrap_or(cfg.find_limit);
                 let ranked = fuzzy::rank(&req.query, &refs, limit);
 
@@ -537,8 +619,8 @@ fn register_find(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>) {
                         })
                         .collect(),
                     scanned: refs.len() as u32,
-                    truncated: refs.len() >= cfg.max_find_candidates,
-                    from_git,
+                    truncated: found.truncated,
+                    from_git: found.from_git,
                 })
             }
         })
@@ -546,8 +628,17 @@ fn register_find(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>) {
     );
 }
 
-/// Paths to rank, and whether git supplied them.
-///
+/// Paths to rank, where they came from, and whether they are all of them.
+struct Candidates {
+    paths: Vec<String>,
+    /// True when git's listing supplied them, so `.gitignore` was honoured.
+    from_git: bool,
+    /// True when the workspace held more paths than were collected — the
+    /// candidate cap, or the folder walk's visit budget. Either way the ranking
+    /// is over a prefix of the workspace and the response has to say so.
+    truncated: bool,
+}
+
 /// git's listing is preferred where it exists — it already honours
 /// `.gitignore`, which is most of what makes a picker usable in a real
 /// checkout. A plain folder is not a degraded case, just a different source:
@@ -557,7 +648,7 @@ async fn candidates(
     root: &str,
     req: &FindInput,
     cfg: &WorkerConfig,
-) -> Result<(Vec<String>, bool), Error> {
+) -> Result<Candidates, Error> {
     let mut args = vec!["ls-files", "--cached"];
     if req.include_untracked {
         args.push("--others");
@@ -572,11 +663,20 @@ async fn candidates(
             .map(str::to_string)
             .collect();
         paths.truncate(cfg.max_find_candidates);
-        return Ok((paths, true));
+        return Ok(Candidates {
+            truncated: paths.len() >= cfg.max_find_candidates,
+            paths,
+            from_git: true,
+        });
     }
 
     let listing = bus.tree(root, 12).await?;
-    Ok((tree::file_paths(&listing, cfg.max_find_candidates), false))
+    let walked = tree::walk(&listing, cfg.max_find_candidates);
+    Ok(Candidates {
+        truncated: walked.truncated || walked.paths.len() >= cfg.max_find_candidates,
+        paths: walked.paths,
+        from_git: false,
+    })
 }
 
 // -------------------------------------------------------------------- diff
@@ -745,6 +845,76 @@ mod tests {
             );
             assert!(seen.insert(*id), "{id} is registered twice");
         }
+    }
+
+    #[test]
+    fn a_content_version_is_stable_and_content_addressed() {
+        assert_eq!(
+            content_version("fn main() {}"),
+            content_version("fn main() {}")
+        );
+        assert_ne!(content_version("a\nb\n"), content_version("a\nB\n"));
+        // Same length, transposed bytes: the digest, not the length, has to
+        // carry this.
+        assert_ne!(content_version("ab"), content_version("ba"));
+        // Length is part of the token, so a prefix can never collide with the
+        // whole.
+        assert_ne!(content_version(""), content_version("\0"));
+    }
+
+    /// The bug this guard exists for: a second write inside the same
+    /// filesystem second leaves `mtime` unchanged, so the mtime guard waves it
+    /// through and the save silently overwrites the other writer.
+    #[test]
+    fn a_same_second_write_is_caught_by_the_version_and_missed_by_the_mtime() {
+        let started_from = content_version("original\n");
+        let now_on_disk = content_version("someone else's edit\n");
+        let same_second = 1_700_000_000;
+
+        assert!(
+            conflicted(Some(&started_from), None, &now_on_disk, same_second),
+            "the version guard must refuse a write over content it did not read"
+        );
+        assert!(
+            !conflicted(None, Some(same_second), &now_on_disk, same_second),
+            "documents the mtime guard's blind spot: it cannot see this at all"
+        );
+        // Both sent: the version decides, so a caller that sends the stale
+        // mtime alongside is still protected.
+        assert!(conflicted(
+            Some(&started_from),
+            Some(same_second),
+            &now_on_disk,
+            same_second
+        ));
+    }
+
+    #[test]
+    fn a_matching_version_is_not_a_conflict() {
+        let v = content_version("unchanged\n");
+        assert!(!conflicted(Some(&v), None, &v, 1_700_000_000));
+        // An mtime that moved without the content changing is not a divergence
+        // for a version-guarded caller — a touch or a rewrite of identical
+        // bytes is nothing to refuse.
+        assert!(!conflicted(Some(&v), Some(1), &v, 999));
+    }
+
+    /// The legacy path, unchanged: mtime only, compared exactly as before.
+    #[test]
+    fn the_mtime_guard_still_applies_when_no_version_is_sent() {
+        let v = content_version("whatever\n");
+        assert!(!conflicted(None, Some(42), &v, 42));
+        assert!(conflicted(None, Some(41), &v, 42));
+    }
+
+    #[test]
+    fn no_guard_token_means_a_deliberate_overwrite() {
+        assert!(!conflicted(
+            None,
+            None,
+            &content_version("anything"),
+            1_700_000_000
+        ));
     }
 
     /// The catalog is what ships to the registry; a function registered but

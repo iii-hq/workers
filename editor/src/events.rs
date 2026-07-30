@@ -14,6 +14,7 @@
 //! the event.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -117,16 +118,33 @@ impl TriggerHandler for ChangedTriggerHandler {
     }
 }
 
+/// A latch that is `true` the first time and never again — for a condition
+/// worth one loud line and no more.
+#[derive(Clone, Default)]
+struct Once(Arc<AtomicBool>);
+
+impl Once {
+    fn first(&self) -> bool {
+        !self.0.swap(true, Ordering::Relaxed)
+    }
+}
+
 /// Fans `editor::changed` out to every current subscriber.
 #[derive(Clone)]
 pub struct ChangedEmitter {
     iii: Arc<IIIClient>,
     subscribers: SubscriberSet,
+    /// Whether the "this event went nowhere" line has already been said.
+    unsubscribed: Once,
 }
 
 impl ChangedEmitter {
     pub fn new(iii: Arc<IIIClient>, subscribers: SubscriberSet) -> Self {
-        Self { iii, subscribers }
+        Self {
+            iii,
+            subscribers,
+            unsubscribed: Once::default(),
+        }
     }
 
     pub fn has_subscribers(&self) -> bool {
@@ -139,7 +157,23 @@ impl ChangedEmitter {
     pub async fn emit(&self, mut event: ChangedEvent) {
         let targets = self.subscribers.function_ids();
         if targets.is_empty() {
-            tracing::debug!(path = %event.path, "editor::changed: nobody subscribed, dropping");
+            // Loud once, then quiet. This is the only place a failed trigger
+            // type registration is observable at all (see
+            // `register_changed_trigger`), and "nobody has bound it yet" and
+            // "nobody ever can" look identical from here — so it has to be
+            // visible without a debug filter, and it must not log a line per
+            // write for a workspace nobody is watching.
+            if self.unsubscribed.first() {
+                tracing::warn!(
+                    path = %event.path,
+                    trigger_type = CHANGED,
+                    "editor::changed fired with nothing bound to it, so push updates are going \
+                     nowhere. Either no surface has subscribed yet, or the trigger type never \
+                     reached the engine."
+                );
+            } else {
+                tracing::debug!(path = %event.path, "editor::changed: nobody subscribed, dropping");
+            }
             return;
         }
         if event.patch.len() > MAX_PATCH_BYTES {
@@ -187,7 +221,17 @@ impl ChangedEmitter {
 /// set. Call before registering functions so the emitter can be threaded in.
 pub fn register_changed_trigger(iii: &Arc<IIIClient>) -> ChangedEmitter {
     let subscribers = SubscriberSet::new();
-    let _ = iii.register_trigger_type(RegisterTriggerType::new(
+    // `register_trigger_type` hands back a typed handle, not a `Result`: the SDK
+    // queues the registration message and drops the send result on the floor,
+    // so there is nothing here to check and nothing to retry. The log therefore
+    // claims only what actually happened — the message was sent — because
+    // "registered" would be a claim this worker cannot make.
+    //
+    // The failure it cannot see is a real one: without the type, every
+    // `editor::changed` is undeliverable and the whole push surface is dead. The
+    // loud signal for that lives in `ChangedEmitter::emit`, which warns the
+    // first time an event has nowhere to go.
+    let _handle = iii.register_trigger_type(RegisterTriggerType::new(
         CHANGED,
         "Fires when a file in the workspace changes, whoever changed it — \
          including an agent that never called this worker.",
@@ -195,7 +239,10 @@ pub fn register_changed_trigger(iii: &Arc<IIIClient>) -> ChangedEmitter {
             subscribers: subscribers.clone(),
         },
     ));
-    tracing::info!(trigger_type = CHANGED, "registered trigger type");
+    tracing::info!(
+        trigger_type = CHANGED,
+        "sent the trigger type registration; delivery is confirmed by the first subscription"
+    );
     ChangedEmitter::new(iii.clone(), subscribers)
 }
 
@@ -248,6 +295,19 @@ mod tests {
         s.add("t1".into(), "fn::a".into());
         s.add("t1".into(), "fn::a".into());
         assert_eq!(s.function_ids().len(), 1);
+    }
+
+    /// The undeliverable-event warning has to be said once, not once per write:
+    /// a workspace nobody is watching would otherwise log a line per edit.
+    #[test]
+    fn the_first_undeliverable_event_is_the_only_loud_one() {
+        let once = Once::default();
+        assert!(once.first(), "the first drop is worth a warning");
+        assert!(!once.first());
+        assert!(!once.first());
+        // The latch is shared, not copied: a cloned emitter must not get a
+        // second chance to shout.
+        assert!(!once.clone().first());
     }
 
     #[test]

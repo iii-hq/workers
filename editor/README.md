@@ -58,11 +58,12 @@ async fn main() -> anyhow::Result<()> {
     })).await?;
     println!("{}", preview["patch"].as_str().unwrap());
 
-    // The mtime from the open is what makes this safe: if anything else
+    // The version from the open is what makes this safe: if anything else
     // touched the file in between, nothing is written and the divergence
-    // comes back as a patch.
+    // comes back as a patch. `expected_mtime` also works and is still
+    // honoured, but it cannot see a write that landed inside the same second.
     let saved = call("editor::save", json!({
-        "path": "src/main.rs", "content": edited, "expected_mtime": file["mtime"],
+        "path": "src/main.rs", "content": edited, "expected_version": file["version"],
     })).await?;
     if saved["conflict"] == true {
         println!("refused:\n{}", saved["conflict_patch"].as_str().unwrap());
@@ -139,10 +140,18 @@ this page should use it and drop the local renderer.
 
 Runtime config lives in the `configuration` worker under id `editor`, so the
 console's Workers tab can edit it and every field hot-reloads — handlers read
-the live snapshot per call, and nothing needs a restart. There is no committed
-`config.yaml`; these are the defaults seeded when nothing is stored yet, and
-`--config <path>` is an optional one-time seed that never overwrites a stored
-value.
+the live snapshot per call, and nothing needs a restart. The block below is what
+gets seeded when nothing is stored yet, and `--config <path>` takes a file in
+that shape as an optional one-time seed that never overwrites a stored value.
+The committed `config.yaml` is *not* that file: it is a bare engine config
+(`workers: []`) for running this worker from source, and it would be rejected as
+a worker seed.
+
+If the configuration worker cannot be reached at boot, the worker retries, then
+starts on the `--config` seed rather than exiting — with a warning naming which
+numbers are in force — and keeps asking in the background until the
+authoritative value lands. The built-in defaults are used only when nothing was
+seeded either.
 
 Every field is a bound. Nothing here grants access — that is `shell`'s config.
 
@@ -159,7 +168,8 @@ git_timeout_ms: 15000       # per git invocation handed to shell::exec
 ## Local development & testing
 
 ```bash
-cargo run --release -- --url ws://127.0.0.1:49134 --config ./config.yaml
+iii -c config.yaml   # a bare engine (workers: []) so this worker runs from source
+cargo run --release -- --url ws://127.0.0.1:49134
 cargo test
 ```
 

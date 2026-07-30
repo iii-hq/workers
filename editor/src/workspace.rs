@@ -36,6 +36,15 @@ pub struct Buffer {
     pub path: String,
     /// Last-modified time this buffer was read at, Unix seconds.
     pub mtime: i64,
+    /// Opaque version of the content this buffer was read at — the same fact
+    /// `mtime` carries, in the form that survives two writes inside one second.
+    /// A surface saves against it by sending it as `expected_version`.
+    ///
+    /// Defaulted so a session persisted before this field existed still loads.
+    /// Empty means "unknown": a surface holding an empty version has only the
+    /// mtime to save against, which is the behaviour it had all along.
+    #[serde(default)]
+    pub version: String,
     /// Monaco language id for the path.
     pub language: String,
 }
@@ -134,6 +143,7 @@ mod tests {
         Buffer {
             path: path.to_string(),
             mtime: 1,
+            version: "1-0000000000000001".to_string(),
             language: "rust".to_string(),
         }
     }
@@ -150,9 +160,25 @@ mod tests {
         s.upsert(buf("a.rs"));
         let mut newer = buf("a.rs");
         newer.mtime = 99;
+        newer.version = "9-000000000000009f".to_string();
         s.upsert(newer);
         assert_eq!(s.buffers.len(), 1);
         assert_eq!(s.buffers[0].mtime, 99, "the newer read wins");
+        assert_eq!(
+            s.buffers[0].version, "9-000000000000009f",
+            "the version travels with the mtime it was read at"
+        );
+    }
+
+    /// A session written before buffers carried a version must still load,
+    /// with the version reading as unknown rather than failing the parse.
+    #[test]
+    fn a_buffer_without_a_version_still_loads() {
+        let back: Session =
+            serde_json::from_str(r#"{"buffers":[{"path":"a.rs","mtime":7,"language":"rust"}]}"#)
+                .expect("an older buffer record parses");
+        assert_eq!(back.buffers[0].mtime, 7);
+        assert!(back.buffers[0].version.is_empty());
     }
 
     #[test]

@@ -41,9 +41,10 @@ pub struct ExecOutcome {
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileStat {
     pub size: u64,
-    /// Last-modified time, Unix seconds. The conflict guard compares this and
-    /// nothing else — content hashing every save would double the read cost
-    /// for a check that only has to catch "someone else touched this".
+    /// Last-modified time, Unix seconds — all `shell::fs::stat` reports, and the
+    /// reason `editor::save`'s strong conflict guard versions content instead of
+    /// looking for a finer timestamp it cannot get. See
+    /// `functions::conflicted`.
     pub mtime: i64,
 }
 

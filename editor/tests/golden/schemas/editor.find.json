@@ -79,7 +79,7 @@
         "type": "integer"
       },
       "truncated": {
-        "description": "True when the workspace held more paths than `max_find_candidates` and only the first of them were ranked.",
+        "description": "True when not every path in the workspace was ranked: it held more than `max_find_candidates`, or the folder walk stopped at its visit budget. Either way this ranking is over a prefix of the workspace.",
         "type": "boolean"
       }
     },

@@ -35,6 +35,14 @@ const CONFIG_RETRIES: u32 = 3;
 /// Base backoff between configuration RPC retries; multiplied by the attempt
 /// number for a linear backoff (250ms, 500ms, …).
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
+/// How many times the background recovery re-attempts the boot handshake after
+/// a fallback. At the backoff below this covers roughly twenty minutes, which is
+/// far longer than any worker start-order race.
+const RECOVERY_ATTEMPTS: u32 = 60;
+
+/// Where a served configuration came from, for the boot log and for tests.
+pub const SOURCE_SEED: &str = "the --config seed";
+pub const SOURCE_DEFAULTS: &str = "the built-in defaults";
 
 pub fn cell(cfg: WorkerConfig) -> ConfigCell {
     Arc::new(RwLock::new(Arc::new(cfg)))
@@ -131,6 +139,78 @@ async fn trigger_with_retry(
     Err(last)
 }
 
+/// What to serve when the boot handshake never completed.
+///
+/// The seed, whenever there is one. `config.yaml` is where an operator wrote
+/// their intent, and falling back to `WorkerConfig::default()` while a seed
+/// exists would silently loosen every limit they had tightened — a safety
+/// regression dressed as a resilience fix. With no seed at all nothing was
+/// configured on this side, so the shipped baseline genuinely is the operator's
+/// choice.
+///
+/// Either way this is a *stopgap*: [`spawn_boot_recovery`] keeps trying for the
+/// authoritative value, and the returned source string is what the boot log
+/// prints so "running on the seed" is never mistaken for "running on live
+/// config".
+pub fn fallback_config(seed: Option<&WorkerConfig>) -> (WorkerConfig, &'static str) {
+    match seed {
+        Some(seed) => (seed.clone(), SOURCE_SEED),
+        None => (WorkerConfig::default(), SOURCE_DEFAULTS),
+    }
+}
+
+/// Keep trying to complete the boot handshake after a fallback, and publish the
+/// authoritative values the moment it lands.
+///
+/// Without this the fallback would be permanent in its likeliest cause. When it
+/// is `configuration::register` that never landed — the configuration worker was
+/// not up yet — the configuration worker holds no `editor` entry, so nothing can
+/// ever emit the `configuration:updated` event the hot-reload trigger waits on,
+/// and the stopgap limits would be the limits for the life of the process. A
+/// worker permanently stuck on a seed is worse than one that refused to start.
+///
+/// It publishes through [`apply_config`], the same path the hot-reload handler
+/// uses, so the git timeout the bus reads is republished too.
+pub fn spawn_boot_recovery(
+    iii: Arc<IIIClient>,
+    cell: ConfigCell,
+    git_timeout_ms: Arc<AtomicU64>,
+    seed: Option<WorkerConfig>,
+) {
+    tokio::spawn(async move {
+        for attempt in 1..=RECOVERY_ATTEMPTS {
+            tokio::time::sleep(recovery_backoff(attempt)).await;
+            if let Err(e) = register_config(&iii, seed.as_ref()).await {
+                tracing::debug!(attempt, error = %e, "configuration still not registrable");
+                continue;
+            }
+            match fetch_config(&iii).await {
+                Ok(cfg) => {
+                    apply_config(&cell, &git_timeout_ms, cfg).await;
+                    tracing::warn!(
+                        attempt,
+                        "configuration handshake recovered; the editor is serving the \
+                         authoritative limits and no longer the boot fallback"
+                    );
+                    return;
+                }
+                Err(e) => tracing::debug!(attempt, error = %e, "configuration still unreadable"),
+            }
+        }
+        tracing::error!(
+            attempts = RECOVERY_ATTEMPTS,
+            "the configuration worker never answered; the editor is serving its boot fallback \
+             limits for the rest of this process. Restart it once the configuration worker is up."
+        );
+    });
+}
+
+/// Linear, then capped: quick retries for a configuration worker that is merely
+/// starting, then a slow poll that costs nothing while it stays down.
+fn recovery_backoff(attempt: u32) -> Duration {
+    Duration::from_millis((500 * u64::from(attempt)).min(30_000))
+}
+
 /// Swap the snapshot. Handlers read it per call, so the next invocation of
 /// every function sees the new values.
 pub async fn apply_config(cell: &ConfigCell, git_timeout_ms: &AtomicU64, cfg: WorkerConfig) {
@@ -159,7 +239,13 @@ pub struct OnConfigChangeResponse {
 /// Register the internal config-change handler and bind a `configuration`
 /// trigger. Registered here rather than in `functions::register_all` so it
 /// stays off the public `catalog()`.
-pub fn register_config_trigger(
+///
+/// The bind is retried on the same shape as the boot handshake, and for the same
+/// reason: a bus call that fails once against a busy engine is not a reason to
+/// give up, because the caller's only other move is to exit and be restarted
+/// straight back into the same race. Only a bind that never succeeds is an
+/// error, and the caller decides what to do about it.
+pub async fn register_config_trigger(
     iii: &IIIClient,
     cell: ConfigCell,
     git_timeout_ms: Arc<AtomicU64>,
@@ -185,16 +271,37 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_FN_ID.to_string(),
-        config: json!({
-            "configuration_id": CONFIG_ID,
-            "event_types": ["configuration:updated"],
-        }),
-        metadata: None,
-    })?;
-    Ok(())
+    let mut last: Option<Error> = None;
+    for attempt in 1..=CONFIG_RETRIES {
+        match iii.register_trigger(RegisterTriggerInput {
+            trigger_type: "configuration".to_string(),
+            function_id: CONFIG_FN_ID.to_string(),
+            config: json!({
+                "configuration_id": CONFIG_ID,
+                "event_types": ["configuration:updated"],
+            }),
+            metadata: None,
+        }) {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                tracing::warn!(
+                    attempt,
+                    error = %e,
+                    "could not bind the configuration trigger; retrying"
+                );
+                last = Some(e);
+                if attempt < CONFIG_RETRIES {
+                    tokio::time::sleep(Duration::from_millis(
+                        CONFIG_RETRY_BACKOFF_MS * attempt as u64,
+                    ))
+                    .await;
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| {
+        Error::Handler("binding the configuration trigger never succeeded".into())
+    }))
 }
 
 /// Reload from the AUTHORITATIVE configuration.
@@ -214,5 +321,53 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, git_timeout_ms: &A
             error = %e,
             "config-change: failed to fetch authoritative configuration; keeping previous config"
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A boot that exhausted its retries must keep the operator's numbers. The
+    /// seed is `config.yaml`, so falling back to `WorkerConfig::default()` while
+    /// one exists would hand back every limit the operator had tightened.
+    #[test]
+    fn a_failed_boot_falls_back_to_the_seed_not_the_defaults() {
+        let seed = WorkerConfig {
+            max_file_bytes: 64_000,
+            git_timeout_ms: 3_000,
+            ..WorkerConfig::default()
+        };
+        assert_ne!(
+            seed,
+            WorkerConfig::default(),
+            "the fixture has to differ from the baseline to prove anything"
+        );
+
+        let (cfg, source) = fallback_config(Some(&seed));
+        assert_eq!(cfg, seed, "the seed's values, not the shipped ones");
+        assert_eq!(cfg.max_file_bytes, 64_000);
+        assert_eq!(cfg.git_timeout_ms, 3_000);
+        assert_eq!(source, SOURCE_SEED);
+    }
+
+    /// With nothing seeded, nothing was configured on this side, so the baseline
+    /// is the operator's choice by default.
+    #[test]
+    fn without_a_seed_the_fallback_is_the_baseline() {
+        let (cfg, source) = fallback_config(None);
+        assert_eq!(cfg, WorkerConfig::default());
+        assert_eq!(source, SOURCE_DEFAULTS);
+    }
+
+    #[test]
+    fn recovery_backoff_grows_then_caps() {
+        assert_eq!(recovery_backoff(1), Duration::from_millis(500));
+        assert_eq!(recovery_backoff(4), Duration::from_millis(2_000));
+        assert_eq!(
+            recovery_backoff(RECOVERY_ATTEMPTS),
+            Duration::from_millis(30_000),
+            "a configuration worker that stays down must not be polled faster and faster"
+        );
     }
 }

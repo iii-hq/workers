@@ -1,8 +1,9 @@
 //! Wire types for every registered function.
 //!
-//! Kept in one module because the six functions share a small vocabulary
-//! (`Hunk`, path, mtime) and splitting them across six files would mean six
-//! copies of the same doc comments explaining what an mtime is for.
+//! Kept in one module because the functions share a small vocabulary (`Hunk`,
+//! path, mtime, content version) and splitting them one file per function would
+//! mean a copy of the same doc comments — what an mtime is for, what a version
+//! is for — in every one of them.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -459,8 +460,9 @@ pub struct FindOutput {
     /// Paths considered. Compare against `truncated` to know whether the whole
     /// repo was ranked.
     pub scanned: u32,
-    /// True when the workspace held more paths than `max_find_candidates` and
-    /// only the first of them were ranked.
+    /// True when not every path in the workspace was ranked: it held more than
+    /// `max_find_candidates`, or the folder walk stopped at its visit budget.
+    /// Either way this ranking is over a prefix of the workspace.
     pub truncated: bool,
     /// True when candidates came from git's listing (so `.gitignore` was
     /// honoured), false when they came from the folder walk.
@@ -487,6 +489,12 @@ pub struct OpenOutput {
     /// Last-modified time, Unix seconds. Pass it back as `expected_mtime` on
     /// `editor::save` to get the conflict guard.
     pub mtime: i64,
+    /// Opaque version of the `content` above. Pass it back as
+    /// `expected_version` on `editor::save` for a guard that does not depend on
+    /// the filesystem's timestamp resolution: it catches a write that landed
+    /// inside the same second, which `mtime` cannot. Compare it for equality
+    /// only — the encoding is this worker's business and may change.
+    pub version: String,
     /// True when the file exceeded `max_file_bytes` and `content` holds only
     /// its beginning. Saving a truncated buffer back would delete the rest of
     /// the file, so `editor::save` refuses one.
@@ -505,13 +513,23 @@ pub struct SaveInput {
     /// divergence comes back as a patch. Omit only when deliberately
     /// overwriting whatever is there.
     ///
-    /// Resolution is one second, which is what the filesystem reports. Two
-    /// writes inside the same second are therefore indistinguishable, and the
-    /// second one wins silently. The guard is built for the case it actually
-    /// sees, a person and an agent editing minutes apart, not for concurrent
-    /// writers racing on the same file.
+    /// Resolution is one second, which is all the filesystem reports. Two
+    /// writes inside the same second are therefore indistinguishable to this
+    /// field, and the second one wins silently — send `expected_version`
+    /// instead to close that window.
     #[serde(default)]
     pub expected_mtime: Option<i64>,
+    /// The `version` from the `editor::open` — or from the previous
+    /// `editor::save` — this edit started from. It is a version of the
+    /// *content*, so it catches a write that landed inside the same filesystem
+    /// second and it does not care whether a clock or a checkout moved the
+    /// mtime.
+    ///
+    /// When this is present it is the guard and `expected_mtime` is ignored.
+    /// When it is absent the `expected_mtime` comparison applies exactly as
+    /// before, so a caller that has never heard of a version is unaffected.
+    #[serde(default)]
+    pub expected_version: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -523,8 +541,15 @@ pub struct SaveOutput {
     pub conflict: bool,
     /// Last-modified time after the write. Feed it into the next save.
     pub mtime: i64,
+    /// Version of the content this file now holds: what was written on success,
+    /// what is on disk on a conflict. Feed it into the next save as
+    /// `expected_version`.
+    pub version: String,
     /// What was on disk when a conflict was detected.
     pub disk_mtime: Option<i64>,
+    /// Version of the disk contents when a conflict was detected — the value
+    /// to send as `expected_version` once you have reconciled with them.
+    pub disk_version: Option<String>,
     /// On conflict: a unified diff from the current disk contents to the
     /// contents you tried to write, so the divergence is reviewable without a
     /// second round trip.

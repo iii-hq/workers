@@ -49,6 +49,53 @@ fn engine_already_running() -> bool {
     .is_ok()
 }
 
+/// The shorter of `cap` and what is left before `deadline`.
+///
+/// Every wait in a poll loop goes through this. Without it the last attempt gets
+/// its full timeout *plus* a full retry sleep on top of an already-spent budget,
+/// which is how a 30-second budget takes 40 seconds to give up.
+fn within(deadline: std::time::Instant, cap: Duration) -> Duration {
+    deadline
+        .saturating_duration_since(std::time::Instant::now())
+        .min(cap)
+}
+
+/// Poll until the engine accepts connections, or `budget` runs out.
+async fn wait_for_engine(budget: Duration) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
+        if engine_already_running() {
+            return true;
+        }
+        sleep(within(deadline, Duration::from_millis(50))).await;
+    }
+    engine_already_running()
+}
+
+/// Pins the budget arithmetic, which is the part of the poll loops that has no
+/// engine in it and so can be checked on any machine.
+#[test]
+fn no_single_wait_outlives_the_budget() {
+    let deadline = std::time::Instant::now() + Duration::from_millis(10);
+    assert!(
+        within(deadline, Duration::from_secs(10)) <= Duration::from_millis(10),
+        "a 10s cap must not survive a 10ms budget"
+    );
+    assert_eq!(
+        within(std::time::Instant::now(), Duration::from_millis(250)),
+        Duration::ZERO,
+        "a spent budget buys no more sleeping"
+    );
+    assert_eq!(
+        within(
+            std::time::Instant::now() + Duration::from_secs(600),
+            Duration::from_millis(250)
+        ),
+        Duration::from_millis(250),
+        "with time to spare the cap still applies"
+    );
+}
+
 async fn boot() -> Option<Harness> {
     let iii_bin = which::which("iii").ok()?;
 
@@ -68,7 +115,15 @@ async fn boot() -> Option<Harness> {
         .spawn()
         .ok()?;
 
-    sleep(Duration::from_millis(800)).await;
+    // Wait for the port rather than for a number of milliseconds. A fixed sleep
+    // is either too long on an idle machine or too short on a loaded runner, and
+    // the too-short case reads as "the worker never registered" rather than as
+    // "the engine had not started". Not being ready in time is not fatal here:
+    // the worker retries its own handshake and `await_function` polls, so the
+    // loud failure stays where it belongs.
+    if !wait_for_engine(Duration::from_secs(10)).await {
+        eprintln!("engine port did not open in 10s; continuing and letting the poll decide");
+    }
 
     // `?` here would drop `iii` without killing it: `Harness` does not exist
     // yet, so nothing owns the engine until both children are spawned.
@@ -112,7 +167,7 @@ async fn await_function(
             action: None,
             timeout_ms: Some(5_000),
         });
-        match timeout(Duration::from_secs(10), call).await {
+        match timeout(within(deadline, Duration::from_secs(10)), call).await {
             Ok(Ok(value)) => return Some(value),
             Ok(Err(e)) => {
                 let text = e.to_string();
@@ -123,7 +178,7 @@ async fn await_function(
             }
             Err(_) => last = Some("trigger timed out".to_string()),
         }
-        sleep(Duration::from_millis(250)).await;
+        sleep(within(deadline, Duration::from_millis(250))).await;
     }
     eprintln!("gave up waiting for editor::diff: {last:?}");
     None

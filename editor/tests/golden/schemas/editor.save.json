@@ -10,10 +10,18 @@
       },
       "expected_mtime": {
         "default": null,
-        "description": "The `mtime` from the `editor::open` this edit started from. When it no longer matches the file on disk, the write is refused and the divergence comes back as a patch. Omit only when deliberately overwriting whatever is there.\n\nResolution is one second, which is what the filesystem reports. Two writes inside the same second are therefore indistinguishable, and the second one wins silently. The guard is built for the case it actually sees, a person and an agent editing minutes apart, not for concurrent writers racing on the same file.",
+        "description": "The `mtime` from the `editor::open` this edit started from. When it no longer matches the file on disk, the write is refused and the divergence comes back as a patch. Omit only when deliberately overwriting whatever is there.\n\nResolution is one second, which is all the filesystem reports. Two writes inside the same second are therefore indistinguishable to this field, and the second one wins silently — send `expected_version` instead to close that window.",
         "format": "int64",
         "type": [
           "integer",
+          "null"
+        ]
+      },
+      "expected_version": {
+        "default": null,
+        "description": "The `version` from the `editor::open` — or from the previous `editor::save` — this edit started from. It is a version of the *content*, so it catches a write that landed inside the same filesystem second and it does not care whether a clock or a checkout moved the mtime.\n\nWhen this is present it is the guard and `expected_mtime` is ignored. When it is absent the `expected_mtime` comparison applies exactly as before, so a caller that has never heard of a version is unaffected.",
+        "type": [
+          "string",
           "null"
         ]
       },
@@ -60,6 +68,13 @@
           "null"
         ]
       },
+      "disk_version": {
+        "description": "Version of the disk contents when a conflict was detected — the value to send as `expected_version` once you have reconciled with them.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "mtime": {
         "description": "Last-modified time after the write. Feed it into the next save.",
         "format": "int64",
@@ -77,6 +92,10 @@
       "saved": {
         "description": "True when the file was written.",
         "type": "boolean"
+      },
+      "version": {
+        "description": "Version of the content this file now holds: what was written on success, what is on disk on a conflict. Feed it into the next save as `expected_version`.",
+        "type": "string"
       }
     },
     "required": [
@@ -86,7 +105,8 @@
       "mtime",
       "path",
       "removed",
-      "saved"
+      "saved",
+      "version"
     ],
     "title": "SaveOutput",
     "type": "object"

@@ -10,35 +10,79 @@
 
 use serde_json::Value;
 
-/// Every file path in the snapshot, root-relative, in traversal order.
-///
-/// Directories are descended but not emitted: this feeds the file picker, and
-/// a folder is not something you open. `limit` bounds the walk so a huge tree
-/// cannot turn one call into an unbounded allocation.
-pub fn file_paths(tree: &Value, limit: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    // Directories do not grow `out`, so a tree of mostly-empty folders would
-    // be walked in full however low the file limit is. Bound the visit count
-    // as well, generously enough that it never truncates a real result.
-    let mut budget = limit.saturating_mul(8).max(1_000);
-    if let Some(root) = tree.get("root") {
-        walk(root, "", limit, &mut budget, &mut out);
-    }
-    out
+/// Smallest visit budget any walk gets, however small the file limit is. A
+/// folder costs a visit but yields no path, so a low limit must still be able
+/// to reach past the directories in front of the files.
+const MIN_VISIT_BUDGET: usize = 1_000;
+
+/// A flattened snapshot, and whether the walk saw all of it.
+#[derive(Debug, Default)]
+pub struct Walk {
+    /// Every file path found, root-relative, in traversal order.
+    pub paths: Vec<String>,
+    /// True when the walk stopped early — at `limit` files, or at the visit
+    /// budget — so a caller can report a partial listing as partial instead of
+    /// presenting it as the whole tree.
+    ///
+    /// A tree holding exactly `limit` files reports `true` as well: from in
+    /// here a listing cut at the boundary is indistinguishable from a complete
+    /// one, and claiming completeness wrongly is the worse error.
+    pub truncated: bool,
 }
 
-fn walk(node: &Value, prefix: &str, limit: usize, budget: &mut usize, out: &mut Vec<String>) {
-    if out.len() >= limit || *budget == 0 {
+/// Flatten a `coder::tree` snapshot to its file paths.
+///
+/// Directories are descended but not emitted: this feeds the file picker, and a
+/// folder is not something you open. `limit` bounds the files collected, and a
+/// visit budget bounds the nodes walked to get them — without the second bound
+/// a tree of empty folders is traversed in full however low `limit` is, since
+/// directories never grow the result.
+///
+/// The budget is deliberately generous (eight visits per file wanted, and never
+/// under [`MIN_VISIT_BUDGET`]) because the cost of hitting it is a short
+/// listing. `editor::find` calls this with `max_find_candidates`, so a real
+/// checkout is nowhere near it; when it does bite, `truncated` says so.
+pub fn walk(tree: &Value, limit: usize) -> Walk {
+    let mut state = Visit {
+        limit,
+        budget: limit.saturating_mul(8).max(MIN_VISIT_BUDGET),
+        walk: Walk::default(),
+    };
+    if let Some(root) = tree.get("root") {
+        descend(root, "", &mut state);
+    }
+    state.walk
+}
+
+struct Visit {
+    limit: usize,
+    budget: usize,
+    walk: Walk,
+}
+
+impl Visit {
+    /// True when the walk must stop, recording that the result is partial.
+    fn spent(&mut self) -> bool {
+        if self.walk.paths.len() >= self.limit || self.budget == 0 {
+            self.walk.truncated = true;
+            return true;
+        }
+        false
+    }
+}
+
+fn descend(node: &Value, prefix: &str, state: &mut Visit) {
+    if state.spent() {
         return;
     }
     let Some(children) = node.get("children").and_then(Value::as_array) else {
         return;
     };
     for child in children {
-        if out.len() >= limit || *budget == 0 {
+        if state.spent() {
             return;
         }
-        *budget -= 1;
+        state.budget -= 1;
         let Some(name) = child.get("name").and_then(Value::as_str) else {
             continue;
         };
@@ -48,12 +92,12 @@ fn walk(node: &Value, prefix: &str, limit: usize, budget: &mut usize, out: &mut 
             format!("{prefix}/{name}")
         };
         if is_dir(child) {
-            walk(child, &path, limit, budget, out);
+            descend(child, &path, state);
         } else {
             // Anything that is not a directory is openable as far as this is
             // concerned; `editor::open` is the one guard that decides whether
             // the bytes are actually text.
-            out.push(path);
+            state.walk.paths.push(path);
         }
     }
 }
@@ -99,16 +143,77 @@ mod tests {
         })
     }
 
+    /// A directory tree shaped like a real checkout: nested a few levels deep,
+    /// dozens of folders, hundreds of files. `editor::find` walks with
+    /// `max_find_candidates`, so this is the case that must never come back
+    /// short — a bound that truncated an ordinary repository would be a worse
+    /// bug than the unbounded walk it replaced.
+    fn repository_shaped(depth: usize, dirs_per_level: usize, files_per_dir: usize) -> Value {
+        fn build(prefix: &str, level: usize, depth: usize, dirs: usize, files: usize) -> Value {
+            let mut children: Vec<Value> = (0..files)
+                .map(|f| json!({ "name": format!("{prefix}f{f}.rs"), "kind": "file" }))
+                .collect();
+            if level < depth {
+                for d in 0..dirs {
+                    let name = format!("{prefix}d{level}_{d}");
+                    let mut child = build(&name, level + 1, depth, dirs, files);
+                    child["name"] = json!(name);
+                    child["kind"] = json!("dir");
+                    children.push(child);
+                }
+            }
+            json!({ "children": children })
+        }
+        let mut root = build("", 0, depth, dirs_per_level, files_per_dir);
+        root["name"] = json!("repo");
+        root["kind"] = json!("dir");
+        json!({ "root": root })
+    }
+
+    fn count_files(node: &Value) -> usize {
+        match node.get("children").and_then(Value::as_array) {
+            Some(children) => children.iter().map(count_files).sum(),
+            None => 1,
+        }
+    }
+
     #[test]
     fn paths_are_joined_from_the_root_down() {
-        let paths = file_paths(&sample(), 100);
-        assert_eq!(paths, vec!["README.md", "src/main.rs", "src/app/mod.rs"]);
+        let walked = walk(&sample(), 100);
+        assert_eq!(
+            walked.paths,
+            vec!["README.md", "src/main.rs", "src/app/mod.rs"]
+        );
+        assert!(!walked.truncated, "three files is not a truncated walk");
     }
 
     #[test]
     fn folders_are_descended_but_not_emitted() {
-        let paths = file_paths(&sample(), 100);
+        let paths = walk(&sample(), 100).paths;
         assert!(!paths.iter().any(|p| p == "src" || p == "src/app"));
+    }
+
+    /// The visit budget must not cost a real tree any of its files.
+    #[test]
+    fn a_repository_shaped_tree_comes_back_whole() {
+        // 3 levels × 4 folders each = 84 directories, 5 files in every one:
+        // 425 files, ~509 visits. Well past MIN_VISIT_BUDGET's reach at a small
+        // limit, and nowhere near the budget a real `editor::find` call gets.
+        let tree = repository_shaped(3, 4, 5);
+        let total = count_files(tree.get("root").expect("a root"));
+        assert!(total > 400, "fixture is meant to be repository-sized");
+
+        // The shipped `max_find_candidates`, i.e. what `editor::find` passes.
+        let walked = walk(&tree, 50_000);
+        assert_eq!(
+            walked.paths.len(),
+            total,
+            "every file in an ordinary tree must be returned"
+        );
+        assert!(
+            !walked.truncated,
+            "a complete walk must not claim to be partial"
+        );
     }
 
     /// Pins shell's real vocabulary. Reading `dir` as a file is what made
@@ -124,7 +229,7 @@ mod tests {
                 }]
             }
         });
-        assert_eq!(file_paths(&tree, 10), vec!["src/a.rs"]);
+        assert_eq!(walk(&tree, 10).paths, vec!["src/a.rs"]);
     }
 
     #[test]
@@ -135,30 +240,65 @@ mod tests {
                 "children": [{ "name": "empty", "kind": "dir", "children": [] }]
             }
         });
-        assert!(file_paths(&tree, 10).is_empty());
+        let walked = walk(&tree, 10);
+        assert!(walked.paths.is_empty());
+        assert!(!walked.truncated, "an empty tree was walked in full");
     }
 
     /// A tree of empty directories must not be traversed without bound just
-    /// because it yields no files.
+    /// because it yields no files — and when the budget does stop it, the
+    /// result has to say so rather than pass a partial listing off as whole.
     #[test]
-    fn the_visit_budget_stops_a_directory_only_tree() {
-        let mut node = json!({ "name": "leaf", "kind": "dir", "children": [] });
-        for i in 0..400 {
-            node = json!({ "name": format!("d{i}"), "kind": "dir", "children": [node] });
-        }
-        assert!(file_paths(&json!({ "root": node }), 10).is_empty());
+    fn the_visit_budget_stops_a_directory_only_tree_and_reports_it() {
+        // More empty folders than MIN_VISIT_BUDGET, with a file behind them
+        // that only an unbounded walk would ever reach.
+        let mut children: Vec<Value> = (0..MIN_VISIT_BUDGET + 200)
+            .map(|i| json!({ "name": format!("d{i}"), "kind": "dir", "children": [] }))
+            .collect();
+        children.push(json!({ "name": "behind-the-budget.rs", "kind": "file" }));
+        let tree = json!({ "root": { "name": "r", "kind": "dir", "children": children } });
+
+        let walked = walk(&tree, 10);
+        assert!(
+            walked.paths.is_empty(),
+            "the walk must stop before the file the budget cannot reach"
+        );
+        assert!(
+            walked.truncated,
+            "a walk cut short by the budget must not look complete"
+        );
+    }
+
+    /// The same shape inside the budget: the file is found, and nothing claims
+    /// to be truncated. This is the half that keeps the bound from quietly
+    /// shortening an ordinary listing.
+    #[test]
+    fn folders_within_the_budget_do_not_hide_the_files_behind_them() {
+        let mut children: Vec<Value> = (0..100)
+            .map(|i| json!({ "name": format!("d{i}"), "kind": "dir", "children": [] }))
+            .collect();
+        children.push(json!({ "name": "after-the-folders.rs", "kind": "file" }));
+        let tree = json!({ "root": { "name": "r", "kind": "dir", "children": children } });
+
+        let walked = walk(&tree, 10);
+        assert_eq!(walked.paths, vec!["after-the-folders.rs"]);
+        assert!(!walked.truncated);
     }
 
     #[test]
-    fn limit_stops_the_walk() {
-        assert_eq!(file_paths(&sample(), 2).len(), 2);
+    fn limit_stops_the_walk_and_says_so() {
+        let walked = walk(&sample(), 2);
+        assert_eq!(walked.paths.len(), 2);
+        assert!(walked.truncated, "two of three files is a partial listing");
     }
 
     #[test]
     fn an_empty_or_foreign_shape_yields_nothing_rather_than_panicking() {
-        assert!(file_paths(&json!({}), 10).is_empty());
-        assert!(file_paths(&json!({ "root": { "name": "x", "kind": "dir" } }), 10).is_empty());
-        assert!(file_paths(&json!({ "root": 5 }), 10).is_empty());
+        assert!(walk(&json!({}), 10).paths.is_empty());
+        assert!(walk(&json!({ "root": { "name": "x", "kind": "dir" } }), 10)
+            .paths
+            .is_empty());
+        assert!(walk(&json!({ "root": 5 }), 10).paths.is_empty());
     }
 
     #[test]
@@ -169,6 +309,6 @@ mod tests {
                 "children": [ { "kind": "file" }, { "name": "ok.rs", "kind": "file" } ]
             }
         });
-        assert_eq!(file_paths(&tree, 10), vec!["ok.rs"]);
+        assert_eq!(walk(&tree, 10).paths, vec!["ok.rs"]);
     }
 }

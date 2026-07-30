@@ -77,15 +77,18 @@ async fn main() -> Result<()> {
     );
     let iii = Arc::new(iii);
 
-    // The configuration worker is a required boot dependency: without it
-    // there is no authoritative config, and guessing one silently would mean
-    // running with limits nobody chose.
+    // The configuration worker is where the authoritative limits live, and a
+    // loaded engine can answer its registration late. Dying on that timeout is
+    // worse than waiting: the source watcher restarts the worker straight back
+    // into the same race, so a slow boot becomes a crash loop that never
+    // converges. So: retry.
     //
-    // Required is not the same as first-try, though. A loaded engine answers
-    // the registration late, and dying on that timeout is worse than waiting:
-    // the source watcher restarts the worker straight back into the same race,
-    // so a slow boot turns into a crash loop that never converges. Retry, and
-    // only then fail with the last error rather than a generic one.
+    // And if the retries run out, still do not exit. Serve the seed — the
+    // operator's own numbers, from `--config` — and keep asking for the
+    // authoritative value in the background, because a worker that is up on
+    // known limits beats one that is not up at all. What is never done is
+    // guessing: the log says exactly which numbers are in force, and the
+    // built-in defaults are used only when nothing was seeded either.
     const CONFIG_BOOT_ATTEMPTS: u32 = 5;
     let mut loaded = None;
     let mut last_err = None;
@@ -111,14 +114,36 @@ async fn main() -> Result<()> {
             tokio::time::sleep(backoff).await;
         }
     }
-    let cfg = loaded.ok_or_else(|| {
-        anyhow::anyhow!(
-            "{}",
-            last_err.unwrap_or_else(|| "editor configuration unavailable".to_string())
-        )
-    })?;
+    let fell_back = loaded.is_none();
+    let cfg = match loaded {
+        Some(cfg) => cfg,
+        None => {
+            let (cfg, source) = configuration::fallback_config(seed.as_ref());
+            tracing::warn!(
+                attempts = CONFIG_BOOT_ATTEMPTS,
+                error = last_err.as_deref().unwrap_or("unknown"),
+                "the configuration worker never answered, so the editor is serving {source}; \
+                 these limits are a stopgap and may be stale until it does"
+            );
+            cfg
+        }
+    };
     let git_timeout_ms = Arc::new(std::sync::atomic::AtomicU64::new(cfg.git_timeout_ms));
     let cfg = configuration::cell(cfg);
+
+    // A fallback has to be temporary. The hot-reload trigger below only fires
+    // once the configuration worker holds an `editor` entry, and the likeliest
+    // reason the boot failed is that it was not up to take the registration —
+    // in which case no reload event can ever arrive. This keeps asking until it
+    // can, then publishes through the same path a reload would.
+    if fell_back {
+        configuration::spawn_boot_recovery(
+            iii.clone(),
+            cfg.clone(),
+            git_timeout_ms.clone(),
+            seed.clone(),
+        );
+    }
 
     // The bus carries the engine URL because `shell::fs::read` answers with a
     // channel reference that has to be dialled separately.
@@ -139,10 +164,12 @@ async fn main() -> Result<()> {
     // just by callers of this worker.
     observe::bind(&iii, &cfg, &bus, changed);
 
-    // Bound last, so the handler closes over fully-built state. A failure here
-    // is fatal rather than a warning: the worker would keep serving with limits
-    // that can never be changed, which is worse than not starting.
+    // Bound last, so the handler closes over fully-built state. The bind retries
+    // internally, for the same reason the boot handshake does; a bind that never
+    // succeeds is fatal rather than a warning, because a worker whose limits can
+    // never be changed is worse than one that did not start.
     configuration::register_config_trigger(&iii, cfg.clone(), git_timeout_ms)
+        .await
         .map_err(|e| anyhow::anyhow!("binding the configuration trigger: {e}"))?;
 
     tracing::info!("editor ready, waiting for invocations");

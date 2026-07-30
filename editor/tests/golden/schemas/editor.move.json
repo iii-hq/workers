@@ -38,6 +38,11 @@
           "path": {
             "description": "Path relative to the workspace root.",
             "type": "string"
+          },
+          "version": {
+            "default": "",
+            "description": "Opaque version of the content this buffer was read at — the same fact `mtime` carries, in the form that survives two writes inside one second. A surface saves against it by sending it as `expected_version`.\n\nDefaulted so a session persisted before this field existed still loads. Empty means \"unknown\": a surface holding an empty version has only the mtime to save against, which is the behaviour it had all along.",
+            "type": "string"
           }
         },
         "required": [

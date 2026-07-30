@@ -6,9 +6,11 @@
 //! security surface. What is left to tune here is how much work a single call
 //! may cost, and all of it hot-reloads.
 //!
-//! There is deliberately no committed `config.yaml`: the configuration worker
-//! is the source of truth after first boot, and these defaults are what gets
-//! seeded when nothing is stored yet.
+//! Nothing in this shape is committed: the configuration worker is the source of
+//! truth after first boot, and these defaults are what gets seeded when nothing
+//! is stored yet. The `config.yaml` next to this crate is an *engine* config for
+//! local runs, not a seed — `deny_unknown_fields` below rejects it as one, which
+//! `tests::an_engine_config_is_not_a_worker_seed` pins.
 
 use anyhow::Result;
 use schemars::JsonSchema;
@@ -170,6 +172,14 @@ mod tests {
     #[test]
     fn unknown_fields_are_rejected() {
         assert!(WorkerConfig::from_yaml("find_limt: 5").is_err());
+    }
+
+    /// The committed `config.yaml` is an engine config, not a seed for this
+    /// worker, and handing it to `--config` is a mistake the README used to
+    /// teach. It fails loudly, which is the behaviour worth keeping.
+    #[test]
+    fn an_engine_config_is_not_a_worker_seed() {
+        assert!(WorkerConfig::from_yaml("workers: []").is_err());
     }
 
     #[test]
