@@ -129,7 +129,9 @@ async fn main() -> Result<()> {
     ));
     // One LISTEN task per `capture: native` postgres database, live from
     // startup — external writes must be heard before any binding registers.
-    let native_listeners = Arc::new(database::triggers::NativeListeners::new(row_changes.clone()));
+    let native_listeners = Arc::new(database::triggers::NativeListeners::new(
+        row_changes.clone(),
+    ));
     native_listeners.sync(&cfg);
     let state = AppState {
         pools: Arc::new(RwLock::new(pools)),

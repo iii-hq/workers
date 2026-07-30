@@ -200,20 +200,26 @@ impl NativeListeners {
             let Some(handle) = self.spawn(&name, &db) else {
                 continue;
             };
-            tasks.insert(name, ListenerTask { fingerprint, handle });
+            tasks.insert(
+                name,
+                ListenerTask {
+                    fingerprint,
+                    handle,
+                },
+            );
         }
     }
 
     fn spawn(&self, name: &str, db: &crate::config::DatabaseConfig) -> Option<TaskHandle> {
         match db.driver {
-            crate::config::DriverKind::Postgres => Some(TaskHandle::Async(tokio::spawn(
-                run_listener(
+            crate::config::DriverKind::Postgres => {
+                Some(TaskHandle::Async(tokio::spawn(run_listener(
                     name.to_string(),
                     db.url.clone(),
                     db.tls.clone(),
                     Arc::clone(&self.bus),
-                ),
-            ))),
+                ))))
+            }
             crate::config::DriverKind::Sqlite => {
                 let Some(path) = super::sqlite_watch::sqlite_file_path(&db.url) else {
                     // Config validation rejects `:memory:`; reaching this
@@ -275,7 +281,12 @@ async fn run_listener(db: String, url: String, tls: TlsConfig, bus: Arc<RowChang
     }
 }
 
-async fn listen_once(db: &str, url: &str, tls: &TlsConfig, bus: &RowChangeBus) -> Result<(), String> {
+async fn listen_once(
+    db: &str,
+    url: &str,
+    tls: &TlsConfig,
+    bus: &RowChangeBus,
+) -> Result<(), String> {
     // Dedicated connection, never the pool: LISTEN state is per-session, and
     // a pooled session's notifications would go to whoever holds the object.
     match make_pg_connector(tls).map_err(|e| format!("{e:?}"))? {
@@ -367,8 +378,11 @@ mod tests {
 
     #[test]
     fn parse_notification_maps_payloads_and_drops_foreign_ones() {
-        let ev = parse_notification("primary", r#"{"table":"public.orders","op":"insert","n":3}"#)
-            .unwrap();
+        let ev = parse_notification(
+            "primary",
+            r#"{"table":"public.orders","op":"insert","n":3}"#,
+        )
+        .unwrap();
         assert_eq!(ev.db, "primary");
         assert_eq!(ev.table.as_deref(), Some("public.orders"));
         assert_eq!(ev.op, Op::Insert);
@@ -458,7 +472,10 @@ mod tests {
                 .batch_execute(&install_sql(&table).unwrap())
                 .await
                 .unwrap();
-            listener.batch_execute("LISTEN iii_row_changed").await.unwrap();
+            listener
+                .batch_execute("LISTEN iii_row_changed")
+                .await
+                .unwrap();
         })
         .await;
 
@@ -502,6 +519,10 @@ mod tests {
             ));
         }
 
-        let _ = drive(&mut conn, listener.batch_execute(&format!("DROP TABLE {table}"))).await;
+        let _ = drive(
+            &mut conn,
+            listener.batch_execute(&format!("DROP TABLE {table}")),
+        )
+        .await;
     }
 }

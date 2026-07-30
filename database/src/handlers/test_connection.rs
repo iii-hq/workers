@@ -68,7 +68,11 @@ pub async fn handle(req: TestConnectionReq) -> Result<TestConnectionResp, crate:
         });
     };
     let tls = req.tls.clone().unwrap_or_default();
-    let budget = Duration::from_millis(req.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS));
+    let budget = Duration::from_millis(
+        req.timeout_ms
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .min(MAX_TIMEOUT_MS),
+    );
 
     let outcome = tokio::time::timeout(budget, probe(driver, &req.url, &tls)).await;
     let latency_ms = started.elapsed().as_millis() as u64;
@@ -131,7 +135,9 @@ async fn probe_postgres(url: &str, tls: &TlsConfig) -> Result<String, String> {
 async fn probe_mysql(url: &str, tls: &TlsConfig) -> Result<String, String> {
     use mysql_async::prelude::Queryable as _;
     let opts = crate::triggers::mysql_binlog::build_opts(url, tls)?;
-    let mut conn = mysql_async::Conn::new(opts).await.map_err(|e| e.to_string())?;
+    let mut conn = mysql_async::Conn::new(opts)
+        .await
+        .map_err(|e| e.to_string())?;
     let version: Option<String> = conn
         .query_first("SELECT VERSION()")
         .await
@@ -219,11 +225,15 @@ mod tests {
         let path = dir.path().join("probe.db");
         rusqlite::Connection::open(&path).unwrap();
 
-        let resp = handle(req(&format!("sqlite:{}", path.display()))).await.unwrap();
+        let resp = handle(req(&format!("sqlite:{}", path.display())))
+            .await
+            .unwrap();
         assert!(resp.ok, "{:?}", resp.message);
 
         let missing = dir.path().join("not-yet.db");
-        let resp = handle(req(&format!("sqlite:{}", missing.display()))).await.unwrap();
+        let resp = handle(req(&format!("sqlite:{}", missing.display())))
+            .await
+            .unwrap();
         assert!(!resp.ok);
         assert!(resp.message.unwrap().contains("does not exist yet"));
         // The probe must not have created it.
@@ -267,7 +277,10 @@ mod tests {
     /// Live probes, gated like the pool tests.
     #[tokio::test(flavor = "multi_thread")]
     async fn live_postgres_and_mysql_probe_ok_when_configured() {
-        for (env, prefix) in [("TEST_POSTGRES_URL", "postgres"), ("TEST_MYSQL_URL", "mysql")] {
+        for (env, prefix) in [
+            ("TEST_POSTGRES_URL", "postgres"),
+            ("TEST_MYSQL_URL", "mysql"),
+        ] {
             let Some(url) = std::env::var(env).ok() else {
                 eprintln!("skipping: {env} not set");
                 continue;

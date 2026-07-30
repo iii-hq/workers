@@ -206,7 +206,9 @@ mod tests {
         }
     }
 
-    fn handler_with(config: WorkerConfig) -> (RowChangedHandler, Arc<tokio::sync::RwLock<WorkerConfig>>) {
+    fn handler_with(
+        config: WorkerConfig,
+    ) -> (RowChangedHandler, Arc<tokio::sync::RwLock<WorkerConfig>>) {
         let config = Arc::new(tokio::sync::RwLock::new(config));
         let handler = RowChangedHandler {
             bus: Arc::new(RowChangeBus::new(
@@ -223,7 +225,10 @@ mod tests {
     fn pg_install_hint_matches_the_failure_shape() {
         // The bug this pins: a `does not exist` failure wrapped in privilege
         // advice reads as a grants problem and hides the real cause (casing).
-        let hint = pg_install_hint(r#"relation "III_TRIGGER_TEST" does not exist"#, "III_TRIGGER_TEST");
+        let hint = pg_install_hint(
+            r#"relation "III_TRIGGER_TEST" does not exist"#,
+            "III_TRIGGER_TEST",
+        );
         assert!(hint.contains("case-sensitive"), "{hint}");
         assert!(!hint.contains("TRIGGER privilege"), "{hint}");
 
@@ -244,7 +249,10 @@ mod tests {
         .unwrap();
         let (handler, _) = handler_with(cfg);
 
-        let err = handler.register_trigger(trigger("i1", "p")).await.unwrap_err();
+        let err = handler
+            .register_trigger(trigger("i1", "p"))
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("name a `table`"), "{err}");
 
         // With a table but no live pool the DDL cannot land; registration

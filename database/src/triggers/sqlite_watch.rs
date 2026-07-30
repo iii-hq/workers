@@ -53,7 +53,12 @@ pub(crate) fn sqlite_file_path(url: &str) -> Option<PathBuf> {
 /// trigger names are schema-global, not per-table like postgres.
 pub(crate) fn install_sql(table: &str) -> Result<String, String> {
     let target = quote_table(table)?;
-    let name = |suffix: &str| format!("\"iii_row_changed_{suffix}_{}\"", table.trim().replace('"', "\"\""));
+    let name = |suffix: &str| {
+        format!(
+            "\"iii_row_changed_{suffix}_{}\"",
+            table.trim().replace('"', "\"\"")
+        )
+    };
     let ins = name("ins");
     let upd = name("upd");
     let del = name("del");
@@ -77,11 +82,14 @@ BEGIN INSERT INTO {CHANGELOG} (tbl, op) VALUES ('{tbl}', 'delete'); END;
     ))
 }
 
+/// One coalesced run of changelog rows: (table, op, row count).
+type Run = (String, Op, u64);
+
 /// Collapse per-row changelog entries into per-run events: a 1000-row UPDATE
 /// is one event with `affected_rows: 1000`, not a thousand events. Order is
 /// preserved; only adjacent same-(table, op) rows merge.
-pub(crate) fn coalesce(rows: Vec<(String, Op)>) -> Vec<(String, Op, u64)> {
-    let mut out: Vec<(String, Op, u64)> = Vec::new();
+pub(crate) fn coalesce(rows: Vec<(String, Op)>) -> Vec<Run> {
+    let mut out: Vec<Run> = Vec::new();
     for (tbl, op) in rows {
         match out.last_mut() {
             Some((last_tbl, last_op, n)) if *last_tbl == tbl && *last_op == op => *n += 1,
@@ -103,7 +111,7 @@ fn parse_op(s: &str) -> Option<Op> {
 /// Read everything past `cursor`, in id order. Returns the coalesced runs
 /// and the new cursor. A missing changelog table (no binding installed DDL
 /// yet) is an empty result, not an error.
-fn drain(conn: &Connection, cursor: i64) -> rusqlite::Result<(Vec<(String, Op, u64)>, i64)> {
+fn drain(conn: &Connection, cursor: i64) -> rusqlite::Result<(Vec<Run>, i64)> {
     let mut stmt = match conn.prepare(&format!(
         "SELECT id, tbl, op FROM {CHANGELOG} WHERE id > ?1 ORDER BY id"
     )) {
@@ -156,7 +164,11 @@ pub(crate) fn run_watcher(
 
     // Skip history: only changes committed from now on are announced.
     let mut cursor: i64 = conn
-        .query_row(&format!("SELECT COALESCE(MAX(id), 0) FROM {CHANGELOG}"), [], |r| r.get(0))
+        .query_row(
+            &format!("SELECT COALESCE(MAX(id), 0) FROM {CHANGELOG}"),
+            [],
+            |r| r.get(0),
+        )
         .unwrap_or(0);
 
     // Watch the parent directory, filtered to this database's files — the
@@ -169,11 +181,9 @@ pub(crate) fn run_watcher(
         let prefix = file_prefix.clone();
         notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
             let Ok(event) = res else { return };
-            let relevant = event.paths.iter().any(|p| {
-                match (&prefix, p.file_name()) {
-                    (Some(prefix), Some(name)) => name.to_string_lossy().starts_with(prefix.as_str()),
-                    _ => true,
-                }
+            let relevant = event.paths.iter().any(|p| match (&prefix, p.file_name()) {
+                (Some(prefix), Some(name)) => name.to_string_lossy().starts_with(prefix.as_str()),
+                _ => true,
             });
             if relevant {
                 let _ = wake.send(());
@@ -245,10 +255,8 @@ pub(crate) fn run_watcher(
                     // ponytail: GC assumes this worker is the only watcher of
                     // this file; two workers watching one db would starve each
                     // other. Per-watcher cursor rows if that ever exists.
-                    let _ = conn.execute(
-                        &format!("DELETE FROM {CHANGELOG} WHERE id <= ?1"),
-                        [cursor],
-                    );
+                    let _ =
+                        conn.execute(&format!("DELETE FROM {CHANGELOG} WHERE id <= ?1"), [cursor]);
                 }
             }
             Err(e) => {
@@ -330,7 +338,9 @@ mod tests {
         external
             .execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, n INT)")
             .unwrap();
-        external.execute_batch(&install_sql("items").unwrap()).unwrap();
+        external
+            .execute_batch(&install_sql("items").unwrap())
+            .unwrap();
 
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
@@ -372,9 +382,13 @@ mod tests {
         assert_eq!(events[2].affected_rows, 2);
 
         // A rolled-back write is invisible: the changelog rows die with it.
-        external.execute_batch("BEGIN; INSERT INTO items (n) VALUES (9); ROLLBACK;").unwrap();
+        external
+            .execute_batch("BEGIN; INSERT INTO items (n) VALUES (9); ROLLBACK;")
+            .unwrap();
         // And a zero-row statement appends nothing.
-        external.execute_batch("UPDATE items SET n = 0 WHERE n = -777").unwrap();
+        external
+            .execute_batch("UPDATE items SET n = 0 WHERE n = -777")
+            .unwrap();
         assert!(
             rx.recv_timeout(Duration::from_millis(600)).is_err(),
             "rolled-back / zero-row writes must not produce events"
@@ -394,7 +408,9 @@ mod tests {
         external
             .execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, n INT)")
             .unwrap();
-        external.execute_batch(&install_sql("items").unwrap()).unwrap();
+        external
+            .execute_batch(&install_sql("items").unwrap())
+            .unwrap();
         // Rows written before any watcher exists.
         external
             .execute_batch("INSERT INTO items (n) VALUES (1), (2)")
@@ -424,12 +440,17 @@ mod tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             let left: i64 = external
-                .query_row(&format!("SELECT count(*) FROM {CHANGELOG}"), [], |r| r.get(0))
+                .query_row(&format!("SELECT count(*) FROM {CHANGELOG}"), [], |r| {
+                    r.get(0)
+                })
                 .unwrap();
             if left == 0 {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "changelog was not GC'd, {left} rows left");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "changelog was not GC'd, {left} rows left"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
 

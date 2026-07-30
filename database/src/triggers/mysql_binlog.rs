@@ -73,7 +73,7 @@ pub(crate) async fn binlog_position(conn: &mut Conn) -> Result<(String, u64), St
             }
             Ok(None) => {
                 return Err(
-                    "the server reports no binlog position — is log_bin enabled?".to_string()
+                    "the server reports no binlog position — is log_bin enabled?".to_string(),
                 )
             }
             Err(e) => {
@@ -104,7 +104,12 @@ fn op_of(rows: &RowsEventData<'_>) -> Op {
 /// Keep the stream alive forever, reconnecting with capped backoff. Events
 /// flow into `bus` via an unbounded channel so the decode loop never blocks
 /// on subscriber dispatch.
-pub(crate) async fn run_binlog(db_name: String, url: String, tls: TlsConfig, bus: Arc<RowChangeBus>) {
+pub(crate) async fn run_binlog(
+    db_name: String,
+    url: String,
+    tls: TlsConfig,
+    bus: Arc<RowChangeBus>,
+) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RowChangedEvent>();
     // The forwarder dies with this task: aborting run_binlog drops `tx`,
     // recv() yields None, and the spawned task returns.
@@ -200,7 +205,9 @@ async fn stream_once(
                     continue;
                 }
                 match &mut pending {
-                    Some((last_table, last_op, total)) if *last_table == table && *last_op == op => {
+                    Some((last_table, last_op, total))
+                        if *last_table == table && *last_op == op =>
+                    {
                         *total += n;
                     }
                     slot => {

@@ -70,9 +70,9 @@ pub struct DatabaseConfig {
     /// How `database::row-changed` events are captured for this database.
     /// `statements` (default) classifies the SQL this worker executes;
     /// `native` makes writes from ANY client — psql, other processes — fire
-    /// too. Postgres: triggers + LISTEN/NOTIFY. File-backed sqlite: triggers
-    /// + changelog drained on filesystem wake-up. MySQL: the binlog
-    /// replication stream (needs REPLICATION SLAVE + REPLICATION CLIENT).
+    /// too. Postgres: triggers + LISTEN/NOTIFY. File-backed sqlite: a
+    /// trigger-fed changelog drained on filesystem wake-up. MySQL: the
+    /// binlog replication stream (needs REPLICATION SLAVE + CLIENT).
     #[serde(default, skip_serializing_if = "CaptureMode::is_statements")]
     pub capture: CaptureMode,
     /// Populated by [`WorkerConfig::finalize`] from the URL scheme.
@@ -462,15 +462,22 @@ mod tests {
 
     #[test]
     fn capture_native_allows_all_drivers_except_memory_sqlite() {
-        for url in ["postgres://u@h/db", "sqlite:./data/iii.db", "mysql://u@h/db"] {
-            let c = cfg(&format!("databases:\n  p:\n    url: {url}\n    capture: native\n"));
+        for url in [
+            "postgres://u@h/db",
+            "sqlite:./data/iii.db",
+            "mysql://u@h/db",
+        ] {
+            let c = cfg(&format!(
+                "databases:\n  p:\n    url: {url}\n    capture: native\n"
+            ));
             assert_eq!(c.databases["p"].capture, CaptureMode::Native, "{url}");
         }
 
         // A per-connection `:memory:` database cannot be observed.
-        let err =
-            WorkerConfig::from_yaml("databases:\n  p:\n    url: \"sqlite::memory:\"\n    capture: native\n")
-                .unwrap_err();
+        let err = WorkerConfig::from_yaml(
+            "databases:\n  p:\n    url: \"sqlite::memory:\"\n    capture: native\n",
+        )
+        .unwrap_err();
         assert!(err.contains("file-backed"), "got: {err}");
 
         // Default stays statements and stays out of the serialized form —

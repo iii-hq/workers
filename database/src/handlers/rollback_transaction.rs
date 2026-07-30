@@ -170,7 +170,8 @@ mod tests {
         });
         wait_until_taken(&st).await;
 
-        st.stage_row_change(&id, "primary", "INSERT INTO t VALUES (1)", 1, None).await;
+        st.stage_row_change(&id, "primary", "INSERT INTO t VALUES (1)", 1, None)
+            .await;
         assert_eq!(bus.pending_count(&id), 1);
         drop(lock);
 
@@ -188,7 +189,8 @@ mod tests {
         .await
         .unwrap();
         let id = begin.transaction.id;
-        st.stage_row_change(&id, "primary", "INSERT INTO t VALUES (1)", 1, None).await;
+        st.stage_row_change(&id, "primary", "INSERT INTO t VALUES (1)", 1, None)
+            .await;
         let lock = st.transactions.lock(&id).await.unwrap();
 
         let task_state = st.clone();
