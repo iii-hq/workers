@@ -49,8 +49,8 @@ jobs:
     timeout-minutes: 45
     outputs:
       scenarios: ${{ steps.scenarios.outputs.json }}
-      engine_binary: ${{ steps.lock.outputs.binary }}
-      engine_revision: ${{ steps.lock.outputs.revision }}
+      engine_binary: ${{ steps.engine.outputs.binary }}
+      engine_revision: ${{ steps.engine.outputs.version }}
     steps:
       - uses: actions/checkout@v5
 
@@ -86,77 +86,33 @@ jobs:
           [[ -n "$JUDGE_MODEL" ]]
           [[ "$JUDGE_PROVIDER" =~ ^[A-Za-z0-9_-]+$ ]]
 
-      - name: Read and validate engine.lock
-        id: lock
+      - name: Install published iii release
+        id: engine
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          III_INSTALL_URL: https://install.iii.dev/iii/main/install.sh
+          III_INSTALL_BIN_DIR: ${{ github.workspace }}/target/iii/bin
         run: |
           set -euo pipefail
-          lock=harness/tests/integration/engine.lock
-          read_field() {
-            local field=$1 values
-            values=$(sed -n "s/^${field} = \"\\([^\"]*\\)\"$/\\1/p" "$lock")
-            [[ $(printf '%s\n' "$values" | sed '/^$/d' | wc -l) -eq 1 ]] || {
-              echo "engine.lock: $field must appear exactly once"
-              exit 3
-            }
-            printf '%s' "$values"
-          }
-          invalid=$(sed \
-            -e '/^[[:space:]]*$/d' \
-            -e '/^[[:space:]]*#/d' \
-            -e '/^\(repository\|revision\|package\|binary\) = "[^"]*"$/d' \
-            "$lock")
-          [[ -z "$invalid" ]] || {
-            echo "engine.lock: unsupported or malformed entry"
-            printf '%s\n' "$invalid"
-            exit 3
-          }
-          repository=$(read_field repository)
-          revision=$(read_field revision)
-          package=$(read_field package)
-          binary=$(read_field binary)
-          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
-            echo "engine.lock: repository must be an owner/name slug"
-            exit 3
-          }
-          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "engine.lock: revision must be 40-hex"
-            exit 3
-          }
-          [[ "$package" =~ ^[A-Za-z0-9_-]+$ ]] || {
-            echo "engine.lock: package contains unsupported characters"
-            exit 3
-          }
-          [[ "$binary" =~ ^target/(debug|release)/[A-Za-z0-9_.-]+$ ]] || {
-            echo "engine.lock: binary must be a target profile path"
-            exit 3
-          }
-          {
-            echo "repository=$repository"
-            echo "revision=$revision"
-            echo "package=$package"
-            echo "binary=$binary"
-          } >> "$GITHUB_OUTPUT"
+          installer="$RUNNER_TEMP/install-iii.sh"
+          curl -fsSL --retry 3 --retry-all-errors \
+            "$III_INSTALL_URL" \
+            -o "$installer"
+          BIN_DIR="$III_INSTALL_BIN_DIR" sh "$installer"
 
-      - name: Checkout pinned engine source
-        uses: actions/checkout@v5
-        with:
-          repository: ${{ steps.lock.outputs.repository }}
-          ref: ${{ steps.lock.outputs.revision }}
-          path: target/integration-engine-src
+          for binary in iii iii-init iii-worker; do
+            test -x "$III_INSTALL_BIN_DIR/$binary"
+          done
+          version=$("$III_INSTALL_BIN_DIR/iii" --version | awk '{print $NF}')
+          test -n "$version"
+          {
+            echo "binary=target/iii/bin/iii"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-
-      - name: Restore engine build
-        uses: actions/cache/restore@v4
-        with:
-          path: target/integration-engine-src/target
-          key: integration-engine-${{ runner.os }}-${{ runner.arch }}-${{ steps.lock.outputs.revision }}-${{ hashFiles('target/integration-engine-src/Cargo.lock') }}
-
-      - name: Build pinned engine
-        working-directory: target/integration-engine-src
-        run: cargo build --locked --release -p ${{ steps.lock.outputs.package }}
 
       - name: Restore E2E Rust cache
         uses: Swatinem/rust-cache@v2
@@ -226,7 +182,9 @@ jobs:
         run: |
           set -euo pipefail
           paths=(
-            "target/integration-engine-src/${{ steps.lock.outputs.binary }}"
+            target/iii/bin/iii
+            target/iii/bin/iii-init
+            target/iii/bin/iii-worker
             database/target/release/database
             state/target/release/state
             queue/target/release/queue
@@ -294,7 +252,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
           OPENAI_API_KEY: ${{ secrets.openai_api_key }}
           ZAI_API_KEY: ${{ secrets.zai_api_key }}
-          III_BIN: ${{ github.workspace }}/target/integration-engine-src/${{ needs.build.outputs.engine_binary }}
+          III_BIN: ${{ github.workspace }}/${{ needs.build.outputs.engine_binary }}
           HARNESS_E2E_BIN: ${{ github.workspace }}/harness/target/release/harness-e2e
           HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
           HARNESS_E2E_SCENARIO: ${{ matrix.scenario }}

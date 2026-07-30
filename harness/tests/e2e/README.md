@@ -158,7 +158,7 @@ The runner writes `results.json` with:
 
 - exact catalog-resolved subject and judge model identity and capabilities;
 - effective scenario execution policy;
-- judge protocol and pinned engine revision when CI supplies it;
+- judge protocol and installed engine version when CI supplies it;
 - prompt, transcript, and `harness::metrics` for every run;
 - hard-gate results and per-criterion points;
 - judge attempts, token usage, and failures grouped by phase;
@@ -180,12 +180,14 @@ zero.
 | Harness E2E Main | Relevant push to `main` | 1 per subject/scenario | Score advisory; hard gates and technical failures blocking |
 | Harness E2E Nightly | New `main` revision on schedule, or manual dispatch on `main` | 3 per subject/scenario | Median score, two-of-three pass policy, hard gates and technical failures blocking |
 
-The reusable workflow itself is guarded to run only from `main`. It builds the
-pinned engine, the SQLite-backed database worker, and only the provider workers
-required by the subject matrix and fixed judge. Scenario ids come directly from
-`harness-e2e list`. Each subject/scenario pair receives a fresh stack, and
-repetitions run sequentially inside that job with unique table, session, and
-state namespaces. At most two matrix jobs make live-model calls concurrently.
+The reusable workflow itself is guarded to run only from `main`. It installs
+the latest published stable `iii` release with its `iii-init` and `iii-worker`
+companions, then builds the SQLite-backed database worker and only the provider
+workers required by the subject matrix and fixed judge. Scenario ids come
+directly from `harness-e2e list`. Each subject/scenario pair receives a fresh
+stack, and repetitions run sequentially inside that job with unique table,
+session, and state namespaces. At most two matrix jobs make live-model calls
+concurrently.
 
 The scheduled nightly skips the live suite when the current `main` SHA already
 has a successful full nightly result. A manual dispatch bypasses this

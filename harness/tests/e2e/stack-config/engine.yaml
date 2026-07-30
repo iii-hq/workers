@@ -1,4 +1,5 @@
 workers:
+  - name: iii-worker-ops
   - name: iii-worker-manager
     config:
       host: 127.0.0.1
