@@ -85,9 +85,12 @@ INTEGRATION_INFRA_PATHS = {
 }
 E2E_INFRA_PATHS = {
     ".github/scripts/discover_changed_workers.py",
+    ".github/scripts/collect_harness_e2e_benchmarks.py",
     ".github/workflows/_harness-e2e.yml",
+    ".github/workflows/harness-e2e-benchmark.yml",
+    ".github/workflows/harness-e2e-daily.yml",
     ".github/workflows/harness-e2e-main.yml",
-    ".github/workflows/harness-e2e-nightly.yml",
+    "harness/tests/integration/engine.lock",
 }
 INTEGRATION_EXCLUDED_PREFIXES = (
     "harness/tests/e2e/",

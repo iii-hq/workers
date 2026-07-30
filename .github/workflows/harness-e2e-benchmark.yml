@@ -1,0 +1,201 @@
+name: Publish Harness E2E Benchmark
+
+on:
+  workflow_run:
+    workflows:
+      - Harness E2E Daily
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: harness-e2e-benchmark-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish benchmark history
+    if: >-
+      github.event.workflow_run.head_branch == 'main' &&
+      (github.event.workflow_run.event == 'schedule' ||
+      github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Stage dashboard assets
+        env:
+          SITE_DIR: ${{ runner.temp }}/harness-benchmark-site
+        run: |
+          set -euo pipefail
+          mkdir -p "$SITE_DIR"
+          cp -R .github/benchmark-site/. "$SITE_DIR/"
+
+      - name: Download compact benchmark metrics
+        id: compact
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: harness-e2e-benchmark
+          path: target/harness-e2e-benchmark
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Download dashboard execution detail
+        id: detail
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: harness-e2e-dashboard
+          path: target/harness-e2e-dashboard
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Resolve benchmark source
+        id: benchmark
+        if: steps.compact.outcome == 'success'
+        run: |
+          set -euo pipefail
+          source_sha=$(
+            jq -er '.[0].extra | fromjson | .source.sha' \
+              target/harness-e2e-benchmark/quality.json
+          )
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::benchmark source SHA is invalid"
+            exit 2
+          }
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Store quality history
+        if: steps.compact.outcome == 'success'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Harness E2E Quality
+          tool: customBiggerIsBetter
+          output-file-path: target/harness-e2e-benchmark/quality.json
+          ref: ${{ steps.benchmark.outputs.source_sha }}
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/harness-e2e
+          max-items-in-chart: 100
+          github-token: ${{ github.token }}
+          auto-push: true
+          summary-always: true
+
+      - name: Store efficiency and reliability history
+        if: steps.compact.outcome == 'success'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Harness E2E Efficiency and Reliability
+          tool: customSmallerIsBetter
+          output-file-path: target/harness-e2e-benchmark/efficiency.json
+          ref: ${{ steps.benchmark.outputs.source_sha }}
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/harness-e2e
+          max-items-in-chart: 100
+          github-token: ${{ github.token }}
+          auto-push: true
+          summary-always: true
+
+      - name: Resolve benchmark history branch
+        id: history
+        run: |
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout benchmark history
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.history.outputs.exists == 'true' && 'gh-pages' || github.event.workflow_run.head_sha }}
+          path: pages-source
+          fetch-depth: 0
+
+      - name: Install dashboard and execution history
+        env:
+          SITE_DIR: ${{ runner.temp }}/harness-benchmark-site
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          WORKFLOW_URL: ${{ github.event.workflow_run.html_url }}
+          WORKFLOW_EVENT: ${{ github.event.workflow_run.event }}
+          WORKFLOW_ACTOR: ${{ github.event.workflow_run.actor.login }}
+          STARTED_AT: ${{ github.event.workflow_run.run_started_at }}
+          COMPLETED_AT: ${{ github.event.workflow_run.updated_at }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HISTORY_EXISTS: ${{ steps.history.outputs.exists }}
+        run: |
+          set -euo pipefail
+          if [[ "$HISTORY_EXISTS" != "true" ]]; then
+            git -C pages-source checkout --orphan gh-pages
+            git -C pages-source rm -rf .
+          fi
+          mkdir -p pages-source/dev/harness-e2e
+          cp -R "$SITE_DIR"/. pages-source/dev/harness-e2e/
+          touch pages-source/.nojekyll
+
+          python3 .github/scripts/publish_harness_e2e_dashboard.py \
+            --site-dir pages-source/dev/harness-e2e \
+            --snapshot target/harness-e2e-benchmark/snapshot.json \
+            --detail target/harness-e2e-dashboard/execution.json \
+            --run-id "$RUN_ID" \
+            --attempt "$RUN_ATTEMPT" \
+            --workflow-name "$WORKFLOW_NAME" \
+            --workflow-url "$WORKFLOW_URL" \
+            --event "$WORKFLOW_EVENT" \
+            --actor "$WORKFLOW_ACTOR" \
+            --started-at "$STARTED_AT" \
+            --completed-at "$COMPLETED_AT" \
+            --conclusion "$CONCLUSION" \
+            --head-sha "$HEAD_SHA" \
+            --head-branch "$HEAD_BRANCH" \
+            --repository "$GITHUB_REPOSITORY" \
+            --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --max-summaries 100 \
+            --max-details 30
+
+          git -C pages-source config user.name github-actions
+          git -C pages-source config user.email github-actions@github.com
+          git -C pages-source add .nojekyll dev/harness-e2e
+          if git -C pages-source diff --cached --quiet; then
+            echo "Dashboard shell already matches the published version."
+            exit 0
+          fi
+          git -C pages-source commit -m "Update Harness E2E benchmark dashboard"
+          git -C pages-source push origin HEAD:gh-pages
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: pages-source
+
+  deploy:
+    name: Deploy benchmark dashboard
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

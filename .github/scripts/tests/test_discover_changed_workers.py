@@ -349,6 +349,24 @@ class TestHarnessSelection:
         assert data["integration_changed"] is True
         assert data["e2e_changed"] is False
 
+    def test_engine_lock_change_runs_both_real_stack_suites(self, tmp_path):
+        repo = make_repo_with_harness(tmp_path)
+        path = repo / "harness" / "tests" / "integration" / "engine.lock"
+        path.parent.mkdir(parents=True)
+        path.write_text('revision = "' + "a" * 40 + '"\n')
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "engine lock"],
+            cwd=repo,
+            check=True,
+            env=GIT_HERMETIC_ENV,
+        )
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["integration_changed"] is True
+        assert data["e2e_changed"] is True
+
     def test_quickstart_change_does_not_run_e2e(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
         path = repo / "harness" / "tests" / "quickstart" / "run-ci.sh"
@@ -393,12 +411,12 @@ class TestHarnessSelection:
         assert data["integration_changed"] is False
         assert data["e2e_changed"] is True
 
-    def test_e2e_nightly_workflow_change_runs_only_e2e(self, tmp_path):
+    def test_e2e_daily_workflow_change_runs_only_e2e(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
-        workflow = repo / ".github" / "workflows" / "harness-e2e-nightly.yml"
-        workflow.write_text("name: nightly\n")
+        workflow = repo / ".github" / "workflows" / "harness-e2e-daily.yml"
+        workflow.write_text("name: daily\n")
         subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
-        subprocess.run(["git", "commit", "-q", "-m", "nightly"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "daily"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
         r = run_script(repo, "main~1")
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)

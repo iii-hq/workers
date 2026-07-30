@@ -130,7 +130,7 @@ score reaches the scenario threshold. For repeated runs, the aggregate requires
 at least two thirds of the runs to pass and the median score to reach the
 threshold. Hard-gate and technical failures stop further repetitions for that
 subject/scenario pair and always fail the aggregate. Score-only failures retain
-the two-of-three tolerance used nightly.
+the two-of-three tolerance used by the daily benchmark.
 
 Scenarios with a judge reference delegate every criterion score to the judge.
 Scenarios without one award every criterion objectively in code. Mechanical
@@ -178,23 +178,24 @@ zero.
 | --- | --- | ---: | --- |
 | Pull-request CI | Relevant pull-request changes | 0 | Deterministic integration only |
 | Harness E2E Main | Relevant push to `main` | 1 per subject/scenario | Score advisory; hard gates and technical failures blocking |
-| Harness E2E Nightly | New `main` revision on schedule, or manual dispatch on `main` | 3 per subject/scenario | Median score, two-of-three pass policy, hard gates and technical failures blocking |
+| Harness E2E Daily | Daily at 06:00 UTC, or manual dispatch on `main` | 3 per subject/scenario | Median score and reliability gates are evaluated; history is published on failure |
 
-The reusable workflow itself is guarded to run only from `main`. It installs
-the latest published stable `iii` release with its `iii-init` and `iii-worker`
-companions, then builds the SQLite-backed database worker and only the provider
-workers required by the subject matrix and fixed judge. Scenario ids come
+The reusable workflow normally runs from `main`; a manual daily benchmark may
+instead pin an exact source commit. It installs the latest published stable
+`iii` release with its `iii-init` and `iii-worker` companions, then builds the
+SQLite-backed database worker and only the provider workers required by the
+subject matrix and fixed judge from the selected source. Scenario ids come
 directly from `harness-e2e list`. Each subject/scenario pair receives a fresh
 stack, and repetitions run sequentially inside that job with unique table,
 session, and state namespaces. At most two matrix jobs make live-model calls
 concurrently.
 
-The scheduled nightly skips the live suite when the current `main` SHA already
-has a successful full nightly result. A manual dispatch bypasses this
-same-revision check but must target `main`.
+The scheduled benchmark runs even when `main` has not changed. This preserves
+one comparable observation per day and exposes model or infrastructure drift.
+A manual dispatch may pin another full commit SHA but must run from `main`.
 
 The subject matrix comes from the `HARNESS_E2E_SUBJECTS` repository variable.
-Nightly dispatch inputs may override the matrix and judge:
+Daily dispatch inputs may override the matrix and judge:
 
 ```json
 [
@@ -226,11 +227,55 @@ and `ZAI_API_KEY`. Subscription-backed `claude-code` and `openai-codex`
 providers require their credential files to be provisioned securely on the
 runner; the current workflow does not inject those files.
 
+### Daily benchmark dashboard
+
+The scheduled workflow evaluates the default branch once per day with three
+runs for every subject/scenario pair. A manual dispatch can pin a full commit
+SHA. The stable cadence makes missing days visible and keeps the time series
+independent of release frequency.
+
+The dashboard is published at
+<https://iii-hq.github.io/workers/dev/harness-e2e/>. Its execution overview and
+detail pages support workflow debugging, while **Trends** preserves the daily
+metric review:
+
+- the overview surfaces the latest KPIs, a workflow-by-scenario health matrix,
+  and a filterable table of workflow attempts;
+- each workflow attempt has a shareable detail page with configuration,
+  scenarios, individual runs, gates, criteria, failures, retries, usage, cost,
+  prompts, transcripts, sessions, traces, and the complete JSON record;
+- the primary chart uses calendar time, switches between score, pass rate, cost,
+  and runtime, and filters by scenario;
+- hovering a line shows the nearest daily value, and selecting its point opens
+  the retained execution detail;
+- the scenario breakdown makes regressions and missing reports visible;
+- the execution table keeps failed, incomplete, and cancelled workflows visible
+  even when they did not produce metrics.
+
+The public `gh-pages` history retains 100 aggregate workflow summaries and the
+complete structured reports for the latest 30 attempts. Those complete reports
+include prompts, transcripts, session ids, judge attempts, gates, criteria,
+failure messages, usage, cost, and traces. Diagnostic logs, stack files, and
+credentials remain in access-controlled workflow artifacts. Missing reports are
+stored as reliability events; unknown cost is omitted instead of recorded as
+zero.
+
+The daily lane evaluates repository binaries built from the resolved default
+branch commit. It does not install registry artifacts; registry installation
+remains the responsibility of the quickstart validator.
+
+Repository administration has one manual prerequisite: under **Settings →
+Pages**, select **GitHub Actions** as the Pages source. The benchmark workflow
+maintains the `gh-pages` data history and deploys that history through the
+official Pages artifact flow.
+
 Each matrix job publishes its result for 14 days; failed jobs also publish
 diagnostics for 14 days. The workflow summary shows subject, judge, and total
-cost per scenario and consolidated by subject. CI currently evaluates fixed
-code-defined thresholds; it does not compare scores automatically with a
-previous run.
+cost per scenario and consolidated by subject. The daily dashboard retains the
+latest 100 comparable points and summaries, plus complete reports for the latest
+30 workflow attempts. Fixed code-defined thresholds remain the CI gate;
+historical deltas are a team-facing signal and do not add a second implicit
+threshold.
 
 The launcher performs a clean first boot with isolated configuration, session,
 queue, state, and log directories. It starts the provider workers named by the
