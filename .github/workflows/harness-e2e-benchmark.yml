@@ -76,6 +76,9 @@ jobs:
           }
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
 
+      - name: Bootstrap benchmark history
+        run: python3 .github/scripts/bootstrap_benchmark_history.py
+
       - name: Store quality history
         if: steps.compact.outcome == 'success'
         uses: benchmark-action/github-action-benchmark@v1
@@ -106,19 +109,10 @@ jobs:
           auto-push: true
           summary-always: true
 
-      - name: Resolve benchmark history branch
-        id: history
-        run: |
-          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Checkout benchmark history
         uses: actions/checkout@v5
         with:
-          ref: ${{ steps.history.outputs.exists == 'true' && 'gh-pages' || github.event.workflow_run.head_sha }}
+          ref: gh-pages
           path: pages-source
           fetch-depth: 0
 
@@ -136,13 +130,8 @@ jobs:
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          HISTORY_EXISTS: ${{ steps.history.outputs.exists }}
         run: |
           set -euo pipefail
-          if [[ "$HISTORY_EXISTS" != "true" ]]; then
-            git -C pages-source checkout --orphan gh-pages
-            git -C pages-source rm -rf .
-          fi
           mkdir -p pages-source/dev/harness-e2e
           cp -R "$SITE_DIR"/. pages-source/dev/harness-e2e/
           touch pages-source/.nojekyll
