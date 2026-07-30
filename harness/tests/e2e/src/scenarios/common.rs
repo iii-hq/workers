@@ -100,6 +100,47 @@ pub fn state_value(response: Value) -> Value {
     }
 }
 
+pub fn requested_once(arguments: &Value) -> bool {
+    arguments.get("once").and_then(Value::as_bool) == Some(true)
+        || arguments
+            .pointer("/lifecycle/once")
+            .and_then(Value::as_bool)
+            == Some(true)
+}
+
+pub fn is_wake_registration(arguments: &Value) -> bool {
+    arguments.get("function_id").is_none_or(Value::is_null)
+        && arguments.get("target").is_none_or(|target| {
+            target.is_null()
+                || target.get("function_id").and_then(Value::as_str) == Some("harness::send")
+        })
+}
+
+pub fn trigger_fired_records(transcript: &Value) -> Vec<&Value> {
+    transcript
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("custom"))
+        .filter(|custom| custom.get("custom_type").and_then(Value::as_str) == Some("trigger_fired"))
+        .filter_map(|custom| custom.get("data"))
+        .collect()
+}
+
+pub async fn active_binding_count(context: &E2eContext, session_id: &str) -> anyhow::Result<usize> {
+    Ok(context
+        .trigger_value(
+            "harness::triggers::list",
+            json!({ "session_id": session_id }),
+        )
+        .await?
+        .get("subscriptions")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(usize::MAX))
+}
+
 pub fn evaluate_text_response<'a>(
     _context: &'a E2eContext,
     observation: &'a ScenarioObservation,

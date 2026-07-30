@@ -48,6 +48,16 @@ scenario through one global `allow: ["*"]` policy:
   the namespaced `state`-trigger fallback. The evaluator queries the resulting
   tables, verifies trigger provenance from session metadata, and checks that all
   run-owned triggers were removed.
+- `research_pipeline`: arms article and fan-in wakes before fetching a
+  Wikipedia page, directly spawns two least-privilege analysts, and returns
+  their barrier-gated research brief in the coordinator session.
+- `mechanical_reaction`: mirrors a state event through a zero-token call
+  binding, then wakes the original session from the mirrored state write.
+- `timer_wake`: parks the original session on a relative timer, verifies the
+  fired wake turn, and checks automatic binding retirement.
+- `receiving_operation`: runs three least-privilege database couriers, keeps a
+  live ledger without model turns, and verifies a single database completion
+  wake with no polling or surviving trigger machinery.
 
 List the code-defined ids used by CI:
 

@@ -456,6 +456,7 @@ mod tests {
             pending_function_calls: Vec::new(),
             children: Vec::new(),
             expects_wake,
+            armed_wakes: Vec::new(),
             queued: Vec::new(),
             result: None,
             result_error: None,

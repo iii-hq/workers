@@ -193,6 +193,13 @@ start_process harness \
   --url "$iii_url"
 wait_for_function harness::send
 
+if [[ "$HARNESS_E2E_SCENARIO" == "research_pipeline" ]]; then
+  start_process web \
+    "$repo_root/web/target/release/web" \
+    --url "$iii_url"
+  wait_for_function web::fetch
+fi
+
 "$e2e_bin" run \
   --url "$iii_url" \
   --model "$HARNESS_E2E_MODEL" \

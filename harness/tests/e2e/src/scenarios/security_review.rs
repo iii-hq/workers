@@ -22,6 +22,7 @@ For each snippet, identify the vulnerability, explain its impact, and recommend 
             max_total_tokens: 49_152,
             stuck_timeout_seconds: 120,
         },
+        denied_functions: &[],
         threshold: 80,
         criteria: vec![
             CriterionSpec {

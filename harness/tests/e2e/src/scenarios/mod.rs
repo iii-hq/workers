@@ -13,9 +13,13 @@ use crate::report::HardGateReport;
 
 pub mod common;
 pub mod direct_answer;
+pub mod mechanical_reaction;
 pub mod persistent_state;
 pub mod reactive_automation;
+pub mod receiving_operation;
+pub mod research_pipeline;
 pub mod security_review;
+pub mod timer_wake;
 
 pub type EvaluationFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ObjectiveEvaluation>> + Send + 'a>>;
@@ -68,6 +72,7 @@ pub struct ScenarioSpec {
     pub id: &'static str,
     pub prompt: String,
     pub execution: ExecutionPolicy,
+    pub denied_functions: &'static [&'static str],
     pub threshold: u8,
     pub criteria: Vec<CriterionSpec>,
     pub judge_reference: Option<Value>,
@@ -139,14 +144,26 @@ pub enum ScenarioId {
     SecurityReview,
     #[value(name = "reactive_automation")]
     ReactiveAutomation,
+    #[value(name = "research_pipeline")]
+    ResearchPipeline,
+    #[value(name = "mechanical_reaction")]
+    MechanicalReaction,
+    #[value(name = "timer_wake")]
+    TimerWake,
+    #[value(name = "receiving_operation")]
+    ReceivingOperation,
 }
 
 impl ScenarioId {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 8] = [
         Self::DirectAnswer,
         Self::PersistentState,
         Self::SecurityReview,
         Self::ReactiveAutomation,
+        Self::ResearchPipeline,
+        Self::MechanicalReaction,
+        Self::TimerWake,
+        Self::ReceivingOperation,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -155,6 +172,10 @@ impl ScenarioId {
             Self::PersistentState => persistent_state::ID,
             Self::SecurityReview => security_review::ID,
             Self::ReactiveAutomation => reactive_automation::ID,
+            Self::ResearchPipeline => research_pipeline::ID,
+            Self::MechanicalReaction => mechanical_reaction::ID,
+            Self::TimerWake => timer_wake::ID,
+            Self::ReceivingOperation => receiving_operation::ID,
         }
     }
 
@@ -164,6 +185,10 @@ impl ScenarioId {
             Self::PersistentState => persistent_state::scenario(run_id),
             Self::SecurityReview => security_review::scenario(run_id),
             Self::ReactiveAutomation => reactive_automation::scenario(run_id),
+            Self::ResearchPipeline => research_pipeline::scenario(run_id),
+            Self::MechanicalReaction => mechanical_reaction::scenario(run_id),
+            Self::TimerWake => timer_wake::scenario(run_id),
+            Self::ReceivingOperation => receiving_operation::scenario(run_id),
         }
     }
 }
@@ -184,13 +209,13 @@ pub fn selected(requested: &[ScenarioId]) -> Vec<ScenarioId> {
 mod tests {
     use super::*;
     #[test]
-    fn registry_contains_four_unique_valid_scenarios() {
+    fn registry_contains_eight_unique_valid_scenarios() {
         let mut ids = HashSet::new();
         for scenario in ScenarioId::ALL {
             assert!(ids.insert(scenario.as_str()));
             scenario.spec("run").validate().unwrap();
         }
-        assert_eq!(ids.len(), 4);
+        assert_eq!(ids.len(), 8);
     }
 
     #[test]

@@ -33,6 +33,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             max_total_tokens: SCENARIO_MAX_TOTAL_TOKENS,
             stuck_timeout_seconds: STUCK_WATCHDOG_SECONDS,
         },
+        denied_functions: &[],
         threshold: 90,
         criteria: vec![
             CriterionSpec {
