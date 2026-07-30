@@ -1,14 +1,16 @@
 /**
- * Native change capture (`capture: native` — postgres and file-backed sqlite).
+ * Native change capture (`capture: native` — postgres, file-backed sqlite,
+ * and mysql).
  *
  * Each native handle points at the same physical database as its
  * statements-path sibling (`pg_native_db` ↔ `pg_db`, `sqlite_native_db` ↔
- * `sqlite_db`). A write that enters through the sibling's pool is — from the
- * native handle's perspective — an external client: different pool,
- * different connections, invisible to SQL classification. If the native
- * subscriber still hears it, the cross-client claim holds end-to-end
- * (postgres: DDL triggers → pg_notify → dedicated LISTEN connection;
- * sqlite: DDL triggers → changelog table → fs-watch drain).
+ * `sqlite_db`, `mysql_native_db` ↔ `mysql_db`). A write that enters through
+ * the sibling's pool is — from the native handle's perspective — an
+ * external client: different pool, different connections, invisible to SQL
+ * classification. If the native subscriber still hears it, the cross-client
+ * claim holds end-to-end (postgres: DDL triggers → pg_notify → dedicated
+ * LISTEN connection; sqlite: DDL triggers → changelog table → fs-watch
+ * drain; mysql: the binlog replication stream, nothing installed).
  *
  * Cases carry `applies` for the sibling driver so they run once inside that
  * driver's loop, and address the native handle explicitly in payloads.
@@ -772,10 +774,13 @@ function caseSensitivityCase(target: NativeTarget): TestCase {
         if (target.uppercaseBindingCaptures) {
           const viaUpper = await upper.next()
           expectEqual(viaUpper.op, 'insert', 'uppercase binding hears the write')
-        } else {
-          await sleep(SILENCE_WINDOW_MS)
-          upper.expectDrained()
         }
+        // Exactly one event per subscriber, ever: a differently-cased
+        // reinstall must converge on ONE trigger set — a second set would
+        // double-log every write and fail here.
+        await sleep(SILENCE_WINDOW_MS)
+        exact.expectDrained()
+        upper.expectDrained()
       } finally {
         upperTrigger.unregister()
         upperFn.unregister()

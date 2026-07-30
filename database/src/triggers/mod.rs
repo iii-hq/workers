@@ -16,6 +16,13 @@
 //!   dedicated connection. File-backed sqlite (`sqlite_watch.rs`): triggers →
 //!   changelog table → fs-watch drain. MySQL (`mysql_binlog.rs`): the binlog
 //!   replication stream — nothing installed in the schema at all.
+//!
+//! Native delivery is at-most-once by contract: events raised while a
+//! listener is down — including the instants around a hot reload that
+//! restarts it, or an interactive transaction that outlives a reload of its
+//! database's config and commits on the OLD database — can be lost. It is a
+//! doorbell, not a ledger; subscribers needing a gapless view reconcile on
+//! their own schedule.
 
 pub mod bus;
 pub mod handler;

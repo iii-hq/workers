@@ -178,10 +178,10 @@ impl RowChangedHandler {
                     .await
                     .map_err(|e| config_error(format!("db `{}`: {e}", cfg.db)))?;
             }
-            _ => {
-                // finalize() enforces native ⇒ postgres|sqlite; a missing
-                // pool means config and pools drifted, which apply_config
-                // forbids.
+            None => {
+                // Every driver supports native capture, so reaching this arm
+                // means exactly one thing: config and pools drifted, which
+                // apply_config forbids.
                 return Err(config_error(format!(
                     "db `{}`: no pool available for native capture",
                     cfg.db

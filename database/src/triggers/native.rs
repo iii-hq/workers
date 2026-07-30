@@ -127,13 +127,16 @@ pub(crate) fn parse_notification(db: &str, payload: &str) -> Option<RowChangedEv
 }
 
 enum TaskHandle {
-    /// Postgres LISTEN task — a tokio task, aborted on removal.
+    /// Postgres LISTEN / mysql binlog task — a tokio task, aborted on removal.
     Async(tokio::task::JoinHandle<()>),
     /// Sqlite watcher — a dedicated OS thread (rusqlite is sync and the
-    /// connection must stay put); told to stop via flag, not joined: it
-    /// notices within one fallback tick and exits on its own.
+    /// connection must stay put); told to stop via flag plus a wake poke so
+    /// it exits within one drain instead of one fallback tick — a stopped
+    /// watcher lingering next to its replacement would double-drain and
+    /// double-GC the same changelog.
     Thread {
         stop: Arc<std::sync::atomic::AtomicBool>,
+        wake: std::sync::mpsc::Sender<()>,
     },
 }
 
@@ -141,7 +144,10 @@ impl TaskHandle {
     fn stop(&self) {
         match self {
             TaskHandle::Async(handle) => handle.abort(),
-            TaskHandle::Thread { stop } => stop.store(true, std::sync::atomic::Ordering::Relaxed),
+            TaskHandle::Thread { stop, wake } => {
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                let _ = wake.send(());
+            }
         }
     }
 }
@@ -228,22 +234,39 @@ impl NativeListeners {
                     return None;
                 };
                 let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
                 let bus = Arc::clone(&self.bus);
                 let rt = tokio::runtime::Handle::current();
                 let db_name = name.to_string();
                 let thread_stop = Arc::clone(&stop);
-                std::thread::Builder::new()
+                let thread_wake = wake_tx.clone();
+                if let Err(e) = std::thread::Builder::new()
                     .name(format!("sqlite-capture-{name}"))
                     .spawn(move || {
-                        super::sqlite_watch::run_watcher(&db_name, &path, &thread_stop, |event| {
-                            // Bridge sync → async: the watcher thread parks on
-                            // the runtime while the bus fans out.
-                            rt.block_on(bus.emit_event(event));
-                            true
-                        });
+                        super::sqlite_watch::run_watcher(
+                            &db_name,
+                            &path,
+                            &thread_stop,
+                            thread_wake,
+                            &wake_rx,
+                            |event| {
+                                // Bridge sync → async: the watcher thread parks
+                                // on the runtime while the bus fans out.
+                                rt.block_on(bus.emit_event(event));
+                                true
+                            },
+                        );
                     })
-                    .ok()?;
-                Some(TaskHandle::Thread { stop })
+                {
+                    // A database with no watcher hears nothing — that must
+                    // never happen silently.
+                    tracing::warn!(db = %name, error = %e, "sqlite capture watcher thread failed to spawn");
+                    return None;
+                }
+                Some(TaskHandle::Thread {
+                    stop,
+                    wake: wake_tx,
+                })
             }
             crate::config::DriverKind::Mysql => Some(TaskHandle::Async(tokio::spawn(
                 super::mysql_binlog::run_binlog(

@@ -51,19 +51,31 @@ pub(crate) fn sqlite_file_path(url: &str) -> Option<PathBuf> {
 /// triggers (SQLite has no statement-level triggers or transition tables).
 /// Idempotent to reinstall; trigger names embed the table because SQLite
 /// trigger names are schema-global, not per-table like postgres.
+///
+/// Two properties matter here:
+/// * The whole script runs inside ONE explicit transaction. `execute_batch`
+///   autocommits per statement, so without it a reinstall (second binding on
+///   the same table) would open a window with the triggers dropped — an
+///   external write landing there would be lost silently.
+/// * The trigger-name suffix and the recorded `tbl` value are lowercased.
+///   SQLite resolves identifiers case-insensitively, so bindings spelled in
+///   different cases must converge on the SAME trigger set and the same
+///   changelog spelling — never a second set double-logging every write.
 pub(crate) fn install_sql(table: &str) -> Result<String, String> {
     let target = quote_table(table)?;
+    let spelling = table.trim().to_lowercase();
     let name = |suffix: &str| {
         format!(
             "\"iii_row_changed_{suffix}_{}\"",
-            table.trim().replace('"', "\"\"")
+            spelling.replace('"', "\"\"")
         )
     };
     let ins = name("ins");
     let upd = name("upd");
     let del = name("del");
     Ok(format!(
-        r#"CREATE TABLE IF NOT EXISTS {CHANGELOG} (
+        r#"BEGIN IMMEDIATE;
+CREATE TABLE IF NOT EXISTS {CHANGELOG} (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   tbl TEXT NOT NULL,
   op TEXT NOT NULL
@@ -77,8 +89,9 @@ BEGIN INSERT INTO {CHANGELOG} (tbl, op) VALUES ('{tbl}', 'update'); END;
 DROP TRIGGER IF EXISTS {del};
 CREATE TRIGGER {del} AFTER DELETE ON {target} FOR EACH ROW
 BEGIN INSERT INTO {CHANGELOG} (tbl, op) VALUES ('{tbl}', 'delete'); END;
+COMMIT;
 "#,
-        tbl = table.trim().replace('\'', "''"),
+        tbl = spelling.replace('\'', "''"),
     ))
 }
 
@@ -138,11 +151,16 @@ fn drain(conn: &Connection, cursor: i64) -> rusqlite::Result<(Vec<Run>, i64)> {
 /// The watcher thread body: one dedicated connection (the pool cannot serve
 /// this — `data_version` is per-connection), an fs watch for wake-up, drain
 /// on every wake. Each event goes to `on_event`; returning `false` from it
-/// ends the watcher (the bus side is gone). Returns when `stop` is set.
+/// ends the watcher (the bus side is gone). Returns when `stop` is set —
+/// promptly, because the spawner holds the `wake` sender and pokes it after
+/// setting the flag; without that poke a stopped watcher would linger for up
+/// to [`FALLBACK_TICK`], overlapping its replacement on the same changelog.
 pub(crate) fn run_watcher(
     db_name: &str,
     path: &Path,
     stop: &AtomicBool,
+    wake_tx: mpsc::Sender<()>,
+    wake_rx: &mpsc::Receiver<()>,
     mut on_event: impl FnMut(RowChangedEvent) -> bool,
 ) {
     let conn = match Connection::open(path) {
@@ -174,7 +192,6 @@ pub(crate) fn run_watcher(
     // Watch the parent directory, filtered to this database's files — the
     // -wal/-journal siblings appear and disappear (checkpoints), so watching
     // the paths themselves would race their recreation.
-    let (wake_tx, wake_rx) = mpsc::channel::<()>();
     let file_prefix = path.file_name().map(|n| n.to_string_lossy().into_owned());
     let mut watcher = {
         let wake = wake_tx.clone();
@@ -295,12 +312,51 @@ mod tests {
         assert!(sql.contains("AFTER INSERT ON \"orders\""));
         assert!(sql.contains("\"iii_row_changed_del_orders\""));
         assert!(sql.contains("VALUES ('orders', 'update')"));
+        // Reinstall must be atomic: execute_batch autocommits per statement,
+        // so the script carries its own transaction.
+        assert!(sql.starts_with("BEGIN IMMEDIATE;"));
+        assert!(sql.trim_end().ends_with("COMMIT;"));
         assert!(install_sql("  ").is_err());
 
-        // Hostile names stay inside identifier quotes and string literals.
+        // Hostile names stay inside identifier quotes and string literals
+        // (the recorded spelling is lowercased along with everything else).
         let evil = "t'; DROP TABLE x; --";
         let sql = install_sql(evil).unwrap();
-        assert!(sql.contains("VALUES ('t''; DROP TABLE x; --', 'insert')"));
+        assert!(sql.contains("VALUES ('t''; drop table x; --', 'insert')"));
+    }
+
+    /// Bindings spelled in different cases must converge on ONE trigger set
+    /// writing ONE changelog row per change — never a second set that
+    /// double-logs every write. (SQLite resolves identifiers
+    /// case-insensitively, and install_sql normalizes the embedded spelling;
+    /// this pins both halves against a real database.)
+    #[test]
+    fn differently_cased_reinstall_never_double_logs() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, n INT)")
+            .unwrap();
+        conn.execute_batch(&install_sql("items").unwrap()).unwrap();
+        conn.execute_batch(&install_sql("ITEMS").unwrap()).unwrap();
+
+        let triggers: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'trigger'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(triggers, 3, "reinstall must replace, not accumulate");
+
+        conn.execute_batch("INSERT INTO items (n) VALUES (1)")
+            .unwrap();
+        let rows: Vec<(String, String)> = conn
+            .prepare(&format!("SELECT tbl, op FROM {CHANGELOG}"))
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, vec![("items".to_string(), "insert".to_string())]);
     }
 
     #[test]
@@ -344,11 +400,15 @@ mod tests {
 
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let stop_wake = wake_tx.clone();
         let thread = {
             let stop = Arc::clone(&stop);
             let path = db_path.clone();
             std::thread::spawn(move || {
-                run_watcher("primary", &path, &stop, move |ev| tx.send(ev).is_ok())
+                run_watcher("primary", &path, &stop, wake_tx, &wake_rx, move |ev| {
+                    tx.send(ev).is_ok()
+                })
             })
         };
 
@@ -395,6 +455,7 @@ mod tests {
         );
 
         stop.store(true, Ordering::Relaxed);
+        let _ = stop_wake.send(());
         thread.join().unwrap();
     }
 
@@ -418,11 +479,15 @@ mod tests {
 
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let stop_wake = wake_tx.clone();
         let thread = {
             let stop = Arc::clone(&stop);
             let path = db_path.clone();
             std::thread::spawn(move || {
-                run_watcher("primary", &path, &stop, move |ev| tx.send(ev).is_ok())
+                run_watcher("primary", &path, &stop, wake_tx, &wake_rx, move |ev| {
+                    tx.send(ev).is_ok()
+                })
             })
         };
         std::thread::sleep(Duration::from_millis(300));
@@ -455,6 +520,7 @@ mod tests {
         }
 
         stop.store(true, Ordering::Relaxed);
+        let _ = stop_wake.send(());
         thread.join().unwrap();
     }
 }

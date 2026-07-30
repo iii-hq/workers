@@ -68,18 +68,24 @@ export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
   // sibling entry mid-typing and silently swallow it.
   const [pendingNames, setPendingNames] = useState<Record<string, string>>({})
   // Probe outcomes are keyed by handle and dropped on any edit of that
-  // handle — a stale "connected" next to a changed url would be a lie.
+  // handle — a stale "connected" next to a changed url would be a lie. The
+  // token guards the async completion: an edit/rename/remove while a probe
+  // is in flight bumps it, and the completion for the superseded probe is
+  // discarded instead of resurrecting a result for a url it never tested.
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({})
+  const testTokens = useRef<Record<string, number>>({})
 
   const commit = (nextDatabases: JsonObject) =>
     props.onChange({ ...value, databases: nextDatabases })
 
-  const clearTest = (name: string) =>
+  const clearTest = (name: string) => {
+    testTokens.current[name] = (testTokens.current[name] ?? 0) + 1
     setTestResults((r) => {
       const next = { ...r }
       delete next[name]
       return next
     })
+  }
 
   const setDb = (name: string, next: JsonObject) => {
     clearTest(name)
@@ -88,6 +94,7 @@ export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
 
   const runTest = async (name: string) => {
     const db = asObject(databases[name])
+    const token = (testTokens.current[name] = (testTokens.current[name] ?? 0) + 1)
     setTestResults((r) => ({ ...r, [name]: { status: 'testing' } }))
     let result: TestResult
     try {
@@ -106,6 +113,7 @@ export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
     } catch (e) {
       result = { status: 'done', ok: false, text: e instanceof Error ? e.message : String(e) }
     }
+    if (testTokens.current[name] !== token) return // superseded by an edit
     setTestResults((r) => ({ ...r, [name]: result }))
   }
 

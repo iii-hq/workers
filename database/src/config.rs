@@ -300,11 +300,26 @@ impl WorkerConfig {
             })?;
             if db.capture == CaptureMode::Native {
                 match db.driver {
-                    // Postgres captures via LISTEN/NOTIFY, mysql via the
-                    // binlog replication stream — server-side prerequisites
-                    // (ROW binlog, replication grants) are checked at
-                    // binding registration, where failures are actionable.
-                    DriverKind::Postgres | DriverKind::Mysql => {}
+                    // Postgres captures via LISTEN/NOTIFY; server-side
+                    // prerequisites are checked at binding registration,
+                    // where failures are actionable.
+                    DriverKind::Postgres => {}
+                    DriverKind::Mysql => {
+                        // Binlog events are filtered to the url's schema; a
+                        // url without one would capture every database on
+                        // the server — table names and change volumes from
+                        // schemas this handle was never meant to see.
+                        let has_schema = url::Url::parse(&db.url)
+                            .map(|u| !u.path().trim_start_matches('/').is_empty())
+                            .unwrap_or(false);
+                        if !has_schema {
+                            return Err(format!(
+                                "db `{name}`: `capture: native` on mysql requires the \
+                                 url to name a database (mysql://host/dbname) — binlog \
+                                 events are filtered to that schema"
+                            ));
+                        }
+                    }
                     DriverKind::Sqlite => {
                         // A `:memory:` database exists per connection — a
                         // watcher connection would open a different database
@@ -479,6 +494,18 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("file-backed"), "got: {err}");
+
+        // A schema-less mysql url would capture every database on the server.
+        let err = WorkerConfig::from_yaml(
+            "databases:\n  p:\n    url: mysql://u@h\n    capture: native\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("name a database"), "got: {err}");
+        let err = WorkerConfig::from_yaml(
+            "databases:\n  p:\n    url: mysql://u@h/\n    capture: native\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("name a database"), "got: {err}");
 
         // Default stays statements and stays out of the serialized form —
         // existing configs round-trip byte-identical.

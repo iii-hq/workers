@@ -46,6 +46,20 @@ export const ROW_CHANGED_CASES: TestCase[] = [
       })
 
       try {
+        // Registration propagates asynchronously; write only once the engine
+        // can see the binding, or a slow ack fails the case on timeout
+        // rather than on the behavior under test.
+        const registered = await iii.trigger<
+          Record<string, never>,
+          { registered_triggers: Array<{ trigger_type: string; function_id: string }> }
+        >({ function_id: 'engine::registered-triggers::list', payload: {} })
+        expect(
+          registered.registered_triggers.some(
+            (t) => t.trigger_type === 'database::row-changed' && t.function_id === functionId,
+          ),
+          'case-insensitive binding is visible to the engine',
+        )
+
         await call('database::execute', {
           db: driver,
           sql: `INSERT INTO ${table} (n) VALUES (${dialect.placeholder(1)})`,

@@ -41,10 +41,16 @@ pub(crate) const GRANT_HINT: &str =
 
 /// A server id for COM_REGISTER_SLAVE that stays clear of the low range
 /// operators typically hand-assign to real replicas. Collisions only matter
-/// between simultaneous replicas of the same server; pid keeps concurrent
-/// workers on one host apart.
-fn server_id() -> u32 {
-    1_000_000_000 + (std::process::id() % 1_000_000)
+/// between simultaneous replicas of the same server: the handle name keeps
+/// two `capture: native` databases in ONE worker apart (same-id replicas
+/// evict each other and reconnect-thrash forever), and the pid keeps
+/// concurrent workers on one host apart.
+fn server_id(db_name: &str) -> u32 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    db_name.hash(&mut hasher);
+    std::process::id().hash(&mut hasher);
+    1_000_000_000 + (hasher.finish() % 1_000_000) as u32
 }
 
 pub(crate) fn build_opts(url: &str, tls: &TlsConfig) -> Result<Opts, String> {
@@ -151,7 +157,7 @@ async fn stream_once(
     let (file, pos) = binlog_position(&mut conn).await?;
     let mut stream = conn
         .get_binlog_stream(
-            BinlogStreamRequest::new(server_id())
+            BinlogStreamRequest::new(server_id(db_name))
                 .with_filename(file.as_bytes())
                 .with_pos(pos),
         )
@@ -162,7 +168,11 @@ async fn stream_once(
     // One statement's rows can arrive chunked across several events; merge
     // ADJACENT same-(table, op) row events and flush on any other event —
     // every transaction ends with a non-rows event (Xid), so nothing is
-    // held past its commit.
+    // held past its commit. TableMapEvent is a flush point too: in row
+    // format every STATEMENT re-maps its table before its rows events,
+    // while the chunks of one statement share a single map — so flushing
+    // there yields exactly one event per statement (matching postgres)
+    // without breaking chunk merging.
     let mut pending: Option<(String, Op, u64)> = None;
     let flush = |pending: &mut Option<(String, Op, u64)>| {
         if let Some((table, op, n)) = pending.take() {
@@ -216,8 +226,8 @@ async fn stream_once(
                     }
                 }
             }
-            // Table maps prefix their rows events — not a boundary.
-            EventData::TableMapEvent(_) => {}
+            // A table map opens the next statement's rows — statement boundary.
+            EventData::TableMapEvent(_) => flush(&mut pending),
             // Anything else (Xid, Query, Rotate, Gtid, …) ends a statement.
             _ => flush(&mut pending),
         }
@@ -231,9 +241,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn server_id_stays_in_the_reserved_range() {
-        let id = server_id();
-        assert!((1_000_000_000..1_001_000_000).contains(&id));
+    fn server_id_stays_in_range_and_separates_handles() {
+        let a = server_id("primary");
+        let b = server_id("analytics");
+        for id in [a, b] {
+            assert!((1_000_000_000..1_001_000_000).contains(&id));
+        }
+        // Two native handles in one worker must register as DIFFERENT
+        // replicas — the server evicts duplicate server ids.
+        assert_ne!(a, b);
+        // Deterministic within a process: reconnects keep their identity.
+        assert_eq!(a, server_id("primary"));
     }
 
     /// The cross-client claim, mysql edition: writes from a plain client
