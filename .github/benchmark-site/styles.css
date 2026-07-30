@@ -116,36 +116,8 @@ select {
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 13px;
   color: var(--text);
   text-decoration: none;
-}
-
-.brand-mark {
-  display: grid;
-  grid-template-columns: repeat(3, 5px);
-  align-items: end;
-  gap: 3px;
-  width: 22px;
-  height: 24px;
-}
-
-.brand-mark span {
-  display: block;
-  border-radius: 2px;
-  background: var(--accent);
-}
-
-.brand-mark span:nth-child(1) {
-  height: 13px;
-}
-
-.brand-mark span:nth-child(2) {
-  height: 20px;
-}
-
-.brand-mark span:nth-child(3) {
-  height: 16px;
 }
 
 .brand-copy {
