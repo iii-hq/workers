@@ -144,6 +144,29 @@
           </div>
         </div>
       </div>
+
+      <dialog
+        id="session-transcript-dialog"
+        class="session-transcript-dialog"
+        aria-labelledby="session-transcript-title"
+      >
+        <div class="session-transcript-shell">
+          <header class="session-transcript-header">
+            <div>
+              <div class="section-kicker">Session transcript</div>
+              <h2 id="session-transcript-title">Execution conversation</h2>
+              <p id="session-transcript-context"></p>
+            </div>
+            <button
+              id="session-transcript-close"
+              class="session-transcript-close"
+              type="button"
+              aria-label="Close session transcript"
+            >×</button>
+          </header>
+          <div id="session-transcript-body" class="session-transcript-body"></div>
+        </div>
+      </dialog>
     </main>
 
     <footer>

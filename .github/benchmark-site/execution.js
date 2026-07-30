@@ -36,6 +36,11 @@
     score: document.querySelector("#detail-score"),
     status: document.querySelector("#execution-status"),
     subtitle: document.querySelector("#execution-subtitle"),
+    transcriptBody: document.querySelector("#session-transcript-body"),
+    transcriptClose: document.querySelector("#session-transcript-close"),
+    transcriptContext: document.querySelector("#session-transcript-context"),
+    transcriptDialog: document.querySelector("#session-transcript-dialog"),
+    transcriptTitle: document.querySelector("#session-transcript-title"),
     title: document.querySelector("#execution-title"),
     workflowLink: document.querySelector("#workflow-link"),
     workflowRuntime: document.querySelector("#workflow-runtime"),
@@ -481,9 +486,16 @@
     }
   }
 
+  function renderConversationText(value) {
+    return escapeHtml(value)
+      .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replaceAll("\n", "<br>");
+  }
+
   function conversationMessage(event) {
     const isAssistant = event.role === "assistant";
-    const label = isAssistant ? "Agent" : "User";
+    const label = isAssistant ? "assistant" : "you";
     const context = [event.provider, event.model].filter(Boolean).join("/");
     const time = formatEventTime(event.timestamp);
     const metadata = [context, time].filter(Boolean).join(" · ");
@@ -493,13 +505,12 @@
         class="conversation-event conversation-message conversation-${escapeHtml(event.role)}"
         data-kind="message"
       >
-        <div class="conversation-rail-mark" aria-hidden="true">${isAssistant ? "A" : "U"}</div>
         <div class="conversation-card">
           <header>
-            <strong>${label}</strong>
+            <strong><span aria-hidden="true">${isAssistant ? ">" : "$"}</span> ${label}</strong>
             <span>${escapeHtml(metadata)}</span>
           </header>
-          <div class="conversation-copy">${escapeHtml(event.text)}</div>
+          <div class="conversation-copy">${renderConversationText(event.text)}</div>
         </div>
       </article>
     `;
@@ -525,10 +536,10 @@
         ${event.isError ? "open" : ""}
       >
         <summary>
-          <span class="conversation-tool-icon" aria-hidden="true">${event.isError ? "!" : "↳"}</span>
+          <span class="conversation-tool-icon" aria-hidden="true">${event.isError ? "×" : "✓"}</span>
           <span class="conversation-tool-name">
-            <small>Function${time ? ` · ${escapeHtml(time)}` : ""}</small>
-            <strong class="mono">${escapeHtml(event.functionId)}</strong>
+            <small>${event.status === "pending" ? "triggering" : "triggered"} <i>ƒ</i></small>
+            <strong class="mono">${escapeHtml(event.functionId)}${time ? ` <em>· ${escapeHtml(time)}</em>` : ""}</strong>
           </span>
           <span class="conversation-tool-status">${status}</span>
           <span class="conversation-chevron" aria-hidden="true">⌄</span>
@@ -594,6 +605,55 @@
         </div>
       </div>
     `;
+  }
+
+  function renderConversationLaunch(messages, run) {
+    const transcript = window.HarnessExecutionTranscript;
+    const events = transcript.normalizeTranscript(messages);
+    const summary = transcript.summarizeTranscript(events);
+    return `
+      <section class="conversation-launch">
+        <div>
+          <span>Session transcript</span>
+          <strong>${summary.messages} messages · ${summary.calls} functions</strong>
+          <small class="${summary.errors ? "has-errors" : ""}">
+            ${summary.errors
+              ? `${summary.errors} error${summary.errors === 1 ? "" : "s"} to inspect`
+              : `${escapeHtml(run.session_id || "No session id")} · read-only`}
+          </small>
+        </div>
+        <button type="button" class="conversation-open">Open chat</button>
+      </section>
+    `;
+  }
+
+  function openConversationDialog(run, context) {
+    const messages = Array.isArray(run.transcript?.messages)
+      ? run.transcript.messages
+      : [];
+    elements.transcriptTitle.textContent =
+      `${titleCase(context.scenarioId)} · run ${context.runIndex + 1}`;
+    elements.transcriptContext.textContent = [
+      context.subjectLabel,
+      run.session_id ? `session ${run.session_id}` : "session unavailable",
+      run.run_id ? `run ${run.run_id}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    elements.transcriptBody.innerHTML = renderConversation(messages);
+    attachConversationControls(elements.transcriptBody);
+    if (!elements.transcriptDialog.open) elements.transcriptDialog.showModal();
+  }
+
+  function attachTranscriptDialogControls() {
+    elements.transcriptClose.addEventListener("click", () => {
+      elements.transcriptDialog.close();
+    });
+    elements.transcriptDialog.addEventListener("click", (event) => {
+      if (event.target === elements.transcriptDialog) {
+        elements.transcriptDialog.close();
+      }
+    });
   }
 
   function attachConversationControls(container) {
@@ -696,7 +756,7 @@
     `;
   }
 
-  function renderRunContent(container, run) {
+  function renderRunContent(container, run, context) {
     const messages = Array.isArray(run.transcript?.messages)
       ? run.transcript.messages
       : [];
@@ -709,13 +769,9 @@
         ${metricBlock("Retries", compactNumber(run.retry_attempts?.length || 0, 0))}
         ${metricBlock("Session", run.session_id || "Unknown")}
       </div>
+      ${renderConversationLaunch(messages, run)}
       <div class="run-sections">
         ${runSection("Failures", renderFailureList(run.failures))}
-        ${runSection(
-          "Execution conversation",
-          renderConversation(messages),
-          { wide: true },
-        )}
         ${runSection("Hard gates", renderGateTable(run.hard_gates), { wide: true })}
         ${runSection("Scored criteria", renderCriteriaTable(run.criteria), { wide: true })}
         ${runSection("Usage and cost", usageBlocks(run), { wide: true })}
@@ -731,7 +787,9 @@
         )}
       </div>
     `;
-    attachConversationControls(container);
+    container.querySelector(".conversation-open")?.addEventListener("click", () => {
+      openConversationDialog(run, context);
+    });
   }
 
   function renderFullScenario(record) {
@@ -819,7 +877,16 @@
           const container = element.querySelector(".run-content[data-pending='true']");
           if (!container) return;
           container.removeAttribute("data-pending");
-          renderRunContent(container, run);
+          renderRunContent(container, run, {
+            runIndex: index,
+            scenarioId: record.scenario_id,
+            subjectLabel: [
+              record.report?.subject?.provider,
+              record.report?.subject?.model,
+            ]
+              .filter(Boolean)
+              .join("/"),
+          });
         });
       });
     });
@@ -994,6 +1061,7 @@
   }
 
   async function initialize() {
+    attachTranscriptDialogControls();
     if (!execution) {
       elements.loading.hidden = true;
       elements.error.hidden = false;
