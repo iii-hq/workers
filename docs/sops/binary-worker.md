@@ -1451,7 +1451,7 @@ iii worker add <worker>
 ## Run
 
 ```bash
-iii start
+iii --config config.yaml
 ```
 
 ## Quickstart

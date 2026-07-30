@@ -41,19 +41,18 @@ alongside it for the full loop.
 
 ## Quickstart
 
-Install the engine, start it, then add harness and the console from a second
-terminal in the same folder:
+Install the engine, init a project, start it, then add harness and the
+console from a second terminal in the same folder:
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-mkdir iii-app && cd iii-app
-touch config.yaml
-iii -c config.yaml
+iii project init iii-app && cd iii-app
+iii
 ```
 
 ```bash
-# New terminal, SAME folder. `iii worker add` writes to the config.yaml in the
-# current directory, so it has to match the directory the engine runs in.
+# New terminal, same folder. `iii worker add` targets the running engine's
+# config.yaml, so it has to match the directory the engine runs in.
 cd iii-app
 iii worker add harness console
 ```

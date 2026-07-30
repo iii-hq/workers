@@ -15,8 +15,7 @@ iii worker add http
 ```
 
 `iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker on the next
-`iii start`.
+`~/.iii/config.yaml`, and the engine starts the worker the next time it boots.
 
 ## Quickstart
 

@@ -82,7 +82,7 @@ folder name; see [`docs/sops/new-worker.md`](docs/sops/new-worker.md) §1).
 That is the whole user-facing install — no source build, no
 `sudo install`, no `--manifest | jq` verification step. `iii worker add`
 fetches the binary, writes a config block into `~/.iii/config.yaml`,
-and the engine starts the worker on the next `iii start`.
+and the engine starts the worker the next time it boots.
 
 ### Companion workers
 
@@ -235,8 +235,8 @@ iii worker add <worker>
 ```
 
 `iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker on the next
-`iii start`.
+`~/.iii/config.yaml`, and the engine starts the worker the next time it
+boots.
 
 ## Quickstart
 

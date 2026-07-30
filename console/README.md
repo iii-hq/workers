@@ -104,13 +104,19 @@ Defined in [`src/functions/status.rs`](src/functions/status.rs).
 iii worker add console
 ```
 
-This fetches the prebuilt binary, writes a `console:` block into `~/.iii/config.yaml`, and the engine launches the worker on the next `iii start`.
+This fetches the prebuilt binary, writes a `console:` block into `~/.iii/config.yaml`, and the engine launches the worker the next time it boots.
 
 ## Quickstart
 
 ```bash
-iii start                       # engine on ws://127.0.0.1:49134
-console --http-port 3113        # UI + /ws proxy on :3113
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+iii project init iii-app && cd iii-app
+iii                              # engine on ws://127.0.0.1:49134
+```
+
+```bash
+# New terminal, same folder
+iii worker add console          # UI + /ws proxy on :3113
 open http://127.0.0.1:3113
 ```
 
