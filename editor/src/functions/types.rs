@@ -364,10 +364,10 @@ pub struct GitHunksInput {
     /// Which comparison to make. Defaults to `worktree`.
     #[serde(default)]
     pub against: Against,
-    /// Unchanged lines kept around each hunk in `patch`. Omitted, it follows
-    /// the worker's `diff_context_lines` setting. Pass 0 for ranges that match
-    /// a gutter exactly — with context, a hunk's reported range widens to
-    /// include it.
+    /// Unchanged lines kept around each hunk in `patch`. Defaults to 0, which
+    /// keeps `hunks` exactly the lines that changed — the ranges a gutter
+    /// paints. Pass 3 or so for a patch a person will read, and note that the
+    /// reported ranges widen to include the context you asked for.
     #[serde(default)]
     pub context_lines: Option<u32>,
 }

@@ -174,7 +174,10 @@ export function createApi(host: Host) {
         removed: number
         untracked: boolean
         patch: string
-      }>('editor::git::hunks', { path, against: 'head' }),
+        // Context is requested explicitly: the worker defaults to zero so
+        // that `hunks` stays gutter-accurate, but this view renders the patch
+        // for a person to read.
+      }>('editor::git::hunks', { path, against: 'head', context_lines: 3 }),
     show: (path: string) =>
       call<{ path: string; rev: string; content: string; exists: boolean }>('editor::git::show', {
         path,

@@ -651,16 +651,12 @@ fn register_git_hunks(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>) {
                     Some(dir) => dir,
                     None => active_root(&bus).await,
                 };
-                // Context is a knob rather than a constant: a gutter wants
-                // `-U0` ranges, a person reading the patch wants surrounding
-                // lines. Defaulting to 3 favours the reader, because the
-                // ranges are still correct — just wider.
-                let context = format!(
-                    "-U{}",
-                    req.context_lines
-                        .map(|c| c as usize)
-                        .unwrap_or(cfg.diff_context_lines)
-                );
+                // Defaults to zero, and that is load-bearing: `Hunk` is
+                // documented as the ranges a gutter paints, and any context at
+                // all widens them past the lines that actually changed. A
+                // caller who wants a readable patch asks for context
+                // explicitly and accepts the wider ranges that come with it.
+                let context = format!("-U{}", req.context_lines.unwrap_or(0));
                 let mut args = vec!["diff", &context, "--no-color"];
                 match req.against {
                     Against::Worktree => {}
@@ -695,14 +691,7 @@ fn register_git_hunks(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>) {
                 // byte cap lands mid-codepoint the moment a diff contains any
                 // multibyte character. Cut back to the last boundary at or
                 // before the cap.
-                let mut patch = out.stdout;
-                if patch.len() > cfg.max_diff_bytes {
-                    let mut cut = cfg.max_diff_bytes;
-                    while cut > 0 && !patch.is_char_boundary(cut) {
-                        cut -= 1;
-                    }
-                    patch.truncate(cut);
-                }
+                let patch = truncate_on_boundary(out.stdout, cfg.max_diff_bytes);
                 Ok::<_, Error>(GitHunksOutput {
                     path: req.path,
                     against: req.against,
@@ -934,6 +923,24 @@ fn relative_to(path: &str, root: &str) -> String {
         .filter(|rest| !rest.is_empty())
         .unwrap_or(path)
         .to_string()
+}
+
+/// Cut a string to at most `max_bytes`, never mid-codepoint.
+///
+/// `String::truncate` panics on a non-boundary index, and a byte cap lands
+/// inside a multibyte character the moment a diff contains one. Cutting back to
+/// the previous boundary loses at most three bytes of an already-truncated
+/// patch, which is the right trade against a panicking handler.
+fn truncate_on_boundary(mut text: String, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut cut = max_bytes;
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    text.truncate(cut);
+    text
 }
 
 /// Ahead/behind straight from git, for the sync response.
@@ -1169,6 +1176,35 @@ mod parity_tests {
             group_matches(&raw, "/repo").files[0].path,
             "/elsewhere/a.rs"
         );
+    }
+
+    /// The case that used to panic: a cap landing inside a multibyte char.
+    #[test]
+    fn truncate_never_splits_a_codepoint() {
+        // "é" is two bytes, so a cap of 2 lands inside the second one.
+        let text = "aé".to_string();
+        assert_eq!(text.len(), 3);
+        assert_eq!(truncate_on_boundary(text.clone(), 2), "a");
+        // A cap on a boundary keeps everything up to it.
+        assert_eq!(truncate_on_boundary(text.clone(), 3), "aé");
+        // Under the cap is returned untouched.
+        assert_eq!(truncate_on_boundary(text, 99), "aé");
+    }
+
+    #[test]
+    fn truncate_handles_a_cap_of_zero() {
+        assert_eq!(truncate_on_boundary("é".to_string(), 0), "");
+    }
+
+    /// A patch of nothing but multibyte characters must still cut cleanly.
+    #[test]
+    fn truncate_survives_an_all_multibyte_string() {
+        let text = "→→→→".to_string();
+        for cap in 0..=text.len() {
+            let cut = truncate_on_boundary(text.clone(), cap);
+            assert!(cut.len() <= cap, "cap {cap} overshot");
+            assert!(text.starts_with(&cut), "cap {cap} produced a non-prefix");
+        }
     }
 
     #[test]

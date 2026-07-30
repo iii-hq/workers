@@ -88,9 +88,45 @@ async fn boot() -> Option<Harness> {
         }
     };
 
-    sleep(Duration::from_millis(1500)).await;
-
     Some(Harness { iii, worker })
+}
+
+/// Call `editor::diff` until it resolves or `budget` runs out.
+///
+/// A `function_not_found` means the worker has not finished booting, which is
+/// worth retrying; anything else is a real failure and is returned at once.
+async fn await_function(
+    client: &iii_sdk::IIIClient,
+    budget: Duration,
+) -> Option<serde_json::Value> {
+    let deadline = std::time::Instant::now() + budget;
+    let mut last: Option<String> = None;
+    while std::time::Instant::now() < deadline {
+        let call = client.trigger(TriggerRequest {
+            function_id: "editor::diff".into(),
+            payload: json!({
+                "before": "a\nb\nc\n",
+                "after": "a\nB\nc\n",
+                "path": "sample.txt",
+            }),
+            action: None,
+            timeout_ms: Some(5_000),
+        });
+        match timeout(Duration::from_secs(10), call).await {
+            Ok(Ok(value)) => return Some(value),
+            Ok(Err(e)) => {
+                let text = e.to_string();
+                if !text.contains("not found") {
+                    panic!("editor::diff failed: {text}");
+                }
+                last = Some(text);
+            }
+            Err(_) => last = Some("trigger timed out".to_string()),
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+    eprintln!("gave up waiting for editor::diff: {last:?}");
+    None
 }
 
 #[tokio::test]
@@ -101,24 +137,14 @@ async fn diff_round_trips_over_the_bus() {
     };
 
     let client = register_worker(ENGINE_WS, InitOptions::default());
-    sleep(Duration::from_millis(500)).await;
 
-    let result = timeout(
-        Duration::from_secs(10),
-        client.trigger(TriggerRequest {
-            function_id: "editor::diff".into(),
-            payload: json!({
-                "before": "a\nb\nc\n",
-                "after": "a\nB\nc\n",
-                "path": "sample.txt",
-            }),
-            action: None,
-            timeout_ms: Some(5_000),
-        }),
-    )
-    .await
-    .expect("trigger timed out")
-    .expect("trigger failed");
+    // Poll rather than sleep for a fixed interval. The worker registers its
+    // functions only after `configuration::register` and `fetch_config` have
+    // both come back, and those retry with backoff on a cold engine, so any
+    // constant chosen here would be either flaky or needlessly slow.
+    let result = await_function(&client, Duration::from_secs(30))
+        .await
+        .expect("editor::diff never became callable");
 
     assert_eq!(result["identical"], false);
     assert_eq!(result["added"], 1);
