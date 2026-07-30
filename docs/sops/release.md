@@ -34,21 +34,15 @@ Actions → **Create Tag**:
 | Input | Meaning |
 |---|---|
 | Worker | Folder name (must be in workflow options) |
-| Bump | `patch` / `minor` / `major` / `none` — picks the base version |
-| Suffix | `none` / `alpha` / `beta` / `rc` / `stable` — pre-release line on that base |
-| Registry tag | `latest` / `next` / `experimental` — channel the version publishes to; alpha always resolves to `experimental` |
-
-The suffix lives in the version (`1.2.3-rc.1`); the channel is where that
-version is published (`@next`). They are independent except for `alpha`, which
-is always published as `@experimental` so it cannot advance `latest`. See
-[Version suffixes](#version-suffixes) and [Registry tag semantics](#4-registry-tag-semantics).
+| Bump | `patch` / `minor` / `major` |
+| Registry tag | `latest` or `next` — channel for `iii worker add` resolution |
 
 The workflow:
 
 1. Bumps version in the worker manifest (`Cargo.toml`, `package.json`, …).
 2. Commits `chore(<worker>): bump to vX.Y.Z` to `main`.
 3. Creates and pushes an **annotated** tag `<worker>/vX.Y.Z` with
-   `registry-tag: <latest|next|experimental>` in the tag message.
+   `registry-tag: <latest|next>` in the tag message.
 
 ### 2. Release pipeline
 
@@ -98,65 +92,14 @@ Workers with `interface_smoke: false` skip the entire publish job.
 
 ### 4. Registry tag semantics
 
-A channel is *where a version is published*, written `<worker>@<channel>`.
-
 | Channel | Typical use |
 |---|---|
 | `latest` | Default; what most `iii worker add` installs resolve |
-| `next` | Upcoming release; safer for a first publish |
-| `experimental` | Throwaway / spike work not intended for promotion |
-
-A worker version carries **at most one** channel, and a worker has at most one
-version per channel. Publishing moves the channel: the previous holder loses it
-(`clearTagOnWorker` in the registry), so channels are reassigned on each release.
+| `next` | Pre-release / risky channel; safer for first publish |
 
 The channel is stored in the **annotated tag message** (`registry-tag:`).
 `release.yml` refetches the annotated tag for this reason. Lightweight tags
-lose the channel and default to `latest`. `parse_release_tag.py` rejects any
-value outside the table above, so a typo fails the release instead of creating
-a dead channel that nothing resolves.
-
-> **Note:** installs resolve `latest` only. `next` and `experimental` are
-> published and queryable by tag through the registry API, but
-> `iii worker add <worker>@next` needs resolver support in `iii-hq/registry`
-> before it works.
-
-### Version suffixes
-
-A suffix is *what the version is*, written into the version itself. The
-channel is normally chosen independently, except that alpha releases are
-always isolated on `experimental`.
-
-| Suffix | Result from `1.2.3` | Meaning |
-|---|---|---|
-| `none` | `1.2.4` | Stable release (default) |
-| `alpha` | `1.2.4-alpha.1` | Earliest, expected to break; always `@experimental` |
-| `beta` | `1.2.4-beta.1` | Feature-complete but unstable |
-| `rc` | `1.2.4-rc.1` | Release candidate |
-| `stable` | `1.2.3` | Promote a pre-release to its base, no bump |
-
-The counter is derived from existing git tags, so re-running Create Tag with
-the same worker, base and suffix advances it (`-rc.1` → `-rc.2`) instead of
-colliding. Each suffix line advances independently at the same base.
-
-Bump and suffix compose: **Bump** picks the base version, **Suffix** decides
-whether that base ships as a pre-release. `Bump: none` keeps the current base,
-which is how you iterate a pre-release without walking the version forward.
-
-Create Tag overrides the selected registry channel to `experimental` for an
-`alpha` suffix, so a test build can never advance the stable `latest` pointer.
-
-A typical `rc` cycle, all on `@next`, then promoted:
-
-```text
-Bump: patch  Suffix: rc      Tag: next     ->  1.2.4-rc.1@next
-Bump: none   Suffix: rc      Tag: next     ->  1.2.4-rc.2@next
-Bump: none   Suffix: stable  Tag: latest   ->  1.2.4@latest
-```
-
-Pre-release versions are marked as prereleases on the GitHub Release and are
-skipped by the registry resolver's semver matching, so a `^1.2.0` dependency
-never silently resolves to `1.2.4-rc.2`.
+lose the channel and default to `latest`.
 
 ## Variants
 
@@ -168,29 +111,14 @@ Concurrency group `release-${{ github.ref }}` serializes per tag.
 
 ### Prerelease
 
-Use Create Tag's **Suffix** input — see [Version suffixes](#version-suffixes).
+Create Tag cannot produce prerelease suffixes. Push a manual **annotated** tag:
 
-To cut one by hand instead, push an **annotated** tag shaped
-`<worker>/vX.Y.Z-beta.1` with `registry-tag: <channel>` in the message. Either
-way the GitHub Release is marked prerelease and still builds and publishes
-(unless `interface_smoke: false`). A hand-pushed tag must carry the `.N`
-counter — `parse_release_tag.py` detects prereleases as `-<word>.<number>`.
+```text
+<worker>/vX.Y.Z-beta.1
+```
 
-### Alpha release from a pull request branch
-
-To publish a worker from an unmerged pull request for integration testing, open
-**Actions → Alpha Release**, select the pull request branch in **Use workflow
-from**, then choose the worker. The workflow creates an ephemeral commit with an
-`-alpha.N` manifest version, then pushes only its annotated tag, for example
-`browser/v1.4.0-alpha.1`.
-
-The release pipeline publishes that tag as a GitHub prerelease and assigns it
-the `experimental` registry channel (`browser@experimental`). Neither the
-selected branch nor `main` is pushed or changed. The channel is shared: a new
-alpha release for the same worker moves `experimental` to that version.
-
-The selected branch must not be `main`; use **Create Tag** for a release that
-should move `latest` or `next`.
+With tag message including `registry-tag: next`. Marks the GitHub Release as
+prerelease; still builds and publishes (unless `interface_smoke: false`).
 
 ### Dry run
 
@@ -262,8 +190,7 @@ There is **no unpublish**. Recovery:
 
 1. Fix the issue on `main`.
 2. Cut a new patch via Create Tag (registry `latest` moves forward).
-3. When uncertain, cut an `rc` suffix on the `next` channel first, then
-   promote with `Suffix: stable` / `Tag: latest`.
+3. Use `registry-tag: next` when uncertain before promoting to `latest`.
 
 GitHub Release assets for the bad version remain (immutable history).
 

@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       registry_tag:
-        description: 'Registry channel to also push as an image tag (latest, next, experimental)'
+        description: 'Registry tag to also push (latest, next, ...)'
         required: false
         type: string
         default: latest
