@@ -55,26 +55,6 @@ def pyproject_manifest(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def git_repo_manifest(tmp_path: Path) -> tuple[Path, Path]:
-    """A git repo with a committed Cargo.toml at 0.1.0, for pre-release numbering.
-
-    Returns (repo_dir, manifest_path). Tests add `<worker>/v<version>` tags to
-    the repo to exercise the counter `manifest_version.py bump --worker` reads.
-    """
-    def git(*args: str) -> None:
-        subprocess.run(args, cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
-
-    git("git", "init", "-q", "-b", "main")
-    git("git", "config", "user.email", "test@example.com")
-    git("git", "config", "user.name", "Test")
-    manifest = tmp_path / "Cargo.toml"
-    manifest.write_text('[package]\nname = "smoke"\nversion = "0.1.0"\nedition = "2021"\n')
-    git("git", "add", ".")
-    git("git", "commit", "-q", "-m", "init")
-    return tmp_path, manifest
-
-
-@pytest.fixture
 def iii_worker_yaml_dir(tmp_path: Path) -> Path:
     """Returns a tmp dir containing a minimal iii.worker.yaml (rust binary)."""
     (tmp_path / "iii.worker.yaml").write_text(

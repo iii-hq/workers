@@ -69,25 +69,13 @@ on:
           - major
           - none
         default: patch
-      suffix:
-        description: 'Pre-release suffix (none = leave the version stable; stable = promote a pre-release to its base version)'
-        required: true
-        type: choice
-        options:
-          - none
-          - alpha
-          - beta
-          - rc
-          - stable
-        default: none
       tag:
-        description: 'Registry channel the version is published under (passed to POST /publish; not part of the git tag name)'
+        description: 'Registry tag (passed to POST /publish; not part of git tag name)'
         required: true
         type: choice
         options:
           - latest
           - next
-          - experimental
         default: latest
 
 permissions:
@@ -158,19 +146,15 @@ jobs:
         env:
           WORKER: ${{ inputs.worker }}
           BUMP: ${{ inputs.bump }}
-          SUFFIX: ${{ inputs.suffix }}
           MANIFEST: ${{ steps.meta.outputs.manifest }}
         run: |
           set -euo pipefail
           current=$(python3 .github/scripts/manifest_version.py read "$WORKER/$MANIFEST")
-          # --worker lets the script number the pre-release from existing tags
-          # (checkout above is fetch-depth 0, so they are all present).
-          new_ver=$(python3 .github/scripts/manifest_version.py bump "$WORKER/$MANIFEST" \
-            --kind "$BUMP" --suffix "$SUFFIX" --worker "$WORKER")
+          new_ver=$(python3 .github/scripts/manifest_version.py bump "$WORKER/$MANIFEST" --kind "$BUMP")
           echo "current=$current" >> "$GITHUB_OUTPUT"
           echo "version=$new_ver" >> "$GITHUB_OUTPUT"
           echo "tag=${WORKER}/v${new_ver}" >> "$GITHUB_OUTPUT"
-          echo "::notice::${WORKER}: ${current} -> ${new_ver} (channel: ${{ inputs.tag }})"
+          echo "::notice::${WORKER}: ${current} -> ${new_ver}"
 
       - name: Validate manifest update
         env:
