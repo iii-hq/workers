@@ -67,7 +67,7 @@ Anthropic** / **configure OpenAI** to paste a key. It is stored in the
 Until a provider is configured the picker is empty and chat will not generate.
 
 <p align="center">
-  <img src="https://iii.dev/blog/_astro/provider-configuration.DWWh-ski_Z2rzBYt.webp" alt="Configure a provider key in the iii console" width="100%">
+  <img src="https://raw.githubusercontent.com/iii-hq/workers/main/harness/docs/images/configure-a-provider.webp" alt="Configure a provider key in the iii console" width="100%">
 </p>
 
 `iii worker add harness` installs every worker the loop needs (see the badges
@@ -82,7 +82,7 @@ as failed and carry standard error attributes. The session transcript keeps the
 same recovery, partial-output, and blocked-reaction explanation after refresh.
 
 <p align="center">
-  <img src="https://iii.dev/blog/_astro/harness-turn-waterfall.CVg_Sl12_23G6C5.webp" alt="Harness turn waterfall in the iii console" width="100%">
+  <img src="https://raw.githubusercontent.com/iii-hq/workers/main/harness/docs/images/console-traces.webp" alt="Harness turn waterfall in the iii console" width="100%">
 </p>
 
 The agent-facing function surface is deny-by-default: with no `functions.allow`
