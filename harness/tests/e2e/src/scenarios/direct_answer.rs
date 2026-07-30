@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::common;
-use super::{CriterionSpec, ExecutionPolicy, ScenarioSpec};
+use super::{CriterionSpec, ExecutionPolicy, ScenarioSpec, JUDGE_BACKED_PASS_THRESHOLD};
 
 pub const ID: &str = "direct_answer";
 
@@ -16,7 +16,7 @@ pub fn scenario(_run_id: &str) -> ScenarioSpec {
             max_total_tokens: 32_768,
             stuck_timeout_seconds: 120,
         },
-        threshold: 80,
+        threshold: JUDGE_BACKED_PASS_THRESHOLD,
         criteria: vec![
             CriterionSpec {
                 id: "correctness",

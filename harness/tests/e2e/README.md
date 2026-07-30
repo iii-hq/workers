@@ -134,7 +134,10 @@ the two-of-three tolerance used by the daily benchmark.
 
 Scenarios with a judge reference delegate every criterion score to the judge.
 Scenarios without one award every criterion objectively in code. Mechanical
-effects remain hard gates in both cases.
+effects remain hard gates in both cases. Judge-backed scenarios use a 50-point
+pass floor so a mediocre but usable answer remains a passing execution while
+its full score still exposes the quality gap in reports and historical trends.
+Scores below 50 continue to fail as semantically inadequate.
 
 Every run has one explicit status:
 
