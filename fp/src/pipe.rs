@@ -8,7 +8,8 @@
 //! Steps run with THIS worker's authority, not the calling agent's dispatch
 //! policy — the `fp::pipe` call itself is the policy/approval surface
 //! (an approver sees the full step list). `forbidden_step` statically refuses
-//! the classes that must never ride on worker authority.
+//! the classes that must never ride on worker authority. Database writes are
+//! refused only when the approval gate is present.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -38,7 +39,8 @@ pub const PIPE_DESC: &str =
      {function:'state::set', payload:{scope,key}}]. Returns per-step sizes and a preview, not \
      the value. shell::*/coder::* steps run under the session's harness-stamped filesystem \
      scope; without one (no working directory, or a non-harness caller) they are refused — \
-     call them directly instead.";
+     call them directly instead. Database write steps are refused only while `approval::gate` \
+     is registered.";
 
 /// ponytail: remaining ceilings — no nested pipes, no trigger-control or
 /// session/approval steps, 120s per bus step, and a held (approval) release
@@ -140,7 +142,7 @@ fn is_scoped_step(function_id: &str) -> bool {
 /// pipe must stay needs_approval. Residual, accepted: an rbac boundary that
 /// exposes fp::pipe while denying shell::* could launder a scope through a
 /// non-harness call; shell-side caller verification is tracked follow-up.
-fn forbidden_step(function_id: &str) -> Option<&'static str> {
+fn forbidden_step(function_id: &str, approval_gate_running: bool) -> Option<&'static str> {
     // Shell control-plane ids sit inside the scoped shell::* prefix but are
     // NOT session tools: config-status is agent-policy hard-denied (it can
     // surface operator paths) and workspace::* is console picker plumbing —
@@ -190,12 +192,13 @@ fn forbidden_step(function_id: &str) -> Option<&'static str> {
     {
         return Some("bus-internal functions are not supported in a pipe");
     }
-    // Only the read-only `database::query` may ride a pipe. Every other
-    // `database::*` — execute, the transaction handles, prepared statements —
-    // can WRITE, and a pipe step runs with THIS worker's authority: a child
-    // capped at read-only `database::query` could otherwise wrap a
-    // `database::execute` here and defeat the query/execute split entirely.
-    if function_id.starts_with("database::") && function_id != "database::query" {
+    // With an approval gate, only the read-only `database::query` may ride a
+    // pipe. Every other `database::*` can WRITE with THIS worker's authority,
+    // bypassing the gate's per-agent decision.
+    if approval_gate_running
+        && function_id.starts_with("database::")
+        && function_id != "database::query"
+    {
         return Some(
             "only database::query (read-only) is supported in a pipe — writes, transactions, \
              and prepared statements run with worker authority, which would bypass the \
@@ -209,12 +212,15 @@ fn forbidden_step(function_id: &str) -> Option<&'static str> {
 }
 
 /// Static validation, separated from execution for testability.
-pub fn validate(req: &PipeRequest) -> Result<(), String> {
+fn validate_with_approval_gate(
+    req: &PipeRequest,
+    approval_gate_running: bool,
+) -> Result<(), String> {
     if req.through.is_empty() || req.through.len() > MAX_STEPS {
         return Err(format!("a pipe takes 1..={MAX_STEPS} steps"));
     }
     for (i, step) in req.through.iter().enumerate() {
-        if let Some(reason) = forbidden_step(&step.function) {
+        if let Some(reason) = forbidden_step(&step.function, approval_gate_running) {
             return Err(format!("step {} ({}): {reason}", i + 1, step.function));
         }
         if is_scoped_step(&step.function) {
@@ -265,6 +271,33 @@ pub fn validate(req: &PipeRequest) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+pub fn validate(req: &PipeRequest) -> Result<(), String> {
+    validate_with_approval_gate(req, true)
+}
+
+async fn approval_gate_running(iii: &IIIClient) -> Result<bool, String> {
+    let catalog = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::functions::list".into(),
+            payload: json!({ "search": "approval::gate", "include_internal": true }),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await
+        .map_err(|e| format!("could not inspect approval-gate availability: {e}"))?;
+    approval_gate_in_catalog(&catalog)
+}
+
+fn approval_gate_in_catalog(catalog: &Value) -> Result<bool, String> {
+    let functions = catalog
+        .get("functions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "engine::functions::list returned no functions array".to_string())?;
+    Ok(functions.iter().any(|function| {
+        function.get("function_id").and_then(Value::as_str) == Some("approval::gate")
+    }))
 }
 
 /// Set `value` at `pointer` inside `payload`, creating intermediate objects.
@@ -381,7 +414,18 @@ fn step_error(i: usize, function: &str, msg: &str, receipts: &[StepReceipt]) -> 
 /// Execute a pipe: transforms inline, everything else over the bus. The first
 /// failing step stops the pipe with a teachable error carrying the trail.
 pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, String> {
-    validate(&req)?;
+    // Gate discovery is a bus round trip that couples every pipe to
+    // engine::functions::list availability — pay it only when the gate
+    // actually decides the verdict. Both static verdicts are computed first
+    // (12 steps max, trivially cheap); agreeing verdicts are final as-is.
+    match (
+        validate_with_approval_gate(&req, false),
+        validate_with_approval_gate(&req, true),
+    ) {
+        (Ok(()), Ok(())) => {}
+        (Err(e), Err(_)) => return Err(e),
+        _ => validate_with_approval_gate(&req, approval_gate_running(iii).await?)?,
+    }
     let preview_chars = preview_len(req.preview_chars);
 
     let mut receipts: Vec<StepReceipt> = Vec::with_capacity(req.through.len());
@@ -608,6 +652,35 @@ mod tests {
 
         let empty = parse(json!({ "through": [] })).unwrap();
         assert!(validate(&empty).is_err());
+    }
+
+    #[test]
+    fn database_writes_are_rejected_only_with_an_approval_gate() {
+        let req = parse(json!({ "through": [
+            { "function": "database::execute",
+              "payload": { "db": "primary", "sql": "INSERT INTO ledger VALUES (1)" } },
+        ]}))
+        .unwrap();
+
+        assert!(validate_with_approval_gate(&req, true).is_err());
+        assert!(validate_with_approval_gate(&req, false).is_ok());
+
+        // `run` consults engine::functions::list only when the two verdicts
+        // above differ — a pipe with no database write, even a read-only
+        // database::query, validates identically both ways and never pays
+        // the gate-discovery round trip.
+        let query_only = parse(json!({ "through": [
+            { "function": "database::query", "payload": { "db": "primary", "sql": "SELECT 1" } },
+        ]}))
+        .unwrap();
+        assert!(validate_with_approval_gate(&query_only, true).is_ok());
+        assert!(validate_with_approval_gate(&query_only, false).is_ok());
+
+        assert!(approval_gate_in_catalog(
+            &json!({ "functions": [{ "function_id": "approval::gate" }] })
+        )
+        .unwrap());
+        assert!(!approval_gate_in_catalog(&json!({ "functions": [] })).unwrap());
     }
 
     fn scope() -> Value {
