@@ -54,7 +54,9 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
     // Restart-tier snapshot, like the adapter: the internal accessors
     // register once at start, so a hot-reloaded namespace list takes effect
     // at the next worker start.
-    let private = Arc::new(functions::PrivateNamespaces::new(&config.private_namespaces));
+    let private = Arc::new(functions::PrivateNamespaces::new(
+        &config.private_namespaces,
+    ));
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(config)));
     let invoker: Arc<dyn Invoker> = Arc::new(SdkInvoker { iii: iii.clone() });
     let ctx = Arc::new(StateCtx {
