@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::clients::router::{ChatParams, StreamSink};
-use crate::clients::{LoadedEntry, SessionClient};
+use crate::clients::{FunctionDescriptor, LoadedEntry, SessionClient};
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::ids;
@@ -2358,11 +2358,50 @@ fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<String> {
     }
 }
 
+/// The native-exposure surface: the registry descriptors this turn's compiled
+/// policy allows, led by the harness's virtual subscription controls.
+///
+/// Subscription controls are harness-intercepted virtual functions, so the
+/// engine's public registry intentionally does not list them. Publish their
+/// real schemas alongside registry functions whenever this turn's dispatch
+/// policy allows them.
+///
+/// A denied descriptor is ABSENT, not masked — the model never sees a name,
+/// description, or schema it cannot call. A name already present (a control id
+/// the engine started listing, or a repeated descriptor) is skipped so the
+/// provider never receives two tools sharing a name. An unhydrated descriptor
+/// still ships a usable empty object schema (see [`crate::discovery`]).
+///
+/// Pure and total: a missing policy compiles to deny-all and yields an empty
+/// surface. The caller owns what to log about that.
+fn native_tools(policy: &CompiledPolicy, registry: &[FunctionDescriptor]) -> Vec<AgentFunction> {
+    let mut tools = crate::functions::subscribe::native_control_tools(policy);
+    for descriptor in registry {
+        if !policy.allows(&descriptor.function_id) {
+            continue;
+        }
+        if tools.iter().any(|tool| tool.name == descriptor.function_id) {
+            continue;
+        }
+        tools.push(AgentFunction {
+            name: descriptor.function_id.clone(),
+            description: descriptor.description.clone().unwrap_or_default(),
+            parameters: descriptor
+                .parameters
+                .clone()
+                .unwrap_or_else(|| json!({ "type": "object" })),
+            label: None,
+            execution_mode: Some("sequential".to_string()),
+        });
+    }
+    tools
+}
+
 /// Build the invocation-schema surface attached to the generate request
 /// (harness.md § Exposure modes). Default: the single `agent_trigger` schema.
-/// Native: expand the allow globs against the registry and attach one schema
-/// per allowed function.
-async fn build_tools(deps: &Deps, record: &TurnRecord) -> Vec<crate::types::model::AgentFunction> {
+/// Native: expand the policy against the cached registry snapshot and attach
+/// one schema per allowed function.
+async fn build_tools(deps: &Deps, record: &TurnRecord) -> Vec<AgentFunction> {
     let expose = record
         .options
         .functions
@@ -2374,29 +2413,7 @@ async fn build_tools(deps: &Deps, record: &TurnRecord) -> Vec<crate::types::mode
         ExposeMode::Native => {
             let policy = CompiledPolicy::from(record.options.functions.as_ref());
             let snapshot = deps.functions().await;
-            // Subscription controls are harness-intercepted virtual functions,
-            // so the engine's public registry intentionally does not list
-            // them. Publish their real schemas alongside registry functions
-            // whenever this turn's dispatch policy allows them.
-            let mut tools = crate::functions::subscribe::native_control_tools(&policy);
-            for descriptor in snapshot.functions.iter() {
-                if !policy.allows(&descriptor.function_id) {
-                    continue;
-                }
-                if tools.iter().any(|tool| tool.name == descriptor.function_id) {
-                    continue;
-                }
-                tools.push(crate::types::model::AgentFunction {
-                    name: descriptor.function_id.clone(),
-                    description: descriptor.description.clone().unwrap_or_default(),
-                    parameters: descriptor
-                        .parameters
-                        .clone()
-                        .unwrap_or_else(|| json!({ "type": "object" })),
-                    label: None,
-                    execution_mode: Some("sequential".to_string()),
-                });
-            }
+            let tools = native_tools(&policy, &snapshot.functions);
             if tools.is_empty() {
                 tracing::warn!(
                     session_id = %record.session_id,
@@ -2876,5 +2893,154 @@ mod tests {
     fn no_signal_does_not_cancel() {
         assert!(!cancel_requested(false, false, StopReason::End));
         assert!(!cancel_requested(false, false, StopReason::FunctionCall));
+    }
+
+    /// Native exposure is the only mode where the model sees real function
+    /// names, so the dispatch policy has to bite on the TOOL LIST, not just at
+    /// dispatch. A denied id must never reach the provider.
+    mod native_tools {
+        use super::super::native_tools;
+        use crate::clients::FunctionDescriptor;
+        use crate::functions::subscribe::{REGISTER_TRIGGER_ID, UNREGISTER_TRIGGER_ID};
+        use crate::policy::CompiledPolicy;
+        use crate::types::model::AgentFunction;
+        use crate::types::turn::{ExposeMode, FunctionPolicy};
+        use serde_json::json;
+
+        fn desc(id: &str) -> FunctionDescriptor {
+            FunctionDescriptor {
+                function_id: id.into(),
+                description: Some(format!("{id} does something")),
+                parameters: Some(json!({
+                    "type": "object",
+                    "properties": { "x": { "type": "string" } }
+                })),
+            }
+        }
+
+        fn names(tools: &[AgentFunction]) -> Vec<&str> {
+            tools.iter().map(|t| t.name.as_str()).collect()
+        }
+
+        /// `native_tools` itself never reads `expose` — the caller's `match`
+        /// does — but the fixtures spell it out so they are honest native
+        /// policies.
+        fn surface(policy: &FunctionPolicy, registry: &[FunctionDescriptor]) -> Vec<AgentFunction> {
+            native_tools(&CompiledPolicy::from(Some(policy)), registry)
+        }
+
+        #[test]
+        fn native_exposure_hides_denied_descriptors_from_the_model() {
+            let registry = [
+                desc("shell::run"),
+                desc("state::get"),
+                desc("state::set"),
+                desc("configuration::write"),
+            ];
+            let policy = FunctionPolicy {
+                allow: None,
+                deny: vec!["state::*".into(), "configuration::write".into()],
+                expose: ExposeMode::Native,
+            };
+            let tools = surface(&policy, &registry);
+            // Controls first, then registry order — the deny-only default
+            // exposes everything it does not subtract.
+            assert_eq!(
+                names(&tools),
+                vec![REGISTER_TRIGGER_ID, UNREGISTER_TRIGGER_ID, "shell::run"]
+            );
+            // The FP-031 contract, stated twice: no denied NAME…
+            assert!(
+                !names(&tools).iter().any(|n| n.starts_with("state::")),
+                "a denied descriptor must be absent from the surface, not merely uncallable"
+            );
+            // …and no denied DESCRIPTION either.
+            assert!(!tools
+                .iter()
+                .any(|t| t.description.contains("configuration::write")));
+        }
+
+        #[test]
+        fn legacy_allow_list_narrows_the_surface_including_the_controls() {
+            let policy = FunctionPolicy {
+                allow: Some(vec!["state::get".into()]),
+                deny: vec![],
+                expose: ExposeMode::Native,
+            };
+            let tools = surface(
+                &policy,
+                &[desc("state::get"), desc("state::set"), desc("shell::run")],
+            );
+            // The controls are gone too: a narrow child must not silently gain
+            // engine::register_trigger, which binds triggers to notify_agent.
+            assert_eq!(names(&tools), vec!["state::get"]);
+        }
+
+        #[test]
+        fn native_surface_is_empty_when_the_policy_grants_nothing() {
+            let registry = [desc("shell::run"), desc("state::get")];
+            let empty_allow = FunctionPolicy {
+                allow: Some(vec![]),
+                deny: vec![],
+                expose: ExposeMode::Native,
+            };
+            assert!(
+                surface(&empty_allow, &registry).is_empty(),
+                "an explicit empty allow-list exposes nothing"
+            );
+            // A missing policy is deny-all (harness.md § Functions), so it can
+            // never widen the surface even if a caller reaches native exposure
+            // without one.
+            assert!(native_tools(&CompiledPolicy::from(None), &registry).is_empty());
+        }
+
+        #[test]
+        fn native_surface_leads_with_controls_and_never_duplicates_a_name() {
+            let mut stub = desc(REGISTER_TRIGGER_ID);
+            stub.description = Some("ENGINE STUB MUST NOT WIN".into());
+            let registry = [stub, desc("shell::run"), desc("shell::run")];
+            let policy = FunctionPolicy {
+                allow: None,
+                deny: vec![],
+                expose: ExposeMode::Native,
+            };
+            let tools = surface(&policy, &registry);
+            assert_eq!(
+                names(&tools),
+                vec![REGISTER_TRIGGER_ID, UNREGISTER_TRIGGER_ID, "shell::run"]
+            );
+            assert!(
+                tools[0]
+                    .description
+                    .contains("Subscribe the current harness session"),
+                "the harness's intercepted contract wins over a registry listing of the same id"
+            );
+            assert!(!tools[0].description.contains("MUST NOT WIN"));
+        }
+
+        #[test]
+        fn unhydrated_descriptors_default_their_description_and_schema() {
+            // discovery applies the unhydrated list first for a fast boot, so
+            // a descriptor with no schema must still ship a usable one.
+            let bare = FunctionDescriptor {
+                function_id: "shell::run".into(),
+                description: None,
+                parameters: None,
+            };
+            let policy = FunctionPolicy {
+                allow: None,
+                deny: vec![],
+                expose: ExposeMode::Native,
+            };
+            let tools = surface(&policy, &[bare]);
+            let tool = tools
+                .iter()
+                .find(|t| t.name == "shell::run")
+                .expect("an allowed descriptor is exposed");
+            assert_eq!(tool.description, "");
+            assert_eq!(tool.parameters, json!({ "type": "object" }));
+            assert!(tool.label.is_none());
+            assert_eq!(tool.execution_mode.as_deref(), Some("sequential"));
+        }
     }
 }
