@@ -15,10 +15,78 @@
 </div>
 
 <p align="center">
-  <a href="https://raw.githubusercontent.com/iii-hq/workers/main/console/screenshot.png">
-    <img src="https://raw.githubusercontent.com/iii-hq/workers/main/console/screenshot.png" alt="console — chat and OpenTelemetry trace explorer in a single binary" width="100%" />
+  <a href="https://raw.githubusercontent.com/iii-hq/workers/main/console/docs/images/console-traces.webp">
+    <img src="https://raw.githubusercontent.com/iii-hq/workers/main/console/docs/images/console-traces.webp" alt="console — chat and OpenTelemetry trace explorer in a single binary" width="100%" />
   </a>
 </p>
+
+## Install
+
+```bash
+iii worker add console
+```
+
+This fetches the prebuilt binary, writes a `console:` block into `~/.iii/config.yaml`, and the engine launches the worker the next time it boots.
+
+## Quickstart
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+iii project init iii-app && cd iii-app
+iii                              # engine on ws://127.0.0.1:49134
+```
+
+```bash
+# New terminal, same folder
+iii worker add console          # UI + /ws proxy on :3113
+open http://127.0.0.1:3113
+```
+
+The browser hits `/` for the SPA shell and upgrades `/ws` to the engine WebSocket — one origin, no CORS, no API base URL to configure.
+
+### Bring up the chat stack
+
+Chat runs on the [`harness`](https://github.com/iii-hq/workers/tree/main/harness) durable turn loop. Its manifest declares the whole stack as dependencies — [`session-manager`](https://github.com/iii-hq/workers/tree/main/session-manager) (the conversation store the sidebar, transcripts, and live token rendering are backed by), [`llm-router`](https://github.com/iii-hq/workers/tree/main/llm-router) (generation + the model catalog), [`context-manager`](https://github.com/iii-hq/workers/tree/main/context-manager) (the `/compact` summariser), [`approval-gate`](https://github.com/iii-hq/workers/tree/main/approval-gate) (human-in-the-loop approvals), and the provider workers — so a single command resolves and installs all of it:
+
+```bash
+iii worker add harness
+```
+
+### Add a provider key
+
+The provider workers install with the harness, but they need credentials before any model appears — until then the model picker reads **no models** and chat won't generate. Add a key either way:
+
+- **In the UI (recommended)** — open the model picker and use **configure anthropic** / **configure openai** to paste a key. It's written to that provider's slice of the `llm-router` configuration entry, and the catalog populates within seconds.
+- **From the environment** — `llm-router` falls back to a provider's credential env var (e.g. `ANTHROPIC_API_KEY`), read in the router's own process. See [`llm-router`](https://github.com/iii-hq/workers/tree/main/llm-router#configuration) for the credential model.
+
+Pick a model in the composer and send — the turn streams back through the harness loop.
+
+<details>
+<summary><strong>Programmatic check from the SDK</strong></summary>
+
+```rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let iii = register_worker("ws://localhost:49134", InitOptions::default());
+
+    let result = iii.trigger(TriggerRequest {
+        function_id: "console::status".into(),
+        payload: json!({}),
+        action: None,
+        timeout_ms: Some(5_000),
+    }).await?;
+
+    println!("{result:#?}");
+    Ok(())
+}
+```
+
+Returns `{ http_port, engine_url, version }` — useful for liveness and readiness probes.
+
+</details>
 
 ## Why `console`
 
@@ -97,74 +165,6 @@ Light and dark themes via `data-theme` + CSS custom properties. Persisted to `lo
 | `console::status` | `{}` | `{ http_port, engine_url, version }` |
 
 Defined in [`src/functions/status.rs`](src/functions/status.rs).
-
-## Install
-
-```bash
-iii worker add console
-```
-
-This fetches the prebuilt binary, writes a `console:` block into `~/.iii/config.yaml`, and the engine launches the worker the next time it boots.
-
-## Quickstart
-
-```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-iii project init iii-app && cd iii-app
-iii                              # engine on ws://127.0.0.1:49134
-```
-
-```bash
-# New terminal, same folder
-iii worker add console          # UI + /ws proxy on :3113
-open http://127.0.0.1:3113
-```
-
-The browser hits `/` for the SPA shell and upgrades `/ws` to the engine WebSocket — one origin, no CORS, no API base URL to configure.
-
-### Bring up the chat stack
-
-Chat runs on the [`harness`](https://github.com/iii-hq/workers/tree/main/harness) durable turn loop. Its manifest declares the whole stack as dependencies — [`session-manager`](https://github.com/iii-hq/workers/tree/main/session-manager) (the conversation store the sidebar, transcripts, and live token rendering are backed by), [`llm-router`](https://github.com/iii-hq/workers/tree/main/llm-router) (generation + the model catalog), [`context-manager`](https://github.com/iii-hq/workers/tree/main/context-manager) (the `/compact` summariser), [`approval-gate`](https://github.com/iii-hq/workers/tree/main/approval-gate) (human-in-the-loop approvals), and the provider workers — so a single command resolves and installs all of it:
-
-```bash
-iii worker add harness
-```
-
-### Add a provider key
-
-The provider workers install with the harness, but they need credentials before any model appears — until then the model picker reads **no models** and chat won't generate. Add a key either way:
-
-- **In the UI (recommended)** — open the model picker and use **configure anthropic** / **configure openai** to paste a key. It's written to that provider's slice of the `llm-router` configuration entry, and the catalog populates within seconds.
-- **From the environment** — `llm-router` falls back to a provider's credential env var (e.g. `ANTHROPIC_API_KEY`), read in the router's own process. See [`llm-router`](https://github.com/iii-hq/workers/tree/main/llm-router#configuration) for the credential model.
-
-Pick a model in the composer and send — the turn streams back through the harness loop.
-
-<details>
-<summary><strong>Programmatic check from the SDK</strong></summary>
-
-```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let iii = register_worker("ws://localhost:49134", InitOptions::default());
-
-    let result = iii.trigger(TriggerRequest {
-        function_id: "console::status".into(),
-        payload: json!({}),
-        action: None,
-        timeout_ms: Some(5_000),
-    }).await?;
-
-    println!("{result:#?}");
-    Ok(())
-}
-```
-
-Returns `{ http_port, engine_url, version }` — useful for liveness and readiness probes.
-
-</details>
 
 ## Architecture
 
