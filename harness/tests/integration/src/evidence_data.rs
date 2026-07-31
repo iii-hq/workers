@@ -26,6 +26,14 @@ pub struct RunEvidence {
     /// that never touch the tracked session (a call-mode reaction); the
     /// serving process sees them all.
     pub target_calls: Vec<Value>,
+    /// Runner-side intervention evidence, when the fixture drives a
+    /// synchronized mid-flight operation.
+    pub control: Value,
+    /// Durable status reports for the root and any descendant sessions.
+    pub tree_sessions: Vec<String>,
+    pub tree_statuses: Vec<Value>,
+    /// Raw scripted-router calls and abort acknowledgements.
+    pub router_evidence: Value,
 }
 
 /// Compact form published in `playground-result.json`.
@@ -40,6 +48,9 @@ pub struct RunEvidenceSummary<'a> {
     pub generations_consumed: u64,
     pub generations_total: u64,
     pub trace_summary: &'a TraceSummaryV1,
+    pub control: &'a Value,
+    pub tree_sessions: &'a [String],
+    pub tree_statuses: &'a [Value],
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +72,9 @@ impl RunEvidence {
             generations_consumed: self.generations_consumed,
             generations_total: self.generations_total,
             trace_summary: &self.traces.summary,
+            control: &self.control,
+            tree_sessions: &self.tree_sessions,
+            tree_statuses: &self.tree_statuses,
         }
     }
 
@@ -214,6 +228,17 @@ impl RunEvidence {
         if let Some(turn_id) = &self.turn_id {
             replace_identity(&mut text, turn_id, "{{turn_id}}");
         }
+        for session_id in &self.tree_sessions {
+            replace_identity(&mut text, session_id, "{{session_id}}");
+        }
+        for status in &self.tree_statuses {
+            if let Some(session_id) = status.get("session_id").and_then(Value::as_str) {
+                replace_identity(&mut text, session_id, "{{session_id}}");
+            }
+            if let Some(turn_id) = status.get("turn_id").and_then(Value::as_str) {
+                replace_identity(&mut text, turn_id, "{{turn_id}}");
+            }
+        }
         text
     }
 
@@ -319,6 +344,10 @@ mod tests {
             generations_total: 1,
             traces: TraceEvidenceV1::new(Vec::new()),
             target_calls: Vec::new(),
+            control: Value::Null,
+            tree_sessions: Vec::new(),
+            tree_statuses: Vec::new(),
+            router_evidence: Value::Null,
         }
     }
 

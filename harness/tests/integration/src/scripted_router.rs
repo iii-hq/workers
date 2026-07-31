@@ -13,7 +13,7 @@
 //! llm-router's actual contract (`llm-router/src/catalog/queries.rs:36`) and
 //! the mandatory context-manager depends on it for token budgeting.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use iii_sdk::channel::{ChannelWriter, StreamChannelRef};
@@ -23,8 +23,11 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
 use crate::client::{Client, DEFAULT_CALL_TIMEOUT_MS};
+use crate::deadline::Deadline;
 use crate::matcher::{evaluate, FieldMatchResult};
-use crate::types::script::{ModelFixtureV1, RouterScriptV1, ScriptedGenerationV1, ServeEffectV1};
+use crate::types::script::{
+    ModelFixtureV1, RouterDispatchV1, RouterScriptV1, ScriptedGenerationV1, ServeEffectV1,
+};
 
 /// One `router::chat` call's evidence, stored raw (never normalized).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -47,13 +50,30 @@ pub enum CallOutcome {
     UnexpectedCall,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RouterAbortEvidence {
+    pub request_id: String,
+    pub aborted: bool,
+}
+
+struct GateState {
+    arrivals: usize,
+    released: bool,
+}
+
 struct State {
     script: RouterScriptV1,
-    /// Generations sorted by ordinal; index of the next one to consume.
+    /// Number of generations consumed so far.
     next: usize,
+    /// In match-any mode, the consumed generation indexes are not necessarily
+    /// a prefix of the ordinally sorted script.
+    consumed: BTreeSet<usize>,
     calls: Vec<RouterCallEvidence>,
+    aborts: Vec<RouterAbortEvidence>,
     /// request_id → aborted-once flag, for `router::abort` semantics.
     live: BTreeMap<String, bool>,
+    gates: BTreeMap<String, GateState>,
+    gate_notify: Arc<tokio::sync::Notify>,
     /// Serve-time captures (name → value) taken from matched requests; frames
     /// reference them as `[[cap:<name>]]`.
     captured: BTreeMap<String, String>,
@@ -74,8 +94,12 @@ impl ScriptedRouter {
         let state = Arc::new(Mutex::new(State {
             script,
             next: 0,
+            consumed: BTreeSet::new(),
             calls: Vec::new(),
+            aborts: Vec::new(),
             live: BTreeMap::new(),
+            gates: BTreeMap::new(),
+            gate_notify: Arc::new(tokio::sync::Notify::new()),
             captured: BTreeMap::new(),
         }));
 
@@ -127,6 +151,10 @@ impl ScriptedRouter {
                                 }
                                 _ => false,
                             };
+                            state.aborts.push(RouterAbortEvidence {
+                                request_id,
+                                aborted,
+                            });
                             Ok::<Value, Error>(json!({ "aborted": aborted }))
                         }
                     }),
@@ -247,9 +275,63 @@ impl ScriptedRouter {
         let state = self.state.lock().expect("router state");
         json!({
             "calls": state.calls,
+            "aborts": state.aborts,
             "generations_consumed": state.next,
             "generations_total": state.script.generations.len(),
         })
+    }
+
+    /// Wait until `count` scripted calls have entered the named gate.
+    pub async fn wait_for_gate(
+        &self,
+        name: &str,
+        count: usize,
+        deadline: Deadline,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(count > 0, "gate arrival count must be positive");
+        loop {
+            let notify = {
+                let state = self.state.lock().expect("router state");
+                let arrivals = state.gates.get(name).map_or(0, |gate| gate.arrivals);
+                if arrivals >= count {
+                    return Ok(());
+                }
+                Arc::clone(&state.gate_notify)
+            };
+            let notified = notify.notified();
+            deadline
+                .timeout(format!("scripted router gate {name}"), notified)
+                .await?;
+        }
+    }
+
+    /// Release one named gate. Releasing an absent gate is a caller error: it
+    /// would turn a fixture typo into a test that proceeds without its hard
+    /// synchronization point.
+    pub fn release_gate(&self, name: &str) -> anyhow::Result<()> {
+        let notify = {
+            let mut state = self.state.lock().expect("router state");
+            let gate = state.gates.get_mut(name).ok_or_else(|| {
+                anyhow::anyhow!("scripted router gate {name:?} was never entered")
+            })?;
+            gate.released = true;
+            Arc::clone(&state.gate_notify)
+        };
+        notify.notify_waiters();
+        Ok(())
+    }
+
+    /// Unblock all gates during teardown, including after an intervention
+    /// failure, so no scripted-router handler remains parked on shutdown.
+    pub fn release_all_gates(&self) {
+        let notify = {
+            let mut state = self.state.lock().expect("router state");
+            for gate in state.gates.values_mut() {
+                gate.released = true;
+            }
+            Arc::clone(&state.gate_notify)
+        };
+        notify.notify_waiters();
     }
 
     /// True when any call failed to match or arrived unexpected.
@@ -263,6 +345,7 @@ impl ScriptedRouter {
     }
 
     pub async fn shutdown(&self) {
+        self.release_all_gates();
         self.client.shutdown().await;
     }
 }
@@ -375,10 +458,24 @@ async fn chat(
     // Match under the lock; stream outside it.
     let (generation, writer_ref, request_id) = {
         let mut state = state.lock().expect("router state");
-        let index = state.next;
-        let generation = state.script.generations.get(index).cloned();
+        let candidates: Vec<usize> = match state.script.dispatch {
+            RouterDispatchV1::Ordinal => {
+                if state.next < state.script.generations.len() {
+                    vec![state.next]
+                } else {
+                    Vec::new()
+                }
+            }
+            RouterDispatchV1::MatchAny => state
+                .script
+                .generations
+                .iter()
+                .enumerate()
+                .filter_map(|(index, _)| (!state.consumed.contains(&index)).then_some(index))
+                .collect(),
+        };
 
-        let Some(generation) = generation else {
+        if candidates.is_empty() {
             state.calls.push(RouterCallEvidence {
                 ordinal: None,
                 outcome: CallOutcome::UnexpectedCall,
@@ -390,15 +487,31 @@ async fn chat(
             ));
         };
 
-        let field_results: Vec<FieldMatchResult> = generation
-            .match_
-            .fields()
-            .iter()
-            .map(|(field, matcher)| evaluate(field, matcher, input.get(*field)))
-            .collect();
-        let failed: Vec<&FieldMatchResult> = field_results.iter().filter(|r| !r.passed).collect();
+        let mut selected = None;
+        let mut first_failure = None;
+        for index in candidates {
+            let generation = state.script.generations[index].clone();
+            let field_results: Vec<FieldMatchResult> = generation
+                .match_
+                .fields()
+                .iter()
+                .map(|(field, matcher)| evaluate(field, matcher, input.get(*field)))
+                .collect();
+            if field_results.iter().all(|result| result.passed) {
+                selected = Some((index, generation, field_results));
+                break;
+            }
+            if first_failure.is_none() {
+                first_failure = Some((index, generation, field_results));
+            }
+        }
 
-        if !failed.is_empty() {
+        let Some((index, generation, field_results)) = selected else {
+            let (_index, generation, field_results) = first_failure.expect("candidate exists");
+            let failed: Vec<&FieldMatchResult> = field_results
+                .iter()
+                .filter(|result| !result.passed)
+                .collect();
             let detail = failed
                 .iter()
                 .map(|r| format!("{}: {}", r.field, r.detail))
@@ -414,7 +527,7 @@ async fn chat(
                 "integration/match_failed: generation {}: {detail}",
                 generation.ordinal
             )));
-        }
+        };
 
         let writer_ref: StreamChannelRef =
             serde_json::from_value(input.get("writer_ref").cloned().unwrap_or(Value::Null))
@@ -425,7 +538,8 @@ async fn chat(
             .unwrap_or_default()
             .to_string();
 
-        state.next = index + 1;
+        state.next += 1;
+        state.consumed.insert(index);
         state.live.insert(request_id.clone(), false);
         state.calls.push(RouterCallEvidence {
             ordinal: Some(generation.ordinal),
@@ -460,6 +574,10 @@ async fn chat(
         (generation, writer_ref, request_id)
     };
 
+    if let Some(gate) = generation.gate.as_ref() {
+        await_gate(&state, &gate.name).await;
+    }
+
     // Serve-time side effect, BEFORE streaming or failing: the harness is now
     // blocked awaiting this generation with its turn `Running`, so an awaited
     // steer parks in the turn's queue before the outcome proceeds.
@@ -485,6 +603,41 @@ async fn chat(
     // Response only after terminal streaming has been relayed.
     serde_json::to_value(&generation.response)
         .map_err(|e| Error::Handler(format!("integration/response_serialize: {e}")))
+}
+
+async fn await_gate(state: &Arc<Mutex<State>>, name: &str) {
+    let (notify, released) = {
+        let mut state = state.lock().expect("router state");
+        let notify = Arc::clone(&state.gate_notify);
+        let gate = state.gates.entry(name.to_string()).or_insert(GateState {
+            arrivals: 0,
+            released: false,
+        });
+        gate.arrivals += 1;
+        let released = gate.released;
+        (notify, released)
+    };
+    // `wait_for_gate` observes arrivals through this notification. Keep the
+    // state mutation and notification separate so no lock is held while
+    // waking the runner.
+    notify.notify_waiters();
+    if released {
+        return;
+    }
+    loop {
+        let notified = notify.notified();
+        notified.await;
+        let released = {
+            let state = state.lock().expect("router state");
+            state.gates.get(name).is_some_and(|gate| gate.released)
+        };
+        if released {
+            return;
+        }
+        // The state is re-checked on every notification. `Notify` is used as a
+        // wake-up only, so release_all_gates and a named release share the same
+        // race-free state transition.
+    }
 }
 
 /// Run a generation's serve-time side effect. The steer is *awaited*:
@@ -574,4 +727,58 @@ fn request_aborted(state: &Arc<Mutex<State>>, request_id: &str) -> bool {
         .get(request_id)
         .copied()
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::types::script::{RouterDispatchV1, SchemaVersion1};
+
+    fn state() -> Arc<Mutex<State>> {
+        Arc::new(Mutex::new(State {
+            script: RouterScriptV1 {
+                schema_version: SchemaVersion1::V1,
+                scenario_id: "test".to_string(),
+                model: ModelFixtureV1 {
+                    id: "fixture-model".to_string(),
+                    provider: "scripted".to_string(),
+                    context_window: 1,
+                    max_output_tokens: 1,
+                    supports_thinking: Some(false),
+                    supports_xhigh: None,
+                    supports_tools: Some(false),
+                    supports_vision: Some(false),
+                    supports_cache: Some(false),
+                    supports_structured_output: Some(false),
+                },
+                dispatch: RouterDispatchV1::Ordinal,
+                generations: Vec::new(),
+            },
+            next: 0,
+            consumed: BTreeSet::new(),
+            calls: Vec::new(),
+            aborts: Vec::new(),
+            live: BTreeMap::new(),
+            gates: BTreeMap::new(),
+            gate_notify: Arc::new(tokio::sync::Notify::new()),
+            captured: BTreeMap::new(),
+        }))
+    }
+
+    #[tokio::test]
+    async fn gate_arrival_notifies_waiters() {
+        let state = state();
+        let notify = Arc::clone(&state.lock().expect("router state").gate_notify);
+        let notified = notify.notified();
+        let gate_state = Arc::clone(&state);
+        let gate = tokio::spawn(async move { await_gate(&gate_state, "test-gate").await });
+
+        tokio::time::timeout(Duration::from_secs(1), notified)
+            .await
+            .expect("gate arrival should wake waiters");
+
+        gate.abort();
+    }
 }

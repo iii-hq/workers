@@ -9,7 +9,7 @@ mod discovery;
 mod loading;
 
 pub use discovery::scenario_fixtures;
-pub use loading::{ProbeAction, ScenarioFixture};
+pub use loading::{ProbeAction, ScenarioFixture, ScenarioIntervention};
 
 #[cfg(test)]
 mod tests;

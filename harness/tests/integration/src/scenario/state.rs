@@ -37,6 +37,13 @@ pub(super) struct ActiveTurn {
     pub(super) traces: TraceEvidenceV1,
     pub(super) trace_generation: u64,
     pub(super) timed_out: bool,
+    /// Runner-side synchronization record for an intervention fixture.
+    pub(super) control: Value,
+    /// Root plus any descendant sessions whose status and traces belong to
+    /// this run's cancellation tree.
+    pub(super) tree_sessions: Vec<String>,
+    pub(super) tree_statuses: Vec<Value>,
+    pub(super) router_evidence: Value,
 }
 
 impl ActiveTurn {
@@ -55,6 +62,10 @@ impl ActiveTurn {
             traces: TraceEvidenceV1::new(Vec::new()),
             trace_generation,
             timed_out: false,
+            control: Value::Null,
+            tree_sessions: Vec::new(),
+            tree_statuses: Vec::new(),
+            router_evidence: Value::Null,
         }
     }
 

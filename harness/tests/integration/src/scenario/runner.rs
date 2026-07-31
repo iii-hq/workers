@@ -284,6 +284,7 @@ impl<'a> ScenarioRunner<'a> {
         prepared: &PreparedRun,
     ) -> Result<(), RunError> {
         let mut active = self.send(services, prepared).await?;
+        self.intervene(services, &mut active).await?;
         self.fault(stack, services, prepared, &active).await?;
         self.r#await(services, &mut active).await?;
         self.collect(services, prepared, &mut active).await?;

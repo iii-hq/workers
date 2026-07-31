@@ -19,10 +19,14 @@ struct TraceGroup {
     trace_ids: Vec<String>,
 }
 
-pub(crate) async fn collect(
+/// Collect one correlated evidence set for a root session and its known
+/// descendants. The trace store groups by session, so a tree run must union
+/// every group before applying the stability oracle; otherwise child lifecycle
+/// spans disappear from the evidence floor.
+pub(crate) async fn collect_for_sessions(
     client: &Client,
     probe: &ScenarioProbe,
-    session_id: &str,
+    session_ids: &[String],
     expected_terminal_turns: usize,
     after_generation: u64,
     deadline: Deadline,
@@ -41,7 +45,7 @@ pub(crate) async fn collect(
                     .unwrap_or_else(|| "none".to_string())
             );
         }
-        let evidence = collect_once(client, session_id, deadline).await?;
+        let evidence = collect_once(client, session_ids, deadline).await?;
         last_summary = Some(evidence.summary.clone());
         if evidence.is_stable_for(expected_terminal_turns, LIFECYCLE_FUNCTION_ID) {
             return Ok(evidence);
@@ -50,17 +54,17 @@ pub(crate) async fn collect(
     }
 }
 
-pub(crate) async fn collect_available(
+pub(crate) async fn collect_available_for_sessions(
     client: &Client,
-    session_id: &str,
+    session_ids: &[String],
     deadline: Deadline,
 ) -> anyhow::Result<TraceEvidenceV1> {
-    collect_once(client, session_id, deadline).await
+    collect_once(client, session_ids, deadline).await
 }
 
 async fn collect_once(
     client: &Client,
-    session_id: &str,
+    session_ids: &[String],
     deadline: Deadline,
 ) -> anyhow::Result<TraceEvidenceV1> {
     let response = client
@@ -77,12 +81,17 @@ async fn collect_once(
         .await
         .map_err(anyhow::Error::msg)?;
     let groups: GroupByResponse = serde_json::from_value(response)?;
+    let wanted = session_ids
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
     let mut trace_ids = groups
         .groups
         .into_iter()
-        .find(|group| group.value == session_id)
-        .map(|group| group.trace_ids)
-        .unwrap_or_default();
+        .filter(|group| wanted.contains(&group.value))
+        .flat_map(|group| group.trace_ids)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     trace_ids.sort();
 
     let mut traces = Vec::with_capacity(trace_ids.len());

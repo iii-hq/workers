@@ -40,6 +40,27 @@ pub struct ScenarioFixture {
     /// dispatch a function without seeding any session turn — no extra trace
     /// tree ever forms.
     pub traces_override: Option<usize>,
+    /// Optional runner-owned mid-flight control sequence. This is deliberately
+    /// outside the compiled subject scenario: it is test synchronization, not
+    /// a public harness request.
+    pub intervention: Option<ScenarioIntervention>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScenarioIntervention {
+    StopCancelCascade {
+        gate: String,
+        expected_in_flight: usize,
+        queued_message: String,
+    },
+    QueuedMessageEditUnqueue {
+        gate: String,
+        before_message: String,
+        edit_message: String,
+        edit_replacement: String,
+        remove_message: String,
+        after_message: String,
+    },
 }
 
 /// A function the PROBE (test infra, not a model turn) invokes at a completion
@@ -122,10 +143,67 @@ impl ScenarioFixture {
                 );
             }
         }
-        anyhow::ensure!(
-            self.expected_turn_statuses.last().map(String::as_str) == Some("completed"),
-            "the last terminal turn must be completed"
-        );
+        if self.intervention.is_none() {
+            anyhow::ensure!(
+                self.expected_turn_statuses.last().map(String::as_str) == Some("completed"),
+                "the last terminal turn must be completed"
+            );
+        }
+        if let Some(intervention) = &self.intervention {
+            match intervention {
+                ScenarioIntervention::StopCancelCascade {
+                    gate,
+                    expected_in_flight,
+                    queued_message,
+                } => {
+                    anyhow::ensure!(!gate.is_empty(), "stop-cascade gate must not be empty");
+                    anyhow::ensure!(
+                        *expected_in_flight > 0,
+                        "stop-cascade must expect at least one in-flight generation"
+                    );
+                    anyhow::ensure!(
+                        !queued_message.is_empty(),
+                        "stop-cascade queued message must not be empty"
+                    );
+                    anyhow::ensure!(
+                        self.expected_turn_statuses
+                            .iter()
+                            .all(|status| status == "cancelled"),
+                        "stop-cascade terminal statuses must all be cancelled"
+                    );
+                }
+                ScenarioIntervention::QueuedMessageEditUnqueue {
+                    gate,
+                    before_message,
+                    edit_message,
+                    edit_replacement,
+                    remove_message,
+                    after_message,
+                } => {
+                    anyhow::ensure!(!gate.is_empty(), "queued-edit gate must not be empty");
+                    for (label, message) in [
+                        ("before", before_message),
+                        ("edit", edit_message),
+                        ("replacement", edit_replacement),
+                        ("remove", remove_message),
+                        ("after", after_message),
+                    ] {
+                        anyhow::ensure!(
+                            !message.is_empty(),
+                            "queued-edit {label} message must not be empty"
+                        );
+                    }
+                    anyhow::ensure!(
+                        edit_message != edit_replacement,
+                        "queued-edit replacement must change the message"
+                    );
+                    anyhow::ensure!(
+                        self.expected_turn_statuses == ["completed"],
+                        "queued-edit scenario must end with one completed turn"
+                    );
+                }
+            }
+        }
         // A direct scenario is one external send, but the harness may seed
         // further turns from it (a reseed after a parked message); those extra
         // terminal turns are declared with `terminal_turns(n)` and awaited the

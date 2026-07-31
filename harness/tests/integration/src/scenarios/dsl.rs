@@ -7,7 +7,7 @@
 use serde_json::{json, Value};
 
 use super::{ScenarioDriver, VerifyFn};
-use crate::fixtures::ScenarioFixture;
+use crate::fixtures::{ScenarioFixture, ScenarioIntervention};
 use crate::types::frames::{
     AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, ErrorShape,
     RouterChatResponse, StopReason, Usage,
@@ -19,7 +19,8 @@ use crate::types::scenario::{
 };
 use crate::types::script::{
     GenerationMatchV1, JsonMatcherV1, JsonNormalizerV1, ModelFixtureV1, NormalizerOperation,
-    RouterScriptV1, SchemaVersion1, ScriptedGenerationV1, ServeEffectV1, SteerSendV1,
+    RouterDispatchV1, RouterScriptV1, SchemaVersion1, ScriptedGenerationV1, ServeEffectV1,
+    ServeGateV1, SteerSendV1,
 };
 
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../../../prompts/default.txt");
@@ -61,6 +62,7 @@ pub(super) struct Scenario {
     harness_env: Vec<(String, String)>,
     await_target_calls: Option<usize>,
     traces_override: Option<usize>,
+    intervention: Option<ScenarioIntervention>,
 }
 
 impl Scenario {
@@ -88,6 +90,7 @@ impl Scenario {
             harness_env: Vec::new(),
             await_target_calls: None,
             traces_override: None,
+            intervention: None,
         }
     }
 
@@ -193,6 +196,68 @@ impl Scenario {
         self
     }
 
+    /// Run the scenario through the runner's deterministic stop/cascade
+    /// intervention. The scripted router holds three concurrent generations
+    /// behind `gate` while the runner queues a message, stops the root turn,
+    /// and then releases the generation barrier.
+    pub(super) fn stop_cancel_cascade(mut self, gate: &str, queued_message: &str) -> Self {
+        assert!(!gate.is_empty(), "stop-cascade gate must not be empty");
+        assert!(
+            !queued_message.is_empty(),
+            "stop-cascade queued message must not be empty"
+        );
+        self.intervention = Some(ScenarioIntervention::StopCancelCascade {
+            gate: gate.to_string(),
+            expected_in_flight: 3,
+            queued_message: queued_message.to_string(),
+        });
+        self.expected_turn_statuses = vec!["cancelled".to_string(); 3];
+        self.traces_override = Some(1);
+        self
+    }
+
+    /// Hold the first generation while the runner queues four messages, edits
+    /// one in place, removes another by its client-visible entry id, and then
+    /// releases the turn to drain the remaining three in their original order.
+    pub(super) fn queued_message_edit_unqueue(
+        mut self,
+        gate: &str,
+        before_message: &str,
+        edit_message: &str,
+        edit_replacement: &str,
+        remove_message: &str,
+        after_message: &str,
+    ) -> Self {
+        assert!(!gate.is_empty(), "queued-edit gate must not be empty");
+        for (label, message) in [
+            ("before", before_message),
+            ("edit", edit_message),
+            ("replacement", edit_replacement),
+            ("remove", remove_message),
+            ("after", after_message),
+        ] {
+            assert!(
+                !message.is_empty(),
+                "queued-edit {label} message must not be empty"
+            );
+        }
+        assert_ne!(
+            edit_message, edit_replacement,
+            "queued-edit replacement must change the message"
+        );
+        self.intervention = Some(ScenarioIntervention::QueuedMessageEditUnqueue {
+            gate: gate.to_string(),
+            before_message: before_message.to_string(),
+            edit_message: edit_message.to_string(),
+            edit_replacement: edit_replacement.to_string(),
+            remove_message: remove_message.to_string(),
+            after_message: after_message.to_string(),
+        });
+        self.expected_turn_statuses = vec!["completed".to_string()];
+        self.traces_override = Some(1);
+        self
+    }
+
     pub(super) fn terminal_turns(mut self, count: usize) -> Self {
         assert!(count > 0, "scenario must expect at least one terminal turn");
         self.expected_turn_statuses = vec!["completed".to_string(); count];
@@ -248,6 +313,11 @@ impl Scenario {
                 schema_version: SchemaVersion1::V1,
                 scenario_id: self.id,
                 model: self.model,
+                dispatch: if self.intervention.is_some() {
+                    RouterDispatchV1::MatchAny
+                } else {
+                    RouterDispatchV1::Ordinal
+                },
                 generations,
             },
             system_prompt_template: system_prompt(&allowed_functions),
@@ -256,6 +326,7 @@ impl Scenario {
             harness_env: self.harness_env,
             await_target_calls: self.await_target_calls,
             traces_override: self.traces_override,
+            intervention: self.intervention,
         }
     }
 }
@@ -264,6 +335,7 @@ pub(super) struct Send {
     message: String,
     idempotency_key: Option<String>,
     allowed_functions: Vec<String>,
+    expose: CompiledFunctionExposureV1,
 }
 
 impl Send {
@@ -272,6 +344,7 @@ impl Send {
             message: message.to_string(),
             idempotency_key: None,
             allowed_functions: Vec::new(),
+            expose: CompiledFunctionExposureV1::Native,
         }
     }
 
@@ -305,6 +378,14 @@ impl Send {
         self
     }
 
+    /// Expose the harness's single `agent_trigger` wrapper while retaining
+    /// the concrete target in the compiled allow-list. This is the public
+    /// model surface for harness-owned functions such as `harness::spawn`.
+    pub(super) fn agent_trigger(mut self) -> Self {
+        self.expose = CompiledFunctionExposureV1::AgentTrigger;
+        self
+    }
+
     fn compile(self, scenario_id: &str, model: &ModelFixtureV1) -> CompiledSendV1 {
         CompiledSendV1 {
             session_id: "{{session_id}}".to_string(),
@@ -318,7 +399,7 @@ impl Send {
                 functions: CompiledFunctionPolicyV1 {
                     allow: self.allowed_functions,
                     deny: Vec::new(),
-                    expose: CompiledFunctionExposureV1::Native,
+                    expose: self.expose,
                 },
             },
         }
@@ -543,6 +624,7 @@ pub(super) struct Generation {
     parked_message: Option<String>,
     failure: Option<String>,
     captures: Vec<(String, String)>,
+    gate: Option<String>,
 }
 
 impl Generation {
@@ -554,6 +636,7 @@ impl Generation {
             parked_message: None,
             failure: None,
             captures: Vec::new(),
+            gate: None,
         }
     }
 
@@ -597,6 +680,15 @@ impl Generation {
         self
     }
 
+    /// Hold the router call after it matches and before it emits any frame.
+    /// The runner releases the named gate as part of a synchronized
+    /// intervention.
+    pub(super) fn gate(mut self, name: &str) -> Self {
+        assert!(!name.is_empty(), "generation gate name must not be empty");
+        self.gate = Some(name.to_string());
+        self
+    }
+
     fn compile(self, model: &ModelFixtureV1) -> ScriptedGenerationV1 {
         let (frames, response) = match (self.response, &self.failure) {
             (Some(response), None) => response.compile(model, self.ordinal),
@@ -622,6 +714,7 @@ impl Generation {
                     message,
                 },
             }),
+            gate: self.gate.map(|name| ServeGateV1 { name }),
             failure: self.failure,
         }
     }
@@ -642,6 +735,9 @@ enum ResponseKind {
         call_id: String,
         function_id: String,
         arguments: Value,
+    },
+    FunctionCalls {
+        calls: Vec<(String, String, Value)>,
     },
 }
 
@@ -707,6 +803,28 @@ impl Response {
         }
     }
 
+    /// Compile one assistant message containing several function calls. This
+    /// is used by the stop-cascade fixture so both child checkpoints exist
+    /// before the root enters its held generation.
+    pub(super) fn function_calls_raw(
+        calls: Vec<(&str, &str, Value)>,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Self {
+        assert!(!calls.is_empty(), "a function-call response needs one call");
+        Self {
+            kind: ResponseKind::FunctionCalls {
+                calls: calls
+                    .into_iter()
+                    .map(|(call_id, function_id, arguments)| {
+                        (call_id.to_string(), function_id.to_string(), arguments)
+                    })
+                    .collect(),
+            },
+            usage: usage(input_tokens, output_tokens),
+        }
+    }
+
     fn compile(
         self,
         model: &ModelFixtureV1,
@@ -743,6 +861,25 @@ impl Response {
                             function_id,
                             arguments,
                         }],
+                        StopReason::FunctionCall,
+                        Some(usage.clone()),
+                        model,
+                        timestamp,
+                    ),
+                }],
+                StopReason::FunctionCall,
+            ),
+            ResponseKind::FunctionCalls { calls } => (
+                vec![AssistantMessageEvent::Done {
+                    message: assistant_message(
+                        calls
+                            .into_iter()
+                            .map(|(id, function_id, arguments)| ContentBlock::FunctionCall {
+                                id,
+                                function_id,
+                                arguments,
+                            })
+                            .collect(),
                         StopReason::FunctionCall,
                         Some(usage.clone()),
                         model,

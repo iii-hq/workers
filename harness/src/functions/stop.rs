@@ -104,9 +104,11 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
         return Ok(StopResponse { stopping: false });
     }
     if record.status.is_terminal() {
-        // The step finalised between the pre-read and acquiring the lock
-        // (possibly via the router::abort above) — nothing left to flag.
-        return Ok(StopResponse { stopping: false });
+        // The in-process cancel signal and router abort above can finalize the
+        // turn before this handler reacquires the session lock. The stop was
+        // accepted against the matching non-terminal pre-read; report that
+        // acceptance even though the durable abort bit can no longer be set.
+        return Ok(StopResponse { stopping: true });
     }
     record.abort = true;
     record.updated_at = crate::types::message::AgentMessage::now_ms();
