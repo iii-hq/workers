@@ -15,8 +15,8 @@
 </div>
 
 <p align="center">
-  <a href="https://raw.githubusercontent.com/iii-hq/workers/main/console/screenshot.png">
-    <img src="https://raw.githubusercontent.com/iii-hq/workers/main/console/screenshot.png" alt="console — chat and OpenTelemetry trace explorer in a single binary" width="100%" />
+  <a href="https://raw.githubusercontent.com/iii-hq/workers/main/console/docs/images/console-traces.webp">
+    <img src="https://raw.githubusercontent.com/iii-hq/workers/main/console/docs/images/console-traces.webp" alt="console — chat and OpenTelemetry trace explorer in a single binary" width="100%" />
   </a>
 </p>
 
