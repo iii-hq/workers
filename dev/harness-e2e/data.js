@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785483557264,
+  "lastUpdate": 1785483560583,
   "repoUrl": "https://github.com/iii-hq/workers",
   "entries": {
     "Harness E2E Quality": [
@@ -1291,6 +1291,286 @@ window.BENCHMARK_DATA = {
             "value": 759.816,
             "unit": "seconds",
             "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"workflow_dispatch\",\"id\":\"30570655128-1\",\"run_id\":\"30570655128\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30570655128\"},\"expected_reports\":5,\"generated_at\":\"2026-07-30T18:57:21.271393+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"claude-sonnet-4-6\",\"provider\":\"anthropic\",\"supports_tools\":true,\"supports_vision\":true},\"lane\":\"daily\",\"passed\":false,\"received_reports\":5,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-30\",\"url\":\"https://github.com/iii-hq/workers/commit/2ab08fbce06e2bed2a83fcba56a5f67c0e16f16c\",\"version\":\"2026-07-30\",\"worker\":\"main\"},\"requested_runs\":3,\"scenario\":\"suite\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-30\",\"repository\":\"iii-hq/workers\",\"sha\":\"2ab08fbce06e2bed2a83fcba56a5f67c0e16f16c\"},\"status\":\"failed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30570655128\"}"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Ytallo",
+            "username": "ytallo",
+            "email": "ytallo.layon@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "a3e47414203725c4c0df4917fd102f3b0d89706b",
+          "message": "(MOT-4107) fix(harness): recover calls safely after engine restarts\n\n* (MOT-4107) fix(harness): recover calls safely after engine restarts\n\n* (MOT-4107) test(harness): rename engine restart scenario\n\n* (MOT-4107) test(harness): cover dependency boot retry\n\n* (MOT-4107) test(harness): exercise dependency boot race\n\n* (MOT-4107) test(harness): keep boot race within retry window",
+          "timestamp": "2026-07-31T03:57:05Z",
+          "url": "https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b"
+        },
+        "date": 1785483559669,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliability::glm-5-2::direct_answer::hard_gate_failures",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"direct_answer\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::direct_answer::technical_failures",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"direct_answer\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::direct_answer::retry_attempts",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"direct_answer\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::direct_answer::missing_reports",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"direct_answer\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::direct_answer::wall_time_seconds",
+            "value": 16.674,
+            "unit": "seconds",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"direct_answer\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::direct_answer::subject_cost_usd",
+            "value": 0.03310928,
+            "unit": "USD",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"direct_answer\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::direct_answer::judge_cost_usd",
+            "value": 0.00332088,
+            "unit": "USD",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"direct_answer\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::direct_answer::total_cost_usd",
+            "value": 0.036430159999999996,
+            "unit": "USD",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"direct_answer\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::persistent_state::hard_gate_failures",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"persistent_state\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::persistent_state::technical_failures",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"persistent_state\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::persistent_state::retry_attempts",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"persistent_state\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::persistent_state::missing_reports",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"persistent_state\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::persistent_state::wall_time_seconds",
+            "value": 24.235,
+            "unit": "seconds",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"persistent_state\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::persistent_state::subject_cost_usd",
+            "value": 0.108564,
+            "unit": "USD",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"persistent_state\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::persistent_state::judge_cost_usd",
+            "value": 0,
+            "unit": "USD",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"persistent_state\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::persistent_state::total_cost_usd",
+            "value": 0.108564,
+            "unit": "USD",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"persistent_state\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::security_review::hard_gate_failures",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"security_review\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::security_review::technical_failures",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"security_review\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::security_review::retry_attempts",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"security_review\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::security_review::missing_reports",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"security_review\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::security_review::wall_time_seconds",
+            "value": 48.879,
+            "unit": "seconds",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"security_review\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::security_review::subject_cost_usd",
+            "value": 0.04390432,
+            "unit": "USD",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"security_review\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::security_review::judge_cost_usd",
+            "value": 0.00746304,
+            "unit": "USD",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"security_review\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::security_review::total_cost_usd",
+            "value": 0.05136736,
+            "unit": "USD",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"security_review\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::reactive_automation::hard_gate_failures",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"reactive_automation\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::reactive_automation::technical_failures",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"reactive_automation\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::reactive_automation::retry_attempts",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"reactive_automation\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::reactive_automation::missing_reports",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"reactive_automation\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::reactive_automation::wall_time_seconds",
+            "value": 1206.491,
+            "unit": "seconds",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"reactive_automation\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::reactive_automation::judge_cost_usd",
+            "value": 0,
+            "unit": "USD",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"reactive_automation\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::shell_coder_sandbox::hard_gate_failures",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"shell_coder_sandbox\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::shell_coder_sandbox::technical_failures",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"shell_coder_sandbox\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::shell_coder_sandbox::retry_attempts",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"shell_coder_sandbox\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::shell_coder_sandbox::missing_reports",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"shell_coder_sandbox\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::shell_coder_sandbox::wall_time_seconds",
+            "value": 201.841,
+            "unit": "seconds",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"shell_coder_sandbox\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::shell_coder_sandbox::subject_cost_usd",
+            "value": 1.8636946399999998,
+            "unit": "USD",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"shell_coder_sandbox\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::shell_coder_sandbox::judge_cost_usd",
+            "value": 0,
+            "unit": "USD",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"shell_coder_sandbox\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::shell_coder_sandbox::total_cost_usd",
+            "value": 1.8636946399999998,
+            "unit": "USD",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"shell_coder_sandbox\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::suite::hard_gate_failures",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"expected_reports\":5,\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"received_reports\":5,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"scenario\":\"suite\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::suite::technical_failures",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"expected_reports\":5,\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"received_reports\":5,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"scenario\":\"suite\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::suite::retry_attempts",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"expected_reports\":5,\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"received_reports\":5,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"scenario\":\"suite\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "reliability::glm-5-2::suite::missing_reports",
+            "value": 0,
+            "unit": "count",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"expected_reports\":5,\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"received_reports\":5,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"scenario\":\"suite\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
+          },
+          {
+            "name": "efficiency::glm-5-2::suite::wall_time_seconds",
+            "value": 1498.12,
+            "unit": "seconds",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30611136043-1\",\"run_id\":\"30611136043\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"},\"expected_reports\":5,\"generated_at\":\"2026-07-31T07:38:46.593165+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"received_reports\":5,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-07-31\",\"url\":\"https://github.com/iii-hq/workers/commit/a3e47414203725c4c0df4917fd102f3b0d89706b\",\"version\":\"2026-07-31\",\"worker\":\"main\"},\"requested_runs\":3,\"scenario\":\"suite\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-07-31\",\"repository\":\"iii-hq/workers\",\"sha\":\"a3e47414203725c4c0df4917fd102f3b0d89706b\"},\"status\":\"passed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30611136043\"}"
           }
         ]
       }
