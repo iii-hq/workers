@@ -80,10 +80,10 @@ jobs:
       # file with all npm deps + JSON assets inlined. Only Node built-ins
       # and `fsevents` (macOS-only optional native dep used by chokidar)
       # are external. See `<worker>/scripts/build-bundle.mjs`.
+      # The pnpm version comes from the repo-root package.json
+      # `packageManager` field (the UI pnpm workspace root).
       - uses: pnpm/action-setup@v5
         if: inputs.language == 'node' || inputs.language == 'javascript'
-        with:
-          version: 10
 
       - uses: actions/setup-node@v5
         if: inputs.language == 'node' || inputs.language == 'javascript'
