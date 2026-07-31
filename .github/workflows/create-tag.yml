@@ -38,6 +38,7 @@ on:
           - memory
           - memory-consolidate
           - opencode
+          - openwiki
           - pi
           - provider-anthropic
           - provider-claude-code
