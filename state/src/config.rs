@@ -44,6 +44,28 @@ pub struct StateConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 100, max = 3_600_000))]
     pub save_interval_ms: Option<u64>,
+
+    /// Worker-claimed PRIVATE namespaces: control-plane storage invisible to
+    /// the public `state::*` surface and to trigger fan-out, reachable only
+    /// through the internal accessors registered per namespace as
+    /// `<functions_prefix>::state::{get, list, compare-and-set}` (e.g. the
+    /// harness deployment claims prefix `harness` for its binding records).
+    /// Restart-tier: the accessors register once at worker start.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub private_namespaces: Vec<PrivateNamespace>,
+}
+
+/// One private namespace claim (see [`StateConfig::private_namespaces`]).
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PrivateNamespace {
+    /// Function-id prefix for the internal accessors, e.g. `harness` →
+    /// `harness::state::get`. Letters, digits, `_` and `-` only.
+    pub functions_prefix: String,
+    /// The reserved storage scopes this namespace owns. Each scope belongs to
+    /// exactly one namespace; a scope already claimed by an earlier entry is
+    /// skipped with an error log.
+    pub scopes: Vec<String>,
 }
 
 impl Default for StateConfig {
@@ -53,6 +75,7 @@ impl Default for StateConfig {
             triggers_enabled: Some(true),
             max_value_bytes: None,
             save_interval_ms: None,
+            private_namespaces: Vec::new(),
         }
     }
 }

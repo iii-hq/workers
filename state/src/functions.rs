@@ -24,32 +24,109 @@ use crate::trigger::TriggerTable;
 
 pub type ConfigCell = Arc<RwLock<Arc<StateConfig>>>;
 
-/// Binding authority is control-plane state, not agent state. The harness
-/// reaches it through the internal functions below; public `state::*` calls
-/// must never read, mutate, list, or fan it out to state triggers.
-pub const BINDING_SCOPE: &str = "harness_binding";
-pub const BINDING_OWNER_SCOPE: &str = "harness_binding_owner";
-pub const HARNESS_GET_ID: &str = "harness::state::get";
-pub const HARNESS_LIST_ID: &str = "harness::state::list";
-pub const HARNESS_CAS_ID: &str = "harness::state::compare-and-set";
-
-pub fn is_reserved_scope(scope: &str) -> bool {
-    matches!(scope, BINDING_SCOPE | BINDING_OWNER_SCOPE)
+/// Control-plane state is not agent state. Workers claim PRIVATE namespaces
+/// via `StateConfig::private_namespaces`; each claim reserves its scopes —
+/// public `state::*` calls must never read, mutate, list, or fan them out to
+/// state triggers — and registers internal accessors under the claim's own
+/// function-id prefix (`<prefix>::state::{get, list, compare-and-set}`).
+/// This worker knows nothing about WHO claims: the harness's binding
+/// authority is just the first tenant, wired entirely from config.
+#[derive(Debug, Default)]
+pub struct PrivateNamespaces {
+    namespaces: Vec<crate::config::PrivateNamespace>,
+    reserved: std::collections::HashSet<String>,
 }
 
-fn reject_reserved_scope(scope: &str) -> Result<(), Error> {
-    if is_reserved_scope(scope) {
+impl PrivateNamespaces {
+    /// Boot-time snapshot (restart-tier, like the adapter: the accessors
+    /// register once at start). Invalid entries are skipped LOUDLY; a scope
+    /// already claimed by an earlier namespace stays with the first claimant.
+    pub fn new(configured: &[crate::config::PrivateNamespace]) -> Self {
+        let mut namespaces: Vec<crate::config::PrivateNamespace> = Vec::new();
+        let mut reserved = std::collections::HashSet::new();
+        for entry in configured {
+            let prefix = entry.functions_prefix.trim();
+            if prefix.is_empty()
+                || !prefix
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                tracing::error!(
+                    functions_prefix = %entry.functions_prefix,
+                    "private namespace skipped: functions_prefix must be non-empty [A-Za-z0-9_-]"
+                );
+                continue;
+            }
+            let scopes: Vec<String> = entry
+                .scopes
+                .iter()
+                .filter(|scope| {
+                    if scope.is_empty() {
+                        tracing::error!(prefix, "private namespace scope skipped: empty");
+                        return false;
+                    }
+                    if !reserved.insert((*scope).clone()) {
+                        tracing::error!(
+                            prefix,
+                            scope = %scope,
+                            "private namespace scope skipped: already claimed"
+                        );
+                        return false;
+                    }
+                    true
+                })
+                .cloned()
+                .collect();
+            if scopes.is_empty() {
+                tracing::error!(prefix, "private namespace skipped: no usable scopes");
+                continue;
+            }
+            namespaces.push(crate::config::PrivateNamespace {
+                functions_prefix: prefix.to_string(),
+                scopes,
+            });
+        }
+        Self {
+            namespaces,
+            reserved,
+        }
+    }
+
+    pub fn is_reserved(&self, scope: &str) -> bool {
+        self.reserved.contains(scope)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &crate::config::PrivateNamespace> {
+        self.namespaces.iter()
+    }
+}
+
+/// The internal accessor ids a namespace claim registers.
+pub fn internal_ids(functions_prefix: &str) -> (String, String, String) {
+    (
+        format!("{functions_prefix}::state::get"),
+        format!("{functions_prefix}::state::list"),
+        format!("{functions_prefix}::state::compare-and-set"),
+    )
+}
+
+fn reject_reserved_scope(private: &PrivateNamespaces, scope: &str) -> Result<(), Error> {
+    if private.is_reserved(scope) {
         return Err(Error::Handler(format!(
-            "RESERVED_SCOPE: `{scope}` is private harness bookkeeping"
+            "RESERVED_SCOPE: `{scope}` is private worker bookkeeping"
         )));
     }
     Ok(())
 }
 
-fn require_reserved_scope(scope: &str) -> Result<(), Error> {
-    if !is_reserved_scope(scope) {
+fn require_owned_scope(
+    owned: &std::collections::HashSet<String>,
+    prefix: &str,
+    scope: &str,
+) -> Result<(), Error> {
+    if !owned.contains(scope) {
         return Err(Error::Handler(format!(
-            "INVALID_SCOPE: `{scope}` is not harness binding state"
+            "INVALID_SCOPE: `{scope}` is not private state of namespace `{prefix}`"
         )));
     }
     Ok(())
@@ -91,6 +168,8 @@ pub struct StateCtx {
     pub triggers: TriggerTable,
     pub config: ConfigCell,
     pub invoker: Arc<dyn Invoker>,
+    /// Boot-time private-namespace snapshot (see [`PrivateNamespaces`]).
+    pub private: Arc<PrivateNamespaces>,
 }
 
 impl StateCtx {
@@ -99,7 +178,7 @@ impl StateCtx {
     }
 
     async fn emit(&self, event: StateEventData) {
-        if is_reserved_scope(&event.scope) {
+        if self.private.is_reserved(&event.scope) {
             return;
         }
         let enabled = self.snapshot().await.triggers_enabled.unwrap_or(true);
@@ -146,7 +225,9 @@ fn event(
 }
 
 pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
-    register_harness_functions(iii, &ctx);
+    for namespace in ctx.private.iter().cloned().collect::<Vec<_>>() {
+        register_private_namespace_functions(iii, &ctx, &namespace);
+    }
 
     // state::set — max_value_bytes LIVE guard before the adapter write.
     {
@@ -156,7 +237,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
             RegisterFunction::new_async(move |input: StateSetInput| {
                 let ctx = ctx.clone();
                 async move {
-                    reject_reserved_scope(&input.scope)?;
+                    reject_reserved_scope(&ctx.private, &input.scope)?;
                     if let Some(limit) = ctx.snapshot().await.max_value_bytes {
                         let size = serde_json::to_vec(&input.value)
                             .map(|b| b.len())
@@ -205,7 +286,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
             RegisterFunction::new_async(move |input: CompareAndSetInput| {
                 let ctx = ctx.clone();
                 async move {
-                    reject_reserved_scope(&input.scope)?;
+                    reject_reserved_scope(&ctx.private, &input.scope)?;
                     let swapped = ctx
                         .adapter
                         .compare_and_set(
@@ -303,7 +384,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
             RegisterFunction::new_async(move |input: StateGetInput| {
                 let ctx = ctx.clone();
                 async move {
-                    reject_reserved_scope(&input.scope)?;
+                    reject_reserved_scope(&ctx.private, &input.scope)?;
                     ctx.adapter
                         .get(&input.scope, &input.key)
                         .await
@@ -327,7 +408,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
             RegisterFunction::new_async(move |input: StateDeleteInput| {
                 let ctx = ctx.clone();
                 async move {
-                    reject_reserved_scope(&input.scope)?;
+                    reject_reserved_scope(&ctx.private, &input.scope)?;
                     let old = ctx
                         .adapter
                         .get(&input.scope, &input.key)
@@ -370,7 +451,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
             RegisterFunction::new_async(move |input: StateUpdateInput| {
                 let ctx = ctx.clone();
                 async move {
-                    reject_reserved_scope(&input.scope)?;
+                    reject_reserved_scope(&ctx.private, &input.scope)?;
                     let result = ctx
                         .adapter
                         .update(&input.scope, &input.key, input.ops)
@@ -406,7 +487,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
             RegisterFunction::new_async(move |input: StateGetGroupInput| {
                 let ctx = ctx.clone();
                 async move {
-                    reject_reserved_scope(&input.scope)?;
+                    reject_reserved_scope(&ctx.private, &input.scope)?;
                     let values = ctx.adapter.list(&input.scope).await.map_err(|e| {
                         Error::Handler(format!("LIST_ERROR: Failed to list values: {e}"))
                     })?;
@@ -432,7 +513,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
             RegisterFunction::new_async(move |input: StateGetGroupInput| {
                 let ctx = ctx.clone();
                 async move {
-                    reject_reserved_scope(&input.scope)?;
+                    reject_reserved_scope(&ctx.private, &input.scope)?;
                     let keys = ctx.adapter.list_keys(&input.scope).await.map_err(|e| {
                         Error::Handler(format!("LIST_KEYS_ERROR: Failed to list keys: {e}"))
                     })?;
@@ -456,7 +537,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     })?;
                     let mut normalized: Vec<String> = groups
                         .into_iter()
-                        .filter(|scope| !is_reserved_scope(scope))
+                        .filter(|scope| !ctx.private.is_reserved(scope))
                         .collect::<std::collections::HashSet<_>>()
                         .into_iter()
                         .collect();
@@ -469,43 +550,64 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
     }
 }
 
-/// Private persistence primitives used only by the harness worker. They skip
-/// trigger fan-out by design: a binding claim must not recursively fire a
-/// catch-all state subscription.
-fn register_harness_functions(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
+/// Private persistence primitives for the workers that claimed a namespace
+/// in `StateConfig::private_namespaces`. They skip trigger fan-out by design:
+/// a binding claim must not recursively fire a catch-all state subscription.
+/// Each accessor is hard-scoped to ITS namespace's own scopes — one tenant
+/// can never reach another tenant's bookkeeping.
+fn register_private_namespace_functions(
+    iii: &Arc<IIIClient>,
+    ctx: &Arc<StateCtx>,
+    namespace: &crate::config::PrivateNamespace,
+) {
     let internal = serde_json::json!({ "internal": true, "trace_hidden": true });
+    let prefix = namespace.functions_prefix.clone();
+    let owned: Arc<std::collections::HashSet<String>> =
+        Arc::new(namespace.scopes.iter().cloned().collect());
+    let (get_id, list_id, cas_id) = internal_ids(&prefix);
 
     {
         let ctx = ctx.clone();
+        let owned = owned.clone();
+        let prefix = prefix.clone();
         iii.register_function(
-            HARNESS_GET_ID,
+            &get_id,
             RegisterFunction::new_async(move |input: StateGetInput| {
                 let ctx = ctx.clone();
+                let owned = owned.clone();
+                let prefix = prefix.clone();
                 async move {
-                    require_reserved_scope(&input.scope)?;
+                    require_owned_scope(&owned, &prefix, &input.scope)?;
                     ctx.adapter
                         .get(&input.scope, &input.key)
                         .await
                         .map_err(|e| Error::Handler(format!("GET_ERROR: {e}")))
                 }
             })
-            .description("Internal: read harness bookkeeping state")
+            .description(format!(
+                "Internal: read private `{}` bookkeeping state",
+                namespace.functions_prefix
+            ))
             .metadata(internal.clone())
             .response_format(json_value_or_null_schema(
-                "HarnessStateGetResponse",
-                "The raw private harness value, or null if absent.",
+                "PrivateStateGetResponse",
+                "The raw private value, or null if absent.",
             )),
         );
     }
 
     {
         let ctx = ctx.clone();
+        let owned = owned.clone();
+        let prefix = prefix.clone();
         iii.register_function(
-            HARNESS_LIST_ID,
+            &list_id,
             RegisterFunction::new_async(move |input: StateGetGroupInput| {
                 let ctx = ctx.clone();
+                let owned = owned.clone();
+                let prefix = prefix.clone();
                 async move {
-                    require_reserved_scope(&input.scope)?;
+                    require_owned_scope(&owned, &prefix, &input.scope)?;
                     let values = ctx
                         .adapter
                         .list(&input.scope)
@@ -514,11 +616,14 @@ fn register_harness_functions(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
                     Ok(serde_json::to_value(values).ok())
                 }
             })
-            .description("Internal: list harness bookkeeping state")
+            .description(format!(
+                "Internal: list private `{}` bookkeeping state",
+                namespace.functions_prefix
+            ))
             .metadata(internal.clone())
             .response_format(json_value_or_null_schema(
-                "HarnessStateListResponse",
-                "Private harness values in the given scope.",
+                "PrivateStateListResponse",
+                "Private values in the given scope.",
             )),
         );
     }
@@ -526,11 +631,13 @@ fn register_harness_functions(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
     {
         let ctx = ctx.clone();
         iii.register_function(
-            HARNESS_CAS_ID,
+            &cas_id,
             RegisterFunction::new_async(move |input: CompareAndSetInput| {
                 let ctx = ctx.clone();
+                let owned = owned.clone();
+                let prefix = prefix.clone();
                 async move {
-                    require_reserved_scope(&input.scope)?;
+                    require_owned_scope(&owned, &prefix, &input.scope)?;
                     let swapped = ctx
                         .adapter
                         .compare_and_set(
@@ -553,7 +660,10 @@ fn register_harness_functions(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
                     })
                 }
             })
-            .description("Internal: atomically update harness bookkeeping state")
+            .description(format!(
+                "Internal: atomically update private `{}` bookkeeping state",
+                namespace.functions_prefix
+            ))
             .metadata(internal),
         );
     }
@@ -562,16 +672,66 @@ fn register_harness_functions(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
 #[cfg(test)]
 mod reserved_scope_tests {
     use super::*;
+    use crate::config::PrivateNamespace;
+
+    fn ns(prefix: &str, scopes: &[&str]) -> PrivateNamespace {
+        PrivateNamespace {
+            functions_prefix: prefix.into(),
+            scopes: scopes.iter().map(|s| s.to_string()).collect(),
+        }
+    }
 
     #[test]
-    fn harness_scopes_are_reserved() {
-        assert!(is_reserved_scope("harness_binding"));
-        assert!(is_reserved_scope("harness_binding_owner"));
-        assert!(!is_reserved_scope("harness_turn"));
-        assert!(!is_reserved_scope("agent_state"));
-        assert!(reject_reserved_scope("harness_binding").is_err());
-        assert!(reject_reserved_scope("agent_state").is_ok());
-        assert!(require_reserved_scope("harness_binding").is_ok());
-        assert!(require_reserved_scope("agent_state").is_err());
+    fn claimed_scopes_are_reserved_and_guarded() {
+        // Neutral tenant names on purpose: nothing here knows about the
+        // harness — its deployment config is just the first claimant.
+        let private = PrivateNamespaces::new(&[
+            ns("acme", &["acme_ledger", "acme_ledger_owner"]),
+            ns("wf", &["wf_runs"]),
+        ]);
+        assert!(private.is_reserved("acme_ledger"));
+        assert!(private.is_reserved("wf_runs"));
+        assert!(!private.is_reserved("agent_state"));
+        assert!(reject_reserved_scope(&private, "acme_ledger").is_err());
+        assert!(reject_reserved_scope(&private, "agent_state").is_ok());
+    }
+
+    #[test]
+    fn accessors_are_hard_scoped_to_their_own_namespace() {
+        let owned: std::collections::HashSet<String> =
+            ["acme_ledger".to_string()].into_iter().collect();
+        assert!(require_owned_scope(&owned, "acme", "acme_ledger").is_ok());
+        // Another tenant's reserved scope is NOT reachable through this
+        // namespace's accessors — reserved-but-foreign is still denied.
+        assert!(require_owned_scope(&owned, "acme", "wf_runs").is_err());
+        assert!(require_owned_scope(&owned, "acme", "agent_state").is_err());
+    }
+
+    #[test]
+    fn internal_ids_follow_the_prefix() {
+        let (get, list, cas) = internal_ids("harness");
+        assert_eq!(get, "harness::state::get");
+        assert_eq!(list, "harness::state::list");
+        assert_eq!(cas, "harness::state::compare-and-set");
+    }
+
+    #[test]
+    fn invalid_and_duplicate_claims_are_skipped_loudly() {
+        let private = PrivateNamespaces::new(&[
+            ns("", &["a"]),                 // empty prefix → skipped
+            ns("bad prefix", &["b"]),       // invalid chars → skipped
+            ns("first", &["shared", "own"]),
+            ns("second", &["shared"]),      // duplicate scope → entry left empty → skipped
+        ]);
+        assert!(private.is_reserved("shared"));
+        assert!(private.is_reserved("own"));
+        assert!(!private.is_reserved("a"));
+        assert!(!private.is_reserved("b"));
+        // `shared` stayed with its first claimant.
+        let owners: Vec<&str> = private
+            .iter()
+            .map(|n| n.functions_prefix.as_str())
+            .collect();
+        assert_eq!(owners, vec!["first"]);
     }
 }
