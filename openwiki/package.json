@@ -1,0 +1,32 @@
+{
+  "name": "openwiki",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Source-grounded markdown wiki for code repositories, as an iii worker: generated and refreshed from the repo itself, with a browser UI and JSON API under /openwiki.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.18.2",
+  "scripts": {
+    "build:bundle": "node scripts/build-bundle.mjs",
+    "check": "node --check src/index.mjs",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "node --test",
+    "start": "node src/index.mjs"
+  },
+  "dependencies": {
+    "iii-sdk": "^0.21.6"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.10",
+    "esbuild": "^0.25.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

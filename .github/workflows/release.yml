@@ -32,6 +32,7 @@ on:
       - 'memory/v*'
       - 'memory-consolidate/v*'
       - 'opencode/v*'
+      - 'openwiki/v*'
       - 'pi/v*'
       - 'provider-anthropic/v*'
       - 'provider-claude-code/v*'

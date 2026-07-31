@@ -167,6 +167,14 @@ rules:
   # github: internal hot-reload hook — invoked only by the engine's
   # configuration:updated trigger dispatch, never agent-callable.
   - '!github::on-config-change'
+  # openwiki: internal trigger targets. cron::refresh-due is the per-wiki cron
+  # target; on-turn-started/completed are harness trigger-bridge targets whose
+  # direct call could forge generation progress. The hot-reload hook follows
+  # the same pattern as the other on-config-change denies.
+  - '!openwiki::cron::refresh-due'
+  - '!openwiki::on-turn-started'
+  - '!openwiki::on-turn-completed'
+  - '!openwiki::on-config-change'
 
   # Read-only / introspection (extend below for your tools).
   - state::get
