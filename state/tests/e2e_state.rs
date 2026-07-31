@@ -384,17 +384,17 @@ async fn state_trigger_fires_with_event_payload() {
     call(
         &iii,
         "state::set",
-        json!({"scope": scope, "key": key, "value": {"name": "Alice"}}),
+        json!({"scope": scope, "key": key, "value": null}),
     )
     .await
     .expect("first set");
     call(
         &iii,
-        "state::set",
+        "state::compare-and-set",
         json!({"scope": scope, "key": key, "value": {"name": "Bob"}}),
     )
     .await
-    .expect("second set");
+    .expect("compare-and-set over stored null");
     call(&iii, "state::delete", json!({"scope": scope, "key": key}))
         .await
         .expect("delete");
@@ -414,10 +414,10 @@ async fn state_trigger_fires_with_event_payload() {
     assert_eq!(created["scope"], scope);
     assert_eq!(created["key"], key);
     assert_eq!(created["old_value"], Value::Null);
-    assert_eq!(created["new_value"], json!({"name": "Alice"}));
+    assert_eq!(created["new_value"], Value::Null);
 
     let updated = &by_type["state:updated"];
-    assert_eq!(updated["old_value"], json!({"name": "Alice"}));
+    assert_eq!(updated["old_value"], Value::Null);
     assert_eq!(updated["new_value"], json!({"name": "Bob"}));
 
     let deleted = &by_type["state:deleted"];

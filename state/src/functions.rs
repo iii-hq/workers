@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-use crate::adapters::StateAdapter;
+use crate::adapters::{CompareAndSetOutcome, StateAdapter};
 use crate::config::StateConfig;
 use crate::events::{Invoker, fan_out};
 use crate::structs::{
@@ -84,7 +84,7 @@ pub enum ClaimOutcome {
 
 impl PrivateNamespaces {
     pub fn is_reserved(&self, scope: &str) -> bool {
-        self.read().reserved.contains(scope)
+        is_builtin_reserved_scope(scope) || self.read().reserved.contains(scope)
     }
 
     /// The scopes a namespace owns — the hard bound on its own accessors.
@@ -105,6 +105,11 @@ impl PrivateNamespaces {
     /// held by another namespace fails the whole claim, so a partial state is
     /// never observable.
     pub fn claim(&self, functions_prefix: &str, scopes: &[String]) -> ClaimOutcome {
+        if let Some(scope) = scopes.iter().find(|scope| is_builtin_reserved_scope(scope)) {
+            return ClaimOutcome::Conflict(format!(
+                "scope `{scope}` is reserved by the state worker"
+            ));
+        }
         let mut claims = self.write();
         let mut fresh = Vec::new();
         for scope in scopes {
@@ -162,6 +167,10 @@ impl PrivateNamespaces {
     }
 }
 
+fn is_builtin_reserved_scope(scope: &str) -> bool {
+    matches!(scope, CLAIMS_SCOPE | crate::barrier::BARRIER_SCOPE)
+}
+
 /// A namespace prefix must be a usable function-id segment.
 pub fn valid_prefix(functions_prefix: &str) -> bool {
     !functions_prefix.is_empty()
@@ -180,8 +189,7 @@ pub fn internal_ids(functions_prefix: &str) -> (String, String, String) {
 }
 
 fn reject_reserved_scope(private: &PrivateNamespaces, scope: &str) -> Result<(), Error> {
-    // The claims ledger itself is never publicly reachable.
-    if scope == CLAIMS_SCOPE || private.is_reserved(scope) {
+    if private.is_reserved(scope) {
         return Err(Error::Handler(format!(
             "RESERVED_SCOPE: `{scope}` is private worker bookkeeping"
         )));
@@ -248,7 +256,7 @@ impl StateCtx {
     }
 
     async fn emit(&self, event: StateEventData) {
-        if event.scope == CLAIMS_SCOPE || self.private.is_reserved(&event.scope) {
+        if self.private.is_reserved(&event.scope) {
             return;
         }
         let enabled = self.snapshot().await.triggers_enabled.unwrap_or(true);
@@ -366,22 +374,16 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                         .await
                         .map_err(|e| Error::Handler(format!("CAS_ERROR: {e}")))?;
                     match swapped {
-                        None => {
+                        CompareAndSetOutcome::Swapped { old_value } => {
                             // Same event a plain set emits: a watcher must not
                             // miss a write just because it went through CAS.
-                            let et = if input.expected.is_none() {
+                            let et = if old_value.is_none() {
                                 StateEventType::Created
                             } else {
                                 StateEventType::Updated
                             };
-                            ctx.emit(event(
-                                et,
-                                input.scope,
-                                input.key,
-                                input.expected,
-                                input.value,
-                            ))
-                            .await;
+                            ctx.emit(event(et, input.scope, input.key, old_value, input.value))
+                                .await;
                             Ok(CompareAndSetResult {
                                 swapped: true,
                                 current: None,
@@ -389,7 +391,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                         }
                         // The caller retries against `current` rather than
                         // paying another round trip to find out what changed.
-                        Some(current) => Ok(CompareAndSetResult {
+                        CompareAndSetOutcome::NotSwapped { current } => Ok(CompareAndSetResult {
                             swapped: false,
                             current: Some(current),
                         }),
@@ -424,12 +426,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     })?;
                     let decision = ctx
                         .adapter
-                        .barrier_arrive(
-                            crate::barrier::BARRIER_SCOPE,
-                            &cfg.id.clone(),
-                            &cfg,
-                            &input.event,
-                        )
+                        .barrier_arrive(crate::barrier::BARRIER_SCOPE, &cfg.id, &cfg, &input.event)
                         .await
                         .map_err(|e| Error::Handler(format!("BARRIER_ERROR: {e}")))?;
                     Ok(decision)
@@ -605,9 +602,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     })?;
                     let mut normalized: Vec<String> = groups
                         .into_iter()
-                        .filter(|scope| {
-                            scope.as_str() != CLAIMS_SCOPE && !ctx.private.is_reserved(scope)
-                        })
+                        .filter(|scope| !ctx.private.is_reserved(scope))
                         .collect::<std::collections::HashSet<_>>()
                         .into_iter()
                         .collect();
@@ -696,9 +691,13 @@ fn register_claim_namespace(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
                         "INVALID_SCOPE: scopes must be non-empty".to_string(),
                     ));
                 }
-                if input.scopes.iter().any(|s| s == CLAIMS_SCOPE) {
+                if let Some(scope) = input
+                    .scopes
+                    .iter()
+                    .find(|scope| is_builtin_reserved_scope(scope))
+                {
                     return Err(Error::Handler(format!(
-                        "RESERVED_SCOPE: `{CLAIMS_SCOPE}` is the claims ledger"
+                        "RESERVED_SCOPE: `{scope}` is state worker bookkeeping"
                     )));
                 }
                 let caller_worker_id = input.caller_worker_id.clone().ok_or_else(|| {
@@ -925,11 +924,11 @@ fn register_private_namespace_functions(
                         .await
                         .map_err(|e| Error::Handler(format!("CAS_ERROR: {e}")))?;
                     Ok(match swapped {
-                        None => CompareAndSetResult {
+                        CompareAndSetOutcome::Swapped { .. } => CompareAndSetResult {
                             swapped: true,
                             current: None,
                         },
-                        Some(current) => CompareAndSetResult {
+                        CompareAndSetOutcome::NotSwapped { current } => CompareAndSetResult {
                             swapped: false,
                             current: Some(current),
                         },
@@ -1009,9 +1008,15 @@ mod private_namespace_tests {
     }
 
     #[test]
-    fn the_claims_ledger_is_never_publicly_reachable() {
+    fn state_owned_scopes_are_always_private_and_cannot_be_claimed() {
         let private = PrivateNamespaces::default();
         assert!(reject_reserved_scope(&private, CLAIMS_SCOPE).is_err());
+        assert!(reject_reserved_scope(&private, crate::barrier::BARRIER_SCOPE).is_err());
+        assert!(matches!(
+            private.claim("acme", &scopes(&[crate::barrier::BARRIER_SCOPE])),
+            ClaimOutcome::Conflict(_)
+        ));
+        assert!(private.owned_scopes("acme").is_empty());
     }
 
     #[test]

@@ -426,9 +426,8 @@ impl KvStore {
         removed
     }
 
-    /// Swap `key` from `expected` to `value`, atomically. Returns the value
-    /// that was there — `Ok(None)` on success, `Ok(Some(current))` when the
-    /// caller's `expected` did not match and nothing was written.
+    /// Swap `key` from `expected` to `value`, atomically. Returns the observed
+    /// old value on success, or the current value when the expectation missed.
     ///
     /// The whole point is the read and the write happening under ONE lock. A
     /// caller doing `get` then `set` cannot tell "nobody touched it" from "two
@@ -440,15 +439,20 @@ impl KvStore {
         key: String,
         expected: Option<&Value>,
         value: Value,
-    ) -> Option<Value> {
+    ) -> crate::adapters::CompareAndSetOutcome {
         let mut store = self.store.write().await;
-        let current = store.get(&index).and_then(|index_map| index_map.get(&key));
+        let current = store
+            .get(&index)
+            .and_then(|index_map| index_map.get(&key))
+            .cloned();
 
         // `expected: None` means "I expect this key to be absent" — the
         // set-if-absent form a claim needs. A stored `null` counts as absent so
         // a deleted-and-rewritten key behaves the same as a never-written one.
-        if !crate::adapters::cas_matches(expected, current) {
-            return Some(current.cloned().unwrap_or(Value::Null));
+        if !crate::adapters::cas_matches(expected, current.as_ref()) {
+            return crate::adapters::CompareAndSetOutcome::NotSwapped {
+                current: current.unwrap_or(Value::Null),
+            };
         }
 
         store
@@ -460,7 +464,7 @@ impl KvStore {
         if self.file_store_dir.is_some() {
             self.dirty.write().await.insert(index, DirtyOp::Upsert);
         }
-        None
+        crate::adapters::CompareAndSetOutcome::Swapped { old_value: current }
     }
 
     /// Apply one barrier arrival under the SAME write lock `update` uses.
@@ -486,10 +490,17 @@ impl KvStore {
         let (next, decision) = crate::barrier::arrive(current.as_ref(), cfg, event)?;
         let encoded =
             serde_json::to_value(&next).map_err(|e| format!("barrier state serialize: {e}"))?;
+        let unchanged = match current.as_ref() {
+            None | Some(Value::Null) => next.arrived.is_empty() && !next.complete,
+            Some(current) => current == &encoded,
+        };
+        if unchanged {
+            return Ok(decision);
+        }
         store
             .entry(index.clone())
             .or_insert_with(IndexMap::new)
-            .insert(key.clone(), encoded);
+            .insert(key, encoded);
         drop(store);
 
         if self.file_store_dir.is_some() {
@@ -836,6 +847,7 @@ mod barrier_tests {
 #[cfg(test)]
 mod cas_tests {
     use super::*;
+    use crate::adapters::CompareAndSetOutcome::{NotSwapped, Swapped};
     use serde_json::json;
 
     #[tokio::test]
@@ -846,21 +858,23 @@ mod cas_tests {
             store
                 .compare_and_set("s".into(), "k".into(), None, json!(1))
                 .await,
-            None
+            Swapped { old_value: None }
         );
         // Absent again → now occupied, so the same call reports what is there.
         assert_eq!(
             store
                 .compare_and_set("s".into(), "k".into(), None, json!(2))
                 .await,
-            Some(json!(1))
+            NotSwapped { current: json!(1) }
         );
         // Correct expectation swaps.
         assert_eq!(
             store
                 .compare_and_set("s".into(), "k".into(), Some(&json!(1)), json!(2))
                 .await,
-            None
+            Swapped {
+                old_value: Some(json!(1))
+            }
         );
         // Stale expectation does not, and hands back the current value so the
         // caller can recompute instead of re-reading.
@@ -868,19 +882,21 @@ mod cas_tests {
             store
                 .compare_and_set("s".into(), "k".into(), Some(&json!(1)), json!(3))
                 .await,
-            Some(json!(2))
+            NotSwapped { current: json!(2) }
         );
         assert_eq!(store.get("s".into(), "k".into()).await, Some(json!(2)));
     }
 
     #[tokio::test]
-    async fn failed_atomic_operations_do_not_create_scopes() {
+    async fn failed_or_ignored_atomic_operations_do_not_create_scopes() {
         let store = KvStore::new(None);
         assert_eq!(
             store
                 .compare_and_set("phantom".into(), "k".into(), Some(&json!(1)), json!(2))
                 .await,
-            Some(Value::Null)
+            NotSwapped {
+                current: Value::Null
+            }
         );
 
         let cfg = crate::barrier::BarrierConfig {
@@ -900,6 +916,24 @@ mod cas_tests {
                 .await
                 .is_err()
         );
+
+        let cfg = crate::barrier::BarrierConfig {
+            id: "ignored".into(),
+            expect: crate::barrier::Expect::Keys(vec!["expected".into()]),
+            key_from: None,
+            carry: None,
+        };
+        assert!(matches!(
+            store
+                .barrier_arrive(
+                    crate::barrier::BARRIER_SCOPE.into(),
+                    cfg.id.clone(),
+                    &cfg,
+                    &json!({ "key": "unexpected" }),
+                )
+                .await,
+            Ok(crate::barrier::Decision::Skip { .. })
+        ));
         assert!(store.list_groups().await.is_empty());
     }
 
@@ -926,16 +960,17 @@ mod cas_tests {
                         .await
                         .unwrap_or(json!(0));
                     let next = current.as_u64().unwrap_or(0) + 1;
-                    if store
-                        .compare_and_set(
-                            "claims".into(),
-                            "counter".into(),
-                            Some(&current),
-                            json!(next),
-                        )
-                        .await
-                        .is_none()
-                    {
+                    if matches!(
+                        store
+                            .compare_and_set(
+                                "claims".into(),
+                                "counter".into(),
+                                Some(&current),
+                                json!(next),
+                            )
+                            .await,
+                        Swapped { .. }
+                    ) {
                         return next;
                     }
                 }
@@ -966,7 +1001,9 @@ mod cas_tests {
             store
                 .compare_and_set("s".into(), "k".into(), None, json!("claimed"))
                 .await,
-            None
+            Swapped {
+                old_value: Some(Value::Null)
+            }
         );
     }
 }

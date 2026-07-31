@@ -21,13 +21,20 @@ use crate::store::KvStore;
 
 const DEFAULT_REDIS_URL: &str = "redis://localhost:6379";
 const REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
+const REDIS_CAS_MAX_ATTEMPTS: usize = 8;
 
 pub(crate) fn cas_matches(expected: Option<&Value>, current: Option<&Value>) -> bool {
     match (expected, current) {
-        (None, None | Some(Value::Null)) => true,
+        (None | Some(Value::Null), None | Some(Value::Null)) => true,
         (Some(want), Some(got)) => want == got,
         _ => false,
     }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum CompareAndSetOutcome {
+    Swapped { old_value: Option<Value> },
+    NotSwapped { current: Value },
 }
 
 #[async_trait]
@@ -42,8 +49,8 @@ pub trait StateAdapter: Send + Sync + 'static {
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<StreamUpdateResult>;
     /// Swap `scope/key` from `expected` to `value` atomically. `expected:
-    /// None` means "expect absent". Returns `None` when the swap happened, or
-    /// `Some(current)` when it did not — the caller retries against that.
+    /// None` means "expect absent". Returns the observed old value when the
+    /// swap happened, or the current value when it did not.
     ///
     /// `get` then `set` from outside cannot express this: two callers reading
     /// the same value both believe they hold it, and both write.
@@ -53,7 +60,7 @@ pub trait StateAdapter: Send + Sync + 'static {
         key: &str,
         expected: Option<&Value>,
         value: Value,
-    ) -> anyhow::Result<Option<Value>>;
+    ) -> anyhow::Result<CompareAndSetOutcome>;
 
     /// Apply one barrier arrival atomically to `scope/key`.
     ///
@@ -127,7 +134,7 @@ impl StateAdapter for KvStoreAdapter {
         key: &str,
         expected: Option<&Value>,
         value: Value,
-    ) -> anyhow::Result<Option<Value>> {
+    ) -> anyhow::Result<CompareAndSetOutcome> {
         Ok(self
             .storage
             .compare_and_set(scope.to_string(), key.to_string(), expected, value)
@@ -685,15 +692,15 @@ impl StateAdapter for RedisAdapter {
         key: &str,
         expected: Option<&Value>,
         value: Value,
-    ) -> anyhow::Result<Option<Value>> {
+    ) -> anyhow::Result<CompareAndSetOutcome> {
         let scope_key = format!("state:{}", scope);
-        let mut conn = self.publisher.lock().await;
         let next = serde_json::to_string(&value)
             .map_err(|e| anyhow::anyhow!("Failed to serialize value: {}", e))?;
 
-        // ponytail: WATCH is scope-wide because Redis hashes cannot watch one
-        // field; use per-field version keys if unrelated writes cause retries.
-        loop {
+        // ponytail: WATCH is scope-wide and retries are capped at 8; use
+        // per-field version keys if unrelated writes cause contention.
+        for _ in 0..REDIS_CAS_MAX_ATTEMPTS {
+            let mut conn = self.publisher.lock().await;
             redis::cmd("WATCH")
                 .arg(&scope_key)
                 .query_async::<()>(&mut *conn)
@@ -720,23 +727,27 @@ impl StateAdapter for RedisAdapter {
                     .query_async::<()>(&mut *conn)
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to unwatch Redis CAS value: {e}"))?;
-                return Ok(Some(current.unwrap_or(Value::Null)));
+                return Ok(CompareAndSetOutcome::NotSwapped {
+                    current: current.unwrap_or(Value::Null),
+                });
             }
 
-            let committed: Option<()> = redis::pipe()
+            let committed: Option<(usize,)> = redis::pipe()
                 .atomic()
                 .cmd("HSET")
                 .arg(&scope_key)
                 .arg(key)
                 .arg(&next)
-                .ignore()
                 .query_async(&mut *conn)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to compare-and-set value in Redis: {e}"))?;
             if committed.is_some() {
-                return Ok(None);
+                return Ok(CompareAndSetOutcome::Swapped { old_value: current });
             }
         }
+        anyhow::bail!(
+            "Failed to compare-and-set value in Redis after {REDIS_CAS_MAX_ATTEMPTS} attempts"
+        )
     }
 
     /// Redis has the atomicity for this (a Lua script over the hash field),
@@ -980,10 +991,21 @@ mod tests {
         let stored = serde_json::from_str(r#"{"a":1,"b":2}"#).unwrap();
         let reordered = serde_json::from_str(r#"{"b":2,"a":1}"#).unwrap();
         assert!(cas_matches(Some(&reordered), Some(&stored)));
+        assert!(cas_matches(None, Some(&Value::Null)));
+        assert!(cas_matches(Some(&Value::Null), None));
         assert!(!cas_matches(
             Some(&serde_json::json!([])),
             Some(&serde_json::json!({}))
         ));
+    }
+
+    #[test]
+    fn redis_exec_result_distinguishes_watch_abort() {
+        let committed: Option<(usize,)> =
+            redis::from_redis_value(&redis::Value::Array(vec![redis::Value::Int(1)])).unwrap();
+        let aborted: Option<(usize,)> = redis::from_redis_value(&redis::Value::Nil).unwrap();
+        assert_eq!(committed, Some((1,)));
+        assert_eq!(aborted, None);
     }
 
     #[tokio::test]
