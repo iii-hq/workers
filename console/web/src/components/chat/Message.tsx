@@ -38,6 +38,8 @@ interface MessageProps {
   /** Copy payload for an assistant turn (prose + its function calls). Lazy so
       the string is built on click, not on every streaming re-render. */
   copyText?: string | (() => string)
+  /** Render function-call cards already expanded (showcase surfaces). */
+  defaultOpenCalls?: boolean
 }
 
 export function Message({
@@ -48,6 +50,7 @@ export function Message({
   onManageFilesystemAccess,
   workingDir,
   copyText,
+  defaultOpenCalls,
 }: MessageProps) {
   switch (message.role) {
     case 'user':
@@ -89,6 +92,7 @@ export function Message({
       return (
         <FunctionTriggerCard
           message={message}
+          defaultOpen={defaultOpenCalls}
           onApprove={onApprove}
           onDeny={onDeny}
           onAlwaysAllow={onAlwaysAllowHandler}

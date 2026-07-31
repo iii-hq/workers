@@ -6,6 +6,7 @@ import {
 } from '@/components/function-trigger/FunctionTriggerCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { StatusDot } from '@/components/ui/StatusDot'
+import { formatCallDuration } from '@/lib/format-call-duration'
 import { cn } from '@/lib/utils'
 import type { FunctionTriggerMessage as FunctionTriggerMessageType } from '@/types/chat'
 
@@ -117,7 +118,7 @@ function deriveStatus(messages: FunctionTriggerMessageType[]): GroupStatus {
     label: (
       <>
         <span className="tabular-nums">{total}</span> functions for{' '}
-        <span className="tabular-nums">{sum}</span>ms
+        <span className="tabular-nums">{formatCallDuration(sum)}</span>
       </>
     ),
   }

@@ -331,9 +331,25 @@
   animation: timeline-enter 240ms ease-out both;
 }
 
+/* live-timeline re-packs — geometry changes glide instead of teleporting.
+   Composes with timeline-enter: the entrance animates transform/opacity,
+   this transitions the box, so a new bar mounts in place and only later
+   moves smoothly. */
+@utility timeline-glide {
+  transition:
+    left 300ms ease,
+    top 300ms ease,
+    width 300ms ease,
+    height 300ms ease,
+    max-width 300ms ease;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .timeline-enter {
     animation: none;
+  }
+  .timeline-glide {
+    transition: none;
   }
 }
 
