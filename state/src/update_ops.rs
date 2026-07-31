@@ -32,7 +32,7 @@ pub(crate) const ERR_DECREMENT_TARGET_NOT_OBJECT: &str = "decrement.target_not_o
 pub(crate) const ERR_DECREMENT_NOT_NUMBER: &str = "decrement.not_number";
 pub(crate) const ERR_REMOVE_TARGET_NOT_OBJECT: &str = "remove.target_not_object";
 
-const DOC_URL_BASE: &str = "https://iii.dev/docs/workers/iii-state#error-codes";
+const DOC_URL_BASE: &str = "https://workers.iii.dev/workers/iii-state#error-codes";
 
 fn err(op_index: usize, code: &str, message: String) -> UpdateOpError {
     UpdateOpError {

@@ -446,11 +446,11 @@ existing one — read the SDK reference for the language you will use. Do not wr
 from memory: names and config keys from memory are often wrong, and a trigger registered with
 wrong keys never fires. Fetch the reference as Markdown.
 Pick the URL for the implementation language:
-- https://iii.dev/docs/api-reference/sdk-node — Node/TypeScript
-- https://iii.dev/docs/api-reference/sdk-python — Python
-- https://iii.dev/docs/api-reference/sdk-rust — Rust
-- https://iii.dev/docs/api-reference/sdk-browser — browser
-- https://iii.dev/docs/sdk-reference/engine-sdk — the raw WebSocket protocol, for any other
+- https://iii.dev/docs/reference/sdk-node — Node/TypeScript
+- https://iii.dev/docs/reference/sdk-python — Python
+- https://iii.dev/docs/reference/sdk-rust — Rust
+- https://iii.dev/docs/reference/sdk-browser — browser
+- https://iii.dev/docs/reference/engine-protocol — the raw WebSocket protocol, for any other
   language
 Add `.md` to a docs URL to get the raw markdown source. If a fetch fails, use the index at
 https://iii.dev/docs/llms.txt — it lists every doc page. If the docs stay unreachable,
