@@ -1,19 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { z } from 'zod'
-import { getIiiClient, type IiiClient } from '@/lib/iii-client'
+import { getIiiClient } from '@/lib/iii-client'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { useWorkerLifecycle } from './use-worker-lifecycle'
+import {
+  readWorkerPresence,
+  type WorkerPresenceState,
+} from './use-worker-presence'
 
 /**
  * Watches the engine for the `harness` worker and drives an in-app install of
  * it via `worker::add`, surfacing live progress.
  *
- * Two signals feed `present`:
- *   1. An initial `engine::workers::list` read on mount.
- *   2. A real-time `worker` lifecycle trigger (operations: ['add']) so the UI
- *      reacts the instant harness is added — whether from the in-app CTA or a
- *      `iii worker add harness` run in the operator's own terminal (this is the
- *      educational, "you can do this in the CLI too" angle).
+ * Presence reconciles two runtime signals:
+ *   1. `engine::workers::list` says whether the worker is callable now.
+ *   2. `worker::status` explains installed, starting, provisioning, and stopped
+ *      states when the worker is not connected.
+ * A real-time `worker` lifecycle trigger keeps the UI responsive to an add
+ * started from the in-app CTA or from `iii worker add harness` in a terminal.
  *
  * `install()` triggers `worker::add` for the registry `harness` source. It
  * resolves with a terminal outcome, but the per-stage progress
@@ -48,6 +52,10 @@ export interface HarnessStatus {
   present: boolean
   /** Initial presence probe in flight. */
   loading: boolean
+  /** Reconciled engine/worker-manager state for the harness process. */
+  state: WorkerPresenceState
+  /** Optional worker-manager detail when the process is not connected. */
+  detail: string | null
   /** An add is in progress (in-app or detected from the CLI). */
   installing: boolean
   /** Ordered console lines for the current/last add. */
@@ -117,15 +125,6 @@ function toStage(evt: WorkerEvent): InstallStage {
   }
 }
 
-async function checkHarnessPresent(client: IiiClient): Promise<boolean> {
-  const res = await client.trigger<{ workers?: Array<{ name?: unknown }> }>(
-    'engine::workers::list',
-    {},
-  )
-  const workers = Array.isArray(res?.workers) ? res.workers : []
-  return workers.some((w) => w?.name === HARNESS_WORKER_NAME)
-}
-
 /**
  * @param enabled - only run against the real backend; pass `false` for the
  *   mock/Storybook backend (treats harness as present so the normal empty
@@ -134,9 +133,14 @@ async function checkHarnessPresent(client: IiiClient): Promise<boolean> {
 export function useHarnessStatus(enabled: boolean): HarnessStatus {
   const [present, setPresent] = useState<boolean>(!enabled)
   const [loading, setLoading] = useState<boolean>(enabled)
+  const [state, setState] = useState<WorkerPresenceState>(
+    enabled ? 'unknown' : 'connected',
+  )
+  const [detail, setDetail] = useState<string | null>(null)
   const [installing, setInstalling] = useState<boolean>(false)
   const [stages, setStages] = useState<InstallStage[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [probeNonce, setProbeNonce] = useState(0)
 
   // Process a single inbound `worker` lifecycle event. Uses functional
   // setState only so the handler has no reactive deps and stays stable.
@@ -148,6 +152,11 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
     setStages((prev) => [...prev, toStage(evt)])
 
     if (evt.stage === 'failed') {
+      setPresent(false)
+      setState('stopped')
+      setDetail(
+        evt.error?.message ?? 'worker manager failed to start the harness',
+      )
       setError(
         evt.error?.message
           ? normalizeErrorMessage(evt.error)
@@ -155,8 +164,14 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
       )
       setInstalling(false)
     } else if (evt.stage === 'done') {
-      setPresent(true)
+      // A completed manager operation does not guarantee that the process has
+      // registered with the engine yet. Reconcile both signals immediately.
+      setPresent(false)
+      setState('starting')
+      setDetail(null)
+      setError(null)
       setInstalling(false)
+      setProbeNonce((nonce) => nonce + 1)
     } else {
       // started / downloading / downloaded — make sure the console is shown
       // even when the add was kicked off from the CLI rather than the CTA.
@@ -175,23 +190,36 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
     onEvent: handleEvent,
   })
 
-  // One-time presence probe on mount. Live changes — the in-app CTA or a CLI
-  // `iii worker add harness` — arrive purely through the `worker` add trigger
-  // above (the engine's push channel). No polling, no focus re-checks.
+  // Presence probe on mount and after a completed add. Reconcile the engine
+  // catalogue with worker-manager status so an installed-but-stopped worker
+  // does not masquerade as an absent worker.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: probeNonce is an explicit re-probe trigger after worker::add completes.
   useEffect(() => {
     if (!enabled) {
       setLoading(false)
       setPresent(true)
+      setState('connected')
+      setDetail(null)
       return
     }
     let cancelled = false
+    setLoading(true)
     void (async () => {
-      const client = await getIiiClient()
       try {
-        const found = await checkHarnessPresent(client)
-        if (!cancelled) setPresent(found)
+        const client = await getIiiClient()
+        const snapshot = await readWorkerPresence(client, HARNESS_WORKER_NAME)
+        if (!cancelled) {
+          setPresent(snapshot.present)
+          setState(snapshot.state)
+          setDetail(snapshot.detail)
+          if (snapshot.present) setError(null)
+        }
       } catch {
-        if (!cancelled) setPresent(false)
+        if (!cancelled) {
+          setPresent(false)
+          setState('unknown')
+          setDetail('could not read worker presence')
+        }
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -199,7 +227,7 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
     return () => {
       cancelled = true
     }
-  }, [enabled])
+  }, [enabled, probeNonce])
 
   const install = useCallback(() => {
     if (!enabled) return
@@ -207,23 +235,33 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
     setStages([])
     setInstalling(true)
     void (async () => {
-      const client = await getIiiClient()
+      let client: Awaited<ReturnType<typeof getIiiClient>> | undefined
       try {
+        client = await getIiiClient()
         await client.trigger('worker::add', {
           source: { kind: 'registry', name: HARNESS_WORKER_NAME },
           wait: true,
         })
         // Terminal success. Trigger events may have already flipped these, but
-        // setting them again is harmless and covers the no-events fallback.
-        setPresent(true)
+        // reconcile again for the no-events fallback and for the short window
+        // between manager completion and engine registration.
+        const snapshot = await readWorkerPresence(client, HARNESS_WORKER_NAME)
+        setPresent(snapshot.present)
+        setState(snapshot.state)
+        setDetail(snapshot.detail)
         setInstalling(false)
+        if (snapshot.present) setError(null)
       } catch (err) {
         setInstalling(false)
         // The add may have actually landed even though the call rejected
         // (e.g. a late timeout) — re-check before surfacing the error.
         try {
-          if (await checkHarnessPresent(client)) {
-            setPresent(true)
+          if (!client) throw new Error('iii client unavailable')
+          const snapshot = await readWorkerPresence(client, HARNESS_WORKER_NAME)
+          setPresent(snapshot.present)
+          setState(snapshot.state)
+          setDetail(snapshot.detail)
+          if (snapshot.present) {
             setError(null)
             return
           }
@@ -239,13 +277,15 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
     () => ({
       present,
       loading,
+      state,
+      detail,
       installing,
       stages,
       error,
       install,
       retry: install,
     }),
-    [present, loading, installing, stages, error, install],
+    [present, loading, state, detail, installing, stages, error, install],
   )
 }
 
@@ -278,5 +318,9 @@ export function isChatBlockedByHarness(status: HarnessStatus): boolean {
 /** Composer placeholder copy while the harness gate is closed. */
 export function harnessComposerPlaceholder(status: HarnessStatus): string {
   if (status.installing) return 'installing harness…'
+  if (status.state === 'starting') return 'starting harness…'
+  if (status.state === 'provisioning') return 'preparing harness…'
+  if (status.state === 'stopped') return 'harness is stopped…'
+  if (status.state === 'unknown') return 'checking harness…'
   return 'install the harness worker to send a message…'
 }

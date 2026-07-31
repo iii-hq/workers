@@ -26,7 +26,7 @@ pub fn build_manifest() -> ModuleManifest {
             "registry_url": DEFAULT_REGISTRY_URL,
             "download_timeout_ms": 60_000,
             "registry_cache_ttl_ms": 60_000,
-            "filter_unregistered": true,
+            "filter_unregistered": false,
             "auto_download": true,
         }),
         supported_targets: vec![env!("TARGET").to_string()],
@@ -58,6 +58,7 @@ mod tests {
         );
         assert_eq!(parsed["default_config"]["download_timeout_ms"], 60_000);
         assert_eq!(parsed["default_config"]["registry_cache_ttl_ms"], 60_000);
+        assert_eq!(parsed["default_config"]["filter_unregistered"], false);
         assert!(!parsed["supported_targets"].as_array().unwrap().is_empty());
     }
 }

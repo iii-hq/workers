@@ -376,10 +376,10 @@ fn parse_worker_names(val: &serde_json::Value) -> HashSet<String> {
 
 /// Resolve the visible set of skills given config and engine handle.
 ///
-/// When `cfg.filter_unregistered` is true, only skills whose top
-/// namespace segment matches a registered (installed) worker name are
-/// returned. On daemon-down or first-boot-no-cache, falls back to
-/// the unfiltered set.
+/// When `cfg.filter_unregistered` is true, only skills whose top namespace
+/// segment matches a registered (installed) worker name are returned. The
+/// default is false so explicitly downloaded skills are not silently hidden.
+/// On daemon-down or first-boot-no-cache, falls back to the unfiltered set.
 pub async fn resolve_visible_skills(
     cfg: &SkillsConfig,
     cache: &RegisteredWorkersCache,

@@ -82,6 +82,7 @@ import {
 } from './lib/traceTransform'
 
 const PAGE_SIZES = [25, 50, 100]
+const TRACE_STALL_TIMEOUT_MS = 10_000
 
 export interface TracesV2Props {
   /** mount with a trace's detail already expanded (stories/deep links) */
@@ -328,12 +329,14 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
   // waterfall via `toWaterfallData`. Accumulated by `span_id` so re-delivered
   // spans dedupe. Frozen while paused.
   const detailSpansRef = useRef<Map<string, StoredSpan>>(new Map())
+  const detailLastActivityRef = useRef<number | null>(null)
   const isPausedRef = useRef(isPaused)
   useEffect(() => {
     isPausedRef.current = isPaused
   }, [isPaused])
 
   const [hasPendingSpans, setHasPendingSpans] = useState(false)
+  const [detailStalled, setDetailStalled] = useState(false)
 
   const rebuildDetail = useCallback((traceId: string): WaterfallData | null => {
     const wf = toWaterfallData([...detailSpansRef.current.values()], traceId)
@@ -346,8 +349,18 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
   // waterfall every second so live bars and elapsed durations keep growing
   // between stream frames (the transform measures pendings against "now").
   useEffect(() => {
-    if (!hasPendingSpans || !selectedTraceId || isPaused) return
-    const timer = setInterval(() => rebuildDetail(selectedTraceId), 1000)
+    if (!hasPendingSpans || !selectedTraceId || isPaused) {
+      setDetailStalled(false)
+      return
+    }
+    const timer = setInterval(() => {
+      rebuildDetail(selectedTraceId)
+      const lastActivity = detailLastActivityRef.current
+      setDetailStalled(
+        lastActivity !== null &&
+          Date.now() - lastActivity >= TRACE_STALL_TIMEOUT_MS,
+      )
+    }, 1000)
     return () => clearInterval(timer)
   }, [hasPendingSpans, selectedTraceId, isPaused, rebuildDetail])
 
@@ -358,6 +371,8 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
         setIsLoadingSpans(true)
         setSpansError(null)
         setWaterfallData(null)
+        detailLastActivityRef.current = null
+        setDetailStalled(false)
       }
       try {
         const { spans } = await fetchTraces({
@@ -368,6 +383,10 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
         })
         detailSpansRef.current = new Map(spans.map((s) => [s.span_id, s]))
         const wf = rebuildDetail(traceId)
+        detailLastActivityRef.current = wf?.spans.some((s) => s.pending)
+          ? Date.now()
+          : null
+        setDetailStalled(false)
         if (!wf && !silent) {
           setSpansError('no span data available for this trace')
         }
@@ -388,6 +407,8 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
     (traceId: string, spans: StoredSpan[]) => {
       if (spans.length === 0) return
       for (const s of spans) mergeDetailSpan(detailSpansRef.current, s)
+      detailLastActivityRef.current = Date.now()
+      setDetailStalled(false)
       rebuildDetail(traceId)
     },
     [rebuildDetail],
@@ -468,6 +489,9 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
       setSelectedSpan(null)
       setWaterfallData(null)
       setSpansError(null)
+      setHasPendingSpans(false)
+      setDetailStalled(false)
+      detailLastActivityRef.current = null
       detailSpansRef.current = new Map()
       if (traceId) {
         loadTraceSpans(traceId)
@@ -552,6 +576,25 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
         )}
         {!isLoadingSpans && !spansError && waterfallData && (
           <>
+            {detailStalled ? (
+              <div className="border-b border-rule p-3 flex items-start gap-3">
+                <StatusPanel
+                  variant="warn"
+                  icon={<AlertCircle className="w-full h-full" />}
+                  headline="trace stream stalled"
+                  detail="this trace is still marked running, but no span updates arrived for 10 seconds. retry to resync it."
+                  className="min-w-0 flex-1"
+                />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => loadTraceSpans(selectedTraceId)}
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  retry
+                </Button>
+              </div>
+            ) : null}
             <TraceHeader
               data={waterfallData}
               traceId={selectedTraceId}

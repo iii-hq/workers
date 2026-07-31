@@ -34,6 +34,9 @@ use harness::events::TurnEvents;
 use harness::hooks::HookRegistry;
 use harness::{config, discovery, functions, manifest, queue, subscriptions};
 
+const BOOT_CONFIG_ATTEMPTS: u32 = 8;
+const BOOT_CONFIG_RETRY_BACKOFF_MS: u64 = 500;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "harness",
@@ -50,6 +53,49 @@ struct Cli {
 
     #[arg(long)]
     manifest: bool,
+}
+
+/// Configuration is the first external boot dependency. A worker-manager
+/// restart can bring the harness up before `configuration` has registered its
+/// functions, so a single failed RPC must not turn a transient startup race
+/// into a permanently dead harness process. Registration is idempotent and
+/// the stored value remains authoritative, making this safe across retries.
+async fn load_config_with_retries(
+    iii: &iii_sdk::IIIClient,
+    seed: Option<&config::WorkerConfig>,
+) -> Result<config::WorkerConfig> {
+    let mut last_error = String::new();
+
+    for attempt in 1..=BOOT_CONFIG_ATTEMPTS {
+        let result = async {
+            configuration::register_config(iii, seed).await?;
+            configuration::fetch_config(iii).await
+        }
+        .await;
+
+        match result {
+            Ok(cfg) => return Ok(cfg),
+            Err(error) => {
+                last_error = error;
+                if attempt < BOOT_CONFIG_ATTEMPTS {
+                    tracing::warn!(
+                        attempt,
+                        max_attempts = BOOT_CONFIG_ATTEMPTS,
+                        error = %last_error,
+                        "harness boot dependency unavailable; retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        BOOT_CONFIG_RETRY_BACKOFF_MS,
+                    ))
+                    .await;
+                }
+            }
+        }
+    }
+
+    Err(anyhow::Error::msg(format!(
+        "harness boot dependency initialization failed after {BOOT_CONFIG_ATTEMPTS} attempts: {last_error}"
+    )))
 }
 
 #[tokio::main]
@@ -102,13 +148,8 @@ async fn main() -> Result<()> {
         None => None,
     };
 
-    configuration::register_config(&iii, seed.as_ref())
+    let cfg = load_config_with_retries(&iii, seed.as_ref())
         .await
-        .map_err(anyhow::Error::msg)
-        .context("registering harness configuration schema")?;
-    let cfg = configuration::fetch_config(&iii)
-        .await
-        .map_err(anyhow::Error::msg)
         .context("loading harness configuration")?;
 
     // Trigger types first: the handlers capture the subscriber sets.

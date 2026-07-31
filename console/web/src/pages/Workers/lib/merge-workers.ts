@@ -14,6 +14,7 @@ const STOP_REASON = {
   standalone:
     'standalone workers must be stopped from the process that started them',
   notRunning: 'worker is not running',
+  notConnected: 'worker process is running but not connected to the engine',
 } as const
 
 interface ConfigurationLookup {
@@ -63,7 +64,14 @@ function deriveConnectionStatus(
   engineStatus: string | undefined,
   supervisor: WorkerEntry | undefined,
 ): WorkerConnectionStatus {
-  if (engineStatus?.toLowerCase() === 'connected') return 'connected'
+  // An engine row with a non-connected status is a real, registered worker
+  // that is not callable yet. A running supervisor process alone must not
+  // turn that row green — it may still be booting or have lost registration.
+  if (engineStatus !== undefined) {
+    return engineStatus.toLowerCase() === 'connected'
+      ? 'connected'
+      : 'disconnected'
+  }
   if (supervisor?.running) return 'connected'
   if (supervisor && !supervisor.running) return 'stopped'
   return 'disconnected'
@@ -74,6 +82,9 @@ function deriveStopState(
   status: WorkerConnectionStatus,
   supervisor: WorkerEntry | undefined,
 ): Pick<WorkerRow, 'stopEnabled' | 'stopDisabledReason'> {
+  if (kind === 'supervisor' && supervisor?.running && status !== 'connected') {
+    return { stopEnabled: false, stopDisabledReason: STOP_REASON.notConnected }
+  }
   if (kind === 'supervisor' && status === 'connected' && supervisor?.running) {
     return { stopEnabled: true, stopDisabledReason: null }
   }

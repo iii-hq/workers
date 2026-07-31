@@ -54,7 +54,10 @@ fn default_registry_cache_ttl_ms() -> u64 {
 }
 
 fn default_filter_unregistered() -> bool {
-    true
+    // Downloaded skills are explicit operator content. Keep them visible even
+    // when their namespace is not currently connected to the engine; callers
+    // can opt into the stricter installed-worker filter when they need it.
+    false
 }
 
 fn default_auto_download() -> bool {
@@ -100,10 +103,10 @@ pub struct SkillsConfig {
     #[serde(default = "default_registry_cache_ttl_ms")]
     pub registry_cache_ttl_ms: u64,
 
-    /// When `true` (default), read functions hide skills whose top
-    /// namespace segment doesn't match a registered (installed) worker
-    /// name. Orphan namespaces are hidden. When `false`, all scanned
-    /// skills are returned regardless of installed workers.
+    /// When `true`, read functions hide skills whose top namespace segment
+    /// doesn't match a registered (installed) worker name. When `false`
+    /// (the default), all scanned skills are returned. Explicitly downloaded
+    /// skills remain visible even before their worker is connected.
     #[serde(default = "default_filter_unregistered")]
     pub filter_unregistered: bool,
 
@@ -271,7 +274,7 @@ mod tests {
         assert_eq!(cfg.registry_url, DEFAULT_REGISTRY_URL);
         assert_eq!(cfg.download_timeout_ms, 60_000);
         assert_eq!(cfg.registry_cache_ttl_ms, 60_000);
-        assert!(cfg.filter_unregistered);
+        assert!(!cfg.filter_unregistered);
         assert!(cfg.auto_download);
     }
 

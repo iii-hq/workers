@@ -94,8 +94,13 @@ assistant: The payload was a JSON-encoded string. Re-issuing the SAME function w
 
 - `engine::workers::list` — workers connected right now.
 - `engine::workers::info { name }` — one worker's functions, trigger types, and triggers.
-- `worker::list` — installed + running workers, including daemon-managed builtins. To check
-  a worker is running, merge `engine::workers::list` with `worker::list` by name.
+- `worker::list` — installed + running workers, including daemon-managed builtins.
+- `worker::status { name }` — installed/running state plus the latest stdout/stderr tails;
+  use it when a worker is installed but not connected so you can distinguish provisioning
+  from a stopped process with a boot error.
+- A worker-manager process can be running before it registers with the engine: treat
+  `engine::workers::list` status `connected` as the callable signal, not the manager's
+  `running` flag alone.
 - Lifecycle ops: `worker::add` (install from registry or OCI), `worker::start`,
   `worker::stop`, `worker::update`, `worker::remove`, `worker::clear`. The ops
   `remove`, `stop`, and `clear` require exactly `yes: true` — the boolean, not a

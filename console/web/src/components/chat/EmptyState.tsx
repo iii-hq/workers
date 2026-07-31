@@ -4,6 +4,7 @@ import { Terminal } from '@/components/chat/sandbox/terminal/Terminal'
 import { Button } from '@/components/ui/Button'
 import { Prompt } from '@/components/ui/Prompt'
 import type { InstallStage } from '@/hooks/use-harness-status'
+import type { WorkerPresenceState } from '@/hooks/use-worker-presence'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { cn } from '@/lib/utils'
 
@@ -12,7 +13,7 @@ import { cn } from '@/lib/utils'
  *
  *   - `ready`          — harness present + a model available (the hero copy)
  *   - `no-provider`    — harness present, no model configured -> configure CTA
- *   - `no-harness`     — harness worker missing -> install CTA + cli hint
+ *   - `no-harness`     — harness absent/starting/stopped -> state-aware CTA
  *   - `installing`     — `worker::add` in flight -> live console
  *   - `install-failed` — add failed -> console + retry
  *
@@ -38,6 +39,8 @@ export interface EmptyStateProps {
   errorMessage?: string | null
   /** `no-harness` primary CTA. */
   onInstallHarness?: () => void
+  /** Reconciled harness state, used to distinguish stopped/starting from absent. */
+  harnessState?: WorkerPresenceState
   /** `install-failed` retry CTA. */
   onRetryInstall?: () => void
   /** `no-provider` CTA (defaults to opening the harness configuration). */
@@ -57,6 +60,7 @@ export function EmptyState({
   stages = [],
   errorMessage,
   onInstallHarness,
+  harnessState = 'absent',
   onRetryInstall,
   onConfigureProvider,
 }: EmptyStateProps) {
@@ -76,7 +80,10 @@ export function EmptyState({
           <NoProviderBody onConfigureProvider={onConfigureProvider} />
         ) : null}
         {variant === 'no-harness' ? (
-          <NoHarnessBody onInstallHarness={onInstallHarness} />
+          <NoHarnessBody
+            onInstallHarness={onInstallHarness}
+            harnessState={harnessState}
+          />
         ) : null}
         {variant === 'installing' || variant === 'install-failed' ? (
           <InstallingBody
@@ -105,8 +112,8 @@ function ReadyBody() {
       <h1 className={HEADING_CLASS}>welcome to iii! 👋</h1>
       <div className="flex flex-col gap-2">
         <p className={BODY_CLASS}>
-          You're in an agent-oriented workspace where you can
-          leverage the power of a full-featured agentic system:
+          You're in an agent-oriented workspace where you can leverage the power
+          of a full-featured agentic system:
         </p>
         <ul className="font-mono text-[13px] leading-[1.7] text-ink-faint flex flex-col gap-1">
           <li>· trigger functions via the function registry</li>
@@ -161,20 +168,55 @@ function NoProviderBody({
 
 function NoHarnessBody({
   onInstallHarness,
+  harnessState,
 }: {
   onInstallHarness?: () => void
+  harnessState: WorkerPresenceState
 }) {
+  const isInstalled =
+    harnessState === 'starting' ||
+    harnessState === 'provisioning' ||
+    harnessState === 'stopped'
+  const isStopped = harnessState === 'stopped'
+  const isUnknown = harnessState === 'unknown'
   return (
     <>
-      <h1 className={HEADING_CLASS}>install the harness worker.</h1>
+      <h1 className={HEADING_CLASS}>
+        {isStopped
+          ? 'the harness worker is stopped.'
+          : isUnknown
+            ? "couldn't verify the harness worker."
+            : isInstalled
+              ? 'starting the harness worker…'
+              : 'install the harness worker.'}
+      </h1>
       <p className={BODY_CLASS}>
-        chat runs on the <span className="text-ink">harness</span> worker, and
-        it isn't connected yet. add it to start a session.
+        {isStopped ? (
+          <>
+            the <span className="text-ink">harness</span> worker is installed
+            but not connected. retry to start it, or inspect the worker logs.
+          </>
+        ) : isUnknown ? (
+          <>
+            the engine or worker manager did not answer the presence check.
+            retry before installing anything.
+          </>
+        ) : isInstalled ? (
+          <>
+            the <span className="text-ink">harness</span> worker is installed;
+            waiting for it to connect before starting a session.
+          </>
+        ) : (
+          <>
+            chat runs on the <span className="text-ink">harness</span> worker,
+            and it isn't connected yet. add it to start a session.
+          </>
+        )}
       </p>
       <div className="flex flex-col gap-4">
         <div>
           <Button variant="primary" onClick={onInstallHarness}>
-            add harness
+            {isInstalled || isUnknown ? 'retry harness' : 'add harness'}
           </Button>
         </div>
         <div className="flex flex-col gap-1.5">

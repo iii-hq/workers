@@ -48,6 +48,44 @@ export HARNESS_E2E_PORT="$iii_port"
 export III_ENGINE_URL="$iii_url"
 
 pids=()
+declare -A process_pids=()
+
+assert_engine_port_available() {
+  # The worker manager owns the configured port. Starting an E2E stack on an
+  # occupied port can make the manager tear down an otherwise healthy engine;
+  # fail before spawning anything and make the conflicting port explicit.
+  if (exec 3<>"/dev/tcp/127.0.0.1/$iii_port"; exec 3>&-) 2>/dev/null; then
+    echo "HARNESS_E2E_PORT=$iii_port is already in use; choose a free port" >&2
+    return 1
+  fi
+}
+
+report_process_failure() {
+  local name=$1
+  local pid=${process_pids[$name]:-}
+  [[ -n "$pid" ]] || return 0
+
+  local state
+  state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)
+  if kill -0 "$pid" 2>/dev/null && [[ "$state" != Z* ]]; then
+    return 0
+  fi
+
+  echo "$name exited before its function surface became ready (pid $pid)" >&2
+  if [[ -f "$logs_dir/$name.log" ]]; then
+    echo "--- $name.log (last 80 lines) ---" >&2
+    tail -n 80 "$logs_dir/$name.log" >&2 || true
+    echo "--- end $name.log ---" >&2
+  fi
+  return 1
+}
+
+check_started_processes() {
+  local name
+  for name in "${!process_pids[@]}"; do
+    report_process_failure "$name" || return 1
+  done
+}
 
 cleanup() {
   local status=$?
@@ -68,6 +106,7 @@ start_process() {
     exec "$@"
   ) >"$logs_dir/$name.log" 2>&1 &
   pids+=("$!")
+  process_pids["$name"]=$!
 }
 
 wait_for_function() {
@@ -75,6 +114,7 @@ wait_for_function() {
   local attempts=120
   local response
   for ((attempt = 1; attempt <= attempts; attempt++)); do
+    check_started_processes
     response=$(
       "$III_BIN" trigger engine::functions::list \
         --port "$iii_port" \
@@ -88,6 +128,7 @@ wait_for_function() {
     sleep 0.5
   done
   echo "timed out waiting for function $function_id" >&2
+  check_started_processes || true
   return 1
 }
 
@@ -96,6 +137,7 @@ wait_for_trigger_type() {
   local attempts=120
   local response
   for ((attempt = 1; attempt <= attempts; attempt++)); do
+    check_started_processes
     response=$(
       "$III_BIN" trigger engine::triggers::list \
         --port "$iii_port" \
@@ -109,6 +151,7 @@ wait_for_trigger_type() {
     sleep 0.5
   done
   echo "timed out waiting for trigger type $trigger_type" >&2
+  check_started_processes || true
   return 1
 }
 
@@ -121,6 +164,7 @@ wait_for_model() {
   request=$(jq -cn --arg provider "$provider" --arg id "$model" \
     '{provider:$provider,id:$id}')
   for ((attempt = 1; attempt <= attempts; attempt++)); do
+    check_started_processes
     response=$(
       "$III_BIN" trigger router::models::get \
         --port "$iii_port" \
@@ -132,6 +176,7 @@ wait_for_model() {
     sleep 0.5
   done
   echo "timed out waiting for E2E model $provider/$model" >&2
+  check_started_processes || true
   return 1
 }
 
@@ -151,6 +196,7 @@ start_provider() {
   wait_for_function "provider::$provider::stream"
 }
 
+assert_engine_port_available
 start_process engine "$III_BIN" -c "$engine_config"
 wait_for_function engine::workers::list
 wait_for_function worker::add

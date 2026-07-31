@@ -32,3 +32,7 @@ registry_url: https://api.workers.iii.dev
 
 # Timeout for a single download (`git clone` or HTTP request) in ms.
 download_timeout_ms: 60000
+
+# Keep explicitly downloaded skills visible even before their worker connects.
+# Set true only when the directory should hide uninstalled namespaces.
+filter_unregistered: false

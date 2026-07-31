@@ -133,6 +133,35 @@ describe('mergeWorkers', () => {
     expect(rows[0]?.stopEnabled).toBe(true)
   })
 
+  it('does not call a running but disconnected engine worker connected', () => {
+    const rows = mergeWorkers(
+      snapshot({
+        engineWorkers: [
+          {
+            id: 'w-booting',
+            name: 'harness',
+            runtime: 'rust',
+            status: 'starting',
+            function_count: 0,
+            connected_at_ms: 0,
+            active_invocations: 0,
+          },
+        ],
+        supervisorWorkers: [
+          {
+            name: 'harness',
+            running: true,
+            pid: 250,
+          },
+        ],
+      }),
+    )
+
+    expect(rows[0]?.status).toBe('disconnected')
+    expect(rows[0]?.stopEnabled).toBe(false)
+    expect(rows[0]?.stopDisabledReason).toContain('not connected')
+  })
+
   it('classifies standalone workers without stop', () => {
     const rows = mergeWorkers(
       snapshot({

@@ -127,8 +127,8 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
       <CheckField
         field="filter_unregistered"
         label="hide skills of uninstalled workers"
-        hint="reads only show namespaces matching a registered worker; off = everything on disk"
-        checked={value.filter_unregistered !== false}
+        hint="off by default: downloaded skills stay visible; on = only registered-worker namespaces"
+        checked={value.filter_unregistered === true}
         onChange={setBool}
         errors={props.errors}
       />

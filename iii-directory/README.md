@@ -99,7 +99,7 @@ auto_download: true                   # subscribe to worker-add + run the boot r
 registry_url: https://api.workers.iii.dev   # workers registry base URL
 download_timeout_ms: 60000                   # per git-clone / HTTP request timeout (ms)
 registry_cache_ttl_ms: 60000                 # in-process TTL for registry::workers::* responses
-filter_unregistered: true                    # hide skills whose namespace isn't an installed worker
+filter_unregistered: false                   # opt in to hiding skills whose namespace isn't installed
 ```
 
 The `skills_folder` is created on first download if it doesn't exist.

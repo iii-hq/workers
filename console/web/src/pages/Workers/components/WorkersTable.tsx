@@ -38,6 +38,12 @@ const MANAGEMENT_VARIANT: Record<
   internal: 'default',
 }
 
+const STATUS_LABEL: Record<WorkerRow['status'], string> = {
+  connected: 'connected',
+  disconnected: 'not connected',
+  stopped: 'stopped',
+}
+
 function statusTone(
   status: WorkerRow['status'],
 ): 'accent' | 'alert' | 'warn' | 'ink' {
@@ -178,6 +184,9 @@ function WorkerTableRow({
           />
           <span className="font-mono text-[13px] text-ink lowercase">
             {row.name}
+          </span>
+          <span className="font-mono text-[11px] text-ink-ghost lowercase">
+            {STATUS_LABEL[row.status]}
           </span>
         </div>
       </td>

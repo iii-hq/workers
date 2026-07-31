@@ -258,6 +258,7 @@ function resolveEmptyState(
     density,
     stages: harnessStatus.stages,
     errorMessage: harnessStatus.error,
+    harnessState: harnessStatus.state,
     onInstallHarness: harnessStatus.install,
     onRetryInstall: harnessStatus.retry,
     onConfigureProvider: () => {
