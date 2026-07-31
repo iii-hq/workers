@@ -244,6 +244,25 @@ impl ScenarioProbe {
         Ok(())
     }
 
+    /// Add a second lifecycle binding for direct children of `session_id`.
+    /// The root binding remains session-scoped; the parent filter captures
+    /// every in-turn `harness::spawn` child without needing runtime child ids
+    /// before the first generation runs.
+    pub async fn bind_child_completion_observer(
+        &self,
+        parent_session_id: &str,
+        deadline: Deadline,
+    ) -> anyhow::Result<()> {
+        self.bind_engine_trigger(
+            LIFECYCLE_TRIGGER_TYPE,
+            LIFECYCLE_FUNCTION_ID,
+            json!({ "parent_session_id": parent_session_id }),
+            deadline,
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Deferred trigger replay cannot await the provider SDK's registration
     /// acknowledgement because replay runs on that provider's read loop. Once
     /// readiness proves the custom types exist, replace the deferred lifecycle

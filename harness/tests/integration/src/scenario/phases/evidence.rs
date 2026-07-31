@@ -43,19 +43,41 @@ impl ScenarioRunner<'_> {
         )?;
         self.write_artifact(
             &prepared.scenario.id,
+            "control.json",
+            &active.control,
+            phase,
+        )?;
+        self.write_artifact(
+            &prepared.scenario.id,
+            "tree-status.json",
+            &active.tree_statuses,
+            phase,
+        )?;
+        active.router_evidence = services.router().evidence();
+        self.write_artifact(
+            &prepared.scenario.id,
             "router-calls.json",
-            &services.router().evidence(),
+            &active.router_evidence,
             phase,
         )?;
 
-        active.traces = if active.timed_out {
-            crate::trace_evidence::collect_available(services.client(), &self.session_id, deadline)
-                .await
+        let session_ids = if active.tree_sessions.is_empty() {
+            vec![self.session_id.clone()]
         } else {
-            crate::trace_evidence::collect(
+            active.tree_sessions.clone()
+        };
+        active.traces = if active.timed_out {
+            crate::trace_evidence::collect_available_for_sessions(
+                services.client(),
+                &session_ids,
+                deadline,
+            )
+            .await
+        } else {
+            crate::trace_evidence::collect_for_sessions(
                 services.client(),
                 services.probe(),
-                &self.session_id,
+                &session_ids,
                 self.fixture.expected_terminal_turns,
                 active.trace_generation,
                 deadline,
@@ -87,6 +109,10 @@ impl ScenarioRunner<'_> {
             generations_total: services.router().total_generations(),
             traces: active.traces.clone(),
             target_calls: services.probe().target_calls(),
+            control: active.control.clone(),
+            tree_sessions: active.tree_sessions.clone(),
+            tree_statuses: active.tree_statuses.clone(),
+            router_evidence: active.router_evidence.clone(),
         }
     }
 

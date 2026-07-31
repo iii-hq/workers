@@ -24,9 +24,7 @@ impl FloorExpectations<'_> {
     }
 
     fn declares_failure(&self) -> bool {
-        self.turn_statuses
-            .iter()
-            .any(|status| status != "completed")
+        self.turn_statuses.iter().any(|status| status == "failed")
     }
 }
 
@@ -43,7 +41,7 @@ pub fn floor_failure(run: &RunEvidence) -> Option<String> {
 }
 
 pub fn floor_failure_for(run: &RunEvidence, expected: &FloorExpectations) -> Option<String> {
-    terminal_failure(run)
+    terminal_failure(run, expected)
         .or_else(|| trace_failure(run, expected))
         .or_else(|| lifecycle_failure(run, expected))
         .or_else(|| generations_failure(run))
@@ -70,17 +68,20 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
 }
 
 /// Terminal status `completed` with no pending calls, queued messages, or children.
-fn terminal_failure(run: &RunEvidence) -> Option<String> {
+fn terminal_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<String> {
     let status = run.status.get("status").and_then(Value::as_str);
     let pending = status_list_len(run, "pending_function_calls");
     let queued = status_list_len(run, "queued");
     let children = status_list_len(run, "children");
-    if status == Some("completed") && pending == 0 && queued == 0 && children == 0 {
+    let expected_final = expected.turn_statuses.last().map(String::as_str);
+    let tree_children = run.tree_sessions.len() > 1;
+    if status == expected_final && pending == 0 && queued == 0 && (children == 0 || tree_children) {
         return None;
     }
     Some(format!(
-        "floor: terminal status must be completed with nothing pending; got status {status:?}, \
-         {pending} pending call(s), {queued} queued message(s), {children} child session(s)"
+        "floor: terminal status must be {expected_final:?} with nothing pending; got status \
+         {status:?}, {pending} pending call(s), {queued} queued message(s), {children} child \
+         session(s)"
     ))
 }
 
@@ -97,14 +98,28 @@ fn trace_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<Stri
     let trace_count = summary.trace_count == expected.traces;
     let turn_count = summary.turn_ids.len() == expected.turns();
     let complete = summary.pending_span_count == 0;
-    // A declared-failed turn must surface its failure in the traces; a run
-    // declared all-completed must stay clean.
+    // A declared-failed turn must surface its failure in the traces; an
+    // all-completed run must stay clean. Cancellation aborts an in-flight
+    // router call, so those expected turns legitimately carry error spans;
+    // accept only errors bound to a turn declared cancelled.
     let clean = if expected.declares_failure() {
         summary.error_count > 0
+    } else if expected
+        .turn_statuses
+        .iter()
+        .any(|status| status == "cancelled")
+    {
+        cancelled_errors_are_bound(run, expected)
     } else {
         summary.error_count == 0
     };
-    let latest_bound = summary.turn_ids.last().map(String::as_str) == run.turn_id.as_deref();
+    let latest_bound = if run.tree_sessions.len() > 1 {
+        run.turn_id
+            .as_ref()
+            .is_some_and(|turn_id| summary.turn_ids.contains(turn_id))
+    } else {
+        summary.turn_ids.last().map(String::as_str) == run.turn_id.as_deref()
+    };
     if trace_count && turn_count && complete && clean && latest_bound {
         return None;
     }
@@ -119,6 +134,26 @@ fn trace_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<Stri
         summary.pending_span_count,
         summary.error_count
     ))
+}
+
+fn cancelled_errors_are_bound(run: &RunEvidence, expected: &FloorExpectations) -> bool {
+    let cancelled_turns = run
+        .traces
+        .summary
+        .turn_ids
+        .iter()
+        .zip(expected.turn_statuses.iter())
+        .filter(|(_, status)| status.as_str() == "cancelled")
+        .map(|(turn_id, _)| turn_id.as_str())
+        .collect::<BTreeSet<_>>();
+
+    run.traces
+        .spans()
+        .filter(|span| span.status.eq_ignore_ascii_case("error"))
+        .all(|span| {
+            span.attribute("iii.message.id")
+                .is_some_and(|turn_id| cancelled_turns.contains(turn_id))
+        })
 }
 
 /// Validate `harness::turn-completed` from the lifecycle sink's trace events.
@@ -178,6 +213,11 @@ fn lifecycle_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<
         .map(String::as_str)
         .zip(expected.turn_statuses.iter().map(String::as_str))
         .collect();
+    let allowed_sessions = if run.tree_sessions.is_empty() {
+        BTreeSet::from([run.session_id.as_str()])
+    } else {
+        run.tree_sessions.iter().map(String::as_str).collect()
+    };
     let bound = payloads.iter().all(|payload| {
         let declared = payload
             .get("turn_id")
@@ -186,7 +226,10 @@ fn lifecycle_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<
         declared.is_some()
             && payload.get("status").and_then(Value::as_str) == declared
             && payload.get("terminal").and_then(Value::as_bool) == Some(true)
-            && payload.get("session_id").and_then(Value::as_str) == Some(run.session_id.as_str())
+            && payload
+                .get("session_id")
+                .and_then(Value::as_str)
+                .is_some_and(|session_id| allowed_sessions.contains(session_id))
     });
 
     let allowed_keys = BTreeSet::from([
@@ -332,6 +375,10 @@ mod tests {
                 roots: vec![lifecycle_span("turn-1", completed_lifecycle("turn-1", 1))],
             }]),
             target_calls: Vec::new(),
+            control: Value::Null,
+            tree_sessions: Vec::new(),
+            tree_statuses: Vec::new(),
+            router_evidence: Value::Null,
         }
     }
 
@@ -353,6 +400,32 @@ mod tests {
         error.traces.traces[0].roots[0].status = "error".into();
         error.traces = TraceEvidenceV1::new(error.traces.traces);
         assert!(floor_failure(&error).unwrap().contains("error spans: 1"));
+    }
+
+    #[test]
+    fn cancelled_turns_accept_abort_errors_bound_to_the_cancelled_turn() {
+        let mut evidence = clean_evidence();
+        evidence.turn_id = Some("turn-1".into());
+        evidence.status["status"] = json!("cancelled");
+        evidence.traces.traces[0].roots[0].status = "error".into();
+        evidence.traces.traces[0].roots[0].events[0] = TraceEventV1 {
+            name: "iii.invocation.input".into(),
+            timestamp_unix_nano: 2,
+            attributes: BTreeMap::from([
+                (
+                    "iii.payload.json".into(),
+                    terminal_lifecycle("turn-1", "cancelled", 1).to_string(),
+                ),
+                ("iii.payload.truncated".into(), "false".into()),
+            ]),
+        };
+        evidence.traces = TraceEvidenceV1::new(evidence.traces.traces);
+        let statuses = vec!["cancelled".to_string()];
+
+        assert_eq!(
+            floor_failure_for(&evidence, &expectations(&statuses, 1)),
+            None
+        );
     }
 
     #[test]

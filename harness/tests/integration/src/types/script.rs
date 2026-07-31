@@ -12,7 +12,20 @@ pub struct RouterScriptV1 {
     pub schema_version: SchemaVersion1,
     pub scenario_id: String,
     pub model: ModelFixtureV1,
+    /// How `router::chat` selects an unused generation. Existing fixtures use
+    /// strict ordinal dispatch; concurrent tree fixtures opt into matching the
+    /// first unused generation whose request contract passes.
+    #[serde(default)]
+    pub dispatch: RouterDispatchV1,
     pub generations: Vec<ScriptedGenerationV1>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RouterDispatchV1 {
+    #[default]
+    Ordinal,
+    MatchAny,
 }
 
 /// The literal string `"1"`; any other value is a schema error.
@@ -161,6 +174,10 @@ pub struct ScriptedGenerationV1 {
     pub captures: Vec<CaptureV1>,
     pub frames: Vec<AssistantMessageEvent>,
     pub response: RouterChatResponse,
+    /// Hold the matched router call at a named runner-controlled barrier
+    /// before any response frame is sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<ServeGateV1>,
     /// Optional side effect the router performs *before* it streams this
     /// generation's frames (or fails the call): an awaited steer send. Because
     /// the harness is blocked awaiting this generation (its turn is `Running`),
@@ -197,4 +214,11 @@ pub struct SteerSendV1 {
     pub session_id: String,
     /// User-message text steered into the session before streaming.
     pub message: String,
+}
+
+/// A named barrier shared by the runner and one or more scripted calls.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ServeGateV1 {
+    pub name: String,
 }

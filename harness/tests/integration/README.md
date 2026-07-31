@@ -21,6 +21,8 @@ No provider key or network access is required.
 | INT-008 | `reaction-unregisters-run` | direct | a reaction session in the registrant's lineage unregisters the registrant's subscription (serve-time capture of the runtime sub id; probe-side call await) |
 | INT-009 | `late-join-predecessor-replay` | direct | a join predecessor registered after its watched session completed receives a catch-up completion fire (level-triggered join barrier; `probe_after_calls` gating) |
 | INT-010 | `crash-recovery-507` | direct | SIGKILL and restart the engine while a controlled function is in flight, with `context::assemble` held out during boot; the side effect runs once, the interrupted call closes, and the turn completes |
+| INT-011 | `stop-cancel-cascade` | direct | stopping a running root turn cancels the root and spawned children while retaining a queued message |
+| INT-012 | `queued-message-edit-unqueue` | direct | edit one queued message in place and unqueue another while the first turn is streaming; only the edited and untouched rows drain in order |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 

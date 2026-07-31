@@ -47,6 +47,12 @@ impl ScenarioRunner<'_> {
             .map_err(|error| {
                 RunError::setup(phase, "confirm completion observer binding", error)
             })?;
+        if self.fixture.intervention.is_some() {
+            probe
+                .bind_child_completion_observer(&self.session_id, deadline)
+                .await
+                .map_err(|error| RunError::setup(phase, "bind child completion observer", error))?;
+        }
         self.sink_mut(phase)?
             .write_scenario_text(
                 &scenario.id,

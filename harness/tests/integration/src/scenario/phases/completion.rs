@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::client::DEFAULT_CALL_TIMEOUT_MS;
 use crate::deadline::Deadline;
@@ -83,6 +83,7 @@ impl ScenarioRunner<'_> {
             }
         }
 
+        let tree_run = active.tree_sessions.len() > 1;
         let latest_turn_id = if expected > 1 {
             services
                 .probe()
@@ -99,7 +100,7 @@ impl ScenarioRunner<'_> {
         match latest_turn_id {
             // Evidence binds to the LATEST terminal turn: with harness-seeded
             // follow-on turns, Send's own turn id is the first, not the last.
-            Ok(Some(turn_id)) if expected > 1 => active.turn_id = Some(turn_id),
+            Ok(Some(turn_id)) if expected > 1 && !tree_run => active.turn_id = Some(turn_id),
             Ok(turn_id) => {
                 if active.turn_id.is_none() {
                     active.turn_id = turn_id;
@@ -162,7 +163,37 @@ impl ScenarioRunner<'_> {
             }
         }
 
-        self.confirm_terminal_status(services, active).await
+        self.confirm_terminal_status(services, active).await?;
+        if tree_run {
+            let status_deadline = Deadline::after(FINAL_STATUS_TIMEOUT);
+            active.tree_statuses = vec![active.final_status.clone()];
+            for session_id in active.tree_sessions.iter().skip(1) {
+                let status = services
+                    .client()
+                    .call_with_deadline(
+                        "harness::status",
+                        json!({ "session_id": session_id }),
+                        status_deadline,
+                        DEFAULT_CALL_TIMEOUT_MS,
+                    )
+                    .await
+                    .map_err(|error| {
+                        RunError::runner(
+                            phase,
+                            format!("collect terminal status for child session {session_id}"),
+                            anyhow::anyhow!(error),
+                        )
+                    })?;
+                active.tree_statuses.push(status);
+            }
+            if let Some(control) = active.control.as_object_mut() {
+                control.insert(
+                    "terminal_statuses".to_string(),
+                    Value::Array(active.tree_statuses.clone()),
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Playground may keep running after its first completed turn. On

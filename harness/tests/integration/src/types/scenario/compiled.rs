@@ -65,6 +65,7 @@ pub struct CompiledFunctionPolicyV1 {
 #[serde(rename_all = "snake_case")]
 pub enum CompiledFunctionExposureV1 {
     Native,
+    AgentTrigger,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

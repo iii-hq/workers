@@ -8,10 +8,12 @@ mod exactly_once_function;
 mod join_spec_mismatch;
 mod late_join_replay;
 mod multi_turn_traces;
+mod queued_message_edit_unqueue;
 mod reaction_policy_inheritance;
 mod reaction_unregisters_run;
 mod reseed_parked_message;
 mod state_worker_sidecar;
+mod stop_cancel_cascade;
 mod streamed_text;
 
 use crate::evidence_data::RunEvidence;
@@ -40,6 +42,8 @@ pub fn all() -> Vec<ScenarioFixture> {
         reaction_unregisters_run::scenario(),
         state_worker_sidecar::scenario(),
         reseed_parked_message::scenario(),
+        stop_cancel_cascade::scenario(),
+        queued_message_edit_unqueue::scenario(),
         streamed_text::scenario(),
     ]
 }
@@ -51,7 +55,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 12);
+        assert_eq!(fixtures.len(), 14);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {
