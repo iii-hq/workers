@@ -47,8 +47,8 @@ gracefully when a worker is absent:
 
 Open the browser UI on the engine's HTTP port:
 
-```bash
-open http://localhost:3111/openwiki
+```text
+http://localhost:3111/openwiki
 ```
 
 Or drive it from the CLI:

@@ -736,7 +736,10 @@ export const INDEX_HTML = String.raw`<!doctype html>
     if (!generating) {
       head.appendChild(el('button', {
         class: 'wiki-del', title: 'Remove this wiki', 'aria-label': 'Remove this wiki',
-        onclick: (e) => { e.stopPropagation(); deleteWiki(w.id); },
+        onclick: (e) => {
+          e.stopPropagation();
+          if (confirm('Remove the wiki "' + (w.repo_name || w.id) + '" and all its pages?')) deleteWiki(w.id);
+        },
       }, '×'));
     }
     node.appendChild(head);
@@ -852,6 +855,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
       let es = null;
       try { es = new EventSource('/openwiki/api/wikis/' + wid + '/events'); } catch (_) { es = null; }
       if (es) {
+        let gotAny = false;
         const stop = () => { try { es.close(); } catch (_) { /* ignore */ } state.pollTimers.delete(wid); };
         state.pollTimers.set(wid, { stop });
         const pushFeed = (g, op, text) => {
@@ -860,6 +864,7 @@ export const INDEX_HTML = String.raw`<!doctype html>
           if (g.feed.length > 40) g.feed.shift();
         };
         es.onmessage = (m) => {
+          gotAny = true;
           let evt; try { evt = JSON.parse(m.data); } catch (_) { return; }
           if (evt.kind === 'page') {
             const g = cur(); g.lastPage = evt.title || evt.slug; g.message = 'wrote ' + (evt.title || evt.slug);
@@ -886,23 +891,31 @@ export const INDEX_HTML = String.raw`<!doctype html>
           applyStatus(evt);
           if (evt.phase === 'ready' || evt.phase === 'error' || evt.final) { stop(); finish(evt); }
         };
-        es.onerror = () => { /* EventSource auto-reconnects; server re-seeds on connect */ };
+        es.onerror = () => {
+          // SSE never delivered anything (endpoint 501 / proxy stripped the
+          // stream): stop the reconnect loop and poll instead. After the first
+          // event, EventSource auto-reconnects and the server re-seeds.
+          if (!gotAny) { stop(); startPoll(); }
+        };
         return;
       }
     }
 
-    // Poll fallback.
-    const stopPoll = () => { const h = state.pollTimers.get(wid); if (h && h.timer) clearInterval(h.timer); state.pollTimers.delete(wid); };
-    const tick = async () => {
-      let st;
-      try { st = await api('/wikis/' + wid + '/status'); }
-      catch (e) { state.generating.set(wid, { phase: 'error', progress: 0, message: e.message }); renderWikiList(); stopPoll(); return; }
-      applyStatus(st);
-      if (st.phase === 'ready' || st.phase === 'error') { stopPoll(); finish(st); }
-    };
-    const timer = setInterval(tick, 1500);
-    state.pollTimers.set(wid, { timer, stop: stopPoll });
-    tick();
+    startPoll();
+
+    function startPoll() {
+      const stopPoll = () => { const h = state.pollTimers.get(wid); if (h && h.timer) clearInterval(h.timer); state.pollTimers.delete(wid); };
+      const tick = async () => {
+        let st;
+        try { st = await api('/wikis/' + wid + '/status'); }
+        catch (e) { state.generating.set(wid, { phase: 'error', progress: 0, message: e.message }); renderWikiList(); stopPoll(); return; }
+        applyStatus(st);
+        if (st.phase === 'ready' || st.phase === 'error') { stopPoll(); finish(st); }
+      };
+      const timer = setInterval(tick, 1500);
+      state.pollTimers.set(wid, { timer, stop: stopPoll });
+      tick();
+    }
   }
 
   //--- select wiki / page
@@ -1046,9 +1059,14 @@ export const INDEX_HTML = String.raw`<!doctype html>
     const key = 'nav:' + depth + ':' + (node.title || '');
     const collapsed = state.collapsedNav.has(key);
     const folder = el('div', { class: 'nav-folder' + (collapsed ? ' collapsed' : '') });
+    const toggleFolder = () => { if (state.collapsedNav.has(key)) state.collapsedNav.delete(key); else state.collapsedNav.add(key); renderPageList(); };
     folder.appendChild(el('div', {
       class: 'fhead',
-      onclick: () => { if (state.collapsedNav.has(key)) state.collapsedNav.delete(key); else state.collapsedNav.add(key); renderPageList(); },
+      tabindex: '0',
+      role: 'button',
+      'aria-expanded': String(!collapsed),
+      onclick: toggleFolder,
+      onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleFolder(); } },
     }, el('span', { class: 'caret', text: '▼' }), el('span', { text: node.title || '' })));
     const kids = el('div', { class: 'fchildren' });
     if (node.slug) kids.appendChild(renderNavNode({ title: 'Overview', slug: node.slug }, depth + 1));
@@ -1280,23 +1298,48 @@ export const INDEX_HTML = String.raw`<!doctype html>
     }, 250);
   }
 
+  //--- modal plumbing: backdrop, Escape, focus trap, focus restore
+  function openModal(box) {
+    const back = el('div', { class:'modal-back' });
+    const prevFocus = document.activeElement;
+    const close = () => {
+      document.removeEventListener('keydown', onKey, true);
+      back.remove();
+      if (prevFocus && typeof prevFocus.focus === 'function') prevFocus.focus();
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); close(); return; }
+      if (e.key !== 'Tab') return;
+      const focusables = box.querySelectorAll('button, input, textarea, select, a[href], [tabindex]:not([tabindex="-1"])');
+      if (!focusables.length) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+    back.addEventListener('click', (e) => { if (e.target === back) close(); });
+    document.addEventListener('keydown', onKey, true);
+    back.appendChild(box);
+    document.body.appendChild(back);
+    return close;
+  }
+
   //--- about modal
   function openAbout() {
-    const back = el('div', { class:'modal-back', onclick: (e) => { if (e.target === back) back.remove(); } });
     const box = el('div', { class:'modal' },
       el('h2', { text:'About OpenWiki' }),
       el('p', { text:'OpenWiki turns any code repository into a browsable, source-grounded wiki: a hierarchical set of cited pages generated from the source itself, kept current from git changes.' }),
       el('p', { text:'Built as an iii worker \u2014 it composes the harness, llm-router, shell, and web workers to plan, explore, and write.' }),
-      el('button', { onclick: () => back.remove(), text:'Close' }),
     );
-    back.appendChild(box);
-    document.body.appendChild(back);
+    const close = openModal(box);
+    box.appendChild(el('button', { onclick: () => close(), text:'Close' }));
   }
 
   //--- ask modal
   function openAsk() {
     if (!state.currentWikiId) return;
-    const back = el('div', { class:'modal-back', onclick: (e) => { if (e.target === back) back.remove(); } });
     const answer = el('div', { class:'ask-answer' });
     const input = el('input', { class:'ask-input', placeholder:'Ask a question about this repo…', autocomplete:'off' });
     const ask = async () => {
@@ -1324,10 +1367,9 @@ export const INDEX_HTML = String.raw`<!doctype html>
       el('h2', { text:'Ask this wiki' }),
       input,
       answer,
-      el('button', { onclick: () => back.remove(), text:'Close' }),
     );
-    back.appendChild(box);
-    document.body.appendChild(back);
+    const close = openModal(box);
+    box.appendChild(el('button', { onclick: () => close(), text:'Close' }));
     setTimeout(() => input.focus(), 0);
   }
 

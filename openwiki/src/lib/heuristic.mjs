@@ -173,8 +173,13 @@ export async function generatePageHeuristic({
   repoName,
   repoUrl,
 }) {
+  // This runs as the last-resort fallback after an LLM failure, so the caller
+  // may hand it partial opts; default the collections rather than adding a
+  // TypeError on top of the original error.
+  const cats = categories || [];
+  const reads = sourceReads || [];
   const title = outlineItem.title;
-  const category = categories.find((c) => c.id === outlineItem.category);
+  const category = cats.find((c) => c.id === outlineItem.category);
   const catTitle = category ? category.title : outlineItem.category;
 
   const lines = [];
@@ -188,7 +193,7 @@ export async function generatePageHeuristic({
   lines.push('');
 
   // Try to derive a short description from the first source's leading comment/paragraph
-  const first = sourceReads[0];
+  const first = reads[0];
   if (first) {
     const preview = extractSummary(first.content, first.path);
     if (preview) {
@@ -200,16 +205,14 @@ export async function generatePageHeuristic({
   // Key files section
   lines.push('## Key files');
   lines.push('');
-  for (const sr of sourceReads) {
+  for (const sr of reads) {
     const short = oneLine(sr.content);
     lines.push(`- \`${sr.path}\`${short ? ` — ${short}` : ''}`);
   }
   lines.push('');
 
   // Excerpts
-  const excerpts = sourceReads
-    .filter((sr) => !isBinaryLikely(sr.path) && sr.content && sr.content.length > 0)
-    .slice(0, 4);
+  const excerpts = reads.filter((sr) => !isBinaryLikely(sr.path) && sr.content && sr.content.length > 0).slice(0, 4);
   if (excerpts.length) {
     lines.push('## Excerpts');
     lines.push('');
@@ -227,9 +230,11 @@ export async function generatePageHeuristic({
 
   // Related pages
   const related = [];
-  for (let i = 0; i < allSlugs.length; i++) {
-    if (allSlugs[i] === outlineItem.slug) continue;
-    related.push(`- [${allTitles[i]}](./${allSlugs[i]}.md)`);
+  const slugs = allSlugs || [];
+  const titles = allTitles || [];
+  for (let i = 0; i < slugs.length; i++) {
+    if (slugs[i] === outlineItem.slug) continue;
+    related.push(`- [${titles[i] || slugs[i]}](./${slugs[i]}.md)`);
     if (related.length >= 6) break;
   }
   if (related.length) {
@@ -242,7 +247,7 @@ export async function generatePageHeuristic({
   // Sources
   lines.push('## Sources');
   lines.push('');
-  for (const p of outlineItem.source_paths) {
+  for (const p of outlineItem.source_paths || []) {
     lines.push(`- \`${p}\``);
   }
   lines.push('');

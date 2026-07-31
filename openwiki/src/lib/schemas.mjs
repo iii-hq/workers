@@ -41,6 +41,9 @@ export const WIKI_META = {
     generating: BOOL,
     content_hash: STRING,
     navigation: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    refresh_schedule: STRING,
+    last_refresh_at: STRING,
+    steer: { type: 'object', additionalProperties: true },
   },
 };
 
@@ -73,6 +76,7 @@ export const PAGE_META = {
     confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
     status: { type: 'string', enum: ['current', 'needs-review', 'stale'] },
     generator: { type: 'string', enum: ['harness', 'router', 'heuristic'] },
+    quality_issues: INT,
   },
 };
 
@@ -129,7 +133,7 @@ export const REFRESH_RES = {
   required: ['wiki_id', 'refresh'],
   properties: {
     wiki_id: STRING,
-    refresh: { type: 'string', enum: ['regenerating', 'up_to_date', 'error'] },
+    refresh: { type: 'string', enum: ['regenerating', 'up_to_date', 'in_progress', 'error'] },
     changed: {
       type: 'array',
       items: {
@@ -252,6 +256,7 @@ export const PAGE_RES = {
     confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
     status: { type: 'string', enum: ['current', 'needs-review', 'stale'] },
     generator: { type: 'string', enum: ['harness', 'router', 'heuristic'] },
+    quality_issues: INT,
     markdown: STRING,
   },
 };
@@ -373,8 +378,21 @@ export const EXPORT_AGENTS_RES = {
 };
 
 // ---------- harness page output contract ----------
-// The JSON a harness turn returns for one page. Citations reuse CITATION but the
-// model supplies path + line range + note; openwiki fills the host deep-link url.
+// The JSON a harness turn returns for one page. The model supplies path + line
+// range + note only; openwiki fills the host deep-link url itself, so the
+// model-facing citation schema deliberately omits `url`.
+const MODEL_CITATION = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['path'],
+  properties: {
+    path: STRING,
+    start_line: INT,
+    end_line: INT,
+    note: STRING,
+  },
+};
+
 export const PAGE_HARNESS_OUT = {
   type: 'object',
   additionalProperties: false,
@@ -382,7 +400,7 @@ export const PAGE_HARNESS_OUT = {
   properties: {
     title: STRING,
     markdown: STRING,
-    citations: { type: 'array', items: CITATION },
+    citations: { type: 'array', items: MODEL_CITATION },
     links: { type: 'array', items: STRING },
     confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
     status: { type: 'string', enum: ['current', 'needs-review'] },

@@ -86,19 +86,22 @@ async function setIndex(wikiId, idx) {
   await sset(S_PAGE_INDEX, wikiId, idx);
 }
 
-// Serialize the page-index read-modify-write per wiki. Pages generate
-// concurrently (batch writers, spawned sub-agents), so an unguarded
-// getIndex -> mutate -> setIndex would lose updates.
-const indexLocks = new Map();
-function withIndexLock(wikiId, fn) {
-  const prev = indexLocks.get(wikiId) || Promise.resolve();
+// Serialize per-wiki read-modify-write cycles. Pages generate concurrently
+// (batch writers, spawned sub-agents), so an unguarded
+// get -> mutate -> set would lose updates. One promise chain per key per map.
+function withLock(locks, key, fn) {
+  const prev = locks.get(key) || Promise.resolve();
   const run = prev.then(fn, fn);
-  indexLocks.set(
-    wikiId,
+  locks.set(
+    key,
     run.catch(() => {}),
   );
   return run;
 }
+const indexLocks = new Map();
+const logLocks = new Map();
+const withIndexLock = (wikiId, fn) => withLock(indexLocks, wikiId, fn);
+const withLogLock = (wikiId, fn) => withLock(logLocks, wikiId, fn);
 
 // Rebuild the index from the pages scope. Migration / self-heal path only —
 // runs once when a wiki has pages but no index (pre-index wikis).
@@ -221,10 +224,12 @@ export async function getStatus(wikiId) {
 
 export async function appendLog(wikiId, line) {
   const ts = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
-  const prev = (await sget(S_LOG, wikiId)) || [];
-  prev.push(`${ts}  ${line}`);
-  if (prev.length > 500) prev.splice(0, prev.length - 500);
-  await sset(S_LOG, wikiId, prev);
+  await withLogLock(wikiId, async () => {
+    const prev = (await sget(S_LOG, wikiId)) || [];
+    prev.push(`${ts}  ${line}`);
+    if (prev.length > 500) prev.splice(0, prev.length - 500);
+    await sset(S_LOG, wikiId, prev);
+  });
 }
 export async function getLog(wikiId) {
   return (await sget(S_LOG, wikiId)) || [];

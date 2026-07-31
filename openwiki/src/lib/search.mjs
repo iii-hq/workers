@@ -16,10 +16,8 @@ function countOccurrences(tokens, target) {
   return n;
 }
 
-function escapeHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
+// Snippets are raw text: the API returns data, and the UI renders them via
+// textContent, so payload-level HTML escaping would double-escape.
 function makeSnippet(body, queryTokens) {
   const lower = body.toLowerCase();
   let idx = -1;
@@ -29,12 +27,11 @@ function makeSnippet(body, queryTokens) {
   }
   if (idx === -1) {
     const head = body.slice(0, 200);
-    return escapeHtml(head) + (body.length > 200 ? '…' : '');
+    return head + (body.length > 200 ? '…' : '');
   }
   const start = Math.max(0, idx - 80);
   const end = Math.min(body.length, idx + 120);
   let snip = body.slice(start, end);
-  snip = escapeHtml(snip);
   if (start > 0) snip = `…${snip}`;
   if (end < body.length) snip = `${snip}…`;
   return snip;

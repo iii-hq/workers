@@ -11,9 +11,9 @@ export function pickModel(models, preferred) {
   let m = preferred ? byId(preferred) : null;
   if (!m && list.length) {
     m =
-      list.find((x) => x.supports_structured_output && x.supports_tools) ||
-      list.find((x) => x.supports_tools) ||
-      list[0];
+      list.find((x) => x?.supports_structured_output && x.supports_tools) ||
+      list.find((x) => x?.supports_tools) ||
+      list.find(Boolean);
   }
   if (!m) {
     return { model: preferred || null, provider: undefined, supports_structured_output: false, resolved: false };
@@ -39,7 +39,9 @@ export async function resolveModel(worker, preferred) {
     // will error and the caller drops to the router/heuristic page path.
   }
   const out = pickModel(models, preferred);
-  cache.set(key, out);
+  // Only cache successful resolutions: a router that was down at first call
+  // must not pin the worker to the unresolved (heuristic) tier forever.
+  if (out.resolved) cache.set(key, out);
   return out;
 }
 

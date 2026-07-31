@@ -1,5 +1,6 @@
 // src/lib/generate.mjs — LLM planning + page generation for OpenWiki
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 
 const PLAN_SYSTEM =
   'You are OpenWiki, an expert technical writer that plans documentation wikis for source code repositories. Your task is to design a small, reader-facing wiki (6–12 pages) organized by category. NEVER invent source paths. Every outline item must cite ≥1 real path from the provided inventory. Prefer conceptual pages that stitch together multiple files over one-page-per-file docs. Output STRICT JSON only.';
@@ -45,7 +46,7 @@ function extFromPath(p) {
   return m ? m[1].toLowerCase() : 'text';
 }
 
-async function buildKeyDocs(inventory) {
+async function buildKeyDocs(inventory, repoDir) {
   const CAP = 40_000;
   const PER = 8_000;
   const docs = inventory.filter((e) => e.isDoc === true && (e.priority ?? 0) >= 2);
@@ -55,7 +56,7 @@ async function buildKeyDocs(inventory) {
     if (total >= CAP) break;
     let content = '';
     try {
-      content = await readFile(e.path, 'utf8');
+      content = await readFile(path.join(repoDir, e.relPath), 'utf8');
     } catch {
       continue;
     }
@@ -80,9 +81,9 @@ function buildFileTree(inventory) {
     .join('\n');
 }
 
-async function planWikiLLM(worker, { inventory, repoName, repoUrl, model = 'claude-sonnet-4-6' }) {
+async function planWikiLLM(worker, { inventory, repoName, repoUrl, repoDir, model = 'claude-sonnet-4-6' }) {
   const fileTree = buildFileTree(inventory);
-  const keyDocs = await buildKeyDocs(inventory);
+  const keyDocs = await buildKeyDocs(inventory, repoDir);
 
   const userContent =
     'Plan a wiki for the repository below. Return JSON with this exact shape:\n' +

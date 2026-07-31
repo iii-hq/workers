@@ -42,12 +42,12 @@ export function candidateOrigins(_repoUrl, readme) {
   return [...origins].slice(0, 4);
 }
 
-async function webFetch(worker, url) {
+async function webFetch(worker, url, timeoutMs = 15_000) {
   try {
     const res = await worker.trigger({
       function_id: 'web::fetch',
       payload: { url, format: 'markdown' },
-      timeoutMs: 30_000,
+      timeoutMs,
     });
     const status = res?.status ?? res?.status_code ?? 200;
     const body = res?.content ?? res?.body ?? res?.markdown ?? res?.text ?? '';
@@ -59,10 +59,15 @@ async function webFetch(worker, url) {
 }
 
 export async function fetchDocsIndex(worker, { repoUrl, readme, repoDir }) {
+  // Overall budget across every probe: up to 8 sequential fetches against
+  // origins that may all be black holes must not stall planning for minutes.
+  const deadline = Date.now() + 45_000;
   // 1) llms.txt at README-referenced documentation origins.
-  for (const origin of candidateOrigins(repoUrl, readme)) {
+  outer: for (const origin of candidateOrigins(repoUrl, readme)) {
     for (const p of ['/llms.txt', '/llms-full.txt']) {
-      const txt = await webFetch(worker, origin + p);
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break outer;
+      const txt = await webFetch(worker, origin + p, Math.min(15_000, remaining));
       if (txt && /\]\(https?:/.test(txt)) {
         const parsed = parseLlmsTxt(txt);
         if (parsed.links.length >= 5)

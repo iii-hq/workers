@@ -172,14 +172,21 @@ export async function inventoryRepo(repoDir, opts = {}) {
 
 export async function readSourceFile(repoDir, relPath, maxBytes = 200_000) {
   const full = path.join(repoDir, relPath);
-  const buf = await fs.readFile(full);
-  let truncated = false;
-  let content;
-  if (buf.length > maxBytes) {
-    content = `${buf.slice(0, maxBytes).toString('utf8')}\n...[truncated]`;
-    truncated = true;
-  } else {
-    content = buf.toString('utf8');
+  // Bounded read: request maxBytes + 1 through a handle instead of loading the
+  // whole file, so a giant file never lands in memory. The extra byte is only
+  // the truncation probe.
+  const fh = await fs.open(full, 'r');
+  let bytesRead = 0;
+  let buf;
+  try {
+    buf = Buffer.alloc(maxBytes + 1);
+    ({ bytesRead } = await fh.read(buf, 0, maxBytes + 1, 0));
+  } finally {
+    await fh.close();
   }
+  const truncated = bytesRead > maxBytes;
+  const content = truncated
+    ? `${buf.subarray(0, maxBytes).toString('utf8')}\n...[truncated]`
+    : buf.subarray(0, bytesRead).toString('utf8');
   return { path: relPath, content, truncated };
 }

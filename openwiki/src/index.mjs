@@ -552,6 +552,25 @@ async function refreshWiki(wikiId) {
   const meta = await store.getWiki(wikiId);
   if (!meta) throw err('openwiki/wiki_not_found', 'wiki not found');
 
+  // One refresh (or generation) per wiki at a time: concurrent runs would race
+  // the same clone directory through gitPull/cloneRepo. The marker is held
+  // until the scheduled runGeneration/runRefresh takes ownership (each re-adds
+  // it and deletes it in its own finally).
+  if (inflight.has(wikiId)) {
+    return { wiki_id: wikiId, refresh: 'in_progress', changed: [], pages_affected: [] };
+  }
+  inflight.add(wikiId);
+  let handedOff = false;
+  try {
+    return await doRefresh(wikiId, meta, () => {
+      handedOff = true;
+    });
+  } finally {
+    if (!handedOff) inflight.delete(wikiId);
+  }
+}
+
+async function doRefresh(wikiId, meta, markHandedOff) {
   // Stamp the refresh clock up front so the scheduled due-check advances even
   // when this run finds nothing to do or kicks off an async rebuild.
   meta.last_refresh_at = now();
@@ -582,7 +601,8 @@ async function refreshWiki(wikiId) {
 
   // No prior commit / no pages -> full build.
   const priorPages = await store.listPages(wikiId);
-  if (!prevCommit || priorPages.length === 0) {
+  const fullRebuild = () => {
+    markHandedOff();
     setImmediate(() => {
       runGeneration(wikiId, {
         repoUrl: meta.repo_url,
@@ -592,14 +612,18 @@ async function refreshWiki(wikiId) {
       }).catch((e) => console.error(e));
     });
     return { wiki_id: wikiId, refresh: 'regenerating', changed: [], pages_affected: [] };
-  }
+  };
+  if (!prevCommit || priorPages.length === 0) return fullRebuild();
 
   // Diff prev..new, map changed files to affected pages, regenerate only those.
+  // A failed diff (e.g. the previous commit was pruned from the clone) means
+  // the change set is unknown; rebuild rather than report up_to_date.
   let changed = [];
   try {
     changed = await gitDiff(worker, dir, prevCommit, newCommit);
   } catch (e) {
-    await store.appendLog(wikiId, `refresh diff failed: ${e?.message || e}`);
+    await store.appendLog(wikiId, `refresh diff failed (${e?.message || e}); treating as unknown changes`);
+    return fullRebuild();
   }
   const changedPaths = changed.map((c) => c.path);
   const affected = await store.pagesForPaths(wikiId, changedPaths);
@@ -613,6 +637,7 @@ async function refreshWiki(wikiId) {
   const outline = (await store.getOutline(wikiId)) || { items: [], categories: meta.categories || [] };
   const itemsToWrite = (outline.items || []).filter((o) => affected.includes(o.slug));
   const prevHash = meta.content_hash || (await store.computeContentHash(wikiId));
+  markHandedOff();
   setImmediate(() => {
     runRefresh(wikiId, { dir, itemsToWrite, outline, meta, newCommit, prevHash }).catch((e) => console.error(e));
   });
@@ -634,7 +659,7 @@ worker.registerFunction(
 
 worker.registerFunction(
   'openwiki::status',
-  async ({ id }) => (await store.getStatus(id)) || { phase: 'unknown', progress: 0, updated_at: now() },
+  async (a) => (await store.getStatus(wikiIdOf(a))) || { phase: 'unknown', progress: 0, updated_at: now() },
   { description: 'Poll generation status for a wiki id.', request_format: S.STATUS_REQ, response_format: S.STATUS_RES },
 );
 
@@ -657,7 +682,8 @@ worker.registerFunction(
 
 worker.registerFunction(
   'openwiki::wiki',
-  async ({ id }) => {
+  async (a) => {
+    const id = needId(a, 'openwiki::wiki');
     const m = await store.getWiki(id);
     if (!m) throw err('openwiki/wiki_not_found', 'wiki not found');
     return m;
@@ -713,7 +739,7 @@ worker.registerFunction(
   },
 );
 
-worker.registerFunction('openwiki::refresh', async ({ id }) => refreshWiki(id), {
+worker.registerFunction('openwiki::refresh', async (a) => refreshWiki(needId(a, 'openwiki::refresh')), {
   description: 'Pull the repo and regenerate only the pages whose source changed (incremental).',
   request_format: S.WIKI_REQ,
   response_format: S.REFRESH_RES,
@@ -726,6 +752,8 @@ worker.registerFunction(
     if (inflight.has(id)) throw err('openwiki/generating', 'wiki is generating; stop it before deleting');
     applyWikiSchedule(id, 'off'); // tear down any auto-refresh trigger for this wiki
     await store.deleteWiki(id);
+    invalidateInventory(id);
+    resetReadStats(id);
     return { id, deleted: true };
   },
   {
@@ -740,7 +768,7 @@ worker.registerFunction(
   },
 );
 
-worker.registerFunction('openwiki::lint', async ({ id }) => lintWiki(id), {
+worker.registerFunction('openwiki::lint', async (a) => lintWiki(needId(a, 'openwiki::lint')), {
   description: 'Validate every page citation against the clone and flag thin pages.',
   request_format: S.LINT_REQ,
   response_format: S.LINT_RES,
@@ -748,7 +776,8 @@ worker.registerFunction('openwiki::lint', async ({ id }) => lintWiki(id), {
 
 worker.registerFunction(
   'openwiki::gen-stats',
-  async ({ id }) => {
+  async (a) => {
+    const id = needId(a, 'openwiki::gen-stats');
     const reads = getReadStats(id) || {};
     const pages = await store.listPages(id);
     let output_bytes = 0;
@@ -900,7 +929,14 @@ worker.registerFunction(
 
 worker.registerFunction(
   'openwiki::ask',
-  async ({ id, q, mode, file_answer, model }) => askWiki(worker, { id, q, mode, file_answer, model }),
+  async (a) =>
+    askWiki(worker, {
+      id: needId(a, 'openwiki::ask'),
+      q: a.q,
+      mode: a.mode,
+      file_answer: a.file_answer,
+      model: a.model,
+    }),
   {
     description: 'Ask a question about a wiki; returns a cited answer. mode=fast (router) or deep (harness).',
     request_format: S.ASK_REQ,
@@ -908,11 +944,15 @@ worker.registerFunction(
   },
 );
 
-worker.registerFunction('openwiki::diagram', async ({ id, kind }) => makeDiagram(worker, { id, kind }), {
-  description: 'Generate a Mermaid diagram (architecture|dataflow|deps) of a wiki.',
-  request_format: S.DIAGRAM_REQ,
-  response_format: S.DIAGRAM_RES,
-});
+worker.registerFunction(
+  'openwiki::diagram',
+  async (a) => makeDiagram(worker, { id: needId(a, 'openwiki::diagram'), kind: a.kind }),
+  {
+    description: 'Generate a Mermaid diagram (architecture|dataflow|deps) of a wiki.',
+    request_format: S.DIAGRAM_REQ,
+    response_format: S.DIAGRAM_RES,
+  },
+);
 
 worker.registerFunction(
   'openwiki::export-agents-md',
@@ -930,7 +970,8 @@ const MCP_EXPOSE = { mcp: { expose: true } };
 
 worker.registerFunction(
   'openwiki::read-wiki-structure',
-  async ({ id }) => {
+  async (a) => {
+    const id = needId(a, 'openwiki::read-wiki-structure');
     const m = await store.getWiki(id);
     if (!m) throw err('openwiki/wiki_not_found', 'wiki not found');
     const pages = (await store.listPages(id)).map((x) => ({
@@ -950,8 +991,9 @@ worker.registerFunction(
 
 worker.registerFunction(
   'openwiki::read-wiki-contents',
-  async ({ id, slug }) => {
-    const p = await store.getPage(id, slug);
+  async (a) => {
+    const { slug } = a;
+    const p = await store.getPage(needId(a, 'openwiki::read-wiki-contents'), slug);
     if (!p) throw err('openwiki/page_not_found', 'page not found');
     return { slug, ...p.meta, markdown: p.markdown };
   },
@@ -1075,7 +1117,10 @@ worker.registerFunction(
     const id = path_params?.id;
     if (!id) return jsonResponse(400, { error: 'id required' });
     if (inflight.has(id)) return jsonResponse(409, { error: 'wiki is generating; stop it before deleting' });
+    applyWikiSchedule(id, 'off'); // tear down any auto-refresh trigger for this wiki
     await store.deleteWiki(id);
+    invalidateInventory(id);
+    resetReadStats(id);
     return jsonResponse(200, { id, deleted: true });
   },
   HTTP_META('HTTP DELETE /openwiki/api/wikis/:id'),
@@ -1144,7 +1189,7 @@ worker.registerFunction(
   async (req) => {
     const wikiId = req?.path_params?.id;
     const w = req?.response;
-    if (!w?.stream) return jsonResponse(200, { error: 'streaming unsupported' });
+    if (!w?.stream) return jsonResponse(501, { error: 'streaming unsupported' });
     const ctl = (o) => {
       try {
         w.sendMessage(JSON.stringify(o));

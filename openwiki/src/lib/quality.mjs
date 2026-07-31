@@ -21,9 +21,11 @@ export function countH2(markdown) {
 }
 
 // Returns a list of human-readable issue strings (empty = passes).
+// Checks run on the markdown with fenced code blocks removed: a fence that
+// happens to contain "## " or "Sources:" must not satisfy (or pad) the checks.
 export function getPageQualityIssues(markdown, opts = {}) {
   const minWords = opts.minWords ?? 180;
-  const md = String(markdown || '');
+  const md = String(markdown || '').replace(/```[\s\S]*?```/g, '');
   const issues = [];
 
   if (!/^#\s+.+/m.test(md)) {

@@ -28,13 +28,16 @@ export async function lintWiki(wikiId) {
       for (const c of pm?.citations || []) {
         if (!c?.path) continue;
         let content;
+        let truncated = false;
         try {
-          ({ content } = await readSourceFile(dir, c.path, 200_000));
+          ({ content, truncated } = await readSourceFile(dir, c.path, 200_000));
         } catch {
           issues.push({ slug, kind: 'broken-citation', detail: `missing file ${c.path}` });
           continue;
         }
-        if (c.start_line || c.end_line) {
+        // A truncated read undercounts the file's lines; a line-range check
+        // against it would flag valid citations as broken.
+        if (!truncated && (c.start_line || c.end_line)) {
           const total = content.split(/\r?\n/).length;
           if (c.start_line && c.start_line > total) {
             issues.push({ slug, kind: 'broken-citation', detail: `${c.path}:${c.start_line} beyond ${total} lines` });

@@ -109,8 +109,12 @@ export async function srcList(wikiId, subdir) {
   return { files: out, truncated };
 }
 
+const MAX_GREP_PATTERN = 256;
+const GREP_DEADLINE_MS = 5_000;
+
 export async function srcGrep(wikiId, pattern, max = 200) {
   let re;
+  if (String(pattern ?? '').length > MAX_GREP_PATTERN) return { matches: [], truncated: false };
   try {
     re = new RegExp(pattern, 'i');
   } catch {
@@ -121,7 +125,12 @@ export async function srcGrep(wikiId, pattern, max = 200) {
   const matches = [];
   let truncated = false;
   let scanned = 0;
+  const deadline = Date.now() + GREP_DEADLINE_MS;
   for (const e of inv) {
+    if (Date.now() > deadline) {
+      truncated = true;
+      break;
+    }
     if (matches.length >= max || scanned >= MAX_GREP_FILES) {
       truncated = true;
       break;

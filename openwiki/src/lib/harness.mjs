@@ -23,7 +23,9 @@ export function citationUrl(repoUrl, commit, path, from, to) {
   const repo = m[2].replace(/\/+$/, '');
   let frag = '';
   if (from) frag = `#L${from}${to && to !== from ? `-L${to}` : ''}`;
-  return `https://github.com/${owner}/${repo}/blob/${commit}/${path}${frag}`;
+  // Encode each path segment (spaces, #, ?) but keep the slash separators.
+  const safePath = String(path).split('/').map(encodeURIComponent).join('/');
+  return `https://github.com/${owner}/${repo}/blob/${commit}/${safePath}${frag}`;
 }
 
 // Slice a 1-indexed inclusive line window out of a file's content.

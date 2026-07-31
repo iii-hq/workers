@@ -4,10 +4,17 @@
 const CONFIG_ID = 'openwiki';
 const CONFIG_FN_ID = 'openwiki::on-config-change';
 
+// Sanitize env seeds against the declared schema: a NaN or out-of-range
+// max_parallel, or an unknown refresh cadence, would make the registered
+// defaults/initial_value violate the schema itself.
+const REFRESH_VALUES = ['off', '3h', '6h', '12h', 'daily', 'weekly'];
+const rawParallel = parseInt(process.env.OPENWIKI_MAX_PARALLEL || '3', 10);
+const envRefresh = process.env.OPENWIKI_REFRESH_DEFAULT || 'off';
+
 const DEFAULTS = {
   model: process.env.OPENWIKI_MODEL || 'claude-haiku-4-5-20251001',
-  max_parallel: Math.max(1, parseInt(process.env.OPENWIKI_MAX_PARALLEL || '3', 10)),
-  refresh_default: process.env.OPENWIKI_REFRESH_DEFAULT || 'off',
+  max_parallel: Math.min(16, Math.max(1, Number.isFinite(rawParallel) ? rawParallel : 3)),
+  refresh_default: REFRESH_VALUES.includes(envRefresh) ? envRefresh : 'off',
 };
 
 function schema() {

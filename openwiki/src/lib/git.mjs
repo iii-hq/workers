@@ -72,10 +72,29 @@ export function repoName(repoUrl) {
   return parts[parts.length - 1] || u;
 }
 
+// Guard the values that reach git's argv. A leading "-" would be parsed as an
+// option (e.g. `--upload-pack=...`), and transports like ext:: execute
+// arbitrary commands. Allow only http(s)/git/ssh URLs and scp-like
+// user@host:path remotes; end option parsing with "--" before the positionals.
+const URL_SCHEME_RE = /^(?:https?|git|ssh):\/\/\S+$/i;
+const SCP_LIKE_RE = /^[\w.-]+@[\w.-]+:[^\s-][^\s]*$/;
+
+function assertCloneArgs(repoUrl, ref) {
+  const u = String(repoUrl || '').trim();
+  if (!u || u.startsWith('-') || !(URL_SCHEME_RE.test(u) || SCP_LIKE_RE.test(u))) {
+    throw new Error(`invalid repo_url: expected an http(s)/git/ssh URL, got "${u.slice(0, 100)}"`);
+  }
+  if (ref != null && ref !== '') {
+    const r = String(ref).trim();
+    if (!r || r.startsWith('-') || /\s/.test(r)) throw new Error(`invalid ref: "${r.slice(0, 100)}"`);
+  }
+}
+
 export async function cloneRepo(worker, repoUrl, destDir, ref) {
+  assertCloneArgs(repoUrl, ref);
   const args = ['clone', '--depth', '1'];
-  if (ref) args.push('--branch', ref);
-  args.push(repoUrl, destDir);
+  if (ref) args.push('--branch', String(ref).trim());
+  args.push('--', String(repoUrl).trim(), destDir);
   await sh(worker, 'git', args, { timeoutMs: 120_000 });
   const { stdout } = await sh(worker, 'git', ['-C', destDir, 'rev-parse', 'HEAD']);
   return { commit: stdout.trim(), dir: destDir, name: repoName(repoUrl), url: repoUrl };
@@ -90,7 +109,9 @@ export async function currentCommit(worker, dir) {
 // failure (caller decides whether to re-clone).
 export async function gitPull(worker, dir) {
   try {
-    await sh(worker, 'git', ['-C', dir, 'fetch', '--depth', '1', 'origin'], { timeoutMs: 120_000 });
+    // No --depth here: a depth-1 fetch would detach the new HEAD from the
+    // previously recorded commit and starve the refresh diff of history.
+    await sh(worker, 'git', ['-C', dir, 'fetch', 'origin'], { timeoutMs: 120_000 });
     await sh(worker, 'git', ['-C', dir, 'reset', '--hard', 'FETCH_HEAD']);
     return await currentCommit(worker, dir);
   } catch {

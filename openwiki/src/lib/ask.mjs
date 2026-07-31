@@ -3,6 +3,7 @@
 // harness to explore both the wiki and the clone; both fall back to a heuristic
 // answer (stitched page excerpts) so ask works with no provider. A good answer
 // can be filed back as a new page so explorations compound into the wiki.
+import crypto from 'node:crypto';
 import * as store from './store.mjs';
 import { searchPages } from './search.mjs';
 import { extractAssistantText } from './generate.mjs';
@@ -144,6 +145,7 @@ async function askDeep(worker, { id, q, model, blocks }) {
     },
     timeoutMs: 30_000,
   });
+  if (!session_id) throw new Error('harness::send returned no session_id');
   const result = await awaitTurn(worker, session_id, { timeoutMs: 240_000 });
   const text = typeof result === 'string' ? result : result?.answer || result?.markdown || '';
   if (!String(text).trim()) throw new Error('empty answer');
@@ -151,7 +153,11 @@ async function askDeep(worker, { id, q, model, blocks }) {
 }
 
 async function fileAnswer(id, q, answer, citations) {
-  const slug = `ask-${slugify(q)}`;
+  // Distinct questions can normalize to the same slugify output; a short
+  // deterministic hash of the exact question keeps their pages separate while
+  // re-asking the same question still updates its own page.
+  const qHash = crypto.createHash('sha1').update(String(q)).digest('hex').slice(0, 6);
+  const slug = `ask-${slugify(q)}-${qHash}`;
   const md = `# ${q}\n\n${answer}\n\n_Filed from a question on ${new Date().toISOString()}._\n`;
   await store.savePage(id, slug, md, {
     title: q.slice(0, 80),
@@ -188,7 +194,8 @@ export async function askWiki(worker, { id, q, mode = 'fast', file_answer = fals
       mode === 'deep'
         ? await askDeep(worker, { id, q, model: model || meta.model, blocks })
         : await askFastLLM(worker, { q, blocks, model: model || meta.model });
-  } catch {
+  } catch (e) {
+    console.warn(`[openwiki] ask ${mode} tier failed: ${e?.message || e}`);
     answer = null;
   }
   // Fast mode uses router::complete; if that path is down, try the harness
@@ -196,7 +203,8 @@ export async function askWiki(worker, { id, q, mode = 'fast', file_answer = fals
   if (!answer && mode !== 'deep') {
     try {
       answer = await askDeep(worker, { id, q, model: model || meta.model, blocks });
-    } catch {
+    } catch (e) {
+      console.warn(`[openwiki] ask deep fallback failed: ${e?.message || e}`);
       answer = null;
     }
   }
