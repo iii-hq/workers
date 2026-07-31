@@ -29,7 +29,6 @@ use crate::types::script::{
     ModelFixtureV1, RouterDispatchV1, RouterScriptV1, ScriptedGenerationV1, ServeEffectV1,
 };
 
-pub const GATE_STATUS_FUNCTION_ID: &str = "integration-scripted-router::gate::status";
 pub const GATE_RELEASE_FUNCTION_ID: &str = "integration-scripted-router::gate::release";
 
 /// One `router::chat` call's evidence, stored raw (never normalized).
@@ -260,33 +259,12 @@ impl ScriptedRouter {
         {
             let state = self.state.clone();
             iii.register_function(
-                GATE_STATUS_FUNCTION_ID,
-                RegisterFunction::new_async(move |input: Value| {
-                    let state = state.clone();
-                    async move {
-                        let name = required_gate_name(&input)?;
-                        let (arrivals, released) = gate_status(&state, name);
-                        Ok::<Value, Error>(json!({
-                            "name": name,
-                            "arrivals": arrivals,
-                            "released": released,
-                        }))
-                    }
-                })
-                .metadata(json!({ "internal": true })),
-            );
-        }
-        {
-            let state = self.state.clone();
-            iii.register_function(
                 GATE_RELEASE_FUNCTION_ID,
                 RegisterFunction::new_async(move |input: Value| {
                     let state = state.clone();
                     async move {
                         let name = required_gate_name(&input)?;
-                        release_gate_state(&state, name).map_err(|error| {
-                            Error::Handler(format!("integration/gate_release: {error}"))
-                        })?;
+                        latch_gate_release(&state, name);
                         Ok::<Value, Error>(json!({ "name": name, "released": true }))
                     }
                 })
@@ -473,12 +451,24 @@ fn required_gate_name(input: &Value) -> Result<&str, Error> {
         .ok_or_else(|| Error::Handler("integration/gate_name: non-empty name is required".into()))
 }
 
-fn gate_status(state: &Arc<Mutex<State>>, name: &str) -> (usize, bool) {
-    let state = state.lock().expect("router state");
-    state
-        .gates
-        .get(name)
-        .map_or((0, false), |gate| (gate.arrivals, gate.released))
+/// Arm a release even when the router has not reached the gate yet. This is
+/// the Console playground's event-driven control seam: the queued-message
+/// lifecycle event authorizes progress, and an early release is remembered
+/// instead of turning ordering into another wait.
+fn latch_gate_release(state: &Arc<Mutex<State>>, name: &str) {
+    let notify = {
+        let mut state = state.lock().expect("router state");
+        state
+            .gates
+            .entry(name.to_string())
+            .or_insert(GateState {
+                arrivals: 0,
+                released: false,
+            })
+            .released = true;
+        Arc::clone(&state.gate_notify)
+    };
+    notify.notify_waiters();
 }
 
 fn release_gate_state(state: &Arc<Mutex<State>>, name: &str) -> anyhow::Result<()> {
@@ -895,5 +885,20 @@ mod tests {
             .await
             .expect("gate release should wake the router")
             .expect("router gate task should finish");
+    }
+
+    #[tokio::test]
+    async fn latched_release_does_not_wait_for_gate_arrival() {
+        let state = state();
+
+        latch_gate_release(&state, "test-gate");
+        tokio::time::timeout(Duration::from_secs(1), await_gate(&state, "test-gate"))
+            .await
+            .expect("an early release should let a later arrival pass");
+
+        let state = state.lock().expect("router state");
+        let gate = state.gates.get("test-gate").expect("gate should exist");
+        assert_eq!(gate.arrivals, 1);
+        assert!(gate.released);
     }
 }

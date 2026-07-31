@@ -15,7 +15,7 @@ use crate::deadline::Deadline;
 use crate::fixtures::ScenarioFixture;
 use crate::runtime::{RunError, RunErrorKind, RunPhase};
 use crate::scenarios::ScenarioDriver;
-use crate::scripted_router::{GATE_RELEASE_FUNCTION_ID, GATE_STATUS_FUNCTION_ID};
+use crate::scripted_router::GATE_RELEASE_FUNCTION_ID;
 use crate::stack::{Stack, StackBins};
 use crate::types::scenario::{Classification, CompiledSendV1};
 use crate::types::script::SchemaVersion1;
@@ -49,7 +49,6 @@ pub struct PlaygroundReadyV1 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlaygroundControlsV1 {
-    pub gate_status: String,
     pub gate_release: String,
 }
 
@@ -371,7 +370,6 @@ fn build_ready_manifest(
         message: prepared.scenario.send.message.clone(),
         functions,
         controls: PlaygroundControlsV1 {
-            gate_status: GATE_STATUS_FUNCTION_ID.to_string(),
             gate_release: GATE_RELEASE_FUNCTION_ID.to_string(),
         },
         send: prepared.scenario.send.clone(),

@@ -10,13 +10,14 @@ test('keeps the composer editable and queues a message while streaming', async (
   stack,
 }) => {
   const completed = stack.waitForTurnCompleted()
+  const turnStarted = stack.waitForTurnStarted()
   await openSession(page, stack)
 
   const composer = page.getByLabel('message composer')
   await composer.pressSequentially(stack.ready.message)
   await page.getByRole('button', { name: 'send message' }).click()
 
-  await stack.waitForRouterGate(GATE)
+  await turnStarted
   await expect(
     page.getByRole('button', { name: 'stop generating' }),
   ).toBeVisible()
@@ -25,16 +26,18 @@ test('keeps the composer editable and queues a message while streaming', async (
 
   await composer.pressSequentially(QUEUED_MESSAGE)
   await expect(composer).toHaveText(QUEUED_MESSAGE)
+  const queuedOnHarness = stack.waitForQueuedMessage(QUEUED_MESSAGE)
   await page.getByRole('button', { name: 'queue message' }).click()
 
   const queued = page.getByRole('region', { name: 'queued messages' })
   await expect(queued).toContainText(QUEUED_MESSAGE)
-  await stack.waitForQueuedMessage(QUEUED_MESSAGE)
+  await queuedOnHarness
   await stack.releaseRouterGate(GATE)
 
   expect(await completed).toMatchObject({
     session_id: stack.ready.session.id,
     status: 'completed',
+    terminal: true,
   })
   await expect(
     page.locator('[data-message-role="user"]', { hasText: QUEUED_MESSAGE }),

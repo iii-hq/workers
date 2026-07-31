@@ -21,7 +21,6 @@ interface ReadyManifest {
   message: string
   functions: Record<string, string>
   controls: {
-    gate_status: string
     gate_release: string
   }
   send: Record<string, unknown>
@@ -64,6 +63,20 @@ interface TurnCompletedEvent {
   session_id: string
   turn_id: string
   status: 'completed' | 'cancelled' | 'failed'
+  terminal: boolean
+  timestamp: number
+}
+
+interface TurnStartedEvent {
+  session_id: string
+  turn_id: string
+  timestamp: number
+}
+
+interface MessageQueuedEvent {
+  session_id: string
+  entry_id: string
+  queued_at: number
   timestamp: number
 }
 
@@ -71,7 +84,7 @@ export interface HarnessStack {
   ready: ReadyManifest
   consoleUrl: string
   trigger(): Promise<unknown>
-  waitForRouterGate(name: string, count?: number): Promise<void>
+  waitForTurnStarted(): Promise<TurnStartedEvent>
   waitForQueuedMessage(text: string): Promise<void>
   releaseRouterGate(name: string): Promise<void>
   waitForTurnCompleted(): Promise<TurnCompletedEvent>
@@ -151,16 +164,22 @@ async function waitForReady(
   }
 }
 
-function armCompletion(
+let eventSubscriptionSequence = 0
+
+function armTriggerEvent<T>(
   sdk: ISdk,
   ready: ReadyManifest,
-): Promise<TurnCompletedEvent> {
-  const functionId = `console-e2e::turn-completed::${ready.run_id}`
+  triggerType: string,
+  label: string,
+  config: Record<string, unknown>,
+  select: (payload: unknown) => T | undefined,
+): Promise<T> {
+  eventSubscriptionSequence += 1
+  const functionId = `console-e2e::${label}::${ready.run_id}::${eventSubscriptionSequence}`
   let functionRef: ReturnType<ISdk['registerFunction']> | undefined
   let triggerRef: ReturnType<ISdk['registerTrigger']> | undefined
-  let timer: NodeJS.Timeout | undefined
+  let settled = false
   const cleanup = () => {
-    if (timer) clearTimeout(timer)
     try {
       triggerRef?.unregister()
       functionRef?.unregister()
@@ -168,27 +187,108 @@ function armCompletion(
       // The isolated stack may already be shutting down.
     }
   }
-  return new Promise<TurnCompletedEvent>((resolve, reject) => {
+  return new Promise<T>((resolve, reject) => {
     functionRef = sdk.registerFunction(
       functionId,
       async (payload) => {
-        const event = payload as TurnCompletedEvent
-        if (event.session_id !== ready.session.id) return null
-        cleanup()
-        resolve(event)
+        try {
+          const selected = select(payload)
+          if (selected === undefined) return null
+          settled = true
+          cleanup()
+          resolve(selected)
+        } catch (error) {
+          settled = true
+          cleanup()
+          reject(error)
+        }
         return null
       },
       { metadata: { internal: true } },
     )
     triggerRef = sdk.registerTrigger({
-      type: 'harness::turn-completed',
+      type: triggerType,
       function_id: functionId,
-      config: { session_id: ready.session.id },
+      config,
     })
-    timer = setTimeout(() => {
-      cleanup()
-      reject(new Error('harness::turn-completed was not delivered'))
-    }, 60_000)
+    // A state-backed trigger may catch up while registerTrigger is still
+    // returning its handle. Complete teardown once the handle is available.
+    if (settled) cleanup()
+  })
+}
+
+function armCompletion(
+  sdk: ISdk,
+  ready: ReadyManifest,
+): Promise<TurnCompletedEvent> {
+  return armTriggerEvent(
+    sdk,
+    ready,
+    'harness::turn-completed',
+    'turn-completed',
+    { session_id: ready.session.id },
+    (payload) => {
+      const event = payload as TurnCompletedEvent
+      if (event.session_id !== ready.session.id || event.terminal !== true)
+        return undefined
+      return event
+    },
+  )
+}
+
+function armTurnStarted(
+  sdk: ISdk,
+  ready: ReadyManifest,
+): Promise<TurnStartedEvent> {
+  return armTriggerEvent(
+    sdk,
+    ready,
+    'harness::turn-started',
+    'turn-started',
+    { session_id: ready.session.id },
+    (payload) => {
+      const event = payload as TurnStartedEvent
+      return event.session_id === ready.session.id ? event : undefined
+    },
+  )
+}
+
+function armQueuedMessage(
+  sdk: ISdk,
+  ready: ReadyManifest,
+  text: string,
+): Promise<void> {
+  return armTriggerEvent<MessageQueuedEvent>(
+    sdk,
+    ready,
+    'harness::message-queued',
+    'message-queued',
+    { session_id: ready.session.id },
+    (payload) => {
+      const event = payload as MessageQueuedEvent
+      return event.session_id === ready.session.id ? event : undefined
+    },
+  ).then(async (event) => {
+    const status = (await sdk.trigger({
+      function_id: 'harness::status',
+      payload: { session_id: ready.session.id },
+    })) as {
+      queued?: Array<{
+        entry_id?: string
+        message?: { content?: Array<{ type?: string; text?: string }> }
+      }>
+    } | null
+    const row = status?.queued?.find(
+      (queued) => queued.entry_id === event.entry_id,
+    )
+    const matches = row?.message?.content?.some(
+      (block) => block.type === 'text' && block.text === text,
+    )
+    if (!matches) {
+      throw new Error(
+        `harness::message-queued ${event.entry_id} did not reference ${JSON.stringify(text)}`,
+      )
+    }
   })
 }
 
@@ -281,43 +381,9 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
             function_id: 'harness::send',
             payload: manifest.send,
           }),
-        waitForRouterGate: async (name, count = 1) => {
-          const deadline = Date.now() + 15_000
-          while (Date.now() < deadline) {
-            const status = (await connectedSdk.trigger({
-              function_id: manifest.controls.gate_status,
-              payload: { name },
-            })) as { arrivals?: number }
-            if ((status.arrivals ?? 0) >= count) return
-            await delay(25)
-          }
-          throw new Error(
-            `timed out waiting for scripted router gate ${name} (${count} arrivals)`,
-          )
-        },
-        waitForQueuedMessage: async (text) => {
-          const deadline = Date.now() + 15_000
-          while (Date.now() < deadline) {
-            const status = (await connectedSdk.trigger({
-              function_id: 'harness::status',
-              payload: { session_id: manifest.session.id },
-            })) as {
-              queued?: Array<{
-                message?: { content?: Array<{ type?: string; text?: string }> }
-              }>
-            } | null
-            const queued = status?.queued?.some((row) =>
-              row.message?.content?.some(
-                (block) => block.type === 'text' && block.text === text,
-              ),
-            )
-            if (queued) return
-            await delay(25)
-          }
-          throw new Error(
-            `timed out waiting for queued harness message ${JSON.stringify(text)}`,
-          )
-        },
+        waitForTurnStarted: () => armTurnStarted(connectedSdk, manifest),
+        waitForQueuedMessage: (text) =>
+          armQueuedMessage(connectedSdk, manifest, text),
         releaseRouterGate: async (name) => {
           const response = (await connectedSdk.trigger({
             function_id: manifest.controls.gate_release,
