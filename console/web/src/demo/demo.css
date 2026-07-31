@@ -62,3 +62,12 @@
     transform: none;
   }
 }
+
+/* The way out of the embedded console. Taken down from the raw alert red, so
+   it reads as an exit rather than as something having gone wrong, and dark
+   enough that white holds AA at the 10px the chrome bar uses. Derived from the
+   token, identical in both themes: the button means the same thing in each. */
+.demo-close {
+  background: color-mix(in oklab, var(--color-alert) 72%, #1a0206);
+  color: #fff;
+}
