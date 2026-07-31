@@ -118,64 +118,6 @@ where
     Err(last_error)
 }
 
-#[cfg(test)]
-mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    use super::*;
-
-    #[tokio::test]
-    async fn boot_dependency_retries_transient_failures() {
-        let attempts = Arc::new(AtomicU32::new(0));
-
-        let result = retry_boot_dependency(4, Duration::ZERO, || {
-            let attempts = attempts.clone();
-            async move {
-                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
-                if attempt < 3 {
-                    Err(format!("not ready on attempt {attempt}"))
-                } else {
-                    Ok("ready")
-                }
-            }
-        })
-        .await;
-
-        assert_eq!(result, Ok("ready"));
-        assert_eq!(attempts.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn boot_dependency_returns_last_error_after_attempt_budget() {
-        let attempts = Arc::new(AtomicU32::new(0));
-
-        let result = retry_boot_dependency(3, Duration::ZERO, || {
-            let attempts = attempts.clone();
-            async move {
-                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
-                Err::<(), _>(format!("failure {attempt}"))
-            }
-        })
-        .await;
-
-        assert_eq!(result, Err("failure 3".to_string()));
-        assert_eq!(attempts.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn boot_dependency_rejects_an_empty_attempt_budget() {
-        let result = retry_boot_dependency(0, Duration::ZERO, || async {
-            Ok::<_, String>("must not run")
-        })
-        .await;
-
-        assert_eq!(
-            result,
-            Err("retry attempt count must be greater than zero".to_string())
-        );
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -289,4 +231,62 @@ async fn main() -> Result<()> {
     tracing::info!("harness shutting down");
     iii.shutdown_async().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn boot_dependency_retries_transient_failures() {
+        let attempts = Arc::new(AtomicU32::new(0));
+
+        let result = retry_boot_dependency(4, Duration::ZERO, || {
+            let attempts = attempts.clone();
+            async move {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                if attempt < 3 {
+                    Err(format!("not ready on attempt {attempt}"))
+                } else {
+                    Ok("ready")
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(result, Ok("ready"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn boot_dependency_returns_last_error_after_attempt_budget() {
+        let attempts = Arc::new(AtomicU32::new(0));
+
+        let result = retry_boot_dependency(3, Duration::ZERO, || {
+            let attempts = attempts.clone();
+            async move {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                Err::<(), _>(format!("failure {attempt}"))
+            }
+        })
+        .await;
+
+        assert_eq!(result, Err("failure 3".to_string()));
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn boot_dependency_rejects_an_empty_attempt_budget() {
+        let result = retry_boot_dependency(0, Duration::ZERO, || async {
+            Ok::<_, String>("must not run")
+        })
+        .await;
+
+        assert_eq!(
+            result,
+            Err("retry attempt count must be greater than zero".to_string())
+        );
+    }
 }
