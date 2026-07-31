@@ -718,10 +718,10 @@ mod reserved_scope_tests {
     #[test]
     fn invalid_and_duplicate_claims_are_skipped_loudly() {
         let private = PrivateNamespaces::new(&[
-            ns("", &["a"]),                 // empty prefix → skipped
-            ns("bad prefix", &["b"]),       // invalid chars → skipped
+            ns("", &["a"]),           // empty prefix → skipped
+            ns("bad prefix", &["b"]), // invalid chars → skipped
             ns("first", &["shared", "own"]),
-            ns("second", &["shared"]),      // duplicate scope → entry left empty → skipped
+            ns("second", &["shared"]), // duplicate scope → entry left empty → skipped
         ]);
         assert!(private.is_reserved("shared"));
         assert!(private.is_reserved("own"));
