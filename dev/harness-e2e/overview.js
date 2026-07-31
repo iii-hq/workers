@@ -79,6 +79,8 @@
     content: document.querySelector("#overview-content"),
     count: document.querySelector("#execution-count"),
     empty: document.querySelector("#empty-state"),
+    emptyDescription: document.querySelector("#empty-description"),
+    emptyTitle: document.querySelector("#empty-title"),
     efficiencyBody: document.querySelector("#efficiency-body"),
     efficiencyCost: document.querySelector("#efficiency-cost"),
     efficiencyCostDelta: document.querySelector("#efficiency-cost-delta"),
@@ -125,6 +127,7 @@
     ),
     scenarioHistoryDialog: document.querySelector("#scenario-history-dialog"),
     scenarioHistoryTitle: document.querySelector("#scenario-history-title"),
+    syncLabel: document.querySelector("#sync-label"),
     status: document.querySelector("#status-filter"),
   };
 
@@ -1086,7 +1089,16 @@
   }
 
   async function initialize() {
-    elements.preview.hidden = !history.preview;
+    const isLocal = history.mode === "local";
+    elements.preview.hidden = !(history.preview || isLocal);
+    elements.preview.textContent = isLocal ? "Local data" : "Preview data";
+    if (isLocal) {
+      elements.syncLabel.textContent = "Last imported";
+      elements.emptyTitle.textContent = "No local executions imported";
+      elements.emptyDescription.textContent =
+        "Import a results.json file to populate this dashboard.";
+      elements.actionsLink.textContent = "View repository ↗";
+    }
     const lastUpdate = history.lastUpdate || history.executions[0]?.completed_at;
     if (lastUpdate) {
       elements.lastUpdate.dateTime = new Date(lastUpdate).toISOString();
@@ -1095,8 +1107,9 @@
     if (history.repoUrl) {
       const repo = safeUrl(history.repoUrl);
       if (repo) {
-        elements.actionsLink.href =
-          `${repo.replace(/\/$/, "")}/actions/workflows/harness-e2e-daily.yml`;
+        elements.actionsLink.href = isLocal
+          ? repo
+          : `${repo.replace(/\/$/, "")}/actions/workflows/harness-e2e-daily.yml`;
       }
     }
     elements.scenarioHistoryClose.addEventListener("click", () => {
