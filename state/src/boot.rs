@@ -51,12 +51,10 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
             .trigger_request_format::<StateTriggerSpec>(),
     );
 
-    // Restart-tier snapshot, like the adapter: the internal accessors
-    // register once at start, so a hot-reloaded namespace list takes effect
-    // at the next worker start.
-    let private = Arc::new(functions::PrivateNamespaces::new(
-        &config.private_namespaces,
-    ));
+    // Private namespaces are CLAIMED at runtime (`state::claim-namespace`),
+    // not configured: this starts empty and is refilled from the persisted
+    // ledger below.
+    let private = Arc::new(functions::PrivateNamespaces::default());
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(config)));
     let invoker: Arc<dyn Invoker> = Arc::new(SdkInvoker { iii: iii.clone() });
     let ctx = Arc::new(StateCtx {
@@ -67,6 +65,9 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
         private,
     });
     functions::register_functions(&iii, ctx.clone());
+    // Re-arm namespaces claimed by earlier runs BEFORE any tenant asks, so a
+    // state restart restores `<prefix>::state::*` on its own.
+    functions::restore_persisted_claims(&iii, &ctx).await;
 
     // Injectable console UI: content function + console:script trigger.
     // Ordering doesn't matter for the console side (the engine parks the

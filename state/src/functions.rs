@@ -24,81 +24,150 @@ use crate::trigger::TriggerTable;
 
 pub type ConfigCell = Arc<RwLock<Arc<StateConfig>>>;
 
-/// Control-plane state is not agent state. Workers claim PRIVATE namespaces
-/// via `StateConfig::private_namespaces`; each claim reserves its scopes —
-/// public `state::*` calls must never read, mutate, list, or fan them out to
-/// state triggers — and registers internal accessors under the claim's own
-/// function-id prefix (`<prefix>::state::{get, list, compare-and-set}`).
-/// This worker knows nothing about WHO claims: the harness's binding
-/// authority is just the first tenant, wired entirely from config.
+/// Control-plane state is not agent state. A worker CLAIMS its private
+/// namespace at runtime (`state::claim-namespace`): the claim reserves its
+/// scopes — public `state::*` calls must never read, mutate, list, or fan
+/// them out to state triggers — and registers internal accessors under the
+/// claimant's own function-id prefix (`<prefix>::state::{get, list,
+/// compare-and-set}`).
+///
+/// This worker knows nothing about WHO claims, and needs no configuration:
+/// a claim is authorized by the engine-stamped `_caller_worker_id` (the
+/// engine OVERWRITES it on every dispatch, so it cannot be forged), and a
+/// worker may only claim the namespace matching its own worker NAME. That is
+/// exactly the function-id namespace it already owns — only the worker named
+/// `harness` can own `harness::state::*`.
+///
+/// Claims persist in [`CLAIMS_SCOPE`] and are re-registered at boot, so a
+/// state restart restores the accessors without the tenant lifting a finger.
+/// Scopes are first-claimant-wins; re-claiming your own namespace is a no-op.
+pub const CLAIMS_SCOPE: &str = "__state_private_namespaces";
+pub const CLAIM_NAMESPACE_ID: &str = "state::claim-namespace";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PrivateNamespace {
+    /// Function-id prefix for the accessors, e.g. `harness` →
+    /// `harness::state::get`. Must equal the claimant's worker name.
+    pub functions_prefix: String,
+    /// The reserved storage scopes this namespace owns.
+    pub scopes: Vec<String>,
+}
+
+/// The live claim registry: read on every public `state::*` call (guards) and
+/// written by `state::claim-namespace`.
 #[derive(Debug, Default)]
 pub struct PrivateNamespaces {
-    namespaces: Vec<crate::config::PrivateNamespace>,
+    inner: std::sync::RwLock<Claims>,
+}
+
+#[derive(Debug, Default)]
+struct Claims {
+    namespaces: Vec<PrivateNamespace>,
     reserved: std::collections::HashSet<String>,
 }
 
+/// What a claim attempt did.
+pub enum ClaimOutcome {
+    /// Newly reserved these scopes. `namespace_is_new` distinguishes the
+    /// FIRST claim for a prefix (register its accessors) from growing an
+    /// existing one (accessors read their scopes live, so re-registering
+    /// would fail with "function id already registered").
+    Claimed {
+        fresh: Vec<String>,
+        namespace_is_new: bool,
+    },
+    /// Everything asked for is already owned by this prefix — no-op.
+    AlreadyOwned,
+    /// A scope belongs to a different namespace; nothing was changed.
+    Conflict(String),
+}
+
 impl PrivateNamespaces {
-    /// Boot-time snapshot (restart-tier, like the adapter: the accessors
-    /// register once at start). Invalid entries are skipped LOUDLY; a scope
-    /// already claimed by an earlier namespace stays with the first claimant.
-    pub fn new(configured: &[crate::config::PrivateNamespace]) -> Self {
-        let mut namespaces: Vec<crate::config::PrivateNamespace> = Vec::new();
-        let mut reserved = std::collections::HashSet::new();
-        for entry in configured {
-            let prefix = entry.functions_prefix.trim();
-            if prefix.is_empty()
-                || !prefix
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            {
-                tracing::error!(
-                    functions_prefix = %entry.functions_prefix,
-                    "private namespace skipped: functions_prefix must be non-empty [A-Za-z0-9_-]"
-                );
-                continue;
-            }
-            let scopes: Vec<String> = entry
-                .scopes
-                .iter()
-                .filter(|scope| {
-                    if scope.is_empty() {
-                        tracing::error!(prefix, "private namespace scope skipped: empty");
-                        return false;
-                    }
-                    if !reserved.insert((*scope).clone()) {
-                        tracing::error!(
-                            prefix,
-                            scope = %scope,
-                            "private namespace scope skipped: already claimed"
-                        );
-                        return false;
-                    }
-                    true
-                })
-                .cloned()
-                .collect();
-            if scopes.is_empty() {
-                tracing::error!(prefix, "private namespace skipped: no usable scopes");
-                continue;
-            }
-            namespaces.push(crate::config::PrivateNamespace {
-                functions_prefix: prefix.to_string(),
-                scopes,
-            });
-        }
-        Self {
-            namespaces,
-            reserved,
-        }
-    }
-
     pub fn is_reserved(&self, scope: &str) -> bool {
-        self.reserved.contains(scope)
+        self.read().reserved.contains(scope)
     }
 
-    fn iter(&self) -> impl Iterator<Item = &crate::config::PrivateNamespace> {
-        self.namespaces.iter()
+    /// The scopes a namespace owns — the hard bound on its own accessors.
+    pub fn owned_scopes(&self, functions_prefix: &str) -> std::collections::HashSet<String> {
+        self.read()
+            .namespaces
+            .iter()
+            .filter(|n| n.functions_prefix == functions_prefix)
+            .flat_map(|n| n.scopes.iter().cloned())
+            .collect()
     }
+
+    pub fn snapshot(&self) -> Vec<PrivateNamespace> {
+        self.read().namespaces.clone()
+    }
+
+    /// Reserve `scopes` for `functions_prefix`. First-claimant-wins: a scope
+    /// held by another namespace fails the whole claim, so a partial state is
+    /// never observable.
+    pub fn claim(&self, functions_prefix: &str, scopes: &[String]) -> ClaimOutcome {
+        let mut claims = self.write();
+        let mut fresh = Vec::new();
+        for scope in scopes {
+            if claims.reserved.contains(scope) {
+                let owner = claims
+                    .namespaces
+                    .iter()
+                    .find(|n| n.scopes.iter().any(|s| s == scope))
+                    .map(|n| n.functions_prefix.as_str())
+                    .unwrap_or_default();
+                if owner != functions_prefix {
+                    return ClaimOutcome::Conflict(format!(
+                        "scope `{scope}` is already claimed by namespace `{owner}`"
+                    ));
+                }
+                continue; // already ours
+            }
+            fresh.push(scope.clone());
+        }
+        if fresh.is_empty() {
+            return ClaimOutcome::AlreadyOwned;
+        }
+        for scope in &fresh {
+            claims.reserved.insert(scope.clone());
+        }
+        let namespace_is_new = match claims
+            .namespaces
+            .iter_mut()
+            .find(|n| n.functions_prefix == functions_prefix)
+        {
+            Some(existing) => {
+                existing.scopes.extend(fresh.iter().cloned());
+                false
+            }
+            None => {
+                claims.namespaces.push(PrivateNamespace {
+                    functions_prefix: functions_prefix.to_string(),
+                    scopes: fresh.clone(),
+                });
+                true
+            }
+        };
+        ClaimOutcome::Claimed {
+            fresh,
+            namespace_is_new,
+        }
+    }
+
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, Claims> {
+        self.inner.read().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, Claims> {
+        self.inner.write().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+/// A namespace prefix must be a usable function-id segment.
+pub fn valid_prefix(functions_prefix: &str) -> bool {
+    !functions_prefix.is_empty()
+        && functions_prefix
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// The internal accessor ids a namespace claim registers.
@@ -111,7 +180,8 @@ pub fn internal_ids(functions_prefix: &str) -> (String, String, String) {
 }
 
 fn reject_reserved_scope(private: &PrivateNamespaces, scope: &str) -> Result<(), Error> {
-    if private.is_reserved(scope) {
+    // The claims ledger itself is never publicly reachable.
+    if scope == CLAIMS_SCOPE || private.is_reserved(scope) {
         return Err(Error::Handler(format!(
             "RESERVED_SCOPE: `{scope}` is private worker bookkeeping"
         )));
@@ -178,7 +248,7 @@ impl StateCtx {
     }
 
     async fn emit(&self, event: StateEventData) {
-        if self.private.is_reserved(&event.scope) {
+        if event.scope == CLAIMS_SCOPE || self.private.is_reserved(&event.scope) {
             return;
         }
         let enabled = self.snapshot().await.triggers_enabled.unwrap_or(true);
@@ -225,9 +295,7 @@ fn event(
 }
 
 pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
-    for namespace in ctx.private.iter().cloned().collect::<Vec<_>>() {
-        register_private_namespace_functions(iii, &ctx, &namespace);
-    }
+    register_claim_namespace(iii, &ctx);
 
     // state::set — max_value_bytes LIVE guard before the adapter write.
     {
@@ -537,7 +605,9 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     })?;
                     let mut normalized: Vec<String> = groups
                         .into_iter()
-                        .filter(|scope| !ctx.private.is_reserved(scope))
+                        .filter(|scope| {
+                            scope.as_str() != CLAIMS_SCOPE && !ctx.private.is_reserved(scope)
+                        })
                         .collect::<std::collections::HashSet<_>>()
                         .into_iter()
                         .collect();
@@ -550,6 +620,219 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
     }
 }
 
+/// Input for [`CLAIM_NAMESPACE_ID`]. `_caller_worker_id` is engine-stamped
+/// (overwritten on every dispatch, so a caller cannot forge it); the handler
+/// resolves it to the caller's worker NAME and requires it to equal
+/// `functions_prefix`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct ClaimNamespaceInput {
+    /// Must equal the calling worker's name.
+    pub functions_prefix: String,
+    /// Storage scopes to reserve for this namespace.
+    pub scopes: Vec<String>,
+    #[serde(rename = "_caller_worker_id", default)]
+    pub caller_worker_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ClaimNamespaceResult {
+    /// False when the namespace already owned everything asked for.
+    pub claimed: bool,
+    /// Every scope this namespace owns after the call.
+    pub scopes: Vec<String>,
+    /// The accessor ids now serving this namespace.
+    pub functions: Vec<String>,
+}
+
+/// Resolve the engine-stamped caller worker id to its registered NAME.
+/// Engine builtins register with their name as id, so an exact id match is
+/// accepted too.
+async fn caller_worker_name(iii: &IIIClient, caller_worker_id: &str) -> Result<String, Error> {
+    let workers = iii
+        .trigger(iii_sdk::protocol::TriggerRequest {
+            function_id: "engine::workers::list".to_string(),
+            payload: serde_json::json!({}),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .map_err(|e| Error::Handler(format!("CALLER_LOOKUP_ERROR: {e}")))?;
+    workers
+        .get("workers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|worker| worker.get("id").and_then(Value::as_str) == Some(caller_worker_id))
+        .and_then(|worker| worker.get("name").and_then(Value::as_str))
+        .map(str::to_string)
+        // An id the engine no longer lists cannot be authorized as a name.
+        .ok_or_else(|| {
+            Error::Handler(format!(
+                "UNKNOWN_CALLER: worker id `{caller_worker_id}` is not registered"
+            ))
+        })
+}
+
+/// `state::claim-namespace` — a worker reserves its own private namespace.
+/// Public by necessity (tenants call it) but authorized by identity: you may
+/// only claim the namespace named after your own worker.
+fn register_claim_namespace(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
+    let ctx = ctx.clone();
+    let client = iii.clone();
+    iii.register_function(
+        CLAIM_NAMESPACE_ID,
+        RegisterFunction::new_async(move |input: ClaimNamespaceInput| {
+            let ctx = ctx.clone();
+            let client = client.clone();
+            async move {
+                if !valid_prefix(&input.functions_prefix) {
+                    return Err(Error::Handler(
+                        "INVALID_PREFIX: functions_prefix must be non-empty [A-Za-z0-9_-]"
+                            .to_string(),
+                    ));
+                }
+                if input.scopes.iter().any(String::is_empty) {
+                    return Err(Error::Handler(
+                        "INVALID_SCOPE: scopes must be non-empty".to_string(),
+                    ));
+                }
+                if input.scopes.iter().any(|s| s == CLAIMS_SCOPE) {
+                    return Err(Error::Handler(format!(
+                        "RESERVED_SCOPE: `{CLAIMS_SCOPE}` is the claims ledger"
+                    )));
+                }
+                let caller_worker_id = input.caller_worker_id.clone().ok_or_else(|| {
+                    Error::Handler(
+                        "UNKNOWN_CALLER: the engine did not stamp _caller_worker_id".to_string(),
+                    )
+                })?;
+                let caller = caller_worker_name(&client, &caller_worker_id).await?;
+                if caller != input.functions_prefix {
+                    return Err(Error::Handler(format!(
+                        "FORBIDDEN: worker `{caller}` may only claim namespace `{caller}`, \
+                         not `{}`",
+                        input.functions_prefix
+                    )));
+                }
+
+                match ctx.private.claim(&input.functions_prefix, &input.scopes) {
+                    ClaimOutcome::Conflict(reason) => {
+                        Err(Error::Handler(format!("SCOPE_CONFLICT: {reason}")))
+                    }
+                    outcome => {
+                        let (claimed, namespace_is_new) = match outcome {
+                            ClaimOutcome::Claimed {
+                                namespace_is_new, ..
+                            } => (true, namespace_is_new),
+                            _ => (false, false),
+                        };
+                        let scopes: Vec<String> = {
+                            let mut owned: Vec<String> = ctx
+                                .private
+                                .owned_scopes(&input.functions_prefix)
+                                .into_iter()
+                                .collect();
+                            owned.sort();
+                            owned
+                        };
+                        if claimed {
+                            // Persist BEFORE registering: a crash between the
+                            // two costs a restart's re-registration, never a
+                            // silently unreserved scope.
+                            persist_claim(&ctx, &input.functions_prefix, &scopes).await?;
+                            // Only the FIRST claim registers accessors — they
+                            // read their owned scopes live, so a grown claim
+                            // needs nothing (and re-registering would fail).
+                            if namespace_is_new {
+                                register_private_namespace_functions(
+                                    &client,
+                                    &ctx,
+                                    &PrivateNamespace {
+                                        functions_prefix: input.functions_prefix.clone(),
+                                        scopes: scopes.clone(),
+                                    },
+                                );
+                            }
+                            tracing::info!(
+                                prefix = %input.functions_prefix,
+                                ?scopes,
+                                "private namespace claimed"
+                            );
+                        }
+                        let (get_id, list_id, cas_id) = internal_ids(&input.functions_prefix);
+                        Ok(ClaimNamespaceResult {
+                            claimed,
+                            scopes,
+                            functions: vec![get_id, list_id, cas_id],
+                        })
+                    }
+                }
+            }
+        })
+        .description(
+            "Reserve a PRIVATE state namespace for the calling worker: its scopes become \
+             invisible to public state::* and to trigger fan-out, and internal accessors \
+             `<functions_prefix>::state::{get, list, compare-and-set}` are registered. A worker \
+             may only claim the namespace matching its own worker name (engine-stamped caller \
+             identity). Idempotent; claims survive a state restart.",
+        ),
+    );
+}
+
+async fn persist_claim(
+    ctx: &Arc<StateCtx>,
+    functions_prefix: &str,
+    scopes: &[String],
+) -> Result<(), Error> {
+    ctx.adapter
+        .set(
+            CLAIMS_SCOPE,
+            functions_prefix,
+            serde_json::json!({ "functions_prefix": functions_prefix, "scopes": scopes }),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| Error::Handler(format!("CLAIM_PERSIST_ERROR: {e}")))
+}
+
+/// Re-arm claims persisted by earlier runs. Called at boot, before any tenant
+/// can ask: a state restart restores the accessors on its own.
+pub async fn restore_persisted_claims(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
+    let stored = match ctx.adapter.list(CLAIMS_SCOPE).await {
+        Ok(values) => values,
+        Err(error) => {
+            tracing::warn!(%error, "could not read persisted private-namespace claims");
+            return;
+        }
+    };
+    for value in stored {
+        let Ok(namespace) = serde_json::from_value::<PrivateNamespace>(value.clone()) else {
+            tracing::error!(?value, "skipping unreadable private-namespace claim");
+            continue;
+        };
+        match ctx
+            .private
+            .claim(&namespace.functions_prefix, &namespace.scopes)
+        {
+            ClaimOutcome::Conflict(reason) => {
+                tracing::error!(
+                    prefix = %namespace.functions_prefix,
+                    %reason,
+                    "persisted claim conflicts; skipped"
+                );
+            }
+            _ => {
+                register_private_namespace_functions(iii, ctx, &namespace);
+                tracing::info!(
+                    prefix = %namespace.functions_prefix,
+                    scopes = ?namespace.scopes,
+                    "private namespace restored"
+                );
+            }
+        }
+    }
+}
+
 /// Private persistence primitives for the workers that claimed a namespace
 /// in `StateConfig::private_namespaces`. They skip trigger fan-out by design:
 /// a binding claim must not recursively fire a catch-all state subscription.
@@ -558,26 +841,22 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
 fn register_private_namespace_functions(
     iii: &Arc<IIIClient>,
     ctx: &Arc<StateCtx>,
-    namespace: &crate::config::PrivateNamespace,
+    namespace: &PrivateNamespace,
 ) {
     let internal = serde_json::json!({ "internal": true, "trace_hidden": true });
     let prefix = namespace.functions_prefix.clone();
-    let owned: Arc<std::collections::HashSet<String>> =
-        Arc::new(namespace.scopes.iter().cloned().collect());
     let (get_id, list_id, cas_id) = internal_ids(&prefix);
 
     {
         let ctx = ctx.clone();
-        let owned = owned.clone();
         let prefix = prefix.clone();
         iii.register_function(
             &get_id,
             RegisterFunction::new_async(move |input: StateGetInput| {
                 let ctx = ctx.clone();
-                let owned = owned.clone();
                 let prefix = prefix.clone();
                 async move {
-                    require_owned_scope(&owned, &prefix, &input.scope)?;
+                    require_owned_scope(&ctx.private.owned_scopes(&prefix), &prefix, &input.scope)?;
                     ctx.adapter
                         .get(&input.scope, &input.key)
                         .await
@@ -598,16 +877,14 @@ fn register_private_namespace_functions(
 
     {
         let ctx = ctx.clone();
-        let owned = owned.clone();
         let prefix = prefix.clone();
         iii.register_function(
             &list_id,
             RegisterFunction::new_async(move |input: StateGetGroupInput| {
                 let ctx = ctx.clone();
-                let owned = owned.clone();
                 let prefix = prefix.clone();
                 async move {
-                    require_owned_scope(&owned, &prefix, &input.scope)?;
+                    require_owned_scope(&ctx.private.owned_scopes(&prefix), &prefix, &input.scope)?;
                     let values = ctx
                         .adapter
                         .list(&input.scope)
@@ -634,10 +911,9 @@ fn register_private_namespace_functions(
             &cas_id,
             RegisterFunction::new_async(move |input: CompareAndSetInput| {
                 let ctx = ctx.clone();
-                let owned = owned.clone();
                 let prefix = prefix.clone();
                 async move {
-                    require_owned_scope(&owned, &prefix, &input.scope)?;
+                    require_owned_scope(&ctx.private.owned_scopes(&prefix), &prefix, &input.scope)?;
                     let swapped = ctx
                         .adapter
                         .compare_and_set(
@@ -670,41 +946,81 @@ fn register_private_namespace_functions(
 }
 
 #[cfg(test)]
-mod reserved_scope_tests {
+mod private_namespace_tests {
     use super::*;
-    use crate::config::PrivateNamespace;
 
-    fn ns(prefix: &str, scopes: &[&str]) -> PrivateNamespace {
-        PrivateNamespace {
-            functions_prefix: prefix.into(),
-            scopes: scopes.iter().map(|s| s.to_string()).collect(),
-        }
+    fn scopes(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
-    fn claimed_scopes_are_reserved_and_guarded() {
-        // Neutral tenant names on purpose: nothing here knows about the
-        // harness — its deployment config is just the first claimant.
-        let private = PrivateNamespaces::new(&[
-            ns("acme", &["acme_ledger", "acme_ledger_owner"]),
-            ns("wf", &["wf_runs"]),
-        ]);
+    fn claiming_reserves_scopes_and_is_idempotent() {
+        // Neutral tenant names on purpose: this worker knows no tenant.
+        let private = PrivateNamespaces::default();
+        assert!(!private.is_reserved("acme_ledger"));
+
+        assert!(matches!(
+            private.claim("acme", &scopes(&["acme_ledger", "acme_owner"])),
+            ClaimOutcome::Claimed { fresh, namespace_is_new: true } if fresh.len() == 2
+        ));
         assert!(private.is_reserved("acme_ledger"));
-        assert!(private.is_reserved("wf_runs"));
-        assert!(!private.is_reserved("agent_state"));
         assert!(reject_reserved_scope(&private, "acme_ledger").is_err());
         assert!(reject_reserved_scope(&private, "agent_state").is_ok());
+
+        // Re-claiming the same namespace is a no-op — the harness re-claims
+        // on every boot and after any state restart.
+        assert!(matches!(
+            private.claim("acme", &scopes(&["acme_ledger", "acme_owner"])),
+            ClaimOutcome::AlreadyOwned
+        ));
+        // Growing an existing claim adds only the new scope.
+        assert!(matches!(
+            private.claim("acme", &scopes(&["acme_ledger", "acme_extra"])),
+            // Grown, not new: the accessors already exist.
+            ClaimOutcome::Claimed { fresh, namespace_is_new: false }
+                if fresh == vec!["acme_extra".to_string()]
+        ));
+    }
+
+    #[test]
+    fn a_scope_belongs_to_its_first_claimant() {
+        let private = PrivateNamespaces::default();
+        private.claim("first", &scopes(&["shared"]));
+        match private.claim("second", &scopes(&["second_own", "shared"])) {
+            ClaimOutcome::Conflict(reason) => assert!(reason.contains("`first`"), "{reason}"),
+            _ => panic!("a foreign scope must fail the claim"),
+        }
+        // All-or-nothing: the conflicting claim reserved nothing at all.
+        assert!(!private.is_reserved("second_own"));
     }
 
     #[test]
     fn accessors_are_hard_scoped_to_their_own_namespace() {
-        let owned: std::collections::HashSet<String> =
-            ["acme_ledger".to_string()].into_iter().collect();
-        assert!(require_owned_scope(&owned, "acme", "acme_ledger").is_ok());
+        let private = PrivateNamespaces::default();
+        private.claim("acme", &scopes(&["acme_ledger"]));
+        private.claim("wf", &scopes(&["wf_runs"]));
+
+        let acme = private.owned_scopes("acme");
+        assert!(require_owned_scope(&acme, "acme", "acme_ledger").is_ok());
         // Another tenant's reserved scope is NOT reachable through this
         // namespace's accessors — reserved-but-foreign is still denied.
-        assert!(require_owned_scope(&owned, "acme", "wf_runs").is_err());
-        assert!(require_owned_scope(&owned, "acme", "agent_state").is_err());
+        assert!(require_owned_scope(&acme, "acme", "wf_runs").is_err());
+        assert!(require_owned_scope(&acme, "acme", "agent_state").is_err());
+    }
+
+    #[test]
+    fn the_claims_ledger_is_never_publicly_reachable() {
+        let private = PrivateNamespaces::default();
+        assert!(reject_reserved_scope(&private, CLAIMS_SCOPE).is_err());
+    }
+
+    #[test]
+    fn prefixes_must_be_usable_function_id_segments() {
+        assert!(valid_prefix("harness"));
+        assert!(valid_prefix("my-worker_2"));
+        assert!(!valid_prefix(""));
+        assert!(!valid_prefix("bad prefix"));
+        assert!(!valid_prefix("bad::prefix"));
     }
 
     #[test]
@@ -716,22 +1032,19 @@ mod reserved_scope_tests {
     }
 
     #[test]
-    fn invalid_and_duplicate_claims_are_skipped_loudly() {
-        let private = PrivateNamespaces::new(&[
-            ns("", &["a"]),           // empty prefix → skipped
-            ns("bad prefix", &["b"]), // invalid chars → skipped
-            ns("first", &["shared", "own"]),
-            ns("second", &["shared"]), // duplicate scope → entry left empty → skipped
-        ]);
-        assert!(private.is_reserved("shared"));
-        assert!(private.is_reserved("own"));
-        assert!(!private.is_reserved("a"));
-        assert!(!private.is_reserved("b"));
-        // `shared` stayed with its first claimant.
-        let owners: Vec<&str> = private
-            .iter()
-            .map(|n| n.functions_prefix.as_str())
-            .collect();
-        assert_eq!(owners, vec!["first"]);
+    fn persisted_claims_round_trip() {
+        // What restore_persisted_claims() reads back at boot.
+        let stored = serde_json::json!({
+            "functions_prefix": "harness",
+            "scopes": ["harness_binding", "harness_binding_owner"]
+        });
+        let namespace: PrivateNamespace = serde_json::from_value(stored).unwrap();
+        assert_eq!(namespace.functions_prefix, "harness");
+        let private = PrivateNamespaces::default();
+        assert!(matches!(
+            private.claim(&namespace.functions_prefix, &namespace.scopes),
+            ClaimOutcome::Claimed { .. }
+        ));
+        assert_eq!(private.snapshot(), vec![namespace]);
     }
 }

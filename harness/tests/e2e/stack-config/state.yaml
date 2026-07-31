@@ -2,9 +2,3 @@ adapter:
   name: kv
   config:
     store_method: in_memory
-
-# The harness claims its binding-authority scopes; the state worker itself is
-# tenant-agnostic (StateConfig::private_namespaces).
-private_namespaces:
-  - functions_prefix: harness
-    scopes: [harness_binding, harness_binding_owner]

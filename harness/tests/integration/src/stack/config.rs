@@ -77,18 +77,6 @@ pub fn render_seed(worker: &str, layout: &RunLayout) -> Option<Value> {
         "iii-directory" => Some(json!({
             "skills_folder": layout.skills_dir().to_string_lossy()
         })),
-        // The harness claims its binding-authority scopes
-        // (StateConfig::private_namespaces). Without the claim the state
-        // worker registers no `harness::state::*` accessors and every turn
-        // completion fails CLOSED as "expects wake" — the whole suite times
-        // out on non-terminal turns (live-caught by this suite's first run
-        // against the tenant-agnostic state worker).
-        "state" => Some(json!({
-            "private_namespaces": [{
-                "functions_prefix": "harness",
-                "scopes": ["harness_binding", "harness_binding_owner"]
-            }]
-        })),
         // Avoid a run-path-dependent line in the expected system prompt.
         "harness" => Some(json!({
             "default_filesystem_root": "off"
