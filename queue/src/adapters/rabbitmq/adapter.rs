@@ -1,6 +1,6 @@
 //! RabbitMQ transport adapter: implements
 //! [`crate::adapter::QueueAdapter`] on top of the fanout-exchange +
-//! per-function-queue topology (`topology.rs`), the job envelope
+//! per-subscription queue topology (`topology.rs`), the job envelope
 //! (`types.rs`), and the retry/DLQ decision table (`retry.rs`).
 //!
 //! Port of `engine/src/workers/queue/adapters/rabbitmq/adapter.rs`. Seams
@@ -58,7 +58,7 @@ use async_trait::async_trait;
 use lapin::{message::Delivery, options::*, Channel, Connection, ConnectionProperties};
 use serde_json::Value;
 use tokio::{
-    sync::{Mutex, RwLock},
+    sync::{oneshot, Mutex, RwLock},
     task::JoinHandle,
 };
 use uuid::Uuid;
@@ -81,7 +81,7 @@ pub struct RabbitMQAdapter {
     retry_handler: Arc<RetryHandler>,
     topology: Arc<TopologyManager>,
     channel: Arc<Channel>,
-    subscriptions: Arc<RwLock<HashMap<String, SubscriptionInfo>>>,
+    subscriptions: Arc<RwLock<HashMap<(String, String), SubscriptionInfo>>>,
     invoker: Arc<dyn Invoker>,
     config: RabbitMQConfig,
     delivery_map: Arc<RwLock<HashMap<u64, Arc<FunctionQueueDelivery>>>>,
@@ -109,8 +109,8 @@ struct FunctionConsumerHandle {
 }
 
 struct SubscriptionInfo {
-    id: String,
     consumer_tag: String,
+    cancel: oneshot::Sender<()>,
     task_handle: JoinHandle<()>,
 }
 
@@ -375,6 +375,7 @@ impl QueueAdapter for RabbitMQAdapter {
         topic: &str,
         id: &str,
         function_id: &str,
+        metadata: Option<Value>,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
@@ -383,12 +384,14 @@ impl QueueAdapter for RabbitMQAdapter {
         let function_id = function_id.to_string();
         let subscriptions = Arc::clone(&self.subscriptions);
 
-        let already_subscribed = {
-            let subs = subscriptions.read().await;
-            subs.contains_key(&format!("{}:{}", topic, id))
-        };
-
-        if already_subscribed {
+        // Hold the write lock from the duplicate check through the insert:
+        // two racing same-key subscribes would otherwise both pass the check
+        // and the loser's consumer task would be silently overwritten and
+        // leak (delivering every message a second time, unstoppable by
+        // unsubscribe). Subscribes are rare control-plane work, so lock
+        // duration is not a concern.
+        let mut subs = subscriptions.write().await;
+        if subs.contains_key(&(topic.clone(), id.clone())) {
             tracing::warn!(topic = %topic, id = %id, "Already subscribed to topic");
             return;
         }
@@ -405,20 +408,20 @@ impl QueueAdapter for RabbitMQAdapter {
         let subscriber_max_priority = queue_config.as_ref().and_then(|c| c.max_priority);
         if let Err(e) = self
             .topology
-            .setup_subscriber_queue(&topic, &function_id, subscriber_max_priority)
+            .setup_subscriber_queue(&topic, &id, subscriber_max_priority)
             .await
         {
             tracing::error!(
                 error = ?e,
                 topic = %topic,
-                function_id = %function_id,
-                "Failed to setup RabbitMQ per-function queue"
+                subscription_id = %id,
+                "Failed to setup RabbitMQ per-subscription queue"
             );
             return;
         }
 
         let names = RabbitNames::new(&topic);
-        let per_function_queue = names.function_queue(&function_id);
+        let subscriber_queue = names.subscriber_queue(&id);
         let consumer_tag = format!("consumer-{}", Uuid::new_v4());
 
         let effective_queue_mode = queue_config
@@ -442,28 +445,32 @@ impl QueueAdapter for RabbitMQAdapter {
         ));
 
         let topic_clone = topic.clone();
+        let id_clone = id.clone();
         let function_id_clone = function_id.clone();
         let consumer_tag_clone = consumer_tag.clone();
-        let queue_name_clone = per_function_queue.clone();
+        let queue_name_clone = subscriber_queue.clone();
+        let (cancel, cancelled) = oneshot::channel();
 
         let task_handle = tokio::spawn(async move {
             worker
                 .run(
                     topic_clone,
+                    id_clone,
                     function_id_clone,
+                    metadata,
                     condition_function_id,
                     consumer_tag_clone,
                     queue_name_clone,
+                    cancelled,
                 )
                 .await;
         });
 
-        let mut subs = subscriptions.write().await;
         subs.insert(
-            format!("{}:{}", topic, id),
+            (topic.clone(), id),
             SubscriptionInfo {
-                id,
                 consumer_tag,
+                cancel,
                 task_handle,
             },
         );
@@ -471,47 +478,44 @@ impl QueueAdapter for RabbitMQAdapter {
         tracing::debug!(
             topic = %topic,
             function_id = %function_id,
-            queue = %per_function_queue,
-            "Subscribed to RabbitMQ per-function queue"
+            queue = %subscriber_queue,
+            "Subscribed to RabbitMQ per-subscription queue"
         );
     }
 
     async fn unsubscribe(&self, topic: &str, id: &str) {
         let subscriptions = Arc::clone(&self.subscriptions);
-        let key = format!("{}:{}", topic, id);
+        let key = (topic.to_string(), id.to_string());
 
-        let mut subs = subscriptions.write().await;
+        let sub_info = subscriptions.write().await.remove(&key);
+        if let Some(sub_info) = sub_info {
+            tracing::debug!(
+                topic = %topic,
+                id = %id,
+                "Unsubscribing from RabbitMQ queue"
+            );
 
-        if let Some(sub_info) = subs.remove(&key) {
-            if sub_info.id == id {
-                tracing::debug!(
+            let _ = sub_info.cancel.send(());
+            if let Err(e) = self
+                .channel
+                .basic_cancel(&sub_info.consumer_tag, BasicCancelOptions::default())
+                .await
+            {
+                tracing::error!(
+                    error = ?e,
                     topic = %topic,
-                    id = %id,
-                    "Unsubscribing from RabbitMQ queue"
+                    consumer_tag = %sub_info.consumer_tag,
+                    "Failed to cancel consumer"
                 );
-
-                if let Err(e) = self
-                    .channel
-                    .basic_cancel(&sub_info.consumer_tag, BasicCancelOptions::default())
-                    .await
-                {
-                    tracing::error!(
-                        error = ?e,
-                        topic = %topic,
-                        consumer_tag = %sub_info.consumer_tag,
-                        "Failed to cancel consumer"
-                    );
-                }
-
-                sub_info.task_handle.abort();
-            } else {
-                tracing::warn!(
-                    topic = %topic,
-                    id = %id,
-                    "Subscription ID mismatch, not unsubscribing"
-                );
-                subs.insert(key, sub_info);
             }
+
+            // Wait for in-flight deliveries to finish, then leave the queue
+            // and DLQ declared and bound: they hold the subscription's
+            // durable backlog and dead letters, and unsubscribe fires on
+            // every routine subscriber disconnect — deleting them here would
+            // destroy exactly the data a later same-id resubscribe exists to
+            // drain.
+            let _ = sub_info.task_handle.await;
         } else {
             tracing::warn!(
                 topic = %topic,
@@ -1354,6 +1358,13 @@ impl QueueAdapter for RabbitMQAdapter {
     /// dropped (no field for it in this worker's `TopicStats`);
     /// `delivered`/`failed` are always `0` (not tracked by this adapter).
     ///
+    /// Inherits one engine quirk verbatim: the "main queue depth" is looked
+    /// up via `RabbitNames::new(topic).queue()` (`iii.{topic}.queue`), a
+    /// queue name that topic-fanout subscriptions never actually declare
+    /// (`subscribe` declares per-subscription queues via
+    /// `RabbitNames::subscriber_queue`, never the bare `.queue()` name) -- so
+    /// for topic-based (non-`__fn_queue::`) topics this always resolves to
+    /// depth `0` in both the engine and this port.
     async fn topic_stats(&self, topic: &str) -> anyhow::Result<TopicStats> {
         let is_configured_function_queue =
             self.function_queue_configs.read().await.contains_key(topic);
@@ -1386,11 +1397,8 @@ impl QueueAdapter for RabbitMQAdapter {
     async fn list_topics(&self) -> anyhow::Result<Vec<TopicInfo>> {
         let subs = self.subscriptions.read().await;
         let mut topics: HashMap<String, u64> = HashMap::new();
-        for key in subs.keys() {
-            // subscription key format is "topic:id"
-            if let Some(topic) = key.split(':').next() {
-                *topics.entry(topic.to_string()).or_insert(0u64) += 1;
-            }
+        for (topic, _) in subs.keys() {
+            *topics.entry(topic.clone()).or_insert(0u64) += 1;
         }
         drop(subs);
         let function_queues = self
@@ -1418,15 +1426,31 @@ impl QueueAdapter for RabbitMQAdapter {
     }
 
     async fn shutdown(&self) {
-        let mut subs = self.subscriptions.write().await;
-        for (_, sub) in subs.drain() {
+        let subs = self
+            .subscriptions
+            .write()
+            .await
+            .drain()
+            .map(|(_, sub)| {
+                let _ = sub.cancel.send(());
+                (sub.consumer_tag, sub.task_handle)
+            })
+            .collect::<Vec<_>>();
+        for (consumer_tag, _) in &subs {
             let _ = self
                 .channel
-                .basic_cancel(&sub.consumer_tag, BasicCancelOptions::default())
+                .basic_cancel(consumer_tag, BasicCancelOptions::default())
                 .await;
-            sub.task_handle.abort();
         }
-        drop(subs);
+        // Shutdown is process exit: abandon in-flight deliveries mid-
+        // invocation ON PURPOSE — they are unacked, so the broker redelivers
+        // them (at-least-once). Draining here could hang exit behind one
+        // blocked invocation. Contrast `unsubscribe`, where the process
+        // keeps running and the drain preserves acks.
+        for (_, task) in subs {
+            task.abort();
+            let _ = task.await;
+        }
 
         let tasks = self
             .function_consumer_tasks

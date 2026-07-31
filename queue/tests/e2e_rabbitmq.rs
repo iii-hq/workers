@@ -48,25 +48,25 @@ where
 fn exchange_name(topic: &str) -> String {
     format!("iii.{topic}.exchange")
 }
-fn function_queue_name(topic: &str, function_id: &str) -> String {
-    format!("iii.{topic}.{function_id}.queue")
+fn subscriber_queue_name(topic: &str, subscription_id: &str) -> String {
+    format!("iii.{topic}.{subscription_id}.queue")
 }
-fn function_dlq_name(topic: &str, function_id: &str) -> String {
-    format!("iii.{topic}.{function_id}.dlq")
+fn subscriber_dlq_name(topic: &str, subscription_id: &str) -> String {
+    format!("iii.{topic}.{subscription_id}.dlq")
 }
 
 /// Declares the exact same topology `RabbitMQAdapter::subscribe` would
-/// declare for `(topic, function_id)` -- fanout exchange, per-function DLQ,
-/// per-function priority queue (`x-max-priority`), and the binding -- via a
-/// raw `lapin` channel, so messages can be published into the queue BEFORE
-/// any adapter-owned consumer exists. All declarations use identical
+/// declare for `(topic, subscription_id)` -- fanout exchange, per-subscription
+/// DLQ, per-subscription priority queue (`x-max-priority`), and the binding --
+/// via a raw `lapin` channel, so messages can be published into the queue
+/// BEFORE any adapter-owned consumer exists. All declarations use identical
 /// arguments to what `topology::TopologyManager` declares, so the later,
 /// real `subscribe()` call's redeclare is a idempotent no-op (AMQP rejects a
 /// redeclare with mismatched arguments).
 async fn predeclare_priority_subscriber_queue(
     channel: &Channel,
     topic: &str,
-    function_id: &str,
+    subscription_id: &str,
     max_priority: i32,
 ) {
     channel
@@ -84,7 +84,7 @@ async fn predeclare_priority_subscriber_queue(
 
     channel
         .queue_declare(
-            &function_dlq_name(topic, function_id),
+            &subscriber_dlq_name(topic, subscription_id),
             QueueDeclareOptions {
                 durable: true,
                 ..Default::default()
@@ -98,7 +98,7 @@ async fn predeclare_priority_subscriber_queue(
     args.insert("x-max-priority".into(), AMQPValue::LongInt(max_priority));
     channel
         .queue_declare(
-            &function_queue_name(topic, function_id),
+            &subscriber_queue_name(topic, subscription_id),
             QueueDeclareOptions {
                 durable: true,
                 ..Default::default()
@@ -110,7 +110,7 @@ async fn predeclare_priority_subscriber_queue(
 
     channel
         .queue_bind(
-            &function_queue_name(topic, function_id),
+            &subscriber_queue_name(topic, subscription_id),
             &exchange_name(topic),
             "",
             QueueBindOptions::default(),
@@ -168,7 +168,7 @@ async fn basic_delivery_connect_or_skip() {
 
     let topic = format!("e2e-rmq-basic-{}", Uuid::new_v4());
     adapter
-        .subscribe(&topic, "sub-1", &function_id, None, None)
+        .subscribe(&topic, "sub-1", &function_id, None, None, None)
         .await;
     // Give the consumer task a beat to actually attach before the first
     // publish.
@@ -396,7 +396,7 @@ async fn priority_ordering_connect_or_skip() {
         .create_channel()
         .await
         .expect("raw amqp channel");
-    predeclare_priority_subscriber_queue(&raw_channel, &topic, &function_id, 10).await;
+    predeclare_priority_subscriber_queue(&raw_channel, &topic, sub_id, 10).await;
 
     for p in [1u64, 9, 5] {
         adapter
@@ -412,6 +412,7 @@ async fn priority_ordering_connect_or_skip() {
             &topic,
             sub_id,
             &function_id,
+            None,
             None,
             Some(SubscriberQueueConfig {
                 max_priority: Some(10),
@@ -488,6 +489,7 @@ async fn fifo_mode_preserves_order_connect_or_skip() {
             &topic,
             "sub-fifo-1",
             &function_id,
+            None,
             None,
             Some(SubscriberQueueConfig {
                 queue_mode: Some("fifo".to_string()),
