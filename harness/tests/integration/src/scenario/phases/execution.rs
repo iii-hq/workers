@@ -14,7 +14,7 @@ use super::super::runner::ScenarioRunner;
 use super::super::state::{ActiveTurn, PreparedRun};
 
 const SEND_TIMEOUT_MS: u64 = 30_000;
-const BOOT_RACE_DEPENDENCY_GAP: Duration = Duration::from_secs(5);
+const BOOT_RACE_DEPENDENCY_GAP: Duration = Duration::from_secs(3);
 
 impl ScenarioRunner<'_> {
     pub(in crate::scenario) async fn send(
