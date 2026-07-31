@@ -10,22 +10,9 @@
   <a href="https://www.rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-rust-orange?style=flat-square&logo=rust&logoColor=white"></a>
 </p>
 
-<p><sub><b>INSTALLS WITH HARNESS</b></sub></p>
-
 <p>
-  <a href="https://workers.iii.dev/workers/iii-directory"><img alt="iii-directory" src="https://workers.iii.dev/workers/iii-directory/badge.svg"></a>
-  <a href="https://workers.iii.dev/workers/session-manager"><img alt="session-manager" src="https://workers.iii.dev/workers/session-manager/badge.svg"></a>
-  <a href="https://workers.iii.dev/workers/context-manager"><img alt="context-manager" src="https://workers.iii.dev/workers/context-manager/badge.svg"></a>
-  <a href="https://workers.iii.dev/workers/provider-anthropic"><img alt="provider-anthropic" src="https://workers.iii.dev/workers/provider-anthropic/badge.svg"></a>
-  <a href="https://workers.iii.dev/workers/provider-openai"><img alt="provider-openai" src="https://workers.iii.dev/workers/provider-openai/badge.svg"></a>
-  <a href="https://workers.iii.dev/workers/shell"><img alt="shell" src="https://workers.iii.dev/workers/shell/badge.svg"></a>
-  <a href="https://workers.iii.dev/workers/web"><img alt="web" src="https://workers.iii.dev/workers/web/badge.svg"></a>
-  <a href="https://workers.iii.dev/workers/iii-state"><img alt="iii-state" src="https://workers.iii.dev/workers/iii-state/badge.svg"></a>
-  <a href="https://workers.iii.dev/workers/queue"><img alt="queue" src="https://workers.iii.dev/workers/queue/badge.svg"></a>
-  <a href="https://workers.iii.dev/workers/iii-cron"><img alt="iii-cron" src="https://workers.iii.dev/workers/iii-cron/badge.svg"></a>
-  <a href="https://workers.iii.dev/workers/iii-stream"><img alt="iii-stream" src="https://workers.iii.dev/workers/iii-stream/badge.svg"></a>
-  <a href="https://workers.iii.dev/workers/iii-observability"><img alt="iii-observability" src="https://workers.iii.dev/workers/iii-observability/badge.svg"></a>
-  <a href="https://workers.iii.dev/workers/configuration"><img alt="configuration" src="https://workers.iii.dev/workers/configuration/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/harness"><img alt="harness on the workers registry" src="https://workers.iii.dev/workers/harness/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/console"><img alt="console on the workers registry" src="https://workers.iii.dev/workers/console/badge.svg"></a>
 </p>
 
 </div>
