@@ -144,6 +144,18 @@ Create Tag cannot produce prerelease suffixes. Push a manual **annotated** tag:
 With tag message including `registry-tag: next`. Marks the GitHub Release as
 prerelease; still builds and publishes (unless `interface_smoke: false`).
 
+### Alpha release from a feature branch
+
+Actions → **Alpha Release** → choose the worker and select the feature branch
+in **Use workflow from**. The workflow refuses `main`, derives the next
+`<worker>/vX.Y.Z-alpha.N` version from the branch manifest and existing alpha
+tags, then creates an ephemeral commit reachable only from that annotated tag.
+It never pushes the selected branch or `main`.
+
+The tag annotation always contains `registry-tag: next`; alpha releases cannot
+publish to `latest`. The regular **Release** workflow runs from that tag and
+creates a GitHub prerelease, release assets, and the registry entry on `next`.
+
 ### Dry run
 
 Tag shape: `<worker>/vX.Y.Z-dry-run.1` (parsed by `parse_release_tag.py`).
