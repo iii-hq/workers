@@ -51,6 +51,10 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
             .trigger_request_format::<StateTriggerSpec>(),
     );
 
+    // Restart-tier snapshot, like the adapter: the internal accessors
+    // register once at start, so a hot-reloaded namespace list takes effect
+    // at the next worker start.
+    let private = Arc::new(functions::PrivateNamespaces::new(&config.private_namespaces));
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(config)));
     let invoker: Arc<dyn Invoker> = Arc::new(SdkInvoker { iii: iii.clone() });
     let ctx = Arc::new(StateCtx {
@@ -58,6 +62,7 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
         triggers: triggers.clone(),
         config: cell.clone(),
         invoker,
+        private,
     });
     functions::register_functions(&iii, ctx.clone());
 
