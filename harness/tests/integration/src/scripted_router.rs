@@ -288,21 +288,7 @@ impl ScriptedRouter {
         count: usize,
         deadline: Deadline,
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(count > 0, "gate arrival count must be positive");
-        loop {
-            let notify = {
-                let state = self.state.lock().expect("router state");
-                let arrivals = state.gates.get(name).map_or(0, |gate| gate.arrivals);
-                if arrivals >= count {
-                    return Ok(());
-                }
-                Arc::clone(&state.gate_notify)
-            };
-            let notified = notify.notified();
-            deadline
-                .timeout(format!("scripted router gate {name}"), notified)
-                .await?;
-        }
+        wait_for_gate_state(&self.state, name, count, deadline).await
     }
 
     /// Release one named gate. Releasing an absent gate is a caller error: it
@@ -446,6 +432,36 @@ fn model_supports(model: &ModelFixtureV1, capability: &str) -> bool {
         }
         "thinking:xhigh" => model.supports_xhigh == Some(true),
         _ => false,
+    }
+}
+
+async fn wait_for_gate_state(
+    state: &Arc<Mutex<State>>,
+    name: &str,
+    count: usize,
+    deadline: Deadline,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(count > 0, "gate arrival count must be positive");
+    let notify = {
+        let state = state.lock().expect("router state");
+        Arc::clone(&state.gate_notify)
+    };
+
+    loop {
+        // Create the future before reading arrivals. `notify_waiters` only
+        // wakes futures that already exist; the state check below handles an
+        // arrival that happened before this future was created.
+        let notified = notify.notified();
+        let arrivals = {
+            let state = state.lock().expect("router state");
+            state.gates.get(name).map_or(0, |gate| gate.arrivals)
+        };
+        if arrivals >= count {
+            return Ok(());
+        }
+        deadline
+            .timeout(format!("scripted router gate {name}"), notified)
+            .await?;
     }
 }
 
@@ -606,7 +622,7 @@ async fn chat(
 }
 
 async fn await_gate(state: &Arc<Mutex<State>>, name: &str) {
-    let (notify, released) = {
+    let notify = {
         let mut state = state.lock().expect("router state");
         let notify = Arc::clone(&state.gate_notify);
         let gate = state.gates.entry(name.to_string()).or_insert(GateState {
@@ -614,19 +630,16 @@ async fn await_gate(state: &Arc<Mutex<State>>, name: &str) {
             released: false,
         });
         gate.arrivals += 1;
-        let released = gate.released;
-        (notify, released)
+        notify
     };
     // `wait_for_gate` observes arrivals through this notification. Keep the
     // state mutation and notification separate so no lock is held while
     // waking the runner.
     notify.notify_waiters();
-    if released {
-        return;
-    }
     loop {
+        // Register before checking the shared state so a release cannot land
+        // between the check and creation of the future.
         let notified = notify.notified();
-        notified.await;
         let released = {
             let state = state.lock().expect("router state");
             state.gates.get(name).is_some_and(|gate| gate.released)
@@ -634,6 +647,7 @@ async fn await_gate(state: &Arc<Mutex<State>>, name: &str) {
         if released {
             return;
         }
+        notified.await;
         // The state is re-checked on every notification. `Notify` is used as a
         // wake-up only, so release_all_gates and a named release share the same
         // race-free state transition.
@@ -780,5 +794,46 @@ mod tests {
             .expect("gate arrival should wake waiters");
 
         gate.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gate_waiter_and_release_check_shared_state_after_wakeup() {
+        let state = state();
+        let waiter_state = Arc::clone(&state);
+        let waiter = tokio::spawn(async move {
+            wait_for_gate_state(
+                &waiter_state,
+                "test-gate",
+                1,
+                Deadline::after(Duration::from_secs(1)),
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+
+        let arrival_state = Arc::clone(&state);
+        let arrival = tokio::spawn(async move { await_gate(&arrival_state, "test-gate").await });
+
+        waiter
+            .await
+            .expect("gate waiter task should finish")
+            .expect("gate arrival should be observed");
+
+        let notify = {
+            let mut state = state.lock().expect("router state");
+            state
+                .gates
+                .get_mut("test-gate")
+                .expect("gate should exist")
+                .released = true;
+            Arc::clone(&state.gate_notify)
+        };
+        notify.notify_waiters();
+
+        tokio::time::timeout(Duration::from_secs(1), arrival)
+            .await
+            .expect("gate release should wake the router")
+            .expect("router gate task should finish");
     }
 }
