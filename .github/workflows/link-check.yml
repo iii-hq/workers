@@ -1,0 +1,23 @@
+# Every iii.dev URL in the repo must answer with a success code.
+# Weekly too, since these links rot without anyone touching the repo.
+name: Link Check
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 13 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  iii-dev-links:
+    name: iii.dev links
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: ./scripts/check-links.sh
