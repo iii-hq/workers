@@ -92,10 +92,14 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: ${{ inputs.worker }}/pnpm-lock.yaml
 
+      # Bundle workers are self-contained projects with their own lockfiles
+      # (see the note in the repo-root pnpm-workspace.yaml). Without
+      # --ignore-workspace, pnpm walks up to the root UI workspace and never
+      # installs the worker's own deps.
       - name: pnpm install
         if: inputs.language == 'node' || inputs.language == 'javascript'
         working-directory: ${{ inputs.worker }}
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-workspace
 
       - name: pnpm run build:bundle
         if: inputs.language == 'node' || inputs.language == 'javascript'
