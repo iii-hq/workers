@@ -37,7 +37,7 @@ async-trait = "0.1"
 # `JsonSchema` impls satisfy `RegisterFunction::new_async`.
 schemars = "0.8"
 uuid = { version = "1", features = ["v4"] }
-# Fail-closed allow/deny matching for the dispatch policy.
+# Structural function-policy glob matching.
 globset = "0.4"
 # Output-contract JSON Schema validation (json contracts with a schema).
 jsonschema = { version = "0.18", default-features = false }

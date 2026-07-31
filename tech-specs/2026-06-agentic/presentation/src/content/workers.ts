@@ -45,7 +45,7 @@ export const WORKERS: Record<string, WorkerInfo> = {
       { id: 'harness::hook::*', desc: 'five synchronous in-path points: pre_turn, pre_generate, post_generate, pre_trigger, post_trigger.' },
     ],
     notes: [
-      'depends softly on the other three: without context-manager it sends raw history; with no allow-list it is a plain chat loop.',
+      'depends softly on the other three: without context-manager it sends raw history; without approval-gate, policy-permitted calls run immediately.',
       'every loop step is a durable queue entry — a crash or restart resumes mid-turn.',
     ],
   },

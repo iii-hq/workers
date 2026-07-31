@@ -889,7 +889,7 @@ pub async fn run_step(
                 continue;
             }
 
-            // Fail-closed glob policy first — structural and final. Hooks run
+            // Structural glob policy first — final. Hooks run
             // only after it passes (a denial never reaches a hook).
             if !policy.allows(&call.function_id) {
                 let data = trigger::denied_result(&call.function_id);
@@ -2113,7 +2113,7 @@ fn is_context_overflow_error(error: &str) -> bool {
 /// the working directory (when the turn carries a `filesystem_root`), and the
 /// dispatch-policy surface (when it is narrowed — see [`policy_aid`]). These
 /// are AIDs only — the real scoping control plane stamps `fs_scope` onto each
-/// call (`filesystem_scope::inject`) and the policy stays fail-closed at
+/// call (`filesystem_scope::inject`) and the policy remains authoritative at
 /// dispatch.
 fn with_filesystem_root_aid(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
     let mut lines = vec![format!("Your session id is {}.", record.session_id)];
@@ -2130,24 +2130,42 @@ fn with_filesystem_root_aid(system_prompt: Option<String>, record: &TurnRecord) 
     })
 }
 
-/// The dispatch-policy aid line for a narrowed turn, `None` when the surface
-/// is unrestricted (a `*` allow — the prompt's discovery doctrine is correct
-/// there). A narrowed agent is never otherwise shown its allow-list, so it
-/// dutifully follows that doctrine into a denied `engine::functions::list` on
-/// its very first step; telling it the exact surface makes discovery moot.
+/// The dispatch-policy aid line for a narrowed turn. `None` means the policy
+/// is unrestricted and the prompt's discovery doctrine is correct. A
+/// deny-only policy names its exclusions; a legacy positive scope names the
+/// exact allowed surface.
 fn policy_aid(policy: Option<&FunctionPolicy>) -> Option<String> {
     const MAX_LISTED: usize = 30;
     let denied_all = "Function dispatch is entirely disabled this turn — do not call any function.";
     let Some(p) = policy else {
         return Some(denied_all.to_string());
     };
-    if p.allow.iter().any(|g| g == "*") {
-        return None;
+
+    let unrestricted = p
+        .allow
+        .as_deref()
+        .is_none_or(|allow| allow.iter().any(|g| g == "*"));
+    if unrestricted {
+        if p.deny.is_empty() {
+            return None;
+        }
+        let mut deny: Vec<&str> = p.deny.iter().map(String::as_str).collect();
+        deny.sort_unstable();
+        deny.dedup();
+        let over = deny.len() > MAX_LISTED;
+        let shown = deny[..deny.len().min(MAX_LISTED)].join(", ");
+        let ellipsis = if over { ", …" } else { "" };
+        return Some(format!(
+            "Function dispatch is available except for these denied functions: \
+             {shown}{ellipsis}. Do not call or probe the denied targets."
+        ));
     }
-    if p.allow.is_empty() {
+
+    let allow = p.allow.as_deref().unwrap_or_default();
+    if allow.is_empty() {
         return Some(denied_all.to_string());
     }
-    let mut allow: Vec<&str> = p.allow.iter().map(String::as_str).collect();
+    let mut allow: Vec<&str> = allow.iter().map(String::as_str).collect();
     allow.sort_unstable();
     allow.dedup();
     let over = allow.len() > MAX_LISTED;
@@ -2601,19 +2619,29 @@ mod tests {
         use crate::types::turn::FunctionPolicy;
         // No policy / empty allow: dispatch is off entirely — say so.
         assert!(super::policy_aid(None).unwrap().contains("disabled"));
-        let empty = FunctionPolicy::default();
+        let empty = FunctionPolicy {
+            allow: Some(vec![]),
+            ..Default::default()
+        };
         assert!(super::policy_aid(Some(&empty))
             .unwrap()
             .contains("disabled"));
-        // A `*` allow is the full surface: the discovery doctrine applies, no aid.
+        // A deny-only policy with no denies is the full surface.
         let full = FunctionPolicy {
-            allow: vec!["*".into()],
+            allow: None,
             ..Default::default()
         };
         assert!(super::policy_aid(Some(&full)).is_none());
+        let denied = FunctionPolicy {
+            deny: vec!["configuration::*".into()],
+            ..Default::default()
+        };
+        let aid = super::policy_aid(Some(&denied)).unwrap();
+        assert!(aid.contains("available except"));
+        assert!(aid.contains("configuration::*"));
         // Narrowed: the exact surface is spelled out, discovery is called out.
         let narrowed = FunctionPolicy {
-            allow: vec!["state::set".into(), "state::get".into()],
+            allow: Some(vec!["state::set".into(), "state::get".into()]),
             deny: vec!["state::delete".into()],
             ..Default::default()
         };
@@ -2624,7 +2652,7 @@ mod tests {
         assert!(aid.contains("OVERRIDES the general discovery requirement"));
         // Long allow-lists are capped, not dumped.
         let long = FunctionPolicy {
-            allow: (0..40).map(|i| format!("w{i:02}::fn")).collect(),
+            allow: Some((0..40).map(|i| format!("w{i:02}::fn")).collect()),
             ..Default::default()
         };
         let aid = super::policy_aid(Some(&long)).unwrap();

@@ -236,7 +236,7 @@ describe('parseSandboxErrorDisplay', () => {
     }
   })
 
-  it('detects a fail-closed dispatch-policy denial and names the function', () => {
+  it('detects a structural dispatch-policy denial and names the function', () => {
     const out = parseSandboxErrorDisplay({
       error: {
         kind: 'function_error',

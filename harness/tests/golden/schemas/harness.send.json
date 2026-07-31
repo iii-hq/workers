@@ -303,14 +303,17 @@
         "type": "string"
       },
       "FunctionPolicy": {
-        "description": "The fail-closed dispatch policy (harness.md § Functions). Absent on the send => every call denied (a plain chat loop).",
+        "additionalProperties": false,
+        "description": "The turn's structural dispatch policy (harness.md § Functions). A present policy is permissive by default: omitting `allow` permits every function not matched by `deny`. `allow` remains as a backwards-compatible positive scope for restricted consumers; an explicit empty list denies everything. A missing policy on a persisted turn remains deny-all.",
         "properties": {
           "allow": {
-            "default": [],
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "deny": {
             "default": [],
@@ -427,6 +430,7 @@
         ]
       },
       "SendOptions": {
+        "additionalProperties": false,
         "description": "Per-send options frozen onto the turn record (harness.md § `harness::send`).",
         "properties": {
           "functions": {
@@ -438,7 +442,7 @@
                 "type": "null"
               }
             ],
-            "description": "The fail-closed dispatch policy. Omitted on a NEW session → deny every call; omitted when steering an EXISTING session → inherit the prior turn's policy (a nudge must not disarm a live run). Pass `{ allow: [] }` to strip explicitly. On a NEW `ask`-mode turn the effective policy is capped at the configured default policy; a steer folded into an already-running turn keeps that turn's frozen policy until it finalises."
+            "description": "Structural dispatch policy. Omitted on a NEW session → use the configured permissive `default_functions`; omitted when steering an EXISTING session → inherit the prior turn's policy. Pass `{ allow: [] }` to disable dispatch explicitly. A present policy with no `allow` permits everything except `deny`. On a NEW `ask`-mode turn the resolved policy is capped at the configured default policy; a steer folded into an already-running turn keeps that turn's frozen policy until it finalises."
           },
           "max_cost_usd": {
             "description": "Hard USD budget for the complete root-and-subagent session tree. Every model used by the tree must advertise catalog pricing.",

@@ -72,7 +72,7 @@ flowchart LR
 | **Turn** | One run of the loop for a session: one or more generate steps until the model stops, with a coarse `TurnStatus` (`running` / `awaiting_functions` / `completed` / `cancelled` / `failed`). |
 | **Step** | One durable, enqueued `harness::turn` iteration: assemble → generate → dispatch. Re-enqueued until the turn finalises. |
 | **Steering / merge** | A `harness::send` for a session that already has a running turn folds the new message into it instead of starting a second turn (the response carries `merged: true`). |
-| **Dispatch policy** | The fail-closed `options.functions.allow` / `deny` globs deciding which functions the model may call. Absent or empty `allow` → a plain chat loop. Ask-mode turns are additionally capped at the configured default policy (`default_functions`). |
+| **Dispatch policy** | The `options.functions` globs deciding which functions the model may call. A present policy without `allow` permits everything except its `deny` globs; legacy explicit `allow` globs narrow that surface, and `{ allow: [] }` disables dispatch. An omitted policy resolves to `default_functions` for a new turn. |
 | **Exposure mode** | How allowed functions reach the model: one generic `agent_trigger` schema (default) or one schema per allowed function (`native`). |
 | **Output contract** | The turn's deliverable: free `text` (default) or `json` validated against a schema; the result rides `harness::turn-completed` and `harness::run`. |
 | **Hook** | A synchronous extension point (`harness::hook::*`) a sibling binds to veto / hold / mutate in-path. Hook *logic* lives in the sibling, never the harness. |

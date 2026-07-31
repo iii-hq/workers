@@ -193,7 +193,7 @@ impl Scenario {
 
     pub(super) fn build(self) -> ScenarioFixture {
         let send = self.send.expect("scenario send is required");
-        let allowed_functions = send.allowed_functions.clone();
+        let system_prompt_template = system_prompt(&send);
         let compiled_send = send.compile(&self.id, &self.model);
         let generations = self
             .generations
@@ -220,7 +220,7 @@ impl Scenario {
                 model: self.model,
                 generations,
             },
-            system_prompt_template: system_prompt(&allowed_functions),
+            system_prompt_template,
             verify: self.verify.expect("scenario verification is required"),
             probe_actions: self.probe_actions,
             harness_env: self.harness_env,
@@ -233,7 +233,10 @@ impl Scenario {
 pub(super) struct Send {
     message: String,
     idempotency_key: Option<String>,
-    allowed_functions: Vec<String>,
+    allow: Option<Vec<String>>,
+    deny: Vec<String>,
+    expose: CompiledFunctionExposureV1,
+    omit_options: bool,
 }
 
 impl Send {
@@ -241,7 +244,10 @@ impl Send {
         Self {
             message: message.to_string(),
             idempotency_key: None,
-            allowed_functions: Vec::new(),
+            allow: Some(Vec::new()),
+            deny: Vec::new(),
+            expose: CompiledFunctionExposureV1::Native,
+            omit_options: false,
         }
     }
 
@@ -254,13 +260,24 @@ impl Send {
         self
     }
 
+    pub(super) fn with_shipped_default(mut self) -> Self {
+        self.omit_options = true;
+        self
+    }
+
     pub(super) fn allow_function(mut self, function: &ControlledFunction) -> Self {
-        if !self
-            .allowed_functions
-            .contains(&function.target.function_id)
-        {
-            self.allowed_functions
-                .push(function.target.function_id.clone());
+        let allow = self.allow.get_or_insert_default();
+        if !allow.contains(&function.target.function_id) {
+            allow.push(function.target.function_id.clone());
+        }
+        self
+    }
+
+    pub(super) fn deny_function(mut self, function: &ControlledFunction) -> Self {
+        self.allow = None;
+        self.expose = CompiledFunctionExposureV1::AgentTrigger;
+        if !self.deny.contains(&function.target.function_id) {
+            self.deny.push(function.target.function_id.clone());
         }
         self
     }
@@ -269,8 +286,9 @@ impl Send {
     /// or harness builtin (e.g. `engine::register_trigger`) the scenario
     /// drives through the model.
     pub(super) fn allow_id(mut self, function_id: &str) -> Self {
-        if !self.allowed_functions.iter().any(|id| id == function_id) {
-            self.allowed_functions.push(function_id.to_string());
+        let allow = self.allow.get_or_insert_default();
+        if !allow.iter().any(|id| id == function_id) {
+            allow.push(function_id.to_string());
         }
         self
     }
@@ -284,13 +302,13 @@ impl Send {
             idempotency_key: self
                 .idempotency_key
                 .unwrap_or_else(|| format!("{{{{run_id}}}}:{}", scenario_id.to_ascii_lowercase())),
-            options: CompiledSendOptionsV1 {
+            options: (!self.omit_options).then_some(CompiledSendOptionsV1 {
                 functions: CompiledFunctionPolicyV1 {
-                    allow: self.allowed_functions,
-                    deny: Vec::new(),
-                    expose: CompiledFunctionExposureV1::Native,
+                    allow: self.allow,
+                    deny: self.deny,
+                    expose: self.expose,
                 },
-            },
+            }),
         }
     }
 }
@@ -671,6 +689,26 @@ impl Response {
         }
     }
 
+    pub(super) fn agent_trigger_call(
+        call_id: &str,
+        function: &ControlledFunction,
+        payload: Value,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Self {
+        Self {
+            kind: ResponseKind::FunctionCall {
+                call_id: call_id.to_string(),
+                function_id: "agent_trigger".to_string(),
+                arguments: json!({
+                    "function": function.id(),
+                    "payload": payload,
+                }),
+            },
+            usage: usage(input_tokens, output_tokens),
+        }
+    }
+
     fn compile(
         self,
         model: &ModelFixtureV1,
@@ -761,6 +799,32 @@ impl Message {
         })
     }
 
+    pub(super) fn agent_trigger_call(
+        call_id: &str,
+        function: &ControlledFunction,
+        payload: Value,
+        model: &ModelFixtureV1,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Value {
+        json!({
+            "role": "assistant",
+            "content": [{
+                "type": "function_call",
+                "id": call_id,
+                "function_id": "agent_trigger",
+                "arguments": {
+                    "function": function.id(),
+                    "payload": payload,
+                }
+            }],
+            "stop_reason": "end",
+            "model": model.id,
+            "provider": model.provider,
+            "usage": usage(input_tokens, output_tokens)
+        })
+    }
+
     pub(super) fn assistant_text(
         text: &str,
         model: &ModelFixtureV1,
@@ -802,6 +866,26 @@ impl Message {
             "content": [{ "type": "text", "text": text }],
             "details": function.target.response,
             "is_error": false
+        })
+    }
+
+    pub(super) fn policy_denied_result(call_id: &str, function: &ControlledFunction) -> Value {
+        let message = format!(
+            "function {} is not permitted by this agent's dispatch policy \
+             (outside its explicit allow scope or matched by a deny glob)",
+            function.id()
+        );
+        json!({
+            "role": "function_result",
+            "function_call_id": call_id,
+            "function_id": function.id(),
+            "content": [{ "type": "text", "text": message }],
+            "details": {
+                "error": "policy_denied",
+                "function_id": function.id(),
+                "message": message,
+            },
+            "is_error": true
         })
     }
 }
@@ -940,24 +1024,42 @@ fn streamed_text_frames(
     frames
 }
 
-fn system_prompt(allowed_functions: &[String]) -> String {
+fn system_prompt(send: &Send) -> String {
     let base = DEFAULT_SYSTEM_PROMPT
         .strip_suffix('\n')
         .unwrap_or(DEFAULT_SYSTEM_PROMPT);
-    let policy = if allowed_functions.is_empty() {
-        "Function dispatch is entirely disabled this turn — do not call any function.".to_string()
-    } else {
-        format!(
-            "Your dispatch policy allows ONLY these functions: {}. This narrowed-policy \
+    let policy = if send.omit_options {
+        None
+    } else if send.allow.as_ref().is_some_and(Vec::is_empty) {
+        Some("Function dispatch is entirely disabled this turn — do not call any function.".into())
+    } else if let Some(allow) = &send.allow {
+        let deny = if send.deny.is_empty() {
+            String::new()
+        } else {
+            format!(" Deny-listed on top: {}.", send.deny.join(", "))
+        };
+        Some(format!(
+            "Your dispatch policy allows ONLY these functions: {}.{deny} This narrowed-policy \
              instruction OVERRIDES the general discovery requirement for this turn: call the \
              listed target ids directly when the task already supplies their arguments. Anything \
              else — including discovery (engine::functions::list / ::info) unless listed above — \
              is denied. Do not probe: if the task genuinely needs an unlisted function or an \
              unknown contract, report that blocker and finish.",
-            allowed_functions.join(", ")
-        )
+            allow.join(", ")
+        ))
+    } else if send.deny.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Function dispatch is available except for these denied functions: {}. \
+             Do not call or probe the denied targets.",
+            send.deny.join(", ")
+        ))
     };
-    format!("{base}\n\nYour session id is {{{{session_id}}}}.\n{policy}")
+    match policy {
+        Some(policy) => format!("{base}\n\nYour session id is {{{{session_id}}}}.\n{policy}"),
+        None => format!("{base}\n\nYour session id is {{{{session_id}}}}."),
+    }
 }
 
 #[cfg(test)]

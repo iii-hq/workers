@@ -1,14 +1,11 @@
 //! INT-005 — a reaction registered with no `options` inherits the registering
 //! turn's dispatch policy.
 //!
-//! The rctest-k7m3 run-3 failure shape: an agent registers a wrap-up reaction
-//! (no `options.functions`) explicitly delivered back into its own session;
-//! the reaction used to fall back to the read-only baseline and was denied the
-//! functions every earlier turn in that chat could call. With the
-//! registrant-policy stamp the reaction inherits the registering turn's
-//! policy, so its scripted call to the controlled function must dispatch
-//! successfully — before the fix that call errors with "not permitted by this
-//! agent's dispatch policy".
+//! An agent registers a wrap-up reaction (no `options.functions`) delivered
+//! back into its own session. The reaction turn must preserve the registering
+//! turn's explicit allow scope and native exposure rather than falling back to
+//! the configured deny-only policy with agent-trigger exposure. The router
+//! contract and successful controlled call together pin that inheritance.
 //!
 //! The coalescing half of the same PR is pinned at the unit level
 //! (`fire_gate_coalesces_capped_fires_newest_wins`): its trailing fire lands
@@ -107,8 +104,8 @@ pub(super) fn scenario() -> ScenarioFixture {
             .respond(Response::text("armed", 10, 2)),
     )
     // The reaction turn (new turn, steps restart at 0). Its tools carry the
-    // controlled function ONLY because the policy was inherited — the
-    // read-only baseline exposes no worker functions at all.
+    // controlled function natively ONLY because the policy was inherited —
+    // the shipped default exposes the agent-trigger wrapper instead.
     .generation(
         Generation::new(3)
             .expect(
@@ -149,8 +146,8 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "assistant", "content": [
                             { "type": "function_call", "id": "call-record" }
                         ] }),
-                        // The dispatch the whole scenario gates on: succeeds
-                        // only under the inherited policy.
+                        // The dispatch and native tool contract together gate
+                        // the inherited policy.
                         json!({ "role": "function_result", "function_call_id": "call-record",
                                 "is_error": false }),
                     ])
@@ -170,9 +167,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             "the reaction registration must succeed: {regs:?}"
         );
 
-        // The core claim: nothing in the whole run was policy-denied. Before
-        // the registrant-policy stamp, the reaction turn's recorder call died
-        // here with "not permitted by this agent's dispatch policy".
+        // Nothing in the whole run may be policy-denied.
         for item in &run.transcript {
             let msg = item.get("message").cloned().unwrap_or(Value::Null);
             if msg.get("role").and_then(Value::as_str) == Some("function_result") {

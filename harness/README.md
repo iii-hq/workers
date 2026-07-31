@@ -85,10 +85,13 @@ same recovery, partial-output, and blocked-reaction explanation after refresh.
   <img src="https://raw.githubusercontent.com/iii-hq/workers/main/harness/docs/images/console-traces.webp" alt="Harness turn waterfall in the iii console" width="100%">
 </p>
 
-The agent-facing function surface is deny-by-default: with no `functions.allow`
-globs, every model-requested call is refused and the harness is a plain chat
-loop. Allow functions in per-send (`options.functions.allow`) and gate them
-with the optional [`approval-gate`](https://github.com/iii-hq/workers/tree/main/approval-gate) sibling.
+The agent-facing function surface is permissive by default: omit
+`options.functions` (or provide only `deny` globs) and every non-denied
+model-requested call may run. Installing the optional
+[`approval-gate`](https://github.com/iii-hq/workers/tree/main/approval-gate)
+sibling adds a `pre_trigger` hook that can hold or deny those calls. Legacy
+`allow` globs remain available for consumers that need a positive scope, and
+`{ "allow": [] }` disables dispatch explicitly.
 
 The full function reference (every `harness::*` id and its request/response
 schema) lives in the code and `iii worker info harness`.

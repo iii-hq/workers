@@ -78,13 +78,13 @@ pub struct WorkerConfig {
     #[serde(default = "default_sweep_expression")]
     pub sweep_expression: String,
 
-    /// Dispatch policy for a PARENTLESS spawn (a direct/CLI `harness::spawn`
-    /// or a trigger-fired `harness::react` spawn) whose request carries no
-    /// `options.functions`. Children of live turns still inherit/subset the
-    /// parent policy, and explicit options always win. Defaults to allowing
-    /// every function; set to `null` explicitly to restore deny-all. Doubles
-    /// as the ceiling every ask-mode turn's policy is clamped to — `null`
-    /// makes ask mode a plain chat loop.
+    /// Dispatch policy for a new `harness::send` or PARENTLESS spawn (a
+    /// direct/CLI `harness::spawn` or trigger-fired `harness::react` spawn)
+    /// whose request carries no `options.functions`. Steering inherits the
+    /// prior turn; children of live turns inherit/subset their parent; explicit
+    /// options always win. Defaults to allowing every function; set to `null`
+    /// explicitly to restore deny-all. Also caps every ask-mode turn's policy
+    /// — `null` makes ask mode a plain chat loop.
     #[serde(default = "default_functions")]
     pub default_functions: Option<FunctionPolicy>,
 
@@ -242,16 +242,16 @@ fn default_sweep_expression() -> String {
     "0 0 0 * * *".to_string()
 }
 fn default_functions() -> Option<FunctionPolicy> {
-    // Default policy for PARENTLESS spawns that carry no inherited policy
-    // (direct/CLI/raw trigger calls). In-turn children inherit their parent
-    // directly; harness::react persists the registering turn's policy into
-    // its parentless spawn options.
+    // Default policy for new sends and PARENTLESS spawns that carry no
+    // inherited policy (direct/CLI/raw trigger calls). In-turn children inherit
+    // their parent directly; harness::react persists the registering turn's
+    // policy into its parentless spawn options.
     //
     // DOUBLES AS THE ASK-MODE CEILING: every ask-mode send / steer / child has
     // its dispatch policy clamped to this policy (see
     // `functions::send::clamp_for_mode`).
     Some(FunctionPolicy {
-        allow: vec!["*".to_string()],
+        allow: None,
         deny: vec![],
         expose: Default::default(),
     })
@@ -323,7 +323,7 @@ mod tests {
     fn default_functions_allows_everything_and_is_nullable() {
         let cfg = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
         let policy = cfg.default_functions.expect("policy present by default");
-        assert_eq!(policy.allow, vec!["*"]);
+        assert!(policy.allow.is_none());
         assert!(policy.deny.is_empty());
         // Explicit null restores deny-all.
         let cfg =

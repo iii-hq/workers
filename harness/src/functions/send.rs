@@ -31,6 +31,7 @@ pub enum MessageInput {
 
 /// Per-send options frozen onto the turn record (harness.md § `harness::send`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SendOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
@@ -61,13 +62,14 @@ pub struct SendOptions {
     /// The turn's deliverable; default `{ type: "text" }`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputContract>,
-    /// The fail-closed dispatch policy. Omitted on a NEW session → deny every
-    /// call; omitted when steering an EXISTING session → inherit the prior
-    /// turn's policy (a nudge must not disarm a live run). Pass
-    /// `{ allow: [] }` to strip explicitly. On a NEW `ask`-mode turn the
-    /// effective policy is capped at the configured default policy; a
-    /// steer folded into an already-running turn keeps that turn's frozen
-    /// policy until it finalises.
+    /// Structural dispatch policy. Omitted on a NEW session → use the
+    /// configured permissive `default_functions`; omitted when steering an
+    /// EXISTING session → inherit the prior turn's policy. Pass
+    /// `{ allow: [] }` to disable dispatch explicitly. A present policy with
+    /// no `allow` permits everything except `deny`. On a NEW `ask`-mode turn
+    /// the resolved policy is capped at the configured default policy; a steer
+    /// folded into an already-running turn keeps that turn's frozen policy
+    /// until it finalises.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
     /// Tracing passthrough.
@@ -194,7 +196,7 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
         .system_prompt_get(provider.as_deref())
         .await;
     let mut options = build_options(&cfg, &req, model, provider, identity.as_deref());
-    inherit_prior_functions(
+    resolve_functions(
         &cfg,
         &mut options,
         prev.as_ref().and_then(|p| p.options.functions.as_ref()),
@@ -512,7 +514,9 @@ fn build_options(
     identity: Option<&str>,
 ) -> TurnOptions {
     let opts = req.options.clone().unwrap_or_default();
-    let functions = clamp_for_mode(cfg, opts.mode, opts.functions);
+    // Resolved after the previous turn is known: explicit request → prior
+    // policy → configured default. See `resolve_functions`.
+    let functions = opts.functions;
     TurnOptions {
         model,
         provider,
@@ -554,21 +558,22 @@ pub(crate) fn clamp_for_mode(
     }
 }
 
-/// A steer also inherits the prior turn's dispatch policy unless this send
-/// names its own: `functions` is fail-closed, so leaving it `None` on a fresh
-/// steer record would silently DISARM a live run — every turn from the nudge
-/// onward denied all dispatch. Explicit strip stays possible
-/// (`options.functions: { allow: [] }`). An ask-mode steer stays armed but
-/// read-only via the shared [`clamp_for_mode`] cap.
-fn inherit_prior_functions(
+/// Resolve the turn's structural dispatch policy once, before it is frozen:
+/// explicit request → prior turn policy → configured default. This makes a
+/// fresh harness YOLO by default while a steer preserves any narrower policy
+/// already attached to its session. Explicit deny-all remains
+/// `options.functions: { allow: [] }`.
+fn resolve_functions(
     cfg: &WorkerConfig,
     options: &mut TurnOptions,
     prev_functions: Option<&FunctionPolicy>,
 ) {
-    if options.functions.is_some() {
-        return;
-    }
-    options.functions = clamp_for_mode(cfg, options.mode, prev_functions.cloned());
+    let resolved = options
+        .functions
+        .take()
+        .or_else(|| prev_functions.cloned())
+        .or_else(|| cfg.default_functions.clone());
+    options.functions = clamp_for_mode(cfg, options.mode, resolved);
 }
 
 /// Default a BRAND-NEW session's working directory (MOT-3897): when the very
@@ -889,37 +894,119 @@ mod tests {
     fn ask_mode_steer_inherits_the_prior_policy_clamped() {
         let cfg = WorkerConfig::default();
         let broad = FunctionPolicy {
-            allow: vec!["*".into()],
+            allow: None,
             deny: vec![],
             expose: Default::default(),
         };
 
-        // An ask-mode steer keeps the run armed and is capped at the wildcard
-        // default policy.
+        // An ask-mode steer keeps the run armed and is capped at the
+        // unrestricted deny-only default policy.
         let mut options = options_with(Some(Mode::Ask), None);
-        inherit_prior_functions(&cfg, &mut options, Some(&broad));
+        resolve_functions(&cfg, &mut options, Some(&broad));
         let compiled = policy::CompiledPolicy::from(options.functions.as_ref());
         assert!(compiled.allows("state::get"));
         assert!(compiled.allows("state::set"));
 
         // Outside ask mode the prior policy is inherited whole.
         let mut options = options_with(Some(Mode::Agent), None);
-        inherit_prior_functions(&cfg, &mut options, Some(&broad));
+        resolve_functions(&cfg, &mut options, Some(&broad));
         assert!(policy::CompiledPolicy::from(options.functions.as_ref()).allows("state::set"));
 
         // An explicit policy on the send still beats inheritance.
         let strip = FunctionPolicy {
-            allow: vec![],
+            allow: Some(vec![]),
             deny: vec![],
             expose: Default::default(),
         };
         let mut options = options_with(Some(Mode::Ask), Some(strip));
-        inherit_prior_functions(&cfg, &mut options, Some(&broad));
+        resolve_functions(&cfg, &mut options, Some(&broad));
         assert!(!policy::CompiledPolicy::from(options.functions.as_ref()).allows("state::get"));
     }
 
     #[test]
-    fn build_options_clamps_functions_to_the_default_policy_in_ask_mode() {
+    fn new_turn_without_functions_uses_the_permissive_default() {
+        let cfg = WorkerConfig::default();
+        let req = SendRequest {
+            session_id: None,
+            message: MessageInput::Text("hi".into()),
+            model: Some("m".into()),
+            provider: None,
+            idempotency_key: None,
+            session: None,
+            options: None,
+        };
+        let mut opts = build_options(&cfg, &req, "m".into(), None, None);
+        resolve_functions(&cfg, &mut opts, None);
+        let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
+        assert!(compiled.allows("engine::functions::list"));
+        assert!(compiled.allows("state::set"));
+        assert!(compiled.allows("shell::run"));
+    }
+
+    #[test]
+    fn function_resolution_precedence_is_explicit_then_prior_then_default() {
+        let default = FunctionPolicy {
+            allow: None,
+            deny: vec!["default::*".into()],
+            expose: Default::default(),
+        };
+        let prior = FunctionPolicy {
+            allow: Some(vec!["prior::read".into()]),
+            deny: vec!["prior::blocked".into()],
+            expose: Default::default(),
+        };
+        let explicit = FunctionPolicy {
+            allow: Some(vec!["explicit::read".into()]),
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let mut cfg = WorkerConfig {
+            default_functions: Some(default.clone()),
+            ..WorkerConfig::default()
+        };
+
+        let mut options = options_with(Some(Mode::Agent), Some(explicit.clone()));
+        resolve_functions(&cfg, &mut options, Some(&prior));
+        assert_eq!(options.functions, Some(explicit));
+
+        let mut options = options_with(Some(Mode::Agent), None);
+        resolve_functions(&cfg, &mut options, Some(&prior));
+        assert_eq!(options.functions, Some(prior));
+
+        let mut options = options_with(Some(Mode::Agent), None);
+        resolve_functions(&cfg, &mut options, None);
+        assert_eq!(options.functions, Some(default));
+
+        cfg.default_functions = None;
+        let mut options = options_with(Some(Mode::Agent), None);
+        resolve_functions(&cfg, &mut options, None);
+        assert!(
+            options.functions.is_none(),
+            "an explicitly null operator default must remain deny-all"
+        );
+    }
+
+    #[test]
+    fn misspelled_policy_fields_are_rejected_instead_of_widening_access() {
+        let request = serde_json::json!({
+            "message": "test",
+            "model": "test",
+            "options": {
+                "functons": {
+                    "deny": ["shell::*"]
+                }
+            }
+        });
+        assert!(serde_json::from_value::<SendRequest>(request).is_err());
+
+        assert!(serde_json::from_value::<FunctionPolicy>(serde_json::json!({
+            "denny": ["shell::*"]
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn resolve_functions_clamps_to_the_default_policy_in_ask_mode() {
         let cfg = WorkerConfig::default();
         let req = SendRequest {
             session_id: None,
@@ -931,16 +1018,17 @@ mod tests {
             options: Some(SendOptions {
                 mode: Some(Mode::Ask),
                 functions: Some(FunctionPolicy {
-                    allow: vec!["*".into()],
+                    allow: None,
                     deny: vec![],
                     expose: Default::default(),
                 }),
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, "m".into(), req.provider.clone(), None);
+        let mut opts = build_options(&cfg, &req, "m".into(), req.provider.clone(), None);
+        resolve_functions(&cfg, &mut opts, None);
         let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
-        // The wildcard default preserves the requested policy…
+        // The unrestricted deny-only default preserves the requested policy.
         assert!(compiled.allows("state::get"));
         assert!(compiled.allows("engine::functions::list"));
         assert!(compiled.allows("state::set"));
@@ -963,14 +1051,15 @@ mod tests {
                 options: Some(SendOptions {
                     mode,
                     functions: Some(FunctionPolicy {
-                        allow: vec!["*".into()],
+                        allow: None,
                         deny: vec![],
                         expose: Default::default(),
                     }),
                     ..Default::default()
                 }),
             };
-            let opts = build_options(&cfg, &req, "m".into(), None, None);
+            let mut opts = build_options(&cfg, &req, "m".into(), None, None);
+            resolve_functions(&cfg, &mut opts, None);
             let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
             assert!(
                 compiled.allows("state::set"),

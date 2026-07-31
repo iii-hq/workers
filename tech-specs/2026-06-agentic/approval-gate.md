@@ -154,12 +154,11 @@ iii.registerTrigger({
 through. The `functions` globs narrow which dispatches consult the gate; omit them to consult on
 every call.
 
-**Ordering caveat.** `pre_trigger` hooks run **after** the harness's fail-closed allow/deny globs —
+**Ordering caveat.** `pre_trigger` hooks run **after** the harness's structural dispatch policy —
 a hook narrows the policy, never widens it (see
-[harness.md § Hook points](harness.md#hook-points)). A call that matches no `allow` glob is denied
-before the gate ever sees it. A deployment that wants *everything* gated by approvals therefore
-sets a broad dispatch policy (`functions.allow: ["*"]`) and lets the gate hold/deny per this spec's
-permission model.
+[harness.md § Hook points](harness.md#hook-points)). A call blocked by a deny glob or legacy
+explicit allow scope is denied before the gate sees it. The shipped deny-only default permits
+every non-denied call to reach the gate, which then holds/denies per this spec's permission model.
 
 Contract (maps `HookInput` → `HookOutput`, both defined in
 [harness.md § Hooks › Contract](harness.md#contract)):
@@ -716,7 +715,7 @@ All `approval::*` and `configuration::*` functions are operator surfaces — an 
    (below).
 2. **Inside the gate** (backstop): `approval::gate` unconditionally denies any dispatch targeting
    `approval::*` or `configuration::*` with rule `human_only_function` — even under `mode: "full"`
-   and even when the dispatch policy is `allow: ["*"]`. The settings RPCs are reached only through
+   and an unrestricted deny-only dispatch policy. The settings RPCs are reached only through
    user-initiated console calls, which never pass through the trigger pipeline.
 
 ## Yaml policy dependency
@@ -794,8 +793,8 @@ Deny-by-default for in-run agents (see [README § Security model](README.md#secu
   and treats the rule engine as a sibling surface.
 - Does **not** send notifications — it emits triggers; notification workers compose on top (see
   [Standalone use](#standalone-use-notification-workers)).
-- Does **not** widen the dispatch policy — `pre_trigger` runs after the harness's fail-closed
-  globs; gating "everything" is a dispatch-policy choice (`allow: ["*"]`), not a gate feature.
+- Does **not** widen the dispatch policy — `pre_trigger` runs after the harness's structural
+  policy. The shipped deny-only default sends every non-denied call through the installed gate.
 
 ## Prior art & migration
 

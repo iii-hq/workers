@@ -71,7 +71,6 @@ interface RunParams {
  * the gate hook remains the human decision surface.
  */
 export const FALLBACK_FUNCTION_POLICY: HarnessFunctionPolicy = {
-  allow: ['*'],
   deny: ['approval::*', 'configuration::*', 'shell::workspace::*'],
   expose: 'agent_trigger',
 }

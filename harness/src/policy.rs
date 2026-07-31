@@ -1,6 +1,7 @@
-//! The fail-closed dispatch policy and the invocation-schema surface
-//! (harness.md § Functions). The allow/deny globs are structural and final —
-//! hooks run only after they pass.
+//! The structural dispatch policy and the invocation-schema surface
+//! (harness.md § Functions). A resolved policy permits everything by default
+//! and subtracts deny globs; an explicit legacy allow-list can narrow it.
+//! These globs are final — hooks run only after they pass.
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde_json::{json, Value};
@@ -16,59 +17,80 @@ pub const AGENT_TRIGGER_NAME: &str = "agent_trigger";
 /// dispatched).
 pub const SUBMIT_RESULT_NAME: &str = "submit_result";
 
-/// A compiled allow/deny matcher. Fail-closed: a call is allowed only when it
-/// matches an `allow` glob and no `deny` glob; an absent or empty allow-list
-/// denies everything.
+/// A compiled allow/deny matcher. A PRESENT policy with no `allow` permits
+/// every function not matched by `deny`. A legacy explicit allow-list narrows
+/// that universe, including an empty list which denies everything. A missing
+/// policy remains deny-all for unscoped/internal callers.
 pub struct CompiledPolicy {
-    allow: GlobSet,
+    allow: Option<GlobSet>,
     deny: GlobSet,
-    allow_empty: bool,
+    policy_missing: bool,
+    policy_invalid: bool,
 }
 
 impl CompiledPolicy {
     pub fn from(policy: Option<&FunctionPolicy>) -> Self {
         match policy {
-            Some(p) => CompiledPolicy {
-                allow: build_set(&p.allow),
-                deny: build_set(&p.deny),
-                allow_empty: p.allow.is_empty(),
-            },
+            Some(p) => {
+                let (allow, allow_invalid) = match p.allow.as_deref() {
+                    Some(patterns) => {
+                        let (set, invalid) = build_set(patterns);
+                        (Some(set), invalid)
+                    }
+                    None => (None, false),
+                };
+                let (deny, deny_invalid) = build_set(&p.deny);
+                CompiledPolicy {
+                    allow,
+                    deny,
+                    policy_missing: false,
+                    policy_invalid: allow_invalid || deny_invalid,
+                }
+            }
             None => CompiledPolicy {
-                allow: GlobSet::empty(),
+                allow: None,
                 deny: GlobSet::empty(),
-                allow_empty: true,
+                policy_missing: true,
+                policy_invalid: false,
             },
         }
     }
 
-    /// Whether `function_id` may be dispatched (fail-closed).
+    /// Whether `function_id` may be dispatched.
     pub fn allows(&self, function_id: &str) -> bool {
-        if self.allow_empty {
+        if self.policy_missing || self.policy_invalid {
             return false;
         }
-        self.allow.is_match(function_id) && !self.deny.is_match(function_id)
+        self.allow
+            .as_ref()
+            .is_none_or(|allow| allow.is_match(function_id))
+            && !self.deny.is_match(function_id)
     }
 }
 
 /// Subset a child's requested policy against the parent's (harness.md §
-/// Sub-agents: narrow, never escalate). The child's allow is the requested
-/// globs kept only where the parent's allow covers them (or the parent's allow
-/// inherited when the child requests none); deny is the union; a `None` parent
-/// policy yields `None` (deny all) so an un-empowered parent can't empower a
-/// child.
+/// Sub-agents: narrow, never escalate). Missing `allow` means unrestricted,
+/// but a child still inherits a parent's explicit allow ceiling. When both
+/// sides carry legacy allow-lists, only requested globs covered by the parent
+/// survive. Denies are unioned, so a child may narrow but never remove a
+/// parent's restriction. A `None` parent policy yields `None` (deny all).
 pub fn subset_policy(
     parent: Option<&FunctionPolicy>,
     requested: Option<&FunctionPolicy>,
 ) -> Option<FunctionPolicy> {
     let parent = parent?;
-    let allow = match requested {
-        Some(r) if !r.allow.is_empty() => r
-            .allow
-            .iter()
-            .filter(|g| glob_covered(g, &parent.allow))
-            .cloned()
-            .collect(),
-        _ => parent.allow.clone(),
+    let requested_allow = requested.and_then(|r| r.allow.as_deref());
+    let allow = match (parent.allow.as_deref(), requested_allow) {
+        (None, None) => None,
+        (None, Some(child)) => Some(child.to_vec()),
+        (Some(parent), None) => Some(parent.to_vec()),
+        (Some(parent), Some(child)) => Some(
+            child
+                .iter()
+                .filter(|g| glob_covered(g, parent))
+                .cloned()
+                .collect(),
+        ),
     };
     let mut deny = parent.deny.clone();
     if let Some(r) = requested {
@@ -82,45 +104,45 @@ pub fn subset_policy(
     })
 }
 
-/// Cap a requested policy at the operator's configured baseline (ask mode):
-/// the effective allow is the baseline kept only where the REQUEST covers it,
-/// denies are unioned, and the request's exposure choice is kept. Never
-/// widens — an absent or deny-all request stays deny-all, and an absent or
-/// hollow (empty-allow) baseline denies everything.
+/// Cap a requested policy at the operator's configured baseline (ask mode).
+/// Missing allow-lists are unrestricted; explicit lists remain positive
+/// ceilings. Denies are unioned and the request's exposure choice is kept.
+/// An absent request or baseline remains deny-all.
 ///
 /// Coverage is [`glob_covered`] (exact id, `*`, or `<prefix>::*`), so the
 /// result is a conservative UNDER-approximation of a set intersection for
-/// prefix globs. A wildcard baseline is handled as an unrestricted ceiling,
-/// so a narrower requested allow-list remains effective.
+/// two explicit prefix-glob allow-lists.
 pub fn clamp_policy(
     baseline: Option<&FunctionPolicy>,
     requested: Option<&FunctionPolicy>,
 ) -> Option<FunctionPolicy> {
-    // LOAD-BEARING: reject a hollow baseline BEFORE `subset_policy`. With the
-    // roles flipped below, `subset_policy`'s empty-allow arm would fall back to
-    // `parent.allow.clone()` — i.e. the REQUEST's allow — which would widen ask
-    // mode to whatever it asked for. This guard is what keeps the flip safe;
-    // `ask_clamp_without_a_usable_baseline_denies_everything` pins it.
-    let baseline = baseline.filter(|b| !b.allow.is_empty())?;
+    let baseline = baseline?;
     let requested = requested?;
-    debug_assert!(
-        !baseline.allow.is_empty(),
-        "clamp baseline must be non-empty here or the flip widens"
-    );
-    // A wildcard baseline covers every requested function. Preserve the
-    // request's allow-list and add any baseline denies.
-    if baseline.allow.iter().any(|pattern| pattern == "*") {
-        let mut unrestricted = requested.clone();
-        unrestricted.deny.extend(baseline.deny.iter().cloned());
-        return Some(unrestricted);
-    }
-    // Subset with the roles flipped — keep the baseline's ids where the
-    // REQUEST covers them — so broad requests (`*`, `<prefix>::*`) intersect
-    // down to the baseline instead of collapsing to deny-all.
-    let mut clamped = subset_policy(Some(requested), Some(baseline))?;
-    // `subset_policy` picked the baseline's `expose`; restore the caller's.
-    clamped.expose = requested.expose;
-    Some(clamped)
+
+    let baseline_allow = baseline.allow.as_deref();
+    let requested_allow = requested.allow.as_deref();
+    let baseline_unrestricted = is_unrestricted(baseline_allow);
+    let requested_unrestricted = is_unrestricted(requested_allow);
+    let allow = match (baseline_unrestricted, requested_unrestricted) {
+        (true, true) => None,
+        (true, false) => Some(requested_allow.unwrap_or_default().to_vec()),
+        (false, true) => Some(baseline_allow.unwrap_or_default().to_vec()),
+        (false, false) => Some(
+            baseline_allow
+                .unwrap_or_default()
+                .iter()
+                .filter(|g| glob_covered(g, requested_allow.unwrap_or_default()))
+                .cloned()
+                .collect(),
+        ),
+    };
+    let mut deny = baseline.deny.clone();
+    deny.extend(requested.deny.iter().cloned());
+    Some(FunctionPolicy {
+        allow,
+        deny,
+        expose: requested.expose,
+    })
 }
 
 /// Is a child allow glob covered by the parent's allow set? Conservative: an
@@ -131,16 +153,31 @@ fn glob_covered(child: &str, parent_globs: &[String]) -> bool {
     })
 }
 
-fn build_set(patterns: &[String]) -> GlobSet {
+fn is_unrestricted(allow: Option<&[String]>) -> bool {
+    allow.is_none_or(|patterns| patterns.iter().any(|pattern| pattern == "*"))
+}
+
+fn build_set(patterns: &[String]) -> (GlobSet, bool) {
     let mut builder = GlobSetBuilder::new();
+    let mut invalid = false;
     for p in patterns {
-        if let Ok(glob) = Glob::new(p) {
+        if p.is_empty() {
+            invalid = true;
+            tracing::warn!("empty function glob makes the dispatch policy fail closed");
+        } else if let Ok(glob) = Glob::new(p) {
             builder.add(glob);
         } else {
-            tracing::warn!(pattern = %p, "ignoring invalid function glob");
+            invalid = true;
+            tracing::warn!(pattern = %p, "invalid function glob makes the dispatch policy fail closed");
         }
     }
-    builder.build().unwrap_or_else(|_| GlobSet::empty())
+    match builder.build() {
+        Ok(set) => (set, invalid),
+        Err(error) => {
+            tracing::warn!(%error, "function glob set failed to compile; policy fails closed");
+            (GlobSet::empty(), true)
+        }
+    }
 }
 
 /// The single `agent_trigger` schema attached by default — the model triggers
@@ -291,7 +328,15 @@ mod tests {
 
     fn policy(allow: &[&str], deny: &[&str]) -> FunctionPolicy {
         FunctionPolicy {
-            allow: allow.iter().map(|s| s.to_string()).collect(),
+            allow: Some(allow.iter().map(|s| s.to_string()).collect()),
+            deny: deny.iter().map(|s| s.to_string()).collect(),
+            expose: ExposeMode::AgentTrigger,
+        }
+    }
+
+    fn deny_only(deny: &[&str]) -> FunctionPolicy {
+        FunctionPolicy {
+            allow: None,
             deny: deny.iter().map(|s| s.to_string()).collect(),
             expose: ExposeMode::AgentTrigger,
         }
@@ -302,6 +347,16 @@ mod tests {
         let p = CompiledPolicy::from(None);
         assert!(!p.allows("shell::run"));
         assert!(!p.allows("anything"));
+    }
+
+    #[test]
+    fn deny_only_wire_policy_is_unrestricted_outside_its_denies() {
+        let decoded: FunctionPolicy =
+            serde_json::from_value(json!({ "deny": ["configuration::*"] })).unwrap();
+        assert!(decoded.allow.is_none());
+        let compiled = CompiledPolicy::from(Some(&decoded));
+        assert!(compiled.allows("shell::run"));
+        assert!(!compiled.allows("configuration::set"));
     }
 
     #[test]
@@ -331,6 +386,14 @@ mod tests {
     }
 
     #[test]
+    fn deny_only_policy_allows_everything_else() {
+        let p = CompiledPolicy::from(Some(&deny_only(&["configuration::*"])));
+        assert!(p.allows("shell::run"));
+        assert!(p.allows("engine::functions::list"));
+        assert!(!p.allows("configuration::set"));
+    }
+
+    #[test]
     fn allow_glob_matches_prefix() {
         let p = CompiledPolicy::from(Some(&policy(&["shell::*"], &[])));
         assert!(p.allows("shell::run"));
@@ -343,6 +406,25 @@ mod tests {
         let p = CompiledPolicy::from(Some(&policy(&["*"], &["shell::*"])));
         assert!(p.allows("fs::read"));
         assert!(!p.allows("shell::run"));
+    }
+
+    #[test]
+    fn malformed_or_empty_globs_fail_the_whole_policy_closed() {
+        for malformed in ["[", ""] {
+            let deny = deny_only(&[malformed]);
+            let compiled = CompiledPolicy::from(Some(&deny));
+            assert!(
+                !compiled.allows("shell::run"),
+                "malformed deny {malformed:?} must not widen access"
+            );
+
+            let allow = policy(&[malformed], &[]);
+            let compiled = CompiledPolicy::from(Some(&allow));
+            assert!(
+                !compiled.allows("shell::run"),
+                "malformed allow {malformed:?} must fail closed"
+            );
+        }
     }
 
     #[test]
@@ -387,7 +469,8 @@ mod tests {
         assert!(clamp_policy(None, Some(&requested)).is_none());
         // A hollow baseline (empty allow) is deny-all, not a hole to widen through.
         let hollow = policy(&[], &["x"]);
-        assert!(clamp_policy(Some(&hollow), Some(&requested)).is_none());
+        let clamped = clamp_policy(Some(&hollow), Some(&requested));
+        assert!(!CompiledPolicy::from(clamped.as_ref()).allows("state::get"));
     }
 
     #[test]
@@ -431,6 +514,18 @@ mod tests {
             CompiledPolicy::from(clamp_policy(Some(&baseline), Some(&requested)).as_ref());
         assert!(compiled.allows("state::get"));
         assert!(!compiled.allows("state::set"));
+    }
+
+    #[test]
+    fn ask_clamp_deny_only_policies_union_denies() {
+        let baseline = deny_only(&["configuration::*"]);
+        let requested = deny_only(&["router::chat"]);
+        let clamped = clamp_policy(Some(&baseline), Some(&requested)).unwrap();
+        assert!(clamped.allow.is_none());
+        let compiled = CompiledPolicy::from(Some(&clamped));
+        assert!(compiled.allows("shell::run"));
+        assert!(!compiled.allows("configuration::set"));
+        assert!(!compiled.allows("router::chat"));
     }
 
     #[test]
@@ -606,7 +701,10 @@ mod tests {
     fn subset_inherits_parent_allow_when_request_omits_it() {
         let parent = policy(&["shell::*", "fs::read"], &["shell::rm"]);
         let child = subset_policy(Some(&parent), None).unwrap();
-        assert_eq!(child.allow, vec!["shell::*", "fs::read"]);
+        assert_eq!(
+            child.allow,
+            Some(vec!["shell::*".to_string(), "fs::read".to_string()])
+        );
         assert_eq!(child.deny, vec!["shell::rm"]);
     }
 
@@ -616,7 +714,7 @@ mod tests {
         let requested = policy(&["shell::run", "fs::read"], &["shell::rm"]);
         let child = subset_policy(Some(&parent), Some(&requested)).unwrap();
         // shell::run is covered by shell::*; fs::read is not — it is dropped.
-        assert_eq!(child.allow, vec!["shell::run"]);
+        assert_eq!(child.allow, Some(vec!["shell::run".to_string()]));
         // deny is the union of parent and requested.
         assert_eq!(child.deny, vec!["shell::rm"]);
     }
@@ -627,7 +725,19 @@ mod tests {
         let requested = policy(&["*"], &[]);
         let child = subset_policy(Some(&parent), Some(&requested)).unwrap();
         // "*" is not covered by "shell::*" → dropped → child allows nothing.
-        assert!(child.allow.is_empty());
+        assert_eq!(child.allow, Some(vec![]));
         assert!(!CompiledPolicy::from(Some(&child)).allows("fs::read"));
+    }
+
+    #[test]
+    fn subset_deny_only_child_inherits_and_adds_denies() {
+        let parent = deny_only(&["configuration::*"]);
+        let requested = deny_only(&["router::chat"]);
+        let child = subset_policy(Some(&parent), Some(&requested)).unwrap();
+        assert!(child.allow.is_none());
+        let compiled = CompiledPolicy::from(Some(&child));
+        assert!(compiled.allows("shell::run"));
+        assert!(!compiled.allows("configuration::set"));
+        assert!(!compiled.allows("router::chat"));
     }
 }

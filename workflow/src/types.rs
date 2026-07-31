@@ -61,11 +61,11 @@ pub struct WorkflowDef {
     /// Default dispatch policy for every node that omits its own
     /// `agent.functions` — the run-wide reach inherited by un-narrowed nodes.
     /// Same shape as `agent.functions` (a bare allow-list array, a single
-    /// string, or a `{ allow, deny }` object). Omit and un-narrowed nodes get
-    /// `["*"]` (everything), so by default a node can do anything the main agent
-    /// could. Set this to mirror a narrower main-agent policy run-wide (e.g.
-    /// `{ "allow": ["*"], "deny": ["approval::*","configuration::*"] }`), then
-    /// narrow individual nodes further with their own `agent.functions`.
+    /// string, or a `{ allow?, deny }` object). Omit and un-narrowed nodes get a
+    /// deny-only policy that permits everything outside the workflow
+    /// control-plane namespaces. Set this to mirror a narrower main-agent
+    /// policy run-wide (for example `{ "deny": ["approval::*"] }`), then narrow
+    /// individual nodes further with their own `agent.functions`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_functions: Option<Value>,
 }
@@ -122,12 +122,12 @@ pub struct AgentSpec {
     /// `{ "allow": [...] }` policy; a single string and a full FunctionPolicy
     /// object (`{ "allow": [...], "deny": [...] }`) are also accepted.
     /// INHERITS BY DEFAULT: omit this and the node inherits the run's default
-    /// reach — the def-level `default_functions`, or `["*"]` (everything) when
-    /// that is also unset. So a node can call anything the main agent could
-    /// without listing it. Set this to NARROW one node (e.g. `["web::fetch"]`),
-    /// or to an empty allow-list (`{ "allow": [] }`) to lock the node down to
-    /// nothing. Use the narrow form for least-privilege nodes; omit for the
-    /// common case.
+    /// reach — the def-level `default_functions`, or the implicit deny-only
+    /// workflow policy when that is also unset. So a node can call anything
+    /// outside the workflow control plane without listing it. Set this to
+    /// NARROW one node (e.g. `["web::fetch"]`), or to an empty allow-list
+    /// (`{ "allow": [] }`) to lock the node down to nothing. Use the narrow
+    /// form for least-privilege nodes; omit for the common case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<Value>,
     /// Output contract passed to the harness. MUST be `{ "type": "json",
@@ -255,10 +255,10 @@ pub struct ReplySpec {
     /// Optional text prepended to the formatted outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
-    /// Caller turn's dispatch policy, auto-stamped by the pre_trigger hook so the
-    /// reply can WAKE an idle caller with its original reach (`run: true`) instead
-    /// of a deny-all turn. Absent → delivery falls back to a passive transcript
-    /// append (`run: false`). A `FunctionPolicy` object (`{allow, deny}`); carried
+    /// Caller turn's dispatch policy, auto-stamped by the pre_trigger hook so
+    /// the reply can wake an idle caller with its exact original reach. When
+    /// absent, delivery omits `options.functions` and the harness resolves its
+    /// configured default. A `FunctionPolicy` object (`{allow?, deny}`), carried
     /// as a `Value` since the worker only passes it through to `harness::send`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<Value>,

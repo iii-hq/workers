@@ -124,10 +124,20 @@ jobs:
             context-manager -> target
             iii-directory -> target
             state -> target
+            approval-gate -> target
             console -> target
 
       - name: Integration crate unit tests
         run: cargo test --manifest-path harness/Cargo.toml -p harness-integration
+
+      - name: Harness and approval-gate policy integration
+        env:
+          III_ENGINE_BIN: ${{ steps.engine.outputs.bin }}
+          CARGO_BIN_EXE_harness: ${{ github.workspace }}/harness/target/debug/harness
+        run: |
+          cargo build --manifest-path harness/Cargo.toml --bin harness
+          cargo test --manifest-path approval-gate/Cargo.toml \
+            --test harness_integration -- --nocapture
 
       - name: Validate integration scenarios
         run: make -C harness integration-validate

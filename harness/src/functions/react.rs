@@ -2005,15 +2005,14 @@ mod tests {
     }
 
     /// The rctest-k7m3 wrap-up failure: a reaction registered with no
-    /// `options` used to spawn parentless onto the read-only baseline —
-    /// denied database::query / state::set / engine::unregister_trigger in
-    /// the very chat whose earlier turns could call all three. With the
+    /// `options` used to spawn parentless onto the configured default instead
+    /// of preserving the registering turn's narrower authority. With the
     /// registrant stamp, the reaction inherits that policy; explicit options
     /// subset it and can never escalate past it.
     #[test]
     fn spawn_payload_inherits_registrant_policy_and_subsets_requests() {
         let registrant = crate::types::turn::FunctionPolicy {
-            allow: vec!["database::query".into(), "state::set".into()],
+            allow: Some(vec!["database::query".into(), "state::set".into()]),
             deny: vec!["shell::run".into()],
             expose: Default::default(),
         };
@@ -2051,8 +2050,8 @@ mod tests {
             "other options pass through"
         );
 
-        // No stamp (raw engine-side registration): payload untouched, the
-        // read-only baseline fallback stays in force downstream.
+        // No stamp (raw engine-side registration): payload untouched, so the
+        // configured default stays in force downstream.
         let s = spec();
         let payload = build_spawn_payload("t".into(), &s, None);
         assert!(payload.get("options").is_none());

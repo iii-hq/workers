@@ -22,7 +22,6 @@ describe('approval-gate-config', () => {
         '!state::set',
       ]),
     ).toEqual({
-      allow: ['*'],
       deny: ['approval::*', 'configuration::*', 'shell::run', 'state::set'],
       expose: 'agent_trigger',
     })

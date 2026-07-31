@@ -1,5 +1,5 @@
 //! The function-trigger pipeline (harness.md § Functions / §
-//! `harness::function::trigger`): the fail-closed allow/deny globs first,
+//! `harness::function::trigger`): the structural allow/deny globs first,
 //! then the target invocation, then result normalisation. Discovery results
 //! (`engine::functions::list` / `info`) are post-filtered through the same
 //! globs so the model only discovers what it can call.
@@ -50,7 +50,7 @@ pub async fn trigger_call(
     function_id: &str,
     arguments: &Value,
 ) -> TriggerResult {
-    // Fail-closed glob policy — structural and final.
+    // Structural glob policy — final before hooks.
     if !policy.allows(function_id) {
         return TriggerResult::Result(denied_result(function_id));
     }
@@ -125,11 +125,11 @@ fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
     }
 }
 
-/// The `is_error` result for a policy denial (no allow match or a deny match).
+/// The `is_error` result for a structural policy denial.
 pub fn denied_result(function_id: &str) -> ResultData {
     let msg = format!(
-        "function {function_id} is not permitted by this agent's dispatch policy (no allow-glob \
-         match or a deny-glob match)"
+        "function {function_id} is not permitted by this agent's dispatch policy \
+         (outside its explicit allow scope or matched by a deny glob)"
     );
     ResultData {
         content: vec![ContentBlock::text(msg.clone())],
@@ -234,7 +234,7 @@ mod tests {
 
     fn pol(allow: &[&str]) -> CompiledPolicy {
         CompiledPolicy::from(Some(&FunctionPolicy {
-            allow: allow.iter().map(|s| s.to_string()).collect(),
+            allow: Some(allow.iter().map(|s| s.to_string()).collect()),
             deny: vec![],
             expose: Default::default(),
         }))

@@ -401,9 +401,9 @@ export type SandboxInvocationError = {
 }
 
 /**
- * A fail-closed dispatch-policy denial: the calling agent's `functions`
- * allow-list does not cover the function it tried. Distinct from a permission
- * denial (approval gate) — this is structural and the agent cannot retry it.
+ * A structural dispatch-policy denial: the function is outside a legacy
+ * positive scope or matched by a deny glob. Distinct from a permission denial
+ * (approval gate) — the agent cannot retry it under this turn's frozen policy.
  */
 export interface SandboxDispatchDenial {
   /** The blocked function id, when the message names it (`function <id> …`). */
@@ -560,7 +560,7 @@ export function collectErrorCandidates(value: unknown): unknown[] {
   return out
 }
 
-/** Engine fail-closed dispatch-policy denial signature (harness policy.rs). */
+/** Engine structural dispatch-policy denial signature (harness policy.rs). */
 const DISPATCH_DENIAL_RE = /not permitted by this agent.?s dispatch policy/i
 /** `function <id> is not permitted …` — captures the blocked function id. */
 const DISPATCH_FN_RE = /function\s+([A-Za-z0-9_:-]+)\s+is not permitted/i
@@ -576,7 +576,7 @@ function candidateText(candidate: unknown): string | undefined {
 }
 
 /**
- * Detect a fail-closed dispatch-policy denial in any failure shape. Scans the
+ * Detect a structural dispatch-policy denial in any failure shape. Scans the
  * same candidate set as `parseSandboxErrorDisplay` for the engine signature and
  * pulls the blocked function id out of the message when present.
  */

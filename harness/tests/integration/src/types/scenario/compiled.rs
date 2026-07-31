@@ -42,7 +42,8 @@ pub struct CompiledSendV1 {
     pub model: String,
     pub provider: String,
     pub idempotency_key: String,
-    pub options: CompiledSendOptionsV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<CompiledSendOptionsV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -54,7 +55,8 @@ pub struct CompiledSendOptionsV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CompiledFunctionPolicyV1 {
-    pub allow: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<Vec<String>>,
     pub deny: Vec<String>,
     pub expose: CompiledFunctionExposureV1,
 }
@@ -62,6 +64,7 @@ pub struct CompiledFunctionPolicyV1 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CompiledFunctionExposureV1 {
+    AgentTrigger,
     Native,
 }
 

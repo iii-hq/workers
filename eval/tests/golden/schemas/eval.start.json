@@ -213,14 +213,17 @@
         "type": "string"
       },
       "FunctionPolicy": {
-        "description": "The fail-closed dispatch policy (harness.md § Functions). Absent on the send => every call denied (a plain chat loop).",
+        "additionalProperties": false,
+        "description": "The turn's structural dispatch policy (harness.md § Functions). A present policy is permissive by default: omitting `allow` permits every function not matched by `deny`. `allow` remains as a backwards-compatible positive scope for restricted consumers; an explicit empty list denies everything. A missing policy on a persisted turn remains deny-all.",
         "properties": {
           "allow": {
-            "default": [],
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "deny": {
             "default": [],
@@ -355,7 +358,7 @@
             "type": "null"
           }
         ],
-        "description": "Shared function policy for both variants. Omitted means deny all."
+        "description": "Shared function policy for both variants. Omitted means deny all — an explicit empty allow-list, since a policy that omits `allow` is permissive."
       },
       "limits": {
         "allOf": [

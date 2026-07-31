@@ -31,13 +31,12 @@ type PolicyId = 'default' | 'narrow' | 'broad'
 
 const POLICIES: Record<
   PolicyId,
-  { allow: string[]; deny: string[]; caption: string }
+  { allow?: string[]; deny: string[]; caption: string }
 > = {
   default: {
-    allow: [],
     deny: [],
     caption:
-      'no allow-list supplied — every call is refused with a result the model can read. a default install is a plain chat loop until you opt functions in.',
+      'the shipped deny-only policy has no exclusions: every registered function is reachable, and calls run immediately when no approval gate is installed.',
   },
   narrow: {
     allow: ['todo::*', 'search::web', 'engine::functions::list'],
@@ -46,10 +45,9 @@ const POLICIES: Record<
       'a narrow agent: three globs, nothing else reachable. the same registry, a different reach — policy is per turn, not per deployment.',
   },
   broad: {
-    allow: ['*'],
     deny: ['session::delete'],
     caption:
-      'a broad agent: everything allowed except destructive surfaces — the shape a deployment pairs with approval-gate holds on the risky calls.',
+      'a guarded deny-only agent: everything is allowed except explicitly destructive surfaces; an installed approval gate can still hold risky permitted calls.',
   },
 }
 
@@ -58,8 +56,13 @@ function globToRegex(glob: string): RegExp {
   return new RegExp(`^${escaped}$`)
 }
 
-function isAllowed(fn: string, policy: { allow: string[]; deny: string[] }) {
-  const allowed = policy.allow.some((g) => globToRegex(g).test(fn))
+function isAllowed(
+  fn: string,
+  policy: { allow?: string[]; deny: string[] },
+) {
+  const allowed =
+    policy.allow === undefined ||
+    policy.allow.some((g) => globToRegex(g).test(fn))
   const denied = policy.deny.some((g) => globToRegex(g).test(fn))
   return allowed && !denied
 }
@@ -102,8 +105,8 @@ export function SubstrateSection() {
           />
           <StatusPanel
             variant="success"
-            headline="fail closed, by spec"
-            detail="dispatch policy is structural and final: no allow-list means no calls. hooks can narrow it further, never bypass it."
+            headline="deny-only by default"
+            detail="omitting allow permits every non-denied call. legacy allow scopes can narrow it, and hooks can hold or deny after the structural policy passes."
           />
         </div>
 
@@ -125,13 +128,19 @@ export function SubstrateSection() {
 
           <div className="px-4 py-3 border-b border-rule-2 font-mono text-[12.5px] leading-[1.6]">
             <span className="text-ink-faint">functions: </span>
-            <span className="text-ink">{'{'}</span> allow:{' '}
-            <span className="text-accent">
-              [{policy.allow.map((g) => `"${g}"`).join(', ')}]
-            </span>
+            <span className="text-ink">{'{'}</span>
+            {policy.allow ? (
+              <>
+                {' '}
+                allow:{' '}
+                <span className="text-accent">
+                  [{policy.allow.map((g) => `"${g}"`).join(', ')}]
+                </span>
+              </>
+            ) : null}
             {policy.deny.length > 0 ? (
               <>
-                , deny:{' '}
+                {policy.allow ? ', ' : ' '}deny:{' '}
                 <span className="text-ink">
                   [{policy.deny.map((g) => `"${g}"`).join(', ')}]
                 </span>
@@ -187,7 +196,7 @@ export function SubstrateSection() {
             </SpecRow>
             <SpecRow name="same policy either way" type="invariant">
               exposure changes what the model sees, never what it may call —
-              the fail-closed globs run at dispatch time in both modes.
+              the structural globs run at dispatch time in both modes.
             </SpecRow>
           </div>
         </SpecSheet>

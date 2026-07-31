@@ -92,9 +92,9 @@ fn reply_send_payload(
     // caller's in-flight one; it has no passive-append / "run" flag (see harness
     // SendRequest/SendOptions). The only lever over the woken turn is its per-turn
     // dispatch policy: when the stamp hook captured the caller's reach, pass it
-    // through as `options.functions` so the turn keeps that reach instead of running
-    // fail-closed (deny-all, tool-less). Without a captured policy we still deliver
-    // the outcome message; that turn simply runs with no tool reach.
+    // through as `options.functions` so the turn keeps that exact reach. Without a
+    // captured policy we still deliver the outcome message and the turn resolves
+    // the harness's configured deny-only default.
     let mut payload = serde_json::json!({
         "session_id": session_id,
         // Deterministic so an at-least-once re-fire is a harness-side no-op.
@@ -185,9 +185,9 @@ mod tests {
         let msg = p["message"].as_str().unwrap();
         assert!(msg.starts_with("Done:"), "msg: {msg}");
         assert!(msg.contains("winner"), "msg: {msg}");
-        // No captured caller policy → no `options.functions`, so the woken turn runs
-        // fail-closed. (`harness::send` always drives a turn; there is no run/passive
-        // flag — the wake-with-reach path is covered below.)
+        // No captured caller policy → no `options.functions`, so the woken turn
+        // resolves the harness default. (`harness::send` always drives a turn;
+        // there is no run/passive flag — exact-policy carryover is covered below.)
         assert!(
             p.get("options").is_none(),
             "no options without a captured policy"
@@ -203,12 +203,12 @@ mod tests {
             &reply(json!({
                 "session_id": "s1",
                 "model": "m1",
-                "functions": { "allow": ["*"], "deny": ["workflow::*"] }
+                "functions": { "deny": ["workflow::*"] }
             })),
             "s1",
         );
         // A captured caller policy is passed through as the woken turn's reach.
-        assert_eq!(p["options"]["functions"]["allow"][0], "*");
+        assert!(p["options"]["functions"].get("allow").is_none());
         assert_eq!(p["options"]["functions"]["deny"][0], "workflow::*");
     }
 

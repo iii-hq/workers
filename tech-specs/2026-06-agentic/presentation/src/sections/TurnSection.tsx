@@ -68,7 +68,7 @@ const STEPS: SeqStep[] = [
     to: 'functions',
     label: 'agent_trigger → shell::exec',
     title: 'the model asks for work',
-    desc: 'function calls dispatch through the fail-closed allow-list and the hook chain, with a checkpoint per call. results land in the transcript as function_result entries — at-most-once side effects, even across a crash.',
+    desc: 'function calls dispatch through the structural deny/legacy-allow policy and the hook chain, with a checkpoint per call. results land in the transcript as function_result entries — at-most-once side effects, even across a crash.',
   },
   {
     from: 'harness',

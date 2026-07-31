@@ -72,14 +72,16 @@ pub async fn handle(
     req: FunctionTriggerRequest,
 ) -> Result<FunctionTriggerResponse, HarnessError> {
     let cfg = deps.cfg().await;
-    // Honour the calling turn's dispatch policy when one exists; absent a turn
-    // record this is a direct trusted call, which still fails closed.
+    // Honour the calling turn's dispatch policy when one exists. An absent
+    // turn record remains deny-all even though resolved turn policies are
+    // permissive by default: direct callers cannot manufacture model
+    // authority without a turn.
     let record = crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
     let policy = CompiledPolicy::from(record.as_ref().and_then(|r| r.options.functions.as_ref()));
     let engine = deps.engine().await;
     let started = Instant::now();
 
-    // Trigger is a pipeline: fail-closed globs, then the pre_trigger chain,
+    // Trigger is a pipeline: structural globs, then the pre_trigger chain,
     // then the target, then the post_trigger chain (harness.md §
     // `harness::function::trigger`).
     if !policy.allows(&req.call.function_id) {

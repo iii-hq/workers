@@ -48,6 +48,7 @@ INTEGRATION_WORKERS = {
     "context-manager",
     "iii-directory",
     "state",
+    "approval-gate",
     "console",
 }
 E2E_WORKERS = {

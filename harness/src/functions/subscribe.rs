@@ -339,9 +339,8 @@ async fn intercept_register(
 /// binding. At fire time a reaction with no `options.functions` inherits it,
 /// and explicit options are subset against it (narrow, never escalate) —
 /// matching the in-turn child rule instead of dropping a reaction delivered
-/// into the registrant's own chat to the read-only baseline (the rctest-k7m3
-/// wrap-up turn was denied database::query / state::set /
-/// engine::unregister_trigger for exactly that reason).
+/// into the registrant's own chat onto a potentially different configured
+/// default.
 pub const REGISTRANT_FUNCTIONS_KEY: &str = "__registrant_functions";
 
 /// Stamp the registering turn's dispatch policy onto a react binding's
@@ -1283,7 +1282,7 @@ mod tests {
     #[test]
     fn stamp_registrant_functions_writes_trusted_policy_and_strips_smuggled() {
         let policy = crate::types::turn::FunctionPolicy {
-            allow: vec!["database::query".into()],
+            allow: Some(vec!["database::query".into()]),
             deny: vec![],
             expose: Default::default(),
         };
@@ -1509,7 +1508,10 @@ mod tests {
     #[test]
     fn native_subscription_controls_follow_dispatch_policy() {
         let policy = crate::types::turn::FunctionPolicy {
-            allow: vec![REGISTER_TRIGGER_ID.into(), UNREGISTER_TRIGGER_ID.into()],
+            allow: Some(vec![
+                REGISTER_TRIGGER_ID.into(),
+                UNREGISTER_TRIGGER_ID.into(),
+            ]),
             deny: vec![UNREGISTER_TRIGGER_ID.into()],
             expose: crate::types::turn::ExposeMode::Native,
         };

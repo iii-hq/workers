@@ -3,7 +3,7 @@ name: harness
 description: >-
   The durable agent turn loop — kick off a turn with `harness::send`, render
   it from session-manager transcript events, react to
-  `harness::turn-completed`, with deny-by-default tool dispatch and synchronous
+  `harness::turn-completed`, with deny-only-by-default tool dispatch and synchronous
   hook extension points for policy siblings.
 ---
 
@@ -18,18 +18,21 @@ is no `agent::events` stream, and `harness::status` is a point-in-time recovery
 read, not a render feed.
 
 Every invocation is a trigger (`iii.trigger({ function_id, payload })`); there is
-no separate "call" verb. Tool dispatch is deny-by-default: a send with no
-`options.functions.allow` is a plain chat loop and every model-requested call is
-refused until you allow globs per send. Sessions are minted by the harness
-(`s_<uuid>`) or supplied by you; a send into a running turn folds in as steering
-(`merged: true`) instead of erroring, and a repeated `idempotency_key` returns
-the original turn without appending.
+no separate "call" verb. Tool dispatch is permissive by default: a send with no
+`options.functions` receives the configured deny-only default, so every
+non-denied model-requested call may run. Install `approval-gate` to hold or deny
+calls through its `pre_trigger` hook. Legacy `allow` globs can still narrow a
+consumer, and `{ "allow": [] }` disables dispatch explicitly. Sessions are
+minted by the harness (`s_<uuid>`) or supplied by you; a send into a running turn
+folds in as steering (`merged: true`) instead of erroring, and a repeated
+`idempotency_key` returns the original turn without appending.
 
 Prerequisites: `session-manager` (required — transcript store and change feed)
 and `llm-router` (required — generation and the model catalog) must be present.
 `context-manager` (token budgeting and compaction) is a soft dependency — absent
 it, the harness sends raw history. `approval-gate` (the human-in-the-loop gate)
-is optional; without it no call is held and every allowed call runs un-gated.
+is optional; without it no call is held and every policy-permitted call runs
+un-gated.
 
 ## When to Use
 
@@ -110,8 +113,8 @@ must pass one. A supplied `model` must be a live id from `router::models::list`
 Omit `parent_session_id` and the child nests under the registering session's
 root automatically; pin it only to choose a different REAL session (an invented
 id shows the children as disconnected roots). A trigger-fired spawn has no
-parent policy to inherit — it gets the harness's read-only `default_functions`
-baseline unless `options.functions` grants more. Predecessor subscriptions
+parent policy to inherit — it gets the harness's `default_functions` policy
+unless `options.functions` narrows or overrides it. Predecessor subscriptions
 carrying the same `join.id`/`expect` and a distinct `key` each form a fan-in
 barrier: the downstream spawns exactly once, fed every predecessor's result, and
 the join's subscriptions are auto-unregistered once it fires (set

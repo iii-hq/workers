@@ -21,9 +21,9 @@ sessions/turns; orchestration beyond spawn/join stays out of scope, and hook *lo
 itself) always lives in the sibling that registers it.
 
 The harness is the only worker in this spec that depends on the other three. Function dispatch is
-optional (without it, the harness is a plain chat loop), while `session-manager`, `context-manager`,
-and `llm-router` are required on the generation path. Context budgeting fails closed because raw
-history cannot be proven safe for the selected model.
+available by default; installing `approval-gate` adds the optional human gate. `session-manager`,
+`context-manager`, and `llm-router` are required on the generation path. Context budgeting fails
+closed because raw history cannot be proven safe for the selected model.
 
 ## What it wires
 
@@ -239,14 +239,18 @@ The harness:
   the dispatch policy below, triggers via `iii.trigger({ function_id, payload })` through
   `harness::function::trigger`, and captures the result as a `function_result` message.
 
-The dispatch policy is **fail-closed**: a call is dispatched only if the target matches an `allow`
-glob and no `deny` glob (see `harness::send` options). When `options.functions` is omitted entirely,
-every call is denied with an `is_error` function_result explaining the policy — a default install is
-a plain chat loop until functions are explicitly allowed. The globs are structural and final: hooks
-run only *after* they pass, so an approval sibling cannot intercept a no-match denial — a deployment
-that wants every call human-gated instead allows broadly (`allow: ["*"]`) and lets the
-[approval-gate](approval-gate.md) hook hold or deny per its policy (see
-[Out of scope](#out-of-scope-future-sibling-workers)).
+The dispatch policy is **deny-only by default** (see `harness::send` options). A present
+`options.functions` policy without `allow` permits every target not matched by a `deny` glob.
+Legacy explicit `allow` globs remain a positive scope for restricted consumers; an explicit empty
+list (`allow: []`) denies every call. A new turn with no policy resolves to the configured
+`default_functions`, whose shipped value is unrestricted (`{ deny: [] }`). A missing policy on an
+already-persisted/internal turn still denies every call so direct internal dispatch cannot escape a
+turn's scope.
+
+The globs are structural and final: hooks run only *after* they pass. Installing
+[approval-gate](approval-gate.md) binds a `pre_trigger` hook that can hold or deny every
+policy-permitted call. Without that sibling there is no gate hook, so calls run immediately — the
+default harness operates in YOLO mode.
 
 `engine::functions::list` is how the **model** discovers what's callable — by triggering it through
 `agent_trigger` at runtime — not how the harness builds a schema list at turn start. The harness
@@ -258,14 +262,14 @@ functions it can actually call.
 
 - `"agent_trigger"` (default) — the single generic schema above. Zero per-function schema tokens;
   discovery happens at runtime.
-- `"native"` — at turn start the harness expands the `allow` globs against the registry
+- `"native"` — at turn start the harness filters the registry through the effective policy
   (`engine::functions::list` / `engine::functions::info`) and attaches one provider tool schema per
   allowed function. Models follow concrete per-function schemas more reliably than a generic
   `{ function, payload }` wrapper, and no turns are spent on discovery — the right mode for narrow
   agents (sub-agents especially) with small fixed toolsets. Costs registry reads at turn start and
-  schema tokens per function, so keep the allow-list tight.
+  schema tokens per function, so use native exposure with a narrow policy.
 
-Both modes enforce the same fail-closed allow/deny policy at dispatch time; `expose` changes only
+Both modes enforce the same effective policy at dispatch time; `expose` changes only
 what the model sees. The synthetic `submit_result` schema (see [Output contract](#output-contract))
 is harness-internal in either mode and is never dispatched through `iii.trigger`.
 
@@ -322,14 +326,14 @@ and the child's completion resolves the parent's call with the child's result.
 The spawn dispatch, step by step:
 
 1. **Guards** — violations fail the call with an `is_error` function_result, never a throw:
-   `harness::spawn` must match the parent's allow globs (fail-closed, like any target);
+   `harness::spawn` must be permitted by the parent's effective policy (like any target);
    `depth + 1 > max_depth` (default 3) is refused (`harness/spawn_depth_exceeded`); non-terminal
    children of this turn at or above `max_children` (default 5) is refused
    (`harness/spawn_fanout_exceeded`).
-2. **Policy subsetting.** The child's function policy is the requested one **intersected with the
-   parent's**: a child `allow` matches only what the parent's `allow` also matches, and parent
-   `deny` globs are inherited. A child can narrow, never escalate. The child's `max_turns` is
-   capped at the parent's remaining turn budget.
+2. **Policy subsetting.** The child inherits the parent's `deny` globs and any legacy explicit
+   parent `allow` ceiling. Its requested denies are unioned in; its requested explicit allow scope
+   is intersected conservatively with the parent ceiling. A child can narrow, never escalate. The
+   child's `max_turns` is capped at the parent's remaining turn budget.
 3. **Create the child session** with linkage metadata merged into `SessionMeta.metadata` —
    `{ parent_session_id, parent_turn_id, function_call_id, depth }` — so UIs reconstruct the tree
    and trigger configs can filter on it (see
@@ -405,7 +409,7 @@ to the hot path — events are always the cheaper tool.
 | `pre_turn` | first step of a turn, after `working` is set, before any model spend | veto (`deny` ends the turn with the reason) |
 | `pre_generate` | after `context::assemble`, before `router::chat` | replace/extend `system_prompt`; **append-only** message injection; veto |
 | `post_generate` | after the final `AssistantMessage` update of a generate step | observe only (usage accounting, safety logging) |
-| `pre_trigger` | after the fail-closed glob policy passes, before the target is invoked | `deny` (is_error result), `hold` (park via deferred trigger), rewrite `arguments` |
+| `pre_trigger` | after the structural dispatch policy passes, before the target is invoked | `deny` (is_error result), `hold` (park via deferred trigger), rewrite `arguments` |
 | `post_trigger` | after the target returns, before the `function_result` is appended | rewrite result `content` / `details` / `is_error` (redaction, truncation) |
 
 The asymmetries are deliberate:
@@ -421,7 +425,7 @@ The asymmetries are deliberate:
   token budget (default `min(20000, 10% of context_window)` — see
   [context-manager.md § Token budget model](context-manager.md#token-budget-model)); keep it small
   and bounded.
-- `pre_trigger` runs **after** the allow/deny globs: a hook can narrow the policy, never bypass it.
+- `pre_trigger` runs **after** the structural policy: a hook can narrow the policy, never bypass it.
 
 ### Registration
 
@@ -579,17 +583,17 @@ For operators wiring hooks and developers writing them:
 
 ## Agent exposure
 
-Deny-by-default for in-run agents (see [README § Security model](README.md#security-model)):
+The engine-level agent permission gate still protects harness internals even
+though turn dispatch is permissive by default:
 
 - **Deny:** `harness::send` — self-invocation: a model that can start arbitrary
   turns can fork unbounded loops outside any `max_turns` guard; `harness::turn` (internal);
   `harness::function::trigger`
   (forged call ids, policy re-entry); `harness::function::resolve` (forged results for parked
   calls); `harness::stop`.
-- **Allow (gated):** `harness::spawn` — the controlled alternative to `send`: the harness itself
+- **Agent-callable (subject to the effective turn policy):** `harness::spawn` — the controlled alternative to `send`: the harness itself
   enforces depth / fan-out / turn budgets and policy subsetting (see
-  [Sub-agents](#sub-agents-harnessspawn)), and the fail-closed dispatch policy still applies — a
-  deployment turns it on per agent by adding `harness::spawn` to the `allow` globs.
+  [Sub-agents](#sub-agents-harnessspawn)). A deny glob or legacy allow ceiling can remove it.
 - **Safe:** `harness::status` (read-only).
 
 ## Triggers
@@ -752,8 +756,8 @@ type SendRequest = {
     thinking_level?: ThinkingLevel;
     output?: OutputContract;      // the turn's deliverable; default { type: "text" } (see Output contract)
     functions?: {
-      allow?: string[];           // function_id globs the agent may dispatch to (e.g. "shell::*")
-      deny?: string[];
+      allow?: string[];           // legacy positive scope; [] disables dispatch
+      deny?: string[];            // omitted allow => everything except these globs
       expose?: "agent_trigger" | "native"; // default "agent_trigger" (see Functions (the white box))
     };
     metadata?: Record<string, unknown>; // tracing passthrough (session_id/message_id propagate)
@@ -893,7 +897,7 @@ type FunctionDispatchResponse =
     };
 ```
 
-Dispatch is a pipeline: the fail-closed allow/deny globs first, then the `pre_trigger`
+Dispatch is a pipeline: the structural function policy first, then the `pre_trigger`
 [hook chain](#hooks) (deny -> `is_error` result; hold -> `pending`; argument rewrite), then the
 target invocation, then the `post_trigger` chain over the result (redaction, truncation) before it
 is returned and appended. Policy denials and the synthetic "interrupted" results from redelivery

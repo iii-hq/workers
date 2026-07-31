@@ -64,8 +64,9 @@ fn normalize_functions(functions: Option<Value>) -> Option<Value> {
     // LLM turn (the harness runs it via router::chat internally); it must never
     // call router::chat / router::complete AS A TOOL — a confused agent does that to
     // "generate" its output, guessing unregistered model ids and burning turns. The
-    // harness evaluates `allow && !deny`, so this wins even over `allow:["*"]`. (We
-    // only deny the generate calls, not read-only router::models::* discovery.)
+    // The harness subtracts `deny` after applying any legacy allow scope, so
+    // this wins even for an unrestricted deny-only policy. (We only deny the
+    // generate calls, not read-only router::models::* discovery.)
     if let Some(obj) = policy.as_object_mut() {
         let deny = obj
             .entry("deny")
@@ -85,7 +86,7 @@ fn normalize_functions(functions: Option<Value>) -> Option<Value> {
 /// inherits the run's reach unless it narrows itself:
 ///   node.agent.functions  → the node's own (narrow, or `[]` to lock down)
 ///   def.default_functions → the run-wide default for un-narrowed nodes
-///   the implicit default  → everything EXCEPT the control-plane namespaces.
+///   the implicit default  → deny-only: everything EXCEPT control-plane namespaces.
 /// A node that omits `functions` is not deny-all: it inherits the main agent's
 /// reach so it can call e.g. engine::functions::list without listing it. But it
 /// is already running INSIDE a workflow, so the implicit default denies the
@@ -106,7 +107,6 @@ fn node_functions(node: &NodeDef, def: &WorkflowDef) -> Value {
         .or_else(|| def.default_functions.clone())
         .unwrap_or_else(|| {
             json!({
-                "allow": ["*"],
                 "deny": ["workflow::*", "configuration::*", "approval::*", "harness::hook::*"]
             })
         })
@@ -786,16 +786,16 @@ mod tests {
     #[test]
     fn node_functions_defaults_to_everything_except_workflow_control_plane() {
         // A node that omits `functions` is NOT deny-all — it inherits the main
-        // agent's reach (`["*"]`, so it can call e.g. engine::functions::list
-        // without listing it) — BUT the implicit default denies `workflow::*`
-        // so a leaf node can't recursively launch a sub-workflow to do its own
-        // single task. A node that really orchestrates opts in explicitly.
+        // agent's reach (a deny-only policy, so it can call e.g.
+        // engine::functions::list without listing it) — BUT the implicit
+        // default denies `workflow::*` so a leaf node can't recursively launch
+        // a sub-workflow to do its own single task. A node that really
+        // orchestrates opts in explicitly.
         let node = node_with(None);
         let def = def_with_default(None);
         assert_eq!(
             node_functions(&node, &def),
             json!({
-                "allow": ["*"],
                 "deny": ["workflow::*", "configuration::*", "approval::*", "harness::hook::*"]
             })
         );
@@ -804,8 +804,8 @@ mod tests {
     #[test]
     fn node_functions_implicit_default_denies_workflow_start_after_normalize() {
         // Regression: the nested-workflow footgun. An un-narrowed node must be
-        // spawned UNABLE to call workflow::start — deny wins over allow:["*"] in
-        // the harness, so it cannot wrap its assigned task in a sub-workflow.
+        // spawned UNABLE to call workflow::start — its deny-only policy blocks
+        // the namespace, so it cannot wrap its task in a sub-workflow.
         let node = node_with(None);
         let def = def_with_default(None);
         let got = normalize_functions(Some(node_functions(&node, &def))).unwrap();
@@ -839,12 +839,12 @@ mod tests {
     #[test]
     fn node_functions_inherits_run_default_when_node_omits() {
         let node = node_with(None);
-        let def = def_with_default(Some(
-            json!({ "allow": ["*"], "deny": ["approval::*", "configuration::*"] }),
-        ));
+        let def = def_with_default(Some(json!({
+            "deny": ["approval::*", "configuration::*"]
+        })));
         assert_eq!(
             node_functions(&node, &def),
-            json!({ "allow": ["*"], "deny": ["approval::*", "configuration::*"] })
+            json!({ "deny": ["approval::*", "configuration::*"] })
         );
     }
 

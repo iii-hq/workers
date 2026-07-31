@@ -134,13 +134,13 @@ mod tests {
             serde_json::from_value(json!({
                 "session_id": "sess_1",
                 "model": "m1",
-                "functions": { "allow": ["*"], "deny": ["workflow::*"] },
+                "functions": { "deny": ["workflow::*"] },
                 "call": { "arguments": { "definition": { "version": 1 }, "reply_to": {} } },
             }))
             .expect("envelope"),
         );
         let rt = &out["mutations"]["arguments"]["reply_to"];
-        assert_eq!(rt["functions"]["allow"][0], "*");
+        assert!(rt["functions"].get("allow").is_none());
         assert_eq!(rt["functions"]["deny"][0], "workflow::*");
     }
 

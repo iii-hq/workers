@@ -611,7 +611,7 @@ mod tests {
 
     fn broad_policy() -> FunctionPolicy {
         FunctionPolicy {
-            allow: vec!["*".into()],
+            allow: None,
             deny: vec![],
             expose: Default::default(),
         }
@@ -627,7 +627,8 @@ mod tests {
         let inherited = child_functions(&cfg, Some(&parent), None, Some(Mode::Agent));
         assert!(policy::CompiledPolicy::from(inherited.as_ref()).allows("state::set"));
 
-        // An ask-mode child is capped at the wildcard default, whatever it inherited.
+        // An ask-mode child is capped at the unrestricted deny-only default,
+        // whatever it inherited.
         let asked = child_functions(&cfg, Some(&parent), None, Some(Mode::Ask));
         let compiled = policy::CompiledPolicy::from(asked.as_ref());
         assert!(compiled.allows("state::get"));
@@ -640,7 +641,7 @@ mod tests {
         let cfg = WorkerConfig::default();
         let mut parent = parent_record(None);
         parent.options.functions = Some(FunctionPolicy {
-            allow: vec!["state::get".into()],
+            allow: Some(vec!["state::get".into()]),
             deny: vec![],
             expose: Default::default(),
         });

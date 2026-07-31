@@ -137,11 +137,10 @@ export function InvocationErrorView({ error }: InvocationErrorViewProps) {
 }
 
 /**
- * A fail-closed dispatch-policy denial. Unlike a generic invocation failure,
- * this is structural and actionable: the calling agent's `functions` allow-list
- * doesn't cover the function. The card names the blocked id and tells the
- * operator exactly where to grant it (a workflow node's `agent.functions` /
- * the def's `default_functions`, or a session's `options.functions.allow`).
+ * A structural dispatch-policy denial. Unlike a generic invocation failure,
+ * the function is outside a legacy positive scope or matched by a deny glob.
+ * The card names the blocked id and points to the policy locations that can
+ * narrow a workflow node or session.
  */
 export function DispatchDeniedView({ denial }: DispatchDeniedViewProps) {
   const fn = denial.functionId
@@ -169,25 +168,26 @@ export function DispatchDeniedView({ denial }: DispatchDeniedViewProps) {
         <div className="font-mono text-[12.5px] leading-[1.6] text-ink">
           {fn ? (
             <>
-              This agent's allow-list doesn't include <code>{fn}</code>. Grant
-              it where the agent is defined:
+              This agent's function policy blocks <code>{fn}</code>. Adjust it
+              where the agent is defined:
             </>
           ) : (
             <>
-              This function isn't in the agent's allow-list. Grant it where the
-              agent is defined:
+              This function is blocked by the agent's policy. Adjust it where
+              the agent is defined:
             </>
           )}
           <ul className="mt-1.5 flex flex-col gap-1 text-[12px] text-ink-faint">
             <li>
               <span className="text-ink">workflow node</span> — its{' '}
               <code className="text-ink">agent.functions</code> (or the def's{' '}
-              <code className="text-ink">default_functions</code>) narrows it
-              out. Widen that, or drop the narrowing — nodes inherit the run's
-              full reach by default.
+              <code className="text-ink">default_functions</code>) narrows it.
+              Remove the matching deny or widen a legacy allow scope.
             </li>
             <li>
-              <span className="text-ink">chat / session</span> — add it to{' '}
+              <span className="text-ink">chat / session</span> — remove the
+              matching <code className="text-ink">options.functions.deny</code>{' '}
+              glob, or widen a legacy{' '}
               <code className="text-ink">options.functions.allow</code>.
             </li>
           </ul>

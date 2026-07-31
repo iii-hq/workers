@@ -51,12 +51,16 @@ pub enum ExposeMode {
     Native,
 }
 
-/// The fail-closed dispatch policy (harness.md § Functions). Absent on the
-/// send => every call denied (a plain chat loop).
+/// The turn's structural dispatch policy (harness.md § Functions). A present
+/// policy is permissive by default: omitting `allow` permits every function
+/// not matched by `deny`. `allow` remains as a backwards-compatible positive
+/// scope for restricted consumers; an explicit empty list denies everything.
+/// A missing policy on a persisted turn remains deny-all.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FunctionPolicy {
-    #[serde(default)]
-    pub allow: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<Vec<String>>,
     #[serde(default)]
     pub deny: Vec<String>,
     #[serde(default)]
@@ -95,7 +99,8 @@ pub struct TurnOptions {
     pub provider_options: Option<BTreeMap<String, Value>>,
     #[serde(default)]
     pub output: OutputContract,
-    /// The dispatch policy; `None` denies every call.
+    /// The resolved dispatch policy; `None` denies every call. Turn-seeding
+    /// paths normally resolve an omitted request to `default_functions`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
     #[serde(skip_serializing_if = "Option::is_none")]

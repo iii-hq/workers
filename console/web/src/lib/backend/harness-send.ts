@@ -23,8 +23,9 @@ export type HarnessThinkingLevel =
 export type ExposeMode = 'agent_trigger' | 'native'
 
 /**
- * Fail-closed dispatch policy. Absent (or with an empty `allow`) the harness
- * denies every model-requested call — a plain chat loop.
+ * Structural dispatch policy. Omitting `allow` permits every function not
+ * matched by `deny`; legacy explicit `allow` globs narrow the surface, and an
+ * empty `allow` disables dispatch.
  */
 export interface HarnessFunctionPolicy {
   allow?: string[]
@@ -39,7 +40,7 @@ export type HarnessOutputContract =
 
 /** Operating mode — the harness prepends a short paragraph before the
  * identity prompt. In `ask` mode the harness also caps `functions` at its
- * read-only baseline server-side, whatever policy we send. */
+ * configured default server-side, whatever policy we send. */
 export type HarnessSendMode = 'ask' | 'agent'
 
 /** Per-send options frozen onto the turn record. */

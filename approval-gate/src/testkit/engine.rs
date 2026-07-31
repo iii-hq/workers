@@ -2,6 +2,7 @@
 //! Self-skips when no `iii` binary is on PATH or `III_ENGINE_BIN` is set.
 
 use std::io::Write as _;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -51,12 +52,14 @@ fn free_port() -> u16 {
 }
 
 pub async fn spawn_engine() -> Option<Engine> {
+    static NEXT_ENGINE_ID: AtomicU64 = AtomicU64::new(1);
+
     let bin = engine_bin()?;
     let port = free_port();
     let dir = std::env::temp_dir().join(format!(
         "approval-gate-it-{}-{}",
         std::process::id(),
-        Instant::now().elapsed().as_nanos()
+        NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).ok()?;
     // The configuration worker's fs adapter writes one YAML file per id
@@ -157,7 +160,7 @@ pub async fn spawn_engine() -> Option<Engine> {
 
 static BOOT_LOCK: OnceCell<tokio::sync::Mutex<()>> = OnceCell::const_new();
 
-async fn boot_lock() -> tokio::sync::MutexGuard<'static, ()> {
+pub async fn engine_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
     BOOT_LOCK
         .get_or_init(|| async { tokio::sync::Mutex::new(()) })
         .await
@@ -168,7 +171,7 @@ async fn boot_lock() -> tokio::sync::MutexGuard<'static, ()> {
 /// Spawn a fresh isolated engine. Serialized to avoid port races when tests
 /// run in parallel; each call gets its own state store.
 pub async fn require_engine() -> Option<Engine> {
-    let _guard = boot_lock().await;
+    let _guard = engine_test_guard().await;
     match spawn_engine().await {
         Some(engine) => Some(engine),
         None => {
@@ -305,6 +308,48 @@ impl Drop for TestStack {
     }
 }
 
+/// Minimal real stack used to prove standalone harness behavior. No
+/// approval-gate functions or hook bindings are registered on this connection.
+pub struct HarnessOnlyStack {
+    pub iii: Arc<IIIClient>,
+    harness_child: Option<std::process::Child>,
+}
+
+impl Drop for HarnessOnlyStack {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.harness_child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Minimal queue surface for real-harness integration tests. Definitions are
+/// acknowledged and enqueue actions are accepted without consuming them, so a
+/// seeded turn stays stable while the test exercises its dispatch policy.
+fn register_queue_stubs(iii: &IIIClient) {
+    iii.register_function(
+        "queue::define",
+        RegisterFunction::new_async(|req: Value| async move {
+            Ok::<_, iii_sdk::errors::Error>(json!({
+                "queue": req.get("queue").cloned().unwrap_or(Value::Null),
+                "changed": false,
+            }))
+        }),
+    );
+    iii.register_function(
+        "engine::queue::enqueue",
+        RegisterFunction::new_async(|req: Value| async move {
+            Ok::<_, iii_sdk::errors::Error>(json!({
+                "messageReceiptId": req
+                    .get("messageReceiptId")
+                    .cloned()
+                    .unwrap_or_else(|| json!("test-receipt")),
+            }))
+        }),
+    );
+}
+
 fn spawn_harness_worker(engine_url: &str) -> Option<std::process::Child> {
     let bin = std::env::var("CARGO_BIN_EXE_harness").ok()?;
     std::process::Command::new(bin)
@@ -334,6 +379,20 @@ async fn wait_for_harness(iii: &IIIClient) -> bool {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     false
+}
+
+pub async fn boot_harness_only(engine: &Engine) -> HarnessOnlyStack {
+    let iii = Arc::new(register_worker(&engine.url, InitOptions::default()));
+    register_queue_stubs(&iii);
+    let child = spawn_harness_worker(&engine.url).expect("spawn harness worker");
+    assert!(
+        wait_for_harness(&iii).await,
+        "harness worker did not become ready"
+    );
+    HarnessOnlyStack {
+        iii,
+        harness_child: Some(child),
+    }
 }
 
 pub fn log_push(log: &CallLog, value: Value) {
@@ -425,6 +484,12 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
             }}))
         }),
     );
+    iii.register_function(
+        "session::append",
+        RegisterFunction::new_async(move |_req: Value| async move {
+            Ok::<_, iii_sdk::errors::Error>(json!({ "entry_id": "e_integration" }))
+        }),
+    );
 
     let created: CallLog = Arc::default();
     {
@@ -469,7 +534,9 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     })
     .expect("bind pending_resolved");
 
-    configuration::bind_hook(&iii);
+    if !opts.real_harness {
+        configuration::bind_hook(&iii);
+    }
 
     // The typed, re-fetching config-change handler + its `configuration`
     // trigger binding (mirrors the production boot order: last).
@@ -477,11 +544,13 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
         .expect("register configuration change trigger");
 
     let harness_child = if opts.real_harness {
+        register_queue_stubs(&iii);
         let child = spawn_harness_worker(&engine.url).expect("spawn harness worker");
         assert!(
             wait_for_harness(&iii).await,
             "harness worker did not become ready"
         );
+        configuration::bind_hook(&iii);
         Some(child)
     } else {
         None
@@ -574,7 +643,7 @@ where
     F: FnOnce(TestStack) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    let _guard = boot_lock().await;
+    let _guard = engine_test_guard().await;
     let Some(engine) = spawn_engine().await else {
         eprintln!("skipping: no iii engine (set III_ENGINE_BIN or put `iii` on PATH)");
         return;

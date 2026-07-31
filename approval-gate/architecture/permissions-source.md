@@ -8,7 +8,7 @@ what an agent may do:
 | **Deployment rules** | `configuration` entry `approval-gate` → `rules` (+ legacy `always_allow_seed`, now folded into mode-scoped allow rules) | First-match `allow` / `deny` / `hold` for every function call |
 | **Per-session deltas** | `state` scope `approval_settings/<session_id>` → `mode`, `always_allow`, `approved_always` | Human choices layered on top of deployment defaults |
 | **Console defaults (removed)** | ~~`localStorage` `iii-default-permission-mode` / `iii-default-allowlist`~~ | Was a fifth copy; console now reads/writes the `approval-gate` entry |
-| **Harness structural floor** | Per-turn `FunctionPolicy { allow, deny, expose }` on `harness::send` | Fail-closed globs before the pre_trigger hook chain; derived from deployment rules at send time |
+| **Harness structural floor** | Per-turn `FunctionPolicy { allow?, deny, expose }` on `harness::send` | Deny-only globs before the pre_trigger hook chain; derived from deployment rules at send time |
 
 ## Canonical source
 

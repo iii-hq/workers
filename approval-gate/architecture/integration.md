@@ -111,8 +111,8 @@ assumes, faked today by `tests/integration.rs`:
 Until those exist the bindings log `trigger_type_not_found` at boot
 (harmless); **restart the worker after the harness lands to re-bind**. The
 `pre_trigger` ordering caveat from the spec applies: hooks run *after* the
-harness's fail-closed allow/deny globs — a deployment that wants everything
-gated sets a broad trigger policy and lets the gate hold/deny.
+harness's structural function policy. The shipped deny-only default permits
+every non-denied call to reach the gate, which then holds or denies it.
 
 ## Deployment notes
 

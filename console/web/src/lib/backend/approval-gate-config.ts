@@ -65,7 +65,6 @@ export function deriveFunctionPolicy(
     }
   }
   return {
-    allow: ['*'],
     deny: Array.from(deny).sort(),
     expose: 'agent_trigger',
   }

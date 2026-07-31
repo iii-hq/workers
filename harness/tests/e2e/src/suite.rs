@@ -21,9 +21,11 @@ use crate::scenarios::{CriterionAward, ScenarioId, ScenarioObservation, Scenario
 const MAX_RUNS: u32 = 20;
 const MAX_TECHNICAL_RETRIES: u8 = 3;
 
+/// Unrestricted: a present policy with no `allow` permits every function not
+/// matched by `deny`.
 fn e2e_function_policy() -> FunctionPolicy {
     FunctionPolicy {
-        allow: vec!["*".into()],
+        allow: None,
         ..FunctionPolicy::default()
     }
 }

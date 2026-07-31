@@ -119,7 +119,9 @@ pub struct EvalStartRequestV1 {
     pub execution_order: Option<ExecutionOrderV1>,
     #[serde(default)]
     pub limits: EvalLimitsV1,
-    /// Shared function policy for both variants. Omitted means deny all.
+    /// Shared function policy for both variants. Omitted means deny all — an
+    /// explicit empty allow-list, since a policy that omits `allow` is
+    /// permissive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
     /// Shared output contract for both variants. Omitted means text.
@@ -230,7 +232,10 @@ impl EvalStartRequestV1 {
             execution_order: self.execution_order.unwrap_or_default(),
             source_evaluation_id: None,
             limits: self.limits,
-            functions: self.functions.unwrap_or_default(),
+            // Explicit empty allow-list, not `FunctionPolicy::default()`: a
+            // default policy now omits `allow` and so permits everything the
+            // `deny` globs miss. An omitted eval policy stays deny-all.
+            functions: self.functions.unwrap_or_else(deny_all_policy),
             output: self.output.unwrap_or_default(),
             metadata: self.metadata,
         })
@@ -484,6 +489,15 @@ fn empty_object() -> Value {
     json!({})
 }
 
+/// Deny every function. An explicit empty allow-list: the harness treats a
+/// policy that merely omits `allow` as permitting everything `deny` misses.
+fn deny_all_policy() -> FunctionPolicy {
+    FunctionPolicy {
+        allow: Some(Vec::new()),
+        ..FunctionPolicy::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,7 +569,10 @@ mod tests {
     fn prompt_comparison_changes_only_prompt_and_defaults_to_one_run() {
         let normalized = request(ComparisonDimensionV1::Prompt).normalize().unwrap();
         assert_eq!(normalized.runs, 1);
-        assert_eq!(normalized.functions, FunctionPolicy::default());
+        // An omitted policy stays deny-all, which is now an EXPLICIT empty
+        // allow-list rather than `FunctionPolicy::default()` (permissive).
+        assert_eq!(normalized.functions, deny_all_policy());
+        assert_eq!(normalized.functions.allow, Some(Vec::new()));
         assert_eq!(normalized.output, OutputContract::Text);
     }
 
