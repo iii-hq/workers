@@ -264,7 +264,7 @@ impl<'a> ScenarioRunner<'a> {
 
         let outcome = async {
             self.arm_booted(&mut booted).await?;
-            self.run_phases_after_arm(&booted.services, &booted.prepared)
+            self.run_phases_after_arm(&mut booted.stack, &booted.services, &booted.prepared)
                 .await
         }
         .await;
@@ -279,10 +279,12 @@ impl<'a> ScenarioRunner<'a> {
 
     async fn run_phases_after_arm(
         &mut self,
+        stack: &mut Stack,
         services: &RunServices,
         prepared: &PreparedRun,
     ) -> Result<(), RunError> {
         let mut active = self.send(services, prepared).await?;
+        self.fault(stack, services, prepared, &active).await?;
         self.r#await(services, &mut active).await?;
         self.collect(services, prepared, &mut active).await?;
         let evidence = self.build_evidence(services, &active, Some(active.send_response.clone()));

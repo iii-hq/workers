@@ -17,6 +17,8 @@ use crate::boot::{ApplyLock, ConfigCell};
 use crate::config::QueueConfig;
 use crate::trigger::{Invoker, QueueTriggerHandler};
 
+const MAX_RESTART_REDELIVERIES: u32 = 3;
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DefineQueueInput {
@@ -820,12 +822,14 @@ async fn run_concurrent(
         let max_retries = config.max_retries;
         let poll_interval_ms = config.poll_interval_ms;
         let timeout_ms = config.timeout_ms;
+        let redeliver_on_engine_restart = config.redeliver_on_engine_restart;
         tasks.spawn(async move {
             process_standard_message(
                 &queue_name,
                 max_retries,
                 poll_interval_ms,
                 timeout_ms,
+                redeliver_on_engine_restart,
                 active,
                 adapter,
                 invoker,
@@ -898,6 +902,7 @@ async fn run_grouped_fifo(
                 let backoff_ms = config.backoff_ms;
                 let poll_interval_ms = config.poll_interval_ms;
                 let timeout_ms = config.timeout_ms;
+                let redeliver_on_engine_restart = config.redeliver_on_engine_restart;
                 tasks.spawn(async move {
                     while let Ok(Some(message)) =
                         tokio::time::timeout(Duration::from_secs(60), group_rx.recv()).await
@@ -908,6 +913,7 @@ async fn run_grouped_fifo(
                             backoff_ms,
                             poll_interval_ms,
                             timeout_ms,
+                            redeliver_on_engine_restart,
                             active.clone(),
                             adapter.clone(),
                             invoker.clone(),
@@ -950,6 +956,7 @@ async fn process_standard_message(
     max_retries: u32,
     poll_interval_ms: u64,
     timeout_ms: u64,
+    redeliver_on_engine_restart: bool,
     active: Arc<Semaphore>,
     adapter: Arc<dyn QueueAdapter>,
     invoker: Arc<dyn Invoker>,
@@ -959,7 +966,16 @@ async fn process_standard_message(
     let Ok(_permit) = active.acquire_owned().await else {
         return;
     };
-    let result = invoke_message(queue, &invoker, &message, message.attempt, timeout_ms).await;
+    let result = invoke_message_with_restart_policy(
+        queue,
+        &invoker,
+        &message,
+        message.attempt,
+        timeout_ms,
+        poll_interval_ms,
+        redeliver_on_engine_restart,
+    )
+    .await;
     let operation = if result.is_ok() {
         adapter.ack_function_queue(queue, message.delivery_id).await
     } else {
@@ -979,6 +995,7 @@ async fn process_fifo_message(
     backoff_ms: u64,
     poll_interval_ms: u64,
     timeout_ms: u64,
+    redeliver_on_engine_restart: bool,
     active: Arc<Semaphore>,
     adapter: Arc<dyn QueueAdapter>,
     invoker: Arc<dyn Invoker>,
@@ -990,9 +1007,17 @@ async fn process_fifo_message(
         let Ok(permit) = active.clone().acquire_owned().await else {
             return;
         };
-        let succeeded = invoke_message(queue, &invoker, &message, attempt, timeout_ms)
-            .await
-            .is_ok();
+        let succeeded = invoke_message_with_restart_policy(
+            queue,
+            &invoker,
+            &message,
+            attempt,
+            timeout_ms,
+            poll_interval_ms,
+            redeliver_on_engine_restart,
+        )
+        .await
+        .is_ok();
         drop(permit);
         if succeeded {
             if let Err(err) = adapter.ack_function_queue(queue, message.delivery_id).await {
@@ -1021,6 +1046,74 @@ async fn process_fifo_message(
             "FIFO function queue invocation failed; retrying in place"
         );
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+    }
+}
+
+/// Only queues that explicitly declare their consumer checkpoint-safe may
+/// re-deliver inside one queue attempt after an engine restart. Other queues
+/// retain their normal timeout, retry, and DLQ semantics.
+async fn invoke_message_with_restart_policy(
+    queue: &str,
+    invoker: &Arc<dyn Invoker>,
+    message: &QueueMessage,
+    attempt: u32,
+    timeout_ms: u64,
+    poll_interval_ms: u64,
+    redeliver_on_engine_restart: bool,
+) -> Result<Option<Value>, String> {
+    if !redeliver_on_engine_restart {
+        return invoke_message(queue, invoker, message, attempt, timeout_ms).await;
+    }
+
+    invoke_checkpointed_message_across_engine_restarts(
+        queue,
+        invoker,
+        message,
+        attempt,
+        timeout_ms,
+        poll_interval_ms,
+    )
+    .await
+}
+
+/// Replace a stranded checkpoint-safe invocation after an engine restart.
+/// The loop is deliberately bounded; repeated restarts fall back to the
+/// queue's ordinary nack/retry budget instead of pinning a FIFO group forever.
+async fn invoke_checkpointed_message_across_engine_restarts(
+    queue: &str,
+    invoker: &Arc<dyn Invoker>,
+    message: &QueueMessage,
+    attempt: u32,
+    timeout_ms: u64,
+    poll_interval_ms: u64,
+) -> Result<Option<Value>, String> {
+    let mut redeliveries = 0u32;
+    loop {
+        // Capture the current epoch before starting this invocation. A
+        // process-global epoch is unsafe here: after an idle engine restart it
+        // would make the first post-restart delivery look interrupted.
+        let Some(baseline) = invoker.connection_epoch().await? else {
+            return invoke_message(queue, invoker, message, attempt, timeout_ms).await;
+        };
+        tokio::select! {
+            result = invoke_message(queue, invoker, message, attempt, timeout_ms) => return result,
+            () = invoker.connection_lost_since(baseline) => {
+                if redeliveries >= MAX_RESTART_REDELIVERIES {
+                    return Err(format!(
+                        "{} crossed more than {MAX_RESTART_REDELIVERIES} engine restarts in one queue attempt",
+                        message.function_id
+                    ));
+                }
+                redeliveries += 1;
+                tracing::warn!(
+                    queue = %queue,
+                    function_id = %message.function_id,
+                    redeliveries,
+                    "engine connection lost with the invocation in flight; holding until the target re-registers, then re-invoking"
+                );
+                wait_for_function(invoker, queue, &message.function_id, poll_interval_ms).await;
+            }
+        }
     }
 }
 
@@ -1336,6 +1429,91 @@ mod tests {
         }
     }
 
+    /// First call pends forever (the invocation stranded by an engine crash);
+    /// `connection_lost` resolves exactly once, after that call has started;
+    /// every later call succeeds. Mirrors the issue-507 SIGKILL-and-respawn
+    /// window as seen by the consumer loop.
+    #[derive(Default)]
+    struct CrashOnceInvoker {
+        calls: AtomicUsize,
+        lost_fired: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl Invoker for CrashOnceInvoker {
+        async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                std::future::pending::<()>().await;
+            }
+            Ok(None)
+        }
+
+        async fn connection_epoch(&self) -> Result<Option<u64>, String> {
+            Ok(Some(if self.lost_fired.load(Ordering::SeqCst) {
+                2
+            } else {
+                1
+            }))
+        }
+
+        async fn connection_lost_since(&self, baseline: u64) {
+            loop {
+                if baseline == 1
+                    && self.calls.load(Ordering::SeqCst) == 1
+                    && !self.lost_fired.swap(true, Ordering::SeqCst)
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct RestartSignalButSuccessfulInvoker {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Invoker for RestartSignalButSuccessfulInvoker {
+        async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Ok(None)
+        }
+
+        async fn connection_epoch(&self) -> Result<Option<u64>, String> {
+            Ok(Some(1))
+        }
+
+        async fn connection_lost_since(&self, _baseline: u64) {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    }
+
+    #[derive(Default)]
+    struct AlwaysRestartingInvoker {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Invoker for AlwaysRestartingInvoker {
+        async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            std::future::pending::<Result<Option<Value>, String>>().await
+        }
+
+        async fn connection_epoch(&self) -> Result<Option<u64>, String> {
+            Ok(Some(self.calls.load(Ordering::SeqCst) as u64 + 1))
+        }
+
+        async fn connection_lost_since(&self, baseline: u64) {
+            while self.calls.load(Ordering::SeqCst) < baseline as usize {
+                tokio::task::yield_now().await;
+            }
+        }
+    }
+
     #[derive(Default)]
     struct TimeoutRecordingInvoker {
         timeout_ms: AtomicU64,
@@ -1358,10 +1536,16 @@ mod tests {
         }
     }
 
-    fn message(delivery_id: u64, session: &str, sequence: u64, delay_ms: u64) -> QueueMessage {
+    fn message_for(
+        delivery_id: u64,
+        function_id: &str,
+        session: &str,
+        sequence: u64,
+        delay_ms: u64,
+    ) -> QueueMessage {
         QueueMessage {
             delivery_id,
-            function_id: "harness::turn".to_string(),
+            function_id: function_id.to_string(),
             data: json!({
                 "session_id": session,
                 "sequence": sequence,
@@ -1372,6 +1556,10 @@ mod tests {
             traceparent: None,
             baggage: None,
         }
+    }
+
+    fn message(delivery_id: u64, session: &str, sequence: u64, delay_ms: u64) -> QueueMessage {
+        message_for(delivery_id, "harness::turn", session, sequence, delay_ms)
     }
 
     #[test]
@@ -1569,6 +1757,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fifo_reinvokes_after_engine_connection_loss_without_burning_attempts() {
+        let adapter = Arc::new(RecordingAdapter::default());
+        let invoker = Arc::new(CrashOnceInvoker::default());
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            process_fifo_message(
+                "harness-turn",
+                3,
+                1,
+                1,
+                1_800_000,
+                true,
+                Arc::new(Semaphore::new(1)),
+                adapter.clone(),
+                invoker.clone(),
+                message(13, "s1", 1, 0),
+            ),
+        )
+        .await
+        .expect("interrupted delivery must be re-invoked, not stranded");
+
+        // The stranded first invocation is replaced by exactly one re-invoke;
+        // it succeeds and acks with no nack (no retry attempt consumed).
+        assert_eq!(invoker.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(*adapter.acked.lock().unwrap(), vec![13]);
+        assert!(adapter.nacked.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn standard_delivery_without_checkpoint_opt_in_uses_normal_semantics() {
+        let adapter = Arc::new(RecordingAdapter::default());
+        let invoker = Arc::new(RestartSignalButSuccessfulInvoker::default());
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            process_standard_message(
+                "turns",
+                3,
+                1,
+                1_800_000,
+                false,
+                Arc::new(Semaphore::new(1)),
+                adapter.clone(),
+                invoker.clone(),
+                message_for(17, "jobs::run", "s1", 1, 0),
+            ),
+        )
+        .await
+        .expect("generic delivery should complete through normal queue semantics");
+
+        assert_eq!(invoker.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(*adapter.acked.lock().unwrap(), vec![17]);
+        assert!(adapter.nacked.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn checkpointed_restart_redelivery_is_bounded() {
+        let concrete = Arc::new(AlwaysRestartingInvoker::default());
+        let invoker: Arc<dyn Invoker> = concrete.clone();
+        let message = message(19, "s1", 1, 0);
+        let error = invoke_checkpointed_message_across_engine_restarts(
+            "harness-turn",
+            &invoker,
+            &message,
+            0,
+            1_800_000,
+            1,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("more than 3 engine restarts"));
+        assert_eq!(
+            concrete.calls.load(Ordering::SeqCst),
+            MAX_RESTART_REDELIVERIES as usize + 1
+        );
+    }
+
+    #[tokio::test]
     async fn fifo_retries_in_place_then_acks_without_requeueing() {
         let adapter = Arc::new(RecordingAdapter::default());
         let invoker = Arc::new(FailingInvoker {
@@ -1582,6 +1850,7 @@ mod tests {
             1,
             1,
             1_800_000,
+            false,
             Arc::new(Semaphore::new(1)),
             adapter.clone(),
             invoker.clone(),
@@ -1608,6 +1877,7 @@ mod tests {
             1,
             1,
             1_800_000,
+            false,
             Arc::new(Semaphore::new(1)),
             adapter.clone(),
             invoker.clone(),

@@ -3,6 +3,7 @@
 mod coalesced_fire;
 mod console_streamed_text;
 mod dsl;
+mod engine_restart_recovery;
 mod exactly_once_function;
 mod join_spec_mismatch;
 mod late_join_replay;
@@ -30,6 +31,7 @@ pub fn all() -> Vec<ScenarioFixture> {
     vec![
         coalesced_fire::scenario(),
         console_streamed_text::scenario(),
+        engine_restart_recovery::scenario(),
         exactly_once_function::scenario(),
         join_spec_mismatch::scenario(),
         late_join_replay::scenario(),
@@ -49,7 +51,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 11);
+        assert_eq!(fixtures.len(), 12);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

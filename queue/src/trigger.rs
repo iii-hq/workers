@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
@@ -27,6 +28,36 @@ use crate::subscriber_config::SubscriberQueueConfig;
 /// lets the adapter retry an in-flight delivery while the original invocation
 /// is still running. 30 minutes covers the longest intended job budget.
 const FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
+
+/// How often [`IiiInvoker::connection_lost_since`] samples the engine epoch
+/// while an invocation is in flight, and how long one sample may take.
+const ENGINE_EPOCH_PROBE_INTERVAL_MS: u64 = 1_000;
+const ENGINE_EPOCH_PROBE_TIMEOUT_MS: u64 = 3_000;
+
+/// The engine's boot identity: the earliest `connected_at_ms` among its
+/// in-process (`runtime == "engine"`) workers, which attach once at engine
+/// startup. A restarted engine reports a new epoch — the signal that every
+/// invocation in flight across the restart lost its result routing. `None`
+/// when the engine cannot be reached (outage in progress) or the response
+/// shape is unrecognized.
+async fn engine_epoch_ms(iii: &IIIClient) -> Option<u64> {
+    let response = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::workers::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(ENGINE_EPOCH_PROBE_TIMEOUT_MS),
+        })
+        .await
+        .ok()?;
+    response
+        .get("workers")?
+        .as_array()?
+        .iter()
+        .filter(|worker| worker.get("runtime").and_then(Value::as_str) == Some("engine"))
+        .filter_map(|worker| worker.get("connected_at_ms").and_then(Value::as_u64))
+        .min()
+}
 
 #[async_trait]
 pub trait Invoker: Send + Sync + 'static {
@@ -49,6 +80,17 @@ pub trait Invoker: Send + Sync + 'static {
     /// burning delivery retries on a transient `FUNCTION_NOT_FOUND` error.
     async fn function_available(&self, _function_id: &str) -> Result<bool, String> {
         Ok(true)
+    }
+
+    /// Capture the engine epoch immediately before a restart-sensitive
+    /// invocation. `None` disables restart watching for this invocation.
+    async fn connection_epoch(&self) -> Result<Option<u64>, String> {
+        Ok(None)
+    }
+
+    /// Resolve when the engine moves away from the captured epoch.
+    async fn connection_lost_since(&self, _baseline: u64) {
+        std::future::pending::<()>().await
     }
 }
 
@@ -114,6 +156,31 @@ impl Invoker for IiiInvoker {
                     Ok(false)
                 } else {
                     Err(message)
+                }
+            }
+        }
+    }
+
+    async fn connection_epoch(&self) -> Result<Option<u64>, String> {
+        Ok(engine_epoch_ms(&self.iii).await)
+    }
+
+    async fn connection_lost_since(&self, baseline: u64) {
+        // Neither the SDK connection state nor plain liveness probes can see
+        // a fast restart: the reconnect loop reports `Connected` through its
+        // silent 2s retry sleep, and outbound messages buffered during the
+        // outage are answered by the NEW engine as if nothing happened
+        // (both verified against a SIGKILLed-and-respawned engine). The
+        // engine's boot epoch is the reliable signal — a buffered probe
+        // answered by a restarted engine reveals the changed epoch.
+        loop {
+            tokio::time::sleep(Duration::from_millis(ENGINE_EPOCH_PROBE_INTERVAL_MS)).await;
+            // An unreadable epoch (outage in progress) never trips by
+            // itself: nothing can progress until the engine is back, and
+            // the first successful sample afterwards decides.
+            if let Some(epoch) = engine_epoch_ms(&self.iii).await {
+                if epoch != baseline {
+                    return;
                 }
             }
         }

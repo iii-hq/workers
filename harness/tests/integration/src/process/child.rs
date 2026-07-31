@@ -9,6 +9,7 @@ use nix::sys::wait::waitpid;
 use nix::unistd::Pid;
 
 pub(super) const REAP_INTERVAL: Duration = Duration::from_millis(25);
+const IMMEDIATE_KILL_BUDGET: Duration = Duration::from_secs(2);
 
 /// Tracks who owns the final wait for the direct child.
 ///
@@ -57,6 +58,32 @@ impl SupervisedChild {
     /// ownership. A removed child must still clean descendants up on drop.
     pub fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
         self.child.try_wait()
+    }
+
+    pub async fn kill_now(&mut self) -> anyhow::Result<()> {
+        self.signal_tree(Signal::SIGKILL)?;
+        let deadline = tokio::time::Instant::now() + IMMEDIATE_KILL_BUDGET;
+        loop {
+            match self.poll_reap() {
+                Ok(true) => return Ok(()),
+                Ok(false) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(REAP_INTERVAL).await;
+                }
+                Ok(false) => {
+                    let _ = self.child.kill();
+                    self.defer_reap();
+                    anyhow::bail!(
+                        "{} did not reap within {}ms after SIGKILL",
+                        self.name,
+                        IMMEDIATE_KILL_BUDGET.as_millis()
+                    );
+                }
+                Err(error) => {
+                    self.defer_reap();
+                    return Err(error).with_context(|| format!("reaping {}", self.name));
+                }
+            }
+        }
     }
 
     pub(super) fn signal_tree(&self, signal: Signal) -> anyhow::Result<()> {

@@ -11,6 +11,11 @@ pub struct ControlledTargetV1 {
     pub description: String,
     pub request_schema: serde_json::Map<String, serde_json::Value>,
     pub response: serde_json::Value,
+    /// Keep the handler pending until the fault injector releases it. This
+    /// makes the engine crash land after the side effect starts but before its
+    /// result can close the function call.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hold_response: bool,
 }
 
 /// Exact wire shape accepted by the private lifecycle sink.

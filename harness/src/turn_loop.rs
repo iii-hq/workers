@@ -117,6 +117,15 @@ pub struct TurnStepResult {
     pub skipped: bool,
 }
 
+/// Bounded in-place retry for the enqueue that follows a persisted step
+/// advance: `queue::enqueue` can be briefly unregistered while the queue
+/// worker replays its registrations against a restarted engine, and failing
+/// the turn in that window (or worse, wedging it Running with the step
+/// persisted but never enqueued) turns a recoverable restart into a dead
+/// session (iii-hq/workers#507).
+const ENQUEUE_ATTEMPTS: u32 = 5;
+const ENQUEUE_RETRY_BACKOFF_MS: u64 = 500;
+
 /// Enqueue the next durable loop step onto the dedicated `harness-turn` queue.
 pub async fn enqueue_step(
     iii: &IIIClient,
@@ -131,17 +140,40 @@ pub async fn enqueue_step(
     if let Some(preview) = message_preview {
         payload["message_preview"] = json!(preview);
     }
-    iii.trigger(TriggerRequest {
-        function_id: "harness::turn".to_string(),
-        payload,
-        action: Some(TriggerAction::Enqueue {
-            queue: TURN_QUEUE.to_string(),
-        }),
-        timeout_ms: None,
-    })
-    .await
-    .map(|_| ())
-    .map_err(|e| HarnessError::Dependency(format!("enqueue harness::turn: {e}")))
+    let mut last_error = String::new();
+    for attempt in 1..=ENQUEUE_ATTEMPTS {
+        match iii
+            .trigger(TriggerRequest {
+                function_id: "harness::turn".to_string(),
+                payload: payload.clone(),
+                action: Some(TriggerAction::Enqueue {
+                    queue: TURN_QUEUE.to_string(),
+                }),
+                timeout_ms: None,
+            })
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                last_error = e.to_string();
+                if attempt < ENQUEUE_ATTEMPTS {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        turn_id = %turn_id,
+                        step,
+                        attempt,
+                        error = %last_error,
+                        "enqueue harness::turn failed; retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(ENQUEUE_RETRY_BACKOFF_MS))
+                        .await;
+                }
+            }
+        }
+    }
+    Err(HarnessError::Dependency(format!(
+        "enqueue harness::turn: {last_error}"
+    )))
 }
 
 fn origin(turn_id: &str) -> Value {
@@ -190,6 +222,10 @@ pub async fn run_step(
         match crate::state::get_turn(&deps.iii, &payload.session_id, cfg.session_timeout_ms).await?
         {
             Some(r) => r,
+            // The turn record is the authoritative recovery snapshot. A
+            // transcript alone cannot recover budgets, parent linkage, output
+            // contracts, or dispatch policy safely, so an absent record stays
+            // a stale delivery and is acknowledged without fabricating state.
             None => return Ok(skipped(&payload.session_id)),
         };
 
