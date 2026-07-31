@@ -22,6 +22,14 @@ use crate::store::KvStore;
 const DEFAULT_REDIS_URL: &str = "redis://localhost:6379";
 const REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
+pub(crate) fn cas_matches(expected: Option<&Value>, current: Option<&Value>) -> bool {
+    match (expected, current) {
+        (None, None | Some(Value::Null)) => true,
+        (Some(want), Some(got)) => want == got,
+        _ => false,
+    }
+}
+
 #[async_trait]
 pub trait StateAdapter: Send + Sync + 'static {
     async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<StreamSetResult>;
@@ -33,6 +41,33 @@ pub trait StateAdapter: Send + Sync + 'static {
         key: &str,
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<StreamUpdateResult>;
+    /// Swap `scope/key` from `expected` to `value` atomically. `expected:
+    /// None` means "expect absent". Returns `None` when the swap happened, or
+    /// `Some(current)` when it did not — the caller retries against that.
+    ///
+    /// `get` then `set` from outside cannot express this: two callers reading
+    /// the same value both believe they hold it, and both write.
+    async fn compare_and_set(
+        &self,
+        scope: &str,
+        key: &str,
+        expected: Option<&Value>,
+        value: Value,
+    ) -> anyhow::Result<Option<Value>>;
+
+    /// Apply one barrier arrival atomically to `scope/key`.
+    ///
+    /// Not expressible with the `UpdateOp` set (there is no compare-and-set),
+    /// and it must not be a get-then-set from outside: two arrivals racing on
+    /// the last slot would both see "incomplete" and both answer `allow`.
+    /// Adapters implement it with whatever atomicity they actually have.
+    async fn barrier_arrive(
+        &self,
+        scope: &str,
+        key: &str,
+        cfg: &crate::barrier::BarrierConfig,
+        event: &Value,
+    ) -> anyhow::Result<crate::barrier::Decision>;
     async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>>;
     /// Keys within a scope, in the adapter's natural order (kv: insertion
     /// order; redis: hash-field order). Added for the console state UI —
@@ -85,6 +120,31 @@ impl StateAdapter for KvStoreAdapter {
             .storage
             .update(scope.to_string(), key.to_string(), ops)
             .await)
+    }
+    async fn compare_and_set(
+        &self,
+        scope: &str,
+        key: &str,
+        expected: Option<&Value>,
+        value: Value,
+    ) -> anyhow::Result<Option<Value>> {
+        Ok(self
+            .storage
+            .compare_and_set(scope.to_string(), key.to_string(), expected, value)
+            .await)
+    }
+
+    async fn barrier_arrive(
+        &self,
+        scope: &str,
+        key: &str,
+        cfg: &crate::barrier::BarrierConfig,
+        event: &Value,
+    ) -> anyhow::Result<crate::barrier::Decision> {
+        self.storage
+            .barrier_arrive(scope.to_string(), key.to_string(), cfg, event)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
     }
     async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>> {
         Ok(self.storage.list(scope.to_string()).await)
@@ -616,6 +676,89 @@ impl RedisAdapter {
 
 #[async_trait]
 impl StateAdapter for RedisAdapter {
+    /// Compare parsed JSON values, then commit only if the watched scope has
+    /// not changed. This gives Redis the same semantic equality as the KV
+    /// adapter instead of depending on object-key serialization order.
+    async fn compare_and_set(
+        &self,
+        scope: &str,
+        key: &str,
+        expected: Option<&Value>,
+        value: Value,
+    ) -> anyhow::Result<Option<Value>> {
+        let scope_key = format!("state:{}", scope);
+        let mut conn = self.publisher.lock().await;
+        let next = serde_json::to_string(&value)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize value: {}", e))?;
+
+        // ponytail: WATCH is scope-wide because Redis hashes cannot watch one
+        // field; use per-field version keys if unrelated writes cause retries.
+        loop {
+            redis::cmd("WATCH")
+                .arg(&scope_key)
+                .query_async::<()>(&mut *conn)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to watch Redis CAS value: {e}"))?;
+
+            let encoded: Option<String> = match conn.hget(&scope_key, key).await {
+                Ok(encoded) => encoded,
+                Err(error) => {
+                    let _ = redis::cmd("UNWATCH").query_async::<()>(&mut *conn).await;
+                    return Err(anyhow::anyhow!("Failed to read Redis CAS value: {error}"));
+                }
+            };
+            let current = match encoded.as_deref().map(serde_json::from_str).transpose() {
+                Ok(current) => current,
+                Err(error) => {
+                    let _ = redis::cmd("UNWATCH").query_async::<()>(&mut *conn).await;
+                    return Err(anyhow::anyhow!("Failed to parse Redis CAS value: {error}"));
+                }
+            };
+
+            if !cas_matches(expected, current.as_ref()) {
+                redis::cmd("UNWATCH")
+                    .query_async::<()>(&mut *conn)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to unwatch Redis CAS value: {e}"))?;
+                return Ok(Some(current.unwrap_or(Value::Null)));
+            }
+
+            let committed: Option<()> = redis::pipe()
+                .atomic()
+                .cmd("HSET")
+                .arg(&scope_key)
+                .arg(key)
+                .arg(&next)
+                .ignore()
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to compare-and-set value in Redis: {e}"))?;
+            if committed.is_some() {
+                return Ok(None);
+            }
+        }
+    }
+
+    /// Redis has the atomicity for this (a Lua script over the hash field),
+    /// but the decision logic lives in Rust and porting it to Lua would mean
+    /// maintaining the same rules twice — the kind of divergence that shows up
+    /// as "the barrier behaves differently in prod". Refuse clearly instead;
+    /// the port is a bounded task if a redis-backed deployment needs it.
+    async fn barrier_arrive(
+        &self,
+        _scope: &str,
+        _key: &str,
+        cfg: &crate::barrier::BarrierConfig,
+        _event: &Value,
+    ) -> anyhow::Result<crate::barrier::Decision> {
+        anyhow::bail!(
+            "barrier `{}` needs the kv adapter: the redis adapter has no atomic \
+             read-modify-write for it yet, and a non-atomic one would let two arrivals \
+             both complete the same barrier",
+            cfg.id
+        )
+    }
+
     async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<StreamSetResult> {
         let scope_key: String = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;
@@ -831,6 +974,17 @@ pub async fn build_adapter(config: &StateConfig) -> anyhow::Result<Arc<dyn State
 mod tests {
     use super::*;
     use crate::config::StateConfig;
+
+    #[test]
+    fn cas_uses_json_value_equality() {
+        let stored = serde_json::from_str(r#"{"a":1,"b":2}"#).unwrap();
+        let reordered = serde_json::from_str(r#"{"b":2,"a":1}"#).unwrap();
+        assert!(cas_matches(Some(&reordered), Some(&stored)));
+        assert!(!cas_matches(
+            Some(&serde_json::json!([])),
+            Some(&serde_json::json!({}))
+        ));
+    }
 
     #[tokio::test]
     async fn kv_adapter_set_get_delete_update_list_roundtrip() {

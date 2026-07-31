@@ -18,7 +18,8 @@ iii worker add state
 ```
 
 `iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it boots.
+`~/.iii/config.yaml`, and the engine starts the worker on the next
+`iii start`.
 
 ## Functions
 
@@ -32,6 +33,10 @@ iii worker add state
 | `state::list_keys` | `{ scope }` | `{ keys }` — the keys stored in the scope, adapter order (additive; no builtin counterpart — added for the console state UI, whose per-item navigation `state::list`'s values-only shape cannot drive) | — |
 | `state::list_groups` | `{}` | `{ groups }` — sorted, deduplicated scope names | — |
 | `state::ui-content` | `{ path }` | `{ content, content_type }` — content function for the injected console UI (internal; see [Console UI](#console-ui)) | — |
+
+The `harness_binding` and `harness_binding_owner` scopes are reserved
+control-plane state: public functions reject direct access, omit them from
+group listings, and never emit their bookkeeping writes as state events.
 
 ## Console UI
 
