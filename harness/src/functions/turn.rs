@@ -2,8 +2,6 @@
 //! `harness-turn` queue). Consumers never call it directly. An unexpected
 //! step error finalises the turn as failed rather than retrying forever.
 
-use std::future::Future;
-
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::turn_loop::{self, TurnStepPayload, TurnStepResult};
@@ -110,34 +108,10 @@ fn is_transient_step_error(error: &HarnessError) -> bool {
 
 async fn run(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, HarnessError> {
     let (session_id, turn_id) = (payload.session_id.clone(), payload.turn_id.clone());
-    let result = match run_step_with_retries(&session_id, &turn_id, || {
-        turn_loop::run_step(deps, payload.clone())
-    })
-    .await
-    {
-        Ok(result) => result,
-        Err(e) => {
-            tracing::error!(session_id = %session_id, turn_id = %turn_id, error = %e, "turn step failed; finalising turn as failed");
-            turn_loop::fail_turn(deps, &session_id, &turn_id, &e.to_string()).await
-        }
-    };
-    record_step_status(&result);
-    Ok(result)
-}
-
-async fn run_step_with_retries<F, Fut>(
-    session_id: &str,
-    turn_id: &str,
-    mut step: F,
-) -> Result<TurnStepResult, HarnessError>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Result<TurnStepResult, HarnessError>>,
-{
     let mut transient_attempts = 0u32;
-    loop {
-        match step().await {
-            Ok(result) => return Ok(result),
+    let result = loop {
+        match turn_loop::run_step(deps, payload.clone()).await {
+            Ok(result) => break result,
             Err(e)
                 if transient_attempts < TRANSIENT_STEP_RETRIES && is_transient_step_error(&e) =>
             {
@@ -152,9 +126,14 @@ where
                 tokio::time::sleep(std::time::Duration::from_millis(TRANSIENT_STEP_BACKOFF_MS))
                     .await;
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                tracing::error!(session_id = %session_id, turn_id = %turn_id, error = %e, "turn step failed; finalising turn as failed");
+                break turn_loop::fail_turn(deps, &session_id, &turn_id, &e.to_string()).await;
+            }
         }
-    }
+    };
+    record_step_status(&result);
+    Ok(result)
 }
 
 fn record_step_status(result: &TurnStepResult) {
@@ -210,32 +189,5 @@ mod tests {
         assert!(!is_transient_step_error(&HarnessError::Internal(
             "function_not_found mentioned in an internal error".into()
         )));
-    }
-
-    #[tokio::test]
-    async fn boot_race_retries_the_step_before_finalizing() {
-        let mut attempts = 0;
-        let result = run_step_with_retries("s1", "t1", || {
-            attempts += 1;
-            let result = if attempts == 1 {
-                Err(HarnessError::Dependency(
-                    "context::assemble: remote error (function_not_found): Function not found"
-                        .into(),
-                ))
-            } else {
-                Ok(TurnStepResult {
-                    session_id: "s1".into(),
-                    status: TurnStatus::Completed,
-                    next_step: None,
-                    skipped: false,
-                })
-            };
-            async move { result }
-        })
-        .await
-        .expect("boot-race dependency failure should be retried");
-
-        assert_eq!(attempts, 2);
-        assert_eq!(result.status, TurnStatus::Completed);
     }
 }

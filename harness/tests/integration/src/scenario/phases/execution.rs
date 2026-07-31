@@ -14,6 +14,7 @@ use super::super::runner::ScenarioRunner;
 use super::super::state::{ActiveTurn, PreparedRun};
 
 const SEND_TIMEOUT_MS: u64 = 30_000;
+const BOOT_RACE_DEPENDENCY_GAP: Duration = Duration::from_secs(5);
 
 impl ScenarioRunner<'_> {
     pub(in crate::scenario) async fn send(
@@ -108,6 +109,14 @@ impl ScenarioRunner<'_> {
             ));
         }
 
+        // Keep context::assemble unavailable after the engine comes back so
+        // the restored harness::turn must exercise its boot-race retry path.
+        stack
+            .kill_worker("context-manager")
+            .await
+            .map_err(|error| {
+                RunError::runner(phase, "stop context manager for boot race", error)
+            })?;
         let kill_result = stack.kill_engine().await;
         services.probe().release_target_response();
         kill_result
@@ -148,8 +157,12 @@ impl ScenarioRunner<'_> {
                 RunError::runner(phase, "restore observers after engine restart", error)
             })?;
 
-        let mut required = discovery::TURN_SURFACE.to_vec();
-        required.push("router::chat");
+        let mut required = vec![
+            "harness::turn",
+            "harness::send",
+            "session::messages",
+            "router::chat",
+        ];
         if let Some(target) = &prepared.scenario.target {
             required.push(target.function_id.as_str());
         }
@@ -159,6 +172,33 @@ impl ScenarioRunner<'_> {
                 RunError::runner(
                     phase,
                     "wait for turn dependencies after engine restart",
+                    error,
+                )
+            })?;
+
+        deadline
+            .timeout(
+                "hold context manager out of the boot-race window",
+                tokio::time::sleep(BOOT_RACE_DEPENDENCY_GAP),
+            )
+            .await
+            .map_err(|error| {
+                RunError::runner(
+                    phase,
+                    "boot-race dependency gap exceeded scenario deadline",
+                    error,
+                )
+            })?;
+        stack
+            .respawn_worker(self.bins, "context-manager")
+            .map_err(|error| RunError::runner(phase, "respawn context manager", error))?;
+        required.push("context::assemble");
+        discovery::wait_for_functions(services.client(), &required, deadline)
+            .await
+            .map_err(|error| {
+                RunError::runner(
+                    phase,
+                    "wait for turn dependencies after boot-race gap",
                     error,
                 )
             })?;

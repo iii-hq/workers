@@ -174,6 +174,20 @@ impl Stack {
         Ok(())
     }
 
+    pub async fn kill_worker(&mut self, worker: &str) -> anyhow::Result<()> {
+        let mut child = self
+            .processes
+            .remove(worker)
+            .ok_or_else(|| anyhow::anyhow!("no live {worker} child to kill"))?;
+        child.kill_now().await?;
+        tracing::info!(
+            target: "harness_integration::stack",
+            worker,
+            "worker stopped for fault injection"
+        );
+        Ok(())
+    }
+
     pub fn respawn_engine(&mut self) -> anyhow::Result<()> {
         let (bin, args, cwd) = self
             .engine_recipe
@@ -182,6 +196,13 @@ impl Stack {
         self.engine_restarts += 1;
         let log_name = format!("engine.restart{}", self.engine_restarts);
         self.spawn_child_logged_with_env("engine", &log_name, &bin, &args, &cwd, &[])
+    }
+
+    pub fn respawn_worker(&mut self, bins: &StackBins, worker: &str) -> anyhow::Result<()> {
+        let bin = bins
+            .resolve(worker)
+            .ok_or_else(|| anyhow::anyhow!("no binary configured for {worker}"))?;
+        self.spawn_worker(worker, bin)
     }
 
     fn spawn_worker(&mut self, worker: &str, bin: &Path) -> anyhow::Result<()> {

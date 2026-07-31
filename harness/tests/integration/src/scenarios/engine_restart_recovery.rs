@@ -1,4 +1,5 @@
-//! INT-010 — an engine restart cannot strand an interrupted function call.
+//! INT-010 — an engine restart cannot strand an interrupted function call or
+//! fail a turn while its dependencies re-register.
 //!
 //! Deterministic regression coverage for
 //! <https://github.com/iii-hq/workers/issues/507>.
@@ -33,7 +34,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     Scenario::new(
         ID,
         "crash-recovery-507",
-        "A conversation stays usable when the engine restarts during a function call.",
+        "A conversation stays usable when the engine restarts during a function call and dependencies re-register at different times.",
         ScenarioDriver::Direct,
         model.clone(),
     )
