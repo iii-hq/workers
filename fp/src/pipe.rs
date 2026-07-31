@@ -414,7 +414,18 @@ fn step_error(i: usize, function: &str, msg: &str, receipts: &[StepReceipt]) -> 
 /// Execute a pipe: transforms inline, everything else over the bus. The first
 /// failing step stops the pipe with a teachable error carrying the trail.
 pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, String> {
-    validate_with_approval_gate(&req, approval_gate_running(iii).await?)?;
+    // Gate discovery is a bus round trip that couples every pipe to
+    // engine::functions::list availability — pay it only when the gate
+    // actually decides the verdict. Both static verdicts are computed first
+    // (12 steps max, trivially cheap); agreeing verdicts are final as-is.
+    match (
+        validate_with_approval_gate(&req, false),
+        validate_with_approval_gate(&req, true),
+    ) {
+        (Ok(()), Ok(())) => {}
+        (Err(e), Err(_)) => return Err(e),
+        _ => validate_with_approval_gate(&req, approval_gate_running(iii).await?)?,
+    }
     let preview_chars = preview_len(req.preview_chars);
 
     let mut receipts: Vec<StepReceipt> = Vec::with_capacity(req.through.len());
@@ -653,6 +664,18 @@ mod tests {
 
         assert!(validate_with_approval_gate(&req, true).is_err());
         assert!(validate_with_approval_gate(&req, false).is_ok());
+
+        // `run` consults engine::functions::list only when the two verdicts
+        // above differ — a pipe with no database write, even a read-only
+        // database::query, validates identically both ways and never pays
+        // the gate-discovery round trip.
+        let query_only = parse(json!({ "through": [
+            { "function": "database::query", "payload": { "db": "primary", "sql": "SELECT 1" } },
+        ]}))
+        .unwrap();
+        assert!(validate_with_approval_gate(&query_only, true).is_ok());
+        assert!(validate_with_approval_gate(&query_only, false).is_ok());
+
         assert!(approval_gate_in_catalog(
             &json!({ "functions": [{ "function_id": "approval::gate" }] })
         )
