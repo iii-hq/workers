@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{IIIClient, InitOptions, register_worker};
 use serde_json::json;
 use tokio::sync::OnceCell;
@@ -57,8 +58,12 @@ fn require_or_skip(connected: Option<Arc<IIIClient>>) -> Option<Arc<IIIClient>> 
 }
 
 async fn try_connect_raw() -> Option<Arc<IIIClient>> {
+    try_connect_with(InitOptions::default()).await
+}
+
+async fn try_connect_with(options: InitOptions) -> Option<Arc<IIIClient>> {
     let url = ws_url();
-    let iii = Arc::new(register_worker(&url, InitOptions::default()));
+    let iii = Arc::new(register_worker(&url, options));
 
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -92,6 +97,22 @@ async fn try_connect_raw() -> Option<Arc<IIIClient>> {
 /// `shutdown_async()` the returned client when done.
 pub async fn connect_fresh() -> Option<Arc<IIIClient>> {
     require_or_skip(try_connect_raw().await)
+}
+
+/// Like [`connect_fresh`], but registered under an explicit worker NAME —
+/// for flows authorized by caller identity (`state::claim-namespace` grants
+/// only the namespace matching the caller's own worker name).
+pub async fn connect_fresh_named(name: &str) -> Option<Arc<IIIClient>> {
+    require_or_skip(
+        try_connect_with(InitOptions {
+            metadata: Some(WorkerMetadata {
+                name: name.to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await,
+    )
 }
 
 /// Get-or-init the shared engine handle for this test binary.

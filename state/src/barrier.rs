@@ -376,6 +376,15 @@ mod tests {
     }
 
     #[test]
+    fn an_oversized_named_set_is_refused() {
+        // One past the cap — the named-set arm of the limit, the count arm
+        // has its own test.
+        let keys: Vec<String> = (0..=MAX_BARRIER_ARRIVALS).map(|i| i.to_string()).collect();
+        let err = arrive(None, &cfg(Expect::Keys(keys)), &event("0", json!(1))).unwrap_err();
+        assert!(err.contains("cannot exceed"), "{err}");
+    }
+
+    #[test]
     fn a_missing_arrival_key_errors_rather_than_collapsing() {
         // Two arrivals that both resolve to nothing would land on one key and
         // the barrier would never complete. Refuse instead.

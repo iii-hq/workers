@@ -1034,6 +1034,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_backed_cas_and_barrier_survive_a_reload() {
+        let dir = std::env::temp_dir().join(format!("state-cas-file-{}", uuid::Uuid::new_v4()));
+        let config = serde_json::json!({
+            "store_method": "file_based",
+            "file_path": dir.to_string_lossy(),
+            "save_interval_ms": 100,
+        });
+
+        let store = KvStore::new(Some(config.clone()));
+        let outcome = store
+            .compare_and_set(
+                "claims".into(),
+                "slot".into(),
+                None,
+                serde_json::json!({"owner": "a"}),
+            )
+            .await;
+        assert!(matches!(outcome, CompareAndSetOutcome::Swapped { .. }));
+        let cfg = crate::barrier::BarrierConfig {
+            id: "join".into(),
+            expect: crate::barrier::Expect::Count(2),
+            key_from: None,
+            carry: None,
+        };
+        store
+            .barrier_arrive(
+                "state_barrier".into(),
+                "join".into(),
+                &cfg,
+                &serde_json::json!({"key": "a"}),
+            )
+            .await
+            .unwrap();
+
+        // Both writes mark their scope dirty; the 100ms save loop flushes
+        // them to disk as one file per scope.
+        for _ in 0..50 {
+            if std::fs::read_dir(&dir)
+                .map(|d| d.count() >= 2)
+                .unwrap_or(false)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        let reloaded = KvStore::new(Some(config));
+        assert_eq!(
+            reloaded.get("claims".into(), "slot".into()).await,
+            Some(serde_json::json!({"owner": "a"}))
+        );
+        let barrier = reloaded
+            .get("state_barrier".into(), "join".into())
+            .await
+            .expect("barrier state must survive the reload");
+        assert_eq!(barrier["arrived"].as_object().unwrap().len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
     async fn build_adapter_defaults_to_kv_and_rejects_unknown() {
         let kv = build_adapter(&StateConfig::default()).await;
         assert!(kv.is_ok());

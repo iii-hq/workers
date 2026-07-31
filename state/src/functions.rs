@@ -735,70 +735,34 @@ fn register_claim_namespace(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
                     )));
                 }
 
-                match ctx.private.claim(&input.functions_prefix, &input.scopes) {
-                    ClaimOutcome::Conflict(reason) => {
-                        Err(Error::Handler(format!("SCOPE_CONFLICT: {reason}")))
+                let (claimed, namespace_is_new, scopes) =
+                    claim_and_persist(&ctx, &input.functions_prefix, &input.scopes).await?;
+                if claimed {
+                    // Only the FIRST claim registers accessors — they read
+                    // their owned scopes live, so a grown claim needs nothing
+                    // (and re-registering would fail).
+                    if namespace_is_new {
+                        register_private_namespace_functions(
+                            &client,
+                            &ctx,
+                            &PrivateNamespace {
+                                functions_prefix: input.functions_prefix.clone(),
+                                scopes: scopes.clone(),
+                            },
+                        );
                     }
-                    outcome => {
-                        let (fresh, namespace_is_new) = match outcome {
-                            ClaimOutcome::Claimed {
-                                fresh,
-                                namespace_is_new,
-                            } => (fresh, namespace_is_new),
-                            _ => (Vec::new(), false),
-                        };
-                        // `claim` never returns `Claimed` with nothing fresh.
-                        let claimed = !fresh.is_empty();
-                        let scopes: Vec<String> = {
-                            let mut owned: Vec<String> = ctx
-                                .private
-                                .owned_scopes(&input.functions_prefix)
-                                .into_iter()
-                                .collect();
-                            owned.sort();
-                            owned
-                        };
-                        if claimed {
-                            // Persist BEFORE registering: a crash between the
-                            // two costs a restart's re-registration, never a
-                            // silently unreserved scope. A persist FAILURE
-                            // rolls the in-memory claim back so the retry
-                            // re-claims and re-persists — otherwise it would
-                            // see AlreadyOwned and return accessor ids no
-                            // handler will ever serve.
-                            if let Err(error) =
-                                persist_claim(&ctx, &input.functions_prefix, &scopes).await
-                            {
-                                ctx.private.release(&input.functions_prefix, &fresh);
-                                return Err(error);
-                            }
-                            // Only the FIRST claim registers accessors — they
-                            // read their owned scopes live, so a grown claim
-                            // needs nothing (and re-registering would fail).
-                            if namespace_is_new {
-                                register_private_namespace_functions(
-                                    &client,
-                                    &ctx,
-                                    &PrivateNamespace {
-                                        functions_prefix: input.functions_prefix.clone(),
-                                        scopes: scopes.clone(),
-                                    },
-                                );
-                            }
-                            tracing::info!(
-                                prefix = %input.functions_prefix,
-                                ?scopes,
-                                "private namespace claimed"
-                            );
-                        }
-                        let (get_id, list_id, cas_id) = internal_ids(&input.functions_prefix);
-                        Ok(ClaimNamespaceResult {
-                            claimed,
-                            scopes,
-                            functions: vec![get_id, list_id, cas_id],
-                        })
-                    }
+                    tracing::info!(
+                        prefix = %input.functions_prefix,
+                        ?scopes,
+                        "private namespace claimed"
+                    );
                 }
+                let (get_id, list_id, cas_id) = internal_ids(&input.functions_prefix);
+                Ok(ClaimNamespaceResult {
+                    claimed,
+                    scopes,
+                    functions: vec![get_id, list_id, cas_id],
+                })
             }
         })
         .description(
@@ -809,6 +773,47 @@ fn register_claim_namespace(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
              identity). Idempotent; claims survive a state restart.",
         ),
     );
+}
+
+/// The atomic middle of `state::claim-namespace`: reserve in memory, persist,
+/// and roll the reservation back if persistence fails — separated from the
+/// SDK closure so a failing adapter is testable. Returns
+/// `(claimed, namespace_is_new, owned scopes sorted)`.
+async fn claim_and_persist(
+    ctx: &Arc<StateCtx>,
+    functions_prefix: &str,
+    requested: &[String],
+) -> Result<(bool, bool, Vec<String>), Error> {
+    let (fresh, namespace_is_new) = match ctx.private.claim(functions_prefix, requested) {
+        ClaimOutcome::Conflict(reason) => {
+            return Err(Error::Handler(format!("SCOPE_CONFLICT: {reason}")));
+        }
+        ClaimOutcome::Claimed {
+            fresh,
+            namespace_is_new,
+        } => (fresh, namespace_is_new),
+        ClaimOutcome::AlreadyOwned => (Vec::new(), false),
+    };
+    // `claim` never returns `Claimed` with nothing fresh.
+    let claimed = !fresh.is_empty();
+    let mut scopes: Vec<String> = ctx
+        .private
+        .owned_scopes(functions_prefix)
+        .into_iter()
+        .collect();
+    scopes.sort();
+    if claimed {
+        // Persist BEFORE registering: a crash between the two costs a
+        // restart's re-registration, never a silently unreserved scope. A
+        // persist FAILURE rolls the in-memory claim back so the retry
+        // re-claims and re-persists — otherwise it would see AlreadyOwned
+        // and return accessor ids no handler will ever serve.
+        if let Err(error) = persist_claim(ctx, functions_prefix, &scopes).await {
+            ctx.private.release(functions_prefix, &fresh);
+            return Err(error);
+        }
+    }
+    Ok((claimed, namespace_is_new, scopes))
 }
 
 async fn persist_claim(
@@ -987,6 +992,123 @@ mod private_namespace_tests {
 
     fn scopes(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Adapter whose `set` fails once, then succeeds: the `persist_claim`
+    /// failure a retry must recover from. Everything else is unreachable in
+    /// the claim path.
+    #[derive(Default)]
+    struct FailFirstAdapter {
+        failed: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl StateAdapter for FailFirstAdapter {
+        async fn set(
+            &self,
+            _scope: &str,
+            _key: &str,
+            value: Value,
+        ) -> anyhow::Result<iii_helpers::stream::StreamSetResult> {
+            if !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                anyhow::bail!("disk full");
+            }
+            Ok(iii_helpers::stream::StreamSetResult {
+                old_value: None,
+                new_value: value,
+            })
+        }
+        async fn get(&self, _: &str, _: &str) -> anyhow::Result<Option<Value>> {
+            unreachable!()
+        }
+        async fn delete(&self, _: &str, _: &str) -> anyhow::Result<()> {
+            unreachable!()
+        }
+        async fn update(
+            &self,
+            _: &str,
+            _: &str,
+            _: Vec<iii_helpers::stream::UpdateOp>,
+        ) -> anyhow::Result<iii_helpers::stream::StreamUpdateResult> {
+            unreachable!()
+        }
+        async fn compare_and_set(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&Value>,
+            _: Value,
+        ) -> anyhow::Result<CompareAndSetOutcome> {
+            unreachable!()
+        }
+        async fn barrier_arrive(
+            &self,
+            _: &str,
+            _: &str,
+            _: &crate::barrier::BarrierConfig,
+            _: &Value,
+        ) -> anyhow::Result<crate::barrier::Decision> {
+            unreachable!()
+        }
+        async fn list(&self, _: &str) -> anyhow::Result<Vec<Value>> {
+            unreachable!()
+        }
+        async fn list_keys(&self, _: &str) -> anyhow::Result<Vec<String>> {
+            unreachable!()
+        }
+        async fn list_groups(&self) -> anyhow::Result<Vec<String>> {
+            unreachable!()
+        }
+        async fn destroy(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct NullInvoker;
+
+    #[async_trait::async_trait]
+    impl Invoker for NullInvoker {
+        async fn call(
+            &self,
+            _function_id: &str,
+            _payload: Value,
+            _metadata: Option<Value>,
+        ) -> Result<Value, String> {
+            Ok(Value::Null)
+        }
+    }
+
+    fn test_ctx(adapter: Arc<dyn StateAdapter>) -> Arc<StateCtx> {
+        Arc::new(StateCtx {
+            adapter,
+            triggers: crate::trigger::StateTriggerHandler::new().triggers,
+            config: Arc::new(RwLock::new(Arc::new(StateConfig::default()))),
+            invoker: Arc::new(NullInvoker),
+            private: Arc::new(PrivateNamespaces::default()),
+        })
+    }
+
+    #[tokio::test]
+    async fn a_failed_persist_rolls_back_and_the_retry_succeeds() {
+        let ctx = test_ctx(Arc::new(FailFirstAdapter::default()));
+        let wanted = scopes(&["acme_ledger"]);
+
+        let error = claim_and_persist(&ctx, "acme", &wanted)
+            .await
+            .expect_err("the first attempt must surface the persist failure");
+        assert!(error.to_string().contains("CLAIM_PERSIST_ERROR"), "{error}");
+        // Rolled back: nothing reserved, nothing owned.
+        assert!(!ctx.private.is_reserved("acme_ledger"));
+        assert!(ctx.private.owned_scopes("acme").is_empty());
+
+        // The retry re-claims (fresh again), persists, and reports NEW — so
+        // the caller registers the accessors exactly once.
+        let (claimed, namespace_is_new, owned) = claim_and_persist(&ctx, "acme", &wanted)
+            .await
+            .expect("the retry must claim and persist");
+        assert!(claimed && namespace_is_new);
+        assert_eq!(owned, wanted);
+        assert!(ctx.private.is_reserved("acme_ledger"));
     }
 
     #[test]
