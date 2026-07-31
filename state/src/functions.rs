@@ -158,6 +158,27 @@ impl PrivateNamespaces {
         }
     }
 
+    /// Exact inverse of one `claim`'s fresh reservations. Used when the claim
+    /// could not be persisted: rolled back, the retry re-enters `claim` and
+    /// persists again — left in place, the retry would see `AlreadyOwned` and
+    /// skip both persistence and accessor registration forever.
+    fn release(&self, functions_prefix: &str, scopes: &[String]) {
+        let mut claims = self.write();
+        for scope in scopes {
+            claims.reserved.remove(scope);
+        }
+        if let Some(namespace) = claims
+            .namespaces
+            .iter_mut()
+            .find(|n| n.functions_prefix == functions_prefix)
+        {
+            namespace.scopes.retain(|s| !scopes.contains(s));
+        }
+        claims
+            .namespaces
+            .retain(|n| n.functions_prefix != functions_prefix || !n.scopes.is_empty());
+    }
+
     fn read(&self) -> std::sync::RwLockReadGuard<'_, Claims> {
         self.inner.read().unwrap_or_else(|p| p.into_inner())
     }
@@ -719,12 +740,15 @@ fn register_claim_namespace(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
                         Err(Error::Handler(format!("SCOPE_CONFLICT: {reason}")))
                     }
                     outcome => {
-                        let (claimed, namespace_is_new) = match outcome {
+                        let (fresh, namespace_is_new) = match outcome {
                             ClaimOutcome::Claimed {
-                                namespace_is_new, ..
-                            } => (true, namespace_is_new),
-                            _ => (false, false),
+                                fresh,
+                                namespace_is_new,
+                            } => (fresh, namespace_is_new),
+                            _ => (Vec::new(), false),
                         };
+                        // `claim` never returns `Claimed` with nothing fresh.
+                        let claimed = !fresh.is_empty();
                         let scopes: Vec<String> = {
                             let mut owned: Vec<String> = ctx
                                 .private
@@ -737,8 +761,17 @@ fn register_claim_namespace(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
                         if claimed {
                             // Persist BEFORE registering: a crash between the
                             // two costs a restart's re-registration, never a
-                            // silently unreserved scope.
-                            persist_claim(&ctx, &input.functions_prefix, &scopes).await?;
+                            // silently unreserved scope. A persist FAILURE
+                            // rolls the in-memory claim back so the retry
+                            // re-claims and re-persists — otherwise it would
+                            // see AlreadyOwned and return accessor ids no
+                            // handler will ever serve.
+                            if let Err(error) =
+                                persist_claim(&ctx, &input.functions_prefix, &scopes).await
+                            {
+                                ctx.private.release(&input.functions_prefix, &fresh);
+                                return Err(error);
+                            }
                             // Only the FIRST claim registers accessors — they
                             // read their owned scopes live, so a grown claim
                             // needs nothing (and re-registering would fail).
@@ -794,16 +827,19 @@ async fn persist_claim(
         .map_err(|e| Error::Handler(format!("CLAIM_PERSIST_ERROR: {e}")))
 }
 
-/// Re-arm claims persisted by earlier runs. Called at boot, before any tenant
-/// can ask: a state restart restores the accessors on its own.
-pub async fn restore_persisted_claims(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
-    let stored = match ctx.adapter.list(CLAIMS_SCOPE).await {
-        Ok(values) => values,
-        Err(error) => {
-            tracing::warn!(%error, "could not read persisted private-namespace claims");
-            return;
-        }
-    };
+/// Re-arm claims persisted by earlier runs. Called at boot, before the public
+/// `state::*` functions are registered: a state restart restores the accessors
+/// and reservations on its own, with no window where a persisted private
+/// scope answers public calls. An unreadable ledger fails the boot — starting
+/// with an empty registry would silently serve private scopes publicly and
+/// let another namespace claim them.
+pub async fn restore_persisted_claims(
+    iii: &Arc<IIIClient>,
+    ctx: &Arc<StateCtx>,
+) -> anyhow::Result<()> {
+    let stored = ctx.adapter.list(CLAIMS_SCOPE).await.map_err(|error| {
+        anyhow::anyhow!("could not read persisted private-namespace claims: {error}")
+    })?;
     for value in stored {
         let Ok(namespace) = serde_json::from_value::<PrivateNamespace>(value.clone()) else {
             tracing::error!(?value, "skipping unreadable private-namespace claim");
@@ -830,6 +866,7 @@ pub async fn restore_persisted_claims(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>)
             }
         }
     }
+    Ok(())
 }
 
 /// Private persistence primitives for the workers that claimed a namespace
@@ -991,6 +1028,40 @@ mod private_namespace_tests {
         }
         // All-or-nothing: the conflicting claim reserved nothing at all.
         assert!(!private.is_reserved("second_own"));
+    }
+
+    #[test]
+    fn release_rolls_a_failed_persist_back() {
+        let private = PrivateNamespaces::default();
+        let ClaimOutcome::Claimed { fresh, .. } = private.claim("acme", &scopes(&["acme_ledger"]))
+        else {
+            panic!("first claim must succeed")
+        };
+        // persist_claim failed → the handler releases the fresh scopes...
+        private.release("acme", &fresh);
+        assert!(!private.is_reserved("acme_ledger"));
+        // ...so the retry claims fresh again AND registers accessors.
+        assert!(matches!(
+            private.claim("acme", &scopes(&["acme_ledger"])),
+            ClaimOutcome::Claimed {
+                namespace_is_new: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn release_of_grown_scopes_keeps_the_original_claim() {
+        let private = PrivateNamespaces::default();
+        private.claim("acme", &scopes(&["acme_ledger"]));
+        let ClaimOutcome::Claimed { fresh, .. } = private.claim("acme", &scopes(&["acme_extra"]))
+        else {
+            panic!("growing the claim must succeed")
+        };
+        private.release("acme", &fresh);
+        assert!(private.is_reserved("acme_ledger"));
+        assert!(!private.is_reserved("acme_extra"));
+        assert_eq!(private.owned_scopes("acme").len(), 1);
     }
 
     #[test]

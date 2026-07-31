@@ -1,5 +1,6 @@
 //! Boot sequence: builtin guard → build adapter → trigger table → register the
-//! `state` trigger type → register the six state::* functions.
+//! `state` trigger type → restore persisted private-namespace claims →
+//! register the state::* functions.
 
 use std::sync::Arc;
 
@@ -64,10 +65,12 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
         invoker,
         private,
     });
+    // Re-arm namespaces claimed by earlier runs BEFORE the public state::*
+    // functions exist: after a restart no call can reach a persisted private
+    // scope while its reservation is still missing. An unreadable claims
+    // ledger fails the boot instead of silently serving private scopes.
+    functions::restore_persisted_claims(&iii, &ctx).await?;
     functions::register_functions(&iii, ctx.clone());
-    // Re-arm namespaces claimed by earlier runs BEFORE any tenant asks, so a
-    // state restart restores `<prefix>::state::*` on its own.
-    functions::restore_persisted_claims(&iii, &ctx).await;
 
     // Injectable console UI: content function + console:script trigger.
     // Ordering doesn't matter for the console side (the engine parks the
