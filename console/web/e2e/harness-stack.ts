@@ -20,6 +20,10 @@ interface ReadyManifest {
   model: { id: string; provider: string }
   message: string
   functions: Record<string, string>
+  controls: {
+    gate_status: string
+    gate_release: string
+  }
   send: Record<string, unknown>
 }
 
@@ -67,6 +71,9 @@ export interface HarnessStack {
   ready: ReadyManifest
   consoleUrl: string
   trigger(): Promise<unknown>
+  waitForRouterGate(name: string, count?: number): Promise<void>
+  waitForQueuedMessage(text: string): Promise<void>
+  releaseRouterGate(name: string): Promise<void>
   waitForTurnCompleted(): Promise<TurnCompletedEvent>
   finish(): Promise<PlaygroundResult>
 }
@@ -274,6 +281,52 @@ export const test = base.extend<FixtureValues, FixtureOptions>({
             function_id: 'harness::send',
             payload: manifest.send,
           }),
+        waitForRouterGate: async (name, count = 1) => {
+          const deadline = Date.now() + 15_000
+          while (Date.now() < deadline) {
+            const status = (await connectedSdk.trigger({
+              function_id: manifest.controls.gate_status,
+              payload: { name },
+            })) as { arrivals?: number }
+            if ((status.arrivals ?? 0) >= count) return
+            await delay(25)
+          }
+          throw new Error(
+            `timed out waiting for scripted router gate ${name} (${count} arrivals)`,
+          )
+        },
+        waitForQueuedMessage: async (text) => {
+          const deadline = Date.now() + 15_000
+          while (Date.now() < deadline) {
+            const status = (await connectedSdk.trigger({
+              function_id: 'harness::status',
+              payload: { session_id: manifest.session.id },
+            })) as {
+              queued?: Array<{
+                message?: { content?: Array<{ type?: string; text?: string }> }
+              }>
+            } | null
+            const queued = status?.queued?.some((row) =>
+              row.message?.content?.some(
+                (block) => block.type === 'text' && block.text === text,
+              ),
+            )
+            if (queued) return
+            await delay(25)
+          }
+          throw new Error(
+            `timed out waiting for queued harness message ${JSON.stringify(text)}`,
+          )
+        },
+        releaseRouterGate: async (name) => {
+          const response = (await connectedSdk.trigger({
+            function_id: manifest.controls.gate_release,
+            payload: { name },
+          })) as { released?: boolean }
+          if (response.released !== true) {
+            throw new Error(`scripted router gate ${name} was not released`)
+          }
+        },
         waitForTurnCompleted: () => armCompletion(connectedSdk, manifest),
         finish,
       }

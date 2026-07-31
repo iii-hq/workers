@@ -25,6 +25,7 @@ No provider key or network access is required.
 | INT-012 | `queued-message-edit-unqueue` | direct | edit one queued message in place and unqueue another while the first turn is streaming; only the edited and untouched rows drain in order |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
+| UI-003 | `console-queued-message-streaming` | playground | the Console composer remains editable during streaming and queues a second message that drains in order |
 
 Each fixture is defined end to end in its own `src/scenarios/*.rs` file with a
 small typed DSL. The scenario keeps its send policy, router request matchers,

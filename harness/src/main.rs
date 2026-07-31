@@ -20,7 +20,9 @@
 //!      the fully-built snapshot cell + the cron handle.
 //!  10. Emit `harness::ready`, then sleep on Ctrl+C and shut down cleanly.
 
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -64,38 +66,114 @@ async fn load_config_with_retries(
     iii: &iii_sdk::IIIClient,
     seed: Option<&config::WorkerConfig>,
 ) -> Result<config::WorkerConfig> {
-    let mut last_error = String::new();
-
-    for attempt in 1..=BOOT_CONFIG_ATTEMPTS {
-        let result = async {
+    retry_boot_dependency(
+        BOOT_CONFIG_ATTEMPTS,
+        Duration::from_millis(BOOT_CONFIG_RETRY_BACKOFF_MS),
+        || async {
             configuration::register_config(iii, seed).await?;
             configuration::fetch_config(iii).await
-        }
-        .await;
+        },
+    )
+    .await
+    .map_err(|last_error| {
+        anyhow::Error::msg(format!(
+            "harness boot dependency initialization failed after {BOOT_CONFIG_ATTEMPTS} attempts: {last_error}"
+        ))
+    })
+}
 
-        match result {
-            Ok(cfg) => return Ok(cfg),
+async fn retry_boot_dependency<T, F, Fut>(
+    max_attempts: u32,
+    backoff: Duration,
+    mut operation: F,
+) -> Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, String>>,
+{
+    if max_attempts == 0 {
+        return Err("retry attempt count must be greater than zero".to_string());
+    }
+
+    let mut last_error = String::new();
+
+    for attempt in 1..=max_attempts {
+        match operation().await {
+            Ok(value) => return Ok(value),
             Err(error) => {
                 last_error = error;
-                if attempt < BOOT_CONFIG_ATTEMPTS {
+                if attempt < max_attempts {
                     tracing::warn!(
                         attempt,
-                        max_attempts = BOOT_CONFIG_ATTEMPTS,
+                        max_attempts,
                         error = %last_error,
                         "harness boot dependency unavailable; retrying"
                     );
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        BOOT_CONFIG_RETRY_BACKOFF_MS,
-                    ))
-                    .await;
+                    tokio::time::sleep(backoff).await;
                 }
             }
         }
     }
 
-    Err(anyhow::Error::msg(format!(
-        "harness boot dependency initialization failed after {BOOT_CONFIG_ATTEMPTS} attempts: {last_error}"
-    )))
+    Err(last_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn boot_dependency_retries_transient_failures() {
+        let attempts = Arc::new(AtomicU32::new(0));
+
+        let result = retry_boot_dependency(4, Duration::ZERO, || {
+            let attempts = attempts.clone();
+            async move {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                if attempt < 3 {
+                    Err(format!("not ready on attempt {attempt}"))
+                } else {
+                    Ok("ready")
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(result, Ok("ready"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn boot_dependency_returns_last_error_after_attempt_budget() {
+        let attempts = Arc::new(AtomicU32::new(0));
+
+        let result = retry_boot_dependency(3, Duration::ZERO, || {
+            let attempts = attempts.clone();
+            async move {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                Err::<(), _>(format!("failure {attempt}"))
+            }
+        })
+        .await;
+
+        assert_eq!(result, Err("failure 3".to_string()));
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn boot_dependency_rejects_an_empty_attempt_budget() {
+        let result = retry_boot_dependency(0, Duration::ZERO, || async {
+            Ok::<_, String>("must not run")
+        })
+        .await;
+
+        assert_eq!(
+            result,
+            Err("retry attempt count must be greater than zero".to_string())
+        );
+    }
 }
 
 #[tokio::main]

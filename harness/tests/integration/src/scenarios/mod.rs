@@ -1,6 +1,7 @@
 //! The checked-in integration fixtures.
 
 mod coalesced_fire;
+mod console_queued_message_streaming;
 mod console_streamed_text;
 mod dsl;
 mod engine_restart_recovery;
@@ -32,6 +33,7 @@ pub enum ScenarioDriver {
 pub fn all() -> Vec<ScenarioFixture> {
     vec![
         coalesced_fire::scenario(),
+        console_queued_message_streaming::scenario(),
         console_streamed_text::scenario(),
         engine_restart_recovery::scenario(),
         exactly_once_function::scenario(),
@@ -55,7 +57,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 14);
+        assert_eq!(fixtures.len(), 15);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

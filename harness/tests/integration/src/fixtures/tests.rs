@@ -11,7 +11,7 @@ fn all_selection_returns_the_checked_in_fixtures() {
         ids,
         std::collections::BTreeSet::from([
             "INT-001", "INT-002", "INT-003", "INT-004", "INT-005", "INT-006", "INT-007", "INT-008",
-            "INT-009", "INT-010", "INT-011", "INT-012", "UI-001", "UI-002"
+            "INT-009", "INT-010", "INT-011", "INT-012", "UI-001", "UI-002", "UI-003"
         ])
     );
     assert_eq!(

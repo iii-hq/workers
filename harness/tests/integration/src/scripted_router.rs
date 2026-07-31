@@ -29,6 +29,9 @@ use crate::types::script::{
     ModelFixtureV1, RouterDispatchV1, RouterScriptV1, ScriptedGenerationV1, ServeEffectV1,
 };
 
+pub const GATE_STATUS_FUNCTION_ID: &str = "integration-scripted-router::gate::status";
+pub const GATE_RELEASE_FUNCTION_ID: &str = "integration-scripted-router::gate::release";
+
 /// One `router::chat` call's evidence, stored raw (never normalized).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RouterCallEvidence {
@@ -254,6 +257,42 @@ impl ScriptedRouter {
                 "router::system_prompt::get",
             ),
         );
+        {
+            let state = self.state.clone();
+            iii.register_function(
+                GATE_STATUS_FUNCTION_ID,
+                RegisterFunction::new_async(move |input: Value| {
+                    let state = state.clone();
+                    async move {
+                        let name = required_gate_name(&input)?;
+                        let (arrivals, released) = gate_status(&state, name);
+                        Ok::<Value, Error>(json!({
+                            "name": name,
+                            "arrivals": arrivals,
+                            "released": released,
+                        }))
+                    }
+                })
+                .metadata(json!({ "internal": true })),
+            );
+        }
+        {
+            let state = self.state.clone();
+            iii.register_function(
+                GATE_RELEASE_FUNCTION_ID,
+                RegisterFunction::new_async(move |input: Value| {
+                    let state = state.clone();
+                    async move {
+                        let name = required_gate_name(&input)?;
+                        release_gate_state(&state, name).map_err(|error| {
+                            Error::Handler(format!("integration/gate_release: {error}"))
+                        })?;
+                        Ok::<Value, Error>(json!({ "name": name, "released": true }))
+                    }
+                })
+                .metadata(json!({ "internal": true })),
+            );
+        }
     }
 
     /// Number of generations consumed so far.
@@ -295,16 +334,7 @@ impl ScriptedRouter {
     /// would turn a fixture typo into a test that proceeds without its hard
     /// synchronization point.
     pub fn release_gate(&self, name: &str) -> anyhow::Result<()> {
-        let notify = {
-            let mut state = self.state.lock().expect("router state");
-            let gate = state.gates.get_mut(name).ok_or_else(|| {
-                anyhow::anyhow!("scripted router gate {name:?} was never entered")
-            })?;
-            gate.released = true;
-            Arc::clone(&state.gate_notify)
-        };
-        notify.notify_waiters();
-        Ok(())
+        release_gate_state(&self.state, name)
     }
 
     /// Unblock all gates during teardown, including after an intervention
@@ -433,6 +463,36 @@ fn model_supports(model: &ModelFixtureV1, capability: &str) -> bool {
         "thinking:xhigh" => model.supports_xhigh == Some(true),
         _ => false,
     }
+}
+
+fn required_gate_name(input: &Value) -> Result<&str, Error> {
+    input
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.trim().is_empty())
+        .ok_or_else(|| Error::Handler("integration/gate_name: non-empty name is required".into()))
+}
+
+fn gate_status(state: &Arc<Mutex<State>>, name: &str) -> (usize, bool) {
+    let state = state.lock().expect("router state");
+    state
+        .gates
+        .get(name)
+        .map_or((0, false), |gate| (gate.arrivals, gate.released))
+}
+
+fn release_gate_state(state: &Arc<Mutex<State>>, name: &str) -> anyhow::Result<()> {
+    let notify = {
+        let mut state = state.lock().expect("router state");
+        let gate = state
+            .gates
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("scripted router gate {name:?} was never entered"))?;
+        gate.released = true;
+        Arc::clone(&state.gate_notify)
+    };
+    notify.notify_waiters();
+    Ok(())
 }
 
 async fn wait_for_gate_state(
