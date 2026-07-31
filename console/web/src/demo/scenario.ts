@@ -132,6 +132,11 @@ function readingDwellMs(body: string): number {
   return Math.min(2800, Math.max(600, tokenize(body).length * 10))
 }
 
+/** Mean per-token delay that streams `body` in about `totalMs`. */
+function paceOver(body: string, totalMs: number): number {
+  return totalMs / tokenize(body).length
+}
+
 async function* thought(
   body: string,
   signal?: AbortSignal,
@@ -1139,6 +1144,10 @@ would have resumed from the last completed step, into the same trace.`
 
 /* ── the script ───────────────────────────────────────────────────────── */
 
+/** Streamed on a 1.1s budget: the reader is waiting on the first tool call. */
+const OPENING_THOUGHT =
+  'The user wants a payments ledger with durable storage. Before I write a line of it I should look at what is already connected to this engine. iii keeps a live catalog of every running worker, so a durable database may already be here. If it is, there is nothing to scaffold and nothing to deploy alongside.'
+
 export async function* runScenario(
   opts: ScenarioOptions,
 ): AsyncGenerator<DemoEvent> {
@@ -1153,10 +1162,7 @@ export async function* runScenario(
   /* step 1 — look at what is already running */
   yield* step(
     1,
-    thought(
-      'The user wants a payments ledger with durable storage. Before I write a line of it I should look at what is already connected to this engine. iii keeps a live catalog of every running worker, so a durable database may already be here. If it is, there is nothing to scaffold and nothing to deploy alongside.',
-      signal,
-    ),
+    thought(OPENING_THOUGHT, signal, paceOver(OPENING_THOUGHT, 1100)),
     signal,
     (stepSpan) =>
       call({
