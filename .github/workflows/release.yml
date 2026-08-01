@@ -241,6 +241,25 @@ jobs:
       experimental: ${{ needs.setup.outputs.experimental }}
     secrets: inherit
 
+  # Run the published Harness quickstart immediately after the registry
+  # deployment. The validator supports the stable release channels only.
+  quickstart:
+    name: Harness quickstart
+    needs: [setup, publish]
+    if: >-
+      ${{
+        !failure() &&
+        !cancelled() &&
+        needs.setup.outputs.worker == 'harness' &&
+        needs.setup.outputs.dry_run != 'true' &&
+        needs.publish.result == 'success' &&
+        (needs.setup.outputs.registry_tag == 'latest' || needs.setup.outputs.registry_tag == 'next')
+      }}
+    uses: ./.github/workflows/harness-quickstart.yml
+    with:
+      channel: ${{ needs.setup.outputs.registry_tag }}
+    secrets: inherit
+
   # ──────────────────────────────────────────────────────────────
   # Announce the release in Slack (#worker-releases). Terminal job:
   # nothing depends on it, but a bad token or channel fails red

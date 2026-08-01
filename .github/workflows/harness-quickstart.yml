@@ -1,6 +1,18 @@
 name: Harness quickstart
 
 on:
+  workflow_call:
+    inputs:
+      channel:
+        description: Installer channel to validate
+        required: false
+        type: string
+        default: latest
+    secrets:
+      SLACK_BOT_TOKEN:
+        required: false
+      ZAI_API_KEY:
+        required: true
   schedule:
     - cron: "17 5 * * *"
   workflow_dispatch:
