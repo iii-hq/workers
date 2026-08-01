@@ -74,6 +74,12 @@ impl ProcessSpec {
             // group ID. This runs between fork and exec without a closure.
             .process_group(0);
 
+        // Coverage runs need instrumented children to keep writing their
+        // profiles despite env_clear; inert otherwise.
+        if let Ok(profile_file) = std::env::var("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", profile_file);
+        }
+
         let child = command.spawn().with_context(|| {
             format!("spawning {} from {}", self.name, self.executable.display())
         })?;

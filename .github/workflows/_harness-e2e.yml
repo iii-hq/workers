@@ -73,6 +73,11 @@ on:
         required: false
         type: string
         default: ''
+      coverage:
+        description: Instrument the E2E stack and produce an LLVM coverage report
+        required: false
+        type: boolean
+        default: false
     secrets:
       anthropic_api_key:
         required: false
@@ -86,7 +91,8 @@ jobs:
     name: harness e2e build
     if: github.ref == 'refs/heads/main' || inputs.source_ref != ''
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Instrumented cold builds are slower than regular ones.
+    timeout-minutes: ${{ inputs.coverage && 60 || 45 }}
     outputs:
       scenarios: ${{ steps.scenarios.outputs.json }}
       engine_binary: ${{ steps.engine.outputs.binary }}
@@ -154,13 +160,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: ${{ inputs.coverage && 'clippy,llvm-tools' || 'clippy' }}
 
       - name: Restore E2E Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: harness-e2e
-          save-if: false
+          # Instrumented builds have different fingerprints; keep them on their
+          # own key so coverage runs never poison the normal cache.
+          shared-key: ${{ inputs.coverage && 'harness-e2e-coverage' || 'harness-e2e' }}
+          save-if: ${{ inputs.coverage }}
           workspaces: |
             harness -> target
             database -> target
@@ -187,8 +195,13 @@ jobs:
         env:
           SUBJECTS: ${{ inputs.subjects }}
           JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+          RUSTFLAGS: ${{ inputs.coverage && '-Cinstrument-coverage -Cllvm-args=-runtime-counter-relocation' || '' }}
+          # Scratch profile path so instrumented build scripts don't drop
+          # default.profraw files inside the crate directories.
+          LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/build-profraw/%m_%p.profraw', github.workspace) || '' }}
         run: |
           set -euo pipefail
+          mkdir -p target/coverage/build-profraw
           for worker in database state queue session-manager llm-router context-manager iii-directory cron; do
             cargo build --locked --release --manifest-path "$worker/Cargo.toml"
           done
@@ -210,6 +223,9 @@ jobs:
 
       - name: Read code-defined scenarios
         id: scenarios
+        env:
+          # The instrumented binary would otherwise drop default.profraw in cwd.
+          LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/build-profraw/%m_%p.profraw', github.workspace) || '' }}
         run: |
           set -euo pipefail
           scenarios=$(harness/target/release/harness-e2e list)
@@ -291,6 +307,10 @@ jobs:
           test -c /dev/kvm
           sudo chmod 0666 /dev/kvm
 
+      - name: Prepare coverage profile directory
+        if: inputs.coverage
+        run: mkdir -p target/harness-e2e/profraw
+
       - name: Run real-stack quality scenario
         env:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
@@ -308,6 +328,10 @@ jobs:
           HARNESS_E2E_QUALITY_ADVISORY: ${{ inputs.quality_advisory }}
           HARNESS_E2E_CI_SCORE_FLOOR: ${{ inputs.ci_score_floor }}
           HARNESS_E2E_ENGINE_REVISION: ${{ needs.build.outputs.engine_revision }}
+          # run-ci.sh spawns every worker with cwd inside the artifacts dir, so
+          # the profile path must be absolute; %c keeps profiles flushing after
+          # the SIGTERM teardown. Inert when the stack is not instrumented.
+          LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/harness-e2e/profraw/%m_%p%c.profraw', github.workspace) || '' }}
         run: harness/tests/e2e/run-ci.sh
 
       - name: Write benchmark context
@@ -383,6 +407,15 @@ jobs:
             target/harness-e2e/logs/
             target/harness-e2e/stack/
           retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload coverage profiles
+        if: always() && inputs.coverage
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.scenario }}-profraw
+          path: target/harness-e2e/profraw/
+          retention-days: 1
           if-no-files-found: ignore
 
   summary:
@@ -512,3 +545,84 @@ jobs:
           path: target/harness-e2e-benchmark/execution.json
           retention-days: 30
           if-no-files-found: error
+
+  coverage:
+    name: harness e2e coverage
+    needs: [build, e2e]
+    if: always() && inputs.coverage && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Sources must match the binaries built from the same ref for llvm-cov.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+
+      - name: Download E2E binaries
+        uses: actions/download-artifact@v7
+        with:
+          name: harness-e2e-stack
+          path: target
+
+      - name: Extract E2E binaries
+        run: tar -xzf target/harness-e2e-stack.tar.gz
+
+      - name: Download coverage profiles
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          pattern: harness-e2e-*-profraw
+          merge-multiple: true
+          path: target/coverage/profraw
+
+      - name: Generate coverage report
+        env:
+          SUBJECTS: ${{ inputs.subjects }}
+          JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+        run: |
+          set -euo pipefail
+          objects=(
+            database/target/release/database
+            state/target/release/state
+            queue/target/release/queue
+            session-manager/target/release/session-manager
+            llm-router/target/release/llm-router
+            context-manager/target/release/context-manager
+            iii-directory/target/release/iii-directory
+            cron/target/release/cron
+            harness/target/release/harness
+            harness/target/release/harness-e2e
+          )
+          mapfile -t providers < <(
+            {
+              jq -r '.[].provider' <<<"$SUBJECTS"
+              printf '%s\n' "$JUDGE_PROVIDER"
+            } | sort -u
+          )
+          for provider in "${providers[@]}"; do
+            objects+=("provider-$provider/target/release/provider-$provider")
+          done
+          object_args=()
+          for object in "${objects[@]}"; do
+            object_args+=(--object "$object")
+          done
+          .github/scripts/coverage_report.sh \
+            --profraw-dir target/coverage/profraw \
+            --output-dir target/coverage/e2e \
+            --title harness-e2e \
+            "${object_args[@]}"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-coverage
+          path: |
+            target/coverage/e2e/html/
+            target/coverage/e2e/summary.json
+            target/coverage/e2e/report.txt
+          retention-days: 14
+          if-no-files-found: ignore

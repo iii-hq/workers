@@ -61,6 +61,26 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
 
+      - name: Download E2E coverage report
+        id: e2e-coverage
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: harness-e2e-coverage
+          path: target/coverage/e2e
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Download integration coverage report
+        id: integration-coverage
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: harness-integration-coverage
+          path: target/coverage/integration
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
       - name: Resolve benchmark source
         id: benchmark
         if: steps.compact.outcome == 'success'
@@ -109,12 +129,103 @@ jobs:
           auto-push: true
           summary-always: true
 
+      - name: Collect coverage trend metrics
+        id: coverage-metrics
+        if: steps.benchmark.outputs.source_sha != ''
+        run: |
+          set -euo pipefail
+          entries='[]'
+          add_entry() {
+            local name=$1 summary=$2
+            [[ -f "$summary" ]] || return 0
+            entries=$(
+              jq --arg name "$name" --slurpfile summary "$summary" \
+                '. + [{
+                  name: $name,
+                  unit: "%",
+                  value: (($summary[0].totals.lines.percent * 100 | round) / 100)
+                }]' <<<"$entries"
+            )
+          }
+          add_entry "E2E line coverage" target/coverage/e2e/summary.json
+          add_entry "Integration line coverage" target/coverage/integration/summary.json
+          if [[ $(jq 'length' <<<"$entries") -eq 0 ]]; then
+            echo "No coverage summaries in this run; skipping trend history."
+            echo "has_metrics=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s\n' "$entries" > target/coverage/coverage-metrics.json
+          echo "has_metrics=true" >> "$GITHUB_OUTPUT"
+
+      - name: Store coverage history
+        if: steps.coverage-metrics.outputs.has_metrics == 'true'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Harness Stack Coverage
+          tool: customBiggerIsBetter
+          output-file-path: target/coverage/coverage-metrics.json
+          ref: ${{ steps.benchmark.outputs.source_sha }}
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/harness-e2e/coverage-trend
+          max-items-in-chart: 100
+          github-token: ${{ github.token }}
+          auto-push: true
+          summary-always: true
+
       - name: Checkout benchmark history
         uses: actions/checkout@v5
         with:
           ref: gh-pages
           path: pages-source
           fetch-depth: 0
+
+      - name: Install coverage reports
+        env:
+          WORKFLOW_URL: ${{ github.event.workflow_run.html_url }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          COMPLETED_AT: ${{ github.event.workflow_run.updated_at }}
+        run: |
+          set -euo pipefail
+          coverage_root=pages-source/dev/harness-e2e/coverage
+          mkdir -p "$coverage_root"
+
+          # Replace-latest semantics: only swap a suite when this run produced
+          # a report, so a partial daily failure keeps yesterday's pages.
+          install_suite() {
+            local suite=$1 source=$2
+            [[ -d "$source/html" ]] || {
+              echo "no $suite coverage in this run; keeping the published report"
+              return 0
+            }
+            rm -rf "${coverage_root:?}/$suite"
+            mkdir -p "$coverage_root/$suite"
+            cp -R "$source/html/." "$coverage_root/$suite/"
+            cp "$source/summary.json" "$coverage_root/$suite.summary.json"
+          }
+          install_suite e2e target/coverage/e2e
+          install_suite integration target/coverage/integration
+
+          # Manifest consumed by the coverage landing page; built from the
+          # published per-suite summaries so it reflects the latest known
+          # report even when one suite was skipped this run.
+          read_summary() {
+            if [[ -f "$1" ]]; then cat "$1"; else echo null; fi
+          }
+          manifest=$(
+            jq -cn \
+              --argjson e2e "$(read_summary "$coverage_root/e2e.summary.json")" \
+              --argjson integration "$(read_summary "$coverage_root/integration.summary.json")" \
+              --arg updated_at "$COMPLETED_AT" \
+              --arg head_sha "$HEAD_SHA" \
+              --arg run_url "$WORKFLOW_URL" \
+              '{
+                updated_at: $updated_at,
+                head_sha: $head_sha,
+                run_url: $run_url,
+                suites: {e2e: $e2e, integration: $integration}
+              }'
+          )
+          printf 'window.HARNESS_COVERAGE = %s;\n' "$manifest" > "$coverage_root/summary.js"
 
       - name: Install dashboard and execution history
         env:

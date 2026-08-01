@@ -1448,14 +1448,16 @@ footer {
   line-height: 1;
 }
 
-.scenario-history-tabs {
+.scenario-history-tabs,
+.run-tabs {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
   margin-top: 24px;
 }
 
-.scenario-history-tabs button {
+.scenario-history-tabs button,
+.run-tabs button {
   min-height: 32px;
   padding: 0 11px;
   border: 1px solid var(--line);
@@ -1468,7 +1470,9 @@ footer {
 }
 
 .scenario-history-tabs button:hover,
-.scenario-history-tabs button.active {
+.scenario-history-tabs button.active,
+.run-tabs button:hover,
+.run-tabs button.active {
   border-color: rgba(199, 255, 74, 0.28);
   background: var(--accent-soft);
   color: var(--text);
@@ -2068,6 +2072,104 @@ footer {
   line-height: 1.45;
 }
 
+#detail-failures {
+  scroll-margin-top: 24px;
+}
+
+.failure-groups {
+  display: grid;
+  gap: 8px;
+}
+
+.failure-chip {
+  display: grid;
+  grid-template-columns: auto minmax(140px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255, 120, 111, 0.2);
+  border-radius: 9px;
+  background: rgba(255, 120, 111, 0.04);
+  color: var(--text);
+  font-size: 0.7rem;
+  text-decoration: none;
+}
+
+.failure-chip:hover {
+  border-color: rgba(255, 120, 111, 0.45);
+}
+
+.failure-chip strong {
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.failure-chip-message {
+  overflow: hidden;
+  color: var(--text-soft);
+  font-size: 0.66rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.failure-overflow {
+  margin-top: 10px;
+}
+
+.failure-overflow > summary {
+  cursor: pointer;
+  color: var(--text-soft);
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+
+.failure-overflow[open] > summary {
+  margin-bottom: 10px;
+}
+
+.section-disclosure {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.section-disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.section-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.section-digest {
+  color: var(--text-soft);
+  font-size: 0.71rem;
+}
+
+.section-chevron,
+.scenario-chevron {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  transition: transform 0.15s ease;
+}
+
+.section-disclosure[open] .section-chevron,
+.scenario-detail-card[open] .scenario-chevron {
+  transform: rotate(180deg);
+}
+
+.section-disclosure > .metadata-grid,
+.section-disclosure > #configuration-content {
+  padding: 0 18px 18px;
+}
+
 .detail-kpis {
   margin-bottom: 34px;
 }
@@ -2246,22 +2348,70 @@ footer {
 
 .scenario-detail-card {
   scroll-margin-top: 24px;
-  padding: 22px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--surface);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
 }
 
-.scenario-detail-card > header {
-  display: flex;
+.scenario-detail-card[open] {
+  border-color: var(--line-strong);
+}
+
+.scenario-summary-row {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) auto auto auto auto auto;
   align-items: center;
-  justify-content: space-between;
   gap: 18px;
+  min-height: 64px;
+  padding: 12px 22px;
+  cursor: pointer;
+  list-style: none;
 }
 
-.scenario-detail-card > header span:first-child {
+.scenario-summary-row::-webkit-details-marker {
+  display: none;
+}
+
+.scenario-summary-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.scenario-summary-copy strong {
+  font-size: 0.94rem;
+  font-weight: 590;
+}
+
+.scenario-summary-copy small {
   color: var(--text-muted);
-  font-size: 0.63rem;
+  font-size: 0.62rem;
+}
+
+.scenario-summary-stat {
+  display: grid;
+  gap: 2px;
+  text-align: right;
+}
+
+.scenario-summary-stat small {
+  color: var(--text-muted);
+  font-size: 0.56rem;
+  font-weight: 680;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.scenario-summary-stat strong {
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.scenario-detail-body {
+  padding: 0 22px 22px;
+  border-top: 1px solid var(--line);
 }
 
 .scenario-detail-card h3 {
@@ -2334,6 +2484,8 @@ footer {
   border: 1px solid var(--line);
   border-radius: 11px;
   background: var(--bg);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
 }
 
 .run-detail[open] {
@@ -2416,6 +2568,12 @@ footer {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 9px;
   margin-top: 14px;
+}
+
+/* The authored display would otherwise override the UA [hidden] rule and
+   show every tab panel at once. */
+.run-sections[hidden] {
+  display: none;
 }
 
 .run-section {
@@ -2544,6 +2702,31 @@ footer {
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.prompt-block.is-clamped {
+  max-height: 260px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, black 72%, transparent);
+  mask-image: linear-gradient(to bottom, black 72%, transparent);
+}
+
+.prompt-expand {
+  min-height: 32px;
+  margin-top: 10px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 0.67rem;
+  font-weight: 650;
+}
+
+.prompt-expand:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
 }
 
 .conversation-launch {
@@ -3456,6 +3639,22 @@ footer {
 
   .run-detail > summary > span:nth-child(3),
   .run-detail > summary > span:nth-child(4) {
+    display: none;
+  }
+
+  .scenario-summary-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .scenario-summary-row > .scenario-summary-stat {
+    display: none;
+  }
+
+  .failure-chip {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .failure-chip-message {
     display: none;
   }
 

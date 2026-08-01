@@ -92,16 +92,12 @@
             <div id="detail-runtime" class="kpi-value">—</div>
             <div id="workflow-runtime" class="kpi-delta">—</div>
           </article>
-          <article class="kpi-card">
-            <div class="kpi-label">Reliability events</div>
-            <div id="detail-reliability" class="kpi-value">—</div>
-            <div class="kpi-delta">Blocking failures and missing reports</div>
-          </article>
         </section>
 
         <div class="detail-layout">
           <aside class="detail-index" aria-label="Execution detail sections">
             <span>On this page</span>
+            <a href="#detail-failures">Failures</a>
             <a href="#overview">Overview</a>
             <a href="#configuration">Configuration</a>
             <a href="#scenarios">Scenarios and runs</a>
@@ -112,13 +108,25 @@
             <section id="overview" class="detail-section" aria-labelledby="overview-heading">
               <div class="section-kicker">Execution context</div>
               <h2 id="overview-heading">Overview</h2>
-              <div id="metadata-grid" class="metadata-grid"></div>
+              <details class="section-disclosure">
+                <summary>
+                  <span id="overview-digest" class="section-digest">Loading…</span>
+                  <span class="section-chevron" aria-hidden="true">⌄</span>
+                </summary>
+                <div id="metadata-grid" class="metadata-grid"></div>
+              </details>
             </section>
 
             <section id="configuration" class="detail-section" aria-labelledby="configuration-heading">
               <div class="section-kicker">Resolved stack</div>
               <h2 id="configuration-heading">Configuration</h2>
-              <div id="configuration-content"></div>
+              <details class="section-disclosure">
+                <summary>
+                  <span id="configuration-digest" class="section-digest">Loading…</span>
+                  <span class="section-chevron" aria-hidden="true">⌄</span>
+                </summary>
+                <div id="configuration-content"></div>
+              </details>
             </section>
 
             <section id="scenarios" class="detail-section" aria-labelledby="scenarios-heading">
