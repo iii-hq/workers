@@ -30,7 +30,7 @@ RUST_WORKERS   := $(filter-out $(PYTHON_WORKERS),$(STACK))
 
 GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-run dev-up dev-down dev-restart \
                     engine wait-engine wait-base wait-stack restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
-                    ensure-session prepare-scrapling require-engine where integration-test integration-playground integration-validate quickstart-validate,$(MAKECMDGOALS))
+                    ensure-session prepare-scrapling require-engine where integration-test integration-coverage integration-playground integration-validate quickstart-validate,$(MAKECMDGOALS))
 SELECTED_WORKERS := $(strip $(GOAL_ARGS))
 ACTIVE_WORKERS   := $(if $(SELECTED_WORKERS),$(SELECTED_WORKERS),$(STACK))
 UNKNOWN_WORKERS  := $(filter-out $(STACK),$(SELECTED_WORKERS))
@@ -42,7 +42,7 @@ RUN_FLAG   := $(if $(filter release,$(RUN_PROFILE)),--release,)
 
 .PHONY: help install-iii-next build install-local clean cargo-clean dev-run dev-up dev-down dev-restart engine wait-engine wait-base wait-stack \
         restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach ensure-session prepare-scrapling \
-        require-engine where integration-test integration-playground integration-validate quickstart-validate $(STACK)
+        require-engine where integration-test integration-coverage integration-playground integration-validate quickstart-validate $(STACK)
 
 help:
 	@printf '%s\n' \
@@ -65,6 +65,7 @@ help:
 	  '  make cargo-clean [workers...]       cargo clean stack or selected workers' \
 	  '  make install-local [workers...]     build and symlink into ~/.iii/workers' \
 	  '  make integration-test III_BIN=<iii>  run the harness integration scenarios (tests/integration)' \
+	  '  make integration-coverage III_BIN=<iii>  run the scenarios instrumented and emit an LLVM coverage report' \
 	  '  make integration-playground III_BIN=<iii>  open the Console against an isolated integration stack' \
 	  '  make integration-validate           validate every integration scenario' \
 	  '  make quickstart-validate            validate the published harness quickstart'
@@ -402,6 +403,27 @@ integration-test:
 	  --worker-bin "state=$(REPO_ROOT)/state/target/$(INTEGRATION_PROFILE)/state" \
 	  --scenario "$(INTEGRATION_SCENARIO)" \
 	  --artifacts-dir "$(INTEGRATION_ARTIFACTS)"
+
+COVERAGE_RUSTFLAGS := -Cinstrument-coverage -Cllvm-args=-runtime-counter-relocation
+COVERAGE_PROFRAW   := $(REPO_ROOT)/target/coverage/profraw
+
+integration-coverage:
+	@mkdir -p "$(COVERAGE_PROFRAW)"
+	@RUSTFLAGS="$(COVERAGE_RUSTFLAGS)" \
+	  LLVM_PROFILE_FILE="$(COVERAGE_PROFRAW)/%m_%p%c.profraw" \
+	  $(MAKE) integration-test III_BIN="$(III_BIN)"
+	@"$(REPO_ROOT)/.github/scripts/coverage_report.sh" \
+	  --profraw-dir "$(COVERAGE_PROFRAW)" \
+	  --output-dir "$(REPO_ROOT)/target/coverage/integration" \
+	  --title harness-integration \
+	  --object "$(REPO_ROOT)/queue/target/$(INTEGRATION_PROFILE)/queue" \
+	  --object "$(REPO_ROOT)/iii-directory/target/$(INTEGRATION_PROFILE)/iii-directory" \
+	  --object "$(REPO_ROOT)/session-manager/target/$(INTEGRATION_PROFILE)/session-manager" \
+	  --object "$(REPO_ROOT)/context-manager/target/$(INTEGRATION_PROFILE)/context-manager" \
+	  --object "$(REPO_ROOT)/state/target/$(INTEGRATION_PROFILE)/state" \
+	  --object "$(REPO_ROOT)/harness/target/$(INTEGRATION_PROFILE)/harness" \
+	  --object "$(REPO_ROOT)/harness/target/$(INTEGRATION_PROFILE)/harness-integration"
+	@echo "open $(REPO_ROOT)/target/coverage/integration/html/index.html"
 
 integration-playground:
 	@if [ -z "$(III_BIN)" ]; then \

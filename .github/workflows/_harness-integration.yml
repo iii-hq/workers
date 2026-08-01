@@ -8,6 +8,16 @@ on:
         type: boolean
         required: false
         default: false
+      coverage:
+        description: Instrument the harness stack and produce an LLVM coverage report
+        type: boolean
+        required: false
+        default: false
+      source_ref:
+        description: Git ref to check out (empty uses the caller revision)
+        type: string
+        required: false
+        default: ''
 
 jobs:
   integration:
@@ -15,6 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
 
       - name: Read and validate engine.lock
         id: lock
@@ -72,6 +84,8 @@ jobs:
           path: target/integration-engine-src
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: ${{ inputs.coverage && 'llvm-tools' || '' }}
 
       - uses: pnpm/action-setup@v5
         with:
@@ -115,8 +129,10 @@ jobs:
         id: stack-cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: harness-integration
-          save-if: ${{ inputs.save-cache }}
+          # Instrumented builds have different fingerprints; keep them on their
+          # own key so coverage runs never poison the normal cache.
+          shared-key: ${{ inputs.coverage && 'harness-integration-coverage' || 'harness-integration' }}
+          save-if: ${{ inputs.save-cache || inputs.coverage }}
           workspaces: |
             harness -> target
             queue -> target
@@ -132,7 +148,14 @@ jobs:
       - name: Validate integration scenarios
         run: make -C harness integration-validate
 
+      - name: Prepare coverage directories
+        if: inputs.coverage
+        run: mkdir -p target/coverage/profraw
+
       - name: Run integration scenarios
+        env:
+          RUSTFLAGS: ${{ inputs.coverage && '-Cinstrument-coverage -Cllvm-args=-runtime-counter-relocation' || '' }}
+          LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
         run: make -C harness integration-test III_BIN="${{ steps.engine.outputs.bin }}"
 
       - name: Install Console web dependencies
@@ -144,6 +167,9 @@ jobs:
         run: pnpm build
 
       - name: Build Console worker
+        env:
+          RUSTFLAGS: ${{ inputs.coverage && '-Cinstrument-coverage -Cllvm-args=-runtime-counter-relocation' || '' }}
+          LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
         run: cargo build --release --manifest-path console/Cargo.toml
 
       - name: Install Playwright Chromium
@@ -167,6 +193,7 @@ jobs:
           CONTEXT_MANAGER_BIN: ${{ github.workspace }}/context-manager/target/release/context-manager
           STATE_BIN: ${{ github.workspace }}/state/target/release/state
           CONSOLE_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/console-e2e
+          LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
         run: pnpm test:e2e
 
       - name: Verify integration report links
@@ -189,6 +216,34 @@ jobs:
               exit 3
             }
           done
+
+      - name: Generate coverage report
+        if: always() && inputs.coverage
+        run: |
+          .github/scripts/coverage_report.sh \
+            --profraw-dir target/coverage/profraw \
+            --output-dir target/coverage/integration \
+            --title harness-integration \
+            --object queue/target/release/queue \
+            --object iii-directory/target/release/iii-directory \
+            --object session-manager/target/release/session-manager \
+            --object context-manager/target/release/context-manager \
+            --object state/target/release/state \
+            --object harness/target/release/harness \
+            --object harness/target/release/harness-integration \
+            --object console/target/release/console
+
+      - name: Upload coverage report
+        if: always() && inputs.coverage
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-integration-coverage
+          path: |
+            target/coverage/integration/html/
+            target/coverage/integration/summary.json
+            target/coverage/integration/report.txt
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Write cache summary
         if: always()
