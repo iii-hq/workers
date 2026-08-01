@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "harness"
-version = "1.6.4"
+version = "1.6.5"
 edition = "2021"
 publish = false
 
@@ -17,12 +17,14 @@ name = "harness"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.21.6"
+# 0.21.8 adds the reconnect reattach handshake. Older SDKs can lose this
+# worker's registrations when the engine reloads another worker.
+iii-sdk = "=0.21.8"
 # Re-exports the same `opentelemetry` the SDK uses, so we can carry the active
 # OTel context across `tokio::spawn` boundaries (shared `Context` global).
 # 0.21.5 adds the live span-start push (`LiveSpanStartProcessor`), so the
 # console renders `harness::turn step` while it runs instead of on close.
-iii-helpers = "=0.21.6"
+iii-helpers = "=0.21.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
