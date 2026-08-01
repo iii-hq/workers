@@ -21,6 +21,7 @@ impl ScenarioRunner<'_> {
         probe
             .register_target(&self.run_id, scenario.target.as_ref())
             .map_err(|error| RunError::setup(phase, "register controlled function", error))?;
+        probe.register_hooks(&self.run_id, &self.fixture.hooks);
 
         // Register observer bindings before the harness exists. Recoverable
         // triggers park the harness-owned bindings until their types appear;
@@ -47,6 +48,13 @@ impl ScenarioRunner<'_> {
             .map_err(|error| {
                 RunError::setup(phase, "confirm completion observer binding", error)
             })?;
+        // Hook trigger types are registered by the harness at boot; bind the
+        // scripted hooks only after readiness so registration is acknowledged
+        // before the first stimulus.
+        probe
+            .bind_hooks(&self.run_id, &self.fixture.hooks, deadline)
+            .await
+            .map_err(|error| RunError::setup(phase, "bind scripted hooks", error))?;
         if self.fixture.intervention.is_some() {
             probe
                 .bind_child_completion_observer(&self.session_id, deadline)

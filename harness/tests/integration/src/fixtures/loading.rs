@@ -44,7 +44,46 @@ pub struct ScenarioFixture {
     /// outside the compiled subject scenario: it is test synchronization, not
     /// a public harness request.
     pub intervention: Option<ScenarioIntervention>,
+    /// Probe-hosted hook functions bound to `harness::hook::<point>` trigger
+    /// types before Send. Each records its invocations as whole-run evidence
+    /// and answers with its scripted behavior.
+    pub hooks: Vec<ScenarioHook>,
 }
+
+/// One scripted hook the probe registers and binds for the run.
+#[derive(Debug, Clone)]
+pub struct ScenarioHook {
+    /// Short name; the registered function id is `<run_id>::hook-<name>`.
+    pub name: String,
+    /// Hook point suffix: pre-turn, pre-generate, post-generate, pre-trigger,
+    /// or post-trigger.
+    pub point: String,
+    /// Optional function-id globs for the binding's `functions` filter.
+    pub functions: Option<Vec<String>>,
+    pub priority: i64,
+    pub timeout_ms: Option<u64>,
+    pub on_error: Option<String>,
+    pub behavior: HookBehavior,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HookBehavior {
+    /// Always answer `null` (continue).
+    Continue,
+    /// `{"decision":"hold"}` on the first invocation, `null` afterwards — so
+    /// a post-resolve chain resume does not re-park the call.
+    HoldOnce,
+    Deny { reason: String },
+    Mutate { mutations: serde_json::Value },
+}
+
+pub const HOOK_POINTS: [&str; 5] = [
+    "pre-turn",
+    "pre-generate",
+    "post-generate",
+    "pre-trigger",
+    "post-trigger",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScenarioIntervention {
@@ -61,6 +100,10 @@ pub enum ScenarioIntervention {
         remove_message: String,
         after_message: String,
     },
+    /// Wait for a hook-held call to park the turn in `awaiting_functions`,
+    /// exercise `harness::function::resolve` no-op gates (wrong turn, unknown
+    /// call), then release the held call with `action: "execute"`.
+    HeldCallResolve { function_call_id: String },
 }
 
 /// A function the PROBE (test infra, not a model turn) invokes at a completion
@@ -144,10 +187,46 @@ impl ScenarioFixture {
             }
         }
         if self.intervention.is_none() {
+            // `cancelled` requires the intervention that performs the stop; a
+            // run may legitimately END failed (e.g. a budget-preflight
+            // rejection) — the floor still pins the durable status to it.
             anyhow::ensure!(
-                self.expected_turn_statuses.last().map(String::as_str) == Some("completed"),
-                "the last terminal turn must be completed"
+                matches!(
+                    self.expected_turn_statuses.last().map(String::as_str),
+                    Some("completed") | Some("failed")
+                ),
+                "the last terminal turn must be completed or failed"
             );
+        }
+        {
+            let mut names = std::collections::BTreeSet::new();
+            for hook in &self.hooks {
+                anyhow::ensure!(
+                    !hook.name.is_empty()
+                        && hook
+                            .name
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')),
+                    "hook name {:?} is not id-safe",
+                    hook.name
+                );
+                anyhow::ensure!(
+                    names.insert(hook.name.clone()),
+                    "duplicate hook name {:?}",
+                    hook.name
+                );
+                anyhow::ensure!(
+                    HOOK_POINTS.contains(&hook.point.as_str()),
+                    "unknown hook point {:?}; expected one of {HOOK_POINTS:?}",
+                    hook.point
+                );
+                if let Some(on_error) = &hook.on_error {
+                    anyhow::ensure!(
+                        matches!(on_error.as_str(), "fail_open" | "fail_closed"),
+                        "hook on_error {on_error:?} must be fail_open or fail_closed"
+                    );
+                }
+            }
         }
         if let Some(intervention) = &self.intervention {
             match intervention {
@@ -200,6 +279,26 @@ impl ScenarioFixture {
                     anyhow::ensure!(
                         self.expected_turn_statuses == ["completed"],
                         "queued-edit scenario must end with one completed turn"
+                    );
+                }
+                ScenarioIntervention::HeldCallResolve { function_call_id } => {
+                    anyhow::ensure!(
+                        !function_call_id.is_empty(),
+                        "held-call-resolve function_call_id must not be empty"
+                    );
+                    anyhow::ensure!(
+                        self.scenario.target.is_some(),
+                        "held-call-resolve needs a controlled function to hold"
+                    );
+                    anyhow::ensure!(
+                        self.hooks
+                            .iter()
+                            .any(|hook| hook.behavior == HookBehavior::HoldOnce),
+                        "held-call-resolve needs a HoldOnce hook to park the call"
+                    );
+                    anyhow::ensure!(
+                        self.expected_turn_statuses == ["completed"],
+                        "held-call-resolve scenario must end with one completed turn"
                     );
                 }
             }

@@ -34,6 +34,12 @@ pub struct RunEvidence {
     pub tree_statuses: Vec<Value>,
     /// Raw scripted-router calls and abort acknowledgements.
     pub router_evidence: Value,
+    /// `{function_id, response}` per fired probe action, in fire order —
+    /// the only surface for asserting a probe-dispatched call's response.
+    pub probe_responses: Vec<Value>,
+    /// `{function_id, payload}` per scripted-hook invocation the probe
+    /// served, in arrival order — whole-run evidence like `target_calls`.
+    pub hook_calls: Vec<Value>,
 }
 
 /// Compact form published in `playground-result.json`.
@@ -209,6 +215,59 @@ impl RunEvidence {
         Ok(())
     }
 
+    /// Invocation payloads served by the scripted hook registered as `name`.
+    pub fn hook_invocations(&self, name: &str) -> Vec<&Value> {
+        let suffix = format!("::hook-{name}");
+        self.hook_calls
+            .iter()
+            .filter(|entry| {
+                entry
+                    .get("function_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| id.ends_with(&suffix))
+            })
+            .filter_map(|entry| entry.get("payload"))
+            .collect()
+    }
+
+    pub fn expect_hook_calls(&self, name: &str, count: usize) -> anyhow::Result<()> {
+        let actual = self.hook_invocations(name).len();
+        anyhow::ensure!(
+            actual == count,
+            "hook {name} served {actual} invocation(s), expected {count}"
+        );
+        Ok(())
+    }
+
+    /// Response body of the nth fired probe action (fire order follows the
+    /// fixture's `after_turns` sort).
+    pub fn probe_response(&self, index: usize) -> Option<&Value> {
+        self.probe_responses.get(index).and_then(|entry| entry.get("response"))
+    }
+
+    /// Assert the nth probe action targeted `function_id` and its response
+    /// satisfies `check`.
+    pub fn expect_probe_response(
+        &self,
+        index: usize,
+        function_id: &str,
+        check: impl FnOnce(&Value) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let entry = self.probe_responses.get(index).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no probe response at index {index} ({} recorded)",
+                self.probe_responses.len()
+            )
+        })?;
+        let actual = entry.get("function_id").and_then(Value::as_str);
+        anyhow::ensure!(
+            actual == Some(function_id),
+            "probe action {index} targeted {actual:?}, expected {function_id:?}"
+        );
+        check(entry.get("response").unwrap_or(&Value::Null))
+            .map_err(|error| anyhow::anyhow!("probe response {index} ({function_id}): {error}"))
+    }
+
     pub fn expect_no_duplicate_messages(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             !self.has_duplicate_messages(),
@@ -348,6 +407,8 @@ mod tests {
             tree_sessions: Vec::new(),
             tree_statuses: Vec::new(),
             router_evidence: Value::Null,
+            probe_responses: Vec::new(),
+            hook_calls: Vec::new(),
         }
     }
 

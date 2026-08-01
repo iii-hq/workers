@@ -51,6 +51,9 @@ pub struct CompiledSendV1 {
 #[serde(deny_unknown_fields)]
 pub struct CompiledSendOptionsV1 {
     pub functions: CompiledFunctionPolicyV1,
+    /// Hard token budget for the root session (`SendOptions.max_total_tokens`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

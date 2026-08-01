@@ -63,6 +63,7 @@ pub(super) struct Scenario {
     await_target_calls: Option<usize>,
     traces_override: Option<usize>,
     intervention: Option<ScenarioIntervention>,
+    hooks: Vec<crate::fixtures::ScenarioHook>,
 }
 
 impl Scenario {
@@ -91,6 +92,7 @@ impl Scenario {
             await_target_calls: None,
             traces_override: None,
             intervention: None,
+            hooks: Vec::new(),
         }
     }
 
@@ -179,6 +181,14 @@ impl Scenario {
         self
     }
 
+    /// Register a scripted hook the probe hosts and binds to
+    /// `harness::hook::<point>` before Send.
+    #[allow(dead_code)] // used by the unregistered INT-013 fixture
+    pub(super) fn hook(mut self, hook: Hook) -> Self {
+        self.hooks.push(hook.fixture);
+        self
+    }
+
     /// After every terminal turn arrived, additionally await `count`
     /// controlled-function invocations (probe-side, whole-run) before
     /// collecting evidence. Required to observe call-mode reaction dispatches
@@ -258,6 +268,23 @@ impl Scenario {
         self
     }
 
+    /// Wait for the scripted hook hold to park the scripted call, exercise
+    /// `harness::function::resolve` no-op gates, then release with
+    /// `action: "execute"`.
+    #[allow(dead_code)] // used by the unregistered INT-013 fixture
+    pub(super) fn held_call_resolve(mut self, function_call_id: &str) -> Self {
+        assert!(
+            !function_call_id.is_empty(),
+            "held-call-resolve function_call_id must not be empty"
+        );
+        self.intervention = Some(ScenarioIntervention::HeldCallResolve {
+            function_call_id: function_call_id.to_string(),
+        });
+        self.expected_turn_statuses = vec!["completed".to_string()];
+        self.traces_override = Some(1);
+        self
+    }
+
     pub(super) fn terminal_turns(mut self, count: usize) -> Self {
         assert!(count > 0, "scenario must expect at least one terminal turn");
         self.expected_turn_statuses = vec!["completed".to_string(); count];
@@ -327,7 +354,54 @@ impl Scenario {
             await_target_calls: self.await_target_calls,
             traces_override: self.traces_override,
             intervention: self.intervention,
+            hooks: self.hooks,
         }
+    }
+}
+
+/// Builder for one scripted hook (see [`crate::fixtures::ScenarioHook`]).
+#[allow(dead_code)] // used by the unregistered INT-013 fixture
+pub(super) struct Hook {
+    fixture: crate::fixtures::ScenarioHook,
+}
+
+#[allow(dead_code)] // used by the unregistered INT-013 fixture
+impl Hook {
+    pub(super) fn new(name: &str, point: &str, behavior: crate::fixtures::HookBehavior) -> Self {
+        Self {
+            fixture: crate::fixtures::ScenarioHook {
+                name: name.to_string(),
+                point: point.to_string(),
+                functions: None,
+                priority: 0,
+                timeout_ms: None,
+                on_error: None,
+                behavior,
+            },
+        }
+    }
+
+    /// Restrict the binding to function ids matching these globs.
+    pub(super) fn functions<'a>(mut self, globs: impl IntoIterator<Item = &'a str>) -> Self {
+        self.fixture.functions = Some(globs.into_iter().map(str::to_string).collect());
+        self
+    }
+
+    pub(super) fn priority(mut self, priority: i64) -> Self {
+        self.fixture.priority = priority;
+        self
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.fixture.timeout_ms = Some(timeout_ms);
+        self
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn on_error(mut self, on_error: &str) -> Self {
+        self.fixture.on_error = Some(on_error.to_string());
+        self
     }
 }
 
@@ -336,6 +410,7 @@ pub(super) struct Send {
     idempotency_key: Option<String>,
     allowed_functions: Vec<String>,
     expose: CompiledFunctionExposureV1,
+    max_total_tokens: Option<u64>,
 }
 
 impl Send {
@@ -345,7 +420,15 @@ impl Send {
             idempotency_key: None,
             allowed_functions: Vec::new(),
             expose: CompiledFunctionExposureV1::Native,
+            max_total_tokens: None,
         }
+    }
+
+    /// Freeze a hard token budget onto the root session
+    /// (`SendOptions.max_total_tokens`).
+    pub(super) fn max_total_tokens(mut self, tokens: u64) -> Self {
+        self.max_total_tokens = Some(tokens);
+        self
     }
 
     pub(super) fn idempotency_key(mut self, key: &str) -> Self {
@@ -401,6 +484,7 @@ impl Send {
                     deny: Vec::new(),
                     expose: self.expose,
                 },
+                max_total_tokens: self.max_total_tokens,
             },
         }
     }

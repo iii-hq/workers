@@ -101,6 +101,8 @@ fn evidence(run_id: &str, session_id: &str, turn_id: &str) -> RunEvidence {
         tree_sessions: Vec::new(),
         tree_statuses: Vec::new(),
         router_evidence: Value::Null,
+        probe_responses: Vec::new(),
+        hook_calls: Vec::new(),
     }
 }
 

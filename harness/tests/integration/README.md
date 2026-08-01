@@ -23,8 +23,16 @@ No provider key or network access is required.
 | INT-010 | `crash-recovery-507` | direct | SIGKILL and restart the engine while a controlled function is in flight, with `context::assemble` held out during boot; the side effect runs once, the interrupted call closes, and the turn completes |
 | INT-011 | `stop-cancel-cascade` | direct | stopping a running root turn cancels the root and spawned children while retaining a queued message |
 | INT-012 | `queued-message-edit-unqueue` | direct | edit one queued message in place and unqueue another while the first turn is streaming; only the edited and untouched rows drain in order |
+| INT-014 | `budget-preflight-exceeded` | direct | a frozen token budget admits generation 1, then fails the turn at budget preflight when a fat function result blows generation 2's reservation; the state ledger keeps the reconciled usage |
+| INT-016 | `notify-grant-teardown` | direct | a notify subscription fires an injected notification turn; filesystem grants round-trip; the budget ledger reconciles; `harness::teardown` sweeps the standing binding |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
+
+INT-013 (`held-call-resolve`, hook-held call released via
+`harness::function::resolve`) is authored in `src/scenarios/held_call_resolve.rs`
+but not registered: running it surfaced an apparent harness defect where a
+hook-held call leaves `harness::status` timing out and the turn record missing
+from state (MOT-4296). Register it once that defect is fixed.
 
 Each fixture is defined end to end in its own `src/scenarios/*.rs` file with a
 small typed DSL. The scenario keeps its send policy, router request matchers,
