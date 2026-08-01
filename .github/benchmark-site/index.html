@@ -161,41 +161,6 @@
           </article>
         </section>
 
-        <div id="coverage-divider" class="section-divider-heading" hidden>
-          <div>
-            <div class="section-kicker">Stack instrumentation</div>
-            <h2>Code coverage</h2>
-          </div>
-          <p>LLVM line coverage of the instrumented stack from the latest daily cycle.</p>
-        </div>
-
-        <section
-          id="coverage-kpis"
-          class="kpi-grid"
-          aria-label="Stack code coverage"
-          hidden
-        >
-          <article class="kpi-card">
-            <div class="kpi-label">Integration suite</div>
-            <div id="coverage-integration" class="kpi-value">—</div>
-            <div id="coverage-integration-caption" class="kpi-delta">Not published yet</div>
-          </article>
-          <article class="kpi-card">
-            <div class="kpi-label">E2E suite</div>
-            <div id="coverage-e2e" class="kpi-value">—</div>
-            <div id="coverage-e2e-caption" class="kpi-delta">Not published yet</div>
-          </article>
-          <article class="kpi-card">
-            <div class="kpi-label">Reports</div>
-            <div class="kpi-value kpi-status-value">
-              <a href="./coverage/">Browse <span aria-hidden="true">→</span></a>
-            </div>
-            <div class="kpi-delta">
-              <a href="./coverage-trend/">Line coverage trend</a>
-            </div>
-          </article>
-        </section>
-
         <section class="panel health-panel" aria-labelledby="health-heading">
           <div class="panel-heading">
             <div>
@@ -360,29 +325,6 @@
     <script>
       window.BENCHMARK_DATA = window.BENCHMARK_DATA || null;
       window.HARNESS_EXECUTIONS = window.HARNESS_EXECUTIONS || null;
-      window.HARNESS_COVERAGE = window.HARNESS_COVERAGE || null;
-    </script>
-    <script src="./coverage/summary.js"></script>
-    <script>
-      (function () {
-        var coverage = window.HARNESS_COVERAGE;
-        var suites = coverage && coverage.suites ? coverage.suites : null;
-        if (!suites || (!suites.integration && !suites.e2e)) return;
-        document.getElementById("coverage-divider").hidden = false;
-        document.getElementById("coverage-kpis").hidden = false;
-        function apply(valueId, captionId, summary) {
-          if (!summary || !summary.totals || !summary.totals.lines) return;
-          var lines = summary.totals.lines;
-          document.getElementById(valueId).textContent =
-            lines.percent.toFixed(1) + "%";
-          document.getElementById(captionId).textContent =
-            (lines.covered != null ? lines.covered.toLocaleString() : "?") +
-            " of " + (lines.count != null ? lines.count.toLocaleString() : "?") +
-            " lines covered";
-        }
-        apply("coverage-integration", "coverage-integration-caption", suites.integration);
-        apply("coverage-e2e", "coverage-e2e-caption", suites.e2e);
-      })();
     </script>
     <script src="./data.js"></script>
     <script>
