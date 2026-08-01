@@ -8,6 +8,7 @@ const {
   executionsWithinDays,
   filterExecutions,
   findExecution,
+  groupRunFailures,
   matrixCell,
   matrixCellLabel,
   matrixRows,
@@ -513,4 +514,65 @@ test("compares efficiency only within the same scenario contract", () => {
   assert.equal(overview.metrics.tokens.comparableCurrent, 90);
   assert.equal(overview.metrics.tokens.comparableBaseline, 100);
   assert.equal(overview.metrics.tokens.delta, -10);
+});
+
+test("groupRunFailures returns empty for missing or empty reports", () => {
+  assert.deepEqual(groupRunFailures(undefined), []);
+  assert.deepEqual(groupRunFailures([]), []);
+  assert.deepEqual(
+    groupRunFailures([
+      {
+        subject_id: "s",
+        report: {
+          scenarios: [
+            {
+              scenario_id: "clean",
+              runs: [{ failures: [], hard_gates: [{ id: "g", passed: true }] }],
+            },
+          ],
+        },
+      },
+    ]),
+    [],
+  );
+});
+
+test("groupRunFailures groups failures and failed gates per run", () => {
+  const groups = groupRunFailures([
+    {
+      subject_id: "anthropic-sonnet",
+      report: {
+        scenarios: [
+          {
+            scenario_id: "security_review",
+            runs: [
+              {
+                failures: [{ phase: "execute", message: "boom" }],
+                hard_gates: [
+                  { id: "no_secrets", passed: false, reason: "leaked" },
+                  { id: "compiles", passed: true },
+                ],
+              },
+              { failures: [], hard_gates: [] },
+              { failures: [{ message: "" }] },
+            ],
+          },
+        ],
+      },
+    },
+  ]);
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups[0], {
+    subjectId: "anthropic-sonnet",
+    scenarioId: "security_review",
+    runIndex: 0,
+    items: [
+      { kind: "failure", phase: "execute", message: "boom" },
+      { kind: "gate", gateId: "no_secrets", message: "leaked" },
+    ],
+  });
+  assert.equal(groups[1].runIndex, 2);
+  assert.deepEqual(groups[1].items, [
+    { kind: "failure", phase: "failure", message: "No failure message" },
+  ]);
 });
