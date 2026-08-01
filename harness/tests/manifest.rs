@@ -54,7 +54,7 @@ fn worker_manifest_uses_the_standalone_queue_worker() {
 
     assert_eq!(
         dependencies.get(serde_yaml::Value::String("queue".into())),
-        Some(&serde_yaml::Value::String("^0.2.0".into()))
+        Some(&serde_yaml::Value::String("^0.21.2".into()))
     );
     assert!(!dependencies.contains_key(serde_yaml::Value::String("iii-queue".into())));
 }

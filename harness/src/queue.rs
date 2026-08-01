@@ -23,7 +23,8 @@ const DEFINE_RETRY_BACKOFF_MS: u64 = 250;
 /// Exhaustion is fatal to harness startup: accepting sends without this queue
 /// would acknowledge work that cannot run durably.
 pub async fn ensure_turn_queue(iii: &IIIClient) -> Result<(), String> {
-    let payload = turn_queue_definition();
+    let mut payload = turn_queue_definition();
+    let mut restart_redelivery_requested = true;
     let mut last_error = String::new();
 
     for attempt in 1..=DEFINE_ATTEMPTS {
@@ -42,6 +43,16 @@ pub async fn ensure_turn_queue(iii: &IIIClient) -> Result<(), String> {
             }
             Err(error) => {
                 last_error = error.to_string();
+                if restart_redelivery_requested && is_legacy_queue_schema_error(&last_error) {
+                    tracing::warn!(
+                        queue = TURN_QUEUE,
+                        error = %last_error,
+                        "queue worker does not support restart redelivery; retrying with the legacy queue schema"
+                    );
+                    payload = legacy_turn_queue_definition();
+                    restart_redelivery_requested = false;
+                    continue;
+                }
                 if attempt < DEFINE_ATTEMPTS {
                     tracing::warn!(
                         queue = TURN_QUEUE,
@@ -60,6 +71,10 @@ pub async fn ensure_turn_queue(iii: &IIIClient) -> Result<(), String> {
     ))
 }
 
+fn is_legacy_queue_schema_error(error: &str) -> bool {
+    error.contains("unknown field `redeliver_on_engine_restart`")
+}
+
 fn turn_queue_definition() -> Value {
     json!({
         "queue": TURN_QUEUE,
@@ -71,6 +86,20 @@ fn turn_queue_definition() -> Value {
             "backoff_ms": 1_000,
             "poll_interval_ms": 100,
             "redeliver_on_engine_restart": true
+        }
+    })
+}
+
+fn legacy_turn_queue_definition() -> Value {
+    json!({
+        "queue": TURN_QUEUE,
+        "config": {
+            "type": "fifo",
+            "message_group_field": "session_id",
+            "concurrency": 10,
+            "max_retries": 3,
+            "backoff_ms": 1_000,
+            "poll_interval_ms": 100
         }
     })
 }
@@ -99,5 +128,36 @@ mod tests {
         assert!(turn_queue_definition()["config"]
             .get("timeout_ms")
             .is_none());
+    }
+
+    #[test]
+    fn legacy_turn_queue_definition_omits_restart_redelivery() {
+        assert_eq!(
+            legacy_turn_queue_definition(),
+            json!({
+                "queue": "harness-turn",
+                "config": {
+                    "type": "fifo",
+                    "message_group_field": "session_id",
+                    "concurrency": 10,
+                    "max_retries": 3,
+                    "backoff_ms": 1_000,
+                    "poll_interval_ms": 100
+                }
+            })
+        );
+        assert!(legacy_turn_queue_definition()["config"]
+            .get("redeliver_on_engine_restart")
+            .is_none());
+    }
+
+    #[test]
+    fn only_the_unsupported_restart_redelivery_field_triggers_fallback() {
+        assert!(is_legacy_queue_schema_error(
+            "serialization error: unknown field `redeliver_on_engine_restart`"
+        ));
+        assert!(!is_legacy_queue_schema_error(
+            "serialization error: unknown field `message_group_field`"
+        ));
     }
 }

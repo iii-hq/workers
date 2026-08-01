@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "harness"
-version = "1.6.4"
+version = "1.6.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -804,9 +804,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.21.6"
+version = "0.21.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0d84d5c149ae4404365a79feca28aa66f6a7dbed56423b4b8c4e2421e0b5add"
+checksum = "84bdc7bbc3abfde934a62cdc5d3045adf52914dfc1ed6c20f8af691fc561dc55"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -825,9 +825,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.21.6"
+version = "0.21.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07dd060fddcc9153b0dd07c038a14cf172ce15ce1d4edb98155563ed55b2caba"
+checksum = "4dd563a1d2f55f893d9a433b747f0bf9bc426656413b136b6ed3a699f3c757b2"
 dependencies = [
  "async-trait",
  "futures-util",
