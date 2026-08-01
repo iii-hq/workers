@@ -91,6 +91,7 @@ jobs:
       experimental: ${{ steps.meta.outputs.experimental }}
       web_bundle: ${{ steps.web.outputs.needed }}
       interface_smoke: ${{ steps.smoke.outputs.interface_smoke }}
+      harness_smoke: ${{ steps.harness_smoke.outputs.enabled }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -149,6 +150,29 @@ jobs:
           if [[ "$val" == "false" ]]; then
             echo "::notice::$WORKER opts out of interface collection; registry publish will be skipped"
           fi
+
+      # The published Harness quickstart also covers every worker declared as
+      # a mandatory Harness dependency. Keep this derived from the manifest so
+      # the post-deploy smoke follows dependency changes automatically.
+      - name: Detect Harness quickstart smoke target
+        id: harness_smoke
+        env:
+          WORKER: ${{ steps.meta.outputs.worker }}
+        run: |
+          set -euo pipefail
+          enabled=$(WORKER="$WORKER" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import yaml
+
+          worker = os.environ["WORKER"]
+          manifest = yaml.safe_load(Path("harness/iii.worker.yaml").read_text())
+          dependencies = manifest.get("dependencies", {}) or {}
+          print("true" if worker == "harness" or worker in dependencies else "false")
+          PY
+          )
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "::notice::Harness quickstart smoke target=$enabled worker=$WORKER"
 
   # ──────────────────────────────────────────────────────────────
   # Create the GitHub Release shell (skipped on dry runs).
@@ -242,7 +266,8 @@ jobs:
     secrets: inherit
 
   # Run the published Harness quickstart immediately after the registry
-  # deployment. The validator supports the stable release channels only.
+  # deployment of Harness or one of its mandatory dependencies. The validator
+  # supports the stable release channels only.
   quickstart:
     name: Harness quickstart
     needs: [setup, publish]
@@ -250,7 +275,7 @@ jobs:
       ${{
         !failure() &&
         !cancelled() &&
-        needs.setup.outputs.worker == 'harness' &&
+        needs.setup.outputs.harness_smoke == 'true' &&
         needs.setup.outputs.dry_run != 'true' &&
         needs.publish.result == 'success' &&
         (needs.setup.outputs.registry_tag == 'latest' || needs.setup.outputs.registry_tag == 'next')
