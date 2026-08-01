@@ -852,6 +852,42 @@
     return history?.executions?.find((execution) => execution.id === id) || null;
   }
 
+  function groupRunFailures(reports) {
+    const groups = [];
+    (Array.isArray(reports) ? reports : []).forEach((record) => {
+      (record?.report?.scenarios || []).forEach((scenario) => {
+        (scenario.runs || []).forEach((run, runIndex) => {
+          const items = [];
+          (run.failures || []).forEach((failure) => {
+            items.push({
+              kind: "failure",
+              phase: failure.phase || "failure",
+              message: failure.message || "No failure message",
+            });
+          });
+          (run.hard_gates || [])
+            .filter((gate) => gate && gate.passed === false)
+            .forEach((gate) => {
+              items.push({
+                kind: "gate",
+                gateId: gate.id,
+                message: gate.reason || "Hard gate failed",
+              });
+            });
+          if (items.length) {
+            groups.push({
+              subjectId: record.subject_id,
+              scenarioId: scenario.scenario_id,
+              runIndex,
+              items,
+            });
+          }
+        });
+      });
+    });
+    return groups;
+  }
+
   return {
     buildEfficiencyOverview,
     contractFingerprint,
@@ -859,6 +895,7 @@
     executionsWithinDays,
     filterExecutions,
     findExecution,
+    groupRunFailures,
     legacyExecution,
     matrixCell,
     matrixCellLabel,
