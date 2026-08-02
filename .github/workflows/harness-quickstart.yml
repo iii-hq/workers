@@ -8,6 +8,31 @@ on:
         required: false
         type: string
         default: latest
+      release_worker:
+        description: Worker published by the release that triggered this smoke
+        required: false
+        type: string
+        default: ''
+      release_version:
+        description: Published worker version that must be resolved
+        required: false
+        type: string
+        default: ''
+      release_tag:
+        description: Git tag associated with the published release
+        required: false
+        type: string
+        default: ''
+      release_run_id:
+        description: GitHub Actions run id of the publishing release
+        required: false
+        type: string
+        default: ''
+      cascade_e2e:
+        description: Dispatch the deployed E2E workflow after a successful smoke
+        required: false
+        type: boolean
+        default: false
     secrets:
       SLACK_BOT_TOKEN:
         required: false
@@ -22,13 +47,33 @@ on:
         type: choice
         options: [latest, next]
         default: latest
+      release_worker:
+        description: Worker published by the release that triggered this smoke
+        type: string
+        default: ''
+      release_version:
+        description: Published worker version that must be resolved
+        type: string
+        default: ''
+      release_tag:
+        description: Git tag associated with the published release
+        type: string
+        default: ''
+      release_run_id:
+        description: GitHub Actions run id of the publishing release
+        type: string
+        default: ''
+      cascade_e2e:
+        description: Dispatch the deployed E2E workflow after a successful smoke
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: harness-quickstart-${{ inputs.channel || github.event_name }}
-  cancel-in-progress: true
+  group: harness-quickstart-${{ inputs.channel || github.event_name }}-${{ inputs.release_version || 'rolling' }}
+  cancel-in-progress: ${{ inputs.release_version == '' }}
 
 jobs:
   validate:
@@ -144,6 +189,48 @@ jobs:
             echo "::error::quickstart validator failed${reason:+: $reason}"
             exit 1
           }
+
+      - name: Verify the released artifact was resolved
+        if: ${{ success() && inputs.release_version != '' }}
+        env:
+          RELEASE_WORKER: ${{ inputs.release_worker }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet pyyaml
+          python3 - target/harness-quickstart/iii.lock <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          import yaml
+
+          lock = yaml.safe_load(Path(sys.argv[1]).read_text()) or {}
+          workers = lock.get("workers") or {}
+          worker = os.environ["RELEASE_WORKER"]
+          expected = os.environ["RELEASE_VERSION"]
+          record = workers.get(worker)
+          actual = record.get("version") if isinstance(record, dict) else None
+          if actual != expected:
+              raise SystemExit(
+                  f"artifact_mismatch: expected {worker} {expected}, resolved {actual or 'unknown'}"
+              )
+
+          print(f"Resolved {worker} {actual} from the {os.environ['CHANNEL']} channel.")
+          print(f"Release tag: {os.environ.get('RELEASE_TAG') or 'n/a'}")
+          print(f"Release run: {os.environ.get('RELEASE_RUN_ID') or 'n/a'}")
+          PY
+          jq -n \
+            --arg worker "$RELEASE_WORKER" \
+            --arg version "$RELEASE_VERSION" \
+            --arg tag "$RELEASE_TAG" \
+            --arg run_id "$RELEASE_RUN_ID" \
+            --arg channel "$CHANNEL" \
+            '{worker: $worker, version: $version, tag: $tag, release_run_id: $run_id, channel: $channel}' \
+            >target/harness-quickstart/release-context.json
 
       - name: Show quickstart logs
         if: always()
@@ -346,3 +433,39 @@ jobs:
             exit 1
           fi
           echo "Uploaded ${filename} (${length} bytes) to the Slack thread."
+
+  dispatch-e2e:
+    name: Dispatch deployed Harness E2E CI
+    needs: validate
+    if: ${{ needs.validate.result == 'success' && inputs.cascade_e2e == true }}
+    permissions:
+      actions: write
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch deployed E2E CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ inputs.channel }}
+          WORKER: ${{ inputs.release_worker }}
+          VERSION: ${{ inputs.release_version }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          SMOKE_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ -n "$WORKER" && -n "$VERSION" ]] || {
+            echo "::error::release_worker and release_version are required for the E2E cascade"
+            exit 2
+          }
+          gh workflow run harness-e2e-deployed.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$WORKFLOW_REF" \
+            --field "channel=$CHANNEL" \
+            --field "release_worker=$WORKER" \
+            --field "release_version=$VERSION" \
+            --field "release_tag=$RELEASE_TAG" \
+            --field "release_run_id=$RELEASE_RUN_ID" \
+            --field "smoke_run_id=$SMOKE_RUN_ID"
+          echo "Dispatched deployed Harness E2E CI for $WORKER v$VERSION ($CHANNEL)."
