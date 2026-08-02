@@ -29,22 +29,30 @@ For each snippet, identify the vulnerability, explain its impact, and recommend 
             CriterionSpec {
                 id: "coverage",
                 weight: 40,
-                description: "Identifies the relevant vulnerability in all three snippets.",
+                description: "Full credit: names the hardcoded secret, SQL injection, and open \
+redirect, each on its own snippet. Half: two of the three. Zero: one or none, or \
+findings mapped to the wrong snippets.",
             },
             CriterionSpec {
                 id: "accuracy",
                 weight: 30,
-                description: "Explains each risk accurately without invented findings.",
+                description: "Full credit: every stated impact is technically correct with no \
+invented vulnerabilities. Half: minor imprecision or one speculative extra finding. \
+Zero: materially wrong impacts or fabricated issues dominate.",
             },
             CriterionSpec {
                 id: "remediation",
                 weight: 20,
-                description: "Provides a practical mitigation for every finding.",
+                description: "Full credit: a concrete standard fix per finding (rotate plus \
+secret manager; parameterized queries; allowlisted or relative-path redirects). Half: \
+fixes for only some findings or vague advice. Zero: missing or incorrect fixes.",
             },
             CriterionSpec {
                 id: "clarity",
                 weight: 10,
-                description: "Presents a concise, easy-to-map review.",
+                description: "Full credit: concise snippet-by-snippet structure, findings \
+trivially mapped. Half: readable but disorganized or padded. Zero: unclear which \
+finding belongs to which snippet.",
             },
         ],
         judge_reference: Some(json!({

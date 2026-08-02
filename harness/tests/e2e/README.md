@@ -55,6 +55,14 @@ scenario through one global `allow: ["*"]` policy:
   evaluator verifies every effect, exact stdout from both environments,
   operation ordering, shutdown, and scenario-owned cleanup. Recovered function
   errors reduce its quality score without overriding those validated effects.
+- `design_tradeoff`: recommends one side of a contested database-scaling
+  decision with facts that pull in opposite directions; a judge scores
+  commitment to a single pick, constraint-grounded reasoning, honest costs of
+  the chosen option, and concrete reversal conditions.
+- `security_triage`: classifies four snippets where two are subtly exploitable
+  and two only look vulnerable; a judge scores true positives, false-positive
+  control, remediation, and clarity.
+
 List the code-defined ids used by CI:
 
 ```bash
