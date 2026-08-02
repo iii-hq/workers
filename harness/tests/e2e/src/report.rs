@@ -85,10 +85,6 @@ impl RunStatus {
         )
     }
 
-    pub fn is_blocking_failure(self) -> bool {
-        self == Self::HardGateFailed || self.is_technical_failure()
-    }
-
     fn label(self) -> &'static str {
         match self {
             Self::Passed => "PASS",
@@ -301,7 +297,6 @@ impl E2eScenarioReport {
             total_usd: sum_cost(runs.iter().map(|run| run.cost.total_usd)),
         };
         let passed = run_count > 0
-            && hard_gate_failures == 0
             && technical_failures == 0
             && passed_runs >= required_passes
             && median_score.is_some_and(|score| score >= f64::from(threshold));
@@ -547,12 +542,19 @@ mod tests {
     }
 
     #[test]
-    fn hard_gate_failures_cannot_be_outvoted() {
-        let mut hard_gate = run(100, true);
-        hard_gate.status = RunStatus::HardGateFailed;
-        let report = aggregate(vec![hard_gate, run(90, true), run(90, true)]);
-        assert!(!report.passed);
+    fn hard_gate_failures_count_as_scored_failed_runs() {
+        let mut outvoted = run(45, false);
+        outvoted.status = RunStatus::HardGateFailed;
+        let report = aggregate(vec![outvoted, run(90, true), run(90, true)]);
+        assert!(report.passed);
         assert_eq!(report.aggregate.hard_gate_failures, 1);
+        assert_eq!(report.aggregate.median_score, Some(90.0));
+
+        let mut decisive = run(45, false);
+        decisive.status = RunStatus::HardGateFailed;
+        let report = aggregate(vec![decisive, run(90, true)]);
+        assert!(!report.passed);
+        assert_eq!(report.aggregate.median_score, Some(67.5));
     }
 
     #[test]
