@@ -66,6 +66,7 @@ on:
           - web
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -86,8 +87,6 @@ jobs:
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
-          permission-actions: write
-          permission-contents: write
 
       - name: Checkout selected branch
         uses: actions/checkout@v5
@@ -219,7 +218,7 @@ jobs:
 
       - name: Dispatch release workflow
         env:
-          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
