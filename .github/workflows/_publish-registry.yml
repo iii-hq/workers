@@ -3,6 +3,11 @@ name: Publish to workers registry
 on:
   workflow_call:
     inputs:
+      ref:
+        description: 'Git ref to build (the tag being released). Empty checks out the calling workflow ref, which on a manual dispatch is the branch it was started from, not the tag.'
+        required: false
+        type: string
+        default: ''
       worker:
         description: 'Worker name (folder)'
         required: true
@@ -53,6 +58,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Install pyyaml
         run: pip install --quiet pyyaml
