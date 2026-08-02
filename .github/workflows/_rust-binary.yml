@@ -3,6 +3,11 @@ name: Rust Binary Release
 on:
   workflow_call:
     inputs:
+      ref:
+        description: 'Git ref to build (the tag being released). Empty checks out the calling workflow ref, which on a manual dispatch is the branch it was started from, not the tag.'
+        required: false
+        type: string
+        default: ''
       bin_name:
         description: 'Binary name (e.g., image-resize)'
         required: true
@@ -60,6 +65,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         if: inputs.skip_create_release != true && inputs.dry_run != true
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Create GitHub Release
         if: inputs.skip_create_release != true && inputs.dry_run != true
@@ -127,6 +134,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Resolve worker dir
         id: dirs
@@ -229,6 +238,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"

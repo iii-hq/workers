@@ -95,6 +95,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -186,6 +187,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.setup.outputs.tag }}
@@ -203,6 +206,7 @@ jobs:
     if: ${{ !failure() && !cancelled() && needs.setup.outputs.deploy == 'binary' }}
     uses: ./.github/workflows/_rust-binary.yml
     with:
+      ref: ${{ inputs.tag || github.ref }}
       bin_name: ${{ needs.setup.outputs.bin }}
       manifest_path: ${{ needs.setup.outputs.worker }}/${{ needs.setup.outputs.manifest }}
       tag_name: ${{ needs.setup.outputs.tag }}
@@ -222,6 +226,7 @@ jobs:
     if: ${{ !failure() && !cancelled() && needs.setup.outputs.deploy == 'image' }}
     uses: ./.github/workflows/_container.yml
     with:
+      ref: ${{ inputs.tag || github.ref }}
       worker: ${{ needs.setup.outputs.worker }}
       version: ${{ needs.setup.outputs.version }}
       registry_tag: ${{ needs.setup.outputs.registry_tag }}
@@ -238,6 +243,7 @@ jobs:
     if: ${{ !failure() && !cancelled() && needs.setup.outputs.deploy == 'bundle' }}
     uses: ./.github/workflows/_bundle.yml
     with:
+      ref: ${{ inputs.tag || github.ref }}
       worker: ${{ needs.setup.outputs.worker }}
       version: ${{ needs.setup.outputs.version }}
       language: ${{ needs.setup.outputs.language }}
@@ -255,6 +261,7 @@ jobs:
     if: ${{ !failure() && !cancelled() && needs.setup.outputs.dry_run != 'true' && needs.setup.outputs.interface_smoke != 'false' }}
     uses: ./.github/workflows/_publish-registry.yml
     with:
+      ref: ${{ inputs.tag || github.ref }}
       worker: ${{ needs.setup.outputs.worker }}
       version: ${{ needs.setup.outputs.version }}
       deploy: ${{ needs.setup.outputs.deploy }}
