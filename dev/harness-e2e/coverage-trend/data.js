@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785568936961,
+  "lastUpdate": 1785654869292,
   "repoUrl": "https://github.com/iii-hq/workers",
   "entries": {
     "Harness Stack Coverage": [
@@ -31,6 +31,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "Integration line coverage",
             "value": 43.55,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Ytallo",
+            "username": "ytallo",
+            "email": "ytallo.layon@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4b056e50720252afcb05ff4f5722149b7c5db1c6",
+          "message": "(MOT-3748) fix(harness): preserve registrations across engine reloads (#666)\n\n* (MOT-3748) fix(harness): preserve registrations across engine reloads\n\n* (MOT-3748) fix(harness): align queue dependency with recovery contract\n\n* (MOT-3748) fix(harness): fall back for legacy queue schemas\n\n* (MOT-3748) test(harness): update queue manifest contract\n\n* (MOT-3748) ci(harness): run quickstart after release\n\n* (MOT-3748) ci(harness): smoke mandatory dependencies",
+          "timestamp": "2026-08-01T17:50:47Z",
+          "url": "https://github.com/iii-hq/workers/commit/4b056e50720252afcb05ff4f5722149b7c5db1c6"
+        },
+        "date": 1785654868162,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "E2E line coverage",
+            "value": 43.27,
+            "unit": "%"
+          },
+          {
+            "name": "Integration line coverage",
+            "value": 44.96,
             "unit": "%"
           }
         ]
