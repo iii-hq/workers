@@ -86,6 +86,8 @@ jobs:
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          permission-actions: write
+          permission-contents: write
 
       - name: Checkout selected branch
         uses: actions/checkout@v5
@@ -214,3 +216,12 @@ jobs:
           # commit is reachable exclusively through this annotated tag.
           git push origin "$TAG"
           echo "::notice::Created $TAG (registry-tag=next)"
+
+      - name: Dispatch release workflow
+        env:
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh workflow run release.yml --ref main -f tag="$TAG"
+          echo "::notice::Dispatched Release for $TAG"
