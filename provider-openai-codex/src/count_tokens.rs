@@ -3,28 +3,18 @@
 //! Codex backend exposes no metering endpoint, so the count is computed from
 //! the text the wire mappers would send plus the published chat-framing
 //! constants; it never runs the model, costs nothing, and needs no network.
+//! The counting logic itself is shared with `provider-openai` in
+//! `llm_router::provider_scaffold::tiktoken_count`; this module is the thin
+//! request/response adapter around it. Model ids stay namespaced
+//! (`codex/gpt-5.2`) end to end — the shared encoder-selection logic strips
+//! the namespace internally, but the response echoes the id the caller sent.
 
 use iii_sdk::errors::Error;
-use llm_router::types::content::ContentBlock;
+use llm_router::provider_scaffold::tiktoken_count::{count_chat_tokens, ESTIMATOR_TIKTOKEN};
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use tiktoken_rs::{cl100k_base_singleton, o200k_base_singleton, CoreBPE};
-
-use crate::wire::names::encode_tool_name;
-
-/// The count is a local tokenizer estimate, not a provider-metered value.
-const ESTIMATOR_TIKTOKEN: &str = "tiktoken";
-
-/// Chat-framing overhead per wire message row (role tag + separators),
-/// OpenAI's published ~4-tokens-per-message heuristic for ChatML-framed
-/// conversations. The system prompt is one such row.
-const TOKENS_PER_MESSAGE: u64 = 4;
-
-/// Reply priming the API appends to every prompt (the assistant start tag).
-const TOKENS_REPLY_PRIMING: u64 = 2;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CountTokensRequest {
@@ -53,64 +43,6 @@ pub struct CountTokensResponse {
     pub estimator: String,
 }
 
-/// Tokenizer for a model id. This catalog namespaces ids (`codex/gpt-5.2`),
-/// so selection runs on the bare model id after the namespace. cl100k_base
-/// covers the gpt-3.5 and non-o gpt-4 generations (`gpt-4`, `gpt-4-turbo`,
-/// …); everything else — gpt-4o, gpt-4.1, gpt-5, the o-series, and
-/// unknown-modern ids — is o200k_base.
-fn encoder_for(model: &str) -> &'static CoreBPE {
-    let bare = model.rsplit('/').next().unwrap_or(model);
-    if wants_cl100k(bare) {
-        cl100k_base_singleton()
-    } else {
-        o200k_base_singleton()
-    }
-}
-
-fn wants_cl100k(bare: &str) -> bool {
-    if bare.starts_with("gpt-3.5") {
-        return true;
-    }
-    match bare.strip_prefix("gpt-4") {
-        Some(rest) => rest.is_empty() || rest.starts_with('-'),
-        None => false,
-    }
-}
-
-/// The text a message contributes to the wire: text blocks, plus each
-/// function call's encoded name and serialized arguments, plus function
-/// result bodies. Thinking blocks are dropped (never replayed on this wire),
-/// images are skipped (their token cost is model-specific, not textual), and
-/// custom messages never reach the provider.
-fn message_text(message: &AgentMessage) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-    let content = match message {
-        AgentMessage::User(m) => &m.content,
-        AgentMessage::Assistant(m) => &m.content,
-        AgentMessage::FunctionResult(m) => &m.content,
-        AgentMessage::Custom(_) => return None,
-    };
-    for block in content {
-        match block {
-            ContentBlock::Text { text } => parts.push(text.clone()),
-            ContentBlock::FunctionCall {
-                function_id,
-                arguments,
-                ..
-            } => {
-                parts.push(encode_tool_name(function_id));
-                parts.push(arguments.to_string());
-            }
-            _ => {}
-        }
-    }
-    Some(parts.join("\n"))
-}
-
-fn count(bpe: &CoreBPE, text: &str) -> u64 {
-    bpe.encode_ordinary(text).len() as u64
-}
-
 pub fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Error> {
     // Dumb pipe: an empty request is a caller bug, never padded into a
     // countable one with placeholder messages.
@@ -119,24 +51,12 @@ pub fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Error> {
             "invalid_input: messages must not be empty".into(),
         ));
     }
-    let bpe = encoder_for(&req.model);
-    let mut tokens = TOKENS_REPLY_PRIMING;
-    if let Some(system) = req.system_prompt.as_deref().filter(|s| !s.is_empty()) {
-        tokens += TOKENS_PER_MESSAGE + count(bpe, system);
-    }
-    for message in &req.messages {
-        if let Some(text) = message_text(message) {
-            tokens += TOKENS_PER_MESSAGE + count(bpe, &text);
-        }
-    }
-    for tool in req.tools.as_deref().unwrap_or(&[]) {
-        let schema = json!({
-            "name": encode_tool_name(&tool.name),
-            "description": tool.description,
-            "parameters": tool.parameters,
-        });
-        tokens += count(bpe, &schema.to_string());
-    }
+    let tokens = count_chat_tokens(
+        &req.model,
+        req.system_prompt.as_deref(),
+        req.tools.as_deref().unwrap_or(&[]),
+        &req.messages,
+    );
     Ok(CountTokensResponse {
         model: req.model,
         tokens,
@@ -147,6 +67,7 @@ pub fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use llm_router::types::content::ContentBlock;
     use llm_router::types::messages::{UserMessage, UserRoleTag};
 
     fn user(text: &str) -> AgentMessage {
@@ -167,48 +88,16 @@ mod tests {
     }
 
     #[test]
-    fn encoder_selection_strips_the_codex_namespace() {
-        assert!(wants_cl100k("gpt-4-turbo"));
-        assert!(!wants_cl100k("gpt-4o"));
-        assert!(!wants_cl100k("gpt-5.2"));
-        // Namespaced ids select on the bare model id.
-        let namespaced = handle(request("codex/gpt-5.2", vec![user("hi")])).unwrap();
-        let bare = handle(request("gpt-5.2", vec![user("hi")])).unwrap();
-        assert_eq!(namespaced.tokens, bare.tokens);
-        assert_eq!(namespaced.model, "codex/gpt-5.2");
-    }
-
-    #[test]
     fn empty_messages_are_rejected() {
         assert!(handle(request("codex/gpt-5.2", vec![])).is_err());
     }
 
     #[test]
-    fn framing_constants_apply_per_message_plus_priming() {
-        let bpe = o200k_base_singleton();
-        let hello = count(bpe, "hello world");
-        let resp = handle(request("codex/gpt-5.2", vec![user("hello world")])).unwrap();
-        assert_eq!(
-            resp.tokens,
-            TOKENS_REPLY_PRIMING + TOKENS_PER_MESSAGE + hello
-        );
-        assert_eq!(resp.estimator, "tiktoken");
-    }
-
-    #[test]
-    fn system_prompt_and_tools_count_toward_the_total() {
-        let base = handle(request("codex/gpt-5.2", vec![user("hi")]))
-            .unwrap()
-            .tokens;
-        let mut req = request("codex/gpt-5.2", vec![user("hi")]);
-        req.system_prompt = Some("be brief".into());
-        req.tools = Some(vec![AgentFunction {
-            name: "agent::trigger".into(),
-            description: "Invoke an iii function".into(),
-            parameters: json!({ "type": "object" }),
-            label: None,
-            execution_mode: None,
-        }]);
-        assert!(handle(req).unwrap().tokens > base);
+    fn handle_strips_the_codex_namespace_for_encoding_but_echoes_the_model_id() {
+        let namespaced = handle(request("codex/gpt-5.2", vec![user("hi")])).unwrap();
+        let bare = handle(request("gpt-5.2", vec![user("hi")])).unwrap();
+        assert_eq!(namespaced.tokens, bare.tokens);
+        assert_eq!(namespaced.model, "codex/gpt-5.2");
+        assert_eq!(namespaced.estimator, "tiktoken");
     }
 }
