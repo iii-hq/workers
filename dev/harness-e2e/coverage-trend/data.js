@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785768291443,
+  "lastUpdate": 1785789739837,
   "repoUrl": "https://github.com/iii-hq/workers",
   "entries": {
     "Harness Stack Coverage": [
@@ -122,6 +122,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "E2E line coverage",
             "value": 43.97,
+            "unit": "%"
+          },
+          {
+            "name": "Integration line coverage",
+            "value": 44.89,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Ytallo Layon",
+            "username": "ytallo",
+            "email": "ytallo.layon@gmail.com"
+          },
+          "committer": {
+            "name": "Ytallo Layon",
+            "username": "ytallo",
+            "email": "ytallo.layon@gmail.com"
+          },
+          "id": "83966dc6acd3d53a54c73e73bc5faf1bf8a3511b",
+          "message": "fix(dashboard): filter efficiency sparklines to the comparable cohort\n\nThe sparklines summed raw per-scenario averages across every reported\nscenario, so a missing report or a newly added scenario moved the line for\nstructural reasons while the delta chip on the same card honestly compared\nonly the comparable cohort. Sum the same cohort the chip uses and skip\nexecutions that lack any cohort contract instead of fabricating a dip.",
+          "timestamp": "2026-08-03T20:11:12Z",
+          "url": "https://github.com/iii-hq/workers/commit/83966dc6acd3d53a54c73e73bc5faf1bf8a3511b"
+        },
+        "date": 1785789739045,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "E2E line coverage",
+            "value": 45.1,
             "unit": "%"
           },
           {
