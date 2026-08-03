@@ -30,6 +30,7 @@ import type {
   QueuedMessagePreview,
 } from '@/lib/backend/types'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
+import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { newMessageId } from '@/lib/session-id'
@@ -710,6 +711,11 @@ export function ChatView({
     if (!workingDirEnabled || conversation.draft) return
     const dir = conversation.workingDir
     if (!dir) return
+    // Switching to a conversation brings its working directory with it: the
+    // editor page follows the active chat, not the last folder ever opened.
+    // Best-effort with its own consecutive-root dedupe, so re-activations
+    // and already-validated dirs stay cheap.
+    void syncEditorWorkspace(dir)
     const key = `${conversation.id}:${dir}`
     if (validatedWorkingDirs.has(key)) return
     let cancelled = false
@@ -1473,6 +1479,9 @@ export function ChatView({
       setWorkingDirError(null)
       validatedWorkingDirs.add(`${id}:${next}`)
       onUpdateWorkingDir(id, next)
+      // The editor follows the chat: picking a folder here repoints the
+      // shared editor workspace so the editor page shows this project.
+      void syncEditorWorkspace(next)
       if (!conversation.draft && next !== prev) {
         onAppendMessage(
           id,
