@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { type ChangeEntry, causeLabel, MAX_ENTRIES, recordChange, relativeAge, seedFromStatus } from './changes'
+import {
+  type ChangeEntry,
+  causeLabel,
+  groupByTurn,
+  groupLabel,
+  MAX_ENTRIES,
+  recordChange,
+  relativeAge,
+  seedFromStatus,
+  splitPath,
+} from './changes'
 import type { ChangedEvent } from './events'
 
 function event(path: string, over: Partial<ChangedEvent> = {}): ChangedEvent {
@@ -84,6 +94,60 @@ describe('relativeAge', () => {
     expect(relativeAge(0, 30_000)).toBe('30s')
     expect(relativeAge(0, 120_000)).toBe('2m')
     expect(relativeAge(0, 7_200_000)).toBe('2h')
+  })
+})
+
+describe('groupByTurn', () => {
+  it('folds one turn touching several files into one run', () => {
+    let log: ChangeEntry[] = []
+    log = recordChange(log, event('a.ts', { session_id: 's_1', turn_id: 't_1' }), 1)
+    log = recordChange(log, event('b.ts', { session_id: 's_1', turn_id: 't_1', added: 5 }), 2)
+    const groups = groupByTurn(log)
+    expect(groups).toHaveLength(1)
+    expect(groups[0].entries.map((e) => e.path)).toEqual(['b.ts', 'a.ts'])
+    expect(groups[0].added).toBe(8)
+    expect(groups[0].removed).toBe(2)
+  })
+
+  it('keeps separate turns apart', () => {
+    let log: ChangeEntry[] = []
+    log = recordChange(log, event('a.ts', { turn_id: 't_1' }), 1)
+    log = recordChange(log, event('b.ts', { turn_id: 't_2' }), 2)
+    expect(groupByTurn(log)).toHaveLength(2)
+  })
+
+  it('does not merge a turn with itself across an interruption', () => {
+    // The feed is a timeline: a turn that wrote, was interrupted, then wrote
+    // again really did happen twice, and collapsing that would claim an order
+    // that never occurred.
+    let log: ChangeEntry[] = []
+    log = recordChange(log, event('a.ts', { turn_id: 't_1' }), 1)
+    log = recordChange(log, event('b.ts', { turn_id: 't_2' }), 2)
+    log = recordChange(log, event('c.ts', { turn_id: 't_1' }), 3)
+    const groups = groupByTurn(log)
+    expect(groups).toHaveLength(3)
+    expect(groups.map((g) => g.key.split('#')[0])).toEqual(['t_1', 't_2', 't_1'])
+  })
+
+  it('groups turn-less changes by their cause', () => {
+    let log: ChangeEntry[] = []
+    log = recordChange(log, event('a.ts', { cause: 'editor::save' }), 1)
+    log = recordChange(log, event('b.ts', { cause: 'editor::save' }), 2)
+    const groups = groupByTurn(log)
+    expect(groups).toHaveLength(1)
+    expect(groupLabel(groups[0])).toBe('editor')
+  })
+
+  it('names a run by its agent session when there is one', () => {
+    const log = recordChange([], event('a.ts', { session_id: 's_abcdef12', turn_id: 't_1' }), 1)
+    expect(groupLabel(groupByTurn(log)[0])).toBe('agent abcdef')
+  })
+})
+
+describe('splitPath', () => {
+  it('separates the folder from the name', () => {
+    expect(splitPath('src/lib/api.ts')).toEqual({ dir: 'src/lib/', name: 'api.ts' })
+    expect(splitPath('README.md')).toEqual({ dir: '', name: 'README.md' })
   })
 })
 

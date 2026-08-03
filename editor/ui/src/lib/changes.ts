@@ -121,6 +121,78 @@ export function causeLabel(cause: string): string {
   return worker
 }
 
+/**
+ * A run of changes that belong together: one turn's work on several files.
+ *
+ * An agent turn that touches six files is one thing that happened, not six.
+ * Read as a flat list it buries whatever else changed; read as a group it says
+ * "this turn rewrote these six files, net +40 -12" at a glance, and the files
+ * are still one click away.
+ */
+export interface ChangeGroup {
+  /** Stable per run, so React keys survive a re-render. */
+  key: string
+  sessionId?: string
+  turnId?: string
+  entries: ChangeEntry[]
+  added: number
+  removed: number
+  /** Newest change in the run, for the group's age. */
+  at: number | null
+}
+
+/**
+ * Fold the feed into runs.
+ *
+ * Grouping is by *adjacency*, not by collecting every entry of a turn wherever
+ * it sits: the feed is a timeline, and a turn that writes, waits, then writes
+ * again really did happen twice. Pulling those together would claim an order
+ * that did not happen. Entries with no turn — a local edit, a working-tree
+ * seed — group by their cause instead, so hand edits do not merge into an
+ * agent's run.
+ */
+export function groupByTurn(log: ChangeEntry[]): ChangeGroup[] {
+  const groups: ChangeGroup[] = []
+  // Run identity and React key are different things: a turn that writes twice
+  // with something in between is two runs, so the key needs an index while the
+  // adjacency test must compare the bare run id.
+  let openRun: string | null = null
+  for (const entry of log) {
+    const run = entry.turnId ?? entry.sessionId ?? `cause:${entry.cause}`
+    const open = groups[groups.length - 1]
+    if (open && openRun === run) {
+      open.entries.push(entry)
+      open.added += entry.added
+      open.removed += entry.removed
+      continue
+    }
+    openRun = run
+    groups.push({
+      key: `${run}#${groups.length}`,
+      sessionId: entry.sessionId,
+      turnId: entry.turnId,
+      entries: [entry],
+      added: entry.added,
+      removed: entry.removed,
+      at: entry.at,
+    })
+  }
+  return groups
+}
+
+/** How a run of changes names itself: the agent's session, or the surface. */
+export function groupLabel(group: ChangeGroup): string {
+  if (group.sessionId) return `agent ${group.sessionId.replace(/^s_/, '').slice(0, 6)}`
+  return causeLabel(group.entries[0]?.cause ?? '')
+}
+
+/** `dir/` and `name` split, so a narrow row can keep the name and drop the path. */
+export function splitPath(path: string): { dir: string; name: string } {
+  const cut = path.lastIndexOf('/')
+  if (cut === -1) return { dir: '', name: path }
+  return { dir: path.slice(0, cut + 1), name: path.slice(cut + 1) }
+}
+
 /** Compact relative age: the feed is about recency, not timestamps. */
 export function relativeAge(at: number | null, now: number): string {
   if (at === null) return 'earlier'

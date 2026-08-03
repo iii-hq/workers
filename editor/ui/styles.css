@@ -276,6 +276,60 @@
   color: var(--color-ink-faint);
 }
 
+/* A run's header. Sticky so the run a file belongs to stays legible while its
+   files scroll — the summary is the point, not decoration. */
+[data-iii-ui='editor'] .ed-group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 6px 3px;
+  background: var(--color-bg);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+}
+
+[data-iii-ui='editor'] .ed-group-files {
+  color: var(--color-ink-ghost);
+}
+
+/* The path splits so the folder can be dropped before the name is: at sidebar
+   widths a truncated name identifies nothing. */
+[data-iii-ui='editor'] .ed-change-path {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  overflow: hidden;
+}
+
+[data-iii-ui='editor'] .ed-change-dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-ink-ghost);
+  font-size: 11px;
+}
+
+[data-iii-ui='editor'] .ed-change-name {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+[data-iii-ui='editor'] .ed-change-kind {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui='editor'] .ed-change-kind[data-kind='created'] {
+  color: var(--color-ok);
+}
+[data-iii-ui='editor'] .ed-change-kind[data-kind='deleted'] {
+  color: var(--color-alert);
+}
+
 [data-iii-ui='editor'] .ed-change-age {
   color: var(--color-ink-ghost);
 }

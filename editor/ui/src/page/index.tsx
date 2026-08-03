@@ -67,11 +67,28 @@ import {
   visibleRows,
 } from '../lib/api'
 import { contentHash } from '../lib/cache-key'
-import { type ChangeEntry, causeLabel, recordChange, relativeAge, seedFromStatus } from '../lib/changes'
+import {
+  type ChangeEntry,
+  causeLabel,
+  groupByTurn,
+  groupLabel,
+  recordChange,
+  relativeAge,
+  seedFromStatus,
+  splitPath,
+} from '../lib/changes'
 import { type ChangedEvent, useWorkspaceEvents } from '../lib/events'
 
 /** How long a row keeps its "just changed" accent after an edit lands. */
 const FLASH_MS = 12_000
+
+/** Single-letter change marks, the way a status column reads them. */
+const KIND_MARK: Record<string, string> = {
+  created: 'A',
+  deleted: 'D',
+  moved: 'R',
+  modified: 'M',
+}
 
 /**
  * Trailing-edge window for folding pushed events into one refresh, in ms.
@@ -579,31 +596,55 @@ export function EditorPage({ host }: { host: Host }) {
    * has unsaved edits. Without a repository there is nothing to diff against,
    * so the file itself is the answer.
    */
+  /**
+   * Find a patch to show for a row that arrived without one.
+   *
+   * A seeded row knows a file is dirty and nothing else. Falling through to
+   * the git view for those was the wrong answer twice over: an untracked file
+   * has no HEAD to diff against, so the pane said "no changes" about a file
+   * that is entirely new. Ask git first, and when git has nothing to say
+   * because the file is new, diff it against empty — the whole file *is* the
+   * change. This is the same ladder the worker's observer walks.
+   */
+  const resolvePatch = useCallback(
+    async (entry: ChangeEntry): Promise<string> => {
+      if (entry.patch.trim() !== '') return entry.patch
+      try {
+        const hunks = await api.hunks(entry.path)
+        if (hunks.patch.trim() !== '') return hunks.patch
+      } catch {
+        // Not a repo, or a path git does not track. The file itself is next.
+      }
+      try {
+        const file = await api.open(entry.path)
+        const whole = await api.diff('', file.content, entry.path)
+        return whole.patch
+      } catch {
+        return ''
+      }
+    },
+    [api],
+  )
+
   const openChange = useCallback(
     async (entry: ChangeEntry) => {
-      setOpenChangeEntry(entry)
       // The patch the event carried is the diff of that write, so a change
       // stays readable even after the file is committed, reverted or written
-      // again — which the working-tree diff cannot do. A seeded row has no
-      // patch of its own; for those the git view is the honest answer.
-      if (entry.patch.trim() !== '') {
-        // Opening the file alongside is what makes the tab a way into the
-        // workspace rather than a dead end, but a deleted file cannot be
-        // opened and its diff is the only thing left of it. The view is set
-        // *after* the open, because opening a file selects its reader — doing
-        // it first would have this land on the file rather than the diff.
-        if (entry.kind !== 'deleted') await openPath(entry.path)
-        setView('change')
-        return
+      // again — which the working-tree diff cannot do.
+      setOpenChangeEntry({ ...entry, patch: entry.patch })
+      // Opening the file alongside is what makes the feed a way into the
+      // workspace rather than a dead end. A deleted file cannot be opened and
+      // its diff is the only thing left of it. The view is set *after* the
+      // open, because opening a file selects its reader — doing it first would
+      // land on the file rather than the diff.
+      if (entry.kind !== 'deleted') await openPath(entry.path)
+      setView('change')
+      if (entry.patch.trim() === '') {
+        const patch = await resolvePatch(entry)
+        setOpenChangeEntry((current) => (current && current.path === entry.path ? { ...current, patch } : current))
       }
-      if (entry.kind === 'deleted') {
-        setError(`${entry.path} was deleted`)
-        return
-      }
-      await openPath(entry.path)
-      setView(noRepo ? 'read' : 'git')
     },
-    [openPath, noRepo],
+    [openPath, resolvePatch],
   )
 
   useEffect(() => {
@@ -763,6 +804,8 @@ export function EditorPage({ host }: { host: Host }) {
 
   const rows = useMemo(() => (treeRoot ? visibleRows(treeRoot, expanded) : []), [treeRoot, expanded])
 
+  const changeGroups = useMemo(() => groupByTurn(changeLog), [changeLog])
+
   const lineCount = activeDraft ? activeDraft.draft.split('\n').length : 0
 
   return (
@@ -851,39 +894,67 @@ export function EditorPage({ host }: { host: Host }) {
                   </div>
                 ) : (
                   <ul className="ed-list">
-                    {changeLog.map((entry) => (
-                      <li key={entry.path}>
-                        <button
-                          type="button"
-                          className="ed-row ed-change"
-                          data-active={entry.path === openChangeEntry?.path}
-                          data-fresh={flashed[entry.path] !== undefined}
-                          onClick={() => void openChange(entry)}
-                          title={[
-                            `${entry.kind} via ${entry.cause || 'unknown'}`,
-                            entry.sessionId && `session ${entry.sessionId}`,
-                            entry.turnId && `turn ${entry.turnId}`,
-                          ]
-                            .filter(Boolean)
-                            .join('\n')}
-                        >
-                          <span className="ed-name">{entry.path}</span>
-                          <span className="ed-change-meta">
-                            {(entry.added > 0 || entry.removed > 0) && (
-                              <>
-                                <span className="ed-add">+{entry.added}</span>{' '}
-                                <span className="ed-del">−{entry.removed}</span>{' '}
-                              </>
-                            )}
-                            <span className="ed-change-by">
-                              {entry.sessionId
-                                ? `agent ${entry.sessionId.replace(/^s_/, '').slice(0, 6)}`
-                                : causeLabel(entry.cause)}
-                            </span>{' '}
-                            <span className="ed-change-age">{relativeAge(entry.at, changeClock)}</span>
-                            {entry.count > 1 && <span className="ed-count">{entry.count}</span>}
+                    {changeGroups.map((group) => (
+                      <li key={group.key}>
+                        {/* One turn's work reads as one thing: the header is
+                            the summary, the rows under it are the detail. */}
+                        <div className="ed-group">
+                          <span className="ed-change-by">{groupLabel(group)}</span>
+                          <span className="ed-group-files">
+                            {group.entries.length} file{group.entries.length === 1 ? '' : 's'}
                           </span>
-                        </button>
+                          {(group.added > 0 || group.removed > 0) && (
+                            <span>
+                              <span className="ed-add">+{group.added}</span>{' '}
+                              <span className="ed-del">-{group.removed}</span>
+                            </span>
+                          )}
+                          <span className="ed-change-age">{relativeAge(group.at, changeClock)}</span>
+                        </div>
+                        <ul className="ed-list">
+                          {group.entries.map((entry) => {
+                            const split = splitPath(entry.path)
+                            return (
+                              <li key={entry.path}>
+                                <button
+                                  type="button"
+                                  className="ed-row ed-change"
+                                  data-active={entry.path === openChangeEntry?.path}
+                                  data-fresh={flashed[entry.path] !== undefined}
+                                  onClick={() => void openChange(entry)}
+                                  title={[
+                                    entry.path,
+                                    `${entry.kind} via ${entry.cause || 'unknown'}`,
+                                    entry.sessionId && `session ${entry.sessionId}`,
+                                    entry.turnId && `turn ${entry.turnId}`,
+                                  ]
+                                    .filter(Boolean)
+                                    .join('\n')}
+                                >
+                                  {/* The name identifies the row, so it is the
+                                      part that survives a narrow pane; the
+                                      folder gives way first. */}
+                                  <span className="ed-change-path">
+                                    {split.dir && <span className="ed-change-dir">{split.dir}</span>}
+                                    <span className="ed-change-name">{split.name}</span>
+                                  </span>
+                                  <span className="ed-change-meta">
+                                    <span className="ed-change-kind" data-kind={entry.kind}>
+                                      {KIND_MARK[entry.kind] ?? 'M'}
+                                    </span>
+                                    {(entry.added > 0 || entry.removed > 0) && (
+                                      <>
+                                        <span className="ed-add">+{entry.added}</span>
+                                        <span className="ed-del">-{entry.removed}</span>
+                                      </>
+                                    )}
+                                    {entry.count > 1 && <span className="ed-count">x{entry.count}</span>}
+                                  </span>
+                                </button>
+                              </li>
+                            )
+                          })}
+                        </ul>
                       </li>
                     ))}
                   </ul>
