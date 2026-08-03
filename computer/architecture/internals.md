@@ -44,8 +44,11 @@ coordinates, no HiDPI, no multi-monitor ambiguity.
 ## Durability and the screencast
 
 Sessions are mirrored into `state` (scope `computer_sessions`) on start and
-deleted on stop; `Sessions::restore` reconnects them best-effort at boot, so a
-worker restart does not lose live desktops.
+deleted on stop; `Sessions::restore` reconnects them at boot, so a worker
+restart usually costs nothing. It is best-effort by design: a desktop that went
+away in the meantime fails to reconnect and its record is dropped, and restore
+never displaces a session that started while it was running. Callers should be
+ready to start a new session rather than assume an id survives.
 
 The screencast pump is one task per session. It captures at
 `screencast_fps`, pushes each frame onto the `computer:frames` stream

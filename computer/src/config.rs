@@ -53,6 +53,11 @@ pub struct WorkerConfig {
     pub sandbox_width: u64,
     /// Virtual display height (px) for a sandbox-backed session.
     pub sandbox_height: u64,
+    /// Give a sandbox-backed desktop network access. On by default: a desktop
+    /// nobody can browse from is not much of a desktop. Turn it off for a model
+    /// that should be able to click around a sandbox without reaching anything
+    /// outside it, since `computer::act` is unrestricted once a session exists.
+    pub sandbox_network: bool,
     /// Idle timeout (seconds) passed to `sandbox::create`. Set well above the
     /// worker's own `idle_stop_ms` so the sandbox reaper never kills a live
     /// desktop out from under a session; the worker owns teardown.
@@ -80,6 +85,7 @@ impl Default for WorkerConfig {
             sandbox_image: String::new(),
             sandbox_width: 1280,
             sandbox_height: 800,
+            sandbox_network: true,
             sandbox_idle_timeout_secs: 86_400,
             screen_capture_preflight: true,
         }
@@ -134,6 +140,7 @@ mod tests {
         assert_eq!(c.sandbox_image, "");
         assert_eq!(c.sandbox_width, 1280);
         assert_eq!(c.sandbox_height, 800);
+        assert!(c.sandbox_network);
         assert_eq!(c.sandbox_idle_timeout_secs, 86_400);
         assert!(c.screen_capture_preflight);
     }

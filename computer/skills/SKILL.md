@@ -17,7 +17,8 @@ is the source of truth for where things are, and `computer::act` clicks and
 types at those coordinates. The session stays alive, so you can act, screenshot
 the result, and act again.
 
-Sessions are durable (a worker restart reconnects them) and cost one driver
+Sessions usually survive a worker restart (it reconnects them best-effort, so
+an id can still go away — start a new session if one does) and cost one driver
 connection each; the configured session cap is small. Stop sessions when a task
 is done. Screenshots are large; take one when you need to see the screen, not
 after every action.

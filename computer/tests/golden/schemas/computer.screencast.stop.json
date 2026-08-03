@@ -3,9 +3,9 @@
   "function_id": "computer::screencast::stop",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Stopping the screencast on an unknown session succeeds.",
     "properties": {
       "session_id": {
-        "description": "Stopping the screencast on an unknown session succeeds.",
         "type": "string"
       }
     },

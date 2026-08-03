@@ -32,6 +32,8 @@ use super::{Driver, Screen, Shot};
 const BOOT_TIMEOUT_MS: u64 = 300_000;
 /// The virtual display the desktop renders to.
 const DISPLAY: &str = ":0";
+/// Most wheel notches one scroll call will send.
+const MAX_WHEEL_NOTCHES: i64 = 50;
 
 /// One live desktop inside an iii-sandbox microVM.
 pub struct IiiSandboxHost {
@@ -53,6 +55,7 @@ impl IiiSandboxHost {
         width: u32,
         height: u32,
         jpeg_quality: u8,
+        network: bool,
         idle_timeout_secs: u64,
         command_timeout_ms: u64,
     ) -> Result<Self, String> {
@@ -61,7 +64,7 @@ impl IiiSandboxHost {
                 function_id: "sandbox::create".to_string(),
                 payload: json!({
                     "image": image,
-                    "network": true,
+                    "network": network,
                     "idle_timeout_secs": idle_timeout_secs,
                 }),
                 action: None,
@@ -218,10 +221,13 @@ impl IiiSandboxHost {
     }
 
     /// Spin the wheel `button` `count` times at the current pointer position.
+    /// The count is capped: a caller asking for thousands of notches would
+    /// otherwise hold the exec open until it times out.
     async fn wheel(&self, x: i64, y: i64, button: &str, count: i64) -> Result<(), String> {
         if count <= 0 {
             return Ok(());
         }
+        let count = count.min(MAX_WHEEL_NOTCHES);
         self.exec_argv(
             "xdotool",
             vec![

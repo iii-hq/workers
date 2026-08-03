@@ -4,7 +4,8 @@ For calling the worker from an agent, a sibling worker, or the console.
 
 ## Functions
 
-Every call after `sessions::start` takes the `session_id` it returned.
+Every session-scoped call takes the `session_id` that `sessions::start`
+returned; `sessions::list` and `displays` are the two that do not.
 
 | Function | In | Out |
 |---|---|---|

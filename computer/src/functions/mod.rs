@@ -126,6 +126,26 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
 // Handler helpers
 // ---------------------------------------------------------------------------
 
+/// Capture the desktop, refusing anything that is not a real image. An
+/// undetectable encoding would otherwise reach the model inside an image
+/// content block, where it renders as nothing with no explanation.
+async fn capture(session: &Arc<Session>) -> Result<crate::driver::Shot, Error> {
+    let shot = session
+        .driver()
+        .screenshot()
+        .await
+        .map_err(Error::Handler)?;
+    if shot.mime == "application/octet-stream" {
+        return Err(Error::Handler(format!(
+            "session {} returned {} bytes that are neither PNG nor JPEG; the desktop's capture \
+             tool is misconfigured",
+            session.id,
+            shot.byte_len()
+        )));
+    }
+    Ok(shot)
+}
+
 async fn get_session(sessions: &Arc<Sessions>, id: &str) -> Result<Arc<Session>, Error> {
     sessions.get(id).await.ok_or_else(|| {
         Error::Handler(format!(
@@ -256,11 +276,7 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             async move {
                 let session = get_session(&sessions, &req.session_id).await?;
                 session.touch();
-                let shot = session
-                    .driver()
-                    .screenshot()
-                    .await
-                    .map_err(Error::Handler)?;
+                let shot = capture(&session).await?;
                 let bytes = shot.byte_len();
                 Ok::<_, Error>(screenshot::ScreenshotOutput {
                     content: vec![
@@ -292,8 +308,8 @@ fn register_observe(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             async move {
                 let session = get_session(&sessions, &req.session_id).await?;
                 session.touch();
+                let shot = capture(&session).await?;
                 let driver = session.driver();
-                let shot = driver.screenshot().await.map_err(Error::Handler)?;
                 let accessibility = if req.include_a11y.unwrap_or(false) {
                     match driver.accessibility_tree().await {
                         Ok(v) if !v.is_null() => Some(v),

@@ -10,8 +10,9 @@ microVM and drives it entirely through iii primitives (`sandbox::exec` +
 Driving a real host desktop means fighting multi-monitor layout, HiDPI/Retina
 point-vs-pixel scaling, and OS permission prompts. A sandbox sidesteps all of
 it: one fixed-resolution virtual display means coordinates are 1:1 with the
-screenshot, and there is nothing to grant. It is also reproducible and works
-headless (CI included).
+screenshot, and there is nothing to grant. It is also reproducible and needs no
+physical display — though it still needs a host that can run iii-sandbox
+(macOS Apple Silicon via libkrun, or Linux with `/dev/kvm`).
 
 ## How it works
 
@@ -19,7 +20,8 @@ iii-sandbox boots the image filesystem as a libkrun microVM rootfs but does
 **not** run its ENTRYPOINT/CMD (PID 1 is the engine supervisor). So the worker
 starts the display itself on `sessions::start`:
 
-1. `sandbox::create { image, network: true, idle_timeout_secs }`
+1. `sandbox::create { image, network, idle_timeout_secs }` (network follows the
+   worker's `sandbox_network` config, on by default)
 2. `sandbox::exec` runs `setsid Xvfb :0 -screen 0 <W>x<H>x24 &` + `openbox`,
    then waits for `xdpyinfo` (detached with `setsid` so it survives between
    exec calls).

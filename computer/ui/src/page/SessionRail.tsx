@@ -4,7 +4,8 @@ import type { ComputerSessionInfo } from '../lib/computer'
 import { formatAge, shortEndpoint } from '../lib/format'
 
 /**
- * The left rail: every live session, newest first. Each row carries what
+ * The left rail: every live session in the order the worker lists them
+ * (oldest first, by start time). Each row carries what
  * decides which desktop you are looking at — where it runs, the guest OS, the
  * coordinate space, and whether the live view is streaming.
  */

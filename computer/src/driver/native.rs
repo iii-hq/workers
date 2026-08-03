@@ -24,7 +24,9 @@
 //! actually works; a missing grant instead surfaces as a wallpaper-only image.
 
 use std::io::Cursor;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+
+use arc_swap::ArcSwapOption;
 
 use async_trait::async_trait;
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
@@ -154,10 +156,14 @@ pub struct NativeHost {
     /// Optional display index override (from `sessions::start`); `None` picks
     /// the display under the cursor at first capture.
     monitor: Option<u32>,
-    /// The pinned display (id) and its coordinate geometry, learned on the
-    /// first capture so the session stays on one display with stable input
-    /// mapping.
-    pinned: OnceLock<(u32, Geom)>,
+    /// The display this session captures, learned on the first capture and
+    /// fixed thereafter so coordinates keep meaning the same thing.
+    pinned: OnceLock<u32>,
+    /// That display's coordinate geometry, refreshed on every capture: the
+    /// display stays the same, but its resolution or scale factor can change
+    /// under us (mode switch, scaling change), and a stale mapping would put
+    /// clicks somewhere the model never looked.
+    geom: ArcSwapOption<Geom>,
 }
 
 impl NativeHost {
@@ -167,15 +173,16 @@ impl NativeHost {
             jpeg_quality: jpeg_quality.clamp(1, 100),
             monitor,
             pinned: OnceLock::new(),
+            geom: ArcSwapOption::empty(),
         }
     }
 
     fn pinned_id(&self) -> Option<u32> {
-        self.pinned.get().map(|(id, _)| *id)
+        self.pinned.get().copied()
     }
 
     fn geom(&self) -> Option<Geom> {
-        self.pinned.get().map(|(_, g)| *g)
+        self.geom.load().as_deref().copied()
     }
 }
 
@@ -335,9 +342,21 @@ fn input_err(e: enigo::InputError) -> String {
     format!("input failed: {e}")
 }
 
-/// Map a key name (from `press`/`hotkey`) onto an enigo key.
-fn key_for(name: &str) -> Key {
+/// The mouse button a drag holds down.
+fn button_for(name: &str) -> Result<Button, String> {
     match name.to_ascii_lowercase().as_str() {
+        "left" => Ok(Button::Left),
+        "right" => Ok(Button::Right),
+        "middle" => Ok(Button::Middle),
+        other => Err(format!("unknown button '{other}' (left, right, middle)")),
+    }
+}
+
+/// Map a key name (from `press`/`hotkey`) onto an enigo key. An unknown
+/// multi-character name is an error rather than its first character: silently
+/// pressing `f` for `f5` looks like the key worked.
+fn key_for(name: &str) -> Result<Key, String> {
+    let key = match name.to_ascii_lowercase().as_str() {
         "enter" | "return" => Key::Return,
         "tab" => Key::Tab,
         "escape" | "esc" => Key::Escape,
@@ -356,8 +375,21 @@ fn key_for(name: &str) -> Key {
         "ctrl" | "control" => Key::Control,
         "alt" | "option" => Key::Alt,
         "shift" => Key::Shift,
-        other => other.chars().next().map(Key::Unicode).unwrap_or(Key::Space),
-    }
+        other => {
+            let mut chars = other.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => Key::Unicode(c),
+                _ => {
+                    return Err(format!(
+                        "unknown key '{other}' (a single character, or one of enter, tab, escape, \
+                         backspace, delete, space, up, down, left, right, home, end, pageup, \
+                         pagedown, cmd, ctrl, alt, shift)"
+                    ))
+                }
+            }
+        }
+    };
+    Ok(key)
 }
 
 impl NativeHost {
@@ -371,7 +403,8 @@ impl NativeHost {
         let (bytes, tw, th, id, geom) = spawn_blocking(move || capture(pinned, over, max_dim, q))
             .await
             .map_err(|e| format!("capture task failed: {e}"))??;
-        let _ = self.pinned.set((id, geom));
+        let _ = self.pinned.set(id);
+        self.geom.store(Some(Arc::new(geom)));
         Ok((bytes, tw, th))
     }
 }
@@ -448,16 +481,15 @@ impl Driver for NativeHost {
         .await
     }
 
-    async fn drag(&self, from: (i64, i64), to: (i64, i64), _button: &str) -> Result<(), String> {
+    async fn drag(&self, from: (i64, i64), to: (i64, i64), button: &str) -> Result<(), String> {
+        let held = button_for(button)?;
         with_enigo(self.geom(), move |e, geom| {
             let (fx, fy) = to_global(from.0, from.1, geom);
             let (tx, ty) = to_global(to.0, to.1, geom);
             e.move_mouse(fx, fy, Coordinate::Abs).map_err(input_err)?;
-            e.button(Button::Left, Direction::Press)
-                .map_err(input_err)?;
+            e.button(held, Direction::Press).map_err(input_err)?;
             e.move_mouse(tx, ty, Coordinate::Abs).map_err(input_err)?;
-            e.button(Button::Left, Direction::Release)
-                .map_err(input_err)
+            e.button(held, Direction::Release).map_err(input_err)
         })
         .await
     }
@@ -468,7 +500,12 @@ impl Driver for NativeHost {
     }
 
     async fn keypress(&self, keys: &[String]) -> Result<(), String> {
-        let keys: Vec<String> = keys.to_vec();
+        // Resolve every name before pressing anything: a chord that fails
+        // halfway would leave modifiers held down on the desktop.
+        let keys = keys
+            .iter()
+            .map(|k| key_for(k))
+            .collect::<Result<Vec<Key>, String>>()?;
         with_enigo(None, move |e, _| {
             // A single key is a tap; a chord holds all but the last as
             // modifiers, taps the last, then releases the modifiers.
@@ -476,11 +513,11 @@ impl Driver for NativeHost {
                 return Ok(());
             };
             for m in mods {
-                e.key(key_for(m), Direction::Press).map_err(input_err)?;
+                e.key(*m, Direction::Press).map_err(input_err)?;
             }
-            let tapped = e.key(key_for(last), Direction::Click).map_err(input_err);
+            let tapped = e.key(*last, Direction::Click).map_err(input_err);
             for m in mods.iter().rev() {
-                let _ = e.key(key_for(m), Direction::Release);
+                let _ = e.key(*m, Direction::Release);
             }
             tapped
         })
@@ -500,6 +537,23 @@ impl Driver for NativeHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_for_rejects_unknown_multi_char_names() {
+        assert!(matches!(key_for("enter"), Ok(Key::Return)));
+        assert!(matches!(key_for("a"), Ok(Key::Unicode('a'))));
+        // Silently pressing 'f' here would look like f5 worked.
+        assert!(key_for("f5").is_err());
+        assert!(key_for("").is_err());
+    }
+
+    #[test]
+    fn button_for_names_the_three_buttons() {
+        assert!(matches!(button_for("LEFT"), Ok(Button::Left)));
+        assert!(matches!(button_for("right"), Ok(Button::Right)));
+        assert!(matches!(button_for("middle"), Ok(Button::Middle)));
+        assert!(button_for("thumb").is_err());
+    }
 
     #[test]
     fn target_dims_caps_longest_edge() {

@@ -196,7 +196,7 @@
   overflow: hidden;
   outline: none;
 }
-[data-iii-ui="computer"] .cp-ui-vp.is-live:focus-visible {
+[data-iii-ui="computer"] .cp-ui-vp:focus-visible {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 1px var(--color-ring);
 }

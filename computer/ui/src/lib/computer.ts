@@ -158,7 +158,11 @@ export function decodeComputerResult(output: unknown): unknown {
   return 'details' in obj ? obj.details : output
 }
 
-/** `screenshot` / `observe` output → a renderable image, or null. */
+/**
+ * `screenshot` / `observe` output → a renderable image, or null. Parsed raw,
+ * NOT decoded: the capture envelope IS `{content, details}`, so unwrapping it
+ * would throw away the image block this reads.
+ */
 export function parseCapture(output: unknown): ComputerCapture | null {
   const parsed = captureSchema.safeParse(output)
   if (!parsed.success) return null
@@ -306,6 +310,6 @@ export async function readFrame(
     session_id: sessionId,
     ...(sinceFrame != null ? { since_frame: sinceFrame } : {}),
   })
-  const parsed = frameSchema.safeParse(res)
+  const parsed = frameSchema.safeParse(decodeComputerResult(res))
   return parsed.success ? parsed.data : null
 }

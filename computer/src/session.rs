@@ -341,6 +341,7 @@ impl Sessions {
                     cfg.sandbox_width as u32,
                     cfg.sandbox_height as u32,
                     cfg.screenshot_quality as u8,
+                    cfg.sandbox_network,
                     cfg.sandbox_idle_timeout_secs,
                     cfg.command_timeout_ms,
                 )
@@ -378,7 +379,21 @@ impl Sessions {
             self.config.clone(),
             self.iii.clone(),
         );
-        self.map.lock().await.insert(id.clone(), session.clone());
+        // Re-check the cap under the lock that inserts. The first check ran
+        // before the driver connect awaited, so concurrent starts can all pass
+        // it and only this one is authoritative.
+        {
+            let mut map = self.map.lock().await;
+            if (map.len() as u64) >= cfg.max_sessions {
+                drop(map);
+                session.shutdown().await;
+                return Err(format!(
+                    "session cap reached ({}); stop a session before starting another",
+                    cfg.max_sessions
+                ));
+            }
+            map.insert(id.clone(), session.clone());
+        }
         self.persist(&session).await;
         self.emitter
             .emit(
@@ -487,10 +502,18 @@ impl Sessions {
             match self.reconnect(&rec, &cfg).await {
                 Ok(session) => {
                     self.advance_counter_past(&rec.session_id);
-                    self.map
-                        .lock()
-                        .await
-                        .insert(rec.session_id.clone(), session);
+                    // Functions are live before restore finishes, so a session
+                    // may already own this id. The live one wins: overwriting
+                    // it would strand its driver with nobody left to stop it.
+                    let mut map = self.map.lock().await;
+                    if map.contains_key(&rec.session_id) {
+                        drop(map);
+                        tracing::warn!(session = %rec.session_id, "restore: id already live; dropping the reconnected desktop");
+                        session.shutdown().await;
+                        continue;
+                    }
+                    map.insert(rec.session_id.clone(), session);
+                    drop(map);
                     restored += 1;
                 }
                 Err(e) => {

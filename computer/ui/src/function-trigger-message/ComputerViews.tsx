@@ -109,10 +109,18 @@ export function ActView({
   return (
     <p className="cp-ui-line">
       {typeof action === 'string' ? (
-        <Badge variant="default" className="cp-ui-pill">
+        <Badge
+          variant={parsed.data.ok ? 'default' : 'alert'}
+          className="cp-ui-pill"
+        >
           {action}
         </Badge>
       ) : null}
+      {parsed.data.ok ? null : (
+        <Badge variant="alert" className="cp-ui-pill">
+          failed
+        </Badge>
+      )}
       <span className="cp-ui-detail">{parsed.data.detail}</span>
     </p>
   )

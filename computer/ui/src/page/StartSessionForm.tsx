@@ -99,7 +99,12 @@ export function StartSessionForm({
           className="cp-ui-start-field"
         />
       ) : null}
-      <Button type="submit" variant="primary" size="sm" disabled={starting}>
+      <Button
+        type="submit"
+        variant="primary"
+        size="sm"
+        disabled={starting || (mode === 'remote' && endpoint.trim() === '')}
+      >
         {starting ? 'starting...' : 'start session'}
       </Button>
     </form>

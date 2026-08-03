@@ -1,5 +1,5 @@
 import { Badge, Button, EmptyState, type Host } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   type ActPayload,
   act,
@@ -35,18 +35,25 @@ export function ComputerPage({ host }: { host: Host }) {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
 
+  // A session selected the moment it starts is not in the list yet; hold it
+  // until the refresh lands so the selection does not bounce back to the old
+  // session and then away again.
+  const pendingIdRef = useRef<string | null>(null)
+
   // Selection follows the session list: keep the current pick while it lives,
   // otherwise fall back to the newest session.
   useEffect(() => {
-    if (sessions.length === 0) {
-      setSelectedId(null)
-      return
-    }
     setSelectedId((current) => {
-      if (current && sessions.some((s) => s.session_id === current)) {
+      const live = current && sessions.some((s) => s.session_id === current)
+      if (live) {
+        pendingIdRef.current = null
         return current
       }
-      return sessions[sessions.length - 1].session_id
+      if (current && current === pendingIdRef.current) return current
+      pendingIdRef.current = null
+      return sessions.length > 0
+        ? sessions[sessions.length - 1].session_id
+        : null
     })
   }, [sessions])
 
@@ -89,6 +96,7 @@ export function ComputerPage({ host }: { host: Host }) {
     setActionError(null)
     try {
       const started = await startSession(host.iii, input)
+      pendingIdRef.current = started.session_id
       setSelectedId(started.session_id)
     } catch (err) {
       setActionError(errorMessage(err))

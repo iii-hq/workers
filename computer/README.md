@@ -102,8 +102,10 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-The rest of the surface: `computer::act` (click, right_click, double_click,
-move, drag, scroll, type, press, hotkey — all by coordinate),
+The rest of the surface: `computer::act` — pointer actions by coordinate
+(click, right_click, double_click, move, drag, scroll) and keyboard actions
+that go wherever focus is (`type` with `text`, `press` / `hotkey` with `keys`,
+e.g. `["cmd","c"]`) —
 `computer::observe` (screenshot plus the accessibility tree on macOS guests),
 `computer::displays`, `computer::sessions::list` and `computer::sessions::stop`.
 For running commands or reading and writing files on the desktop, use the
@@ -120,8 +122,10 @@ call in chat and traces renders through the same asset.
 ## Configuration
 
 Stored in the `configuration` worker under the `computer` key; every field is
-editable live from the console. Timeouts and the screencast rate hot-reload;
-`default_endpoint` and `os` apply to sessions started after the change.
+editable live from the console. The screencast rate applies to running
+sessions; everything a driver is built with — endpoint, OS label, timeouts,
+capture limits, and the sandbox display and network settings — is read at
+`sessions::start`, so a change reaches sessions started after it.
 
 ```yaml
 computer:
@@ -137,6 +141,7 @@ computer:
   sandbox_image: ''          # iii-sandbox image for a sandbox session; empty = name it per call
   sandbox_width: 1280        # sandbox virtual display width
   sandbox_height: 800        # sandbox virtual display height
+  sandbox_network: true      # give the sandboxed desktop network access; false keeps it offline
   sandbox_idle_timeout_secs: 86400 # idle_timeout_secs for sandbox::create; kept high, the worker owns teardown
   screen_capture_preflight: true # macOS: ask for Screen Recording at native start, fail loud if denied
 ```

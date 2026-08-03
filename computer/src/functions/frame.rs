@@ -14,9 +14,9 @@ pub struct ScreencastStartInput {
     pub session_id: String,
 }
 
+/// Stopping the screencast on an unknown session succeeds.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ScreencastStopInput {
-    /// Stopping the screencast on an unknown session succeeds.
     pub session_id: String,
 }
 
