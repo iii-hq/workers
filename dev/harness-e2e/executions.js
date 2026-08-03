@@ -4,6 +4,371 @@ window.HARNESS_EXECUTIONS = {
       "actor": "ytallo",
       "attempt": 1,
       "availability": "full",
+      "completed_at": "2026-08-03T20:40:46Z",
+      "conclusion": "success",
+      "detail_path": "runs/30849845674-1.json",
+      "event": "workflow_dispatch",
+      "execution": {
+        "actor": "ytallo",
+        "attempt": 1,
+        "completed_at": "2026-08-03T20:40:46Z",
+        "conclusion": "success",
+        "event": "workflow_dispatch",
+        "head_branch": "main",
+        "head_sha": "1795404b4a1ea6c82f835b1df2bc04b64e63886f",
+        "id": "30849845674-1",
+        "repository": "iii-hq/workers",
+        "run_id": "30849845674",
+        "started_at": "2026-08-03T20:21:32Z",
+        "workflow_name": "Harness E2E Daily",
+        "workflow_url": "https://github.com/iii-hq/workers/actions/runs/30849845674"
+      },
+      "generated_at": "2026-08-03T20:40:11.358516+00:00",
+      "id": "30849845674-1",
+      "lane": "daily",
+      "release": {
+        "registry_tag": "daily",
+        "tag": "daily/2026-08-03",
+        "url": "https://github.com/iii-hq/workers/commit/83966dc6acd3d53a54c73e73bc5faf1bf8a3511b",
+        "version": "2026-08-03",
+        "worker": "main"
+      },
+      "requested_runs": 3,
+      "run_id": "30849845674",
+      "scenario_metrics": [
+        {
+          "averages": {
+            "cost_usd": 0.022471533333333335,
+            "duration_seconds": 29.013666666666666,
+            "function_call_errors": 0.0,
+            "function_calls": 0.0,
+            "sessions": 1.0,
+            "tokens": 8517.0,
+            "turns": 1.0
+          },
+          "contract_fingerprint": "fnv1a32:eea232b1",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "design_tradeoff",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.01339792,
+            "duration_seconds": 5.049,
+            "function_call_errors": 0.0,
+            "function_calls": 0.0,
+            "sessions": 1.0,
+            "tokens": 6933.0,
+            "turns": 1.0
+          },
+          "contract_fingerprint": "fnv1a32:9ddecf33",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "direct_answer",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.02810052,
+            "duration_seconds": 5.092333333333333,
+            "function_call_errors": 0.0,
+            "function_calls": 1.3333333333333333,
+            "sessions": 1.0,
+            "tokens": 16681.666666666668,
+            "turns": 2.3333333333333335
+          },
+          "contract_fingerprint": "fnv1a32:79be8d47",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "persistent_state",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 1.7166767999999997,
+            "duration_seconds": 231.76333333333332,
+            "function_call_errors": 2.6666666666666665,
+            "function_calls": 149.0,
+            "sessions": 6.666666666666667,
+            "tokens": 1012843.5,
+            "turns": 96.66666666666667
+          },
+          "contract_fingerprint": "fnv1a32:3a5be718",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 2,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 2,
+            "turns": 3
+          },
+          "scenario_id": "reactive_automation",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.017251053333333332,
+            "duration_seconds": 13.893,
+            "function_call_errors": 0.0,
+            "function_calls": 0.0,
+            "sessions": 1.0,
+            "tokens": 7617.333333333333,
+            "turns": 1.0
+          },
+          "contract_fingerprint": "fnv1a32:b82f2ff2",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "security_review",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.019739946666666668,
+            "duration_seconds": 15.430333333333332,
+            "function_call_errors": 0.0,
+            "function_calls": 0.0,
+            "sessions": 1.0,
+            "tokens": 7798.333333333333,
+            "turns": 1.0
+          },
+          "contract_fingerprint": "fnv1a32:f9261bda",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "security_triage",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.57966252,
+            "duration_seconds": 66.74766666666666,
+            "function_call_errors": 0.3333333333333333,
+            "function_calls": 18.333333333333332,
+            "sessions": 1.0,
+            "tokens": 350072.0,
+            "turns": 17.333333333333332
+          },
+          "contract_fingerprint": "fnv1a32:1e651e78",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "shell_coder_sandbox",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        }
+      ],
+      "source": {
+        "ref": "daily/2026-08-03",
+        "repository": "iii-hq/workers",
+        "sha": "83966dc6acd3d53a54c73e73bc5faf1bf8a3511b"
+      },
+      "started_at": "2026-08-03T20:21:32Z",
+      "status": "passed",
+      "subjects": [
+        {
+          "engine_revision": "0.22.0",
+          "expected_reports": 7,
+          "hard_gate_failures": 1,
+          "id": "glm-5-2",
+          "judge": {
+            "context_window": 1000000,
+            "max_output_tokens": 128000,
+            "model": "glm-5.2",
+            "provider": "zai",
+            "supports_tools": true,
+            "supports_vision": false
+          },
+          "model": "glm-5.2",
+          "passed": true,
+          "provider": "zai",
+          "received_reports": 7,
+          "report_coverage": 1.0,
+          "retry_attempts": 0,
+          "scenario_pass_rate": 1.0,
+          "scenarios": [
+            {
+              "hard_gate_failures": 0,
+              "id": "direct_answer",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 50.0,
+              "total_cost_usd": 0.040193759999999995,
+              "wall_time_seconds": 15.147
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "persistent_state",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 90.0,
+              "total_cost_usd": 0.08430156,
+              "wall_time_seconds": 15.277
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "security_review",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 50.0,
+              "total_cost_usd": 0.051753160000000006,
+              "wall_time_seconds": 41.679
+            },
+            {
+              "hard_gate_failures": 1,
+              "id": "reactive_automation",
+              "median_score": 100.0,
+              "pass_rate": 0.6666666666666666,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 90.0,
+              "total_cost_usd": null,
+              "wall_time_seconds": 695.29
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "shell_coder_sandbox",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 50.0,
+              "total_cost_usd": 1.73898756,
+              "wall_time_seconds": 200.243
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "design_tradeoff",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 50.0,
+              "total_cost_usd": 0.0674146,
+              "wall_time_seconds": 87.041
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "security_triage",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 50.0,
+              "total_cost_usd": 0.05921984,
+              "wall_time_seconds": 46.291
+            }
+          ],
+          "technical_failures": 0,
+          "total_cost_usd": null,
+          "wall_time_seconds": 1100.9679999999998
+        }
+      ],
+      "totals": {
+        "average_score": 100.0,
+        "expected_reports": 7,
+        "function_calls": 506.0,
+        "hard_gate_failures": 1,
+        "missing_reports": 0,
+        "passed_scenarios": 7,
+        "received_reports": 7,
+        "report_coverage": 100.0,
+        "retries": 0,
+        "scenario_pass_rate": 100.0,
+        "technical_failures": 0,
+        "total_cost_usd": null,
+        "total_tokens": null,
+        "wall_time_seconds": 1100.9679999999998
+      },
+      "workflow_duration_seconds": 1154.0,
+      "workflow_name": "Harness E2E Daily",
+      "workflow_url": "https://github.com/iii-hq/workers/actions/runs/30849845674"
+    },
+    {
+      "actor": "ytallo",
+      "attempt": 1,
+      "availability": "full",
       "completed_at": "2026-08-03T14:43:34Z",
       "conclusion": "cancelled",
       "detail_path": "runs/30820138874-1.json",
@@ -2092,7 +2457,7 @@ window.HARNESS_EXECUTIONS = {
       "workflow_url": "https://github.com/iii-hq/workers/actions/runs/30520846725"
     }
   ],
-  "last_update": "2026-08-03T14:43:34Z",
+  "last_update": "2026-08-03T20:40:46Z",
   "mode": "published",
   "repo_url": "https://github.com/iii-hq/workers",
   "retention": {
