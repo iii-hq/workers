@@ -1,0 +1,195 @@
+{
+  "description": "Extract the real text, or a markdown table, from inside bounding boxes on given pages. Built for the hybrid path where a vision model locates a region and the exact characters come from the document rather than from a transcription. Coordinates are PDF points with a top-left origin.",
+  "function_id": "pdf::extract-regions",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Mode": {
+        "description": "What to pull out of each box.",
+        "oneOf": [
+          {
+            "description": "The characters inside the box, as flat text.",
+            "enum": [
+              "text"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A markdown table, when the items inside the box form one.",
+            "enum": [
+              "table"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "PageRegions": {
+        "description": "Boxes to read on one page.",
+        "properties": {
+          "boxes": {
+            "description": "Boxes as `[x1, y1, x2, y2]` in PDF points, origin at the top left.",
+            "items": {
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 4,
+              "minItems": 4,
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "page": {
+            "description": "1-indexed page number.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "boxes",
+          "page"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Where the PDF comes from. Exactly one of the two fields must be set.",
+    "properties": {
+      "bytes_base64": {
+        "default": null,
+        "description": "Base64-encoded PDF bytes, for a document with no path. Mutually exclusive with `path`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "mode": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Mode"
+          }
+        ],
+        "default": "text",
+        "description": "Flat text, or a markdown table."
+      },
+      "path": {
+        "default": null,
+        "description": "Filesystem path to the PDF. Mutually exclusive with `bytes_base64`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "regions": {
+        "description": "One entry per page, each carrying the boxes to read on it.",
+        "items": {
+          "$ref": "#/definitions/PageRegions"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "regions"
+    ],
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "PageResult": {
+        "description": "Results for one page, parallel to that page's requested boxes.",
+        "properties": {
+          "page": {
+            "description": "1-indexed page number.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "regions": {
+            "description": "One result per requested box, in the order they were given.",
+            "items": {
+              "$ref": "#/definitions/RegionResult"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "page",
+          "regions"
+        ],
+        "type": "object"
+      },
+      "RegionResult": {
+        "description": "What one box held.",
+        "properties": {
+          "needs_ocr": {
+            "description": "`true` when the extraction is not trustworthy: an empty box, a font the parser cannot decode, or text that decodes to nonsense. In `table` mode it also means no table structure was found.",
+            "type": "boolean"
+          },
+          "ocr_reason": {
+            "description": "Machine-readable reason, when the cause is known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "The text, or the markdown table in `table` mode.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "needs_ocr",
+          "text"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "coordinate_origin": {
+        "description": "Origin convention the requested boxes were read under, always `pdf-points, top-left`. Stated on every response because a caller that assumed the other convention gets text from the wrong end of the page with no error. Note `pdf::extract-items` reports bottom-left instead.",
+        "type": "string"
+      },
+      "elapsed_ms": {
+        "description": "Wall-clock time for the extraction.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "pages": {
+        "description": "One entry per requested page, in the order they were given.",
+        "items": {
+          "$ref": "#/definitions/PageResult"
+        },
+        "type": "array"
+      },
+      "region_count": {
+        "description": "Boxes read across every page.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "regions_needing_ocr": {
+        "description": "Boxes whose result should not be trusted.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "source": {
+        "description": "Source label: the file name, or `<inline>` for an in-memory document.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "coordinate_origin",
+      "elapsed_ms",
+      "pages",
+      "region_count",
+      "regions_needing_ocr",
+      "source"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

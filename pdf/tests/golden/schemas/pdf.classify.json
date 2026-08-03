@@ -1,0 +1,204 @@
+{
+  "description": "Classify a PDF as text-based, scanned, image-based or mixed, and report which pages need OCR and why. Samples content streams rather than extracting text, so it answers in tens of milliseconds. Call this before any other pdf function.",
+  "function_id": "pdf::classify",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Where the PDF comes from. Exactly one of the two fields must be set.",
+    "properties": {
+      "bytes_base64": {
+        "default": null,
+        "description": "Base64-encoded PDF bytes, for a document with no path. Mutually exclusive with `path`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "password": {
+        "default": null,
+        "description": "Password for an encrypted document. Never logged or echoed back.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "path": {
+        "default": null,
+        "description": "Filesystem path to the PDF. Mutually exclusive with `bytes_base64`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "sample_pages": {
+        "default": null,
+        "description": "Pages sampled for the verdict, overriding the configured default. `0` scans every page, which is slower but settles a borderline mixed document.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "DocumentType": {
+        "description": "What a document is made of.",
+        "oneOf": [
+          {
+            "description": "Real text throughout. Extract locally.",
+            "enum": [
+              "text_based"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Pictures of pages. Every page needs OCR.",
+            "enum": [
+              "scanned"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Images with little or no text layer.",
+            "enum": [
+              "image_based"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Some pages carry text, others do not. Read `pages_needing_ocr`.",
+            "enum": [
+              "mixed"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "PageOcrReason": {
+        "description": "Why one page cannot be read without OCR.",
+        "properties": {
+          "page": {
+            "description": "1-indexed page number.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "reasons": {
+            "description": "Machine-readable reasons: `scanned` (a raster page), `no_text` (nothing extractable and nothing to OCR), `vector_text` (characters drawn as outlines rather than text) or `suspected_garbled_text` (a text layer that decodes to nonsense).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "page",
+          "reasons"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "confidence": {
+        "description": "How much to trust the verdict, from 0.0 to 1.0.",
+        "format": "float",
+        "type": "number"
+      },
+      "document_type": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/DocumentType"
+          }
+        ],
+        "description": "The document-level verdict."
+      },
+      "elapsed_ms": {
+        "description": "Wall-clock time for the classification.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "has_encoding_issues": {
+        "description": "`true` when font encodings decoded badly. Only known on the encrypted path, which extracts far enough to notice; absent otherwise, where `suspected_garbled_text` in `ocr_reasons` carries the same signal.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "ocr_reasons": {
+        "description": "Per-page explanation for `pages_needing_ocr`.",
+        "items": {
+          "$ref": "#/definitions/PageOcrReason"
+        },
+        "type": "array"
+      },
+      "ocr_recommended": {
+        "description": "`true` when the images carry meaning the text layer does not, so OCR adds something even on a text-based document. Absent for an encrypted document, for the same reason as `pages_sampled`.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "page_count": {
+        "description": "Pages in the document.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "pages_needing_ocr": {
+        "description": "1-indexed pages that cannot be read without OCR. Empty for a clean text-based document.",
+        "items": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "type": "array"
+      },
+      "pages_sampled": {
+        "description": "Pages actually inspected. Lower than `page_count` when sampling, so a verdict from a sample can be told apart from one that read everything. Absent for an encrypted document, which takes a decryption path that does not report the counters.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "pages_with_text": {
+        "description": "Inspected pages that carry text operators. Absent for an encrypted document, for the same reason as `pages_sampled`.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "source": {
+        "description": "Source label: the file name, or `<inline>` for an in-memory document.",
+        "type": "string"
+      },
+      "title": {
+        "description": "Document title from the PDF metadata, when it has one.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "confidence",
+      "document_type",
+      "elapsed_ms",
+      "ocr_reasons",
+      "page_count",
+      "pages_needing_ocr",
+      "source"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

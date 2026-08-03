@@ -1,0 +1,109 @@
+{
+  "description": "Extract a PDF as plain text, with no structure recovery. Cheaper than pdf::to-markdown and the right call when the text will be searched or embedded rather than read.",
+  "function_id": "pdf::extract-text",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Where the PDF comes from. Exactly one of the two fields must be set.",
+    "properties": {
+      "bytes_base64": {
+        "default": null,
+        "description": "Base64-encoded PDF bytes, for a document with no path. Mutually exclusive with `path`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "max_chars": {
+        "default": null,
+        "description": "Characters to return before truncating. Omit for the configured default; `0` returns the whole document.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "path": {
+        "default": null,
+        "description": "Filesystem path to the PDF. Mutually exclusive with `bytes_base64`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Body": {
+        "description": "A body that may have been shortened to fit one response, and the numbers a caller needs to decide what to do about it.\n\nThe cap is what keeps a long document from flooding a model's context. A caller that genuinely wants the whole thing asks for `max_chars: 0`, which is the shape a worker-to-worker pipeline uses to move a document without it passing through anyone's context.",
+        "properties": {
+          "chars": {
+            "description": "Characters returned in `text`.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "preview": {
+            "description": "Leading characters of the content. Present only when the body was truncated, so a caller can see the shape of what it did not get without re-reading the start of `text`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "The content, shortened to the effective character cap.",
+            "type": "string"
+          },
+          "total_chars": {
+            "description": "Characters the document actually holds. Equal to `chars` when nothing was dropped.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "truncated": {
+            "description": "`true` when `text` stops short of the document. Ask again with a page filter, or with `max_chars: 0` to take everything.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "chars",
+          "text",
+          "total_chars",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "body": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Body"
+          }
+        ],
+        "description": "The text, capped per `max_chars`."
+      },
+      "elapsed_ms": {
+        "description": "Wall-clock time for the extraction.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "source": {
+        "description": "Source label: the file name, or `<inline>` for an in-memory document.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "body",
+      "elapsed_ms",
+      "source"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

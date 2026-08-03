@@ -184,6 +184,12 @@ rules:
   - '!openwiki::on-turn-completed'
   - '!openwiki::on-config-change'
 
+  # pdf: internal targets. The hot-reload hook follows the same pattern as the
+  # other on-config-change denies. inject-guidance is a harness pre-generate
+  # hook target: a direct call could hand an agent a forged system prompt.
+  - '!pdf::on-config-change'
+  - '!pdf::inject-guidance'
+
   # Read-only / introspection (extend below for your tools).
   - state::get
   - state::list
@@ -307,3 +313,14 @@ rules:
   # HTTP-trigger verification; it enforces size/timeout caps and server-side
   # SSRF protection, so it is allowed by default.
   - web::fetch
+
+  # pdf: every function is a pure read of a document the agent could already
+  # reach through the filesystem scope, and reaching it any other way returns
+  # binary noise. Nothing here writes, spends, or leaves the machine, and each
+  # response is capped by the worker's own configuration. Gating these would
+  # mean an approval prompt to read a file the agent is already allowed to open.
+  - pdf::classify
+  - pdf::to-markdown
+  - pdf::extract-text
+  - pdf::extract-items
+  - pdf::extract-regions

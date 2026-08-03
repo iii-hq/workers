@@ -15,6 +15,7 @@ packages:
   - editor/ui
   - eval/ui
   - memory/ui
+  - pdf/ui
   - state/ui
   - iii-directory/ui
   - worktree/ui

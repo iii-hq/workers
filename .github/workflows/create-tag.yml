@@ -40,6 +40,7 @@ on:
           - memory-consolidate
           - opencode
           - openwiki
+          - pdf
           - pi
           - provider-anthropic
           - provider-claude-code
