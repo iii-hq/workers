@@ -85,6 +85,19 @@ import { type ChangedEvent, useWorkspaceEvents } from '../lib/events'
 /** How long a row keeps its "just changed" accent after an edit lands. */
 const FLASH_MS = 12_000
 
+/** Sidebar width bounds. The floor is where the tree stops being readable;
+ *  the ceiling keeps the pane from eating the code it exists to navigate. */
+const SIDE_MIN = 180
+const SIDE_MAX = 480
+const SIDE_DEFAULT = 200
+/** Remembered per browser: a pane width is a preference of this surface, not
+ *  a fact about the workspace, so it does not belong in the shared record. */
+const SIDE_WIDTH_KEY = 'iii.editor.sideWidth'
+
+export function clampSideWidth(width: number): number {
+  return Math.min(SIDE_MAX, Math.max(SIDE_MIN, Math.round(width)))
+}
+
 /** Single-letter change marks, the way a status column reads them. */
 const KIND_MARK: Record<string, string> = {
   created: 'A',
@@ -171,6 +184,11 @@ export function EditorPage({ host }: { host: Host }) {
   const [rootInput, setRootInput] = useState('')
   const [rootOpen, setRootOpen] = useState(false)
   const [sideOpen, setSideOpen] = useState(true)
+  const [sideWidth, setSideWidth] = useState(() => {
+    const stored = Number(globalThis.localStorage?.getItem(SIDE_WIDTH_KEY))
+    return Number.isFinite(stored) && stored > 0 ? clampSideWidth(stored) : SIDE_DEFAULT
+  })
+  const [resizing, setResizing] = useState(false)
   const [buffers, setBuffers] = useState<Buffer[]>([])
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [treeRoot, setTreeRoot] = useState<TreeNode | null>(null)
@@ -845,10 +863,47 @@ export function EditorPage({ host }: { host: Host }) {
 
   const changeGroups = useMemo(() => groupByTurn(changeLog), [changeLog])
 
+  /**
+   * Drag the sidebar edge.
+   *
+   * Pointer capture is the whole trick: without it a fast drag leaves the
+   * element and the resize stops following the cursor. Width comes from the
+   * pane's own left edge rather than a delta, so the handle stays under the
+   * pointer even if a frame is dropped.
+   */
+  const startResize = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    const pane = event.currentTarget.parentElement
+    if (!pane) return
+    const left = pane.getBoundingClientRect().left
+    event.currentTarget.setPointerCapture(event.pointerId)
+    event.preventDefault()
+    setResizing(true)
+
+    const onMove = (move: PointerEvent) => setSideWidth(clampSideWidth(move.clientX - left))
+    const onUp = () => {
+      setResizing(false)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }, [])
+
+  // Persist after the drag settles rather than on every frame: a write per
+  // pointermove is a write per pixel.
+  useEffect(() => {
+    if (resizing) return
+    try {
+      globalThis.localStorage?.setItem(SIDE_WIDTH_KEY, String(sideWidth))
+    } catch {
+      // Storage can be denied; a forgotten width is not worth an error.
+    }
+  }, [resizing, sideWidth])
+
   const lineCount = activeDraft ? activeDraft.draft.split('\n').length : 0
 
   return (
-    <div className="ed-root">
+    <div className="ed-root" data-resizing={resizing}>
       <header className="ed-head">
         <span className="ed-brand">editor</span>
         {rootOpen ? (
@@ -896,7 +951,21 @@ export function EditorPage({ host }: { host: Host }) {
 
       <div className="ed-body">
         {sideOpen && (
-          <aside className="ed-side">
+          <aside className="ed-side" style={{ ['--ed-side-width' as string]: `${sideWidth}px` }}>
+            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
+            <button
+              type="button"
+              className="ed-side-handle"
+              data-dragging={resizing}
+              aria-label="Resize the sidebar"
+              onPointerDown={startResize}
+              onKeyDown={(e) => {
+                // Keyboard resize: the handle is a real control, and a drag
+                // target that only responds to a pointer is not one.
+                if (e.key === 'ArrowLeft') setSideWidth((w) => clampSideWidth(w - 16))
+                if (e.key === 'ArrowRight') setSideWidth((w) => clampSideWidth(w + 16))
+              }}
+            />
             <div className="ed-seg">
               <button type="button" data-active={mode === 'files'} onClick={() => setMode('files')}>
                 files
@@ -949,9 +1018,12 @@ export function EditorPage({ host }: { host: Host }) {
                               in {outsideFolder(group.entries[0])}
                             </span>
                           )}
-                          <span className="ed-group-files">
-                            {group.entries.length} file{group.entries.length === 1 ? '' : 's'}
-                          </span>
+                          {/* "1 file" says nothing a single row below does not
+                              already say. The count earns its place only when
+                              it summarises something. */}
+                          {group.entries.length > 1 && (
+                            <span className="ed-group-files">{group.entries.length} files</span>
+                          )}
                           {(group.added > 0 || group.removed > 0) && (
                             <span>
                               <span className="ed-add">+{group.added}</span>{' '}
