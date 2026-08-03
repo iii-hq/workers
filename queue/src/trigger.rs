@@ -654,6 +654,46 @@ mod tests {
         );
     }
 
+    /// A hot-swap resubscribe collapses registrations sharing a subscription
+    /// key to ONE subscribe against the new adapter, mirroring
+    /// `register_subscriber`'s dedup — otherwise the swap would stack
+    /// duplicate consumers that each deliver every message again.
+    #[tokio::test]
+    async fn resubscribe_all_subscribes_shared_keys_once() {
+        let (handler, _old_mock) = handler_with_mock();
+        handler
+            .register_trigger(trigger_config(
+                "uuid-1",
+                "backend",
+                json!({"queue": "demo"}),
+            ))
+            .await
+            .unwrap();
+        handler
+            .register_trigger(trigger_config(
+                "uuid-2",
+                "backend",
+                json!({"queue": "demo"}),
+            ))
+            .await
+            .unwrap();
+
+        let new_mock = Arc::new(MockAdapter::default());
+        let new_adapter: Arc<dyn QueueAdapter> = new_mock.clone();
+        handler.adapter.replace(new_adapter, "new-mock").await;
+        handler.resubscribe_all().await;
+
+        assert_eq!(
+            new_mock.calls().len(),
+            1,
+            "shared-key registrations must resubscribe once"
+        );
+        let Call::Subscribe { id, .. } = &new_mock.calls()[0] else {
+            panic!("expected a Subscribe call");
+        };
+        assert_eq!(id, "backend");
+    }
+
     /// Leftover duplicate registrations for the same function (e.g. persisted
     /// triggers re-delivered across app restarts) share one subscription
     /// instead of each delivering every message again.
