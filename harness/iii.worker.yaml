@@ -20,5 +20,6 @@ dependencies:
   context-manager: "^1.0.0"
   provider-anthropic: "^1.0.0"
   provider-openai: "^1.0.0"
+  provider-opencode-go: "^1.0.0"
   shell: "^0.10.3"
   scrapling: "^0.2.4"

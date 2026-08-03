@@ -42,6 +42,7 @@ on:
       - 'provider-llamacpp/v*'
       - 'provider-openai/v*'
       - 'provider-openai-codex/v*'
+      - 'provider-opencode-go/v*'
       - 'provider-xai/v*'
       - 'provider-zai/v*'
       - 'pubsub/v*'
