@@ -367,7 +367,7 @@ impl Driver for IiiSandboxHost {
         match self.stop_sandbox().await {
             Ok(()) => Ok(()),
             Err(e) => {
-                tracing::debug!(sandbox = %self.sandbox_id, error = %e, "sandbox stop on close (treated as gone)");
+                tracing::warn!(sandbox = %self.sandbox_id, error = %e, "sandbox stop failed on close; the VM may still be running");
                 Ok(())
             }
         }

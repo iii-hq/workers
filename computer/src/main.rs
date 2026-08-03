@@ -136,6 +136,12 @@ async fn main() -> Result<()> {
     ));
 
     let sessions = Sessions::new(shared.clone(), emitter, iii.clone());
+
+    // Durable sessions: reconnect anything persisted on a previous run BEFORE
+    // the functions go live, so a start arriving at boot cannot take an id a
+    // restored desktop already owns.
+    sessions.restore().await;
+
     functions::register_all(&iii, &sessions);
 
     configuration::register_config_trigger(&iii, shared.clone())
@@ -144,9 +150,6 @@ async fn main() -> Result<()> {
     // Injectable console UI — after the computer::* functions so the console
     // can attribute the assets.
     computer::ui::register(&iii);
-
-    // Durable sessions: reconnect anything persisted on a previous run.
-    sessions.restore().await;
 
     // Idle sweep: stop sessions nobody has touched for idle_stop_ms.
     let sweep_sessions = sessions.clone();

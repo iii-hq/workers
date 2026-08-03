@@ -32,7 +32,7 @@
       },
       "os": {
         "default": null,
-        "description": "Guest OS label recorded on the session and surfaced in `session-started` (`linux`, `macos`, `windows`, `android`). Omit to use the configured `os`.",
+        "description": "Guest OS label recorded on the session and surfaced in `session-started` (`linux`, `macos`, `windows`, `android`). Omit and each driver labels itself: a sandbox session is `linux`, a remote one takes the configured `os`, and a native one takes this host's OS.",
         "type": [
           "string",
           "null"

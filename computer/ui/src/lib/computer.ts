@@ -57,6 +57,11 @@ export const sessionInfoSchema = z.object({
 })
 export type ComputerSessionInfo = z.infer<typeof sessionInfoSchema>
 
+/** The `sessions::list` envelope, shared by the page and the chat card. */
+export const sessionListSchema = z.object({
+  sessions: z.array(sessionInfoSchema).optional(),
+})
+
 export const sessionStartSchema = z.object({
   session_id: z.string(),
   endpoint: z.string(),
@@ -239,10 +244,7 @@ export async function listSessions(
   iii: ExtensionIii,
 ): Promise<ComputerSessionInfo[]> {
   const res = await iii.trigger<unknown>(SESSIONS_LIST_FUNCTION_ID, {})
-  const decoded = decodeComputerResult(res)
-  const parsed = z
-    .object({ sessions: z.array(sessionInfoSchema).optional() })
-    .safeParse(decoded)
+  const parsed = sessionListSchema.safeParse(decodeComputerResult(res))
   return parsed.success ? (parsed.data.sessions ?? []) : []
 }
 

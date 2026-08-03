@@ -126,8 +126,10 @@ export function useComputerStream(opts: UseComputerStreamOptions): void {
           config: { stream_name: streamName, group_id: groupId },
         }),
       )
-    } catch {
-      // Stream not available; the seed read is the fallback.
+    } catch (err) {
+      // Stream not available; the seed read is the only paint. Say so — a
+      // silent catch here looks identical to a desktop that never changes.
+      console.warn('[computer-ui] stream binding failed', streamName, err)
     }
 
     return () => {

@@ -10,8 +10,10 @@ description: >-
 # computer
 
 The computer worker turns a live desktop into iii functions. Start a session
-with no endpoint to drive the local machine this worker runs on, pass an `image`
-to boot a sandboxed desktop, or pass an `endpoint` to drive a remote one. Take a
+with neither `image` nor `endpoint` to drive the local machine this worker runs
+on (unless the operator configured a default image or endpoint, which is
+resolved first), pass an `image` to boot a sandboxed desktop, or an `endpoint`
+to drive a remote one. Take a
 screenshot to see the screen, then act on it by pixel coordinate: the screenshot
 is the source of truth for where things are, and `computer::act` clicks and
 types at those coordinates. The session stays alive, so you can act, screenshot
@@ -41,9 +43,10 @@ after every action.
 - Shell and files on the desktop belong to the `shell` worker (`shell::exec`,
   `shell::fs::*`), not this worker. `computer` only sees the screen and drives
   the cursor.
-- With no `endpoint` and no `image` it drives the local machine; an `image`
-  boots a sandboxed desktop through the iii-sandbox worker; an `endpoint`
-  connects to a desktop somebody else booted.
+- With neither argument it drives whatever the configuration defaults to, and
+  the local machine when nothing is configured; an `image` boots a sandboxed
+  desktop through the iii-sandbox worker; an `endpoint` connects to a desktop
+  somebody else booted.
 - `computer::screencast::*` and `computer::frame` are console-UI plumbing, not
   agent surface.
 - Coordinates are integer pixels, top-left origin, in the space of the most
@@ -52,15 +55,17 @@ after every action.
 ## Functions
 
 - `computer::sessions::start` — connect a desktop session; returns the
-  session_id every other function needs, plus the screen size.
+  session_id every session-scoped function needs (all but
+  `computer::sessions::list` and `computer::displays`), plus the screen size.
 - `computer::sessions::list` — live sessions with endpoint, OS, and screen.
 - `computer::sessions::stop` — stop a session; idempotent.
 - `computer::screenshot` — the desktop as a viewable image; how you see the
   screen before acting.
 - `computer::observe` — screenshot plus, on macOS guests, the accessibility
   tree (`include_a11y: true`).
-- `computer::act` — click, right_click, double_click, move, drag, scroll, type,
-  press, or hotkey, addressed by pixel coordinates.
+- `computer::act` — click, right_click, double_click, move, drag and scroll are
+  addressed by pixel coordinates; type, press and hotkey carry their own `text`
+  or `keys` and land wherever the desktop's focus is.
 
 ## Keeping context small
 

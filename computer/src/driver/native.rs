@@ -159,6 +159,9 @@ pub struct NativeHost {
     /// The display this session captures, learned on the first capture and
     /// fixed thereafter so coordinates keep meaning the same thing.
     pinned: OnceLock<u32>,
+    /// The size of the last capture, so `screen_size` can answer from what the
+    /// session already knows instead of capturing and encoding a whole frame.
+    dims: ArcSwapOption<Screen>,
     /// That display's coordinate geometry, refreshed on every capture: the
     /// display stays the same, but its resolution or scale factor can change
     /// under us (mode switch, scaling change), and a stale mapping would put
@@ -173,6 +176,7 @@ impl NativeHost {
             jpeg_quality: jpeg_quality.clamp(1, 100),
             monitor,
             pinned: OnceLock::new(),
+            dims: ArcSwapOption::empty(),
             geom: ArcSwapOption::empty(),
         }
     }
@@ -375,6 +379,18 @@ fn key_for(name: &str) -> Result<Key, String> {
         "ctrl" | "control" => Key::Control,
         "alt" | "option" => Key::Alt,
         "shift" => Key::Shift,
+        "f1" => Key::F1,
+        "f2" => Key::F2,
+        "f3" => Key::F3,
+        "f4" => Key::F4,
+        "f5" => Key::F5,
+        "f6" => Key::F6,
+        "f7" => Key::F7,
+        "f8" => Key::F8,
+        "f9" => Key::F9,
+        "f10" => Key::F10,
+        "f11" => Key::F11,
+        "f12" => Key::F12,
         other => {
             let mut chars = other.chars();
             match (chars.next(), chars.next()) {
@@ -383,7 +399,7 @@ fn key_for(name: &str) -> Result<Key, String> {
                     return Err(format!(
                         "unknown key '{other}' (a single character, or one of enter, tab, escape, \
                          backspace, delete, space, up, down, left, right, home, end, pageup, \
-                         pagedown, cmd, ctrl, alt, shift)"
+                         pagedown, f1-f12, cmd, ctrl, alt, shift)"
                     ))
                 }
             }
@@ -403,8 +419,13 @@ impl NativeHost {
         let (bytes, tw, th, id, geom) = spawn_blocking(move || capture(pinned, over, max_dim, q))
             .await
             .map_err(|e| format!("capture task failed: {e}"))??;
+        let bytes_dims = (tw, th);
         let _ = self.pinned.set(id);
         self.geom.store(Some(Arc::new(geom)));
+        self.dims.store(Some(Arc::new(Screen {
+            width: bytes_dims.0,
+            height: bytes_dims.1,
+        })));
         Ok((bytes, tw, th))
     }
 }
@@ -412,6 +433,11 @@ impl NativeHost {
 #[async_trait]
 impl Driver for NativeHost {
     async fn screen_size(&self) -> Result<Screen, String> {
+        // Answer from the last capture when there is one: a full grab plus JPEG
+        // encode is a lot of work to learn a number the session already has.
+        if let Some(dims) = self.dims.load().as_deref().copied() {
+            return Ok(dims);
+        }
         let (_, tw, th) = self.capture_shot().await?;
         Ok(Screen {
             width: tw,
@@ -542,8 +568,9 @@ mod tests {
     fn key_for_rejects_unknown_multi_char_names() {
         assert!(matches!(key_for("enter"), Ok(Key::Return)));
         assert!(matches!(key_for("a"), Ok(Key::Unicode('a'))));
-        // Silently pressing 'f' here would look like f5 worked.
-        assert!(key_for("f5").is_err());
+        assert!(matches!(key_for("F5"), Ok(Key::F5)));
+        // Silently pressing 'f' would look like the key worked.
+        assert!(key_for("f13").is_err());
         assert!(key_for("").is_err());
     }
 

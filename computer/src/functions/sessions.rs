@@ -24,8 +24,9 @@ pub struct StartInput {
     #[serde(default)]
     pub endpoint: Option<String>,
     /// Guest OS label recorded on the session and surfaced in
-    /// `session-started` (`linux`, `macos`, `windows`, `android`). Omit to
-    /// use the configured `os`.
+    /// `session-started` (`linux`, `macos`, `windows`, `android`). Omit and
+    /// each driver labels itself: a sandbox session is `linux`, a remote one
+    /// takes the configured `os`, and a native one takes this host's OS.
     #[serde(default)]
     pub os: Option<String>,
     /// Display index (from `computer::displays`) for a native session. Omit to

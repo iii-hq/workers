@@ -6,7 +6,7 @@ import {
   decodeComputerResult,
   displayInfoSchema,
   parseCapture,
-  sessionInfoSchema,
+  sessionListSchema,
   sessionStartSchema,
   sessionStopSchema,
 } from '../lib/computer'
@@ -65,11 +65,9 @@ export function SessionStopView({ output }: { output: unknown }) {
 }
 
 export function SessionListView({ output }: { output: unknown }) {
-  const parsed = z
-    .object({ sessions: z.array(sessionInfoSchema) })
-    .safeParse(decodeComputerResult(output))
+  const parsed = sessionListSchema.safeParse(decodeComputerResult(output))
   if (!parsed.success) return null
-  const sessions: ComputerSessionInfo[] = parsed.data.sessions
+  const sessions: ComputerSessionInfo[] = parsed.data.sessions ?? []
   if (sessions.length === 0) {
     return <p className="cp-ui-line">no live sessions</p>
   }

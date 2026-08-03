@@ -277,8 +277,21 @@ impl Session {
     }
 }
 
+/// A session slot held while its driver connects. The connect can boot a
+/// microVM, so the cap has to be claimed before that work starts, not after:
+/// dropping the guard releases the slot on every failure path.
+struct SlotGuard(Arc<AtomicU64>);
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 pub struct Sessions {
     map: Mutex<HashMap<String, Arc<Session>>>,
+    /// Sessions whose driver is still connecting; counted against the cap.
+    connecting: Arc<AtomicU64>,
     counter: AtomicU64,
     config: SharedConfig,
     emitter: Arc<Emitter>,
@@ -289,6 +302,7 @@ impl Sessions {
     pub fn new(config: SharedConfig, emitter: Arc<Emitter>, iii: Arc<IIIClient>) -> Arc<Self> {
         Arc::new(Self {
             map: Mutex::new(HashMap::new()),
+            connecting: Arc::new(AtomicU64::new(0)),
             counter: AtomicU64::new(0),
             config,
             emitter,
@@ -308,12 +322,21 @@ impl Sessions {
         monitor: Option<u32>,
     ) -> Result<Arc<Session>, String> {
         let cfg = self.config.load_full();
-        if (self.map.lock().await.len() as u64) >= cfg.max_sessions {
-            return Err(format!(
-                "session cap reached ({}); stop a session before starting another",
-                cfg.max_sessions
-            ));
-        }
+        // Claim a slot under the map lock, counting sessions still connecting:
+        // the connect below can boot a whole microVM, so two concurrent starts
+        // must not both get past the cap and then discover it at insert time.
+        let cap_slot = {
+            let map = self.map.lock().await;
+            let live = map.len() as u64 + self.connecting.load(Ordering::SeqCst);
+            if live >= cfg.max_sessions {
+                return Err(format!(
+                    "session cap reached ({}); stop a session before starting another",
+                    cfg.max_sessions
+                ));
+            }
+            self.connecting.fetch_add(1, Ordering::SeqCst);
+            SlotGuard(self.connecting.clone())
+        };
         // A sandbox image (arg or configured default) boots a fresh desktop in
         // an iii-sandbox; it takes precedence over an endpoint.
         let image = image
@@ -367,8 +390,8 @@ impl Sessions {
             .await
             .map_err(|e| format!("driver '{endpoint_used}' screen_size failed: {e}"))?;
 
-        let slot = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
-        let id = format!("c{slot}");
+        let seq = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = format!("c{seq}");
         let session = Session::new(
             id.clone(),
             endpoint_used,
@@ -379,21 +402,10 @@ impl Sessions {
             self.config.clone(),
             self.iii.clone(),
         );
-        // Re-check the cap under the lock that inserts. The first check ran
-        // before the driver connect awaited, so concurrent starts can all pass
-        // it and only this one is authoritative.
-        {
-            let mut map = self.map.lock().await;
-            if (map.len() as u64) >= cfg.max_sessions {
-                drop(map);
-                session.shutdown().await;
-                return Err(format!(
-                    "session cap reached ({}); stop a session before starting another",
-                    cfg.max_sessions
-                ));
-            }
-            map.insert(id.clone(), session.clone());
-        }
+        // The slot this session claimed becomes the map entry; releasing the
+        // guard after the insert keeps the two counts from ever both missing it.
+        self.map.lock().await.insert(id.clone(), session.clone());
+        drop(cap_slot);
         self.persist(&session).await;
         self.emitter
             .emit(

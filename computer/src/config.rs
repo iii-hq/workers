@@ -36,8 +36,10 @@ pub struct WorkerConfig {
     /// Longest edge (px) a native screenshot/frame is downscaled to before
     /// JPEG encoding. Full-resolution Retina captures are huge; this caps the
     /// image the model sees and the coordinate space it acts in.
+    #[schemars(range(min = 320, max = 4096))]
     pub max_screenshot_dimension: u64,
     /// JPEG quality (1-100) for native screenshots and frames.
+    #[schemars(range(min = 1, max = 100))]
     pub screenshot_quality: u64,
     /// Timeout for each driver action (ms). Fixed when a session connects.
     pub command_timeout_ms: u64,

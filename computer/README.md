@@ -3,7 +3,8 @@
 Drive a full desktop on the iii bus. Where the
 [browser](https://github.com/iii-hq/workers/tree/main/browser) worker gives an
 agent a Chromium tab, `computer` gives it a whole screen: it hands the model a
-screenshot and clicks, types, and scrolls by coordinate. The harness discovers
+screenshot, clicks and scrolls at the coordinates it reads off that image, and
+types wherever the desktop's focus is. The harness discovers
 `computer::*` as functions automatically, so a model sees the screen and acts on
 it with no glue, and the console gets a live viewport of whatever the desktop is
 doing.
@@ -51,7 +52,8 @@ sandbox driver needs neither.
 Start a session, look at the screen, click what you see:
 
 ```bash
-# drive this machine (native driver)
+# drive this machine: a bare start picks the native driver when neither
+# sandbox_image nor default_endpoint is configured
 iii trigger computer::sessions::start --json '{}'
 # -> { "session_id": "c1", "endpoint": "native", "os": "macos", "screen": { "width": 1512, "height": 945 } }
 
@@ -102,10 +104,10 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-The rest of the surface: `computer::act` — pointer actions by coordinate
-(click, right_click, double_click, move, drag, scroll) and keyboard actions
-that go wherever focus is (`type` with `text`, `press` / `hotkey` with `keys`,
-e.g. `["cmd","c"]`) —
+The rest of the surface: `computer::act` — pointer actions addressed by
+coordinate (click, right_click, double_click, move, drag, scroll) and keyboard
+actions that land wherever the desktop's focus is (`type` with `text`,
+`press` / `hotkey` with `keys`, e.g. `["cmd","c"]`) —
 `computer::observe` (screenshot plus the accessibility tree on macOS guests),
 `computer::displays`, `computer::sessions::list` and `computer::sessions::stop`.
 For running commands or reading and writing files on the desktop, use the

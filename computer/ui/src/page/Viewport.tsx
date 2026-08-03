@@ -191,9 +191,12 @@ export function Viewport({
     if (e.key.length !== 1) return
     e.preventDefault()
     e.stopPropagation()
-    // A chord (cmd+c) is a hotkey; a bare character is text.
+    // A chord (cmd+c) is a hotkey; a bare character is text. Chords read the
+    // physical key: alt+c reports 'ç' on macOS, and the desktop wants 'c'.
     if (modifiers.length > 0) {
-      onPressKeys([...modifiers, e.key.toLowerCase()])
+      const physical = /^(Key([A-Z])|Digit([0-9]))$/.exec(e.code)
+      const name = (physical?.[2] ?? physical?.[3] ?? e.key).toLowerCase()
+      onPressKeys([...modifiers, name])
       return
     }
     onTextInput(e.key)
@@ -206,6 +209,7 @@ export function Viewport({
       // biome-ignore lint/a11y/noNoninteractiveTabindex: a live desktop surface forwarding raw mouse/keyboard input; focus is how typing reaches the desktop
       tabIndex={0}
       aria-label="computer viewport: clicks, scrolling, and typing forward to the desktop"
+      onPointerDown={() => surfaceRef.current?.focus()}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
