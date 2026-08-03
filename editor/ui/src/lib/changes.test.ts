@@ -86,3 +86,20 @@ describe('relativeAge', () => {
     expect(relativeAge(0, 7_200_000)).toBe('2h')
   })
 })
+
+describe('session provenance', () => {
+  it('carries the session and turn from the event', () => {
+    const log = recordChange([], event('a.ts', { session_id: 's_abc', turn_id: 't_1' }), 1_000)
+    expect(log[0]).toMatchObject({ sessionId: 's_abc', turnId: 't_1' })
+  })
+
+  it('leaves them unset for a write made outside a turn', () => {
+    const log = recordChange([], event('a.ts'), 1_000)
+    expect(log[0].sessionId).toBeUndefined()
+  })
+
+  it('keeps the patch, which is what the diff view reads', () => {
+    const log = recordChange([], event('a.ts', { patch: '@@ -1 +1 @@\n-old\n+new' }), 1_000)
+    expect(log[0].patch).toContain('+new')
+  })
+})

@@ -44,12 +44,23 @@ const HOOK_TIMEOUT_MS: u64 = 3_000;
 const HOOK_ON_ERROR: &str = "fail_open";
 
 /// The subset of the harness hook payload this worker reads.
+///
+/// `session_id` and `turn_id` come from the hook envelope, which is the only
+/// place the identity of the writer exists: the call itself says a file was
+/// written, not who was writing. Carrying them onto the event is what lets a
+/// surface say *this* agent session made *this* change, rather than reporting
+/// an anonymous edit. Both stay optional — a hook fired outside a turn (or by
+/// an operator reproducing one) has no session, and that is not an error.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct HookInput {
     #[serde(default)]
     pub metadata: Option<Value>,
     #[serde(default)]
     pub call: Option<HookCall>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub turn_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -205,6 +216,8 @@ pub fn bind(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>, emitter: Cha
 
 /// Build and emit the event for one observed call.
 async fn report(bus: &Bus, cfg: &WorkerConfig, emitter: &ChangedEmitter, input: HookInput) {
+    let session_id = input.session_id.clone();
+    let turn_id = input.turn_id.clone();
     let Some(call) = input.call else {
         tracing::debug!("observer: hook fired with no call payload");
         return;
@@ -293,6 +306,8 @@ async fn report(bus: &Bus, cfg: &WorkerConfig, emitter: &ChangedEmitter, input: 
             patch,
             truncated: false,
             root,
+            session_id,
+            turn_id,
         })
         .await;
 }

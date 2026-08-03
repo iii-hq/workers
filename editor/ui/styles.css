@@ -280,6 +280,26 @@
   color: var(--color-ink-ghost);
 }
 
+/* The diff card's header: the path takes the room, provenance sits after it,
+   and the close button is pushed to the far end by the spacer. */
+[data-iii-ui='editor'] .ed-change-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+[data-iii-ui='editor'] .ed-change-session {
+  color: var(--color-ink-faint);
+  font-size: 10.5px;
+}
+
+[data-iii-ui='editor'] .ed-bar-spacer {
+  flex: 1;
+}
+
 /* ------------------------------------------------------------------ tabs */
 
 [data-iii-ui='editor'] .ed-tabs {

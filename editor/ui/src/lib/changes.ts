@@ -36,6 +36,9 @@ export interface ChangeEntry {
   /** How many events collapsed into this row. A save loop writes one file many
    *  times; showing that as forty rows buries every other change. */
   count: number
+  /** The harness session the write happened in, when it happened inside one. */
+  sessionId?: string
+  turnId?: string
 }
 
 /** Newest first, one row per path, bounded. */
@@ -60,6 +63,8 @@ export function recordChange(log: ChangeEntry[], event: ChangedEvent, now: numbe
     truncated: event.truncated,
     at: now,
     count: (previous?.count ?? 0) + 1,
+    sessionId: event.session_id,
+    turnId: event.turn_id,
   }
   return [next, ...log.filter((entry) => entry.path !== event.path)].slice(0, MAX_ENTRIES)
 }

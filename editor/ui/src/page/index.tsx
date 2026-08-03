@@ -158,7 +158,7 @@ export function EditorPage({ host }: { host: Host }) {
   const [activePath, setActivePath] = useState<string | null>(null)
   // Reading is the default: opening a file should show you the file, not put
   // a cursor in it.
-  const [view, setView] = useState<'read' | 'edit' | 'preview' | 'diff' | 'git'>('read')
+  const [view, setView] = useState<'read' | 'edit' | 'preview' | 'diff' | 'git' | 'change'>('read')
   const [mode, setMode] = useState<'files' | 'search' | 'changes'>('files')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<string[]>([])
@@ -180,6 +180,10 @@ export function EditorPage({ host }: { host: Host }) {
   /** Re-rendered on a slow tick so the relative ages in the feed stay honest
    *  without every row holding its own timer. */
   const [changeClock, setChangeClock] = useState(() => 0)
+  /** The feed row being read as a diff. The patch travels on the event, so
+   *  this renders without a round trip and keeps showing what that write did
+   *  even after the file moves on. */
+  const [openChangeEntry, setOpenChangeEntry] = useState<ChangeEntry | null>(null)
 
   // Read inside a refresh without making it a dependency — rebuilding the
   // refresh callbacks on every keystroke would re-run the effects that bind
@@ -577,6 +581,21 @@ export function EditorPage({ host }: { host: Host }) {
    */
   const openChange = useCallback(
     async (entry: ChangeEntry) => {
+      setOpenChangeEntry(entry)
+      // The patch the event carried is the diff of that write, so a change
+      // stays readable even after the file is committed, reverted or written
+      // again — which the working-tree diff cannot do. A seeded row has no
+      // patch of its own; for those the git view is the honest answer.
+      if (entry.patch.trim() !== '') {
+        // Opening the file alongside is what makes the tab a way into the
+        // workspace rather than a dead end, but a deleted file cannot be
+        // opened and its diff is the only thing left of it. The view is set
+        // *after* the open, because opening a file selects its reader — doing
+        // it first would have this land on the file rather than the diff.
+        if (entry.kind !== 'deleted') await openPath(entry.path)
+        setView('change')
+        return
+      }
       if (entry.kind === 'deleted') {
         setError(`${entry.path} was deleted`)
         return
@@ -837,10 +856,16 @@ export function EditorPage({ host }: { host: Host }) {
                         <button
                           type="button"
                           className="ed-row ed-change"
-                          data-active={entry.path === activePath}
+                          data-active={entry.path === openChangeEntry?.path}
                           data-fresh={flashed[entry.path] !== undefined}
                           onClick={() => void openChange(entry)}
-                          title={`${entry.kind} by ${entry.cause || 'unknown'}`}
+                          title={[
+                            `${entry.kind} via ${entry.cause || 'unknown'}`,
+                            entry.sessionId && `session ${entry.sessionId}`,
+                            entry.turnId && `turn ${entry.turnId}`,
+                          ]
+                            .filter(Boolean)
+                            .join('\n')}
                         >
                           <span className="ed-name">{entry.path}</span>
                           <span className="ed-change-meta">
@@ -850,7 +875,11 @@ export function EditorPage({ host }: { host: Host }) {
                                 <span className="ed-del">−{entry.removed}</span>{' '}
                               </>
                             )}
-                            <span className="ed-change-by">{causeLabel(entry.cause)}</span>{' '}
+                            <span className="ed-change-by">
+                              {entry.sessionId
+                                ? `agent ${entry.sessionId.replace(/^s_/, '').slice(0, 6)}`
+                                : causeLabel(entry.cause)}
+                            </span>{' '}
                             <span className="ed-change-age">{relativeAge(entry.at, changeClock)}</span>
                             {entry.count > 1 && <span className="ed-count">{entry.count}</span>}
                           </span>
@@ -943,7 +972,19 @@ export function EditorPage({ host }: { host: Host }) {
         )}
 
         <section className="ed-main">
-          {buffers.length === 0 ? (
+          {/* A change being read as a diff owns the pane: it can outlive the
+              file (a delete leaves no buffer to open) and it is the whole
+              point of selecting the row. */}
+          {view === 'change' && openChangeEntry ? (
+            <ChangeCard
+              entry={openChangeEntry}
+              themeType={themeType}
+              onClose={() => {
+                setOpenChangeEntry(null)
+                setView('read')
+              }}
+            />
+          ) : buffers.length === 0 ? (
             <EmptyState
               title="No file open"
               description="Pick a file from the tree, or search for one. Files an agent opens appear here too."
@@ -1225,6 +1266,58 @@ function FileView({ path, contents, themeType }: { path: string; contents: strin
  * from the prefix and its position, which is what keeps pierre from re-reading
  * an unchanged hunk on each render.
  */
+/**
+ * One change, read as the diff it was.
+ *
+ * The patch travels on the event, so this renders with no round trip and keeps
+ * showing what a write did after the file has moved on — committed, reverted,
+ * or written again. That is the difference between this and the git view,
+ * which can only ever show the working tree as it is now.
+ *
+ * The header is the provenance the payload actually knows: which worker
+ * performed the write, and the harness session and turn it happened in when it
+ * happened inside one.
+ */
+function ChangeCard({
+  entry,
+  themeType,
+  onClose,
+}: {
+  entry: ChangeEntry
+  themeType: 'light' | 'dark'
+  onClose: () => void
+}) {
+  return (
+    <>
+      <div className="ed-bar">
+        <span className="ed-change-title" title={entry.path}>
+          {entry.path}
+        </span>
+        <Badge variant={entry.kind === 'deleted' ? 'warn' : 'default'}>{entry.kind}</Badge>
+        {(entry.added > 0 || entry.removed > 0) && (
+          <span>
+            <span className="ed-add">+{entry.added}</span> <span className="ed-del">−{entry.removed}</span>
+          </span>
+        )}
+        <span className="ed-change-by">{causeLabel(entry.cause)}</span>
+        {entry.sessionId && (
+          <span className="ed-change-session" title={entry.turnId ? `turn ${entry.turnId}` : entry.sessionId}>
+            session {entry.sessionId.replace(/^s_/, '').slice(0, 8)}
+          </span>
+        )}
+        <span className="ed-bar-spacer" />
+        <Button onClick={onClose}>close</Button>
+      </div>
+      {entry.truncated && (
+        <div className="ed-warn">
+          The change was larger than the preview the event carries, so only its beginning is shown.
+        </div>
+      )}
+      <PatchView patch={entry.patch} themeType={themeType} />
+    </>
+  )
+}
+
 function PatchView({ patch, themeType }: { patch: string; themeType: 'light' | 'dark' }) {
   const files = useMemo(
     () => (patch.trim() === '' ? [] : parsePatchFiles(patch, `p${contentHash(patch)}`).flatMap((p) => p.files)),
