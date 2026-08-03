@@ -111,12 +111,11 @@ impl SessionClient {
         if response.is_null() {
             return Ok(None);
         }
-        let parsed: GetSessionResponse =
-            serde_json::from_value(response).map_err(|error| {
-                HarnessError::Dependency(format!(
-                    "session::get returned malformed metadata for {session_id}: {error}"
-                ))
-            })?;
+        let parsed: GetSessionResponse = serde_json::from_value(response).map_err(|error| {
+            HarnessError::Dependency(format!(
+                "session::get returned malformed metadata for {session_id}: {error}"
+            ))
+        })?;
         Ok(Some(parsed.meta.metadata.unwrap_or_default()))
     }
 

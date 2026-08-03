@@ -5,8 +5,8 @@
 
 pub mod approve_always;
 pub mod clear_settings;
-pub mod filesystem_access_watch;
 pub mod evaluate;
+pub mod filesystem_access_watch;
 pub mod gate;
 pub mod get_pending;
 pub mod get_settings;
@@ -261,9 +261,10 @@ where
 pub fn catalog() -> Vec<FunctionSpec> {
     use crate::types::{
         AlwaysAllowMutationRequest, ApproveAlwaysRequest, ClearSettingsRequest,
-        ClearSettingsResponse, EvaluateRequest, EvaluateResponse, EventAck, GetPendingRequest, GetPendingResponse, GetSettingsRequest,
-        GetSettingsResponse, HookInput, HookOutput, ListPendingRequest, ListPendingResponse,
-        ResolveRequest, ResolveResponse, SetModeRequest, SettingsResponse,
+        ClearSettingsResponse, EvaluateRequest, EvaluateResponse, EventAck, GetPendingRequest,
+        GetPendingResponse, GetSettingsRequest, GetSettingsResponse, HookInput, HookOutput,
+        ListPendingRequest, ListPendingResponse, ResolveRequest, ResolveResponse, SetModeRequest,
+        SettingsResponse,
     };
     use on_session_deleted::SessionDeletedEvent;
     use on_turn_completed::TurnCompletedEvent;

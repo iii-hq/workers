@@ -39,8 +39,7 @@ pub const CONTROL_PLANE_DENY: [&str; 5] = [
 /// allow-list; an empty allow (dispatch disabled) stays empty, an explicit
 /// deny still wins, and the ask-mode operator baseline is applied after — the
 /// deployment ceiling keeps the final word.
-pub const CHILD_DISCOVERY_ALLOW: [&str; 2] =
-    ["engine::functions::list", "engine::functions::info"];
+pub const CHILD_DISCOVERY_ALLOW: [&str; 2] = ["engine::functions::list", "engine::functions::info"];
 
 /// A compiled allow/deny matcher. Fail-closed: a call is allowed only when it
 /// matches an `allow` glob and no `deny` glob; an absent or empty allow-list

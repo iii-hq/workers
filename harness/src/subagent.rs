@@ -822,8 +822,14 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         };
-        let child =
-            child_functions(&cfg, Some(&parent), Some(&covered), Some(Mode::Agent), false).unwrap();
+        let child = child_functions(
+            &cfg,
+            Some(&parent),
+            Some(&covered),
+            Some(Mode::Agent),
+            false,
+        )
+        .unwrap();
         assert_eq!(child.allow, vec!["engine::*", "state::set"]);
 
         // Explicitly denied: deny wins, and no dead allow entry is written.
@@ -844,8 +850,7 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         };
-        let child =
-            child_functions(&cfg, None, Some(&disabled), Some(Mode::Agent), false).unwrap();
+        let child = child_functions(&cfg, None, Some(&disabled), Some(Mode::Agent), false).unwrap();
         assert!(child.allow.is_empty());
         assert!(!policy::CompiledPolicy::from(Some(&child)).allows("engine::functions::list"));
     }

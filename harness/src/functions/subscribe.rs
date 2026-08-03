@@ -1189,19 +1189,16 @@ mod tests {
     /// convention gets no guess.
     #[test]
     fn out_of_scope_child_pattern_names_the_substitution() {
-        let err = validate_post_turn_scope(
-            "console-2c21",
-            Some(vec!["e2e_12ac-child-1".into()]),
-        )
-        .unwrap_err();
+        let err = validate_post_turn_scope("console-2c21", Some(vec!["e2e_12ac-child-1".into()]))
+            .unwrap_err();
         assert!(err.contains("out of scope"), "refusal must stand: {err}");
         assert!(
             err.contains("use `console-2c21-child-1`"),
             "the substitution must be spelled out: {err}"
         );
 
-        let glob = validate_post_turn_scope("run-1", Some(vec!["other-child-*".into()]))
-            .unwrap_err();
+        let glob =
+            validate_post_turn_scope("run-1", Some(vec!["other-child-*".into()])).unwrap_err();
         assert!(
             glob.contains("use `run-1-child-*`"),
             "the glob tail must survive the substitution: {glob}"

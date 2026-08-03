@@ -58,7 +58,10 @@ pub async fn handle(deps: &Deps, req: EvaluateRequest) -> Result<EvaluateRespons
         });
     }
 
-    let arguments = req.arguments.clone().unwrap_or_else(|| serde_json::json!({}));
+    let arguments = req
+        .arguments
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({}));
     let verdict = match cfg
         .permissions()
         .check(&req.function_id, &arguments, effective.mode)

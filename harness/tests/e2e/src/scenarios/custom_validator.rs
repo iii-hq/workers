@@ -318,7 +318,10 @@ mod tests {
         let verdict = envelope_verdict(&wrong);
         assert_eq!(verdict.decision, "deny");
         let reason = verdict.reason.unwrap();
-        assert!(reason.contains(HOOK_TYPE) && reason.contains("e2e_x"), "{reason}");
+        assert!(
+            reason.contains(HOOK_TYPE) && reason.contains("e2e_x"),
+            "{reason}"
+        );
     }
 
     #[test]

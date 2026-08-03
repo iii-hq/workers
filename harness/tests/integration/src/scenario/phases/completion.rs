@@ -105,8 +105,7 @@ impl ScenarioRunner<'_> {
         //
         // A TREE run is the exception: the latest completion there may belong
         // to a spawned child, and the evidence must stay bound to the root.
-        let rebind =
-            (expected > 1 || self.fixture.expected_turn_statuses.len() > 1) && !tree_run;
+        let rebind = (expected > 1 || self.fixture.expected_turn_statuses.len() > 1) && !tree_run;
         match latest_turn_id {
             Ok(Some(turn_id)) if rebind => active.turn_id = Some(turn_id),
             Ok(turn_id) => {

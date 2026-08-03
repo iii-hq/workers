@@ -133,7 +133,10 @@ pub(super) fn scenario() -> ScenarioFixture {
             .respond(Response::text("condition failure acknowledged", 12, 3)),
     )
     .verify(|run| {
-        run.expect_assistant_texts(["armed: watching courier_done", "condition failure acknowledged"])?;
+        run.expect_assistant_texts([
+            "armed: watching courier_done",
+            "condition failure acknowledged",
+        ])?;
         // The condition was genuinely evaluated (the controlled target saw
         // the call) — the skip came from its unusable answer, not from the
         // condition never running.
@@ -183,7 +186,10 @@ pub(super) fn scenario() -> ScenarioFixture {
             })
             .ok_or_else(|| anyhow::anyhow!("no condition-error skip record in the transcript"))?;
         anyhow::ensure!(
-            skip_record.pointer("/data/retired").and_then(Value::as_bool) == Some(false),
+            skip_record
+                .pointer("/data/retired")
+                .and_then(Value::as_bool)
+                == Some(false),
             "a condition failure must leave the binding armed: {skip_record}"
         );
         run.expect_no_duplicate_messages()
