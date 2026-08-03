@@ -10,6 +10,7 @@ packages:
   - console/web
   - console/ui
   - browser/ui
+  - computer/ui
   - database/ui
   - editor/ui
   - eval/ui

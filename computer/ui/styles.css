@@ -1,0 +1,310 @@
+/*
+ * Styles for the computer worker's injected console UI. Shipped as its own
+ * `console:style` asset (computer/styles.css) — the console mounts it as a
+ * <link> and link-swaps it on change.
+ *
+ * EVERY rule is scoped under [data-iii-ui="computer"] — the wrapper the
+ * console mounts around every injected render (page, chat card alike).
+ * Unscoped rules would beat the console's layered CSS document-wide (injected
+ * sheets are unlayered). Keyframe names are global: keep the cp-ui- prefix.
+ * Colors come from the console's design tokens, so light/dark theming is free.
+ */
+
+[data-iii-ui="computer"] .cp-ui-page,
+[data-iii-ui="computer"] .cp-ui-call {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink);
+  box-sizing: border-box;
+}
+[data-iii-ui="computer"] .cp-ui-page *,
+[data-iii-ui="computer"] .cp-ui-page *::before,
+[data-iii-ui="computer"] .cp-ui-page *::after {
+  box-sizing: border-box;
+}
+
+@keyframes cp-ui-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* --- page shell ------------------------------------------------------ */
+[data-iii-ui="computer"] .cp-ui-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+[data-iii-ui="computer"] .cp-ui-page-head {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="computer"] .cp-ui-page-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui="computer"] .cp-ui-page-name {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+[data-iii-ui="computer"] .cp-ui-page-sub {
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="computer"] .cp-ui-page-error {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 8px 24px;
+  font-size: 11px;
+  color: var(--color-alert);
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="computer"] .cp-ui-page-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* --- start control --------------------------------------------------- */
+[data-iii-ui="computer"] .cp-ui-start {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="computer"] .cp-ui-start-mode {
+  min-width: 150px;
+}
+[data-iii-ui="computer"] .cp-ui-start-field {
+  min-width: 190px;
+}
+
+/* --- session rail ---------------------------------------------------- */
+[data-iii-ui="computer"] .cp-ui-rail {
+  flex-shrink: 0;
+  width: 260px;
+  border-right: 1px solid var(--color-rule);
+  overflow-y: auto;
+  padding: 8px;
+}
+[data-iii-ui="computer"] .cp-ui-rail-empty {
+  margin: 12px 8px;
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="computer"] .cp-ui-rail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="computer"] .cp-ui-rail-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 4px 2px 0;
+}
+[data-iii-ui="computer"] .cp-ui-rail-row.is-selected {
+  border-color: var(--color-accent);
+  background: var(--color-panel);
+}
+[data-iii-ui="computer"] .cp-ui-rail-pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  background: none;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+[data-iii-ui="computer"] .cp-ui-rail-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+[data-iii-ui="computer"] .cp-ui-rail-id {
+  font-size: 12px;
+  font-weight: 500;
+}
+[data-iii-ui="computer"] .cp-ui-rail-meta {
+  font-size: 10px;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="computer"] .cp-ui-rail-stop {
+  flex-shrink: 0;
+}
+
+/* --- stage + viewport ------------------------------------------------ */
+[data-iii-ui="computer"] .cp-ui-stage {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 24px 12px;
+  overflow: hidden;
+}
+[data-iii-ui="computer"] .cp-ui-stage-hint {
+  flex-shrink: 0;
+  margin: 0;
+  font-size: 10px;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="computer"] .cp-ui-vp {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-paper-2);
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  overflow: hidden;
+  outline: none;
+}
+[data-iii-ui="computer"] .cp-ui-vp.is-live:focus-visible {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-ring);
+}
+[data-iii-ui="computer"] .cp-ui-vp-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+[data-iii-ui="computer"] .cp-ui-vp-empty {
+  margin: 0;
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+
+/* --- chat cards ------------------------------------------------------ */
+[data-iii-ui="computer"] .cp-ui-call {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+}
+[data-iii-ui="computer"] .cp-ui-call-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="computer"] .cp-ui-call-sid {
+  color: var(--color-ink);
+}
+[data-iii-ui="computer"] .cp-ui-call-link {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+[data-iii-ui="computer"] .cp-ui-call-link:hover {
+  text-decoration: underline;
+}
+[data-iii-ui="computer"] .cp-ui-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="computer"] .cp-ui-detail {
+  color: var(--color-ink);
+}
+[data-iii-ui="computer"] .cp-ui-code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink);
+}
+[data-iii-ui="computer"] .cp-ui-pill {
+  text-transform: lowercase;
+}
+[data-iii-ui="computer"] .cp-ui-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+[data-iii-ui="computer"] .cp-ui-kv-row {
+  display: flex;
+  gap: 8px;
+}
+[data-iii-ui="computer"] .cp-ui-kv-key {
+  width: 64px;
+  flex-shrink: 0;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="computer"] .cp-ui-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+[data-iii-ui="computer"] .cp-ui-list-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui="computer"] .cp-ui-list-id {
+  color: var(--color-ink);
+}
+[data-iii-ui="computer"] .cp-ui-list-meta {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="computer"] .cp-ui-json {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--color-rule-2);
+  border-radius: 4px;
+  padding: 8px;
+}
+[data-iii-ui="computer"] .cp-ui-shot {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="computer"] .cp-ui-shot-img {
+  max-width: 100%;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+}
+[data-iii-ui="computer"] .cp-ui-shot-cap {
+  font-size: 10px;
+  color: var(--color-ink-ghost);
+}

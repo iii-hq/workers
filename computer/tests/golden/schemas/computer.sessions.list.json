@@ -1,0 +1,85 @@
+{
+  "description": "List live computer sessions with their endpoint, guest OS, and screen size.",
+  "function_id": "computer::sessions::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ListInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Screen": {
+        "description": "Desktop pixel dimensions. Coordinates handed to pointer actions are in this space: integer pixels, top-left origin, 1:1 with the screenshot.",
+        "properties": {
+          "height": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "width": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "height",
+          "width"
+        ],
+        "type": "object"
+      },
+      "SessionInfo": {
+        "properties": {
+          "created_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "last_used_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "os": {
+            "type": "string"
+          },
+          "screen": {
+            "$ref": "#/definitions/Screen"
+          },
+          "screencast_active": {
+            "description": "True while a live screen stream is running for this session.",
+            "type": "boolean"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "created_ms",
+          "endpoint",
+          "last_used_ms",
+          "os",
+          "screen",
+          "screencast_active",
+          "session_id"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "sessions": {
+        "items": {
+          "$ref": "#/definitions/SessionInfo"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "sessions"
+    ],
+    "title": "ListOutput",
+    "type": "object"
+  }
+}

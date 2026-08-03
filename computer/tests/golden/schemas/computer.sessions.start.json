@@ -1,0 +1,99 @@
+{
+  "description": "Start a computer-use session and return its session_id. Pass `image` to boot a fresh desktop in an iii-sandbox microVM (fixed virtual display, no host setup), an `endpoint` to drive a desktop through its guest executor, or omit both to drive the local machine. Sessions are durable; stop them with computer::sessions::stop when done.",
+  "function_id": "computer::sessions::start",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "endpoint": {
+        "default": null,
+        "description": "Desktop to drive when not using a sandbox `image`. Omit (and leave `image` unset) to drive the local machine this worker runs on (native driver, nothing else to run). Pass the endpoint of a desktop guest's executor (a `ws`/`wss`/`http`/`https` url or a bare `host:port`) to drive a remote desktop; falls back to the configured `default_endpoint` when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "image": {
+        "default": null,
+        "description": "Boot a fresh desktop inside an iii-sandbox microVM from this OCI image (a sandbox preset name or `custom_images` key) and drive it through iii primitives alone. A fixed virtual display means 1:1 coordinates, no HiDPI or multi-monitor ambiguity. Falls back to the configured `sandbox_image` when omitted. Takes precedence over `endpoint`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "monitor": {
+        "default": null,
+        "description": "Display index (from `computer::displays`) for a native session. Omit to drive the display under the cursor. Ignored for a remote `endpoint` or a sandbox `image`.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "os": {
+        "default": null,
+        "description": "Guest OS label recorded on the session and surfaced in `session-started` (`linux`, `macos`, `windows`, `android`). Omit to use the configured `os`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "StartInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Screen": {
+        "description": "Desktop pixel dimensions. Coordinates handed to pointer actions are in this space: integer pixels, top-left origin, 1:1 with the screenshot.",
+        "properties": {
+          "height": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "width": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "height",
+          "width"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "endpoint": {
+        "description": "What the session drives: `native` for the local machine, or the normalized remote endpoint.",
+        "type": "string"
+      },
+      "os": {
+        "type": "string"
+      },
+      "screen": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Screen"
+          }
+        ],
+        "description": "Desktop pixel dimensions; the coordinate space for `computer::act`."
+      },
+      "session_id": {
+        "description": "Pass this to every other computer function.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "endpoint",
+      "os",
+      "screen",
+      "session_id"
+    ],
+    "title": "StartOutput",
+    "type": "object"
+  }
+}
