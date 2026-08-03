@@ -33,6 +33,31 @@ const PRESS_KEYS: Record<string, string> = {
   PageDown: 'pagedown',
 }
 
+/**
+ * Modifier names for a chord. Shift counts only alongside another modifier or
+ * a named key: shift+a on its own is simply the character A, which types.
+ */
+function chordModifiers(
+  e: React.KeyboardEvent<HTMLDivElement>,
+  named: boolean,
+): string[] {
+  const modifiers: string[] = []
+  if (e.metaKey) modifiers.push('cmd')
+  if (e.ctrlKey) modifiers.push('ctrl')
+  if (e.altKey) modifiers.push('alt')
+  if (e.shiftKey && (modifiers.length > 0 || named)) modifiers.push('shift')
+  return modifiers
+}
+
+/**
+ * The key a chord carries, read off the physical key rather than the produced
+ * character: alt+c reports 'ç' on macOS, and the desktop wants 'c'.
+ */
+function chordKeyName(e: React.KeyboardEvent<HTMLDivElement>): string {
+  const physical = /^(?:Key([A-Z])|Digit([0-9]))$/.exec(e.code)
+  return (physical?.[1] ?? physical?.[2] ?? e.key).toLowerCase()
+}
+
 interface ViewportProps {
   frame: LiveFrame | null
   loading: boolean
@@ -173,15 +198,9 @@ export function Viewport({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (!interactive) return
-    const modifiers: string[] = []
-    if (e.metaKey) modifiers.push('cmd')
-    if (e.ctrlKey) modifiers.push('ctrl')
-    if (e.altKey) modifiers.push('alt')
-    if (e.shiftKey && (modifiers.length > 0 || PRESS_KEYS[e.key])) {
-      modifiers.push('shift')
-    }
-
     const named = PRESS_KEYS[e.key]
+    const modifiers = chordModifiers(e, named !== undefined)
+
     if (named) {
       e.preventDefault()
       e.stopPropagation()
@@ -191,12 +210,9 @@ export function Viewport({
     if (e.key.length !== 1) return
     e.preventDefault()
     e.stopPropagation()
-    // A chord (cmd+c) is a hotkey; a bare character is text. Chords read the
-    // physical key: alt+c reports 'ç' on macOS, and the desktop wants 'c'.
+    // A chord (cmd+c) is a hotkey; a bare character is text.
     if (modifiers.length > 0) {
-      const physical = /^(Key([A-Z])|Digit([0-9]))$/.exec(e.code)
-      const name = (physical?.[2] ?? physical?.[3] ?? e.key).toLowerCase()
-      onPressKeys([...modifiers, name])
+      onPressKeys([...modifiers, chordKeyName(e)])
       return
     }
     onTextInput(e.key)

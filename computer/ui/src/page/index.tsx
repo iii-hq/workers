@@ -106,6 +106,9 @@ export function ComputerPage({ host }: { host: Host }) {
     }
   }
 
+  // One banner: whatever the last action said, else whatever the list said.
+  const problem = actionError ?? error
+
   const handleStop = async (sessionId: string) => {
     setBusyId(sessionId)
     try {
@@ -140,9 +143,9 @@ export function ComputerPage({ host }: { host: Host }) {
         />
       </header>
 
-      {error || actionError ? (
+      {problem ? (
         <p className="cp-ui-page-error">
-          {actionError ?? error}
+          {problem}
           <Button
             variant="ghost"
             size="sm"

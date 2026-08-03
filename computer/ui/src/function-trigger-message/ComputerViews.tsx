@@ -100,26 +100,18 @@ export function ActView({
 }) {
   const parsed = actResultSchema.safeParse(decodeComputerResult(output))
   if (!parsed.success) return null
+  const { ok, detail } = parsed.data
   const action =
     input && typeof input === 'object'
       ? (input as Record<string, unknown>).action
       : undefined
+  const label = typeof action === 'string' ? action : 'act'
   return (
     <p className="cp-ui-line">
-      {typeof action === 'string' ? (
-        <Badge
-          variant={parsed.data.ok ? 'default' : 'alert'}
-          className="cp-ui-pill"
-        >
-          {action}
-        </Badge>
-      ) : null}
-      {parsed.data.ok ? null : (
-        <Badge variant="alert" className="cp-ui-pill">
-          failed
-        </Badge>
-      )}
-      <span className="cp-ui-detail">{parsed.data.detail}</span>
+      <Badge variant={ok ? 'default' : 'alert'} className="cp-ui-pill">
+        {ok ? label : `${label} failed`}
+      </Badge>
+      <span className="cp-ui-detail">{detail}</span>
     </p>
   )
 }

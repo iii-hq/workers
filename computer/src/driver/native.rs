@@ -419,12 +419,11 @@ impl NativeHost {
         let (bytes, tw, th, id, geom) = spawn_blocking(move || capture(pinned, over, max_dim, q))
             .await
             .map_err(|e| format!("capture task failed: {e}"))??;
-        let bytes_dims = (tw, th);
         let _ = self.pinned.set(id);
         self.geom.store(Some(Arc::new(geom)));
         self.dims.store(Some(Arc::new(Screen {
-            width: bytes_dims.0,
-            height: bytes_dims.1,
+            width: tw,
+            height: th,
         })));
         Ok((bytes, tw, th))
     }

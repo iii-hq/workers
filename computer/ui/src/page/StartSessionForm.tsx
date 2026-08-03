@@ -33,19 +33,22 @@ export function StartSessionForm({
   const [endpoint, setEndpoint] = useState('')
   const [monitor, setMonitor] = useState<string | undefined>(undefined)
 
+  // A remote session is the one mode with a required field; the button and
+  // the submit path read the same rule.
+  const ready = !starting && (mode !== 'remote' || endpoint.trim() !== '')
+
   const submit = () => {
-    if (starting) return
-    if (mode === 'sandbox') {
-      onStart({ image: image.trim() || 'desktop' })
-      return
+    if (!ready) return
+    switch (mode) {
+      case 'sandbox':
+        onStart({ image: image.trim() || 'desktop' })
+        return
+      case 'remote':
+        onStart({ endpoint: endpoint.trim() })
+        return
+      default:
+        onStart(monitor != null ? { monitor: Number(monitor) } : {})
     }
-    if (mode === 'remote') {
-      const trimmed = endpoint.trim()
-      if (!trimmed) return
-      onStart({ endpoint: trimmed })
-      return
-    }
-    onStart(monitor != null ? { monitor: Number(monitor) } : {})
   }
 
   return (
@@ -99,12 +102,7 @@ export function StartSessionForm({
           className="cp-ui-start-field"
         />
       ) : null}
-      <Button
-        type="submit"
-        variant="primary"
-        size="sm"
-        disabled={starting || (mode === 'remote' && endpoint.trim() === '')}
-      >
+      <Button type="submit" variant="primary" size="sm" disabled={!ready}>
         {starting ? 'starting...' : 'start session'}
       </Button>
     </form>
