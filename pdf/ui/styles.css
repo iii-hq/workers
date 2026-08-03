@@ -54,10 +54,39 @@
   background: var(--color-paper-2);
 }
 
+/* Once a document is loaded the zone becomes a one-line bar: still a drop
+   target, no longer the centre of the page. */
+[data-iii-ui='pdf'] .pdf-ui__drop--compact {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 0.75rem;
+  border-style: solid;
+  border-color: var(--color-rule-2);
+}
+
 [data-iii-ui='pdf'] .pdf-ui__drop-label {
   color: var(--color-ink-faint);
   font-size: 0.875rem;
   margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__drop-file {
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__drop-hint {
+  color: var(--color-ink-ghost);
+  font-size: 0.75rem;
+  white-space: nowrap;
 }
 
 [data-iii-ui='pdf'] .pdf-ui__file {

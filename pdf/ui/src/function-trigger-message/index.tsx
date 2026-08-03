@@ -36,8 +36,25 @@ export function createPdfTriggerRenderer(_host: Host): FunctionTriggerRenderer {
   }
 }
 
+/**
+ * A function result reaches the console wrapped by the harness as
+ * `{ content: [...], details: <the real response> }`, not as the response
+ * itself. Reading the raw value looks like it works right up until every field
+ * is undefined and the renderer quietly falls through to an empty card, which
+ * is exactly what happened the first time this shipped.
+ *
+ * The console has its own `unwrapEnvelope`, but injected assets can only import
+ * from `@iii-dev/console-ui`, so the same two-line rule lives here.
+ */
+function unwrapEnvelope(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  const obj = value as Record<string, unknown>
+  if (Array.isArray(obj.content) && 'details' in obj) return obj.details
+  return value
+}
+
 function render(message: FunctionTriggerMessage) {
-  const output = message.output
+  const output = unwrapEnvelope(message.output)
   if (!output || typeof output !== 'object') return null
 
   switch (message.functionId) {

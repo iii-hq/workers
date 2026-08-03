@@ -41,6 +41,9 @@ export function AttachmentButton({
         size: f.size,
         type: f.type || 'application/octet-stream',
         dataUrl: await readPreview(f),
+        // Kept so the send path can hand the bytes to a worker that reads this
+        // kind of file (PDFs go through `pdf::to-markdown`). Not persisted.
+        file: f,
       })),
     )
     onAttach(attachments)

@@ -72,6 +72,11 @@ export function PdfPage({ host }: { host: Host }) {
     [run],
   )
 
+  // A failed read still counts as loaded: the error panel is the result, and
+  // reverting to a full-height drop zone above it would bury the explanation.
+  const hasResult = state.status === 'done' || state.status === 'failed'
+  const loadedName = hasResult ? state.name : null
+
   return (
     <div className="pdf-ui">
       <header className="pdf-ui__head">
@@ -82,8 +87,16 @@ export function PdfPage({ host }: { host: Host }) {
         </p>
       </header>
 
+      {/* The drop zone owns the page until a document is loaded, then shrinks
+          to a bar: once there are results, they are what the page is for. */}
       <div
-        className={`pdf-ui__drop${dragging ? ' pdf-ui__drop--over' : ''}`}
+        className={[
+          'pdf-ui__drop',
+          dragging ? 'pdf-ui__drop--over' : '',
+          hasResult ? 'pdf-ui__drop--compact' : '',
+        ]
+          .filter(Boolean)
+          .join(' ')}
         onDragOver={(e) => {
           e.preventDefault()
           setDragging(true)
@@ -92,16 +105,25 @@ export function PdfPage({ host }: { host: Host }) {
         onDrop={onDrop}
       >
         <p className="pdf-ui__drop-label">
-          {state.status === 'reading'
-            ? `reading ${state.name}`
-            : 'Drop a PDF here'}
+          {state.status === 'reading' ? (
+            `reading ${state.name}`
+          ) : hasResult ? (
+            <>
+              <span className="pdf-ui__drop-file">{loadedName}</span>
+              <span className="pdf-ui__drop-hint">
+                {dragging ? 'drop to replace' : 'or drop another here'}
+              </span>
+            </>
+          ) : (
+            'Drop a PDF here'
+          )}
         </p>
         <Button
-          variant="pill"
+          variant={hasResult ? 'ghost' : 'pill'}
           onClick={() => input.current?.click()}
           disabled={state.status === 'reading'}
         >
-          Choose a file
+          {hasResult ? 'Read another' : 'Choose a file'}
         </Button>
         <input
           ref={input}

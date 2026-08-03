@@ -33,6 +33,7 @@ import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
+import { expandPdfAttachments, isPdfAttachment } from '@/lib/pdf-attachments'
 import { newMessageId } from '@/lib/session-id'
 import { cn } from '@/lib/utils'
 import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
@@ -498,6 +499,18 @@ export function ChatView({
             attachedBlocks = (
               await expandFileMentions(workingDir, mentionPaths)
             ).blocks
+          }
+        }
+        // Same expansion as the live send path: a queued message's PDFs have
+        // to reach the agent as markdown too, or editing a queued message
+        // would silently drop the document it carried.
+        if (
+          backend.id === 'real' &&
+          payload.attachments.some(isPdfAttachment)
+        ) {
+          const expanded = await expandPdfAttachments(payload.attachments)
+          if (expanded.blocks.length > 0) {
+            attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
           }
         }
         try {
@@ -989,6 +1002,27 @@ export function ChatView({
             conversationId,
             makeSystemNotice(
               `could not attach ${failure.path} — ${failure.reason}`,
+              'warn',
+            ),
+          )
+        }
+      }
+
+      // A PDF is not text: read as bytes it reaches the model as noise, so the
+      // `pdf` worker converts it on this machine and the markdown is appended
+      // as another attachment block. Failures never block the send — an
+      // unreadable document becomes a placeholder block plus a warn notice, so
+      // the model knows it was handed something it could not read.
+      if (backend.id === 'real' && payload.attachments.some(isPdfAttachment)) {
+        const expanded = await expandPdfAttachments(payload.attachments)
+        if (expanded.blocks.length > 0) {
+          attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
+        }
+        for (const failure of expanded.failures) {
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              `could not read ${failure.name} — ${failure.reason}`,
               'warn',
             ),
           )
