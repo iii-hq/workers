@@ -90,6 +90,8 @@ harness-integration playground \
   --worker-bin session-manager=<session-manager> \
   --worker-bin context-manager=<context-manager> \
   --worker-bin iii-directory=<iii-directory> \
+  --worker-bin state=<state> \
+  --worker-bin database=<database> \
   --scenario console-streamed-text
 ```
 

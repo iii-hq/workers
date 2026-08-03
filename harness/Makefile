@@ -448,6 +448,7 @@ integration-playground:
 	  --worker-bin "session-manager=$(REPO_ROOT)/session-manager/target/$(INTEGRATION_PROFILE)/session-manager" \
 	  --worker-bin "context-manager=$(REPO_ROOT)/context-manager/target/$(INTEGRATION_PROFILE)/context-manager" \
 	  --worker-bin "state=$(REPO_ROOT)/state/target/$(INTEGRATION_PROFILE)/state" \
+	  --worker-bin "database=$(REPO_ROOT)/database/target/$(INTEGRATION_PROFILE)/database" \
 	  --scenario "$(INTEGRATION_PLAYGROUND_SCENARIO)" \
 	  --artifacts-dir "$(INTEGRATION_PLAYGROUND_ARTIFACTS)"
 
