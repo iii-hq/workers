@@ -10,10 +10,9 @@
 //! 5. register and fetch the configuration — a required boot dependency, so a
 //!    failure here aborts rather than running on guessed limits
 //! 6. register the functions, then the console UI they drive
-//! 7. bind the guidance hook, presence-gated on this worker being connected
-//! 8. bind the configuration trigger LAST, so its handler closes over fully
+//! 7. bind the configuration trigger LAST, so its handler closes over fully
 //!    built state
-//! 9. wait for a signal, then shut the SDK down cleanly
+//! 8. wait for a signal, then shut the SDK down cleanly
 
 use std::sync::Arc;
 
@@ -25,7 +24,7 @@ use tracing_subscriber::EnvFilter;
 
 use pdf::config::WorkerConfig;
 use pdf::configuration::ConfigCell;
-use pdf::{cmaps, configuration, functions, guidance, manifest, ui};
+use pdf::{cmaps, configuration, functions, manifest, ui};
 
 #[derive(Parser, Debug)]
 #[command(name = "pdf", about = manifest::DESCRIPTION)]
@@ -113,7 +112,6 @@ async fn main() -> anyhow::Result<()> {
 
     functions::register_all(&iii, &cell);
     ui::register(&iii);
-    guidance::setup(&iii);
 
     configuration::register_config_trigger(&iii, cell.clone())
         .map_err(|e| anyhow::anyhow!("configuration trigger registration failed: {e}"))?;

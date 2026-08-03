@@ -184,11 +184,9 @@ rules:
   - '!openwiki::on-turn-completed'
   - '!openwiki::on-config-change'
 
-  # pdf: internal targets. The hot-reload hook follows the same pattern as the
-  # other on-config-change denies. inject-guidance is a harness pre-generate
-  # hook target: a direct call could hand an agent a forged system prompt.
+  # pdf: internal target. The hot-reload hook follows the same pattern as the
+  # other on-config-change denies.
   - '!pdf::on-config-change'
-  - '!pdf::inject-guidance'
 
   # Read-only / introspection (extend below for your tools).
   - state::get

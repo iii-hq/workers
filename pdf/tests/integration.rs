@@ -234,56 +234,28 @@ async fn caller_mistakes_come_back_as_errors() {
     .await;
 }
 
-/// The guidance hook is what makes an agent aware of this worker at all. It has
-/// to be registered and callable, and it must preserve a prompt it is handed.
+/// This worker is called on demand, so it must cost a turn that has nothing to
+/// do with a document exactly nothing. It registers no harness hook and binds no
+/// trigger type: an agent finds it through the function registry, and a person
+/// finds it through the console page. A hook here would run on every single
+/// generation, which is what a turn-loop worker is for, not this one.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_guidance_hook_appends_without_replacing() {
+async fn the_worker_never_runs_on_a_turn_that_does_not_ask_for_it() {
     with_stack(|stack| async move {
-        let document_turn = json!({
-            "generate": {
-                "system_prompt": "BASE PROMPT",
-                "messages": [{
-                    "role": "user",
-                    "content": [{ "type": "text", "text": "read /tmp/report.pdf" }]
-                }]
-            }
-        });
-
         let out = stack
-            .call("pdf::inject-guidance", document_turn)
+            .call("engine::functions::list", json!({ "search": "pdf" }))
             .await
-            .expect("pdf::inject-guidance");
+            .expect("engine::functions::list");
 
-        let prompt = out["mutations"]["system_prompt"]
-            .as_str()
-            .expect("a system_prompt mutation");
-        assert!(prompt.starts_with("BASE PROMPT\n\n"), "the base was lost");
-        assert!(prompt.contains("pdf::classify"));
-
-        // The hook fires on every generation, so a turn with no document in it
-        // must cost nothing.
-        let unrelated = json!({
-            "generate": {
-                "system_prompt": "BASE PROMPT",
-                "messages": [{
-                    "role": "user",
-                    "content": [{ "type": "text", "text": "what is the weather?" }]
-                }]
-            }
-        });
-        let out = stack
-            .call("pdf::inject-guidance", unrelated)
-            .await
-            .expect("pdf::inject-guidance");
-        assert_eq!(out, json!({ "mutations": {} }));
-
-        // An empty envelope must also yield NO key, so the harness keeps its own
-        // assembled prompt rather than having it replaced by the guidance.
-        let out = stack
-            .call("pdf::inject-guidance", json!({ "generate": {} }))
-            .await
-            .expect("pdf::inject-guidance");
-        assert_eq!(out, json!({ "mutations": {} }));
+        let listed = serde_json::to_string(&out).expect("serializes");
+        assert!(
+            listed.contains("pdf::classify"),
+            "an agent must be able to discover this worker: {listed}"
+        );
+        assert!(
+            !listed.contains("inject-guidance"),
+            "this worker must register no harness hook: {listed}"
+        );
     })
     .await;
 }

@@ -137,6 +137,14 @@ response reports `pages_sampled`. Raise `classify_sample_pages`, or set it to
 
 Defaults live in [`src/config.rs`](src/config.rs).
 
+## Called on demand
+
+This worker registers no harness hook and injects nothing into any prompt. A
+conversation that never touches a document never pays for it, and there is no
+per-turn cost to having it installed. An agent finds it the ordinary way,
+through the function registry and [`skills/SKILL.md`](skills/SKILL.md); a
+person finds it through the console page.
+
 ## What this worker does not do
 
 It does not rasterize pages, so it cannot OCR anything. Scanned and image-based

@@ -174,7 +174,6 @@ pub async fn boot() -> Option<Stack> {
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(WorkerConfig::default())));
     pdf::functions::register_all(&iii, &cell);
-    pdf::guidance::setup(&iii);
 
     // Let the registrations land before the first call.
     tokio::time::sleep(Duration::from_millis(500)).await;

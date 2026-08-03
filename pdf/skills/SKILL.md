@@ -27,10 +27,15 @@ from font sizes and page geometry rather than from any structure the file
 promises. Underneath that sit the positions themselves, for callers that need
 to know where text is and not only what it says.
 
+This worker is called on demand. It registers no harness hook and injects
+nothing into any prompt, so a conversation that never touches a document never
+pays for it. Reach for it when one appears.
+
 ## When to Use
 
 - A conversation names a PDF path or hands one over: call `pdf::classify`
-  before anything else.
+  before anything else. Never read a PDF with a file-reading function; it
+  returns binary noise and spends the context on it.
 - Read a document: `pdf::to-markdown`, narrowed with `pages` when it is long.
 - Search or embed a document rather than read it: `pdf::extract-text`.
 - Decide whether a document is worth sending to a vision model, and which of
