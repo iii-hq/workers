@@ -166,9 +166,11 @@ Ship `skills/SKILL.md` when agents should discover **when** to use the worker
 
 ## 9. First release
 
-Follow [`release.md`](release.md). For a brand-new worker, prefer
-**registry tag `next`** on the first publish so `iii worker add` users on
-`latest` are not surprised.
+Follow [`release.md`](release.md). A first release goes to **`latest`** —
+the channel is release order, not a stability rating, and a worker with one
+version has nothing newer for `next` to point at. Check **experimental** in
+Create Tag instead: that is the signal that says "new, expect changes", and it
+shows as a badge without touching resolution.
 
 Recommended preflight:
 

@@ -94,10 +94,19 @@ Workers with `interface_smoke: false` skip the entire publish job.
 
 ### 4. Registry tag semantics
 
-| Channel | Typical use |
+The channel says **where a version sits in the release order**, nothing else.
+It is not a stability rating: that is the separate `experimental` flag, which
+rides the same tag.
+
+| Channel | What it means |
 |---|---|
-| `latest` | Default; what most `iii worker add` installs resolve |
-| `next` | Pre-release / risky channel; safer for first publish |
+| `latest` | The newest released version. What `iii worker add` resolves by default |
+| `next` | A version ahead of `latest` — a preview of what is coming |
+
+So a worker's first release is `latest`, even when it is brand new and
+experimental: there is nothing newer for `next` to point at. Reach for `next`
+only when `latest` already holds the version people should be getting and you
+are staging the one after it.
 
 The channel is stored in the **annotated tag message** (`registry-tag:`).
 `release.yml` refetches the annotated tag for this reason. Lightweight tags
@@ -226,7 +235,9 @@ There is **no unpublish**. Recovery:
 
 1. Fix the issue on `main`.
 2. Cut a new patch via Create Tag (registry `latest` moves forward).
-3. Use `registry-tag: next` when uncertain before promoting to `latest`.
+3. Staging a fix you are unsure of? Publish it on `next` so `latest` keeps
+   serving the version people already have, then cut the same fix to `latest`
+   once it holds up.
 
 GitHub Release assets for the bad version remain (immutable history).
 
