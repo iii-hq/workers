@@ -33,12 +33,14 @@ There is no embedding surface — the OpenCode Go API is Chat Completions only.
   retry policy.
 - **Model metadata:** discovery fetches the live id list from `GET /v1/models`
   (the API carries no capability data) and enriches each id from a hardcoded
-  curated table (`src/curated.rs`) covering the maintainer's model set,
-  prepared from the `opencode-go` provider entry of
-  [models.dev](https://models.dev) on 2026-08-03 — context windows, reasoning
-  support/effort levels, tool-call and structured-output capability. Ids the
-  table does not know keep conservative defaults (128K context, no thinking,
-  tools on). Same pattern as provider-openai.
+  curated table (`src/curated.rs`) covering the maintainer's OpenCode Go
+  subscription catalog — the 24 `opencode-go` entries on
+  [models.dev](https://models.dev) (fetched 2026-08-03) plus `hy3-preview`,
+  which models.dev does not list and which keeps conservative defaults —
+  context windows, reasoning support/effort levels, tool-call and
+  structured-output capability. Ids the table does not know keep conservative
+  defaults (128K context, no thinking, tools on). Same pattern as
+  provider-openai.
 - **Reasoning:** `thinking_level` maps to the upstream `reasoning_effort`
   when the model's curated effort list accepts the level (e.g. `grok-4.5`
   accepts `low`/`medium`/`high`, `deepseek-v4-flash` accepts `high`/`max`);

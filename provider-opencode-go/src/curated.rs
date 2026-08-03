@@ -6,8 +6,11 @@
 //! unknown ids.
 //!
 //! Source: models.dev api.json — the `opencode-go` ("OpenCode Go") provider
-//! entry, fetched 2026-08-03 — plus the maintainer's model list. A missing
-//! row only degrades capability enrichment, never routing.
+//! entry (24 models, fetched 2026-08-03) — plus the maintainer's OpenCode Go
+//! subscription catalog (25 models: the 24 models.dev entries plus
+//! `hy3-preview`, which models.dev does not list and which therefore keeps
+//! conservative defaults). A missing row only degrades capability enrichment,
+//! never routing.
 use crate::PROVIDER_ID;
 use llm_router::types::model::{Model, ReasoningEffort};
 
@@ -48,6 +51,20 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             tool_call: true,
             structured_output: false,
         }),
+        "glm-5" => Some(&ModelMeta {
+            context_window: 202_752,
+            reasoning: true,
+            reasoning_efforts: &[],
+            tool_call: true,
+            structured_output: false,
+        }),
+        "gpt-5.6-luna" => Some(&ModelMeta {
+            context_window: 1_050_000,
+            reasoning: true,
+            reasoning_efforts: &["none", "low", "medium", "high", "xhigh", "max"],
+            tool_call: true,
+            structured_output: true,
+        }),
         "kimi-k3" => Some(&ModelMeta {
             context_window: 1_048_576,
             reasoning: true,
@@ -69,6 +86,13 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             tool_call: true,
             structured_output: false,
         }),
+        "kimi-k2.5" => Some(&ModelMeta {
+            context_window: 262_144,
+            reasoning: true,
+            reasoning_efforts: &[],
+            tool_call: true,
+            structured_output: false,
+        }),
         "minimax-m3" => Some(&ModelMeta {
             context_window: 1_000_000,
             reasoning: true,
@@ -77,6 +101,13 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "minimax-m2.7" => Some(&ModelMeta {
+            context_window: 204_800,
+            reasoning: true,
+            reasoning_efforts: &[],
+            tool_call: true,
+            structured_output: false,
+        }),
+        "minimax-m2.5" => Some(&ModelMeta {
             context_window: 204_800,
             reasoning: true,
             reasoning_efforts: &[],
@@ -92,6 +123,20 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
         }),
         "qwen3.7-plus" => Some(&ModelMeta {
             context_window: 1_000_000,
+            reasoning: true,
+            reasoning_efforts: &[],
+            tool_call: true,
+            structured_output: false,
+        }),
+        "qwen3.8-max" => Some(&ModelMeta {
+            context_window: 1_000_000,
+            reasoning: true,
+            reasoning_efforts: &[],
+            tool_call: true,
+            structured_output: true,
+        }),
+        "qwen3.5-plus" => Some(&ModelMeta {
+            context_window: 262_144,
             reasoning: true,
             reasoning_efforts: &[],
             tool_call: true,
@@ -118,6 +163,20 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             tool_call: true,
             structured_output: true,
         }),
+        "mimo-v2-omni" => Some(&ModelMeta {
+            context_window: 262_144,
+            reasoning: true,
+            reasoning_efforts: &[],
+            tool_call: true,
+            structured_output: false,
+        }),
+        "mimo-v2-pro" => Some(&ModelMeta {
+            context_window: 1_048_576,
+            reasoning: true,
+            reasoning_efforts: &[],
+            tool_call: true,
+            structured_output: false,
+        }),
         "mimo-v2.5" => Some(&ModelMeta {
             context_window: 1_000_000,
             reasoning: true,
@@ -139,6 +198,15 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             tool_call: true,
             structured_output: false,
         }),
+        // Preview variant in the subscription catalog but not on models.dev —
+        // conservative defaults rather than guessing hy3-like metadata.
+        "hy3-preview" => Some(&ModelMeta {
+            context_window: 128_000,
+            reasoning: false,
+            reasoning_efforts: &[],
+            tool_call: true,
+            structured_output: false,
+        }),
         _ => None,
     }
 }
@@ -156,7 +224,11 @@ pub fn enrich(id: &str) -> Model {
             max_output_tokens: 4096,
             input_limit: None,
             supports_thinking: if m.reasoning { Some(true) } else { None },
-            supports_xhigh: None,
+            supports_xhigh: if m.reasoning_efforts.contains(&"xhigh") {
+                Some(true)
+            } else {
+                None
+            },
             reasoning_efforts: if m.reasoning_efforts.is_empty() {
                 None
             } else {
@@ -213,19 +285,28 @@ mod tests {
             "grok-4.5",
             "glm-5.2",
             "glm-5.1",
+            "glm-5",
+            "gpt-5.6-luna",
             "kimi-k3",
             "kimi-k2.7-code",
             "kimi-k2.6",
+            "kimi-k2.5",
             "minimax-m3",
             "minimax-m2.7",
+            "minimax-m2.5",
             "qwen3.7-max",
             "qwen3.7-plus",
+            "qwen3.8-max",
             "qwen3.6-plus",
+            "qwen3.5-plus",
             "deepseek-v4-pro",
             "deepseek-v4-flash",
+            "mimo-v2-omni",
+            "mimo-v2-pro",
             "mimo-v2.5",
             "mimo-v2.5-pro",
             "hy3",
+            "hy3-preview",
         ];
         for id in ids {
             assert!(meta(id).is_some(), "{id} missing from the curated table");
@@ -267,6 +348,31 @@ mod tests {
         assert_eq!(q.supports_thinking, Some(true));
         assert!(q.reasoning_efforts.is_none());
         assert!(q.supports_structured_output.is_none());
+
+        // glm-5: 203K context, reasons without published effort levels.
+        let g = enrich("glm-5");
+        assert_eq!(g.context_window, 202_752);
+        assert_eq!(g.supports_thinking, Some(true));
+        assert!(g.reasoning_efforts.is_none());
+
+        // gpt-5.6-luna: full effort ladder incl. xhigh → xhigh advertised.
+        let l = enrich("gpt-5.6-luna");
+        assert_eq!(l.context_window, 1_050_000);
+        assert_eq!(l.supports_xhigh, Some(true));
+        let efforts: Vec<&str> = l
+            .reasoning_efforts
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|e| e.effort.as_str())
+            .collect();
+        assert_eq!(efforts, ["none", "low", "medium", "high", "xhigh", "max"]);
+
+        // hy3-preview: subscription-only, conservative defaults.
+        let h = enrich("hy3-preview");
+        assert_eq!(h.context_window, 128_000);
+        assert_eq!(h.supports_thinking, None);
+        assert!(h.reasoning_efforts.is_none());
     }
 
     #[test]
