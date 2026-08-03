@@ -10,6 +10,7 @@ mod leaf_denied_control_plane;
 mod multi_turn_traces;
 mod queued_message_edit_unqueue;
 mod reseed_parked_message;
+mod spawn_reuse_guard;
 mod standing_wake_delivery;
 mod state_worker_sidecar;
 mod stop_cancel_cascade;
@@ -42,6 +43,7 @@ pub fn all() -> Vec<ScenarioFixture> {
         standing_wake_delivery::scenario(),
         state_worker_sidecar::scenario(),
         reseed_parked_message::scenario(),
+        spawn_reuse_guard::scenario(),
         stop_cancel_cascade::scenario(),
         queued_message_edit_unqueue::scenario(),
         streamed_text::scenario(),
@@ -57,7 +59,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 15);
+        assert_eq!(fixtures.len(), 16);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

@@ -25,6 +25,7 @@ No provider key or network access is required.
 | INT-015 | `leaf-denied-control-plane` | direct | a spawned child without the orchestrator grant is policy-denied trigger registration and spawning, and sees neither in its toolset |
 | INT-016 | `standing-wake-delivery` | direct | a standing notify binding delivers every fire as a notification AND a trigger_fired record on distinct entry ids (the burst-loss regression: shared wake/record ids let session-manager's entry-id idempotence swallow one append per fire) |
 | INT-017 | `wake-expiry-notice` | direct | a parked wake whose lifecycle deadline passes unfired wakes its owner with the expiry notice |
+| INT-018 | `spawn-reuse-guard` | direct | an in-turn spawn into an existing session owned by another parent is refused naming the owner (no hijack turn ever starts); re-spawning its own child appends the new task to the retained transcript and reports `reused: true` |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 

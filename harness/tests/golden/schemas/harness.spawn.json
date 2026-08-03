@@ -695,7 +695,7 @@
         ]
       },
       "session_id": {
-        "description": "Spawn into this session, creating it if it does not exist (e.g. a fork, or a pre-chosen id to filter `turn-completed` subscriptions on); default: create fresh.",
+        "description": "Spawn into this session, creating it if it does not exist (e.g. a fork, or a pre-chosen id to filter `turn-completed` subscriptions on); default: create fresh. An in-turn spawn may reuse an EXISTING id only inside its own tree (itself, or a child it spawned) — anything else is refused as a cross-run id collision. The response reports `reused: true` on reuse.",
         "type": [
           "string",
           "null"
@@ -724,6 +724,11 @@
       },
       "child_turn_id": {
         "type": "string"
+      },
+      "reused": {
+        "default": false,
+        "description": "The named session already existed and was reused — its prior transcript and parent linkage were retained (only possible with an explicit `session_id`).",
+        "type": "boolean"
       }
     },
     "required": [

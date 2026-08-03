@@ -80,7 +80,9 @@ pub struct SpawnRequest {
     pub provider: Option<String>,
     /// Spawn into this session, creating it if it does not exist (e.g. a fork,
     /// or a pre-chosen id to filter `turn-completed` subscriptions on); default:
-    /// create fresh.
+    /// create fresh. An in-turn spawn may reuse an EXISTING id only inside its
+    /// own tree (itself, or a child it spawned) — anything else is refused as a
+    /// cross-run id collision. The response reports `reused: true` on reuse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Display-only parent for the console session tree, used when there is no
@@ -98,6 +100,11 @@ pub struct SpawnRequest {
 pub struct SpawnResponse {
     pub child_session_id: String,
     pub child_turn_id: String,
+    /// The named session already existed and was reused — its prior transcript
+    /// and parent linkage were retained (only possible with an explicit
+    /// `session_id`).
+    #[serde(default)]
+    pub reused: bool,
 }
 
 /// Direct-call entry (a consumer starting a linked child). Dispatched from a
@@ -109,5 +116,6 @@ pub async fn handle(deps: &Deps, req: SpawnRequest) -> Result<SpawnResponse, Har
     Ok(SpawnResponse {
         child_session_id: ids.session_id,
         child_turn_id: ids.turn_id,
+        reused: ids.reused,
     })
 }

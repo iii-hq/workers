@@ -48,8 +48,7 @@ struct LoadedSessionMeta {
 
 #[derive(Debug, Clone, Deserialize)]
 struct GetSessionResponse {
-    #[serde(rename = "meta")]
-    _meta: LoadedSessionMeta,
+    meta: LoadedSessionMeta,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -96,19 +95,29 @@ impl SessionClient {
 
     /// Whether a durable session metadata record exists.
     pub async fn exists(&self, session_id: &str) -> Result<bool, HarnessError> {
+        Ok(self.metadata_of(session_id).await?.is_some())
+    }
+
+    /// The stored metadata map of an existing session — `Ok(None)` when the
+    /// session does not exist; an existing session without metadata yields an
+    /// empty map.
+    pub async fn metadata_of(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<serde_json::Map<String, Value>>, HarnessError> {
         let response = self
             .call("session::get", json!({ "session_id": session_id }))
             .await?;
         if response.is_null() {
-            return Ok(false);
+            return Ok(None);
         }
-        serde_json::from_value::<GetSessionResponse>(response)
-            .map(|_| true)
-            .map_err(|error| {
+        let parsed: GetSessionResponse =
+            serde_json::from_value(response).map_err(|error| {
                 HarnessError::Dependency(format!(
                     "session::get returned malformed metadata for {session_id}: {error}"
                 ))
-            })
+            })?;
+        Ok(Some(parsed.meta.metadata.unwrap_or_default()))
     }
 
     /// Load every durable session whose metadata points at `parent_session_id`.

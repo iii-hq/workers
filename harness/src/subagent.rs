@@ -25,6 +25,9 @@ use crate::types::turn::{fs_scope_metadata, FunctionPolicy, ParentLink, TurnOpti
 pub struct ChildIds {
     pub session_id: String,
     pub turn_id: String,
+    /// The named session already existed — its transcript and parent linkage
+    /// were retained (in-turn reuse is confined to the caller's own tree).
+    pub reused: bool,
 }
 
 /// Guarded spawn from a live turn (the dispatch path AND the approval-release
@@ -90,8 +93,14 @@ pub fn spawned_result(child: &ChildIds) -> ResultData {
         "child_session_id": child.session_id,
         "child_turn_id": child.turn_id,
     });
+    let reuse_note = if child.reused {
+        "\nreused: the named session already existed (inside your own tree) — its prior \
+         transcript is retained and this task was appended to it."
+    } else {
+        ""
+    };
     let text = format!(
-        "{ids}\nfire-and-forget: this turn will NOT receive the child's result — or its \
+        "{ids}{reuse_note}\nfire-and-forget: this turn will NOT receive the child's result — or its \
          failure. The child talks to the world only through the destination its task names; \
          read that destination, poll `harness::status` on the child for its health, and put a \
          deadline (a `timer` wake or a binding `lifecycle`) on anything you wait for."
@@ -103,6 +112,7 @@ pub fn spawned_result(child: &ChildIds) -> ResultData {
             "child_session_id": child.session_id,
             "child_turn_id": child.turn_id,
             "fire_and_forget": true,
+            "reused": child.reused,
         }),
     }
 }
@@ -226,14 +236,28 @@ async fn seed_child(
             })
         }),
     };
+    let mut reused = false;
     let child_session_id = match &req.session_id {
         Some(id) => {
             let created = session.ensure(id, None, linkage.as_ref()).await?;
             if !created {
-                // Reuse is legitimate (a fork, or delivering a reaction into an
-                // existing chat) but silent reuse of a stale id is a classic
-                // pipeline bug: the old transcript carries over and the console
-                // keeps the session nested under whoever created it first.
+                // Reuse is legitimate for a parentless caller (a fork, or
+                // delivering a reaction into an existing chat). From a live
+                // turn it is almost always a cross-run id collision — models
+                // re-invent the same "random" ids — so it is confined to the
+                // caller's own tree and reported back either way (`reused`).
+                if let Some(p) = parent {
+                    // A session that vanished between ensure and get behaves
+                    // like a fresh create; malformed metadata stays an error.
+                    if let Some(metadata) = session.metadata_of(id).await? {
+                        validate_turn_reuse(
+                            &p.session_id,
+                            id,
+                            metadata.get("parent_session_id").and_then(Value::as_str),
+                        )?;
+                    }
+                }
+                reused = true;
                 tracing::info!(
                     child_session_id = %id,
                     "harness::spawn reused an existing session — prior transcript and parent linkage retained"
@@ -335,6 +359,7 @@ async fn seed_child(
     Ok(ChildIds {
         session_id: outcome.session_id,
         turn_id: outcome.turn_id,
+        reused,
     })
 }
 
@@ -381,6 +406,34 @@ fn child_filesystem_scope(
         )));
     }
     Ok(Some(fs_scope_metadata(root)))
+}
+
+/// Reuse guard for an in-turn spawn that named an EXISTING session. Reuse is
+/// confined to the caller's own tree — itself (the merge path) or a child it
+/// spawned (re-task/retry). Anything else is a cross-owner collision:
+/// agent-invented ids repeat across runs (the same prompt re-invents the same
+/// "random" suffix), and silent reuse appends the new task to the old
+/// transcript and leaves the console nesting under the original parent.
+/// Parentless (direct) spawns are not guarded — forks and reaction delivery
+/// legitimately target foreign sessions, and there is no caller to check.
+fn validate_turn_reuse(
+    caller_session_id: &str,
+    target_session_id: &str,
+    existing_parent: Option<&str>,
+) -> Result<(), HarnessError> {
+    if target_session_id == caller_session_id || existing_parent == Some(caller_session_id) {
+        return Ok(());
+    }
+    let owner = match existing_parent {
+        Some(parent) => format!("belongs to parent `{parent}`"),
+        None => "is a root session with no parent linkage".to_string(),
+    };
+    Err(HarnessError::InvalidRequest(format!(
+        "spawn session_id `{target_session_id}` already exists and {owner}: an in-turn spawn \
+         may reuse only its own session (`{caller_session_id}`) or a child it spawned itself. \
+         Reuse keeps the existing transcript and parent, so a colliding id hijacks another \
+         run's session — pick a fresh id, or omit session_id and the harness will generate one"
+    )))
 }
 
 fn is_error(code: &str, message: String) -> ResultData {
@@ -723,11 +776,60 @@ mod tests {
         let ids = ChildIds {
             session_id: "s_child".into(),
             turn_id: "t_child".into(),
+            reused: false,
         };
         let result = spawned_result(&ids);
         let text = serde_json::to_string(&result.content).unwrap();
         assert!(!text.contains("[child-failure]"));
         assert!(text.contains("harness::status"));
         assert!(text.contains("deadline"));
+    }
+
+    /// Prevents: the courier-k3m7 mis-nesting — an in-turn spawn naming an id
+    /// that an EARLIER run created must fail loudly (naming the owner and the
+    /// remedy), never silently hijack that run's session. Reuse inside the
+    /// caller's own tree stays legal for retry/re-task flows.
+    #[test]
+    fn turn_reuse_is_confined_to_the_callers_tree() {
+        assert!(validate_turn_reuse("s_parent", "s_parent", None).is_ok());
+        assert!(validate_turn_reuse("s_parent", "courier-1", Some("s_parent")).is_ok());
+
+        let err = validate_turn_reuse("s_parent", "courier-1", Some("console-old"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("courier-1"), "{err}");
+        assert!(err.contains("console-old"), "{err}");
+        assert!(err.contains("s_parent"), "{err}");
+        assert!(err.contains("omit session_id"), "{err}");
+
+        // An existing ROOT session (no linkage) is someone's chat, not a
+        // spawn target — a grandchild (linked to a different parent) is
+        // equally out of reach.
+        let err = validate_turn_reuse("s_parent", "console-x", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("root session"), "{err}");
+    }
+
+    #[test]
+    fn spawned_result_reports_reuse() {
+        let fresh = spawned_result(&ChildIds {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            reused: false,
+        });
+        assert_eq!(fresh.details["reused"], false);
+        let text = serde_json::to_string(&fresh.content).unwrap();
+        assert!(!text.contains("already existed"), "{text}");
+
+        let reused = spawned_result(&ChildIds {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            reused: true,
+        });
+        assert_eq!(reused.details["reused"], true);
+        let text = serde_json::to_string(&reused.content).unwrap();
+        assert!(text.contains("already existed"), "{text}");
+        assert!(text.contains("transcript is retained"), "{text}");
     }
 }
