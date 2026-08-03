@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const {
   buildEfficiencyOverview,
+  cohortMetricSparkline,
   contractFingerprint,
   executionEfficiencyTotalsFromDetail,
   executionsWithinDays,
@@ -412,6 +413,39 @@ test("keeps scenario metrics as one point per workflow execution", () => {
     ).length,
     0,
   );
+});
+
+test("cohort sparkline sums matching contracts and skips partial executions", () => {
+  const cohortRow = {
+    subjectId: "glm",
+    scenarioId: "direct_answer",
+    fingerprint: "fp1",
+    lifecycle: "comparable",
+  };
+  const metric = (fingerprint, tokens) => ({
+    subject_id: "glm",
+    scenario_id: "direct_answer",
+    contract_fingerprint: fingerprint,
+    averages: { tokens },
+  });
+
+  const points = cohortMetricSparkline(
+    [
+      execution({ id: "no-value", scenario_metrics: [metric("fp1", null)] }),
+      execution({ id: "newer", scenario_metrics: [metric("fp1", 300)] }),
+      execution({ id: "changed-contract", scenario_metrics: [metric("fp2", 999)] }),
+      execution({ id: "no-metrics", scenario_metrics: [] }),
+      execution({ id: "older", scenario_metrics: [metric("fp1", 100)] }),
+    ],
+    [cohortRow],
+    "tokens",
+  );
+
+  assert.deepEqual(points, [
+    { executionId: "older", value: 100 },
+    { executionId: "newer", value: 300 },
+  ]);
+  assert.deepEqual(cohortMetricSparkline([execution()], [], "tokens"), []);
 });
 
 test("compares efficiency only within the same scenario contract", () => {
