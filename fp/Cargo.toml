@@ -17,7 +17,7 @@ name = "fp"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.21.6"
+iii-sdk = "=0.22.0"
 # Must stay on the same schemars major as iii-sdk so the derived schemas line up.
 schemars = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }

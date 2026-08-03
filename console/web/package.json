@@ -37,7 +37,7 @@
     "@tanstack/react-virtual": "^3.13.24",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "iii-browser-sdk": "^0.21.6",
+    "iii-browser-sdk": "0.22.0",
     "lexical": "^0.44.0",
     "lucide-react": "^1.16.0",
     "monaco-editor": "^0.56.0",

@@ -13,7 +13,7 @@ authors = [{ name = "iii" }]
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-    "iii-sdk==0.21.6",
+    "iii-sdk==0.22.0",
     "scrapling[fetchers]==0.4.9",
     "markdownify",  # scrapling's HTML→Markdown backend (only in its [shell]/[ai] extras)
     "pillow",  # screenshot downscale/tiling so images fit model input limits

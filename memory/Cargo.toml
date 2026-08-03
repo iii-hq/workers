@@ -18,7 +18,7 @@ path = "src/lib.rs"
 # Bumped from =0.21.3 to match the `iii-console-ui` crate's exact pin: both are
 # `=` requirements so they must resolve to a single version, and the injectable
 # UI helper must never drag a worker onto a different SDK build.
-iii-sdk = "=0.21.6"
+iii-sdk = "=0.22.0"
 # Worker-side injectable console UI (content function + console:script/style
 # triggers + hot-reload watcher) — direct path link, never published.
 iii-console-ui = { path = "../crates/console-ui" }
