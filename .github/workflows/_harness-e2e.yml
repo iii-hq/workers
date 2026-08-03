@@ -435,7 +435,7 @@ jobs:
           {
             echo "### Harness E2E · $SUBJECT · $SCENARIO"
             echo
-            echo "CI gate: scores are advisory; hard-gate and technical failures are blocking."
+            echo "CI gate: scores are advisory; empty reports, hard-gate failures, and technical failures are blocking."
             echo
             results=target/harness-e2e/results/results.json
             if [[ -f "$results" ]]; then

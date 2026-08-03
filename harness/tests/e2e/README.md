@@ -114,8 +114,8 @@ cargo run -p harness-e2e -- run \
 values from 1 through 20.
 
 Scores are quality data and never determine the CI exit status. Quality
-failures remain visible in the report, while hard-gate and technical failures
-remain blocking.
+failures remain visible in the report, while empty reports, hard-gate
+failures, and technical failures remain blocking.
 
 The runner emits a progress heartbeat every 15 seconds with the active turn,
 step, pending function count, child-session count, and descendant-tree size.
@@ -208,9 +208,9 @@ zero.
 | Workflow | Trigger | Live-model runs | Gate |
 | --- | --- | ---: | --- |
 | Pull-request CI | Relevant pull-request changes | 0 | Deterministic integration only |
-| Harness E2E Main | Relevant push to `main` | 1 per subject/scenario | Score advisory; hard-gate and technical failures blocking |
-| Harness E2E Daily | Daily at 06:00 UTC, or manual dispatch on `main` | 3 per subject/scenario | Score is advisory; hard-gate and technical failures are blocking; history is always published |
-| Harness E2E deployed | Successful post-release smoke for Harness or a mandatory dependency | 1 per subject/scenario | Score advisory; hard-gate and technical failures blocking |
+| Harness E2E Main | Relevant push to `main` | 1 per subject/scenario | Score advisory; empty reports, hard-gate and technical failures blocking |
+| Harness E2E Daily | Daily at 06:00 UTC, or manual dispatch on `main` | 3 per subject/scenario | Score is advisory; empty reports, hard-gate and technical failures are blocking; history is always published |
+| Harness E2E deployed | Successful post-release smoke for Harness or a mandatory dependency | 1 per subject/scenario | Score advisory; empty reports, hard-gate and technical failures blocking |
 
 The reusable workflow supports source and registry stack modes. Source runs
 install the latest stable `iii` release with its companion binaries, then build
