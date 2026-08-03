@@ -14,4 +14,4 @@ scripts:
 
 dependencies:
   state: "^0.21.2"
-  iii-stream: "^0.21.6"
+  stream: "^0.21.6"

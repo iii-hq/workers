@@ -33,7 +33,7 @@ fn worker_manifest_declares_runtime_dependencies() {
     let dependencies = manifest["dependencies"]
         .as_mapping()
         .expect("dependencies map");
-    for dependency in ["state", "queue", "cron", "iii-observability"] {
+    for dependency in ["state", "queue", "cron", "observability"] {
         assert!(
             dependencies.contains_key(serde_yaml::Value::String(dependency.into())),
             "missing {dependency}"

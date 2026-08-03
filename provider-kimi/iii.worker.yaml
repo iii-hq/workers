@@ -8,5 +8,5 @@ tags: [llm, kimi, moonshot, chat-completions, provider]
 description: Moonshot (Kimi) Chat Completions provider worker; implements provider::kimi::stream and provider::kimi::refresh_models behind llm-router.
 
 dependencies:
-  iii-state: "^0.21.6"
+  state: "^0.21.6"
   llm-router: "^1.0.0"
