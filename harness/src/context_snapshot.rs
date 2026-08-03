@@ -5,12 +5,21 @@
 //! terminal frame, stored once per generate step. Read back by
 //! `harness::metrics` and pushed on `harness::turn-completed`.
 
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::Mutex;
+use std::sync::OnceLock;
+
 use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
+use crate::clients::RouterClient;
 use crate::error::HarnessError;
 use crate::types::event::Usage;
+use crate::types::model::AgentFunction;
 
 pub const CONTEXT_SCOPE: &str = "harness_context";
 
@@ -107,6 +116,159 @@ pub async fn delete(
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
     crate::state::state_delete(iii, CONTEXT_SCOPE, session_id, timeout_ms).await
+}
+
+/// Process-lifetime cache of provider token counts keyed by
+/// (model, kind, content hash) — the system prompt and tool schemas are
+/// stable across a session's steps, so each is counted over the wire once.
+fn count_cache() -> &'static Mutex<HashMap<u64, u64>> {
+    static CACHE: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cache_key(model: &str, kind: &str, content: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    model.hash(&mut hasher);
+    kind.hash(&mut hasher);
+    content.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// One-message probe the delta counts subtract away: provider metering
+/// endpoints refuse an empty messages array, so category counts are
+/// measured as count(probe + part) - count(probe).
+fn probe_messages() -> Vec<serde_json::Value> {
+    vec![json!({
+        "role": "user",
+        "content": [{ "type": "text", "text": "x" }],
+        "timestamp": 0
+    })]
+}
+
+async fn counted_delta(
+    router: &RouterClient,
+    model: &str,
+    provider: Option<&str>,
+    kind: &str,
+    content_key: &str,
+    system_prompt: Option<&str>,
+    tools: Option<&[AgentFunction]>,
+) -> Option<(u64, String)> {
+    let key = cache_key(model, kind, content_key);
+    if let Some(tokens) = count_cache().lock().ok()?.get(&key).copied() {
+        return Some((tokens, "provider".into()));
+    }
+    let probe = probe_messages();
+    let (base, _) = router
+        .count_tokens(model, provider, None, None, &probe)
+        .await?;
+    let (with_part, estimator) = router
+        .count_tokens(model, provider, system_prompt, tools, &probe)
+        .await?;
+    let tokens = with_part.saturating_sub(base);
+    if let Ok(mut cache) = count_cache().lock() {
+        cache.insert(key, tokens);
+    }
+    Some((tokens, estimator))
+}
+
+/// Replace the snapshot's estimated categories with provider-exact numbers
+/// where they exist: the generation's billed usage is the exact total, the
+/// system prompt and tool schemas are counted once via the provider's
+/// tokenizer (cached by content), and the message window is the remainder.
+/// A rig without a provider counter keeps the heuristic snapshot untouched.
+pub async fn exactify(
+    snapshot: &mut ContextSnapshotV1,
+    router: &RouterClient,
+    system_prompt: Option<&str>,
+    tools: &[AgentFunction],
+) {
+    let Some(usage) = snapshot.usage.as_ref() else {
+        return;
+    };
+    let billed =
+        usage.input.unwrap_or(0) + usage.cache_read.unwrap_or(0) + usage.cache_write.unwrap_or(0);
+    if billed == 0 {
+        return;
+    }
+    let provider = snapshot.provider.clone();
+    let model = snapshot.model.clone();
+
+    let system_exact = match system_prompt {
+        Some(sp) if !sp.is_empty() => {
+            counted_delta(
+                &router.clone(),
+                &model,
+                provider.as_deref(),
+                "system_prompt",
+                sp,
+                Some(sp),
+                None,
+            )
+            .await
+        }
+        _ => Some((0, String::new())),
+    };
+    let tools_exact = if tools.is_empty() {
+        Some((0, String::new()))
+    } else {
+        let tools_key = serde_json::to_string(tools).unwrap_or_default();
+        counted_delta(
+            &router.clone(),
+            &model,
+            provider.as_deref(),
+            "tools",
+            &tools_key,
+            None,
+            Some(tools),
+        )
+        .await
+    };
+    let (Some((system_tokens, sys_est)), Some((tools_tokens, tools_est))) =
+        (system_exact, tools_exact)
+    else {
+        return;
+    };
+    let estimator = [sys_est, tools_est]
+        .into_iter()
+        .find(|e| !e.is_empty())
+        .unwrap_or_else(|| "provider".into());
+
+    let remainder = billed
+        .saturating_sub(system_tokens)
+        .saturating_sub(tools_tokens);
+    let heuristic_messages = {
+        let m = &snapshot.categories.messages;
+        m.user + m.assistant + m.function_result + m.custom
+    };
+    // Keep the by-role proportions from the estimate but rescale them onto
+    // the exact remainder (providers report only the request total).
+    let scaled = if heuristic_messages > 0 {
+        let scale = remainder as f64 / heuristic_messages as f64;
+        let m = &snapshot.categories.messages;
+        SnapshotMessagesV1 {
+            user: (m.user as f64 * scale) as u64,
+            assistant: (m.assistant as f64 * scale) as u64,
+            function_result: (m.function_result as f64 * scale) as u64,
+            custom: (m.custom as f64 * scale) as u64,
+        }
+    } else {
+        SnapshotMessagesV1 {
+            user: remainder,
+            assistant: 0,
+            function_result: 0,
+            custom: 0,
+        }
+    };
+
+    snapshot.categories.system_prompt = system_tokens;
+    snapshot.categories.tools = tools_tokens;
+    snapshot.categories.messages = scaled;
+    snapshot.categories.overhead = 0;
+    snapshot.categories.hook_guidance = 0;
+    snapshot.total = billed;
+    snapshot.free = snapshot.usable.saturating_sub(billed);
+    snapshot.estimator = Some(estimator);
 }
 
 #[cfg(test)]

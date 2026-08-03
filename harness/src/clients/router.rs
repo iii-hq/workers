@@ -450,6 +450,48 @@ impl RouterClient {
             .map(String::from)
     }
 
+    /// Exact token count for a request shape via the resolved provider's
+    /// tokenizer (`None` when the router is absent, the provider has no
+    /// counter, or the call fails — the caller falls back to its estimate).
+    /// Returns `(tokens, estimator)`. Counting never runs the model and
+    /// never enters the session context.
+    pub async fn count_tokens(
+        &self,
+        model: &str,
+        provider: Option<&str>,
+        system_prompt: Option<&str>,
+        tools: Option<&[AgentFunction]>,
+        messages: &[Value],
+    ) -> Option<(u64, String)> {
+        let mut payload = json!({ "model": model, "messages": messages });
+        if let Some(p) = provider {
+            payload["provider"] = json!(p);
+        }
+        if let Some(sp) = system_prompt {
+            payload["system_prompt"] = json!(sp);
+        }
+        if let Some(t) = tools {
+            payload["tools"] = serde_json::to_value(t).ok()?;
+        }
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "router::count_tokens".into(),
+                payload,
+                action: None,
+                timeout_ms: Some(self.timeout_ms),
+            })
+            .await
+            .ok()?;
+        let tokens = resp.get("tokens").and_then(Value::as_u64)?;
+        let estimator = resp
+            .get("estimator")
+            .and_then(Value::as_str)
+            .unwrap_or("provider")
+            .to_string();
+        Some((tokens, estimator))
+    }
+
     /// Look up one model's capabilities (`None` when unregistered or router
     /// absent — the caller degrades).
     pub async fn models_get(&self, provider: Option<&str>, id: &str) -> Option<Model> {

@@ -612,6 +612,8 @@ pub async fn run_step(
         entry_id: assistant_id.clone(),
         turn_id: record.turn_id.clone(),
     };
+    let snapshot_system_prompt = gen_system_prompt.clone();
+    let snapshot_tools = tools.clone();
     let params = ChatParams {
         request_id: format!("{}:{}", record.turn_id, payload.step),
         model: record.options.model.clone(),
@@ -706,11 +708,19 @@ pub async fn run_step(
     // advance()/finalize call that ends this step).
     record.watermark_entry_id = watermark;
 
-    // Stamp the generation's actual usage into the snapshot and store the
-    // session's latest copy. Best-effort: accounting must never fail a turn
-    // that generated successfully.
+    // Stamp the generation's actual usage into the snapshot, replace the
+    // estimated categories with provider-exact counts where a counter
+    // exists, and store the session's latest copy. Best-effort: accounting
+    // must never fail a turn that generated successfully.
     if let Some(snapshot) = record.context_snapshot.as_mut() {
         snapshot.usage = outcome.message.usage.clone();
+        crate::context_snapshot::exactify(
+            snapshot,
+            &router,
+            snapshot_system_prompt.as_deref(),
+            &snapshot_tools,
+        )
+        .await;
         if let Err(error) =
             crate::context_snapshot::put(&deps.iii, snapshot, cfg.session_timeout_ms).await
         {
