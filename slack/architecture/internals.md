@@ -35,7 +35,7 @@ within Slack's 3-second window, and processes the event asynchronously.
 
 - `app_mention` (channel) or any `message.im` (DM) → run a turn.
 - A channel `message` that does **not** mention the bot is captured into a
-  per-thread pending buffer in `iii-state` and never acted on alone.
+  per-thread pending buffer in `state` and never acted on alone.
 - `event_id` dedupe guards Slack retries.
 
 `turn.rs` builds the turn. On the first mention in a thread it backfills prior

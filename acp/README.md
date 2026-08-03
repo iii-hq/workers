@@ -88,10 +88,10 @@ binary, set the `IIIACP_*` env vars below.
 `iii-acp` needs an iii engine plus a brain. Minimum stack:
 
 ```bash
-# 1. Engine builtins iii-acp uses directly. iii-state holds session
+# 1. Workers acp uses directly. state holds session
 #    records + history; iii-stream carries the agent::events tape;
-#    iii-queue backs durable cancel topics.
-iii worker add iii-state iii-stream iii-queue
+#    queue backs durable cancel topics.
+iii worker add state iii-stream queue
 
 # 2. acp itself.
 iii worker add acp

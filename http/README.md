@@ -100,14 +100,14 @@ Functions can stream their response: write to `req.response` (a
 Returning a non-null value instead yields a regular buffered response built
 from `{ status_code, headers, body }`.
 
-### Requires removing the built-in `iii-http` worker
+### Requires removing the legacy built-in HTTP service
 
-The built-in `iii-http` worker also owns the `http` trigger type. Two owners
+The legacy built-in HTTP service also owns the `http` trigger type. Two owners
 of the same trigger type on one engine collide — whichever registers last
-wins — so this worker requires `iii-http` to be absent: omit it from the
+wins — so this worker requires it to be absent: omit it from the
 engine's `config.yaml` (a config that doesn't list a worker won't run it).
 
 On boot, this worker queries the engine for connected workers and refuses to
-start with a clear error if `iii-http` is still active, so a stale config
+start with a clear error if the legacy built-in is still active, so a stale config
 fails loudly instead of silently racing the built-in worker for ownership of
 `http`.

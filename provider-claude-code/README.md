@@ -55,7 +55,7 @@ provider id `anthropic`.
 - **Registration:** self-declares via `router::provider::register` with backoff,
   and re-declares on the `router::ready` trigger. It advertises dynamic model
   listing and `credential_env_var: None` (OAuth-only); identity binds via the
-  `registration_token` persisted in iii-state (scope `provider-claude-code`).
+  `registration_token` persisted in state (scope `provider-claude-code`).
 - **Models:** attempts the authenticated `GET /v1/models` at startup, on
   explicit refresh, after router readiness, and every ~15 minutes. Picker-visible
   results become **namespaced** router ids (`claude-code/<upstream-id>`). If the

@@ -13,9 +13,9 @@ expressions. It exposes no callable `cron::*` functions; its entire surface is
 the `cron` trigger type, bound through a worker SDK trigger registration such
 as `iii.registerTrigger({ type: 'cron', function_id, config })`.
 
-Install it with `iii worker add cron`. The engine builtin `iii-cron` must not
-run on the same engine because it also owns the `cron` trigger type. Remove
-`iii-cron` from the engine config before starting this worker; the standalone
+Install it with `iii worker add cron`. The legacy in-engine cron service must not
+run on the same engine because it also owns the `cron` trigger type. Remove the
+legacy built-in from the engine config before starting this worker; the standalone
 worker refuses to boot when the builtin is active.
 
 On every firing, the worker optionally evaluates a condition function, acquires

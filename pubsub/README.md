@@ -1,8 +1,8 @@
 # pubsub
 
 Topic-based publish/subscribe messaging. Registers the `subscribe` trigger
-type and the `publish` service function, replacing the engine builtin
-`iii-pubsub`. Any function bound to a `subscribe` trigger on a topic receives
+type and the `publish` service function. This standalone worker replaces the
+legacy built-in pub/sub service. Any function bound to a `subscribe` trigger on a topic receives
 every event published to that topic; `publish` fans an event's `data` out to
 all of a topic's subscribers as fire-and-forget invocations.
 
@@ -101,16 +101,16 @@ change rebuilds the backend, re-subscribes the live subscriptions onto it
 accepted for fire-and-forget pub/sub), then tears down the previous backend.
 A build failure keeps the previous backend and config.
 
-### Requires removing the built-in `iii-pubsub` worker
+### Requires removing the legacy built-in pub/sub service
 
-The built-in `iii-pubsub` worker also owns the `subscribe` trigger type and
+The legacy built-in pub/sub service also owns the `subscribe` trigger type and
 the `publish` function. Two owners of the same trigger type on one engine
-collide — whichever registers last wins — so this worker requires `iii-pubsub`
+collide — whichever registers last wins — so this worker requires it
 to be absent: omit it from the engine's `config.yaml` (a config that doesn't
 list a worker won't run it).
 
 On boot, this worker queries the engine for connected workers and refuses to
-start with a clear error if `iii-pubsub` is still active, so a stale config
+start with a clear error if the legacy built-in is still active, so a stale config
 fails loudly instead of silently racing the built-in worker for ownership of
 `subscribe`/`publish`.
 
@@ -132,5 +132,5 @@ fails loudly instead of silently racing the built-in worker for ownership of
 | Redis: subscriptions per topic per instance | one (second warns, dropped) | same |
 | Local unsubscribe | drops the ENTIRE topic entry (bug: kills co-subscribers) | removes only the given id (**deliberate fix**) |
 | Adapter hot-swap | gated build-first, resubscribe-before-swap | same |
-| Config entry id | `iii-pubsub` | `pubsub` (new entry, seeded on first boot) |
+| Config entry id | legacy engine configuration | `pubsub` (new entry, seeded on first boot) |
 | Config schema shape | hand-built `oneOf` union (local/redis) | plain derive — accepted values identical, plainer console form |
