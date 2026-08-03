@@ -2,7 +2,7 @@
 
 A deterministic DAG orchestrator running over the iii harness. Accepts
 `workflow::start` / `workflow::tick` / `workflow::stop` triggers; persists run
-state in iii-state; fans out nodes as child harness sessions with deterministic
+state in state; fans out nodes as child harness sessions with deterministic
 ids so duplicate deliveries are idempotent.
 
 The three harness hook bindings (turn-completed → wake, pre-trigger →
@@ -83,7 +83,7 @@ topology choice.
 
 ### No record-level CAS available
 
-iii-state (sdk 0.20.0) exposes `state::get`, `state::set`, `state::delete`,
+state (sdk 0.20.0) exposes `state::get`, `state::set`, `state::delete`,
 `state::list`, and `state::update` (atomic per-field ops).  None carry a
 precondition or version check — `state::set` is an unconditional overwrite.
 There is no `state::cas` or `if_match` parameter.

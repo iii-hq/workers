@@ -12,7 +12,7 @@ Builds and maintains a source-grounded, interlinked markdown wiki for a code
 repository, and serves a browser UI to read and search it. Point it at a git
 repo: an agent reads the source, plans a hierarchical index, writes one cited
 page per topic, and keeps the wiki current from git diffs on a per-wiki
-schedule. Pages persist in iii-state; the engine serves the UI and JSON API
+schedule. Pages persist in state; the engine serves the UI and JSON API
 under `/openwiki`.
 
 ## Install

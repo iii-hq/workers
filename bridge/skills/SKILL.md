@@ -24,10 +24,10 @@ bridge-specific call shape. Two functions (`bridge.invoke`,
 rare case where the remote function id is dynamic at runtime.
 
 Install it with `iii worker add bridge`. This is a standalone replacement for
-the engine builtin `iii-bridge`: the builtin must not be running on the same
+the engine’s legacy built-in bridge service: it must not run on the same
 engine, since both register the same `bridge.invoke` / `bridge.invoke_async`
 ids (plus any forward/expose ids) — the worker refuses to boot while
-`iii-bridge` is still connected.
+the legacy built-in remains connected.
 
 ## When to Use
 

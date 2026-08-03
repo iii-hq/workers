@@ -11,7 +11,7 @@ description: >-
 
 The `pubsub` worker is topic-based publish/subscribe messaging. Publish an event to a named topic with the `publish` function and every registered `subscribe` trigger whose `topic` matches is invoked with the raw payload — no envelope, no persistence, no retries. It is fire-and-forget broadcast: subscribers receive each event as it arrives, and a subscriber that is offline simply misses it.
 
-Install it with `iii worker add pubsub`. It replaces the former built-in `iii-pubsub` worker: the trigger type (`subscribe`) and the function id (`publish`) are unchanged, so existing application code keeps working — only the owner moved from an in-process builtin to this standalone worker.
+Install it with `iii worker add pubsub`. It replaces the former in-engine pub/sub service: the trigger type (`subscribe`) and the function id (`publish`) are unchanged, so existing application code keeps working — only the owner moved from an in-process builtin to this standalone worker.
 
 The worker exposes one callable function (`publish`, registered with the bare function id `"publish"` — no namespace prefix) and one trigger type (`subscribe`). Two adapters: `local` (default; in-memory broadcast; only delivers to subscribers in this engine process; no external dependency) and `redis` (`redis_url: ${REDIS_URL:redis://localhost:6379}`; uses Redis Pub/Sub so events propagate across multiple engine instances). The adapter is set in the `pubsub` configuration entry and hot-swaps at runtime.
 

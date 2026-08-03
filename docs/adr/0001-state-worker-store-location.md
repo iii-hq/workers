@@ -4,10 +4,10 @@
 Accepted (2026-07-06).
 
 ## Context
-The engine builtin `iii-state` is not just a trigger handler: it owns a key-value
+The legacy in-engine state service is not just a trigger handler: it owns a key-value
 store that lives in the engine process (`engine/src/builtins/kv.rs`,
 `BuiltinKvStore`, in_memory or file_based with a background flush loop).
-Migrating `iii-state` to a standalone worker forces a decision about where that
+Migrating that state service to the standalone `state` worker forces a decision about where that
 store lives. Coupling analysis on the engine found ZERO inbound engine-internal
 consumers of `state::*` (everything reaches state over the function bus), so the
 functions can move; the question is only the store.
