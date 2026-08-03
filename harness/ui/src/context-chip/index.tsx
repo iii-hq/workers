@@ -15,7 +15,6 @@ import {
   type ContextSnapshot,
   type SnapshotMessages,
   isSnapshot,
-  parseMetrics,
 } from '../lib/metrics'
 
 /** Per-tab handler id (host.iii.on namespaces it `::<browserId>`). */
@@ -23,6 +22,10 @@ const EVENTS_FN = 'iii::harness-ui::events'
 
 const WARN_THRESHOLD = 0.75
 const DANGER_THRESHOLD = 0.9
+
+/** Snapshots update after every generate step, but the push only fires at
+    turn end — poll the state row so long multi-step turns tick live. */
+const POLL_MS = 5_000
 
 export interface SessionChipProps {
   sessionId: string
@@ -225,7 +228,11 @@ function ContextPopover({
 }
 
 export function createContextChip(host: Host) {
-  return function ContextChip({ sessionId, modelId }: SessionChipProps) {
+  return function ContextChip({
+    sessionId,
+    modelId,
+    contextWindow,
+  }: SessionChipProps) {
     const [snapshot, setSnapshot] = useState<ContextSnapshot | null>(null)
     const [open, setOpen] = useState(false)
     const rootRef = useRef<HTMLDivElement | null>(null)
@@ -234,19 +241,21 @@ export function createContextChip(host: Host) {
       let cancelled = false
       setSnapshot(null)
       setOpen(false)
-      host.iii
-        .trigger('harness::metrics', { root_session_id: sessionId })
-        .then((result) => {
-          if (cancelled) return
-          const metrics = parseMetrics(result)
-          const own = metrics?.by_session.find(
-            (row) => row.session_id === sessionId,
-          )
-          if (own?.context && isSnapshot(own.context)) setSnapshot(own.context)
-        })
-        .catch(() => {})
+      const read = () => {
+        host.iii
+          .trigger('state::get', { scope: 'harness_context', key: sessionId })
+          .then((value) => {
+            if (cancelled) return
+            if (isSnapshot(value) && value.session_id === sessionId)
+              setSnapshot(value)
+          })
+          .catch(() => {})
+      }
+      read()
+      const interval = window.setInterval(read, POLL_MS)
       return () => {
         cancelled = true
+        window.clearInterval(interval)
       }
     }, [host, sessionId])
 
@@ -284,6 +293,30 @@ export function createContextChip(host: Host) {
     }, [open])
 
     if (!snapshot || snapshot.usable <= 0) {
+      if (contextWindow && contextWindow > 0) {
+        return (
+          <div
+            className="harness-ui-chip"
+            title={`no turn yet — model context window ${contextWindow.toLocaleString()} tokens`}
+          >
+            <span>ctx</span>
+            <span
+              className="harness-ui-chip-bar"
+              role="progressbar"
+              aria-label="context window usage"
+              aria-valuenow={0}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <span className="harness-ui-chip-fill" style={{ width: 0 }} />
+            </span>
+            <span className="harness-ui-chip-pct">0%</span>
+            <span className="harness-ui-chip-counts">
+              0/{formatTokens(contextWindow)}
+            </span>
+          </div>
+        )
+      }
       return (
         <div className="harness-ui-chip" title="no context snapshot yet">
           <span>ctx</span>
