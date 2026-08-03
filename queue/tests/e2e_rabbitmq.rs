@@ -61,7 +61,7 @@ fn subscriber_dlq_name(topic: &str, subscription_id: &str) -> String {
 /// via a raw `lapin` channel, so messages can be published into the queue
 /// BEFORE any adapter-owned consumer exists. All declarations use identical
 /// arguments to what `topology::TopologyManager` declares, so the later,
-/// real `subscribe()` call's redeclare is a idempotent no-op (AMQP rejects a
+/// real `subscribe()` call's redeclare is an idempotent no-op (AMQP rejects a
 /// redeclare with mismatched arguments).
 async fn predeclare_priority_subscriber_queue(
     channel: &Channel,

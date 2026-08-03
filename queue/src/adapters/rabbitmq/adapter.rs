@@ -509,13 +509,17 @@ impl QueueAdapter for RabbitMQAdapter {
                 );
             }
 
-            // Wait for in-flight deliveries to finish, then leave the queue
-            // and DLQ declared and bound: they hold the subscription's
-            // durable backlog and dead letters, and unsubscribe fires on
-            // every routine subscriber disconnect — deleting them here would
-            // destroy exactly the data a later same-id resubscribe exists to
-            // drain.
-            let _ = sub_info.task_handle.await;
+            // Leave the queue and DLQ declared and bound: they hold the
+            // subscription's durable backlog and dead letters, and
+            // unsubscribe fires on every routine subscriber disconnect —
+            // deleting them here would destroy exactly the data a later
+            // same-id resubscribe exists to drain. The worker task is
+            // DETACHED, not awaited: it finishes its in-flight deliveries
+            // (acking or republishing) and exits on its own, while the
+            // caller — which may hold the trigger handler's registrations
+            // lock — returns after the broker-side consumer cancel instead
+            // of blocking for up to one whole invocation.
+            drop(sub_info.task_handle);
         } else {
             tracing::warn!(
                 topic = %topic,

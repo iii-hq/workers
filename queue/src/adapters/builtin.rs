@@ -310,16 +310,20 @@ impl QueueAdapter for BuiltinAdapter {
             }
         }
 
-        // Stop consuming, then wait for the in-flight delivery to finish and
-        // ack. The store state stays untouched: the backlog, DLQ, and stats
-        // are the durable data a later same-id resubscribe reattaches to —
+        // Stop consuming and DETACH the poller instead of awaiting it: the
+        // in-flight delivery still runs to completion and acks (dropping a
+        // JoinHandle detaches the task; aborting it would risk duplicate
+        // execution on redelivery), but callers — the trigger handler holds
+        // its registrations lock across this call — return after the map
+        // updates instead of blocking for up to one whole invocation. The
+        // store state stays untouched: the backlog, DLQ, and stats are the
+        // durable data a later same-id resubscribe reattaches to —
         // unsubscribe fires on every routine subscriber disconnect, so
         // destroying them here would wipe exactly what `durable:subscriber`
-        // exists to keep. Both locks are already released: a drain can take
-        // as long as one invocation, and a concurrent same-id resubscribe is
-        // safe (two pollers on one store queue still deliver each job once).
+        // exists to keep. A same-id resubscribe racing the detached drain is
+        // safe: two pollers on one store queue still deliver each job once.
         let _ = sub.cancel.send(());
-        let _ = sub.task.await;
+        drop(sub.task);
         tracing::debug!(topic = %topic, id = %id, "Unsubscribed from queue");
     }
 
@@ -1804,7 +1808,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsubscribe_drains_the_inflight_delivery_before_returning() {
+    async fn unsubscribe_detaches_while_the_inflight_delivery_completes() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(GatedInvoker::default());
         let adapter = Arc::new(BuiltinAdapter::with_poll_interval_ms(
@@ -1821,31 +1825,29 @@ mod tests {
             .await
             .expect("delivery should start");
 
-        let unsubscribing = {
-            let adapter = adapter.clone();
-            tokio::spawn(async move {
-                adapter.unsubscribe("demo", "sub1").await;
-            })
-        };
-        sleep(Duration::from_millis(50)).await;
-        assert!(
-            !unsubscribing.is_finished(),
-            "unsubscribe must wait for the in-flight invocation, not abort it"
-        );
-
-        invoker.release.notify_one();
-        tokio::time::timeout(Duration::from_secs(1), unsubscribing)
+        // Returns promptly even though a delivery is parked mid-invocation:
+        // unsubscribe must never stall the control plane (the trigger
+        // handler holds its registrations lock across this call) behind one
+        // slow job.
+        tokio::time::timeout(Duration::from_secs(1), adapter.unsubscribe("demo", "sub1"))
             .await
-            .expect("unsubscribe should return once the delivery completes")
-            .unwrap();
-        assert_eq!(
-            invoker.completed.lock().await.as_slice(),
-            [json!("inflight")],
-            "the invocation ran to completion"
-        );
-        // Completed and acked: nothing is left behind to redeliver.
+            .expect("unsubscribe must not wait for the in-flight invocation");
+
+        // The detached delivery still runs to completion and acks — it is
+        // never aborted, so redelivery can't double-execute its side effects.
+        invoker.release.notify_one();
+        wait_until(|| {
+            let invoker = invoker.clone();
+            async move { invoker.completed.lock().await.as_slice() == [json!("inflight")] }
+        })
+        .await;
         let queue_name = internal_queue_name("demo", "sub1");
-        assert_eq!(store.topic_stats(&queue_name).await.depth, 0);
+        wait_until(|| {
+            let store = store.clone();
+            let queue_name = queue_name.clone();
+            async move { store.topic_stats(&queue_name).await.delivered == 1 }
+        })
+        .await;
         adapter.shutdown().await;
     }
 

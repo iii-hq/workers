@@ -177,6 +177,11 @@ async fn same_function_subscriptions_each_receive_their_metadata_connect_or_skip
     wait_for_fires(&invoker.fires, 2).await;
 
     let deliveries = invoker.deliveries.lock().await;
+    assert_eq!(
+        deliveries.len(),
+        2,
+        "exactly one delivery per binding — a duplicate subscription would add more"
+    );
     assert!(deliveries
         .iter()
         .all(|(function_id, payload, _)| function_id == "same-function"

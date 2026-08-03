@@ -386,6 +386,14 @@ impl QueueTriggerHandler {
     /// Unregister by bare trigger id -- the queue/topic name is recovered
     /// from the stored registration, since an unregister `TriggerConfig`
     /// carries only the id.
+    ///
+    /// The registrations lock is deliberately held across `unsubscribe`:
+    /// releasing it first opens a window where a same-key register sees no
+    /// registration, calls subscribe while the adapter still holds the old
+    /// entry, no-ops on the adapter's duplicate check, and ends up
+    /// registered with no live consumer. Adapter unsubscribes are prompt
+    /// (they detach their drain rather than await it), so holding the lock
+    /// costs a broker round-trip, not an invocation.
     pub async fn unregister(&self, trigger_id: &str) {
         let mut registrations = self.registrations.lock().await;
         let Some(registration) = registrations.remove(trigger_id) else {
