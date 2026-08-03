@@ -1,6 +1,6 @@
 {
   "title": "harness-e2e",
-  "generated_at": "2026-08-02T07:06:55Z",
+  "generated_at": "2026-08-03T07:19:51Z",
   "totals": {
     "branches": {
       "count": 0,
@@ -10,18 +10,18 @@
     },
     "functions": {
       "count": 4228,
-      "covered": 1799,
-      "percent": 42.549668874172184
+      "covered": 1847,
+      "percent": 43.684957426679283
     },
     "instantiations": {
       "count": 5422,
-      "covered": 1946,
-      "percent": 35.890815197344153
+      "covered": 1994,
+      "percent": 36.776097381040209
     },
     "lines": {
       "count": 33617,
-      "covered": 14545,
-      "percent": 43.266799535949076
+      "covered": 15061,
+      "percent": 44.801737216289375
     },
     "mcdc": {
       "count": 0,
@@ -31,9 +31,9 @@
     },
     "regions": {
       "count": 48210,
-      "covered": 20006,
-      "notcovered": 28204,
-      "percent": 41.497614602779507
+      "covered": 20754,
+      "notcovered": 27456,
+      "percent": 43.049159925326698
     }
   }
 }

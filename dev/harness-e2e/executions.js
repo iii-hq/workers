@@ -4,6 +4,293 @@ window.HARNESS_EXECUTIONS = {
       "actor": "ytallo",
       "attempt": 1,
       "availability": "full",
+      "completed_at": "2026-08-03T07:19:59Z",
+      "conclusion": "failure",
+      "detail_path": "runs/30792193792-1.json",
+      "event": "schedule",
+      "execution": {
+        "actor": "ytallo",
+        "attempt": 1,
+        "completed_at": "2026-08-03T07:19:59Z",
+        "conclusion": "failure",
+        "event": "schedule",
+        "head_branch": "main",
+        "head_sha": "4b52a11e730597f7e8743e17f4a12d387943946e",
+        "id": "30792193792-1",
+        "repository": "iii-hq/workers",
+        "run_id": "30792193792",
+        "started_at": "2026-08-03T07:02:41Z",
+        "workflow_name": "Harness E2E Daily",
+        "workflow_url": "https://github.com/iii-hq/workers/actions/runs/30792193792"
+      },
+      "generated_at": "2026-08-03T07:18:51.360492+00:00",
+      "id": "30792193792-1",
+      "lane": "daily",
+      "release": {
+        "registry_tag": "daily",
+        "tag": "daily/2026-08-03",
+        "url": "https://github.com/iii-hq/workers/commit/4b52a11e730597f7e8743e17f4a12d387943946e",
+        "version": "2026-08-03",
+        "worker": "main"
+      },
+      "requested_runs": 3,
+      "run_id": "30792193792",
+      "scenario_metrics": [
+        {
+          "averages": {
+            "cost_usd": 0.012372866666666668,
+            "duration_seconds": 12.054,
+            "function_call_errors": 0.0,
+            "function_calls": 0.0,
+            "sessions": 1.0,
+            "tokens": 6935.0,
+            "turns": 1.0
+          },
+          "contract_fingerprint": "fnv1a32:9ddecf33",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "direct_answer",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.032131066666666666,
+            "duration_seconds": 11.693666666666667,
+            "function_call_errors": 0.0,
+            "function_calls": 1.6666666666666667,
+            "sessions": 1.0,
+            "tokens": 19100.666666666668,
+            "turns": 2.6666666666666665
+          },
+          "contract_fingerprint": "fnv1a32:79be8d47",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "persistent_state",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": null,
+            "duration_seconds": 351.918,
+            "function_call_errors": 0.0,
+            "function_calls": 56.0,
+            "sessions": 6.0,
+            "tokens": null,
+            "turns": 39.0
+          },
+          "contract_fingerprint": "fnv1a32:3a5be718",
+          "run_count": 1,
+          "samples": {
+            "cost_usd": 0,
+            "duration_seconds": 1,
+            "function_call_errors": 1,
+            "function_calls": 1,
+            "sessions": 1,
+            "tokens": 0,
+            "turns": 1
+          },
+          "scenario_id": "reactive_automation",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.01690032,
+            "duration_seconds": 16.911666666666665,
+            "function_call_errors": 0.0,
+            "function_calls": 0.0,
+            "sessions": 1.0,
+            "tokens": 7615.666666666667,
+            "turns": 1.0
+          },
+          "contract_fingerprint": "fnv1a32:b82f2ff2",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "security_review",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.53378436,
+            "duration_seconds": 124.05466666666666,
+            "function_call_errors": 0.0,
+            "function_calls": 16.0,
+            "sessions": 1.0,
+            "tokens": 321684.3333333333,
+            "turns": 16.333333333333332
+          },
+          "contract_fingerprint": "fnv1a32:1e651e78",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "shell_coder_sandbox",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        }
+      ],
+      "source": {
+        "ref": "daily/2026-08-03",
+        "repository": "iii-hq/workers",
+        "sha": "4b52a11e730597f7e8743e17f4a12d387943946e"
+      },
+      "started_at": "2026-08-03T07:02:41Z",
+      "status": "failed",
+      "subjects": [
+        {
+          "engine_revision": "0.22.0",
+          "expected_reports": 5,
+          "hard_gate_failures": 2,
+          "id": "glm-5-2",
+          "judge": {
+            "context_window": 1000000,
+            "max_output_tokens": 128000,
+            "model": "glm-5.2",
+            "provider": "zai",
+            "supports_tools": true,
+            "supports_vision": false
+          },
+          "model": "glm-5.2",
+          "passed": false,
+          "provider": "zai",
+          "received_reports": 5,
+          "report_coverage": 1.0,
+          "retry_attempts": 0,
+          "scenario_pass_rate": 0.6,
+          "scenarios": [
+            {
+              "hard_gate_failures": 0,
+              "id": "direct_answer",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 50.0,
+              "total_cost_usd": 0.0371186,
+              "wall_time_seconds": 36.162
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "persistent_state",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 90.0,
+              "total_cost_usd": 0.0963932,
+              "wall_time_seconds": 35.081
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "security_review",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 50.0,
+              "total_cost_usd": 0.05070096,
+              "wall_time_seconds": 50.735
+            },
+            {
+              "hard_gate_failures": 1,
+              "id": "reactive_automation",
+              "median_score": 0.0,
+              "pass_rate": 0.0,
+              "passed": false,
+              "retries": 0,
+              "runs": 1,
+              "status": "failed",
+              "technical_failures": 0,
+              "threshold": 90.0,
+              "total_cost_usd": null,
+              "wall_time_seconds": 351.918
+            },
+            {
+              "hard_gate_failures": 1,
+              "id": "shell_coder_sandbox",
+              "median_score": 100.0,
+              "pass_rate": 0.6666666666666666,
+              "passed": false,
+              "retries": 0,
+              "runs": 3,
+              "status": "failed",
+              "technical_failures": 0,
+              "threshold": 50.0,
+              "total_cost_usd": 1.60135308,
+              "wall_time_seconds": 372.164
+            }
+          ],
+          "technical_failures": 0,
+          "total_cost_usd": null,
+          "wall_time_seconds": 846.06
+        }
+      ],
+      "totals": {
+        "average_score": 80.0,
+        "expected_reports": 5,
+        "function_calls": 109.0,
+        "hard_gate_failures": 2,
+        "missing_reports": 0,
+        "passed_scenarios": 3,
+        "received_reports": 5,
+        "report_coverage": 100.0,
+        "retries": 0,
+        "scenario_pass_rate": 60.0,
+        "technical_failures": 0,
+        "total_cost_usd": null,
+        "total_tokens": null,
+        "wall_time_seconds": 846.06
+      },
+      "workflow_duration_seconds": 1038.0,
+      "workflow_name": "Harness E2E Daily",
+      "workflow_url": "https://github.com/iii-hq/workers/actions/runs/30792193792"
+    },
+    {
+      "actor": "ytallo",
+      "attempt": 1,
+      "availability": "full",
       "completed_at": "2026-08-02T07:13:59Z",
       "conclusion": "success",
       "detail_path": "runs/30736657213-1.json",
@@ -1465,7 +1752,7 @@ window.HARNESS_EXECUTIONS = {
       "workflow_url": "https://github.com/iii-hq/workers/actions/runs/30520846725"
     }
   ],
-  "last_update": "2026-08-02T07:13:59Z",
+  "last_update": "2026-08-03T07:19:59Z",
   "mode": "published",
   "repo_url": "https://github.com/iii-hq/workers",
   "retention": {

@@ -1,6 +1,6 @@
 {
   "title": "harness-integration",
-  "generated_at": "2026-08-02T07:13:27Z",
+  "generated_at": "2026-08-03T07:12:13Z",
   "totals": {
     "branches": {
       "count": 0,
@@ -10,18 +10,18 @@
     },
     "functions": {
       "count": 3234,
-      "covered": 1382,
-      "percent": 42.733457019171304
+      "covered": 1383,
+      "percent": 42.764378478664192
     },
     "instantiations": {
       "count": 3732,
-      "covered": 1536,
-      "percent": 41.157556270096464
+      "covered": 1537,
+      "percent": 41.184351554126472
     },
     "lines": {
       "count": 25264,
-      "covered": 11358,
-      "percent": 44.957251424952496
+      "covered": 11338,
+      "percent": 44.878087397086766
     },
     "mcdc": {
       "count": 0,
@@ -31,9 +31,9 @@
     },
     "regions": {
       "count": 36186,
-      "covered": 15470,
-      "notcovered": 20716,
-      "percent": 42.75134029735257
+      "covered": 15422,
+      "notcovered": 20764,
+      "percent": 42.618692311943846
     }
   }
 }
