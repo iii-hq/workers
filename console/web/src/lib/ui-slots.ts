@@ -6,7 +6,7 @@
  * hooks.
  */
 
-import { useSyncExternalStore } from 'react'
+import { useMemo, useSyncExternalStore } from 'react'
 import type {
   ConfigFormProps,
   FunctionTriggerRenderer,
@@ -171,7 +171,9 @@ export function getExtSessionChips(): readonly RegisteredSessionChip[] {
 
 /**
  * Session chips in registration order, deduplicated by id (last
- * registration wins, matching the pages slot).
+ * registration wins, matching the pages slot). Memoized on the store
+ * snapshot so consumers get a stable array between registrations —
+ * ChatView renders per streamed token, and its chip memo must hold.
  */
 export function useExtSessionChips(): readonly RegisteredSessionChip[] {
   const chips = useSyncExternalStore(
@@ -179,7 +181,7 @@ export function useExtSessionChips(): readonly RegisteredSessionChip[] {
     sessionChipsStore.get,
     () => EMPTY,
   )
-  return dedupeSessionChips(chips)
+  return useMemo(() => dedupeSessionChips(chips), [chips])
 }
 
 /** The injected form override for one configuration id (last wins). */

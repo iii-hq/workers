@@ -162,7 +162,12 @@ export interface Host {
       component: React.ComponentType<ConfigFormProps>,
     ): () => void
   }
-  chat: {
+  /**
+   * Optional: absent on consoles that predate session chips. Feature-detect
+   * with `host.chat?.registerSessionChip` — newer slot namespaces are always
+   * declared optional so worker scripts degrade without casts.
+   */
+  chat?: {
     registerSessionChip(chip: SessionChipRegistration): () => void
   }
 }

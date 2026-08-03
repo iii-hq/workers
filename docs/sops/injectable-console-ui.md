@@ -449,12 +449,13 @@ its own board: the registry refuses to disable it.
 ## Status: shipped vs spec
 
 The 2026-07-21 implementation covers the spec's protocol, loader, and three
-slot kinds; session chips (`host.chat`) landed later. Not shipped yet
-(don't design against them):
+slot kinds. The spec's composer slot (`host.composer`) shipped later as
+`host.chat.registerSessionChip` — chips render in the chat header's right
+cluster, not the composer toolbar. Not shipped yet (don't design against
+them):
 
 | Spec item | Status |
 |---|---|
-| Composer slot (`host.composer`) | shipped as `host.chat.registerSessionChip` — chips render in the chat header's right cluster, not the composer toolbar |
 | `@iii-dev/console-build` CLI + Tailwind preset | not implemented — hand-write scoped CSS (as `state` does) or scope your own Tailwind output; there is no automatic scoping pass to save you |
 | Types package | shipped as `@iii-dev/console-ui` (`packages/console-ui`) — in-repo workers consume it **workspace-linked** (out-of-repo authors install it from npm, see `workers/console/SKILL.md`); the runtime module specifier was renamed from the spec's `@iii/console` |
 | Rust worker-side registration | shipped **beyond spec** as the path-linked `iii-console-ui` crate (`crates/console-ui`) — the spec's authoring doc had each worker hand-roll the content function, triggers, and watcher |
