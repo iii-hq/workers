@@ -280,18 +280,10 @@
     };
   }
 
-  function renderEfficiencySparkline(element, metricId, color) {
-    const values = history.executions
-      .filter((execution) => (execution.scenario_metrics || []).length)
-      .slice(0, 14)
-      .reverse()
-      .map((execution) =>
-        (execution.scenario_metrics || []).reduce(
-          (total, scenario) =>
-            total + (Number(scenario?.averages?.[metricId]) || 0),
-          0,
-        ),
-      );
+  function renderEfficiencySparkline(element, metricId, color, cohortRows) {
+    const values = executionApi
+      .cohortMetricSparkline(history.executions, cohortRows, metricId, 14)
+      .map((point) => point.value);
     if (!values.length) {
       element.replaceChildren();
       return;
@@ -307,7 +299,7 @@
     const svg = svgElement("svg", {
       viewBox: `0 0 ${width} ${height}`,
       role: "img",
-      "aria-label": `${scenarioMetricDefinitions[metricId].label} operational trend`,
+      "aria-label": `${scenarioMetricDefinitions[metricId].label} comparable cohort trend`,
     });
     const areaPoints = [
       `0,${height}`,
@@ -429,13 +421,21 @@
         color: palette[6],
       },
     ];
+    const cohortRows = overview.rows.filter(
+      (row) => row.lifecycle === "comparable" && row.outcome.passed,
+    );
     cards.forEach((card) => {
       const metric = overview.metrics[card.metricId];
       card.value.textContent = card.format(metric?.operational);
       const meta = deltaMeta(metric?.delta);
       card.delta.textContent = meta.label;
       card.delta.className = `efficiency-delta delta-${meta.css}`;
-      renderEfficiencySparkline(card.sparkline, card.metricId, card.color);
+      renderEfficiencySparkline(
+        card.sparkline,
+        card.metricId,
+        card.color,
+        cohortRows,
+      );
     });
 
     const passed = Number(overview.latest.totals?.passed_scenarios) || 0;
