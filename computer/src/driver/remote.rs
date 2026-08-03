@@ -73,7 +73,7 @@ impl RemoteClient {
 
         let outcome: Result<Value, CommandError> = timeout(self.command_timeout, async {
             socket
-                .send(Message::Text(frame))
+                .send(Message::text(frame))
                 .await
                 .map_err(|e| CommandError::Transport(format!("{command}: send failed: {e}")))?;
             loop {

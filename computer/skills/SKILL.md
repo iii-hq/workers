@@ -40,9 +40,11 @@ after every action.
   [browser](https://github.com/iii-hq/workers/tree/main/browser) worker (a real
   Chromium tab with an accessibility outline and page console) or `web::fetch`
   for a one-shot page. Do not start a desktop session just to open a URL.
-- Shell and files on the desktop belong to the `shell` worker (`shell::exec`,
-  `shell::fs::*`), not this worker. `computer` only sees the screen and drives
-  the cursor.
+- Shell and files are not this worker's job; `computer` only sees the screen
+  and drives the cursor. Reach for `shell::exec` / `shell::fs::*` when the
+  session is native (the desktop is that host), `sandbox::exec` /
+  `sandbox::fs` for a sandboxed desktop, and the guest's own executor for a
+  remote one. `shell` always runs on the worker's host, not inside a guest.
 - With neither argument it drives whatever the configuration defaults to, and
   the local machine when nothing is configured; an `image` boots a sandboxed
   desktop through the iii-sandbox worker; an `endpoint` connects to a desktop

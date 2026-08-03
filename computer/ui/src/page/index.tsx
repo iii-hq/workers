@@ -196,7 +196,8 @@ export function ComputerPage({ host }: { host: Host }) {
               />
               <p className="cp-ui-stage-hint">
                 click the desktop to focus it: clicks, scroll, typing and
-                shortcuts forward as <code className="cp-ui-code">act</code>
+                shortcuts forward as <code className="cp-ui-code">act</code> ·
+                shift+esc leaves the surface
               </p>
             </>
           ) : (

@@ -105,9 +105,10 @@ export function Viewport({
       const relX = (clientX - rect.left) / rect.width
       const relY = (clientY - rect.top) / rect.height
       if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return null
+      // The far edge rounds up to width/height, one past the last pixel.
       return {
-        x: Math.round(relX * current.width),
-        y: Math.round(relY * current.height),
+        x: Math.min(current.width - 1, Math.round(relX * current.width)),
+        y: Math.min(current.height - 1, Math.round(relY * current.height)),
       }
     },
     [],
@@ -198,6 +199,15 @@ export function Viewport({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (!interactive) return
+    // The desktop wants Tab and Escape, which is exactly what a keyboard user
+    // needs to leave with. Shift+Escape is reserved as the way out and never
+    // reaches the desktop.
+    if (e.key === 'Escape' && e.shiftKey) {
+      e.preventDefault()
+      e.stopPropagation()
+      surfaceRef.current?.blur()
+      return
+    }
     const named = PRESS_KEYS[e.key]
     const modifiers = chordModifiers(e, named !== undefined)
 

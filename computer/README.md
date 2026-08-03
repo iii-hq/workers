@@ -110,8 +110,12 @@ actions that land wherever the desktop's focus is (`type` with `text`,
 `press` / `hotkey` with `keys`, e.g. `["cmd","c"]`) —
 `computer::observe` (screenshot plus the accessibility tree on macOS guests),
 `computer::displays`, `computer::sessions::list` and `computer::sessions::stop`.
-For running commands or reading and writing files on the desktop, use the
-[shell](https://github.com/iii-hq/workers/tree/main/shell) worker.
+For commands and files, mind which machine you mean: on a native session the
+desktop IS this host, so the
+[shell](https://github.com/iii-hq/workers/tree/main/shell) worker is the right
+tool. A sandboxed desktop is reached with `sandbox::exec` / `sandbox::fs`, and
+a remote one through its own guest executor — `shell` would run on the host
+instead, which is a different machine entirely.
 
 ## Console
 

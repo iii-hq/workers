@@ -282,7 +282,8 @@ export async function act(
   sessionId: string,
   payload: ActPayload,
 ): Promise<void> {
-  await iii.trigger(ACT_FUNCTION_ID, { session_id: sessionId, ...payload })
+  // Session id last: an action payload cannot retarget another desktop.
+  await iii.trigger(ACT_FUNCTION_ID, { ...payload, session_id: sessionId })
 }
 
 export async function startScreencast(

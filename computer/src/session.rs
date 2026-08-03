@@ -197,6 +197,9 @@ impl Session {
         self.screencast_active.store(false, Ordering::SeqCst);
         if let Some(handle) = self.screencast_task.lock().await.take() {
             handle.abort();
+            // Wait for the abort to land: a pump mid-push would otherwise
+            // write a frame back after the delete below.
+            let _ = handle.await;
         }
         self.delete_frame_stream().await;
         // Release the last frame's buffer immediately; a stopped screencast
@@ -234,6 +237,10 @@ impl Session {
                 Err(e) => {
                     tracing::warn!(session = %self.id, error = %e, "screencast capture failed; stopping pump");
                     self.screencast_active.store(false, Ordering::Relaxed);
+                    // Clear what the pump published: a watcher must not keep
+                    // showing a frame from before the driver broke.
+                    self.delete_frame_stream().await;
+                    *self.latest_frame.lock().unwrap_or_else(|p| p.into_inner()) = None;
                     break;
                 }
             }
@@ -478,10 +485,13 @@ impl Sessions {
             return;
         }
         let cutoff = now_ms() - idle_ms as i64;
+        // A live screencast is somebody watching, so it counts as use: the
+        // console viewport would otherwise have the desktop stopped under it
+        // for the crime of not clicking anything.
         let stale: Vec<String> = {
             let map = self.map.lock().await;
             map.values()
-                .filter(|s| s.last_used_ms() < cutoff)
+                .filter(|s| s.last_used_ms() < cutoff && !s.screencast_active())
                 .map(|s| s.id.clone())
                 .collect()
         };
@@ -630,13 +640,23 @@ impl Sessions {
             })
             .await
             .map_err(|e| e.to_string())?;
-        match listed {
-            Value::Array(items) => Ok(items
-                .into_iter()
-                .filter_map(|v| serde_json::from_value(v).ok())
-                .collect()),
-            _ => Ok(Vec::new()),
+        let Value::Array(items) = listed else {
+            tracing::warn!(
+                scope = STATE_SCOPE,
+                "state::list did not answer with an array; restoring nothing"
+            );
+            return Ok(Vec::new());
+        };
+        let mut records = Vec::with_capacity(items.len());
+        for item in items {
+            match serde_json::from_value::<SessionRecord>(item) {
+                Ok(rec) => records.push(rec),
+                Err(e) => {
+                    tracing::warn!(scope = STATE_SCOPE, error = %e, "dropping unreadable session record")
+                }
+            }
         }
+        Ok(records)
     }
 }
 

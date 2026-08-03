@@ -261,16 +261,29 @@ fn target_dims(w: u32, h: u32, max_dim: u32) -> (u32, u32) {
     )
 }
 
-/// Capture the resolved display, downscale + JPEG-encode. Returns
-/// (jpeg bytes, target w, target h, display id, geometry).
+/// One capture: the encoded frame plus everything the session learns from
+/// taking it — which display it came from and how to map its pixels back to
+/// absolute input coordinates.
+struct Capture {
+    jpeg: Vec<u8>,
+    width: u32,
+    height: u32,
+    /// `None` when the OS did not report an id for the display.
+    display_id: Option<u32>,
+    geom: Geom,
+}
+
+/// Capture the resolved display, downscale + JPEG-encode.
 fn capture(
     pinned_id: Option<u32>,
     override_idx: Option<u32>,
     max_dim: u32,
     quality: u8,
-) -> Result<(Vec<u8>, u32, u32, u32, Geom), String> {
+) -> Result<Capture, String> {
     let monitor = resolve_monitor(pinned_id, override_idx)?;
-    let id = monitor.id().unwrap_or(0);
+    // Pin only an id the OS actually reported: a placeholder would pin the
+    // session to a display that does not exist and defeat the fallback.
+    let display_id = monitor.id().ok();
     let img = monitor
         .capture_image()
         .map_err(|e| format!("screen capture failed: {e}"))?;
@@ -302,7 +315,13 @@ fn capture(
     JpegEncoder::new_with_quality(&mut Cursor::new(&mut out), quality)
         .encode_image(&rgb)
         .map_err(|e| format!("jpeg encode failed: {e}"))?;
-    Ok((out, tw, th, id, geom))
+    Ok(Capture {
+        jpeg: out,
+        width: tw,
+        height: th,
+        display_id,
+        geom,
+    })
 }
 
 /// Map a downscaled-image coordinate to an absolute `enigo` coordinate through
@@ -416,16 +435,18 @@ impl NativeHost {
             self.max_dimension,
             self.jpeg_quality,
         );
-        let (bytes, tw, th, id, geom) = spawn_blocking(move || capture(pinned, over, max_dim, q))
+        let shot = spawn_blocking(move || capture(pinned, over, max_dim, q))
             .await
             .map_err(|e| format!("capture task failed: {e}"))??;
-        let _ = self.pinned.set(id);
-        self.geom.store(Some(Arc::new(geom)));
+        if let Some(id) = shot.display_id {
+            let _ = self.pinned.set(id);
+        }
+        self.geom.store(Some(Arc::new(shot.geom)));
         self.dims.store(Some(Arc::new(Screen {
-            width: tw,
-            height: th,
+            width: shot.width,
+            height: shot.height,
         })));
-        Ok((bytes, tw, th))
+        Ok((shot.jpeg, shot.width, shot.height))
     }
 }
 

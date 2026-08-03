@@ -61,8 +61,11 @@ inline) already is.
 - Do not use this worker to open a URL. That is the
   [browser](https://github.com/iii-hq/workers/tree/main/browser) worker, which
   gives you a DOM instead of pixels.
-- Do not use it to run commands or move files on the desktop — that is `shell`.
-  This worker sees the screen and drives the cursor, nothing else.
+- Do not use it to run commands or move files. That is `shell` for a native
+  session, `sandbox::exec` / `sandbox::fs` inside a sandboxed desktop, and the
+  guest executor for a remote one — `shell` runs on the worker's host, which
+  is not the guest. This worker sees the screen and drives the cursor, nothing
+  else.
 - Do not screenshot after every action. Captures are large and land in the
   transcript; `act` returns a `detail` line that says what happened.
 - Do not hold a session open across unrelated work. The cap is small by design;
