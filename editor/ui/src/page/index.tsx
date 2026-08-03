@@ -73,6 +73,8 @@ import {
   fromRecords,
   groupByTurn,
   groupLabel,
+  isOutsideWorkspace,
+  outsideFolder,
   recordChange,
   relativeAge,
   seedFromStatus,
@@ -194,7 +196,7 @@ export function EditorPage({ host }: { host: Host }) {
   /** The recent-changes feed. Live only: what happened while this page was
    *  open, plus a working-tree seed the first time the tab is looked at. */
   const [changeLog, setChangeLog] = useState<ChangeEntry[]>([])
-  const [changesSeeded, setChangesSeeded] = useState(false)
+  const changesSeededRef = useRef(false)
   /** Re-rendered on a slow tick so the relative ages in the feed stay honest
    *  without every row holding its own timer. */
   const [changeClock, setChangeClock] = useState(() => 0)
@@ -590,8 +592,13 @@ export function EditorPage({ host }: { host: Host }) {
    * else on this page.
    */
   useEffect(() => {
-    if (mode !== 'changes' || changesSeeded) return
-    setChangesSeeded(true)
+    // The latch is a ref, not state, and that is the whole point: flipping a
+    // state value here would change this effect's own dependencies, run its
+    // cleanup, and cancel the fetch it had just started — so the seed would
+    // arrive and be thrown away every time, and the feed would sit empty
+    // while the worker held a full log.
+    if (mode !== 'changes' || changesSeededRef.current) return
+    changesSeededRef.current = true
     let cancelled = false
     void (async () => {
       // The worker's log first: those are real changes with real provenance,
@@ -611,7 +618,7 @@ export function EditorPage({ host }: { host: Host }) {
     return () => {
       cancelled = true
     }
-  }, [mode, changesSeeded, noRepo, status, api])
+  }, [mode, noRepo, status, api])
 
   /** Tick the ages while the feed is on screen, and only then. */
   useEffect(() => {
@@ -937,9 +944,9 @@ export function EditorPage({ host }: { host: Host }) {
                               between "the tree is broken" and "that happened
                               somewhere else" — and it is why the file this row
                               names is not in the tree. */}
-                          {group.root && group.root !== root && (
-                            <span className="ed-group-root" title={group.root}>
-                              in {splitPath(group.root.replace(/\/$/, '')).name || group.root}
+                          {group.entries[0] && isOutsideWorkspace(group.entries[0]) && (
+                            <span className="ed-group-root" title={splitPath(group.entries[0].path).dir}>
+                              in {outsideFolder(group.entries[0])}
                             </span>
                           )}
                           <span className="ed-group-files">

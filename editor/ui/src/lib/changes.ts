@@ -240,6 +240,26 @@ export function groupLabel(group: ChangeGroup): string {
   return causeLabel(group.entries[0]?.cause ?? '')
 }
 
+/**
+ * Whether a row names a file outside the open workspace.
+ *
+ * The observer makes a path relative to the workspace root and leaves it alone
+ * when it does not sit under one, so an absolute path *is* the signal: the
+ * agent was working somewhere the editor is not pointed at. The event's `root`
+ * cannot be used for this — it reports the root the observer resolved, which
+ * is the open workspace even when the file has nothing to do with it.
+ */
+export function isOutsideWorkspace(entry: ChangeEntry): boolean {
+  return entry.path.startsWith('/')
+}
+
+/** The folder an outside change happened in, named for a header. */
+export function outsideFolder(entry: ChangeEntry): string {
+  const { dir } = splitPath(entry.path)
+  const trimmed = dir.replace(/\/$/, '')
+  return splitPath(trimmed).name || trimmed || '/'
+}
+
 /** `dir/` and `name` split, so a narrow row can keep the name and drop the path. */
 export function splitPath(path: string): { dir: string; name: string } {
   const cut = path.lastIndexOf('/')
