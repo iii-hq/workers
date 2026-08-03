@@ -251,6 +251,35 @@
   font-size: 10.5px;
 }
 
+/* ------------------------------------------------------- the changes feed */
+
+/* A feed row carries more than a name, and the name is still the thing being
+   scanned: the metadata sits to the right at a smaller size and gives up its
+   space last, so a long path truncates before the counts disappear. */
+[data-iii-ui='editor'] .ed-change {
+  height: auto;
+  min-height: 22px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+[data-iii-ui='editor'] .ed-change-meta {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+[data-iii-ui='editor'] .ed-change-by {
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='editor'] .ed-change-age {
+  color: var(--color-ink-ghost);
+}
+
 /* ------------------------------------------------------------------ tabs */
 
 [data-iii-ui='editor'] .ed-tabs {

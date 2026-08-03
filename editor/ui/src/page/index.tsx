@@ -67,6 +67,7 @@ import {
   visibleRows,
 } from '../lib/api'
 import { contentHash } from '../lib/cache-key'
+import { type ChangeEntry, causeLabel, recordChange, relativeAge, seedFromStatus } from '../lib/changes'
 import { type ChangedEvent, useWorkspaceEvents } from '../lib/events'
 
 /** How long a row keeps its "just changed" accent after an edit lands. */
@@ -158,7 +159,7 @@ export function EditorPage({ host }: { host: Host }) {
   // Reading is the default: opening a file should show you the file, not put
   // a cursor in it.
   const [view, setView] = useState<'read' | 'edit' | 'preview' | 'diff' | 'git'>('read')
-  const [mode, setMode] = useState<'files' | 'search'>('files')
+  const [mode, setMode] = useState<'files' | 'search' | 'changes'>('files')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<string[]>([])
   const [searchResult, setSearchResult] = useState<SearchResult | null>(null)
@@ -172,6 +173,13 @@ export function EditorPage({ host }: { host: Host }) {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [lastChange, setLastChange] = useState<ChangedEvent | null>(null)
+  /** The recent-changes feed. Live only: what happened while this page was
+   *  open, plus a working-tree seed the first time the tab is looked at. */
+  const [changeLog, setChangeLog] = useState<ChangeEntry[]>([])
+  const [changesSeeded, setChangesSeeded] = useState(false)
+  /** Re-rendered on a slow tick so the relative ages in the feed stay honest
+   *  without every row holding its own timer. */
+  const [changeClock, setChangeClock] = useState(() => 0)
 
   // Read inside a refresh without making it a dependency — rebuilding the
   // refresh callbacks on every keystroke would re-run the effects that bind
@@ -526,11 +534,57 @@ export function EditorPage({ host }: { host: Host }) {
   useEffect(
     () =>
       onChanged((event: ChangedEvent) => {
-        setFlashed((prev) => ({ ...prev, [event.path]: Date.now() }))
+        const now = Date.now()
+        setFlashed((prev) => ({ ...prev, [event.path]: now }))
         setLastChange(event)
+        setChangeLog((prev) => recordChange(prev, event, now))
+        setChangeClock(now)
         schedule(event.path, true)
       }),
     [onChanged, schedule],
+  )
+
+  /**
+   * Seed the feed from the working tree the first time it is looked at.
+   *
+   * Changes made before this page existed are still changes worth seeing, and
+   * asking git for them on mount would cost a status call for a tab most
+   * sessions never open. Outside a repository there is nothing to seed and the
+   * feed is simply live-only, which is what `noRepo` already means everywhere
+   * else on this page.
+   */
+  useEffect(() => {
+    if (mode !== 'changes' || changesSeeded) return
+    setChangesSeeded(true)
+    if (noRepo) return
+    setChangeLog((prev) => seedFromStatus(prev, status?.entries ?? []))
+  }, [mode, changesSeeded, noRepo, status])
+
+  /** Tick the ages while the feed is on screen, and only then. */
+  useEffect(() => {
+    if (mode !== 'changes') return
+    const id = setInterval(() => setChangeClock(Date.now()), 15_000)
+    return () => clearInterval(id)
+  }, [mode])
+
+  /**
+   * Open the file a feed row names, on the view that shows what changed.
+   *
+   * In a repository the git view is the honest answer — it diffs the working
+   * tree against HEAD, so it shows the agent's write whether or not this page
+   * has unsaved edits. Without a repository there is nothing to diff against,
+   * so the file itself is the answer.
+   */
+  const openChange = useCallback(
+    async (entry: ChangeEntry) => {
+      if (entry.kind === 'deleted') {
+        setError(`${entry.path} was deleted`)
+        return
+      }
+      await openPath(entry.path)
+      setView(noRepo ? 'read' : 'git')
+    },
+    [openPath, noRepo],
   )
 
   useEffect(() => {
@@ -749,21 +803,63 @@ export function EditorPage({ host }: { host: Host }) {
               <button type="button" data-active={mode === 'search'} onClick={() => setMode('search')}>
                 search
               </button>
+              <button type="button" data-active={mode === 'changes'} onClick={() => setMode('changes')}>
+                changes
+                {changeLog.length > 0 && <span className="ed-count">{changeLog.length}</span>}
+              </button>
             </div>
 
-            <Input
-              value={query}
-              onChange={setQuery}
-              placeholder={mode === 'files' ? 'find a file…' : 'search contents…'}
-              aria-label={mode === 'files' ? 'Find a file' : 'Search file contents'}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && mode === 'search') void runSearch()
-              }}
-              preserveCase
-            />
+            {/* The feed is not searched: it is short by construction, and a
+                box that filters two of three tabs is a box that lies. */}
+            {mode !== 'changes' && (
+              <Input
+                value={query}
+                onChange={setQuery}
+                placeholder={mode === 'files' ? 'find a file…' : 'search contents…'}
+                aria-label={mode === 'files' ? 'Find a file' : 'Search file contents'}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && mode === 'search') void runSearch()
+                }}
+                preserveCase
+              />
+            )}
 
             <div className="ed-scroll">
-              {mode === 'search' ? (
+              {mode === 'changes' ? (
+                changeLog.length === 0 ? (
+                  <div className="ed-hint">
+                    nothing yet — file changes appear here as they happen, whoever makes them
+                  </div>
+                ) : (
+                  <ul className="ed-list">
+                    {changeLog.map((entry) => (
+                      <li key={entry.path}>
+                        <button
+                          type="button"
+                          className="ed-row ed-change"
+                          data-active={entry.path === activePath}
+                          data-fresh={flashed[entry.path] !== undefined}
+                          onClick={() => void openChange(entry)}
+                          title={`${entry.kind} by ${entry.cause || 'unknown'}`}
+                        >
+                          <span className="ed-name">{entry.path}</span>
+                          <span className="ed-change-meta">
+                            {(entry.added > 0 || entry.removed > 0) && (
+                              <>
+                                <span className="ed-add">+{entry.added}</span>{' '}
+                                <span className="ed-del">−{entry.removed}</span>{' '}
+                              </>
+                            )}
+                            <span className="ed-change-by">{causeLabel(entry.cause)}</span>{' '}
+                            <span className="ed-change-age">{relativeAge(entry.at, changeClock)}</span>
+                            {entry.count > 1 && <span className="ed-count">{entry.count}</span>}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )
+              ) : mode === 'search' ? (
                 searchResult === null ? (
                   <div className="ed-hint">enter to search contents</div>
                 ) : searchResult.files.length === 0 ? (
