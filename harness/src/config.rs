@@ -90,11 +90,10 @@ pub struct WorkerConfig {
     pub default_functions: Option<FunctionPolicy>,
 
     /// Use the provider-served identity prompt (`router::system_prompt::get`)
-    /// as the turn's system prompt. Off pins every turn to the harness's
-    /// embedded default prompt instead — the operator escape hatch for a
-    /// provider prompt that has drifted from the harness's actual surface.
-    /// Sub-agents are unaffected: they always take the embedded sub-agent
-    /// prompt.
+    /// as the turn's system prompt. Off (the default) pins every turn to the
+    /// harness's embedded default prompt; on trusts the provider prompt to
+    /// track the harness's actual surface. Sub-agents are unaffected: they
+    /// always take the embedded sub-agent prompt.
     #[serde(default = "default_provider_identity_prompt")]
     pub provider_identity_prompt: bool,
 
@@ -267,7 +266,7 @@ fn default_functions() -> Option<FunctionPolicy> {
     })
 }
 fn default_provider_identity_prompt() -> bool {
-    true
+    false
 }
 
 fn expand_env(input: &str) -> String {

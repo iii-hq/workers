@@ -1,9 +1,9 @@
 //! Every shipped identity prompt must describe the surface the harness
 //! actually serves.
 //!
-//! The prompt an agent sees is the PROVIDER's (`router::system_prompt::get`);
-//! `harness/prompts/default.txt` is only the fallback when a provider declares
-//! none or the operator switches provider prompts off. When `harness::react`
+//! An agent sees `harness/prompts/default.txt` unless the operator enables
+//! provider prompts (`provider_identity_prompt: true`, served via
+//! `router::system_prompt::get`). When `harness::react`
 //! was removed, the fallback was rewritten and all eight provider prompts were
 //! not — so every agent kept being told to bind a function that no longer
 //! existed. A test that reads only the harness's own copy cannot catch that,
