@@ -251,6 +251,109 @@
   font-size: 10.5px;
 }
 
+/* ------------------------------------------------------- the changes feed */
+
+/* A feed row carries more than a name, and the name is still the thing being
+   scanned: the metadata sits to the right at a smaller size and gives up its
+   space last, so a long path truncates before the counts disappear. */
+[data-iii-ui='editor'] .ed-change {
+  height: auto;
+  min-height: 22px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+[data-iii-ui='editor'] .ed-change-meta {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+[data-iii-ui='editor'] .ed-change-by {
+  color: var(--color-ink-faint);
+}
+
+/* A run's header. Sticky so the run a file belongs to stays legible while its
+   files scroll — the summary is the point, not decoration. */
+[data-iii-ui='editor'] .ed-group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 6px 3px;
+  background: var(--color-bg);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+}
+
+[data-iii-ui='editor'] .ed-group-files {
+  color: var(--color-ink-ghost);
+}
+
+/* The path splits so the folder can be dropped before the name is: at sidebar
+   widths a truncated name identifies nothing. */
+[data-iii-ui='editor'] .ed-change-path {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  overflow: hidden;
+}
+
+[data-iii-ui='editor'] .ed-change-dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-ink-ghost);
+  font-size: 11px;
+}
+
+[data-iii-ui='editor'] .ed-change-name {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+[data-iii-ui='editor'] .ed-change-kind {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui='editor'] .ed-change-kind[data-kind='created'] {
+  color: var(--color-ok);
+}
+[data-iii-ui='editor'] .ed-change-kind[data-kind='deleted'] {
+  color: var(--color-alert);
+}
+
+[data-iii-ui='editor'] .ed-change-age {
+  color: var(--color-ink-ghost);
+}
+
+/* The diff card's header: the path takes the room, provenance sits after it,
+   and the close button is pushed to the far end by the spacer. */
+[data-iii-ui='editor'] .ed-change-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+[data-iii-ui='editor'] .ed-change-session {
+  color: var(--color-ink-faint);
+  font-size: 10.5px;
+}
+
+[data-iii-ui='editor'] .ed-bar-spacer {
+  flex: 1;
+}
+
 /* ------------------------------------------------------------------ tabs */
 
 [data-iii-ui='editor'] .ed-tabs {

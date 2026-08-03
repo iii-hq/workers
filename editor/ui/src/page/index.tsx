@@ -67,10 +67,28 @@ import {
   visibleRows,
 } from '../lib/api'
 import { contentHash } from '../lib/cache-key'
+import {
+  type ChangeEntry,
+  causeLabel,
+  groupByTurn,
+  groupLabel,
+  recordChange,
+  relativeAge,
+  seedFromStatus,
+  splitPath,
+} from '../lib/changes'
 import { type ChangedEvent, useWorkspaceEvents } from '../lib/events'
 
 /** How long a row keeps its "just changed" accent after an edit lands. */
 const FLASH_MS = 12_000
+
+/** Single-letter change marks, the way a status column reads them. */
+const KIND_MARK: Record<string, string> = {
+  created: 'A',
+  deleted: 'D',
+  moved: 'R',
+  modified: 'M',
+}
 
 /**
  * Trailing-edge window for folding pushed events into one refresh, in ms.
@@ -157,8 +175,8 @@ export function EditorPage({ host }: { host: Host }) {
   const [activePath, setActivePath] = useState<string | null>(null)
   // Reading is the default: opening a file should show you the file, not put
   // a cursor in it.
-  const [view, setView] = useState<'read' | 'edit' | 'preview' | 'diff' | 'git'>('read')
-  const [mode, setMode] = useState<'files' | 'search'>('files')
+  const [view, setView] = useState<'read' | 'edit' | 'preview' | 'diff' | 'git' | 'change'>('read')
+  const [mode, setMode] = useState<'files' | 'search' | 'changes'>('files')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<string[]>([])
   const [searchResult, setSearchResult] = useState<SearchResult | null>(null)
@@ -172,6 +190,17 @@ export function EditorPage({ host }: { host: Host }) {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [lastChange, setLastChange] = useState<ChangedEvent | null>(null)
+  /** The recent-changes feed. Live only: what happened while this page was
+   *  open, plus a working-tree seed the first time the tab is looked at. */
+  const [changeLog, setChangeLog] = useState<ChangeEntry[]>([])
+  const [changesSeeded, setChangesSeeded] = useState(false)
+  /** Re-rendered on a slow tick so the relative ages in the feed stay honest
+   *  without every row holding its own timer. */
+  const [changeClock, setChangeClock] = useState(() => 0)
+  /** The feed row being read as a diff. The patch travels on the event, so
+   *  this renders without a round trip and keeps showing what that write did
+   *  even after the file moves on. */
+  const [openChangeEntry, setOpenChangeEntry] = useState<ChangeEntry | null>(null)
 
   // Read inside a refresh without making it a dependency — rebuilding the
   // refresh callbacks on every keystroke would re-run the effects that bind
@@ -526,11 +555,96 @@ export function EditorPage({ host }: { host: Host }) {
   useEffect(
     () =>
       onChanged((event: ChangedEvent) => {
-        setFlashed((prev) => ({ ...prev, [event.path]: Date.now() }))
+        const now = Date.now()
+        setFlashed((prev) => ({ ...prev, [event.path]: now }))
         setLastChange(event)
+        setChangeLog((prev) => recordChange(prev, event, now))
+        setChangeClock(now)
         schedule(event.path, true)
       }),
     [onChanged, schedule],
+  )
+
+  /**
+   * Seed the feed from the working tree the first time it is looked at.
+   *
+   * Changes made before this page existed are still changes worth seeing, and
+   * asking git for them on mount would cost a status call for a tab most
+   * sessions never open. Outside a repository there is nothing to seed and the
+   * feed is simply live-only, which is what `noRepo` already means everywhere
+   * else on this page.
+   */
+  useEffect(() => {
+    if (mode !== 'changes' || changesSeeded) return
+    setChangesSeeded(true)
+    if (noRepo) return
+    setChangeLog((prev) => seedFromStatus(prev, status?.entries ?? []))
+  }, [mode, changesSeeded, noRepo, status])
+
+  /** Tick the ages while the feed is on screen, and only then. */
+  useEffect(() => {
+    if (mode !== 'changes') return
+    const id = setInterval(() => setChangeClock(Date.now()), 15_000)
+    return () => clearInterval(id)
+  }, [mode])
+
+  /**
+   * Open the file a feed row names, on the view that shows what changed.
+   *
+   * In a repository the git view is the honest answer — it diffs the working
+   * tree against HEAD, so it shows the agent's write whether or not this page
+   * has unsaved edits. Without a repository there is nothing to diff against,
+   * so the file itself is the answer.
+   */
+  /**
+   * Find a patch to show for a row that arrived without one.
+   *
+   * A seeded row knows a file is dirty and nothing else. Falling through to
+   * the git view for those was the wrong answer twice over: an untracked file
+   * has no HEAD to diff against, so the pane said "no changes" about a file
+   * that is entirely new. Ask git first, and when git has nothing to say
+   * because the file is new, diff it against empty — the whole file *is* the
+   * change. This is the same ladder the worker's observer walks.
+   */
+  const resolvePatch = useCallback(
+    async (entry: ChangeEntry): Promise<string> => {
+      if (entry.patch.trim() !== '') return entry.patch
+      try {
+        const hunks = await api.hunks(entry.path)
+        if (hunks.patch.trim() !== '') return hunks.patch
+      } catch {
+        // Not a repo, or a path git does not track. The file itself is next.
+      }
+      try {
+        const file = await api.open(entry.path)
+        const whole = await api.diff('', file.content, entry.path)
+        return whole.patch
+      } catch {
+        return ''
+      }
+    },
+    [api],
+  )
+
+  const openChange = useCallback(
+    async (entry: ChangeEntry) => {
+      // The patch the event carried is the diff of that write, so a change
+      // stays readable even after the file is committed, reverted or written
+      // again — which the working-tree diff cannot do.
+      setOpenChangeEntry({ ...entry, patch: entry.patch })
+      // Opening the file alongside is what makes the feed a way into the
+      // workspace rather than a dead end. A deleted file cannot be opened and
+      // its diff is the only thing left of it. The view is set *after* the
+      // open, because opening a file selects its reader — doing it first would
+      // land on the file rather than the diff.
+      if (entry.kind !== 'deleted') await openPath(entry.path)
+      setView('change')
+      if (entry.patch.trim() === '') {
+        const patch = await resolvePatch(entry)
+        setOpenChangeEntry((current) => (current && current.path === entry.path ? { ...current, patch } : current))
+      }
+    },
+    [openPath, resolvePatch],
   )
 
   useEffect(() => {
@@ -690,6 +804,8 @@ export function EditorPage({ host }: { host: Host }) {
 
   const rows = useMemo(() => (treeRoot ? visibleRows(treeRoot, expanded) : []), [treeRoot, expanded])
 
+  const changeGroups = useMemo(() => groupByTurn(changeLog), [changeLog])
+
   const lineCount = activeDraft ? activeDraft.draft.split('\n').length : 0
 
   return (
@@ -749,21 +865,101 @@ export function EditorPage({ host }: { host: Host }) {
               <button type="button" data-active={mode === 'search'} onClick={() => setMode('search')}>
                 search
               </button>
+              <button type="button" data-active={mode === 'changes'} onClick={() => setMode('changes')}>
+                changes
+                {changeLog.length > 0 && <span className="ed-count">{changeLog.length}</span>}
+              </button>
             </div>
 
-            <Input
-              value={query}
-              onChange={setQuery}
-              placeholder={mode === 'files' ? 'find a file…' : 'search contents…'}
-              aria-label={mode === 'files' ? 'Find a file' : 'Search file contents'}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && mode === 'search') void runSearch()
-              }}
-              preserveCase
-            />
+            {/* The feed is not searched: it is short by construction, and a
+                box that filters two of three tabs is a box that lies. */}
+            {mode !== 'changes' && (
+              <Input
+                value={query}
+                onChange={setQuery}
+                placeholder={mode === 'files' ? 'find a file…' : 'search contents…'}
+                aria-label={mode === 'files' ? 'Find a file' : 'Search file contents'}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && mode === 'search') void runSearch()
+                }}
+                preserveCase
+              />
+            )}
 
             <div className="ed-scroll">
-              {mode === 'search' ? (
+              {mode === 'changes' ? (
+                changeLog.length === 0 ? (
+                  <div className="ed-hint">
+                    nothing yet — file changes appear here as they happen, whoever makes them
+                  </div>
+                ) : (
+                  <ul className="ed-list">
+                    {changeGroups.map((group) => (
+                      <li key={group.key}>
+                        {/* One turn's work reads as one thing: the header is
+                            the summary, the rows under it are the detail. */}
+                        <div className="ed-group">
+                          <span className="ed-change-by">{groupLabel(group)}</span>
+                          <span className="ed-group-files">
+                            {group.entries.length} file{group.entries.length === 1 ? '' : 's'}
+                          </span>
+                          {(group.added > 0 || group.removed > 0) && (
+                            <span>
+                              <span className="ed-add">+{group.added}</span>{' '}
+                              <span className="ed-del">-{group.removed}</span>
+                            </span>
+                          )}
+                          <span className="ed-change-age">{relativeAge(group.at, changeClock)}</span>
+                        </div>
+                        <ul className="ed-list">
+                          {group.entries.map((entry) => {
+                            const split = splitPath(entry.path)
+                            return (
+                              <li key={entry.path}>
+                                <button
+                                  type="button"
+                                  className="ed-row ed-change"
+                                  data-active={entry.path === openChangeEntry?.path}
+                                  data-fresh={flashed[entry.path] !== undefined}
+                                  onClick={() => void openChange(entry)}
+                                  title={[
+                                    entry.path,
+                                    `${entry.kind} via ${entry.cause || 'unknown'}`,
+                                    entry.sessionId && `session ${entry.sessionId}`,
+                                    entry.turnId && `turn ${entry.turnId}`,
+                                  ]
+                                    .filter(Boolean)
+                                    .join('\n')}
+                                >
+                                  {/* The name identifies the row, so it is the
+                                      part that survives a narrow pane; the
+                                      folder gives way first. */}
+                                  <span className="ed-change-path">
+                                    {split.dir && <span className="ed-change-dir">{split.dir}</span>}
+                                    <span className="ed-change-name">{split.name}</span>
+                                  </span>
+                                  <span className="ed-change-meta">
+                                    <span className="ed-change-kind" data-kind={entry.kind}>
+                                      {KIND_MARK[entry.kind] ?? 'M'}
+                                    </span>
+                                    {(entry.added > 0 || entry.removed > 0) && (
+                                      <>
+                                        <span className="ed-add">+{entry.added}</span>
+                                        <span className="ed-del">-{entry.removed}</span>
+                                      </>
+                                    )}
+                                    {entry.count > 1 && <span className="ed-count">x{entry.count}</span>}
+                                  </span>
+                                </button>
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      </li>
+                    ))}
+                  </ul>
+                )
+              ) : mode === 'search' ? (
                 searchResult === null ? (
                   <div className="ed-hint">enter to search contents</div>
                 ) : searchResult.files.length === 0 ? (
@@ -847,7 +1043,19 @@ export function EditorPage({ host }: { host: Host }) {
         )}
 
         <section className="ed-main">
-          {buffers.length === 0 ? (
+          {/* A change being read as a diff owns the pane: it can outlive the
+              file (a delete leaves no buffer to open) and it is the whole
+              point of selecting the row. */}
+          {view === 'change' && openChangeEntry ? (
+            <ChangeCard
+              entry={openChangeEntry}
+              themeType={themeType}
+              onClose={() => {
+                setOpenChangeEntry(null)
+                setView('read')
+              }}
+            />
+          ) : buffers.length === 0 ? (
             <EmptyState
               title="No file open"
               description="Pick a file from the tree, or search for one. Files an agent opens appear here too."
@@ -1129,6 +1337,58 @@ function FileView({ path, contents, themeType }: { path: string; contents: strin
  * from the prefix and its position, which is what keeps pierre from re-reading
  * an unchanged hunk on each render.
  */
+/**
+ * One change, read as the diff it was.
+ *
+ * The patch travels on the event, so this renders with no round trip and keeps
+ * showing what a write did after the file has moved on — committed, reverted,
+ * or written again. That is the difference between this and the git view,
+ * which can only ever show the working tree as it is now.
+ *
+ * The header is the provenance the payload actually knows: which worker
+ * performed the write, and the harness session and turn it happened in when it
+ * happened inside one.
+ */
+function ChangeCard({
+  entry,
+  themeType,
+  onClose,
+}: {
+  entry: ChangeEntry
+  themeType: 'light' | 'dark'
+  onClose: () => void
+}) {
+  return (
+    <>
+      <div className="ed-bar">
+        <span className="ed-change-title" title={entry.path}>
+          {entry.path}
+        </span>
+        <Badge variant={entry.kind === 'deleted' ? 'warn' : 'default'}>{entry.kind}</Badge>
+        {(entry.added > 0 || entry.removed > 0) && (
+          <span>
+            <span className="ed-add">+{entry.added}</span> <span className="ed-del">−{entry.removed}</span>
+          </span>
+        )}
+        <span className="ed-change-by">{causeLabel(entry.cause)}</span>
+        {entry.sessionId && (
+          <span className="ed-change-session" title={entry.turnId ? `turn ${entry.turnId}` : entry.sessionId}>
+            session {entry.sessionId.replace(/^s_/, '').slice(0, 8)}
+          </span>
+        )}
+        <span className="ed-bar-spacer" />
+        <Button onClick={onClose}>close</Button>
+      </div>
+      {entry.truncated && (
+        <div className="ed-warn">
+          The change was larger than the preview the event carries, so only its beginning is shown.
+        </div>
+      )}
+      <PatchView patch={entry.patch} themeType={themeType} />
+    </>
+  )
+}
+
 function PatchView({ patch, themeType }: { patch: string; themeType: 'light' | 'dark' }) {
   const files = useMemo(
     () => (patch.trim() === '' ? [] : parsePatchFiles(patch, `p${contentHash(patch)}`).flatMap((p) => p.files)),

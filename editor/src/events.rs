@@ -55,6 +55,14 @@ pub struct ChangedEvent {
     /// Workspace root the path is relative to, so a surface that follows the
     /// agent can notice the root moved.
     pub root: String,
+    /// The harness session and turn the write happened in, when it happened
+    /// inside one. This is the only part of the payload that says *who*: the
+    /// function id says which worker performed the write, not who asked for
+    /// it. Absent for a write made outside a turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
 }
 
 type Subscribers = Arc<Mutex<HashMap<String, String>>>;
@@ -260,6 +268,8 @@ mod tests {
             patch: String::new(),
             truncated: false,
             root: "/repo".into(),
+            session_id: Some("s_1".into()),
+            turn_id: Some("t_1".into()),
         }
     }
 
