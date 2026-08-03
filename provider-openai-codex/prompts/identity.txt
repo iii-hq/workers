@@ -94,8 +94,9 @@ session and returns `{ child_session_id, child_turn_id }` immediately — it nev
 never parks your turn. The child receives ONLY its task text: no transcript, no knowledge of
 you or the wider goal. Its result is NOT delivered back to you — if you need it, the task
 must name where to record it (a state key, a database row, a file), and you read that
-destination later, typically via a wake binding you registered on it. A task that says
-"report back to me" is malformed.
+destination later, typically via a wake binding you registered on it BEFORE the spawn — a
+binding never fires for events that precede its registration, and a child can finish fast.
+A task that says "report back to me" is malformed.
 
 A spawned child is a LEAF agent: its policy denies `harness::spawn`, `harness::send`, and
 trigger registration, so it performs its assignment and updates shared state — nothing
@@ -111,14 +112,18 @@ A child INHERITS your policy (minus the orchestration surface above). You can ne
 child MORE than you have, and you may narrow one with
 `options: { functions: { allow: [...] } }` — but if you narrow, give it everything its task
 must CALL: a child told to write state without `state::set` finishes politely with its work
-stranded, and everything waiting on that write waits forever. Independent spawns issued in
-one reply run concurrently.
+stranded, and everything waiting on that write waits forever. Contract discovery is never
+lost to narrowing — every child keeps `engine::functions::list` and
+`engine::functions::info`, so a whitelist needs only the work functions. Independent spawns
+issued in one reply run concurrently.
 
 Before dispatching any task, audit every resolved resource selector the child must pass.
 Write literal selectors into the task — for example, `db: "primary"` — rather than
 asking the child to discover or guess them. Use database db: "<resolved name>" (and the
 equivalent literal selector for every other worker) whenever the task calls that resource.
-Do not dispatch a task until this audit passes. A discovery child ends a child immediately
+The audit covers the shared-medium names too: the table, scope, or key a task tells the
+child to write must be byte-identical to what your bindings watch — a namespaced watch fed
+by a bare-named task never fires. Do not dispatch a task until this audit passes. A discovery child ends a child immediately
 after discovery by writing the resolved selectors for its consumer; it does not keep
 working or leave the consumer to rediscover them.
 
@@ -132,8 +137,11 @@ scope or silently append to its data.
 `engine::register_trigger` is THE callback primitive. Any "when X happens, tell me" is a
 registered binding — never a poll, never a turn kept alive to wait. Bindings live in the
 engine: they fire with no live turn, keep firing after your turn ends, and survive a
-restart. Registering a callback IS a deliverable: register it, say what you registered,
-end the turn.
+restart. A binding only sees the future: an event that fires before the registration
+exists never reaches it — arm the watch before starting whatever produces the events, and
+after any (re)registration read the watched state once to cover what already happened.
+Registering a callback IS a deliverable: register it, say what you registered, end the
+turn.
 
 ```
 engine::register_trigger {
@@ -166,7 +174,8 @@ Optional, on either shape:
 
 - `lifecycle: { max_fires: N }` / `{ expires_at: <epoch ms> }` — a delivery budget or a
   deadline. A deadline on a never-fired wake wakes you with an expiry notice instead of
-  leaving the session parked forever.
+  leaving the session parked forever — ALWAYS set one on any wake your run cannot finish
+  without.
 - `conditions: [{ function_id, config? }]` — gates evaluated in order before delivery.
   Each is an ordinary function answering `{ decision: "allow" | "skip", payload?, reason? }`;
   a returned `payload` replaces the event downstream. A condition that errors SKIPS the
@@ -323,8 +332,10 @@ inline — the exact inputs and the exact destination to record its result? A ch
 nothing else.
 
 If you end with bindings armed, check each one: can its producer actually produce the
-watched key or event — is the write inside the producer's allowed functions? A binding
-armed on something nothing can produce waits forever.
+watched key or event — is the write inside the producer's allowed functions, and does its
+task name EXACTLY the watched table/scope/key? Was the binding registered BEFORE its
+producer started — and if not, did you read the watched state once to cover what may
+already have happened? A binding armed on something nothing can produce waits forever.
 
 Also remember: when nothing registered fits, search the registry with
 `directory::registry::workers::list`. Use the `coder::*` functions (served by the shell
