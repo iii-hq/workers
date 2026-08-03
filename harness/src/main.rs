@@ -32,7 +32,7 @@ use harness::configuration::{self, ConfigCell, TriggerHandles};
 use harness::deps::Deps;
 use harness::events::TurnEvents;
 use harness::hooks::HookRegistry;
-use harness::{config, discovery, functions, manifest, queue, subscriptions};
+use harness::{config, discovery, functions, manifest, queue, subscriptions, ui};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -133,6 +133,12 @@ async fn main() -> Result<()> {
     discovery::register_functions_trigger(&iii, functions_cell.clone(), cfg.dispatch_timeout_ms);
 
     functions::register_all(&iii, &deps);
+
+    // Injectable console UI: content function + console:script/style triggers.
+    // Ordering doesn't matter for the console side (the engine parks the
+    // registration until a console owns the type), but the content function
+    // must exist before the trigger names it.
+    ui::register(&iii);
 
     // The queue consumer may restore durable jobs as soon as this definition
     // succeeds. Discovery and `harness::turn` are already ready; do not bind

@@ -1,0 +1,275 @@
+/*
+ * The harness worker's console stylesheet, shipped as its own `console:style`
+ * asset (harness/styles.css) — the console mounts it as a <link> in
+ * document.head and link-swaps it on hot reload, styles-before-scripts on
+ * boot. Every rule is scoped under `[data-iii-ui="harness"]`, the wrapper the
+ * console mounts around every injected render — session chip and
+ * function-trigger message alike. Styling uses the console's design tokens,
+ * so light/dark theming is free.
+ */
+
+/* --- session chip (context) ------------------------------------------ */
+[data-iii-ui="harness"] .harness-ui-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-chip-empty {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="harness"] .harness-ui-chip-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+}
+[data-iii-ui="harness"] .harness-ui-chip-bar {
+  position: relative;
+  display: block;
+  width: 56px;
+  height: 6px;
+  background: var(--color-rule-2);
+  border: 1px solid var(--color-rule);
+  overflow: hidden;
+}
+[data-iii-ui="harness"] .harness-ui-chip-fill {
+  display: block;
+  height: 100%;
+  transition: width 0.2s, background-color 0.2s;
+}
+[data-iii-ui="harness"] .harness-ui-chip-pct {
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="harness"] .harness-ui-chip-counts {
+  color: var(--color-ink-ghost);
+  text-transform: none;
+  letter-spacing: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- context popover -------------------------------------------------- */
+[data-iii-ui="harness"] .harness-ui-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 1000;
+  width: 300px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-rule);
+  color: var(--color-ink);
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: normal;
+  text-align: left;
+  cursor: default;
+}
+[data-iii-ui="harness"] .harness-ui-pop-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+[data-iii-ui="harness"] .harness-ui-pop-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+[data-iii-ui="harness"] .harness-ui-pop-usage {
+  flex: none;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="harness"] .harness-ui-stack {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  background: var(--color-rule-2);
+  border: 1px solid var(--color-rule);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+[data-iii-ui="harness"] .harness-ui-seg {
+  display: block;
+  height: 100%;
+  flex: none;
+}
+[data-iii-ui="harness"] .harness-ui-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="harness"] .harness-ui-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+}
+[data-iii-ui="harness"] .harness-ui-swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+}
+[data-iii-ui="harness"] .harness-ui-legend-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-legend-val {
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="harness"] .harness-ui-legend-pct {
+  flex: none;
+  width: 36px;
+  text-align: right;
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="harness"] .harness-ui-badge {
+  flex: none;
+  border: 1px solid var(--color-warn);
+  color: var(--color-warn);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0 4px;
+}
+[data-iii-ui="harness"] .harness-ui-pop-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-rule-2);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+
+/* --- function-trigger message (chat / traces card) ------------------- */
+[data-iii-ui="harness"] .harness-ui-msg {
+  border-top: 1px solid var(--color-rule-2);
+  background: var(--color-bg);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+[data-iii-ui="harness"] .harness-ui-msg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="harness"] .harness-ui-pill {
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 1px 8px;
+}
+[data-iii-ui="harness"] .harness-ui-partial {
+  border: 1px solid var(--color-warn);
+  color: var(--color-warn);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 1px 6px;
+}
+[data-iii-ui="harness"] .harness-ui-msg-tag {
+  margin-left: auto;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="harness"] .harness-ui-totals {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 12px 8px;
+}
+[data-iii-ui="harness"] .harness-ui-chip-stat {
+  border: 1px solid var(--color-rule);
+  color: var(--color-ink);
+  font-size: 11.5px;
+  padding: 1px 8px;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="harness"] .harness-ui-chip-stat .k {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="harness"] .harness-ui-table-wrap {
+  padding: 0 12px 10px;
+  overflow-x: auto;
+}
+[data-iii-ui="harness"] .harness-ui-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+[data-iii-ui="harness"] .harness-ui-table th {
+  text-align: left;
+  font-weight: 400;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-ink-ghost);
+  border-bottom: 1px solid var(--color-rule-2);
+  padding: 3px 8px 3px 0;
+}
+[data-iii-ui="harness"] .harness-ui-table td {
+  color: var(--color-ink);
+  border-bottom: 1px solid var(--color-rule-2);
+  padding: 3px 8px 3px 0;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+[data-iii-ui="harness"] .harness-ui-table tr:last-child td {
+  border-bottom: 0;
+}
+[data-iii-ui="harness"] .harness-ui-table th.harness-ui-num,
+[data-iii-ui="harness"] .harness-ui-table td.harness-ui-num {
+  text-align: right;
+}
+[data-iii-ui="harness"] .harness-ui-sid span {
+  display: inline-block;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+[data-iii-ui="harness"] .harness-ui-mini-bar {
+  position: relative;
+  display: inline-block;
+  width: 48px;
+  height: 4px;
+  background: var(--color-rule-2);
+  border: 1px solid var(--color-rule);
+  overflow: hidden;
+  vertical-align: middle;
+}
+[data-iii-ui="harness"] .harness-ui-mini-fill {
+  display: block;
+  height: 100%;
+}
