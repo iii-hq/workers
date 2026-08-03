@@ -67,6 +67,7 @@ mod tests {
             source: PdfSource {
                 path: None,
                 bytes_base64: Some(BASE64.encode(b"this is not a pdf")),
+                fs_scope: None,
             },
             max_chars: None,
         };

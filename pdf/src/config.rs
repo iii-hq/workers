@@ -102,7 +102,24 @@ impl WorkerConfig {
     /// configuration worker), then deserializing.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
-        serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
+        let parsed: Self =
+            serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
+        parsed.validate()
+    }
+
+    /// Reject values that parse but cannot mean anything.
+    ///
+    /// `text_page_ratio_threshold` is a share, so a value outside 0.0 to 1.0
+    /// silently makes every document classify the same way. Better to refuse
+    /// the config than to run on it.
+    fn validate(self) -> Result<Self, String> {
+        let ratio = self.text_page_ratio_threshold;
+        if !ratio.is_finite() || !(0.0..=1.0).contains(&ratio) {
+            return Err(format!(
+                "text_page_ratio_threshold must be a share between 0.0 and 1.0, got {ratio}"
+            ));
+        }
+        Ok(self)
     }
 
     /// Read and parse a YAML seed file (env-expanded — see [`Self::from_yaml`]).
@@ -116,7 +133,9 @@ impl WorkerConfig {
     /// would be a bug) and tolerates a zero-field object (serde defaults fill
     /// in).
     pub fn from_json(value: &Value) -> Result<Self, String> {
-        serde_json::from_value(value.clone()).map_err(|e| format!("json parse: {e}"))
+        let parsed: Self =
+            serde_json::from_value(value.clone()).map_err(|e| format!("json parse: {e}"))?;
+        parsed.validate()
     }
 
     pub fn to_json(&self) -> Value {
@@ -222,6 +241,28 @@ mod tests {
             err.contains("max_charz"),
             "error should name the field: {err}"
         );
+    }
+
+    #[test]
+    fn a_ratio_outside_zero_to_one_is_rejected() {
+        for bad in ["-0.1", "1.5"] {
+            let err = WorkerConfig::from_yaml(&format!("text_page_ratio_threshold: {bad}\n"))
+                .expect_err("out of range");
+            assert!(err.contains("between 0.0 and 1.0"), "{err}");
+        }
+        // Both parse paths validate, not just the seed file.
+        let err = WorkerConfig::from_json(&serde_json::json!({
+            "text_page_ratio_threshold": 2.0
+        }))
+        .expect_err("out of range");
+        assert!(err.contains("between 0.0 and 1.0"), "{err}");
+
+        for good in ["0.0", "0.6", "1.0"] {
+            assert!(
+                WorkerConfig::from_yaml(&format!("text_page_ratio_threshold: {good}\n")).is_ok(),
+                "{good} is a valid share"
+            );
+        }
     }
 
     #[test]

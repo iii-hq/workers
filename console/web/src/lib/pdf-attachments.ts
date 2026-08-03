@@ -32,6 +32,13 @@ export const MAX_PDFS_PER_SEND = 4
  */
 export const MAX_MARKDOWN_CHARS = 20_000
 
+/**
+ * Largest document read from the composer. Encoding happens in the browser, so
+ * an enormous file is a frozen tab before the worker ever sees it, and its own
+ * ceiling would reject it anyway. Refuse it here with an explanation instead.
+ */
+export const MAX_PDF_BYTES = 64 * 1024 * 1024
+
 const ATTACHED_FILE_PREFIX = '<attached-file '
 
 export interface PdfExpansionFailure {
@@ -145,6 +152,13 @@ export async function expandPdfAttachments(
   const failures: PdfExpansionFailure[] = []
 
   for (const attachment of pdfs.slice(0, MAX_PDFS_PER_SEND)) {
+    if (attachment.size > MAX_PDF_BYTES) {
+      const mb = Math.round(MAX_PDF_BYTES / (1024 * 1024))
+      const reason = `larger than the ${mb} MB limit for reading a PDF in the composer`
+      blocks.push(failureBlock(attachment.name, reason))
+      failures.push({ name: attachment.name, reason })
+      continue
+    }
     try {
       const outcome = await expandOne(attachment, call)
       blocks.push(outcome.block)
@@ -314,6 +328,14 @@ function describeFailure(err: unknown): string {
   return message.length > 160 ? `${message.slice(0, 157)}…` : message
 }
 
+/**
+ * `>` has to be escaped as well as `&` and `"`. The header is parsed by finding
+ * the first `>`, so a file name containing one would cut the header short and
+ * lose every attribute after it.
+ */
 function escapeAttr(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;')
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('>', '&gt;')
 }

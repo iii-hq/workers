@@ -20,6 +20,9 @@ fn fixture(name: &str) -> PdfSource {
             env!("CARGO_MANIFEST_DIR")
         )),
         bytes_base64: None,
+        // Unstamped: these exercise the handlers, not the jail, which has its
+        // own tests in `src/source.rs`.
+        fs_scope: None,
     }
 }
 
@@ -495,6 +498,7 @@ fn inline_bytes_and_a_path_agree() {
             source: PdfSource {
                 path: None,
                 bytes_base64: Some(BASE64.encode(&bytes)),
+                fs_scope: None,
             },
             password: None,
             sample_pages: None,

@@ -137,7 +137,9 @@ pub fn detection_config(cfg: &WorkerConfig, sample_pages: Option<usize>) -> Dete
         strategy: if sample == 0 {
             ScanStrategy::Full
         } else {
-            ScanStrategy::Sample(sample as u32)
+            // Saturate rather than cast: a `sample` above u32::MAX would wrap,
+            // and a wrap to 0 means Sample(0), which samples nothing at all.
+            ScanStrategy::Sample(u32::try_from(sample).unwrap_or(u32::MAX))
         },
         min_text_ops_per_page: cfg.min_text_ops_per_page as u32,
         text_page_ratio_threshold: cfg.text_page_ratio_threshold,

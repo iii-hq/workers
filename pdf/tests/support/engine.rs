@@ -92,7 +92,7 @@ async fn spawn_engine() -> Option<Engine> {
       adapter:
         name: fs
         config:
-          directory: {dir}/configuration
+          directory: "{dir}/configuration"
       ttl_seconds: 0
 "#,
         port = port,

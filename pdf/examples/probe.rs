@@ -20,6 +20,7 @@ fn main() {
     let src = || PdfSource {
         path: Some(path.clone()),
         bytes_base64: None,
+        fs_scope: None,
     };
 
     println!("== {path}");

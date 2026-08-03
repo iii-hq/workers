@@ -12,7 +12,7 @@ licensing.
 
 Regenerate with:
 
-```
+```bash
 python3 tests/fixtures/make_fixtures.py
 ```
 

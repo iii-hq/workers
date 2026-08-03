@@ -516,6 +516,17 @@ export function ChatView({
           if (expanded.blocks.length > 0) {
             attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
           }
+          // Same reporting as the live send path. Staying silent here would let
+          // an edited queued message lose its document with no explanation.
+          for (const failure of expanded.failures) {
+            onAppendMessage(
+              conversationId,
+              makeSystemNotice(
+                `could not read ${failure.name} — ${failure.reason}`,
+                'warn',
+              ),
+            )
+          }
         }
         try {
           await backend.editQueued?.(
@@ -1029,7 +1040,11 @@ export function ChatView({
         if (expanded.read.length > 0 && !willQueue) {
           const byId = new Map(expanded.read.map((r) => [r.id, r]))
           onPatchMessage(conversationId, userMsg.id, {
-            attachments: (userMsg.attachments ?? []).map((a) => {
+            // `file` is dropped here as well as relabelled. It has done its job
+            // by now, and keeping it would hold the whole document in memory
+            // for as long as the conversation stays open.
+            attachments: (userMsg.attachments ?? []).map(({ file, ...a }) => {
+              void file
               const summary = byId.get(a.id)
               return summary ? { ...a, name: summaryLabel(a.name, summary) } : a
             }),

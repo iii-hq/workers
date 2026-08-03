@@ -4,6 +4,27 @@
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "FsScope": {
+        "description": "The filesystem jail a call runs under.\n\nThe harness stamps this onto every function it dispatches, so a `path` an agent supplies has to be checked against it. Without the check these functions would read any document on the machine and hand back its text, which is a way around the scope the session was granted. Mirrors the shape the shell worker takes.",
+        "properties": {
+          "grants": {
+            "default": [],
+            "description": "Additional directories or files explicitly granted to this session.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "root": {
+            "description": "The session's working directory.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "root"
+        ],
+        "type": "object"
+      },
       "Profile": {
         "description": "How faithful the markdown should be to the source characters.",
         "oneOf": [
@@ -33,6 +54,17 @@
           "string",
           "null"
         ]
+      },
+      "fs_scope": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/FsScope"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The filesystem jail this call runs under. Stamped by the harness on an agent's call; absent on an operator or console call, which is already user-initiated and not subject to the agent's scope."
       },
       "include_images": {
         "default": false,
@@ -131,7 +163,7 @@
             "type": "integer"
           },
           "truncated": {
-            "description": "`true` when `text` stops short of the document. Ask again with a page filter, or with `max_chars: 0` to take everything.",
+            "description": "`true` when `text` stops short of the document. Ask again with `max_chars: 0` to take everything, or on the functions that accept one, narrow with a `pages` filter.",
             "type": "boolean"
           }
         },

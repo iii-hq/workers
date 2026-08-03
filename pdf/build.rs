@@ -127,6 +127,10 @@ fn dir_file_count(dir: &Path) -> usize {
 // ---------------------------------------------------------------------------
 
 fn build_ui() {
+    // Both of these change what this script does, so a change in either has
+    // to invalidate it.
+    println!("cargo:rerun-if-env-changed=SKIP_UI_BUILD");
+    println!("cargo:rerun-if-env-changed=PNPM");
     // `dist/` itself is not listed: include_str! reads it directly, and
     // listing it would rebuild-loop on our own output.
     println!("cargo:rerun-if-changed=ui/page.tsx");

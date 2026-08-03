@@ -157,6 +157,16 @@ fn markdown_options(req: &Request) -> MarkdownOptions {
 }
 
 pub fn handle(req: Request, cfg: &WorkerConfig) -> Result<Response, String> {
+    // The parser's per-page entry point takes no password, so this combination
+    // would extract the whole document and then fail only on the per-page pass,
+    // reporting a decryption error for a call that had already decrypted fine.
+    // Refuse it up front and say which half to drop.
+    if req.per_page && req.password.is_some() {
+        return Err(
+            "`per_page` cannot be combined with `password`: per-page extraction cannot              decrypt. Call without `per_page`, or convert one page at a time with `pages`."
+                .to_string(),
+        );
+    }
     let bytes = req.source.load(cfg)?;
     let started = std::time::Instant::now();
 
@@ -195,9 +205,12 @@ pub fn handle(req: Request, cfg: &WorkerConfig) -> Result<Response, String> {
         cfg.preview_chars,
     );
 
+    // Clamp to the document: a filter naming pages past the end converts
+    // fewer pages than it asked for, and reporting the request back would
+    // overstate what was read.
     let pages_converted = page_filter
         .as_ref()
-        .map(|f| f.len() as u32)
+        .map(|f| (f.len() as u32).min(result.page_count))
         .unwrap_or(result.page_count);
 
     let per_page = if req.per_page {

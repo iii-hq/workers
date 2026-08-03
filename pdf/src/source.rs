@@ -15,8 +15,25 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 use crate::config::WorkerConfig;
+
+/// The filesystem jail a call runs under.
+///
+/// The harness stamps this onto every function it dispatches, so a `path` an
+/// agent supplies has to be checked against it. Without the check these
+/// functions would read any document on the machine and hand back its text,
+/// which is a way around the scope the session was granted. Mirrors the shape
+/// the shell worker takes.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct FsScope {
+    /// The session's working directory.
+    pub root: String,
+    /// Additional directories or files explicitly granted to this session.
+    #[serde(default)]
+    pub grants: Vec<String>,
+}
 
 /// Where the PDF comes from. Exactly one of the two fields must be set.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -29,6 +46,12 @@ pub struct PdfSource {
     /// exclusive with `path`.
     #[serde(default)]
     pub bytes_base64: Option<String>,
+
+    /// The filesystem jail this call runs under. Stamped by the harness on an
+    /// agent's call; absent on an operator or console call, which is already
+    /// user-initiated and not subject to the agent's scope.
+    #[serde(default)]
+    pub fs_scope: Option<FsScope>,
 }
 
 impl PdfSource {
@@ -40,7 +63,7 @@ impl PdfSource {
                 Err("provide either `path` or `bytes_base64`, not both".to_string())
             }
             (None, None) => Err("provide a `path` or `bytes_base64`".to_string()),
-            (Some(path), None) => Self::read_file(path, cfg),
+            (Some(path), None) => Self::read_file(path, self.fs_scope.as_ref(), cfg),
             (None, Some(encoded)) => Self::decode(encoded, cfg),
         }
     }
@@ -57,13 +80,23 @@ impl PdfSource {
         }
     }
 
-    fn read_file(path: &str, cfg: &WorkerConfig) -> Result<Vec<u8>, String> {
-        let meta = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
+    fn read_file(
+        path: &str,
+        scope: Option<&FsScope>,
+        cfg: &WorkerConfig,
+    ) -> Result<Vec<u8>, String> {
+        // Resolve before checking. A path is only inside the jail once symlinks
+        // and `..` are gone, and `metadata` would follow a symlink out of it.
+        let resolved = std::fs::canonicalize(path).map_err(|e| format!("{path}: {e}"))?;
+        if let Some(scope) = scope {
+            authorize(&resolved, scope)?;
+        }
+        let meta = std::fs::metadata(&resolved).map_err(|e| format!("{path}: {e}"))?;
         if !meta.is_file() {
             return Err(format!("{path}: not a file"));
         }
         check_size(meta.len(), cfg)?;
-        std::fs::read(path).map_err(|e| format!("{path}: {e}"))
+        std::fs::read(&resolved).map_err(|e| format!("{path}: {e}"))
     }
 
     fn decode(encoded: &str, cfg: &WorkerConfig) -> Result<Vec<u8>, String> {
@@ -76,6 +109,29 @@ impl PdfSource {
         check_size(bytes.len() as u64, cfg)?;
         Ok(bytes)
     }
+}
+
+/// Reject a resolved path that sits outside the session's jail.
+///
+/// The comparison is on canonical paths and whole path components, so a
+/// sibling directory whose name merely starts with the root (`/w/project-old`
+/// against a root of `/w/project`) is not treated as inside it.
+fn authorize(resolved: &Path, scope: &FsScope) -> Result<(), String> {
+    let allowed = std::iter::once(&scope.root).chain(scope.grants.iter());
+    for entry in allowed {
+        // A grant that does not resolve is a stale grant, not a reason to fail
+        // the call: skip it and let the remaining ones decide.
+        let Ok(base) = std::fs::canonicalize(entry) else {
+            continue;
+        };
+        if resolved == base || resolved.starts_with(&base) {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "{} is outside this session's filesystem scope",
+        resolved.display()
+    ))
 }
 
 fn check_size(bytes: u64, cfg: &WorkerConfig) -> Result<(), String> {
@@ -107,8 +163,9 @@ pub struct Body {
     /// was dropped.
     pub total_chars: usize,
 
-    /// `true` when `text` stops short of the document. Ask again with a page
-    /// filter, or with `max_chars: 0` to take everything.
+    /// `true` when `text` stops short of the document. Ask again with
+    /// `max_chars: 0` to take everything, or on the functions that accept one,
+    /// narrow with a `pages` filter.
     pub truncated: bool,
 
     /// Leading characters of the content. Present only when the body was
@@ -207,6 +264,7 @@ mod tests {
         let both = PdfSource {
             path: Some("a.pdf".into()),
             bytes_base64: Some("AAAA".into()),
+            fs_scope: None,
         };
         let err = both.load(&cfg()).expect_err("both");
         assert!(err.contains("not both"), "{err}");
@@ -217,6 +275,7 @@ mod tests {
         let src = PdfSource {
             path: None,
             bytes_base64: Some(BASE64.encode(b"%PDF-1.4")),
+            fs_scope: None,
         };
         assert_eq!(src.load(&cfg()).expect("decodes"), b"%PDF-1.4");
     }
@@ -226,6 +285,7 @@ mod tests {
         let src = PdfSource {
             path: None,
             bytes_base64: Some("not base64!!!".into()),
+            fs_scope: None,
         };
         let err = src.load(&cfg()).expect_err("malformed");
         assert!(err.contains("not valid base64"), "{err}");
@@ -240,9 +300,105 @@ mod tests {
         let src = PdfSource {
             path: None,
             bytes_base64: Some(BASE64.encode(vec![0u8; 1024])),
+            fs_scope: None,
         };
         let err = src.load(&cfg).expect_err("over the ceiling");
         assert!(err.contains("max_input_bytes"), "{err}");
+    }
+
+    /// The harness stamps a scope on every call it dispatches. Without this
+    /// check an agent could read any document on the machine and get its text
+    /// back, which is a way around the scope its session was granted.
+    #[test]
+    fn a_path_outside_the_session_scope_is_refused() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inside = dir.path().join("report.pdf");
+        std::fs::write(&inside, b"%PDF-1.4").expect("write");
+
+        let outside = tempfile::tempdir().expect("second temp dir");
+        let secret = outside.path().join("payroll.pdf");
+        std::fs::write(&secret, b"%PDF-1.4").expect("write");
+
+        let scope = FsScope {
+            root: dir.path().to_string_lossy().to_string(),
+            grants: vec![],
+        };
+
+        let allowed = PdfSource {
+            path: Some(inside.to_string_lossy().to_string()),
+            bytes_base64: None,
+            fs_scope: Some(scope.clone()),
+        };
+        assert!(allowed.load(&cfg()).is_ok(), "a path inside the root reads");
+
+        let refused = PdfSource {
+            path: Some(secret.to_string_lossy().to_string()),
+            bytes_base64: None,
+            fs_scope: Some(scope),
+        };
+        let err = refused.load(&cfg()).expect_err("outside the scope");
+        assert!(
+            err.contains("outside this session's filesystem scope"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_explicit_grant_widens_the_scope() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let granted = tempfile::tempdir().expect("granted dir");
+        let doc = granted.path().join("statement.pdf");
+        std::fs::write(&doc, b"%PDF-1.4").expect("write");
+
+        let source = PdfSource {
+            path: Some(doc.to_string_lossy().to_string()),
+            bytes_base64: None,
+            fs_scope: Some(FsScope {
+                root: root.path().to_string_lossy().to_string(),
+                grants: vec![granted.path().to_string_lossy().to_string()],
+            }),
+        };
+        assert!(source.load(&cfg()).is_ok(), "an explicit grant is honoured");
+    }
+
+    /// A sibling whose name merely starts with the root is not inside it.
+    /// A prefix comparison on strings would let `/w/project-old` pass for a
+    /// root of `/w/project`.
+    #[test]
+    fn a_sibling_directory_with_a_shared_prefix_is_not_inside_the_scope() {
+        let parent = tempfile::tempdir().expect("temp dir");
+        let root = parent.path().join("project");
+        let sibling = parent.path().join("project-old");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(&sibling).expect("sibling");
+        let doc = sibling.join("secret.pdf");
+        std::fs::write(&doc, b"%PDF-1.4").expect("write");
+
+        let source = PdfSource {
+            path: Some(doc.to_string_lossy().to_string()),
+            bytes_base64: None,
+            fs_scope: Some(FsScope {
+                root: root.to_string_lossy().to_string(),
+                grants: vec![],
+            }),
+        };
+        let err = source.load(&cfg()).expect_err("sibling is outside");
+        assert!(err.contains("outside"), "{err}");
+    }
+
+    /// Inline bytes carry no path, so there is nothing to escape and the scope
+    /// does not apply.
+    #[test]
+    fn inline_bytes_are_unaffected_by_a_scope() {
+        let source = PdfSource {
+            path: None,
+            bytes_base64: Some(BASE64.encode(b"%PDF-1.4")),
+            fs_scope: Some(FsScope {
+                root: "/nowhere".to_string(),
+                grants: vec![],
+            }),
+        };
+        assert!(source.load(&cfg()).is_ok());
     }
 
     #[test]
@@ -250,6 +406,7 @@ mod tests {
         let src = PdfSource {
             path: Some("/home/someone/private/report.pdf".into()),
             bytes_base64: None,
+            fs_scope: None,
         };
         assert_eq!(src.label(), "report.pdf");
         assert_eq!(PdfSource::default().label(), "<inline>");
@@ -300,11 +457,22 @@ mod tests {
         assert!(unsupported.contains("pdf::to-markdown"), "{unsupported}");
     }
 
-    /// The password itself must never reach an error string.
+    /// The password must not survive into an error string. The parser is what
+    /// produces this text, so the test feeds in an error that DOES carry the
+    /// password and asserts the rewrite drops it. The previous version passed a
+    /// message with no password in it, so it proved nothing.
     #[test]
     fn encryption_errors_never_echo_the_password() {
-        let message = describe_error("classify", "PDF is encrypted", true, true);
-        assert!(!message.contains("secret"), "{message}");
+        let leaky = "PDF is encrypted: bad password 'hunter2-secret'";
+        let message = describe_error("classify", leaky, true, true);
+        assert!(
+            !message.contains("hunter2-secret"),
+            "the password survived into the error: {message}"
+        );
+        assert!(
+            message.contains("did not open it"),
+            "the caller still needs to know the password was wrong: {message}"
+        );
     }
 
     #[test]

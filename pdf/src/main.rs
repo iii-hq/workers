@@ -43,6 +43,28 @@ struct Cli {
     manifest: bool,
 }
 
+/// Wait for either interrupt or terminate.
+///
+/// A managed worker is stopped with SIGTERM, and a process that only listens
+/// for ctrl-c dies without running `shutdown_async`, which leaves its
+/// Message-path triggers registered against a function that no longer exists.
+#[cfg(unix)]
+async fn wait_for_shutdown() -> anyhow::Result<()> {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut terminate = signal(SignalKind::terminate())?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result?,
+        _ = terminate.recv() => {}
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown() -> anyhow::Result<()> {
+    tokio::signal::ctrl_c().await?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -118,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(url = %cli.url, "pdf worker ready");
 
-    tokio::signal::ctrl_c().await?;
+    wait_for_shutdown().await?;
     iii.shutdown_async().await;
     Ok(())
 }
