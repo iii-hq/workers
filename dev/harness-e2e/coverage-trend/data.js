@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785741807141,
+  "lastUpdate": 1785768291443,
   "repoUrl": "https://github.com/iii-hq/workers",
   "entries": {
     "Harness Stack Coverage": [
@@ -95,6 +95,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "Integration line coverage",
             "value": 44.88,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Ytallo Layon",
+            "username": "ytallo",
+            "email": "ytallo.layon@gmail.com"
+          },
+          "committer": {
+            "name": "Ytallo Layon",
+            "username": "ytallo",
+            "email": "ytallo.layon@gmail.com"
+          },
+          "id": "10a168a75dc2b7088d976621bd76ccaa4d146ff1",
+          "message": "feat(harness): add discriminative judge-backed scenarios with anchored rubrics\n\nAdd design_tradeoff (contested scaling decision that punishes non-committal\nanswers) and security_triage (subtle real vulnerabilities plus safe decoys\nthat punish invented findings) to break the ceiling effect of the existing\nsubjective scenarios. Anchor every judge-backed criterion description with\nexplicit full/half/zero score bands to reduce judge variance.",
+          "timestamp": "2026-08-02T21:00:44Z",
+          "url": "https://github.com/iii-hq/workers/commit/10a168a75dc2b7088d976621bd76ccaa4d146ff1"
+        },
+        "date": 1785768290334,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "E2E line coverage",
+            "value": 43.97,
+            "unit": "%"
+          },
+          {
+            "name": "Integration line coverage",
+            "value": 44.89,
             "unit": "%"
           }
         ]
