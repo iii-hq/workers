@@ -78,6 +78,12 @@ pub struct GenerateContext {
     /// The system prompt assembled so far (base plus any prior hook's mutation).
     #[serde(default)]
     pub system_prompt: String,
+
+    /// The conversation as it will be sent. Read only to decide whether this
+    /// turn has anything to do with a document; the contents are never
+    /// inspected further and never leave the worker.
+    #[serde(default)]
+    pub messages: Vec<Value>,
 }
 
 /// Hook envelope returned to the harness.
@@ -113,7 +119,34 @@ fn mutations_for(base: &str) -> PreGenerateMutations {
     }
 }
 
+/// Markers that a turn has anything to do with a PDF.
+///
+/// `.pdf` catches a path or a file name in any phrasing. `application/pdf` is
+/// the MIME type. `pdf-markdown` is the console's own attachment block, which
+/// means a document was already expanded into this conversation. `pdf::` means
+/// the agent is already working with this worker.
+const PDF_MARKERS: [&str; 4] = [".pdf", "application/pdf", "pdf-markdown", "pdf::"];
+
+/// Whether this turn is about a document.
+///
+/// The hook fires on EVERY generation, and the guidance is two and a half
+/// kilobytes. Injecting it into a conversation that will never touch a document
+/// spends the model's context and the harness's per-hook token allowance on
+/// advice nobody can use, so the guidance only lands once a PDF is actually in
+/// play. A conversation that starts talking about one gets it on that turn.
+fn turn_mentions_a_document(messages: &[Value]) -> bool {
+    messages.iter().any(|message| {
+        let rendered = message.to_string().to_ascii_lowercase();
+        PDF_MARKERS.iter().any(|marker| rendered.contains(marker))
+    })
+}
+
 async fn handle(event: PreGenerateEvent) -> Result<PreGenerateResponse, Error> {
+    if !turn_mentions_a_document(&event.generate.messages) {
+        return Ok(PreGenerateResponse {
+            mutations: PreGenerateMutations::default(),
+        });
+    }
     Ok(PreGenerateResponse {
         mutations: mutations_for(&event.generate.system_prompt),
     })
@@ -218,6 +251,72 @@ mod tests {
                 .any(|k| obj.contains_key(*k)),
             "PreGenerateResponse schema is untyped: {value}"
         );
+    }
+
+    fn user(text: &str) -> Value {
+        json!({ "role": "user", "content": [{ "type": "text", "text": text }] })
+    }
+
+    /// The hook fires on every generation. A turn with no document in it must
+    /// cost nothing, or every unrelated conversation pays for advice it cannot
+    /// use.
+    #[tokio::test]
+    async fn an_unrelated_turn_gets_no_guidance() {
+        let event = PreGenerateEvent {
+            generate: GenerateContext {
+                system_prompt: "BASE".to_string(),
+                messages: vec![user("Reply with one short sentence.")],
+            },
+        };
+        let wire = serde_json::to_value(handle(event).await.expect("handled")).expect("serializes");
+        assert_eq!(wire, json!({ "mutations": {} }));
+    }
+
+    #[tokio::test]
+    async fn a_turn_naming_a_document_gets_the_guidance() {
+        let event = PreGenerateEvent {
+            generate: GenerateContext {
+                system_prompt: "BASE".to_string(),
+                messages: vec![user("summarize /tmp/May-lloyds.PDF for me")],
+            },
+        };
+        let response = handle(event).await.expect("handled");
+        let prompt = response
+            .mutations
+            .system_prompt
+            .expect("a document turn yields guidance");
+        assert!(prompt.starts_with("BASE\n\n"));
+        assert!(prompt.contains("pdf::classify"));
+    }
+
+    #[test]
+    fn every_way_a_document_enters_a_turn_is_recognized() {
+        // A path or file name, in any casing.
+        assert!(turn_mentions_a_document(&[user("read report.pdf")]));
+        assert!(turn_mentions_a_document(&[user("read REPORT.PDF")]));
+        // The console's expanded attachment block.
+        assert!(turn_mentions_a_document(&[user(
+            r#"<attached-file path="x" format="pdf-markdown">text</attached-file>"#
+        )]));
+        // A MIME type, and a conversation already using the worker.
+        assert!(turn_mentions_a_document(&[user("application/pdf")]));
+        assert!(turn_mentions_a_document(&[user("call pdf::classify")]));
+        // Any message in the turn counts, not only the last.
+        assert!(turn_mentions_a_document(&[
+            user("here is my report.pdf"),
+            user("what does it say?"),
+        ]));
+    }
+
+    #[test]
+    fn an_ordinary_conversation_is_not_mistaken_for_a_document() {
+        assert!(!turn_mentions_a_document(&[]));
+        assert!(!turn_mentions_a_document(&[user("what is the weather?")]));
+        // "pdf" alone is not a marker: the word appears in ordinary prose, and
+        // matching it would put us back to injecting on nearly every turn.
+        assert!(!turn_mentions_a_document(&[user(
+            "can you handle pdf files in general?"
+        )]));
     }
 
     #[test]

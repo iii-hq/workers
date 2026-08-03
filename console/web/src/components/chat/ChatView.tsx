@@ -33,7 +33,11 @@ import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
-import { expandPdfAttachments, isPdfAttachment } from '@/lib/pdf-attachments'
+import {
+  expandPdfAttachments,
+  isPdfAttachment,
+  summaryLabel,
+} from '@/lib/pdf-attachments'
 import { newMessageId } from '@/lib/session-id'
 import { cn } from '@/lib/utils'
 import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
@@ -1017,6 +1021,19 @@ export function ChatView({
         const expanded = await expandPdfAttachments(payload.attachments)
         if (expanded.blocks.length > 0) {
           attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
+        }
+        // Relabel the chip with what the worker made of the document. The
+        // expansion runs before the model is called, so it never shows up as a
+        // function call — without this a person has no way to tell the PDF was
+        // read at all.
+        if (expanded.read.length > 0 && !willQueue) {
+          const byId = new Map(expanded.read.map((r) => [r.id, r]))
+          onPatchMessage(conversationId, userMsg.id, {
+            attachments: (userMsg.attachments ?? []).map((a) => {
+              const summary = byId.get(a.id)
+              return summary ? { ...a, name: summaryLabel(a.name, summary) } : a
+            }),
+          })
         }
         for (const failure of expanded.failures) {
           onAppendMessage(

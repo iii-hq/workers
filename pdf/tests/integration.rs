@@ -239,11 +239,18 @@ async fn caller_mistakes_come_back_as_errors() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_guidance_hook_appends_without_replacing() {
     with_stack(|stack| async move {
+        let document_turn = json!({
+            "generate": {
+                "system_prompt": "BASE PROMPT",
+                "messages": [{
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "read /tmp/report.pdf" }]
+                }]
+            }
+        });
+
         let out = stack
-            .call(
-                "pdf::inject-guidance",
-                json!({ "generate": { "system_prompt": "BASE PROMPT" } }),
-            )
+            .call("pdf::inject-guidance", document_turn)
             .await
             .expect("pdf::inject-guidance");
 
@@ -253,7 +260,24 @@ async fn the_guidance_hook_appends_without_replacing() {
         assert!(prompt.starts_with("BASE PROMPT\n\n"), "the base was lost");
         assert!(prompt.contains("pdf::classify"));
 
-        // An empty base must yield NO key at all, so the harness keeps its own
+        // The hook fires on every generation, so a turn with no document in it
+        // must cost nothing.
+        let unrelated = json!({
+            "generate": {
+                "system_prompt": "BASE PROMPT",
+                "messages": [{
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "what is the weather?" }]
+                }]
+            }
+        });
+        let out = stack
+            .call("pdf::inject-guidance", unrelated)
+            .await
+            .expect("pdf::inject-guidance");
+        assert_eq!(out, json!({ "mutations": {} }));
+
+        // An empty envelope must also yield NO key, so the harness keeps its own
         // assembled prompt rather than having it replaced by the guidance.
         let out = stack
             .call("pdf::inject-guidance", json!({ "generate": {} }))

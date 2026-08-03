@@ -39,9 +39,30 @@ export interface PdfExpansionFailure {
   reason: string
 }
 
+/**
+ * What one document turned into, for the chip on the sent message.
+ *
+ * Without this the composer chip reads "report.pdf 32kb" whether the document
+ * was parsed, skipped or failed, which leaves a person with no way to tell
+ * that the PDF reached the agent at all.
+ */
+export interface PdfReadSummary {
+  /** Attachment id, so the caller can match this back to its chip. */
+  id: string
+  pages: number
+  /** Absent when the document held no extractable text. */
+  chars?: number
+  /** Classify plus extract, as the worker reported them. */
+  elapsedMs: number
+  needsOcr: boolean
+  truncated: boolean
+}
+
 export interface ExpandedPdfs {
   /** One `<attached-file …>` block per expanded document, in input order. */
   blocks: string[]
+  /** One entry per document actually read, for the message chips. */
+  read: PdfReadSummary[]
   failures: PdfExpansionFailure[]
 }
 
@@ -110,7 +131,7 @@ export async function expandPdfAttachments(
   trigger?: TriggerFn,
 ): Promise<ExpandedPdfs> {
   const pdfs = attachments.filter((a) => isPdfAttachment(a) && a.file)
-  if (pdfs.length === 0) return { blocks: [], failures: [] }
+  if (pdfs.length === 0) return { blocks: [], read: [], failures: [] }
 
   const call =
     trigger ??
@@ -120,12 +141,14 @@ export async function expandPdfAttachments(
     })
 
   const blocks: string[] = []
+  const read: PdfReadSummary[] = []
   const failures: PdfExpansionFailure[] = []
 
   for (const attachment of pdfs.slice(0, MAX_PDFS_PER_SEND)) {
     try {
-      const block = await expandOne(attachment, call)
-      blocks.push(block)
+      const outcome = await expandOne(attachment, call)
+      blocks.push(outcome.block)
+      read.push(outcome.summary)
     } catch (err) {
       const reason = describeFailure(err)
       blocks.push(failureBlock(attachment.name, reason))
@@ -139,13 +162,18 @@ export async function expandPdfAttachments(
     failures.push({ name: dropped.name, reason })
   }
 
-  return { blocks, failures }
+  return { blocks, read, failures }
+}
+
+interface ExpandOutcome {
+  block: string
+  summary: PdfReadSummary
 }
 
 async function expandOne(
   attachment: Attachment,
   call: TriggerFn,
-): Promise<string> {
+): Promise<ExpandOutcome> {
   const bytes_base64 = await fileToBase64(attachment.file as File)
 
   const classified = (await call(CLASSIFY_FUNCTION_ID, {
@@ -153,12 +181,22 @@ async function expandOne(
   })) as ClassifyWire
   const type = classified.document_type ?? 'mixed'
   const pages = classified.page_count ?? 0
+  const classifyMs = classified.elapsed_ms ?? 0
+
+  const unreadable = (): ExpandOutcome => ({
+    block: scannedBlock(attachment.name, pages, classified),
+    summary: {
+      id: attachment.id,
+      pages,
+      elapsedMs: classifyMs,
+      needsOcr: true,
+      truncated: false,
+    },
+  })
 
   // A scan has nothing to extract. Say so in the block: the model needs to know
   // the document was read and found unreadable, not that it was never given one.
-  if (type === 'scanned' || type === 'image_based') {
-    return scannedBlock(attachment.name, pages, classified)
-  }
+  if (type === 'scanned' || type === 'image_based') return unreadable()
 
   const converted = (await call(TO_MARKDOWN_FUNCTION_ID, {
     bytes_base64,
@@ -167,9 +205,7 @@ async function expandOne(
 
   const body = converted.body ?? {}
   const text = body.text ?? ''
-  if (text.trim().length === 0) {
-    return scannedBlock(attachment.name, pages, classified)
-  }
+  if (text.trim().length === 0) return unreadable()
 
   const attrs = [
     `path="${escapeAttr(attachment.name)}"`,
@@ -206,7 +242,36 @@ async function expandOne(
   }
 
   const preamble = notes.length > 0 ? `${notes.join(' ')}\n\n` : ''
-  return `${ATTACHED_FILE_PREFIX}${attrs.join(' ')}>\n${preamble}${text}\n</attached-file>`
+  return {
+    block: `${ATTACHED_FILE_PREFIX}${attrs.join(' ')}>\n${preamble}${text}\n</attached-file>`,
+    summary: {
+      id: attachment.id,
+      pages: converted.page_count ?? pages,
+      chars: body.total_chars ?? text.length,
+      elapsedMs: classifyMs + (converted.elapsed_ms ?? 0),
+      needsOcr: needsOcr.length > 0,
+      truncated: body.truncated === true,
+    },
+  }
+}
+
+/**
+ * One line for the chip on the sent message: what the worker made of the
+ * document, and how fast. This is the only place a person can see that the PDF
+ * was read at all, because the expansion happens before the model is called and
+ * so never appears as a function call in the transcript.
+ */
+export function summaryLabel(name: string, summary: PdfReadSummary): string {
+  const parts = [`${summary.pages} page${summary.pages === 1 ? '' : 's'}`]
+  if (summary.needsOcr && summary.chars === undefined) {
+    parts.push('no readable text')
+  } else if (summary.chars !== undefined) {
+    parts.push(
+      `${summary.chars.toLocaleString('en-US')}${summary.truncated ? '+' : ''} chars`,
+    )
+  }
+  parts.push(`${summary.elapsedMs} ms`)
+  return `${name} · ${parts.join(' · ')}`
 }
 
 function scannedBlock(

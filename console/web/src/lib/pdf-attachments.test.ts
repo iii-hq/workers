@@ -6,6 +6,7 @@ import {
   expandPdfAttachments,
   isPdfAttachment,
   MAX_PDFS_PER_SEND,
+  summaryLabel,
   TO_MARKDOWN_FUNCTION_ID,
 } from './pdf-attachments'
 
@@ -75,7 +76,7 @@ describe('expandPdfAttachments', () => {
   it('does nothing when there are no PDFs', async () => {
     const [fn] = trigger({})
     const result = await expandPdfAttachments([textFile()], fn)
-    expect(result).toEqual({ blocks: [], failures: [] })
+    expect(result).toEqual({ blocks: [], read: [], failures: [] })
     expect(fn.mock.calls).toHaveLength(0)
   })
 
@@ -228,8 +229,77 @@ describe('expandPdfAttachments', () => {
       type: 'application/pdf',
     }
     const result = await expandPdfAttachments([withoutFile], fn)
-    expect(result).toEqual({ blocks: [], failures: [] })
+    expect(result).toEqual({ blocks: [], read: [], failures: [] })
     expect(fn.mock.calls).toHaveLength(0)
+  })
+
+  /**
+   * The expansion runs before the model is called, so it never appears as a
+   * function call in the transcript. This summary is the only place a person
+   * can see that the document was read.
+   */
+  it('reports what it made of the document, for the chip', async () => {
+    const [fn] = trigger({
+      [CLASSIFY_FUNCTION_ID]: {
+        document_type: 'text_based',
+        page_count: 8,
+        elapsed_ms: 15,
+      },
+      [TO_MARKDOWN_FUNCTION_ID]: {
+        body: { text: 'x'.repeat(500), chars: 500, total_chars: 5932 },
+        page_count: 8,
+        elapsed_ms: 72,
+      },
+    })
+
+    const { read } = await expandPdfAttachments([pdf()], fn)
+
+    expect(read).toHaveLength(1)
+    expect(read[0]).toMatchObject({
+      id: 'report.pdf',
+      pages: 8,
+      chars: 5932,
+      elapsedMs: 87,
+      needsOcr: false,
+      truncated: false,
+    })
+    expect(summaryLabel('report.pdf', read[0])).toBe(
+      'report.pdf · 8 pages · 5,932 chars · 87 ms',
+    )
+  })
+
+  it('summarizes a scan as unreadable rather than as zero characters', async () => {
+    const [fn] = trigger({
+      [CLASSIFY_FUNCTION_ID]: {
+        document_type: 'scanned',
+        page_count: 3,
+        elapsed_ms: 9,
+      },
+    })
+
+    const { read } = await expandPdfAttachments([pdf()], fn)
+
+    expect(read[0].needsOcr).toBe(true)
+    expect(read[0].chars).toBeUndefined()
+    expect(summaryLabel('scan.pdf', read[0])).toBe(
+      'scan.pdf · 3 pages · no readable text · 9 ms',
+    )
+  })
+
+  it('marks a truncated extract so the count is not read as the whole document', async () => {
+    const [fn] = trigger({
+      [CLASSIFY_FUNCTION_ID]: { document_type: 'text_based', page_count: 400 },
+      [TO_MARKDOWN_FUNCTION_ID]: {
+        body: { text: 'y', chars: 1, total_chars: 900_000, truncated: true },
+        page_count: 400,
+        elapsed_ms: 39_700,
+      },
+    })
+
+    const { read } = await expandPdfAttachments([pdf()], fn)
+
+    expect(read[0].truncated).toBe(true)
+    expect(summaryLabel('big.pdf', read[0])).toContain('900,000+ chars')
   })
 
   it('escapes quotes in a file name rather than breaking the header', async () => {
