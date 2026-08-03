@@ -1,5 +1,6 @@
 //! The checked-in integration fixtures.
 
+mod condition_failure_notice;
 mod console_streamed_text;
 mod database_row_wake;
 mod direct_spawn_leaf_pipeline;
@@ -33,6 +34,7 @@ pub enum ScenarioDriver {
 /// Every fixture, in stable slug order.
 pub fn all() -> Vec<ScenarioFixture> {
     vec![
+        condition_failure_notice::scenario(),
         console_streamed_text::scenario(),
         database_row_wake::scenario(),
         direct_spawn_leaf_pipeline::scenario(),
@@ -59,7 +61,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 16);
+        assert_eq!(fixtures.len(), 17);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

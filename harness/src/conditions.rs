@@ -38,6 +38,19 @@ impl Skip {
             retire,
         }
     }
+
+    /// A skip that means the binding CANNOT deliver as configured — the
+    /// condition call itself failed (errored, policy-blocked, or
+    /// approval-blocked), as opposed to a healthy condition answering "not
+    /// yet". These starve every future fire the same way, so the owner gets a
+    /// notification (once per binding), not just the transcript record a
+    /// parked session never reads.
+    pub fn is_condition_failure(&self) -> bool {
+        matches!(
+            self.gate,
+            "condition-error" | "condition-policy" | "condition-approval"
+        )
+    }
 }
 
 /// What a condition function returns.
@@ -206,6 +219,19 @@ mod tests {
         assert!(parse_decision(&json!({ "ok": true })).is_err());
         assert!(parse_decision(&json!("yes")).is_err());
         assert!(parse_decision(&json!(null)).is_err());
+    }
+
+    #[test]
+    fn only_condition_failures_warrant_an_owner_notice() {
+        // "Not yet" is the barrier's normal answer N-1 times — it must stay
+        // silent. A condition that cannot even be evaluated starves the
+        // binding forever and must not.
+        let failure = |gate| Skip::new(gate, "r", false).is_condition_failure();
+        assert!(failure("condition-error"));
+        assert!(failure("condition-policy"));
+        assert!(failure("condition-approval"));
+        assert!(!failure("condition"));
+        assert!(!failure("lifecycle"));
     }
 
     #[test]

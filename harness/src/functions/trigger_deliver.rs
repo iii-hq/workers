@@ -589,7 +589,71 @@ async fn record_stop(deps: &Deps, binding: &Binding, event: &Value, skip: Skip) 
         },
     )
     .await;
+    if skip.is_condition_failure() {
+        notify_condition_failure(deps, binding, &skip).await;
+    }
     DeliverResult::stopped(skip.gate, skip.reason)
+}
+
+/// The record above is for the timeline; this is for the OWNER. A condition
+/// that fails to evaluate starves the binding on every fire, and the skip
+/// record lands in a transcript a parked session never reads — three
+/// receiving-op runs slept forever next to a binding whose barrier config
+/// could never resolve. Same doctrine as the claim-failure notice: the
+/// failure surfaces where the wake was expected. The stable entry id makes
+/// re-injection idempotent — one notice per binding, while every later skip
+/// still writes its own record.
+async fn notify_condition_failure(deps: &Deps, binding: &Binding, skip: &Skip) {
+    if let Err(e) = crate::functions::send::inject(
+        deps,
+        &binding.owner.session_id,
+        AgentMessage::user_text(condition_failure_text(binding, skip)),
+        Some(&condition_failure_entry_id(&binding.id)),
+        Some(&json!({ "notification": true, "binding": binding.id })),
+    )
+    .await
+    {
+        tracing::warn!(
+            binding = %binding.id,
+            error = %e,
+            "condition-failure notice failed to deliver"
+        );
+    }
+}
+
+/// What the woken owner reads. It must be actionable without any lookup:
+/// which binding, what it watches, why the fire was dropped, that the binding
+/// is still armed but starving — and the reconcile step, because a
+/// re-registered binding never fires for events that preceded it.
+fn condition_failure_text(binding: &Binding, skip: &Skip) -> String {
+    const MAX_REASON: usize = 400;
+    let mut reason = skip.reason.clone();
+    if reason.chars().count() > MAX_REASON {
+        reason = reason.chars().take(MAX_REASON).collect();
+        reason.push_str(" …(truncated)");
+    }
+    let label = binding_label(binding)
+        .map(|l| format!(" `{l}`"))
+        .unwrap_or_default();
+    let watch = binding
+        .trigger_watch()
+        .map(|(ty, cfg)| format!(" watching `{ty}` {cfg}"))
+        .unwrap_or_default();
+    format!(
+        "[notification] binding {}{label}{watch} fired but was NOT delivered: {reason}. The \
+         binding stays armed and every fire will keep skipping until the condition call \
+         succeeds. If the condition is misconfigured, unregister the binding, re-register it \
+         corrected, and then read the watched state once — events from before the new \
+         registration will never fire it.",
+        binding.id
+    )
+}
+
+/// One notice per binding, ever — session-manager's entry-id idempotence is
+/// the dedup. Distinct by construction from `e_fire_*`/`e_trigfired_*`/
+/// `e_trigskip_*`/`e_expire_*`/`e_claimfail_*`.
+fn condition_failure_entry_id(binding_id: &str) -> String {
+    format!("e_condfail_{binding_id}")
 }
 
 fn skip_record_entry_id(binding_id: &str, gate: &str) -> String {
@@ -679,6 +743,61 @@ mod tests {
         let second = skip_record_entry_id("sub_1", "condition");
         assert_ne!(first, second);
         assert!(first.starts_with("e_trigskip_sub_1_condition_"));
+    }
+
+    /// Prevents: the silent-starvation variant of the parked-forever bug — a
+    /// condition that errors on every fire while the skip records pile up in
+    /// a transcript nobody reads. The notice must name the binding, the
+    /// watch, the reason, the standing consequence, and the reconcile step.
+    #[test]
+    fn the_condition_failure_notice_is_actionable_without_lookup() {
+        let mut b = wake_binding("state");
+        b.dedup_key.as_mut().unwrap()["label"] = json!("All couriers complete");
+        let skip = Skip {
+            gate: "condition-error",
+            reason: "`state::barrier`: condition call failed: BARRIER_ERROR: no arrival key \
+                     at `/supplier` in the event"
+                .into(),
+            retire: false,
+        };
+        let text = condition_failure_text(&b, &skip);
+        assert!(text.starts_with("[notification] binding sub_w"), "{text}");
+        assert!(text.contains("`All couriers complete`"), "{text}");
+        assert!(text.contains("NOT delivered"), "{text}");
+        assert!(text.contains("no arrival key at `/supplier`"), "{text}");
+        assert!(text.contains("stays armed"), "{text}");
+        assert!(
+            text.contains("read the watched state once"),
+            "the reconcile step is the half agents keep missing: {text}"
+        );
+
+        // A runaway reason is bounded, never dropped.
+        let huge = Skip {
+            gate: "condition-error",
+            reason: "x".repeat(2000),
+            retire: false,
+        };
+        let text = condition_failure_text(&b, &huge);
+        assert!(text.contains("…(truncated)"), "{text}");
+        assert!(text.chars().count() < 1200, "{}", text.chars().count());
+    }
+
+    #[test]
+    fn the_condition_failure_notice_is_once_per_binding_and_collision_free() {
+        // Stable id = session-manager's entry-id idempotence dedups repeat
+        // notices; distinct prefixes = it never swallows (or is swallowed by)
+        // the fire, record, expiry, or claim-failure appends for the binding.
+        let id = condition_failure_entry_id("sub_1");
+        assert_eq!(id, condition_failure_entry_id("sub_1"));
+        for other in [
+            "e_fire_sub_1_0",
+            "e_trigfired_sub_1_0",
+            "e_trigskip_sub_1_condition-error_x",
+            "e_expire_sub_1",
+            "e_claimfail_sub_1",
+        ] {
+            assert_ne!(id, other);
+        }
     }
 
     #[test]
