@@ -323,3 +323,16 @@ Feature: context::assemble — the model-ready context pipeline
       { "allow_compaction": false }
       """
     Then the call fails with code "context/overflow"
+
+  # Prevents: the breakdown drifting from the total. Budget UIs render
+  # these categories as segments of token_count, so they must reconcile.
+  Scenario: the response reports a per-category breakdown
+    Given a user message "what is the weather"
+    And an assistant message "sunny with a chance of tokens"
+    When I assemble the history with model "any-model" and system prompt "xxxxxxxxxxxxxxxx"
+    Then the call succeeds
+    And the response field "breakdown.system_prompt_tokens" is 4
+    And the response field "breakdown.tools_tokens" is 0
+    And the response field "breakdown.by_role.user" exceeds 0
+    And the response field "breakdown.by_role.assistant" exceeds 0
+    And the response field "breakdown.estimator" is "heuristic"

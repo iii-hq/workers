@@ -14,7 +14,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::core::budget::{default_reserved, preserve_recent_budget, usable};
-use crate::core::estimate::{estimator_for_model, Estimator};
+use crate::core::estimate::{estimator_for_model, Estimator, EstimatorKind};
 use crate::core::lease;
 use crate::core::prune::{emergency_reduce_with_sizes, prune_with_sizes, PruneParams};
 use crate::core::selection::select;
@@ -22,6 +22,7 @@ use crate::core::summary::{
     build_system_prompt, render_system_prompt, render_user_prompt, strip_media,
 };
 use crate::error::ContextError;
+use crate::functions::count_tokens::{ByRoleTokens, EstimatorName};
 use crate::functions::resolve_model;
 use crate::ports::{Deps, SummarizeRequest};
 use crate::types::{AgentFunction, AgentMessage, ModelInput, Role, ThinkingLevel};
@@ -112,6 +113,22 @@ pub struct Applied {
     pub summarized_head_tokens: Option<u64>,
 }
 
+/// Where the returned `token_count` sits, by category — the same sums the
+/// pipeline already maintains, exposed so callers can render a context
+/// breakdown without re-counting: `token_count` equals the by_role sum plus
+/// `system_prompt_tokens`, `tools_tokens`, and the request overhead.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AssembleBreakdown {
+    /// Estimated tokens of the returned system prompt (any compaction
+    /// summary section included).
+    pub system_prompt_tokens: u64,
+    /// Estimated tokens of the invocation schemas.
+    pub tools_tokens: u64,
+    /// The returned messages' tokens by role.
+    pub by_role: ByRoleTokens,
+    pub estimator: EstimatorName,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AssembleResponse {
     pub system_prompt: String,
@@ -127,6 +144,7 @@ pub struct AssembleResponse {
     pub effective_max_output_tokens: u64,
     pub model_resolved: ModelResolvedWire,
     pub applied: Applied,
+    pub breakdown: AssembleBreakdown,
 }
 
 /// Test-only re-export of [`count_context`] so sibling function tests
@@ -312,6 +330,21 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         });
     }
 
+    let mut by_role = ByRoleTokens {
+        user: 0,
+        assistant: 0,
+        function_result: 0,
+        custom: 0,
+    };
+    for (message, size) in working.iter().zip(&sizes) {
+        match message.role() {
+            Role::User => by_role.user += size,
+            Role::Assistant => by_role.assistant += size,
+            Role::FunctionResult => by_role.function_result += size,
+            Role::Custom => by_role.custom += size,
+        }
+    }
+
     Ok(AssembleResponse {
         system_prompt,
         messages: working,
@@ -324,6 +357,15 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
             crate::core::budget::ModelResolved::Fallback => ModelResolvedWire::Fallback,
         },
         applied,
+        breakdown: AssembleBreakdown {
+            system_prompt_tokens: prompt_tokens,
+            tools_tokens: tool_tokens,
+            by_role,
+            estimator: match estimator.kind() {
+                EstimatorKind::Tokenizer => EstimatorName::Tokenizer,
+                EstimatorKind::Heuristic => EstimatorName::Heuristic,
+            },
+        },
     })
 }
 
