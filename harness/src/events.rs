@@ -421,6 +421,7 @@ impl TurnEvents {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn emit_completed(
         &self,
         session_id: &str,
@@ -433,6 +434,7 @@ impl TurnEvents {
         display_parent: Option<&str>,
         reactive: ReactiveMeta<'_>,
         terminal: bool,
+        context: Option<&crate::context_snapshot::ContextSnapshotV1>,
     ) {
         tracing::info!(
             session_id,
@@ -470,6 +472,11 @@ impl TurnEvents {
         }
         if let Some(dp) = display_parent {
             payload["parent_session_id"] = Value::String(dp.to_string());
+        }
+        // The latest generation's context accounting (categories, budget,
+        // usage) so live consumers never re-walk the transcript for it.
+        if let Some(snapshot) = context {
+            payload["context"] = serde_json::to_value(snapshot).unwrap_or(Value::Null);
         }
         reactive.stamp(&mut payload);
         self.fan_out(

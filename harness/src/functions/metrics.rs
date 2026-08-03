@@ -9,6 +9,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::context_snapshot::ContextSnapshotV1;
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::types::content::ContentBlock;
@@ -77,6 +78,11 @@ pub struct SessionUsageV1 {
     pub reasoning_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    /// The session's latest per-generation context snapshot (categories,
+    /// budget, usage) — absent for sessions that have not generated since
+    /// snapshots landed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextSnapshotV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -153,7 +159,11 @@ pub async fn handle(
                 total.observe(message);
             }
         }
-        by_session.push(current.finish_session(node));
+        let context =
+            crate::context_snapshot::get(&deps.iii, &node.session_id, cfg.session_timeout_ms)
+                .await
+                .unwrap_or(None);
+        by_session.push(current.finish_session(node, context));
     }
     // Partial snapshots are polled as progress signals. Trace aggregation is
     // comparatively expensive and does not help the watchdog decide whether
@@ -323,7 +333,11 @@ impl UsageAccumulator {
         }
     }
 
-    fn finish_session(self, node: &SessionTreeNodeV1) -> SessionUsageV1 {
+    fn finish_session(
+        self,
+        node: &SessionTreeNodeV1,
+        context: Option<ContextSnapshotV1>,
+    ) -> SessionUsageV1 {
         SessionUsageV1 {
             session_id: node.session_id.clone(),
             parent_session_id: node.parent_session_id.clone(),
@@ -337,6 +351,7 @@ impl UsageAccumulator {
             cache_write_tokens: self.cache_write.finish(),
             reasoning_tokens: self.reasoning.finish(),
             cost_usd: self.cost_usd.finish(),
+            context,
         }
     }
 

@@ -687,6 +687,7 @@ pub(crate) async fn seed_new(
         reactive_depth: None,
         reactive_owner_session_id: None,
         functions_generation,
+        context_snapshot: None,
         result: None,
         result_error: None,
         validation_retries: 0,

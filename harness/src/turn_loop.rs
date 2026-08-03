@@ -507,6 +507,14 @@ pub async fn run_step(
                 .max_output_tokens
                 .unwrap_or(assembled.effective_max_output_tokens)
                 .min(assembled.effective_max_output_tokens);
+            let snapshot = build_context_snapshot(
+                &record,
+                payload.step,
+                &assembled,
+                final_request_tokens,
+                request_overhead_tokens,
+            );
+            record.context_snapshot = Some(snapshot);
             break (
                 gen_system_prompt,
                 gen_annotations,
@@ -697,6 +705,23 @@ pub async fn run_step(
     // Generation consumed: advance the steering watermark (persisted by the
     // advance()/finalize call that ends this step).
     record.watermark_entry_id = watermark;
+
+    // Stamp the generation's actual usage into the snapshot and store the
+    // session's latest copy. Best-effort: accounting must never fail a turn
+    // that generated successfully.
+    if let Some(snapshot) = record.context_snapshot.as_mut() {
+        snapshot.usage = outcome.message.usage.clone();
+        if let Err(error) =
+            crate::context_snapshot::put(&deps.iii, snapshot, cfg.session_timeout_ms).await
+        {
+            tracing::warn!(
+                session_id = %record.session_id,
+                turn_id = %record.turn_id,
+                %error,
+                "context snapshot store failed"
+            );
+        }
+    }
 
     // Persist the final assistant message into the streamed entry.
     let _ = session
@@ -1433,6 +1458,7 @@ async fn finalize_completed(
                 depth: record.reactive_depth,
             },
             turn_is_terminal(deps, &record.session_id),
+            record.context_snapshot.as_ref(),
         )
         .await;
     // Sub-agent turns resolve the parent's pending call with their result.
@@ -1525,6 +1551,7 @@ async fn finalize_failed(
                 depth: record.reactive_depth,
             },
             turn_is_terminal(deps, &record.session_id),
+            record.context_snapshot.as_ref(),
         )
         .await;
     if let Some(parent) = record.parent.clone() {
@@ -1792,6 +1819,7 @@ async fn finalize_cancelled(
                 depth: record.reactive_depth,
             },
             turn_is_terminal(deps, &record.session_id),
+            record.context_snapshot.as_ref(),
         )
         .await;
     if let Some(parent) = record.parent.clone() {
@@ -2136,11 +2164,60 @@ async fn assemble_context(
         usable: out.usable,
         token_count: out.token_count,
         effective_max_output_tokens: out.effective_max_output_tokens,
+        compacted: out.applied.compacted,
+        summarized_head_tokens: out.applied.summarized_head_tokens,
+        breakdown: out.breakdown,
     })
 }
 
 fn is_context_overflow_error(error: &str) -> bool {
     error.contains("context/overflow:")
+}
+
+/// Fold the assembly the loop already performed into the session's context
+/// snapshot. `final_request_tokens >= assembled.token_count` when hooks or
+/// orphan repair grew the request; the difference is the hook_guidance
+/// category. No counting round trips happen here.
+fn build_context_snapshot(
+    record: &TurnRecord,
+    step: u64,
+    assembled: &Assembled,
+    final_request_tokens: u64,
+    request_overhead_tokens: u64,
+) -> crate::context_snapshot::ContextSnapshotV1 {
+    use crate::context_snapshot::{ContextSnapshotV1, SnapshotCategoriesV1, SnapshotMessagesV1};
+    let breakdown = assembled.breakdown.as_ref();
+    let messages = breakdown
+        .map(|b| SnapshotMessagesV1 {
+            user: b.by_role.user,
+            assistant: b.by_role.assistant,
+            function_result: b.by_role.function_result,
+            custom: b.by_role.custom,
+        })
+        .unwrap_or_default();
+    ContextSnapshotV1 {
+        session_id: record.session_id.clone(),
+        turn_id: record.turn_id.clone(),
+        step,
+        model: record.options.model.clone(),
+        provider: record.options.provider.clone(),
+        estimator: breakdown.and_then(|b| b.estimator.clone()),
+        usable: assembled.usable,
+        effective_max_output_tokens: assembled.effective_max_output_tokens,
+        total: final_request_tokens,
+        free: assembled.usable.saturating_sub(final_request_tokens),
+        categories: SnapshotCategoriesV1 {
+            system_prompt: breakdown.map(|b| b.system_prompt_tokens).unwrap_or(0),
+            tools: breakdown.map(|b| b.tools_tokens).unwrap_or(0),
+            messages,
+            overhead: request_overhead_tokens,
+            hook_guidance: final_request_tokens.saturating_sub(assembled.token_count),
+        },
+        compacted: assembled.compacted,
+        summarized_head_tokens: assembled.summarized_head_tokens,
+        usage: None,
+        timestamp: AgentMessage::now_ms(),
+    }
 }
 
 /// Append model-facing context aid lines to the system prompt: the session id
@@ -2214,6 +2291,9 @@ struct Assembled {
     token_count: u64,
     /// Model/output ceiling resolved by context-manager for this request.
     effective_max_output_tokens: u64,
+    compacted: bool,
+    summarized_head_tokens: Option<u64>,
+    breakdown: Option<crate::clients::context::AssembleBreakdown>,
 }
 
 struct ContextAssemblyInputs<'a> {

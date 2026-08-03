@@ -11,6 +11,7 @@ pub mod budget;
 pub mod clients;
 pub mod config;
 pub mod configuration;
+pub mod context_snapshot;
 pub mod contract;
 pub mod deferred;
 pub mod deps;
