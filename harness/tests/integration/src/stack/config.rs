@@ -6,16 +6,19 @@ use super::RunLayout;
 
 /// Start order matters: the harness retries `queue::define` only briefly at
 /// boot, so queue precedes harness. The harness itself is spawned after Arm.
-pub const WORKER_START_ORDER: [&str; 5] = [
+pub const WORKER_START_ORDER: [&str; 6] = [
     "queue",
     "iii-directory",
     "session-manager",
     "context-manager",
     // The standalone state worker (NOT the engine builtin): it owns the
     // `state` trigger type in production, and its fan-out is the fire-time
-    // metadata-sidecar seam MOT-4209 broke on. INT-006 drives a reaction
+    // metadata-sidecar seam MOT-4209 broke on. INT-006 drives a wake
     // through it; the builtin would mask exactly that path.
     "state",
+    // The database worker owns `database::row-changed` — the second real
+    // medium INT-014 proves the generic wake path over.
+    "database",
 ];
 
 /// No provider keys or developer secrets leak into the subject stack.
@@ -76,6 +79,13 @@ pub fn render_seed(worker: &str, layout: &RunLayout) -> Option<Value> {
         })),
         "iii-directory" => Some(json!({
             "skills_folder": layout.skills_dir().to_string_lossy()
+        })),
+        "database" => Some(json!({
+            "databases": {
+                "primary": {
+                    "url": format!("sqlite:{}", layout.database_path().display())
+                }
+            }
         })),
         // Avoid a run-path-dependent line in the expected system prompt.
         "harness" => Some(json!({

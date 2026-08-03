@@ -1,135 +1,184 @@
 import { describe, expect, it } from 'vitest'
 import type { TriggerFiredData } from '@/types/chat'
-import { mergeFiredTriggers, type SessionTriggerInfo } from './triggers'
+import {
+  deliveryOf,
+  listSessionTriggers,
+  mergeFiredTriggers,
+  type SessionTriggerInfo,
+} from './triggers'
 
-const live = (
-  id: string,
-  over: Partial<SessionTriggerInfo> = {},
-): SessionTriggerInfo => ({
-  id,
-  triggerType: 'state',
-  functionId: 'harness::react',
-  config: {},
-  configSummary: '',
-  ...over,
+function live(overrides: Partial<SessionTriggerInfo> = {}): SessionTriggerInfo {
+  return {
+    id: 'sub_live',
+    triggerId: 'trg_live',
+    triggerType: 'state',
+    delivery: { kind: 'notify' },
+    config: { scope: 'run', key: 'done' },
+    once: true,
+    fires: 0,
+    createdAt: 1,
+    ...overrides,
+  }
+}
+
+function fired(overrides: Partial<TriggerFiredData> = {}): TriggerFiredData {
+  return {
+    subscription_id: 'sub_live',
+    trigger_id: 'trg_live',
+    target: 'harness::send',
+    once: true,
+    retired: true,
+    fired_at: 42,
+    ...overrides,
+  }
+}
+
+describe('deliveryOf', () => {
+  it('maps live targets: absent/harness::send = notify, anything else = call', () => {
+    expect(deliveryOf(undefined)).toEqual({ kind: 'notify' })
+    expect(deliveryOf('harness::send')).toEqual({ kind: 'notify' })
+    expect(deliveryOf('database::execute')).toEqual({
+      kind: 'call',
+      functionId: 'database::execute',
+    })
+  })
+
+  it('keeps legacy record values rendering', () => {
+    expect(deliveryOf('notify')).toEqual({ kind: 'notify' })
+    expect(deliveryOf('spawn')).toEqual({
+      kind: 'call',
+      functionId: 'harness::spawn',
+    })
+  })
 })
 
-const rec = (over: Partial<TriggerFiredData> = {}): TriggerFiredData => ({
-  subscription_id: 'sub_1',
-  target: 'spawn',
-  once: true,
-  retired: true,
-  fired_at: 1,
-  ...over,
+describe('listSessionTriggers', () => {
+  it('maps binding rows generically, unknown future sources included', async () => {
+    const client = {
+      trigger: async (id: string, _payload?: unknown) => {
+        expect(id).toBe('harness::triggers::list')
+        return {
+          subscriptions: [
+            {
+              subscription_id: 'sub_a',
+              trigger_id: 'trg_a',
+              trigger_type: 'state',
+              config: { scope: 'run', key: 'done' },
+              label: 'gate',
+              once: true,
+              fires: 0,
+              created_at: 10,
+            },
+            {
+              subscription_id: 'sub_b',
+              trigger_type: 'cron',
+              config: { expression: '0 * * * * *' },
+              target: 'state::set',
+              once: false,
+              max_fires: 6,
+              fires: 2,
+              created_at: 20,
+            },
+            {
+              // A trigger source that does not exist yet must map unchanged.
+              subscription_id: 'sub_c',
+              trigger_type: 'mqtt::message',
+              config: { topic: 'sensors/#' },
+              once: false,
+              fires: 0,
+              created_at: 30,
+            },
+          ],
+        } as never
+      },
+    }
+    const rows = await listSessionTriggers(client, 's_owner')
+    expect(rows).toHaveLength(3)
+    expect(rows[0]).toMatchObject({
+      id: 'sub_a',
+      triggerId: 'trg_a',
+      triggerType: 'state',
+      delivery: { kind: 'notify' },
+      label: 'gate',
+      once: true,
+    })
+    expect(rows[1].delivery).toEqual({
+      kind: 'call',
+      functionId: 'state::set',
+    })
+    expect(rows[1].maxFires).toBe(6)
+    expect(rows[2]).toMatchObject({
+      triggerType: 'mqtt::message',
+      delivery: { kind: 'notify' },
+      config: { topic: 'sensors/#' },
+    })
+  })
+
+  it('returns empty on a failed call', async () => {
+    const client = {
+      trigger: async () => {
+        throw new Error('down')
+      },
+    }
+    expect(await listSessionTriggers(client, 's')).toEqual([])
+  })
 })
 
 describe('mergeFiredTriggers', () => {
-  it('appends a ghost row for a retired fire absent from the poll', () => {
+  it('returns the poll untouched when nothing retired', () => {
+    const polled = [live()]
+    expect(mergeFiredTriggers(polled, [fired({ retired: false })])).toBe(polled)
+  })
+
+  it('annotates a still-polled retired row in place', () => {
+    const merged = mergeFiredTriggers([live()], [fired()])
+    expect(merged).toHaveLength(1)
+    expect(merged[0].fired).toBe(true)
+    expect(merged[0].firedAt).toBe(42)
+  })
+
+  it('ghosts a dropped row, preferring the remembered full row', () => {
+    const remembered = new Map([['sub_live', live({ label: 'remembered' })]])
+    const merged = mergeFiredTriggers([], [fired()], remembered)
+    expect(merged).toHaveLength(1)
+    expect(merged[0].label).toBe('remembered')
+    expect(merged[0].fired).toBe(true)
+  })
+
+  it('falls back to a thin record-only ghost after a reload', () => {
     const merged = mergeFiredTriggers(
       [],
-      [rec({ trigger_id: 't-1', model: 'm', scope: 'sc', key: 'k' })],
+      [fired({ scope: 'run', key: 'done', label: undefined })],
     )
     expect(merged).toHaveLength(1)
-    expect(merged[0]).toMatchObject({
-      id: 't-1',
-      fired: true,
-      once: true,
-      triggerType: 'state',
-      functionId: 'harness::react',
-      config: { scope: 'sc', key: 'k' },
+    expect(merged[0].triggerType).toBe('state')
+    expect(merged[0].config).toEqual({ scope: 'run', key: 'done' })
+    expect(merged[0].delivery).toEqual({ kind: 'notify' })
+  })
+
+  it('renders a legacy spawn record as a call ghost', () => {
+    const merged = mergeFiredTriggers([], [fired({ target: 'spawn' })])
+    expect(merged[0].delivery).toEqual({
+      kind: 'call',
+      functionId: 'harness::spawn',
     })
   })
 
-  it('annotates a still-polled retired trigger in place instead of ghosting', () => {
-    const polled = [live('t-1', { label: 'facts', once: true })]
-    const merged = mergeFiredTriggers(polled, [
-      rec({ trigger_id: 't-1', fired_at: 7 }),
-    ])
-    expect(merged).toHaveLength(1)
-    // Same row (full config/metadata retained), just marked fired.
-    expect(merged[0]).toMatchObject({
-      id: 't-1',
-      label: 'facts',
-      fired: true,
-      firedAt: 7,
-    })
-  })
-
-  it('ignores non-retired fires (binding still live)', () => {
-    expect(mergeFiredTriggers([], [rec({ retired: false })])).toEqual([])
-  })
-
-  it('collapses repeat fires of the same trigger to one newest ghost', () => {
+  it('collapses repeat fires to the newest record', () => {
     const merged = mergeFiredTriggers(
       [],
-      [
-        rec({ trigger_id: 't-1', fired_at: 1 }),
-        rec({ trigger_id: 't-1', fired_at: 2 }),
-      ],
+      [fired({ fired_at: 1 }), fired({ fired_at: 2 })],
     )
     expect(merged).toHaveLength(1)
-    expect(merged[0]).toMatchObject({ id: 't-1', firedAt: 2 })
+    expect(merged[0].firedAt).toBe(2)
   })
 
-  it('prefers the full last-seen row for a ghost so workflow structure survives', () => {
-    const full = live('t-1', {
-      label: 'insights',
-      once: true,
-      metadata: {
-        join: { id: 'J1', expect: ['insights', 'glossary'], key: 'insights' },
-        model: 'm',
-        task: 'merge everything',
-      },
-    })
-    const seen = new Map([[full.id, full]])
-    const merged = mergeFiredTriggers([], [rec({ trigger_id: 't-1' })], seen)
+  it('correlates on the subscription id even without an engine trigger id', () => {
+    const merged = mergeFiredTriggers(
+      [live({ id: 'sub_x', triggerId: undefined })],
+      [fired({ subscription_id: 'sub_x', trigger_id: undefined })],
+    )
     expect(merged).toHaveLength(1)
-    // Full metadata retained (join grouping / DAG structure), fired flagged.
-    expect(merged[0]).toMatchObject({
-      id: 't-1',
-      fired: true,
-      firedAt: 1,
-      label: 'insights',
-      metadata: { join: { id: 'J1' }, task: 'merge everything' },
-    })
-    // Without the cache (e.g. after a reload) the thin record ghost stands.
-    const thin = mergeFiredTriggers([], [rec({ trigger_id: 't-1' })])
-    expect(thin[0].metadata?.join).toBeUndefined()
-  })
-
-  it('falls back to a synthetic id when the record has no trigger id', () => {
-    const merged = mergeFiredTriggers(
-      [],
-      [rec({ subscription_id: 'sub_9', trigger_id: undefined })],
-    )
-    expect(merged[0]).toMatchObject({ id: 'fired:sub_9', fired: true })
-  })
-
-  it('never renders an empty ghost title: label-less non-state falls back to "trigger"', () => {
-    const merged = mergeFiredTriggers(
-      [],
-      [rec({ trigger_id: 't-3', key: undefined, label: undefined })],
-    )
-    expect(merged[0]).toMatchObject({ id: 't-3', triggerType: 'trigger' })
-  })
-
-  it('marks a notify fire as a notify-target ghost', () => {
-    const merged = mergeFiredTriggers(
-      [],
-      [
-        rec({
-          trigger_id: 't-2',
-          target: 'notify',
-          label: 'ping',
-          key: undefined,
-        }),
-      ],
-    )
-    expect(merged[0]).toMatchObject({
-      id: 't-2',
-      fired: true,
-      functionId: 'harness::notify_agent',
-      label: 'ping',
-    })
+    expect(merged[0].fired).toBe(true)
   })
 })

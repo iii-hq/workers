@@ -90,14 +90,16 @@ impl BindingFilter {
 
 #[derive(Debug, Clone)]
 struct Binding {
-    /// The registration id (`engine::register_trigger`'s returned id) — stamped
-    /// into react sidecars so a fired join can unregister its predecessors.
-    id: String,
     function_id: String,
     filter: BindingFilter,
     /// The trigger's registration `metadata`, forwarded to the bound function
-    /// as the invocation sidecar so targets like `harness::react` can carry
-    /// per-subscription context (the reaction spec).
+    /// as the invocation sidecar so targets like `harness::spawn` and
+    /// `harness::notify_agent` can carry per-subscription context (the spawn
+    /// spec, or the subscription id/label). Stamped once at registration and
+    /// delivered as stored — there is no fire-time stamping. Carries the
+    /// `__subscription_id` the self-edge check in `fan_out` matches on — the
+    /// engine's own registration id (`TriggerConfig.id`) is keyed on in
+    /// `SubscriberSet` but otherwise unused here.
     metadata: Option<Value>,
 }
 
@@ -110,9 +112,8 @@ impl SubscriberSet {
     fn add(&self, config: TriggerConfig) -> Result<(), String> {
         let filter = BindingFilter::parse(&config.config)?;
         self.lock().insert(
-            config.id.clone(),
+            config.id,
             Binding {
-                id: config.id,
                 function_id: config.function_id,
                 filter,
                 metadata: config.metadata,
@@ -127,7 +128,6 @@ impl SubscriberSet {
 
     fn add_unfiltered(&self, config: TriggerConfig) -> Binding {
         let binding = Binding {
-            id: config.id.clone(),
             function_id: config.function_id,
             filter: BindingFilter::default(),
             metadata: config.metadata,
@@ -174,33 +174,9 @@ impl TriggerHandler for ReadyTriggerHandler {
     }
 }
 
-/// A task reaction that runs detached (no `session_id` pin, no
-/// `__owner_session_id` stamp — [`crate::subscriptions::OWNER_SESSION_KEY`],
-/// the pin fallback `reaction_delivery_session` actually reads) cannot chain
-/// through a `parent_session_id` filter: children it spawns are parented to
-/// the fresh reaction session, so their completion events never match the
-/// binding and the chain silently stalls after the first reaction-spawned
-/// child. Presence-only by design: a pin that MISMATCHES the filtered parent
-/// also cannot chain, but may be a deliberate non-chaining collector, so it
-/// is not flagged.
-fn detached_task_with_parent_filter(metadata: Option<&Value>, config: &Value) -> bool {
-    let has_task = metadata.is_some_and(|m| m.get("task").is_some());
-    let pinned = metadata.is_some_and(|m| {
-        m.get("session_id")
-            .and_then(Value::as_str)
-            .is_some_and(|s| !s.is_empty())
-            || m.get(crate::subscriptions::OWNER_SESSION_KEY)
-                .and_then(Value::as_str)
-                .is_some_and(|s| !s.is_empty())
-    });
-    let parent_filtered = BindingFilter::parse(config).is_ok_and(|f| f.parent_session_id.is_some());
-    has_task && !pinned && parent_filtered
-}
-
 struct TurnEventTriggerHandler {
     type_id: &'static str,
     set: SubscriberSet,
-    iii: Arc<IIIClient>,
 }
 
 #[async_trait]
@@ -208,33 +184,16 @@ impl TriggerHandler for TurnEventTriggerHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         let id = config.id.clone();
         let function_id = config.function_id.clone();
-        // A react binding with a bad spec would only surface as a silent no-op
-        // when the event fires — fail the registration instead. Shape first,
-        // then the model id against the live router catalog (models written
-        // from memory, e.g. "gpt-4o", would otherwise make every reaction fail
-        // at spawn time).
-        if function_id == crate::functions::react::REACT_ID {
-            crate::functions::react::validate_spec(config.metadata.as_ref())
-                .map_err(Error::Handler)?;
-            crate::functions::react::validate_model(&self.iii, config.metadata.as_ref())
-                .await
-                .map_err(Error::Handler)?;
-            // Turn-event types only: `message-queued` fires carry no parent
-            // (`emit_queued` fans out with parent/display both `None`), so a
-            // parent filter there never matches at all and the pin advice
-            // below would be wrong.
-            if self.type_id != MESSAGE_QUEUED
-                && detached_task_with_parent_filter(config.metadata.as_ref(), &config.config)
-            {
-                tracing::warn!(
-                    trigger_type = self.type_id,
-                    %id,
-                    "task reaction is filtered on parent_session_id but delivery is detached \
-                     (no metadata.session_id / owner stamp): sub-agents spawned by the reaction \
-                     will not match this filter and the chain will stall — pin \
-                     metadata.session_id to the filtered session"
-                );
-            }
+        // Trigger delivery never creates an agent — refuse the binding loudly
+        // at registration instead of letting it no-op (or worse) at fire
+        // time. This is the engine-direct path; agent registrations are
+        // already rejected wholesale by the subscribe interceptor.
+        if function_id == crate::functions::SPAWN_ID {
+            return Err(Error::Handler(
+                "harness::spawn is not a trigger target: trigger delivery never creates an \
+                 agent. Spawn children directly and watch what they write."
+                    .to_string(),
+            ));
         }
         self.set.add(config).map_err(Error::Handler)?;
         tracing::info!(trigger_type = self.type_id, %id, %function_id, "turn-event subscription registered");
@@ -244,23 +203,6 @@ impl TriggerHandler for TurnEventTriggerHandler {
     async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         self.set.remove(&config.id);
         Ok(())
-    }
-}
-
-/// Reactive-chain metadata carried by react-spawned turns, echoed on their
-/// turn events: `spawned_by` powers the self-edge loop breaker in `fan_out`,
-/// `depth` powers react's chain cap.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ReactiveMeta<'a> {
-    pub spawned_by: Option<&'a str>,
-    pub depth: Option<u32>,
-}
-
-impl ReactiveMeta<'_> {
-    fn stamp(&self, payload: &mut Value) {
-        if let Some(d) = self.depth {
-            payload["reactive_depth"] = Value::from(d);
-        }
     }
 }
 
@@ -305,7 +247,6 @@ impl TurnEvents {
                 TurnEventTriggerHandler {
                     type_id: TURN_STARTED,
                     set: started.clone(),
-                    iii: iii.clone(),
                 },
             )
             .trigger_request_format::<TurnEventBindingConfig>(),
@@ -317,7 +258,6 @@ impl TurnEvents {
                 TurnEventTriggerHandler {
                     type_id: TURN_COMPLETED,
                     set: completed.clone(),
-                    iii: iii.clone(),
                 },
             )
             .trigger_request_format::<TurnEventBindingConfig>(),
@@ -329,7 +269,6 @@ impl TurnEvents {
                 TurnEventTriggerHandler {
                     type_id: MESSAGE_QUEUED,
                     set: queued.clone(),
-                    iii: iii.clone(),
                 },
             )
             .trigger_request_format::<TurnEventBindingConfig>(),
@@ -375,7 +314,6 @@ impl TurnEvents {
             session_id,
             None,
             None,
-            None,
             payload,
         )
         .await;
@@ -387,15 +325,8 @@ impl TurnEvents {
         turn_id: &str,
         parent: Option<&ParentLink>,
         display_parent: Option<&str>,
-        reactive: ReactiveMeta<'_>,
     ) {
-        tracing::info!(
-            session_id,
-            turn_id,
-            reactive_depth = reactive.depth,
-            spawned_by = reactive.spawned_by,
-            "turn started"
-        );
+        tracing::info!(session_id, turn_id, "turn started");
         let mut payload = serde_json::json!({
             "session_id": session_id,
             "turn_id": turn_id,
@@ -407,14 +338,12 @@ impl TurnEvents {
         if let Some(dp) = display_parent {
             payload["parent_session_id"] = Value::String(dp.to_string());
         }
-        reactive.stamp(&mut payload);
         self.fan_out(
             &self.started,
             TURN_STARTED,
             session_id,
             parent,
             display_parent,
-            reactive.spawned_by,
             payload,
         )
         .await;
@@ -431,15 +360,12 @@ impl TurnEvents {
         reason: Option<&str>,
         parent: Option<&ParentLink>,
         display_parent: Option<&str>,
-        reactive: ReactiveMeta<'_>,
         terminal: bool,
     ) {
         tracing::info!(
             session_id,
             turn_id,
             status,
-            reactive_depth = reactive.depth,
-            spawned_by = reactive.spawned_by,
             result_error,
             terminal,
             "turn completed"
@@ -471,20 +397,17 @@ impl TurnEvents {
         if let Some(dp) = display_parent {
             payload["parent_session_id"] = Value::String(dp.to_string());
         }
-        reactive.stamp(&mut payload);
         self.fan_out(
             &self.completed,
             TURN_COMPLETED,
             session_id,
             parent,
             display_parent,
-            reactive.spawned_by,
             payload,
         )
         .await;
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn fan_out(
         &self,
         set: &SubscriberSet,
@@ -492,48 +415,21 @@ impl TurnEvents {
         session_id: &str,
         parent: Option<&ParentLink>,
         display_parent: Option<&str>,
-        spawned_by_subscription: Option<&str>,
         payload: Value,
     ) {
         for binding in set.snapshot() {
             if !binding.filter.matches(session_id, parent, display_parent) {
                 continue;
             }
-            // Loop breaker #1 (self-edge): the subscription that react-spawned
-            // this turn never receives its completion — otherwise a reaction
-            // filtered on the same parent it spawns under re-fires itself
-            // forever (instantly, when the child fails fast).
-            if spawned_by_subscription == Some(binding.id.as_str()) {
-                tracing::debug!(
-                    trigger_type,
-                    subscription = %binding.id,
-                    "skipping self-edge delivery to the spawning subscription"
-                );
-                continue;
-            }
-            // React targets get the firing subscription's id stamped into the
-            // sidecar (`__subscription_id`) so a completed join can unregister
-            // its predecessor subscriptions.
-            let metadata = match &binding.metadata {
-                Some(Value::Object(m))
-                    if binding.function_id == crate::functions::react::REACT_ID =>
-                {
-                    let mut m = m.clone();
-                    m.insert(
-                        "__subscription_id".to_string(),
-                        Value::String(binding.id.clone()),
-                    );
-                    Some(Value::Object(m))
-                }
-                other => other.clone(),
-            };
+            // The registration metadata is forwarded as stored; there is no
+            // fire-time stamping.
             let request = TriggerRequest {
                 function_id: binding.function_id.clone(),
                 payload: payload.clone(),
                 action: Some(TriggerAction::Void),
                 timeout_ms: None,
             };
-            let res = match metadata {
+            let res = match binding.metadata.clone() {
                 Some(m) => self.iii.trigger(request.metadata(m)).await,
                 None => self.iii.trigger(request).await,
             };
@@ -608,24 +504,9 @@ mod tests {
             session_id: None,
             parent_session_id: Some("root_1".into()),
         };
-        // React-spawned child: no ParentLink, display parent only.
+        // Trigger-spawned child: no ParentLink, display parent only.
         assert!(pf.matches("child", None, Some("root_1")));
         assert!(!pf.matches("child", None, Some("other_root")));
-    }
-
-    #[test]
-    fn reactive_meta_stamps_depth_only_when_present() {
-        let mut p = serde_json::json!({});
-        ReactiveMeta {
-            spawned_by: Some("sub-1"),
-            depth: Some(2),
-        }
-        .stamp(&mut p);
-        assert_eq!(p["reactive_depth"], 2);
-
-        let mut p = serde_json::json!({});
-        ReactiveMeta::default().stamp(&mut p);
-        assert!(p.get("reactive_depth").is_none());
     }
 
     #[test]
@@ -635,47 +516,5 @@ mod tests {
             BindingFilter::parse(&Value::Null).unwrap(),
             BindingFilter::default()
         );
-    }
-
-    #[test]
-    fn detached_task_parent_filter_predicate() {
-        let filter = json!({ "parent_session_id": "s_p" });
-        // Raw registration, no pin of any kind: detached, warn.
-        assert!(detached_task_with_parent_filter(
-            Some(&json!({ "task": "t" })),
-            &filter
-        ));
-        // The subscribe/interceptor owner stamp pins delivery
-        // (reaction_delivery_session falls back to it) — no warn.
-        assert!(!detached_task_with_parent_filter(
-            Some(&json!({ "task": "t", "__owner_session_id": "s_o" })),
-            &filter
-        ));
-        // Explicit session pin — no warn. Presence-only: a pin that does not
-        // match the filtered parent still suppresses (deliberate collector).
-        assert!(!detached_task_with_parent_filter(
-            Some(&json!({ "task": "t", "session_id": "s_p" })),
-            &filter
-        ));
-        assert!(!detached_task_with_parent_filter(
-            Some(&json!({ "task": "t", "session_id": "s_elsewhere" })),
-            &filter
-        ));
-        // An empty-string pin is no pin (matches the `model` "" precedent in
-        // `validate_spec`) — still detached, warn.
-        assert!(detached_task_with_parent_filter(
-            Some(&json!({ "task": "t", "session_id": "", "__owner_session_id": "" })),
-            &filter
-        ));
-        // Call-mode reaction (no sub-agent chain) — no warn.
-        assert!(!detached_task_with_parent_filter(
-            Some(&json!({ "call": { "function_id": "f::g" } })),
-            &filter
-        ));
-        // No parent filter — no warn.
-        assert!(!detached_task_with_parent_filter(
-            Some(&json!({ "task": "t" })),
-            &json!({})
-        ));
     }
 }

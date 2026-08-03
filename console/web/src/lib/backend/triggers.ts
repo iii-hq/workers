@@ -1,154 +1,148 @@
 /**
- * Session-owned trigger subscriptions. The agent registers them through the
- * harness's `engine::register_trigger` intercept, which binds each one to
- * `harness::notify_agent` (notification into the owning session) or
- * `harness::react` (spawn a sub-agent) and stamps the owning session onto the
- * engine trigger's metadata — `session_id` for notify bindings,
- * `__owner_session_id` for react bindings (see harness
- * `subscriptions/reconcile.rs::owner_key`). The console lists both targets and
- * filters by that owner to show a conversation's subscriptions.
+ * Session-owned trigger subscriptions, read from the harness's durable
+ * binding store via `harness::triggers::list`. The engine's own trigger
+ * registry cannot serve this view anymore: every agent binding registers as
+ * the internal delivery hop (`harness::trigger::deliver`) with metadata that
+ * is only a `__binding` pointer, so owner and shape live in the harness
+ * records alone. Rows are source-generic — the raw `trigger_type` + `config`
+ * plus a delivery that is either "notify the owner" or "call a plain
+ * function" — so trigger sources that do not exist yet render unchanged.
  */
 
 import type { IiiClient } from '@/lib/iii-client'
 import type { TriggerFiredData } from '@/types/chat'
 
+export type TriggerDelivery =
+  | { kind: 'notify' }
+  | { kind: 'call'; functionId: string }
+
 export interface SessionTriggerInfo {
-  /** Engine trigger id — the unregister handle. */
+  /** Harness subscription id — the unregister handle. */
   id: string
-  /** e.g. `cron`, `state`, `harness::turn-completed`. */
+  /** Engine-side trigger id (absent only mid-registration). */
+  triggerId?: string
+  /** e.g. `cron`, `state`, `timer`, `database::row-changed`, or any future source. */
   triggerType: string
-  /** `harness::notify_agent` or `harness::react`. */
-  functionId: string
-  config: unknown
-  configSummary: string
+  delivery: TriggerDelivery
+  config?: unknown
+  conditions?: unknown[]
   label?: string
   once?: boolean
-  metadata?: Record<string, unknown>
+  fires?: number
+  maxFires?: number
+  expiresAt?: number
+  createdAt?: number
   /**
-   * This trigger already fired and was unregistered (per a durable
+   * This subscription already fired and was retired (per a durable
    * `trigger_fired` transcript entry — see `mergeFiredTriggers`). Either a
    * still-polled row annotated ahead of the next poll, or a synthesized
-   * "ghost" row reconstructed after the poll dropped it. No engine handle to
+   * "ghost" row reconstructed after the poll dropped it. Nothing left to
    * unregister — the ✕ dismisses locally instead.
    */
   fired?: boolean
   firedAt?: number
 }
 
-const NOTIFY_TARGET = 'harness::notify_agent'
-const REACT_TARGET = 'harness::react'
+const NOTIFY_TARGET = 'harness::send'
 
-interface RegisteredTriggerSummary {
-  id: string
-  trigger_type: string
-  function_id: string
-  worker_name: string
-  config: unknown
-  config_summary: string
-}
-
-interface RegisteredTriggerDetail extends RegisteredTriggerSummary {
-  metadata?: Record<string, unknown>
+interface TriggerRow {
+  subscription_id: string
+  trigger_id?: string
+  trigger_type?: string
+  config?: unknown
+  target?: string
+  conditions?: unknown[]
+  label?: string
+  once: boolean
+  max_fires?: number
+  expires_at?: number
+  fires: number
+  created_at: number
 }
 
 /**
- * List the triggers owned by `sessionId`: both harness targets, detail-read
- * for the owner stamp (the list summary carries no metadata).
+ * Map a raw delivery target to its kind. Live rows carry the target function
+ * id (absent = notify); `trigger_fired` records written before the delivery
+ * hop carry the legacy words `'notify'` / `'spawn'`.
  */
-// ponytail: 2 lists + one info per binding each poll; add an owner filter to
-// engine::registered-triggers::list if binding counts ever matter.
+export function deliveryOf(target: string | undefined | null): TriggerDelivery {
+  if (!target || target === 'notify' || target === NOTIFY_TARGET)
+    return { kind: 'notify' }
+  if (target === 'spawn') return { kind: 'call', functionId: 'harness::spawn' }
+  return { kind: 'call', functionId: target }
+}
+
+/** List the subscriptions `sessionId` owns — one call, straight from the store. */
 export async function listSessionTriggers(
   client: Pick<IiiClient, 'trigger'>,
   sessionId: string,
 ): Promise<SessionTriggerInfo[]> {
-  const out: SessionTriggerInfo[] = []
-  for (const functionId of [NOTIFY_TARGET, REACT_TARGET]) {
-    const list = await client
-      .trigger<{ registered_triggers: RegisteredTriggerSummary[] }>(
-        'engine::registered-triggers::list',
-        { function_id: functionId },
-      )
-      .catch(() => null)
-    for (const summary of list?.registered_triggers ?? []) {
-      const detail = await client
-        .trigger<RegisteredTriggerDetail>('engine::registered-triggers::info', {
-          id: summary.id,
-        })
-        .catch(() => null)
-      if (!detail) continue
-      const meta = detail.metadata ?? {}
-      const owner =
-        functionId === NOTIFY_TARGET ? meta.session_id : meta.__owner_session_id
-      if (owner !== sessionId) continue
-      out.push({
-        id: detail.id,
-        triggerType: detail.trigger_type,
-        functionId,
-        config: detail.config,
-        configSummary: summary.config_summary,
-        label: typeof meta.label === 'string' ? meta.label : undefined,
-        // Notify bindings stamp `once`; react bindings stamp `__once`.
-        once:
-          typeof meta.once === 'boolean'
-            ? meta.once
-            : typeof meta.__once === 'boolean'
-              ? meta.__once
-              : undefined,
-        metadata: meta,
-      })
-    }
-  }
-  return out
+  const response = await client
+    .trigger<{ subscriptions: TriggerRow[] }>('harness::triggers::list', {
+      session_id: sessionId,
+    })
+    .catch(() => null)
+  return (response?.subscriptions ?? []).map((row) => ({
+    id: row.subscription_id,
+    triggerId: row.trigger_id ?? undefined,
+    triggerType: row.trigger_type ?? 'trigger',
+    delivery: deliveryOf(row.target),
+    config: row.config,
+    conditions: row.conditions,
+    label: row.label ?? undefined,
+    once: row.once,
+    fires: row.fires,
+    maxFires: row.max_fires ?? undefined,
+    expiresAt: row.expires_at ?? undefined,
+    createdAt: row.created_at,
+  }))
 }
 
 /**
- * Unregister an engine trigger by id. Goes straight to the engine (the
- * console is a trusted consumer, not an in-run agent). A notify binding's
- * in-memory harness registry entry may linger, but with the engine trigger
- * gone it can never fire and is swept on session delete / harness restart.
+ * Tear a subscription down through the harness — engine trigger AND durable
+ * record. A raw engine-side unregister would orphan the record and leave the
+ * owner session believing in an armed wake that can never fire.
  */
 export async function unregisterTrigger(
   client: Pick<IiiClient, 'trigger'>,
-  triggerId: string,
+  subscriptionId: string,
+  sessionId: string,
 ): Promise<void> {
-  await client.trigger('engine::unregister_trigger', { id: triggerId })
+  await client.trigger('harness::triggers::unregister', {
+    subscription_id: subscriptionId,
+    session_id: sessionId,
+  })
 }
 
-/** Reconstruct a fired-and-unregistered trigger's panel row from its record. */
+/** Reconstruct a fired-and-retired subscription's panel row from its record. */
 function firedGhostRow(t: TriggerFiredData): SessionTriggerInfo {
   const isState = typeof t.key === 'string'
   return {
-    id: t.trigger_id ?? `fired:${t.subscription_id}`,
+    id: t.subscription_id,
+    triggerId: t.trigger_id ?? undefined,
     // The record carries no trigger_type; infer state from the watch and fall
     // back to a generic name so a label-less ghost never renders an empty row.
-    triggerType: isState ? 'state' : t.join ? 'join' : 'trigger',
-    functionId: t.target === 'spawn' ? REACT_TARGET : NOTIFY_TARGET,
+    triggerType: isState ? 'state' : 'trigger',
+    delivery: deliveryOf(t.target),
     config: isState ? { scope: t.scope, key: t.key } : undefined,
-    configSummary: '',
-    label: t.label ?? (t.join ? `join ${t.join.id}` : undefined),
+    label: t.label,
     once: t.once,
-    metadata: t.model ? { model: t.model } : undefined,
     fired: true,
     firedAt: t.fired_at,
   }
 }
 
 /**
- * Merge the live poll with fired-trigger history. A *retired* fire means the
- * binding was unregistered engine-side: if the (≤5s stale) poll still lists
- * it, annotate that row as fired in place; once the poll drops it, append a
- * greyed "ghost" row. Non-retired fires leave their live row untouched;
- * repeat fires collapse to one record (newest wins).
+ * Merge the live poll with fired-subscription history, correlated on the
+ * subscription id (present on both sides). A *retired* fire means the binding
+ * is gone: if the (≤5s stale) poll still lists it, annotate that row as fired
+ * in place; once the poll drops it, append a greyed "ghost" row. Non-retired
+ * fires leave their live row untouched; repeat fires collapse to one record
+ * (newest wins).
  *
  * Ghost fidelity is two-tier: prefer the FULL last-seen polled row (from
- * `seenRows`) so join grouping and the workflow/DAG structure survive the
- * binding's retirement — the fired record alone carries no `metadata.join` /
- * spawn pin / task, and a pipeline of fired thin ghosts would collapse to a
- * flat list. The thin record-only ghost remains the post-reload fallback.
- *
- * ponytail: a completed join collapses to a single fired row (`join <id>`)
- * rather than resurrecting each predecessor row — enough to show it fired +
- * retired. Per-predecessor ghosts if that granularity is ever needed.
+ * `seenRows`) — the fired record alone carries no config or conditions. The
+ * thin record-only ghost remains the post-reload fallback.
  */
 export function mergeFiredTriggers(
   polled: SessionTriggerInfo[],
@@ -162,13 +156,13 @@ export function mergeFiredTriggers(
   for (let i = fired.length - 1; i >= 0; i--) {
     const t = fired[i]
     if (!t.retired) continue
-    const key = t.trigger_id ?? t.subscription_id
+    const key = t.subscription_id
     if (seen.has(key)) continue
     seen.add(key)
-    if (t.trigger_id && liveIds.has(t.trigger_id)) {
-      retiredLive.set(t.trigger_id, t) // stale poll row — mark, don't ghost
+    if (liveIds.has(key)) {
+      retiredLive.set(key, t) // stale poll row — mark, don't ghost
     } else {
-      const remembered = t.trigger_id ? seenRows?.get(t.trigger_id) : undefined
+      const remembered = seenRows?.get(key)
       ghosts.push(
         remembered
           ? { ...remembered, fired: true, firedAt: t.fired_at }

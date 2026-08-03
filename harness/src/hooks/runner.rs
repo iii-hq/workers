@@ -260,6 +260,75 @@ impl HookRegistry {
         }
     }
 
+    /// `post_turn`: gate completion on the contract-valid result. Bindings are
+    /// scoped by `sessions` globs. A template binding (`payload` set) calls a
+    /// plain composition function (fp::pipe) with the result injected at
+    /// `result_into` and reads its receipt as the verdict; an envelope binding
+    /// speaks the ordinary hook contract (`deny` blocks). A deny re-prompts
+    /// the turn through the validation-retry budget; `prompt` (from the
+    /// binding's `retry_prompt`) replaces the generic nudge verbatim.
+    pub async fn run_post_turn(
+        &self,
+        record: &TurnRecord,
+        step: u64,
+        result: &Value,
+    ) -> Result<(), PostTurnDeny> {
+        for binding in self.post_turn.ordered() {
+            if !sessions_match(&binding, &record.session_id) {
+                continue;
+            }
+            if let Some(template) = &binding.payload {
+                // Template mode: no hook envelope, no mutations — a verdict.
+                let payload = crate::functions::trigger_deliver::inject_at(
+                    template.clone(),
+                    binding.result_into.as_deref().unwrap_or("/value"),
+                    result.clone(),
+                );
+                match self.invoke_value(&binding, "post_turn", payload).await {
+                    Ok(response) => match validation_verdict(&response) {
+                        Some(true) => {}
+                        Some(false) => {
+                            let reason =
+                                format!("result rejected by validator {}", binding.function_id);
+                            return Err(PostTurnDeny {
+                                prompt: render_retry_prompt(&binding, &reason, Some(&response)),
+                                reason,
+                            });
+                        }
+                        None => {
+                            // Contract confusion, not a real verdict: keep the
+                            // generic text — a task-shaped custom prompt must
+                            // not mask a broken validator.
+                            return Err(PostTurnDeny::plain(format!(
+                                "validator {} returned no verdict (expected `valid` or a pipe receipt)",
+                                binding.function_id
+                            )));
+                        }
+                    },
+                    Err(message) => {
+                        if let HookOutcome::Deny(reason) = self.on_error(&binding, message) {
+                            return Err(PostTurnDeny::plain(reason));
+                        }
+                    }
+                }
+                continue;
+            }
+            let mut input = self.envelope(HookPoint::PostTurn, record, step);
+            input["result"] = result.clone();
+            match self.invoke(&binding, input).await {
+                HookOutcome::Continue(_) => {}
+                HookOutcome::Deny(reason) => {
+                    return Err(PostTurnDeny {
+                        prompt: render_retry_prompt(&binding, &reason, None),
+                        reason,
+                    })
+                }
+                HookOutcome::Hold(_) => {} // hold is not a post_turn verb
+            }
+        }
+        Ok(())
+    }
+
     /// Invoke one bound hook function, bounded by `timeout_ms` and resolved by
     /// `on_error`. A redelivered step re-runs hooks — they must be idempotent.
     async fn invoke(&self, binding: &HookBinding, input: Value) -> HookOutcome {
@@ -268,15 +337,25 @@ impl HookRegistry {
             .and_then(Value::as_str)
             .unwrap_or("unknown")
             .to_string();
-        let baggage = [
-            ("iii.tag.kind", "harness.hook"),
-            ("iii.hook.point", point.as_str()),
-        ];
+        match self.invoke_value(binding, &point, input).await {
+            Ok(value) => parse_output(value),
+            Err(message) => self.on_error(binding, message),
+        }
+    }
+
+    /// The raw bounded trigger shared by envelope and template invocations.
+    async fn invoke_value(
+        &self,
+        binding: &HookBinding,
+        point: &str,
+        payload: Value,
+    ) -> Result<Value, String> {
+        let baggage = [("iii.tag.kind", "harness.hook"), ("iii.hook.point", point)];
         let fut = iii_helpers::observability::run_with_baggage(
             &baggage,
             self.iii.trigger(TriggerRequest {
                 function_id: binding.function_id.clone(),
-                payload: input,
+                payload,
                 action: None,
                 timeout_ms: Some(binding.timeout_ms),
             }),
@@ -287,11 +366,9 @@ impl HookRegistry {
         )
         .await;
         match bounded {
-            Ok(Ok(value)) => parse_output(value),
-            Ok(Err(e)) => {
-                self.on_error(binding, format!("hook {} failed: {e}", binding.function_id))
-            }
-            Err(_) => self.on_error(binding, format!("hook {} timed out", binding.function_id)),
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(e)) => Err(format!("hook {} failed: {e}", binding.function_id)),
+            Err(_) => Err(format!("hook {} timed out", binding.function_id)),
         }
     }
 
@@ -381,9 +458,19 @@ fn chain_slice(
 /// Whether a pre/post_trigger binding's `functions` globs match the target
 /// (no `functions` filter → all calls).
 pub(super) fn functions_match(binding: &HookBinding, function_id: &str) -> bool {
-    match &binding.functions {
-        None => true,
-        Some(globs) if globs.is_empty() => true,
+    globs_match(binding.functions.as_deref(), function_id)
+}
+
+/// Whether a post_turn binding's `sessions` globs match the completing
+/// session (no filter → every session).
+fn sessions_match(binding: &HookBinding, session_id: &str) -> bool {
+    globs_match(binding.sessions.as_deref(), session_id)
+}
+
+fn globs_match(globs: Option<&[String]>, candidate: &str) -> bool {
+    match globs {
+        // No filter, and an empty filter, both mean "every session".
+        None | Some([]) => true,
         Some(globs) => {
             let mut builder = GlobSetBuilder::new();
             for g in globs {
@@ -393,10 +480,64 @@ pub(super) fn functions_match(binding: &HookBinding, function_id: &str) -> bool 
             }
             builder
                 .build()
-                .map(|set| set.is_match(function_id))
+                .map(|set| set.is_match(candidate))
                 .unwrap_or(false)
         }
     }
+}
+
+/// A `post_turn` denial: `reason` goes into logs and the failure record;
+/// `prompt`, when the binding set `retry_prompt`, is the corrective message
+/// sent to the model VERBATIM instead of the generic wrapper.
+pub struct PostTurnDeny {
+    pub reason: String,
+    pub prompt: Option<String>,
+}
+
+impl PostTurnDeny {
+    fn plain(reason: String) -> Self {
+        PostTurnDeny {
+            reason,
+            prompt: None,
+        }
+    }
+}
+
+/// Render a binding's `retry_prompt`: `{reason}` = the deny reason,
+/// `{value}` = the validator's measured value (fp::pipe receipt
+/// `value_preview`; empty when unavailable).
+fn render_retry_prompt(
+    binding: &HookBinding,
+    reason: &str,
+    response: Option<&Value>,
+) -> Option<String> {
+    let template = binding.retry_prompt.as_deref()?;
+    let value = response
+        .and_then(|r| r.get("value_preview"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    Some(
+        template
+            .replace("{reason}", reason)
+            .replace("{value}", value),
+    )
+}
+
+/// Template-mode verdict: `{ valid: bool }` is authoritative. An fp::pipe
+/// receipt (recognised by its `steps` array) is invalid iff a failed
+/// fp::when guard short-circuited it — the receipt OMITS `short_circuited`
+/// on a full run (`skip_serializing_if`), so absence on a receipt = valid.
+fn validation_verdict(response: &Value) -> Option<bool> {
+    if let Some(b) = response.get("valid").and_then(Value::as_bool) {
+        return Some(b);
+    }
+    if let Some(sc) = response.get("short_circuited").and_then(Value::as_bool) {
+        return Some(!sc);
+    }
+    if response.get("steps").map(Value::is_array).unwrap_or(false) {
+        return Some(true); // pipe receipt, no short-circuit flag = full run
+    }
+    None
 }
 
 #[cfg(test)]
@@ -475,6 +616,10 @@ mod tests {
         HookBinding {
             function_id: function_id.into(),
             functions: Some(vec!["shell::*".into()]),
+            sessions: None,
+            payload: None,
+            result_into: None,
+            retry_prompt: None,
             priority,
             timeout_ms: 5000,
             fail_closed: true,
@@ -527,10 +672,61 @@ mod tests {
     }
 
     #[test]
+    fn retry_prompt_renders_placeholders() {
+        let mut b = binding("check", 0);
+        b.retry_prompt = Some("Only {value} rows so far ({reason}). Insert more.".into());
+        let receipt = json!({ "steps": [], "short_circuited": true, "value_preview": "4" });
+        assert_eq!(
+            render_retry_prompt(&b, "rejected", Some(&receipt)).unwrap(),
+            "Only 4 rows so far (rejected). Insert more."
+        );
+        // Envelope mode has no receipt: {value} renders empty.
+        assert_eq!(
+            render_retry_prompt(&b, "rejected", None).unwrap(),
+            "Only  rows so far (rejected). Insert more."
+        );
+        // No template → no override.
+        assert!(render_retry_prompt(&binding("check", 0), "r", None).is_none());
+    }
+
+    #[test]
+    fn validation_verdict_reads_valid_then_pipe_receipt() {
+        // Explicit verdict is authoritative.
+        assert_eq!(validation_verdict(&json!({ "valid": true })), Some(true));
+        assert_eq!(validation_verdict(&json!({ "valid": false })), Some(false));
+        // fp::pipe receipt: a failed fp::when guard short-circuits = invalid.
+        assert_eq!(
+            validation_verdict(&json!({ "short_circuited": true })),
+            Some(false)
+        );
+        // Full-run receipt OMITS short_circuited (skip_serializing_if) —
+        // the steps array alone must read as valid (live bug: a validated
+        // turn looped to budget exhaustion on exactly this shape).
+        assert_eq!(
+            validation_verdict(
+                &json!({ "steps": [{ "function": "fp::when" }], "value_preview": "18" })
+            ),
+            Some(true)
+        );
+        // `valid` wins over a receipt carrying both.
+        assert_eq!(
+            validation_verdict(&json!({ "valid": false, "short_circuited": false })),
+            Some(false)
+        );
+        // No verdict at all.
+        assert_eq!(validation_verdict(&json!({ "ok": 1 })), None);
+        assert_eq!(validation_verdict(&Value::Null), None);
+    }
+
+    #[test]
     fn functions_filter_matches_globs() {
         let binding = HookBinding {
             function_id: "gate".into(),
             functions: Some(vec!["shell::*".into()]),
+            sessions: None,
+            payload: None,
+            result_into: None,
+            retry_prompt: None,
             priority: 0,
             timeout_ms: 5000,
             fail_closed: true,

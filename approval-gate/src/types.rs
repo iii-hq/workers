@@ -447,6 +447,39 @@ pub struct GetSettingsRequest {
     pub session_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct EvaluateRequest {
+    /// Session whose effective settings apply (mode + always-allow list).
+    pub session_id: String,
+    /// The function id to evaluate.
+    pub function_id: String,
+    /// Call arguments, for deployments whose rules carry argument
+    /// constraints. Defaults to `{}`.
+    #[serde(default)]
+    pub arguments: Option<serde_json::Value>,
+}
+
+/// What [`crate::functions::gate`] WOULD answer for this call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluateVerdict {
+    /// Dispatches with no human in the loop.
+    Allow,
+    /// Refused outright.
+    Deny,
+    /// Would hold for human approval — which a trigger-fired call, running
+    /// outside any turn, has no way to obtain.
+    NeedsApproval,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct EvaluateResponse {
+    pub verdict: EvaluateVerdict,
+    /// Why, for the non-allow verdicts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SettingsSource {

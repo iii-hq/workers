@@ -133,12 +133,6 @@ function SpawnChips({ req }: { req: SpawnRequest }) {
       {req.session_id ? (
         <KvChip k="session" v={<SessionLink sessionId={req.session_id} />} />
       ) : null}
-      {typeof req.reactive_depth === 'number' ? (
-        <KvChip
-          k="depth"
-          v={<span className="tabular-nums">{req.reactive_depth}</span>}
-        />
-      ) : null}
     </>
   )
 }

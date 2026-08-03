@@ -79,6 +79,7 @@ impl ScenarioRunner<'_> {
                 services.probe(),
                 &session_ids,
                 self.fixture.expected_terminal_turns,
+                self.fixture.expected_turn_statuses.len(),
                 active.trace_generation,
                 deadline,
             )
@@ -129,6 +130,7 @@ impl ScenarioRunner<'_> {
             evidence,
             &floor::FloorExpectations {
                 turn_statuses: &self.fixture.expected_turn_statuses,
+                terminal_turns: self.fixture.expected_terminal_turns,
                 traces: self.fixture.expected_traces(),
             },
         )

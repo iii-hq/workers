@@ -1,132 +1,107 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import {
-  buildTriggerWorkflow,
-  levelWatches,
+  deliveryLabel,
+  lifecycleNote,
   stateWatch,
+  summarizeTriggerConfig,
 } from './SessionTriggers'
 
-function trigger(over: Partial<SessionTriggerInfo>): SessionTriggerInfo {
+function trigger(overrides: Partial<SessionTriggerInfo>): SessionTriggerInfo {
   return {
-    id: over.id ?? `t_${Math.random().toString(36).slice(2, 8)}`,
+    id: 'sub_1',
     triggerType: 'state',
-    functionId: 'harness::react',
-    config: {},
-    configSummary: '',
-    ...over,
+    delivery: { kind: 'notify' },
+    once: true,
+    ...overrides,
   }
 }
 
-describe('buildTriggerWorkflow', () => {
-  it('unconnected bindings have no structure and one level', () => {
-    const wf = buildTriggerWorkflow([
-      trigger({ id: 'a' }),
-      trigger({ id: 'b', functionId: 'harness::notify_agent' }),
-    ])
-    expect(wf.hasStructure).toBe(false)
-    expect(wf.levels).toHaveLength(1)
-    expect(wf.levels[0]).toHaveLength(2)
-  })
-
-  it('groups join members under one unit', () => {
-    const wf = buildTriggerWorkflow([
-      trigger({
-        id: 'm1',
-        triggerType: 'harness::turn-completed',
-        config: { session_id: 'summarizer-x1' },
-        metadata: {
-          join: { id: 'analysts', expect: ['sum', 'fact'], key: 'sum' },
-        },
-      }),
-      trigger({
-        id: 'm2',
-        triggerType: 'harness::turn-completed',
-        config: { session_id: 'factextractor-y2' },
-        metadata: {
-          join: { id: 'analysts', expect: ['sum', 'fact'], key: 'fact' },
-        },
-      }),
-    ])
-    expect(wf.hasStructure).toBe(true)
-    expect(wf.levels).toHaveLength(1)
-    const [unit] = wf.levels[0]
-    expect(unit.join?.id).toBe('analysts')
-    expect(unit.join?.expect).toEqual(['sum', 'fact'])
-    expect(unit.members.map((m) => m.id)).toEqual(['m1', 'm2'])
-  })
-
-  it('levels chains: spawn target feeds completion watcher', () => {
-    const wf = buildTriggerWorkflow([
-      // stage 0: state change spawns the analyst into a named session
-      trigger({ id: 'root', metadata: { session_id: 'analyst-1' } }),
-      // stage 1: watches that session's turn completing, joins a barrier
-      trigger({
-        id: 'watcher',
-        triggerType: 'harness::turn-completed',
-        config: { session_id: 'analyst-1' },
-        metadata: { join: { id: 'j', expect: ['a'], key: 'a' } },
-      }),
-    ])
-    expect(wf.hasStructure).toBe(true)
-    expect(wf.levels).toHaveLength(2)
-    expect(wf.levels[0][0].members[0].id).toBe('root')
-    expect(wf.levels[1][0].join?.id).toBe('j')
-  })
-
-  it('levelWatches dedupes the sessions a stage waits on', () => {
-    const wf = buildTriggerWorkflow([
-      trigger({ id: 'root', metadata: { session_id: 'analyst-1' } }),
-      trigger({
-        id: 'w1',
-        triggerType: 'harness::turn-completed',
-        config: { session_id: 'analyst-1' },
-        metadata: { join: { id: 'j', expect: ['a', 'b'], key: 'a' } },
-      }),
-      trigger({
-        id: 'w2',
-        triggerType: 'harness::turn-completed',
-        config: { session_id: 'analyst-1' },
-        metadata: { join: { id: 'j', expect: ['a', 'b'], key: 'b' } },
-      }),
-    ])
-    expect(levelWatches(wf.levels[0])).toEqual([])
-    expect(levelWatches(wf.levels[1])).toEqual(['analyst-1'])
-  })
-
-  it('stateWatch reads key/scope from state bindings only', () => {
+describe('deliveryLabel', () => {
+  it('labels a wake and a call from the delivery data alone', () => {
+    expect(deliveryLabel(trigger({ delivery: { kind: 'notify' } }))).toBe(
+      'notifies this chat',
+    )
     expect(
-      stateWatch(trigger({ config: { key: 'summary', scope: 'wiki' } })),
-    ).toEqual({ key: 'summary', scope: 'wiki' })
-    expect(stateWatch(trigger({ config: { key: 'summary' } }))).toEqual({
-      key: 'summary',
+      deliveryLabel(
+        trigger({ delivery: { kind: 'call', functionId: 'state::set' } }),
+      ),
+    ).toBe('calls state::set')
+  })
+})
+
+describe('stateWatch', () => {
+  it('reads a keyed state config, tolerating a missing scope', () => {
+    expect(
+      stateWatch(trigger({ config: { scope: 'run', key: 'done' } })),
+    ).toEqual({ scope: 'run', key: 'done' })
+    expect(stateWatch(trigger({ config: { key: 'done' } }))).toEqual({
       scope: undefined,
+      key: 'done',
     })
-    expect(stateWatch(trigger({ config: {} }))).toBeNull()
+  })
+
+  it('is null for keyless configs and non-state types', () => {
+    expect(stateWatch(trigger({ config: { scope: 'run' } }))).toBeNull()
     expect(
       stateWatch(
-        trigger({
-          triggerType: 'harness::turn-completed',
-          config: { key: 'summary' },
-        }),
+        trigger({ triggerType: 'cron', config: { key: 'irrelevant' } }),
       ),
     ).toBeNull()
   })
+})
 
-  it('a watch cycle collapses instead of hanging', () => {
-    const wf = buildTriggerWorkflow([
-      trigger({
-        id: 'a',
-        triggerType: 'harness::turn-completed',
-        config: { session_id: 's-b' },
-        metadata: { session_id: 's-a' },
+describe('summarizeTriggerConfig', () => {
+  it('renders an UNKNOWN future trigger source generically', () => {
+    // The compatibility requirement: a source that does not exist yet gets
+    // the same treatment as the known ones — scalar config entries, no
+    // interpretation, no crash.
+    expect(
+      summarizeTriggerConfig({ topic: 'sensors/#', qos: 1, retained: true }),
+    ).toBe('topic: sensors/# · qos: 1 · retained: true')
+  })
+
+  it('caps at three scalars and skips nested values', () => {
+    expect(
+      summarizeTriggerConfig({
+        a: 1,
+        nested: { deep: true },
+        b: 2,
+        c: 3,
+        d: 4,
       }),
+    ).toBe('a: 1 · b: 2 · c: 3')
+  })
+
+  it('is null for empty or scalar-free configs', () => {
+    expect(summarizeTriggerConfig(undefined)).toBeNull()
+    expect(summarizeTriggerConfig({})).toBeNull()
+    expect(summarizeTriggerConfig({ only: { nested: 1 } })).toBeNull()
+  })
+})
+
+describe('lifecycleNote', () => {
+  it('prefers the fired ghost marker', () => {
+    expect(lifecycleNote(trigger({ fired: true, once: true }))).toBe(
+      'fired · unregistered',
+    )
+  })
+
+  it('joins once, fires, budget, and deadline from the row data', () => {
+    const note = lifecycleNote(
       trigger({
-        id: 'b',
-        triggerType: 'harness::turn-completed',
-        config: { session_id: 's-a' },
-        metadata: { session_id: 's-b' },
+        once: false,
+        fires: 3,
+        maxFires: 5,
+        expiresAt: 1_800_000_000_000,
       }),
-    ])
-    expect(wf.levels.flat()).toHaveLength(2)
+    )
+    expect(note).toContain('3 fires')
+    expect(note).toContain('max 5')
+    expect(note).toContain('until ')
+  })
+
+  it('is null when nothing lifecycle-worthy is set', () => {
+    expect(lifecycleNote(trigger({ once: false, fires: 0 }))).toBeNull()
   })
 })

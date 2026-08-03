@@ -474,6 +474,15 @@
               "null"
             ]
           },
+          "max_validation_retries": {
+            "description": "Per-turn override of the configured validation-retry budget (also the bound on `harness::hook::post-turn` deny re-prompts).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "metadata": {
             "description": "Tracing passthrough."
           },

@@ -174,6 +174,13 @@ start_process queue \
   --config "$script_dir/stack-config/queue.yaml"
 wait_for_function queue::define
 
+# fp powers the post-turn validation pipelines (validation_loop /
+# subagent_validation) and is cheap enough to run for every scenario.
+start_process fp \
+  "$repo_root/fp/target/release/fp" \
+  --url "$iii_url"
+wait_for_function fp::when
+
 start_process session-manager \
   "$repo_root/session-manager/target/release/session-manager" \
   --url "$iii_url" \
@@ -215,6 +222,13 @@ start_process harness \
   "$harness_root/target/release/harness" \
   --url "$iii_url"
 wait_for_function harness::send
+
+if [[ "$HARNESS_E2E_SCENARIO" == "research_pipeline" ]]; then
+  start_process web \
+    "$repo_root/web/target/release/web" \
+    --url "$iii_url"
+  wait_for_function web::fetch
+fi
 
 "$e2e_bin" run \
   --url "$iii_url" \
