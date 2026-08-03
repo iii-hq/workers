@@ -145,7 +145,6 @@ jobs:
           WORKER: ${{ steps.meta.outputs.worker }}
         run: |
           set -euo pipefail
-          pip install --quiet pyyaml
           val=$(WORKER="$WORKER" python3 -c 'import os, sys, pathlib; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_iii_worker_yaml(pathlib.Path(os.environ["WORKER"])); print("false" if m.raw.get("interface_smoke") is False else "true")')
           echo "interface_smoke=$val" >> "$GITHUB_OUTPUT"
           if [[ "$val" == "false" ]]; then

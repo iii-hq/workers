@@ -124,8 +124,8 @@ so they're easy to grep.
 | S-C1 (symlink-parent jail escape on writes) | `cases-vuln-repro-jailed.ts` | jailed |
 
 The default suite (`./run-tests.sh`) runs the unjailed four alongside
-the rest. The jailed suite (`./run-tests-jailed.sh`) boots the engine
-with `config-jailed.yaml` (`host_roots: [/private/tmp/iii-shell-jailed-root]`)
+the rest. The jailed suite (`./run-tests.sh --suite=jailed`) boots the engine
+with `config-jailed.yaml`, uses an isolated temporary `host_roots` directory,
 and runs only the C1 repro — the rest of the suite assumes
 no jail (`host_roots` unset) and would mis-fail with a jail set.
 
@@ -139,7 +139,7 @@ cargo test --test bdd -- --tags @direct
 ```
 
 The direct scenarios call the real Rust handlers against temporary jailed
-roots. `run-tests-jailed.sh` also runs the `@live` smoke while the engine is
+roots. The jailed mode also runs the `@live` smoke while the engine is
 up, using `III_ENGINE_WS_URL=ws://127.0.0.1:49134`, to prove the shell worker
 actually registered the engine-dispatched `coder::*` functions.
 

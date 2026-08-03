@@ -19,44 +19,32 @@ on:
         type: string
       release_tag:
         description: Git tag associated with the release
-        required: false
         type: string
         default: ''
       release_run_id:
         description: GitHub Actions run id of the publishing release
-        required: false
         type: string
         default: ''
       smoke_run_id:
         description: GitHub Actions run id of the preceding smoke CI
-        required: false
         type: string
         default: ''
       subjects:
         description: Optional JSON subject matrix
-        required: false
         type: string
         default: ''
       judge_model:
         description: Optional fixed judge model id
-        required: false
         type: string
         default: ''
       judge_provider:
         description: Optional fixed judge provider id
-        required: false
         type: string
         default: ''
       runs:
         description: Number of executions per scenario
-        required: false
         type: number
         default: 1
-      max_parallel:
-        description: Maximum number of live model scenarios
-        required: false
-        type: number
-        default: 2
 
 permissions:
   actions: read
@@ -67,237 +55,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  context:
-    name: Resolve deployed E2E context
-    runs-on: ubuntu-latest
-    outputs:
-      subjects: ${{ steps.context.outputs.subjects }}
-      judge_model: ${{ steps.context.outputs.judge_model }}
-      judge_provider: ${{ steps.context.outputs.judge_provider }}
-      runs: ${{ steps.context.outputs.runs }}
-      max_parallel: ${{ steps.context.outputs.max_parallel }}
-    steps:
-      - name: Validate release and subject context
-        id: context
-        env:
-          INPUT_SUBJECTS: ${{ inputs.subjects }}
-          DEFAULT_SUBJECTS: ${{ vars.HARNESS_E2E_SUBJECTS }}
-          INPUT_JUDGE_MODEL: ${{ inputs.judge_model }}
-          DEFAULT_JUDGE_MODEL: ${{ vars.HARNESS_E2E_JUDGE_MODEL }}
-          INPUT_JUDGE_PROVIDER: ${{ inputs.judge_provider }}
-          DEFAULT_JUDGE_PROVIDER: ${{ vars.HARNESS_E2E_JUDGE_PROVIDER }}
-          INPUT_RUNS: ${{ inputs.runs }}
-          INPUT_MAX_PARALLEL: ${{ inputs.max_parallel }}
-          RELEASE_WORKER: ${{ inputs.release_worker }}
-          RELEASE_VERSION: ${{ inputs.release_version }}
-        run: |
-          set -euo pipefail
-
-          [[ "$RELEASE_WORKER" =~ ^[A-Za-z0-9_-]+$ ]] || {
-            echo "::error::release_worker has an invalid format"
-            exit 2
-          }
-          [[ -n "$RELEASE_VERSION" ]] || {
-            echo "::error::release_version is required"
-            exit 2
-          }
-
-          subjects=${INPUT_SUBJECTS:-${DEFAULT_SUBJECTS:-'[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]'}}
-          judge_model=${INPUT_JUDGE_MODEL:-${DEFAULT_JUDGE_MODEL:-claude-sonnet-4-6}}
-          judge_provider=${INPUT_JUDGE_PROVIDER:-${DEFAULT_JUDGE_PROVIDER:-anthropic}}
-          runs=${INPUT_RUNS:-1}
-          max_parallel=${INPUT_MAX_PARALLEL:-2}
-
-          jq -e '
-            type == "array" and length > 0 and
-            all(.[];
-              (.id | type == "string" and test("^[A-Za-z0-9_.-]+$")) and
-              (.model | type == "string" and length > 0) and
-              (.provider | type == "string" and test("^[A-Za-z0-9_-]+$"))
-            ) and
-            ([.[].id] | unique | length) == length
-          ' <<<"$subjects" >/dev/null
-          [[ -n "$judge_model" ]]
-          [[ "$judge_provider" =~ ^[A-Za-z0-9_-]+$ ]]
-          [[ "$runs" =~ ^[0-9]+$ ]] && ((runs >= 1 && runs <= 20))
-          [[ "$max_parallel" =~ ^[0-9]+$ ]] && ((max_parallel >= 1 && max_parallel <= 10))
-
-          {
-            echo "subjects=$(jq -c . <<<"$subjects")"
-            echo "judge_model=$judge_model"
-            echo "judge_provider=$judge_provider"
-            echo "runs=$runs"
-            echo "max_parallel=$max_parallel"
-          } >>"$GITHUB_OUTPUT"
-
-  build:
-    name: Build deployed E2E runner
-    needs: context
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    outputs:
-      scenarios: ${{ steps.scenarios.outputs.json }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.ref }}
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Restore E2E runner cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: harness-e2e-deployed
-          save-if: false
-          workspaces: |
-            harness -> target
-
-      - name: Test E2E runner crate
-        run: cargo test --locked --manifest-path harness/Cargo.toml -p harness-e2e
-
-      - name: Build E2E runner
-        run: cargo build --locked --release --manifest-path harness/Cargo.toml -p harness-e2e
-
-      - name: Read code-defined scenarios
-        id: scenarios
-        run: |
-          set -euo pipefail
-          scenarios=$(harness/target/release/harness-e2e list)
-          jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' \
-            <<<"$scenarios" >/dev/null
-          echo "json=$scenarios" >>"$GITHUB_OUTPUT"
-
-      - name: Package E2E runner
-        run: tar -czf target/harness-e2e-runner.tar.gz -C harness/target/release harness-e2e
-
-      - name: Upload E2E runner
-        uses: actions/upload-artifact@v6
-        with:
-          name: harness-e2e-deployed-runner
-          path: target/harness-e2e-runner.tar.gz
-          retention-days: 1
-          if-no-files-found: error
-
   e2e:
-    name: deployed E2E / ${{ matrix.subject.id }} / ${{ matrix.scenario }}
-    needs: [context, build]
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      max-parallel: ${{ needs.context.outputs.max_parallel }}
-      matrix:
-        scenario: ${{ fromJSON(needs.build.outputs.scenarios) }}
-        subject: ${{ fromJSON(needs.context.outputs.subjects) }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.ref }}
-
-      - name: Download E2E runner
-        uses: actions/download-artifact@v7
-        with:
-          name: harness-e2e-deployed-runner
-          path: target
-
-      - name: Extract E2E runner
-        run: |
-          mkdir -p target/runner
-          tar -xzf target/harness-e2e-runner.tar.gz -C target/runner
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.x'
-
-      - name: Install E2E helper dependencies
-        run: python3 -m pip install --quiet pyyaml
-
-      - name: Prepare KVM for sandbox scenario
-        if: matrix.scenario == 'shell_coder_sandbox'
-        run: |
-          test -c /dev/kvm
-          sudo chmod 0666 /dev/kvm
-
-      - name: Run deployed E2E scenario
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
-          III_CHANNEL: ${{ inputs.channel }}
-          HARNESS_E2E_RELEASE_WORKER: ${{ inputs.release_worker }}
-          HARNESS_E2E_RELEASE_VERSION: ${{ inputs.release_version }}
-          HARNESS_E2E_RELEASE_TAG: ${{ inputs.release_tag }}
-          HARNESS_E2E_RELEASE_RUN_ID: ${{ inputs.release_run_id }}
-          HARNESS_E2E_SMOKE_RUN_ID: ${{ inputs.smoke_run_id }}
-          HARNESS_E2E_BIN: ${{ github.workspace }}/target/runner/harness-e2e
-          HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
-          HARNESS_E2E_SCENARIO: ${{ matrix.scenario }}
-          HARNESS_E2E_RUNS: ${{ needs.context.outputs.runs }}
-          HARNESS_E2E_MODEL: ${{ matrix.subject.model }}
-          HARNESS_E2E_PROVIDER: ${{ matrix.subject.provider }}
-          HARNESS_E2E_JUDGE_MODEL: ${{ needs.context.outputs.judge_model }}
-          HARNESS_E2E_JUDGE_PROVIDER: ${{ needs.context.outputs.judge_provider }}
-          HARNESS_E2E_QUALITY_ADVISORY: 'false'
-          HARNESS_E2E_CI_SCORE_FLOOR: '50'
-          HARNESS_E2E_TECHNICAL_RETRIES: '1'
-        run: harness/tests/e2e/run-deployed-ci.sh
-
-      - name: Write deployed E2E summary
-        if: always()
-        env:
-          SUBJECT: ${{ matrix.subject.id }}
-          SCENARIO: ${{ matrix.scenario }}
-        run: |
-          {
-            echo "### Deployed Harness E2E · $SUBJECT · $SCENARIO"
-            echo
-            if [[ -f target/harness-e2e/deployment.json ]]; then
-              jq -r '
-                "| Deployment | Expected | Resolved | Channel | Status |",
-                "| --- | --- | --- | --- | --- |",
-                "| \(.release_worker) | \(.release_version) | \(.actual_release_version // \"n/a\") | \(.channel) | \(.status) |"
-              ' target/harness-e2e/deployment.json
-            fi
-            if [[ -f target/harness-e2e/results/results.json ]]; then
-              jq -r '
-                .scenarios[0] |
-                "",
-                "| Median score | Threshold | Pass rate | Hard-gate failures | Technical failures | Status |",
-                "| ---: | ---: | ---: | ---: | ---: | --- |",
-                "| \(.aggregate.median_score // \"n/a\") | \(.threshold) | \((.aggregate.pass_rate * 100) | round)% | \(.aggregate.hard_gate_failures) | \(.aggregate.technical_failures) | \(if .passed then \"pass\" else \"fail\" end) |"
-              ' target/harness-e2e/results/results.json
-            else
-              echo "No E2E result report was produced."
-            fi
-          } >>"$GITHUB_STEP_SUMMARY"
-
-      - name: Upload deployed E2E artifacts
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: harness-e2e-deployed-${{ inputs.release_worker }}-${{ inputs.release_version }}-${{ matrix.subject.id }}-${{ matrix.scenario }}
-          path: target/harness-e2e/
-          retention-days: 14
-          if-no-files-found: warn
-
-  summary:
-    name: deployed E2E summary
-    needs: [context, build, e2e]
-    if: always() && needs.build.result == 'success'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Write suite summary
-        env:
-          E2E_RESULT: ${{ needs.e2e.result }}
-          RELEASE_WORKER: ${{ inputs.release_worker }}
-          RELEASE_VERSION: ${{ inputs.release_version }}
-          CHANNEL: ${{ inputs.channel }}
-          SMOKE_RUN_ID: ${{ inputs.smoke_run_id }}
-        run: |
-          {
-            echo "### Deployed Harness E2E suite"
-            echo
-            echo "| Worker | Version | Channel | Smoke run | E2E result |"
-            echo "| --- | --- | --- | --- | --- |"
-            echo "| $RELEASE_WORKER | $RELEASE_VERSION | $CHANNEL | ${SMOKE_RUN_ID:-n/a} | $E2E_RESULT |"
-          } >>"$GITHUB_STEP_SUMMARY"
+    uses: ./.github/workflows/_harness-e2e.yml
+    with:
+      stack_mode: registry
+      runs: ${{ inputs.runs }}
+      max_parallel: 2
+      quality_advisory: false
+      ci_score_floor: 50
+      benchmark_lane: deployed
+      registry_tag: ${{ inputs.channel }}
+      release_tag: ${{ inputs.release_tag }}
+      release_worker: ${{ inputs.release_worker }}
+      release_version: ${{ inputs.release_version }}
+      release_run_id: ${{ inputs.release_run_id }}
+      smoke_run_id: ${{ inputs.smoke_run_id }}
+      subjects: ${{ inputs.subjects || vars.HARNESS_E2E_SUBJECTS || '[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]' }}
+      judge_model: ${{ inputs.judge_model || vars.HARNESS_E2E_JUDGE_MODEL || 'claude-sonnet-4-6' }}
+      judge_provider: ${{ inputs.judge_provider || vars.HARNESS_E2E_JUDGE_PROVIDER || 'anthropic' }}
+    secrets:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      zai_api_key: ${{ secrets.ZAI_API_KEY }}

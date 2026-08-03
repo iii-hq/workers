@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Check every iii.dev URL in the repo. Usage: scripts/check-links.sh
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit
 
 # Known-good URLs that answer 404 to a plain GET; not broken doc links.
 ignore=(
