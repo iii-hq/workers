@@ -7,10 +7,13 @@ Implements the provider protocol from
 (SSE chunks → `AssistantMessageEvent` frames into a router-owned channel),
 `provider::openai::refresh_models` (live `GET /v1/models` filtered to
 chat/reasoning families ∪ curated capability snapshot →
-`router::models::reconcile`), and `provider::openai::embed` (batch text
+`router::models::reconcile`), `provider::openai::embed` (batch text
 embeddings behind `router::embed`; the endpoint derives from the configured
 `api_url`, so OpenAI-compatible local servers — llama.cpp `--embeddings`,
-Ollama, vLLM, LM Studio — and gateways work through the same surface).
+Ollama, vLLM, LM Studio — and gateways work through the same surface), and
+`provider::openai::count_tokens` (local prompt token estimation with the
+tiktoken tokenizers behind `router::count_tokens`; never runs the model,
+costs nothing, and needs no network).
 
 ## Behavior
 

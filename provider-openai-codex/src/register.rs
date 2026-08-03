@@ -173,6 +173,14 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         .description(surface::REFRESH_MODELS_DESC)
         .metadata(json!({ "internal": true })),
     );
+    iii.register_function(
+        surface::COUNT_TOKENS_ID,
+        RegisterFunction::new_async(|req: crate::count_tokens::CountTokensRequest| async move {
+            crate::count_tokens::handle(req)
+        })
+        .description(surface::COUNT_TOKENS_DESC)
+        .metadata(json!({ "internal": true })),
+    );
 
     {
         let iii_ready = iii.clone();

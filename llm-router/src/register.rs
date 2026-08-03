@@ -131,6 +131,17 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             .metadata(internal_meta()),
     );
     iii.register_function(
+        surface::COUNT_TOKENS_ID,
+        RegisterFunction::new_async(crate::count_tokens::make_count_tokens(
+            iii.clone(),
+            registry.clone(),
+            catalog.clone(),
+            config.clone(),
+        ))
+        .description(surface::COUNT_TOKENS_DESC)
+        .metadata(internal_meta()),
+    );
+    iii.register_function(
         surface::MODELS_LIST_ID,
         RegisterFunction::new_async(make_models_list(catalog.clone()))
             .description(surface::MODELS_LIST_DESC),

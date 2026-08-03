@@ -167,6 +167,21 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             .description(surface::REFRESH_MODELS_DESC)
             .metadata(json!({ "internal": true })),
     );
+    {
+        let iii_count = iii.clone();
+        let http_count = http.clone();
+        let cache_count = cache.clone();
+        iii.register_function(
+            surface::COUNT_TOKENS_ID,
+            RegisterFunction::new_async(move |req: crate::count_tokens::CountTokensRequest| {
+                let (iii, http, cache) =
+                    (iii_count.clone(), http_count.clone(), cache_count.clone());
+                async move { crate::count_tokens::handle(&iii, &http, &cache, req).await }
+            })
+            .description(surface::COUNT_TOKENS_DESC)
+            .metadata(json!({ "internal": true })),
+        );
+    }
 
     // Re-declare when the router restarts: bind to the router::ready trigger type.
     {

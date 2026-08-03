@@ -8,3 +8,4 @@ rules:
   - '!provider::openai-codex::stream'
   - '!provider::openai-codex::refresh_models'
   - '!provider::openai-codex::on_router_ready'
+  - '!provider::openai-codex::count_tokens'
