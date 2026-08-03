@@ -249,9 +249,13 @@ mod tests {
         // Paused clock: the timer auto-advances past the deadline as soon as
         // the runtime parks waiting on the child, so the timeout path trips
         // deterministically instead of racing a real subprocess.
-        let err = run_git(&std::env::temp_dir(), &["--version"], 1)
-            .await
-            .unwrap_err();
+        let err = run_git(
+            &std::env::temp_dir(),
+            &["daemon", "--port=0", "--reuseaddr"],
+            1,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.code, crate::error::codes::GIT_TIMEOUT);
     }
 }
