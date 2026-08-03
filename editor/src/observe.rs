@@ -168,23 +168,23 @@ pub fn bind(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>, emitter: Cha
             let bus = bus.clone();
             let emitter = emitter.clone();
             async move {
-                // Nobody watching means nothing to compute.
-                if !emitter.has_subscribers() {
-                    tracing::debug!("observer: no subscribers, skipping");
-                }
-                if emitter.has_subscribers() {
-                    let snapshot = cfg.read().await.clone();
-                    // Named span under the caller's trace: this fires inside an
-                    // agent turn, and an observed edit that dangled as its own
-                    // root would be unreadable in the traces view — the whole
-                    // point is seeing the write and the event as one chain.
-                    iii_helpers::observability::run_in_span(
-                        "editor::observe file change",
-                        None,
-                        || report(&bus, &snapshot, &emitter, input),
-                    )
-                    .await;
-                }
+                // Recording no longer waits for a subscriber. Skipping when
+                // nobody was watching meant the feed could only ever show what
+                // happened while a page was open, so the question it exists to
+                // answer — what did the agent do while I was elsewhere — was
+                // exactly the one it could not answer. The work is bounded and
+                // fail-open, and the whole hook is `fail_open` besides.
+                let snapshot = cfg.read().await.clone();
+                // Named span under the caller's trace: this fires inside an
+                // agent turn, and an observed edit that dangled as its own
+                // root would be unreadable in the traces view — the whole
+                // point is seeing the write and the event as one chain.
+                iii_helpers::observability::run_in_span(
+                    "editor::observe file change",
+                    None,
+                    || report(&bus, &snapshot, &emitter, input),
+                )
+                .await;
                 Ok::<HookOutput, Error>(HookOutput::default())
             }
         })
@@ -296,20 +296,57 @@ async fn report(bus: &Bus, cfg: &WorkerConfig, emitter: &ChangedEmitter, input: 
         }
     };
 
-    emitter
-        .emit(ChangedEvent {
-            path: rel,
-            cause: call.function_id,
-            kind: touch.kind.to_string(),
-            added,
-            removed,
-            patch,
-            truncated: false,
-            root,
-            session_id,
-            turn_id,
-        })
-        .await;
+    let event = ChangedEvent {
+        path: rel,
+        cause: call.function_id,
+        kind: touch.kind.to_string(),
+        added,
+        removed,
+        patch,
+        truncated: false,
+        root,
+        session_id,
+        turn_id,
+    };
+
+    // Record before pushing. A surface that opens later reads the log, and a
+    // surface that is already open gets the push; recording first means the
+    // two never disagree about what happened. Best-effort, like the emit: a
+    // state write that fails must not fail the agent's write, which has
+    // already happened.
+    record(bus, &event).await;
+    emitter.emit(event).await;
+}
+
+/// Append one change to the durable log, newest first.
+///
+/// Read-modify-write against `state` is not serialized here on purpose: the
+/// hook runs inside one turn at a time per session, and a lost entry in a
+/// recent-activity feed is a far smaller cost than holding a lock across a
+/// bus round trip on the write path of every agent edit.
+async fn record(bus: &Bus, event: &ChangedEvent) {
+    let existing = bus
+        .state_get(workspace::CHANGES_KEY)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_value::<Vec<Value>>(v).ok())
+        .unwrap_or_default();
+    let Ok(entry) = serde_json::to_value(event) else {
+        return;
+    };
+    let next = workspace::record_change(&existing, entry, |e| {
+        e.get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    });
+    if let Err(e) = bus
+        .state_set(workspace::CHANGES_KEY, Value::Array(next))
+        .await
+    {
+        tracing::debug!(error = %e, "observer: could not record the change");
+    }
 }
 
 #[cfg(test)]

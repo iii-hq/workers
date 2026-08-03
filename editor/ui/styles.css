@@ -295,6 +295,12 @@
   color: var(--color-ink-ghost);
 }
 
+/* A run that happened outside the open workspace. Accented because it is the
+   answer to "why is that file not in my tree". */
+[data-iii-ui='editor'] .ed-group-root {
+  color: var(--color-accent);
+}
+
 /* The path splits so the folder can be dropped before the name is: at sidebar
    widths a truncated name identifies nothing. */
 [data-iii-ui='editor'] .ed-change-path {

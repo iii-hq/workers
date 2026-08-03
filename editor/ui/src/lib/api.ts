@@ -65,6 +65,21 @@ export interface StatusEntry {
   renamed_from: string | null
 }
 
+/** One entry of the worker's recorded change log. Same shape as the
+ *  `editor::changed` event, because the log is those events, kept. */
+export interface ChangedRecord {
+  path: string
+  cause: string
+  kind: string
+  added: number
+  removed: number
+  patch: string
+  truncated: boolean
+  root: string
+  session_id?: string
+  turn_id?: string
+}
+
 export interface StatusReport {
   branch: string | null
   upstream: string | null
@@ -192,6 +207,9 @@ export function createApi(host: Host) {
     diff: (before: string, after: string, path?: string) =>
       call<DiffResult>('editor::diff', { before, after, ...(path ? { path } : {}) }),
     status: () => call<StatusReport>('editor::git::status', {}),
+    /** The worker's recorded change log — what happened, including while no
+     *  page was open to hear it. */
+    changes: () => call<{ changes: ChangedRecord[] }>('editor::changes', {}),
     hunks: (path: string) =>
       call<{
         path: string

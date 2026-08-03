@@ -39,6 +39,11 @@ pub const DESC_WORKSPACE_OPEN: &str =
 pub const DESC_WORKSPACE_GET: &str =
     "The active workspace: its root, the files open against it, and which folders are \
      expanded. Shared by every surface, so this is what the agent and the console both see.";
+pub const DESC_CHANGES: &str =
+    "Recent file changes in the workspace, newest first, one entry per path. Recorded by \
+     the observer for every change however it was made, so it answers what happened while \
+     nothing was watching. Each entry carries the patch, the line counts, the function that \
+     performed the write, and the harness session and turn it happened in.";
 pub const DESC_TREE: &str =
     "List a folder in the workspace, with the expansion state the workspace remembers. \
      The walk, the noise-folder excludes and the jail are the shell worker's.";
@@ -102,6 +107,7 @@ pub fn register_all(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>) {
     register_workspace_open(iii, bus);
     register_workspace_get(iii, bus);
     register_tree(iii, bus);
+    register_changes(iii, bus);
     register_open(iii, cfg, bus);
     register_save(iii, cfg, bus);
     register_buffers_list(iii, bus);
@@ -128,6 +134,7 @@ pub fn function_ids() -> Vec<&'static str> {
         "editor::workspace::open",
         "editor::workspace::get",
         "editor::tree",
+        "editor::changes",
         "editor::open",
         "editor::save",
         "editor::buffers::list",
@@ -239,6 +246,30 @@ fn register_workspace_get(iii: &Arc<IIIClient>, bus: &Arc<Bus>) {
             }
         })
         .description(DESC_WORKSPACE_GET),
+    );
+}
+
+/// The recorded change log. Reading is separate from subscribing on purpose:
+/// a surface that opens after the work happened has nothing to subscribe to,
+/// and this is the only way it can learn what it missed.
+fn register_changes(iii: &Arc<IIIClient>, bus: &Arc<Bus>) {
+    let bus = bus.clone();
+    iii.register_function(
+        "editor::changes",
+        RegisterFunction::new_async(move |_req: EmptyInput| {
+            let bus = bus.clone();
+            async move {
+                let changes = bus
+                    .state_get(crate::workspace::CHANGES_KEY)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|v| serde_json::from_value::<Vec<ChangeRecord>>(v).ok())
+                    .unwrap_or_default();
+                Ok::<_, Error>(ChangesView { changes })
+            }
+        })
+        .description(DESC_CHANGES),
     );
 }
 

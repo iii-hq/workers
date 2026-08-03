@@ -70,6 +70,7 @@ import { contentHash } from '../lib/cache-key'
 import {
   type ChangeEntry,
   causeLabel,
+  fromRecords,
   groupByTurn,
   groupLabel,
   recordChange,
@@ -464,7 +465,11 @@ export function EditorPage({ host }: { host: Host }) {
 
   /** Work accumulated since the last pass: paths whose file needs re-reading,
    *  and whether the git overlay is stale. */
-  const pendingRef = useRef<{ paths: Set<string>; git: boolean }>({ paths: new Set(), git: false })
+  const pendingRef = useRef<{ paths: Set<string>; git: boolean; tree: boolean }>({
+    paths: new Set(),
+    git: false,
+    tree: false,
+  })
   /** Set by every event, cleared as a pass takes the work. */
   const wantedRef = useRef(false)
   const runningRef = useRef(false)
@@ -486,7 +491,7 @@ export function EditorPage({ host }: { host: Host }) {
       while (wantedRef.current) {
         wantedRef.current = false
         const work = pendingRef.current
-        pendingRef.current = { paths: new Set(), git: false }
+        pendingRef.current = { paths: new Set(), git: false, tree: false }
 
         await syncWorkspace()
         // One read per changed path. The event carries a patch, not the new
@@ -494,6 +499,13 @@ export function EditorPage({ host }: { host: Host }) {
         // parsing this page deliberately no longer does.
         for (const path of work.paths) await reread(path)
         if (work.git) await refreshGit()
+        // A file that was created, deleted or moved changes the *shape* of
+        // the tree, and the tree is a snapshot this page holds. Re-reading
+        // buffers and git marks leaves a brand-new file invisible until a
+        // reload: the agent's own status line reports a file the tree does
+        // not list. Structural changes reload it; a plain edit does not,
+        // because a modified file is already there.
+        if (work.tree) await loadTree()
 
         // Anything that arrived during the pass gets its own window rather than
         // an immediate re-run, so a sustained stream costs one pass per window
@@ -503,7 +515,7 @@ export function EditorPage({ host }: { host: Host }) {
     } finally {
       runningRef.current = false
     }
-  }, [refreshGit, reread, syncWorkspace])
+  }, [refreshGit, reread, syncWorkspace, loadTree])
 
   /**
    * Record what an event implies and arm the window.
@@ -515,9 +527,10 @@ export function EditorPage({ host }: { host: Host }) {
    * long a change can stay invisible.
    */
   const schedule = useCallback(
-    (path?: string, git = false) => {
+    (path?: string, git = false, tree = false) => {
       if (path !== undefined) pendingRef.current.paths.add(path)
       if (git) pendingRef.current.git = true
+      if (tree) pendingRef.current.tree = true
       wantedRef.current = true
       if (timerRef.current !== null) return
       timerRef.current = setTimeout(() => {
@@ -560,7 +573,9 @@ export function EditorPage({ host }: { host: Host }) {
         setLastChange(event)
         setChangeLog((prev) => recordChange(prev, event, now))
         setChangeClock(now)
-        schedule(event.path, true)
+        // A create, delete or move changes which files exist, so the tree
+        // has to be re-read as well as the buffers.
+        schedule(event.path, true, event.kind !== 'modified')
       }),
     [onChanged, schedule],
   )
@@ -577,9 +592,26 @@ export function EditorPage({ host }: { host: Host }) {
   useEffect(() => {
     if (mode !== 'changes' || changesSeeded) return
     setChangesSeeded(true)
-    if (noRepo) return
-    setChangeLog((prev) => seedFromStatus(prev, status?.entries ?? []))
-  }, [mode, changesSeeded, noRepo, status])
+    let cancelled = false
+    void (async () => {
+      // The worker's log first: those are real changes with real provenance,
+      // recorded whether or not a page was open to hear them. The working tree
+      // fills the rest — files dirty for reasons nobody observed, like an edit
+      // made in another editor before any of this was running.
+      try {
+        const recorded = await api.changes()
+        if (!cancelled) setChangeLog((prev) => fromRecords(prev, recorded.changes))
+      } catch {
+        // Older worker without the log. The working tree still seeds it.
+      }
+      if (!cancelled && !noRepo) {
+        setChangeLog((prev) => seedFromStatus(prev, status?.entries ?? []))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [mode, changesSeeded, noRepo, status, api])
 
   /** Tick the ages while the feed is on screen, and only then. */
   useEffect(() => {
@@ -900,6 +932,16 @@ export function EditorPage({ host }: { host: Host }) {
                             the summary, the rows under it are the detail. */}
                         <div className="ed-group">
                           <span className="ed-change-by">{groupLabel(group)}</span>
+                          {/* An agent can work in a folder other than the one
+                              this page has open. Saying so is the difference
+                              between "the tree is broken" and "that happened
+                              somewhere else" — and it is why the file this row
+                              names is not in the tree. */}
+                          {group.root && group.root !== root && (
+                            <span className="ed-group-root" title={group.root}>
+                              in {splitPath(group.root.replace(/\/$/, '')).name || group.root}
+                            </span>
+                          )}
                           <span className="ed-group-files">
                             {group.entries.length} file{group.entries.length === 1 ? '' : 's'}
                           </span>
