@@ -27,6 +27,32 @@ pub fn session_key(root: &str) -> String {
     format!("session:{root}")
 }
 
+/// Normalize a workspace root to an absolute path with no trailing slash.
+///
+/// Every filesystem call the workspace makes goes through the shell worker,
+/// whose fs jail rejects relative paths outright ("path must be absolute").
+/// A relative root — including the historical default of "." — therefore
+/// cannot work; resolve it against `cwd` at the door so the stored root, the
+/// per-project session key, and every joined path are absolute and stable.
+/// `cwd` is a parameter so this stays pure and testable.
+pub fn normalize_root(root: &str, cwd: &str) -> String {
+    let trimmed = root.trim();
+    let base = match trimmed {
+        "" | "." | "./" => cwd.to_string(),
+        rel if !rel.starts_with('/') => {
+            let rel = rel.strip_prefix("./").unwrap_or(rel);
+            format!("{}/{rel}", cwd.trim_end_matches('/'))
+        }
+        abs => abs.to_string(),
+    };
+    let out = base.trim_end_matches('/');
+    if out.is_empty() {
+        "/".to_string()
+    } else {
+        out.to_string()
+    }
+}
+
 /// One open file. `mtime` is what the conflict guard compares against, so it
 /// is part of the shared record rather than per-surface bookkeeping — two
 /// surfaces editing one file must agree on which version they started from.
@@ -146,6 +172,28 @@ mod tests {
             version: "1-0000000000000001".to_string(),
             language: "rust".to_string(),
         }
+    }
+
+    #[test]
+    fn normalize_root_resolves_the_relative_defaults() {
+        assert_eq!(normalize_root(".", "/home/me/rig"), "/home/me/rig");
+        assert_eq!(normalize_root("", "/home/me/rig"), "/home/me/rig");
+        assert_eq!(normalize_root("./", "/home/me/rig"), "/home/me/rig");
+    }
+
+    #[test]
+    fn normalize_root_absolutizes_relative_paths_against_cwd() {
+        assert_eq!(normalize_root("proj", "/home/me"), "/home/me/proj");
+        assert_eq!(normalize_root("./proj", "/home/me"), "/home/me/proj");
+        assert_eq!(normalize_root("proj", "/home/me/"), "/home/me/proj");
+    }
+
+    #[test]
+    fn normalize_root_keeps_absolute_paths_and_trims_trailing_slash() {
+        assert_eq!(normalize_root("/repo", "/elsewhere"), "/repo");
+        assert_eq!(normalize_root("/repo/", "/elsewhere"), "/repo");
+        assert_eq!(normalize_root(" /repo ", "/elsewhere"), "/repo");
+        assert_eq!(normalize_root("/", "/elsewhere"), "/");
     }
 
     #[test]

@@ -197,7 +197,13 @@ export function EditorPage({ host }: { host: Host }) {
     if (view === 'preview' && !markdown) setView('read')
   }, [view, dirty, markdown])
 
+  /** The root the page currently renders, readable from stable callbacks.
+   *  `syncWorkspace` runs off push events and must notice the active root
+   *  moving underneath it without re-subscribing per render. */
+  const rootRef = useRef('')
+
   const applyWorkspace = useCallback((ws: { root: string; buffers: Buffer[]; expanded: string[] }) => {
+    rootRef.current = ws.root
     setRoot(ws.root)
     setBuffers(ws.buffers)
     setExpanded(new Set(ws.expanded))
@@ -208,6 +214,7 @@ export function EditorPage({ host }: { host: Host }) {
       try {
         const result = await api.tree(opts)
         setTreeRoot(result.tree.root)
+        rootRef.current = result.root
         setRoot(result.root)
         setExpanded(new Set(result.expanded))
         setError(null)
@@ -402,6 +409,19 @@ export function EditorPage({ host }: { host: Host }) {
   const syncWorkspace = useCallback(async () => {
     try {
       const ws = await api.workspace()
+      // The active root moved underneath the page: chat picked a working
+      // directory, or another surface opened a project. Follow it live —
+      // adopt the new root's remembered session exactly the way an explicit
+      // root change does, instead of leaving a stale tree until a reload.
+      if (ws.root && ws.root !== rootRef.current) {
+        applyWorkspace(ws)
+        setRootInput(ws.root)
+        setDrafts({})
+        setActivePath(ws.buffers[ws.buffers.length - 1]?.path ?? null)
+        await loadTree()
+        void refreshGit()
+        return
+      }
       setBuffers(ws.buffers)
       for (const buffer of ws.buffers) {
         const local = draftsRef.current[buffer.path]
@@ -411,7 +431,7 @@ export function EditorPage({ host }: { host: Host }) {
     } catch {
       // Transient; the next event tries again.
     }
-  }, [api, reread])
+  }, [api, reread, applyWorkspace, loadTree, refreshGit])
 
   /** Work accumulated since the last pass: paths whose file needs re-reading,
    *  and whether the git overlay is stale. */
