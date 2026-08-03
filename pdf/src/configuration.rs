@@ -163,6 +163,13 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) {
     tracing::info!("pdf configuration reloaded");
 }
 
+/// `true` for the one error that is an answer rather than a failure: the entry
+/// does not exist yet. Retrying it wastes the backoff on every first boot and
+/// logs two warnings for a completely normal state.
+fn is_not_found(error: &str) -> bool {
+    error.to_ascii_uppercase().contains("NOT_FOUND")
+}
+
 async fn trigger_with_retry(
     iii: &IIIClient,
     function_id: &str,
@@ -182,6 +189,9 @@ async fn trigger_with_retry(
             Ok(v) => return Ok(v),
             Err(e) => {
                 last_err = e.to_string();
+                if is_not_found(&last_err) {
+                    return Err(last_err);
+                }
                 if attempt < CONFIG_RETRIES {
                     tracing::warn!(
                         function_id,
@@ -205,6 +215,19 @@ async fn trigger_with_retry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A missing entry is the normal first-boot state, not a transient
+    /// failure. Retrying it spends the whole backoff and logs warnings on
+    /// every clean install.
+    #[test]
+    fn a_missing_entry_is_not_retried() {
+        assert!(is_not_found(
+            "remote error (NOT_FOUND): configuration 'pdf' not found"
+        ));
+        assert!(is_not_found("STATEMENT_NOT_FOUND"));
+        assert!(!is_not_found("connection reset by peer"));
+        assert!(!is_not_found("timed out"));
+    }
 
     #[tokio::test]
     async fn apply_config_swaps_the_snapshot() {

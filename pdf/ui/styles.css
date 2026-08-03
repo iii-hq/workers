@@ -198,13 +198,17 @@
   text-transform: uppercase;
 }
 
-[data-iii-ui='pdf'] .pdf-ui__source {
+/* The shared Monaco editor grows with its content, so the pane scrolls. */
+[data-iii-ui='pdf'] .pdf-ui__editor {
+  min-height: 20rem;
+  width: 100%;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__timing {
+  color: var(--color-ink-ghost);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
   margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 0.8rem;
-  line-height: 1.55;
-  color: var(--color-ink-faint);
 }
 
 /* The chat and trace renderer for pdf::* calls. */

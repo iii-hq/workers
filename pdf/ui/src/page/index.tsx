@@ -11,6 +11,7 @@
 import {
   Badge,
   Button,
+  CodeEditor,
   EmptyState,
   MarkdownPreview,
   StatusPanel,
@@ -18,6 +19,9 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
   type Host,
 } from '@iii-dev/console-ui'
 import { useCallback, useMemo, useRef, useState } from 'react'
@@ -144,6 +148,13 @@ function Result({ name, result }: { name: string; result: Inspection }) {
   const tables = new Set(markdown?.pages_with_tables ?? [])
   const columns = new Set(markdown?.pages_with_columns ?? [])
   const totalMs = classify.elapsed_ms + (markdown?.elapsed_ms ?? 0)
+  const chars = markdown?.body.total_chars ?? 0
+  // The speed claim is the reason to parse locally rather than pay an OCR
+  // service, so show the rate, not only the duration.
+  const charsPerSecond =
+    markdown && markdown.elapsed_ms > 0
+      ? Math.round(chars / (markdown.elapsed_ms / 1000))
+      : null
 
   return (
     <section className="pdf-ui__result">
@@ -161,11 +172,42 @@ function Result({ name, result }: { name: string; result: Inspection }) {
         <Stat label="pages" value={String(classify.page_count)} />
         <Stat
           label="sampled"
-          value={`${classify.pages_sampled} of ${classify.page_count}`}
+          value={
+            classify.pages_sampled == null
+              ? 'all'
+              : `${classify.pages_sampled} of ${classify.page_count}`
+          }
         />
         <Stat label="need ocr" value={String(classify.pages_needing_ocr.length)} />
-        <Stat label="elapsed" value={`${totalMs} ms`} />
+        <Stat
+          label="classify"
+          value={`${classify.elapsed_ms} ms`}
+          hint="Sampling the content streams to decide whether the document holds real text."
+        />
+        <Stat
+          label="extract"
+          value={markdown ? `${markdown.elapsed_ms} ms` : 'skipped'}
+          hint={
+            markdown
+              ? 'Walking every content stream and rebuilding the document as markdown.'
+              : 'No text layer to extract, so conversion was skipped.'
+          }
+        />
       </dl>
+
+      <p className="pdf-ui__timing">
+        {markdown ? (
+          <>
+            {chars.toLocaleString('en-US')} characters in {totalMs} ms
+            {charsPerSecond
+              ? `, about ${charsPerSecond.toLocaleString('en-US')} characters a second`
+              : ''}
+            . Parsed on this machine, with nothing uploaded.
+          </>
+        ) : (
+          <>Classified in {totalMs} ms on this machine, with nothing uploaded.</>
+        )}
+      </p>
 
       {classify.title && <p className="pdf-ui__doc-title">{classify.title}</p>}
 
@@ -227,7 +269,15 @@ function Result({ name, result }: { name: string; result: Inspection }) {
           </TabsContent>
 
           <TabsContent value="source" className="pdf-ui__pane">
-            <pre className="pdf-ui__source">{markdown.body.text}</pre>
+            {/* The console's one code editor, read-only. Never bundle another. */}
+            <CodeEditor
+              value={markdown.body.text}
+              onChange={() => {}}
+              language="markdown"
+              readOnly
+              aria-label="Extracted markdown source"
+              className="pdf-ui__editor"
+            />
           </TabsContent>
         </Tabs>
       ) : (
@@ -241,12 +291,27 @@ function Result({ name, result }: { name: string; result: Inspection }) {
   )
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
+function Stat({
+  label,
+  value,
+  hint,
+}: {
+  label: string
+  value: string
+  hint?: string
+}) {
+  const tile = (
     <div className="pdf-ui__stat">
       <dt className="pdf-ui__stat-label">{label}</dt>
       <dd className="pdf-ui__stat-value">{value}</dd>
     </div>
+  )
+  if (!hint) return tile
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{tile}</TooltipTrigger>
+      <TooltipContent>{hint}</TooltipContent>
+    </Tooltip>
   )
 }
 

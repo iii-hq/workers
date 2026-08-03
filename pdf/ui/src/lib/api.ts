@@ -23,8 +23,9 @@ export interface ClassifyResponse {
   document_type: DocumentType
   confidence: number
   page_count: number
-  pages_sampled: number
-  pages_with_text: number
+  /** Absent for an encrypted document, which takes the decrypting path. */
+  pages_sampled?: number
+  pages_with_text?: number
   pages_needing_ocr: number[]
   ocr_reasons: PageOcrReason[]
   ocr_recommended: boolean
