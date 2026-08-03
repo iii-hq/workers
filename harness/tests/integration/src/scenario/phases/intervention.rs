@@ -58,6 +58,10 @@ impl ScenarioRunner<'_> {
                 )
                 .await
             }
+            ScenarioIntervention::HeldCallResolve { function_call_id } => {
+                self.run_held_call_resolve(services, active, &function_call_id)
+                    .await
+            }
         };
 
         match result {
@@ -73,6 +77,122 @@ impl ScenarioRunner<'_> {
                 Err(error)
             }
         }
+    }
+
+    /// INT-013 driver: a scripted pre-trigger hook answered `hold`, parking
+    /// the turn in `awaiting_functions`. Prove the no-op resolve gates leave
+    /// it parked, then release the held call so the chain resumes after the
+    /// holder and the turn completes.
+    async fn run_held_call_resolve(
+        &self,
+        services: &RunServices,
+        active: &ActiveTurn,
+        function_call_id: &str,
+    ) -> Result<(Value, Vec<String>), RunError> {
+        let phase = RunPhase::Intervene;
+        let deadline = active.deadline;
+        let turn_id = active.turn_id.clone().ok_or_else(|| {
+            RunError::new(
+                phase,
+                RunErrorKind::Contract,
+                "held-call-resolve requires a turn id from harness::send",
+            )
+        })?;
+
+        // Wait for the hook hold to park the call durably.
+        let parked_status = wait_for_status(services.client(), &self.session_id, deadline, {
+            let call_id = function_call_id.to_string();
+            move |status| {
+                status.get("status").and_then(Value::as_str) == Some("awaiting_functions")
+                    && status
+                        .get("pending_function_calls")
+                        .and_then(Value::as_array)
+                        .is_some_and(|pending| {
+                            pending.iter().any(|call| {
+                                call.get("function_call_id").and_then(Value::as_str)
+                                    == Some(call_id.as_str())
+                                    || call.get("id").and_then(Value::as_str)
+                                        == Some(call_id.as_str())
+                            })
+                        })
+            }
+        })
+        .await?;
+
+        let resolve = |payload: Value| {
+            let client = services.client().clone();
+            async move {
+                client
+                    .call_with_deadline(
+                        "harness::function::resolve",
+                        payload,
+                        deadline,
+                        DEFAULT_CALL_TIMEOUT_MS,
+                    )
+                    .await
+                    .map_err(|error| {
+                        RunError::with_source(
+                            phase,
+                            RunErrorKind::Contract,
+                            "call harness::function::resolve",
+                            anyhow::anyhow!(error),
+                        )
+                    })
+            }
+        };
+
+        // No-op gate: a resolve against the wrong turn must not settle the call.
+        let wrong_turn = resolve(json!({
+            "session_id": self.session_id,
+            "turn_id": format!("{turn_id}-bogus"),
+            "function_call_id": function_call_id,
+            "action": "execute",
+        }))
+        .await?;
+        // No-op gate: an unknown call id must not settle anything either.
+        let unknown_call = resolve(json!({
+            "session_id": self.session_id,
+            "turn_id": turn_id,
+            "function_call_id": format!("{function_call_id}-unknown"),
+            "action": "execute",
+        }))
+        .await?;
+        for (label, response) in [("wrong turn", &wrong_turn), ("unknown call", &unknown_call)] {
+            if response.get("resolved") != Some(&Value::Bool(false)) {
+                return Err(RunError::new(
+                    phase,
+                    RunErrorKind::Contract,
+                    format!("{label} resolve was not a no-op: {response}"),
+                ));
+            }
+        }
+
+        // Release: resume the chain after the holder and run the target.
+        let execute = resolve(json!({
+            "session_id": self.session_id,
+            "turn_id": turn_id,
+            "function_call_id": function_call_id,
+            "action": "execute",
+        }))
+        .await?;
+        if execute.get("resolved") != Some(&Value::Bool(true))
+            || execute.get("turn_resumed") != Some(&Value::Bool(true))
+        {
+            return Err(RunError::new(
+                phase,
+                RunErrorKind::Contract,
+                format!("execute resolve did not resume the turn: {execute}"),
+            ));
+        }
+
+        let control = json!({
+            "kind": "held_call_resolve",
+            "parked_status": parked_status,
+            "wrong_turn_resolve": wrong_turn,
+            "unknown_call_resolve": unknown_call,
+            "execute_resolve": execute,
+        });
+        Ok((control, Vec::new()))
     }
 
     async fn run_stop_cancel_cascade(

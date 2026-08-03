@@ -44,6 +44,8 @@ pub(super) struct ActiveTurn {
     pub(super) tree_sessions: Vec<String>,
     pub(super) tree_statuses: Vec<Value>,
     pub(super) router_evidence: Value,
+    /// `{function_id, response}` per fired probe action, in fire order.
+    pub(super) probe_responses: Vec<Value>,
 }
 
 impl ActiveTurn {
@@ -66,6 +68,7 @@ impl ActiveTurn {
             tree_sessions: Vec::new(),
             tree_statuses: Vec::new(),
             router_evidence: Value::Null,
+            probe_responses: Vec::new(),
         }
     }
 

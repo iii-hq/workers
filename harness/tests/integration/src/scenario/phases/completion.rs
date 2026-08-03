@@ -79,7 +79,11 @@ impl ScenarioRunner<'_> {
                         ));
                     }
                 }
-                self.fire_probe_action(services, &action, deadline).await?;
+                let response = self.fire_probe_action(services, &action, deadline).await?;
+                active.probe_responses.push(json!({
+                    "function_id": action.function_id,
+                    "response": response,
+                }));
             }
         }
 
@@ -223,14 +227,15 @@ impl ScenarioRunner<'_> {
     }
 
     /// Invoke a probe action, expanding `{{run_id}}`/`{{session_id}}` in its
-    /// payload first. A failed dispatch is a runner error — the scenario's
-    /// premise (the reaction it should trip) can't hold without it.
+    /// payload first, and return the response for evidence. A failed dispatch
+    /// is a runner error — the scenario's premise (the reaction it should
+    /// trip) can't hold without it.
     async fn fire_probe_action(
         &self,
         services: &RunServices,
         action: &crate::fixtures::ProbeAction,
         deadline: Deadline,
-    ) -> Result<(), RunError> {
+    ) -> Result<Value, RunError> {
         let mut payload = action.payload.clone();
         crate::expand::Placeholders::new(&self.run_id, &self.session_id)
             .expand_value(&mut payload)
@@ -248,8 +253,7 @@ impl ScenarioRunner<'_> {
             .await
             .map_err(|error| {
                 RunError::runner(RunPhase::Await, "fire probe action", anyhow::anyhow!(error))
-            })?;
-        Ok(())
+            })
     }
 
     async fn confirm_terminal_status(

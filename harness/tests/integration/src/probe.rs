@@ -32,7 +32,7 @@ pub(crate) struct CompletionObservation {
 #[derive(Clone)]
 struct BoundTrigger {
     id: String,
-    trigger_type: &'static str,
+    trigger_type: String,
 }
 
 #[derive(Deserialize)]
@@ -58,6 +58,9 @@ pub struct ScenarioProbe {
     target_notify: Arc<tokio::sync::Notify>,
     target_response_released: Arc<AtomicBool>,
     target_response_notify: Arc<tokio::sync::Notify>,
+    /// `{function_id, payload}` per scripted-hook invocation, in arrival
+    /// order — whole-run evidence, like `target_calls`.
+    hook_calls: Arc<Mutex<Vec<Value>>>,
 }
 
 impl ScenarioProbe {
@@ -75,6 +78,7 @@ impl ScenarioProbe {
             target_notify: Arc::new(tokio::sync::Notify::new()),
             target_response_released: Arc::new(AtomicBool::new(false)),
             target_response_notify: Arc::new(tokio::sync::Notify::new()),
+            hook_calls: Arc::new(Mutex::new(Vec::new())),
         };
         probe.register_sinks();
         Ok(probe)
@@ -185,6 +189,99 @@ impl ScenarioProbe {
             .lock()
             .map(|calls| calls.clone())
             .unwrap_or_default()
+    }
+
+    /// Snapshot of every scripted-hook invocation so far, in arrival order,
+    /// as `{function_id, payload}`.
+    pub fn hook_calls(&self) -> Vec<Value> {
+        self.hook_calls
+            .lock()
+            .map(|calls| calls.clone())
+            .unwrap_or_default()
+    }
+
+    /// Register one probe-hosted function per scripted hook. The function id
+    /// is `<run_id>::hook-<name>`; each invocation is recorded whole-run and
+    /// answered with the hook's scripted behavior.
+    pub fn register_hooks(&self, run_id: &str, hooks: &[crate::fixtures::ScenarioHook]) {
+        for hook in hooks {
+            let function_id = hook_function_id(run_id, &hook.name);
+            let calls = Arc::clone(&self.hook_calls);
+            let behavior = hook.behavior.clone();
+            let held = Arc::new(AtomicBool::new(false));
+            let recorded_id = function_id.clone();
+            self.client.inner().register_function(
+                &function_id,
+                RegisterFunction::new_async(move |mut payload: Value| {
+                    let calls = Arc::clone(&calls);
+                    let behavior = behavior.clone();
+                    let held = Arc::clone(&held);
+                    let recorded_id = recorded_id.clone();
+                    async move {
+                        strip_engine_fields(&mut payload);
+                        calls
+                            .lock()
+                            .map_err(|_| {
+                                Error::Handler("integration/hook_calls_lock_poisoned".into())
+                            })?
+                            .push(json!({
+                                "function_id": recorded_id,
+                                "payload": payload,
+                            }));
+                        let response = match &behavior {
+                            crate::fixtures::HookBehavior::Continue => Value::Null,
+                            crate::fixtures::HookBehavior::HoldOnce => {
+                                if held.swap(true, Ordering::AcqRel) {
+                                    Value::Null
+                                } else {
+                                    json!({ "decision": "hold" })
+                                }
+                            }
+                            crate::fixtures::HookBehavior::Deny { reason } => {
+                                json!({ "decision": "deny", "reason": reason })
+                            }
+                            crate::fixtures::HookBehavior::Mutate { mutations } => {
+                                json!({ "mutations": mutations })
+                            }
+                        };
+                        Ok::<Value, Error>(response)
+                    }
+                })
+                .description(format!("Scripted {} hook for integration runs.", hook.point)),
+            );
+        }
+    }
+
+    /// Bind every scripted hook to its `harness::hook::<point>` trigger type.
+    /// Must run after harness readiness so the trigger types exist and the
+    /// acknowledged RPCs barrier the function registrations queued before.
+    pub async fn bind_hooks(
+        &self,
+        run_id: &str,
+        hooks: &[crate::fixtures::ScenarioHook],
+        deadline: Deadline,
+    ) -> anyhow::Result<()> {
+        for hook in hooks {
+            let mut config = serde_json::Map::new();
+            config.insert("priority".into(), json!(hook.priority));
+            if let Some(functions) = &hook.functions {
+                config.insert("functions".into(), json!(functions));
+            }
+            if let Some(timeout_ms) = hook.timeout_ms {
+                config.insert("timeout_ms".into(), json!(timeout_ms));
+            }
+            if let Some(on_error) = &hook.on_error {
+                config.insert("on_error".into(), json!(on_error));
+            }
+            self.bind_dynamic_trigger(
+                format!("harness::hook::{}", hook.point),
+                hook_function_id(run_id, &hook.name),
+                Value::Object(config),
+                deadline,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// Wait until the controlled function has served at least `expected`
@@ -307,6 +404,22 @@ impl ScenarioProbe {
         &self,
         trigger_type: &'static str,
         function_id: &'static str,
+        config: Value,
+        deadline: Deadline,
+    ) -> anyhow::Result<String> {
+        self.bind_dynamic_trigger(
+            trigger_type.to_string(),
+            function_id.to_string(),
+            config,
+            deadline,
+        )
+        .await
+    }
+
+    async fn bind_dynamic_trigger(
+        &self,
+        trigger_type: String,
+        function_id: String,
         config: Value,
         deadline: Deadline,
     ) -> anyhow::Result<String> {
@@ -557,6 +670,11 @@ fn register_controlled_function(
         .request_format(Value::Object(target.request_schema.clone()))
         .response_format(const_response_schema(&target.response)),
     );
+}
+
+/// Registered function id for a scripted hook: `<run_id>::hook-<name>`.
+pub fn hook_function_id(run_id: &str, name: &str) -> String {
+    format!("{run_id}::hook-{name}")
 }
 
 fn const_response_schema(response: &Value) -> Value {

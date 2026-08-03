@@ -113,6 +113,8 @@ impl ScenarioRunner<'_> {
             tree_sessions: active.tree_sessions.clone(),
             tree_statuses: active.tree_statuses.clone(),
             router_evidence: active.router_evidence.clone(),
+            probe_responses: active.probe_responses.clone(),
+            hook_calls: services.probe().hook_calls(),
         }
     }
 
