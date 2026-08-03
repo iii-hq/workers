@@ -60,13 +60,26 @@ assert_contains "$out" "--providers" "documents --providers"
 # ---- port-conflict test (always run; doesn't need worker binary) ----
 
 echo "[script-tests] port 49134 in use → exit 3"
-# Bind the port in a background nc listener; cleanup with a trap.
-( nc -l 49134 </dev/null >/dev/null 2>&1 ) &
+# Bind the port in a background listener; cleanup with a trap.
+python3 -c '
+import socket
+import time
+
+with socket.socket() as listener:
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 49134))
+    listener.listen()
+    time.sleep(60)
+' &
 NC_PID=$!
-trap "kill $NC_PID 2>/dev/null || true" EXIT
-sleep 0.5
+trap 'kill "$NC_PID" 2>/dev/null || true' EXIT
+for _ in {1..50}; do
+  (echo > /dev/tcp/127.0.0.1/49134) 2>/dev/null && break
+  sleep 0.1
+done
 out=$("$SCRIPT" --providers=local --no-build 2>&1) ; rc=$?
 kill "$NC_PID" 2>/dev/null || true
+wait "$NC_PID" 2>/dev/null || true
 trap - EXIT
 assert_eq "$rc" "3" "exit code"
 assert_contains "$out" "port 49134 already in use" "error message"
@@ -83,48 +96,37 @@ else
   assert_contains "$out" "matched no cases" "FAIL message"
 
   echo "[script-tests] SIGINT mid-run kills engine + rustfs"
-  ( "$SCRIPT" --providers=local --no-build >/tmp/sigint-test.log 2>&1 ) &
+  sigint_root=$(mktemp -d "${TMPDIR:-/tmp}/storage-e2e-sigint.XXXXXX")
+  sigint_log="$sigint_root/run.log"
+  rustfs_pid_file="$sigint_root/rustfs.pid"
+  ( STORAGE_E2E_RUSTFS_PID_FILE="$rustfs_pid_file" \
+      "$SCRIPT" --providers=local --no-build >"$sigint_log" 2>&1 ) &
   SCRIPT_PID=$!
-  # Give the engine ~5s to start.
-  sleep 5
+  deadline=$(( $(date +%s) + 60 ))
+  while [[ ! -s "$rustfs_pid_file" ]] && kill -0 "$SCRIPT_PID" 2>/dev/null; do
+    if (( $(date +%s) > deadline )); then break; fi
+    sleep 0.2
+  done
+  rustfs_pid=$(cat "$rustfs_pid_file" 2>/dev/null || true)
   kill -INT "$SCRIPT_PID" 2>/dev/null || true
   wait "$SCRIPT_PID" 2>/dev/null || true
-  sleep 2
-  # Both processes should be gone.
-  # Zombies (<defunct> / state Z) are "dead enough" for this test's
-  # intent: the process has been killed, the kernel just hasn't reaped
-  # the /proc entry yet (parent died alongside it, init reaps when
-  # scheduled). `pgrep -f` still matches a zombie's comm, so we need to
-  # filter on process state explicitly. `ps -o state=` prints the state
-  # column; "Z" / "X" mean dead. (No `xargs -r` because BSD xargs on
-  # macOS doesn't have it.)
-  is_alive() {
-    local pat=$1 pid state
-    for pid in $(pgrep -f "$pat" 2>/dev/null); do
-      state=$(ps -o state= -p "$pid" 2>/dev/null | tr -d ' ')
-      [[ -n "$state" && "$state" != "Z" && "$state" != "X" ]] && return 0
-    done
-    return 1
-  }
-  if is_alive 'target/release/storage'; then
-    echo "  FAIL: storage worker still running after SIGINT"
+  if (echo > /dev/tcp/127.0.0.1/49134) 2>/dev/null; then
+    echo "  FAIL: engine port still open after SIGINT"
     FAIL=$((FAIL+1))
   else
-    echo "  PASS: storage gone"
+    echo "  PASS: engine port released"
     PASS=$((PASS+1))
   fi
-  if is_alive rustfs; then
+  state=$(ps -o state= -p "$rustfs_pid" 2>/dev/null | tr -d ' ')
+  if [[ -n "$rustfs_pid" && -n "$state" && "$state" != "Z" && "$state" != "X" ]]; then
     echo "  FAIL: rustfs still running after SIGINT"
-    echo "  --- /tmp/sigint-test.log (last 100 lines) ---"
-    tail -100 /tmp/sigint-test.log 2>/dev/null || echo "  (log not present)"
-    echo "  --- live rustfs/storage/iii processes ---"
-    ps -eo pid,ppid,pgid,sid,stat,comm,args 2>/dev/null | awk 'NR==1 || /rustfs|storage|iii/' | head -20
-    echo "  --- end diagnostic ---"
+    tail -100 "$sigint_log" 2>/dev/null || true
     FAIL=$((FAIL+1))
   else
-    echo "  PASS: rustfs gone"
+    echo "  PASS: owned rustfs process gone"
     PASS=$((PASS+1))
   fi
+  rm -rf "$sigint_root"
 fi
 
 # ---- result ----

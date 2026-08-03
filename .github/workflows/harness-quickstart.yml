@@ -1,18 +1,6 @@
 name: Harness quickstart
 
 on:
-  workflow_call:
-    inputs:
-      channel:
-        description: Installer channel to validate
-        required: false
-        type: string
-        default: latest
-    secrets:
-      SLACK_BOT_TOKEN:
-        required: false
-      ZAI_API_KEY:
-        required: true
   schedule:
     - cron: "17 5 * * *"
   workflow_dispatch:
@@ -22,13 +10,33 @@ on:
         type: choice
         options: [latest, next]
         default: latest
+      release_worker:
+        description: Worker published by the release that triggered this smoke
+        type: string
+        default: ''
+      release_version:
+        description: Published worker version that must be resolved
+        type: string
+        default: ''
+      release_tag:
+        description: Git tag associated with the published release
+        type: string
+        default: ''
+      release_run_id:
+        description: GitHub Actions run id of the publishing release
+        type: string
+        default: ''
+      cascade_e2e:
+        description: Dispatch the deployed E2E workflow after a successful smoke
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: harness-quickstart-${{ inputs.channel || github.event_name }}
-  cancel-in-progress: true
+  group: harness-quickstart-${{ inputs.channel || github.event_name }}-${{ inputs.release_version || 'rolling' }}
+  cancel-in-progress: ${{ inputs.release_version == '' }}
 
 jobs:
   validate:
@@ -43,63 +51,9 @@ jobs:
             || fromJSON(format('["{0}"]', inputs.channel))
           }}
     runs-on: ubuntu-latest
-    # Covers registry timeouts plus terminal rendering and finalization.
-    timeout-minutes: 35
+    timeout-minutes: 20
     steps:
-      - name: Notify Slack that validation started
-        id: slack_start
-        continue-on-error: true
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_CHANNEL: worker-releases
-          III_CHANNEL: ${{ matrix.channel }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          text="⏳ *Harness quickstart* started · \`${III_CHANNEL}\` · <${RUN_URL}|view run>"
-          payload=$(jq -n \
-            --arg channel "$SLACK_CHANNEL" \
-            --arg text "$text" \
-            '{channel: $channel, text: $text}')
-          response=$(curl -sS --retry 3 --retry-all-errors \
-            -X POST https://slack.com/api/chat.postMessage \
-            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            -d "$payload")
-          if ! jq -e '.ok == true' <<<"$response" >/dev/null 2>&1; then
-            error=$(jq -r '.error // "invalid_response"' <<<"$response" 2>/dev/null || printf 'invalid_response')
-            echo "::warning::Slack start notification failed: $error"
-            exit 1
-          fi
-          message_ts=$(jq -er '.ts' <<<"$response")
-          channel_id=$(jq -er '.channel' <<<"$response")
-          echo "ts=$message_ts" >>"$GITHUB_OUTPUT"
-          echo "channel_id=$channel_id" >>"$GITHUB_OUTPUT"
-
       - uses: actions/checkout@v5
-
-      - name: Install VHS for terminal recording
-        continue-on-error: true
-        env:
-          VHS_VERSION: "0.11.0"
-          TTYD_VERSION: "1.7.7"
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
-          curl -fsSL --retry 3 \
-            "https://github.com/charmbracelet/vhs/releases/download/v${VHS_VERSION}/vhs_${VHS_VERSION}_Linux_x86_64.tar.gz" \
-            -o /tmp/vhs.tar.gz
-          tar -xzf /tmp/vhs.tar.gz -C /tmp
-          sudo install -m 755 "/tmp/vhs_${VHS_VERSION}_Linux_x86_64/vhs" /usr/local/bin/vhs
-          curl -fsSL --retry 3 \
-            "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64" \
-            -o /tmp/ttyd
-          sudo install -m 755 /tmp/ttyd /usr/local/bin/ttyd
-          vhs --version
-          ttyd --version
-          ffprobe -v quiet -version | sed -n '1p'
-          vhs validate harness/tests/quickstart/quickstart.tape
 
       - name: Run quickstart validator
         id: quickstart
@@ -107,53 +61,41 @@ jobs:
           HARNESS_QUICKSTART_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-quickstart
           HARNESS_QUICKSTART_TRACE: "1"
           III_CHANNEL: ${{ matrix.channel }}
-          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+        run: harness/tests/quickstart/run-ci.sh
+
+      - name: Verify the released artifact was resolved
+        if: ${{ success() && inputs.release_version != '' }}
+        env:
+          RELEASE_WORKER: ${{ inputs.release_worker }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          CHANNEL: ${{ matrix.channel }}
         run: |
           set -euo pipefail
-
-          # VHS records the real validator operations. The tape waits for a
-          # unique shell prompt instead of matching transient terminal output.
-          # Pass/fail is read from result.json because VHS cannot propagate the
-          # typed command's exit code.
-          if command -v vhs >/dev/null 2>&1; then
-            if vhs harness/tests/quickstart/quickstart.tape; then
-              if ! ffprobe -v error \
-                -select_streams v:0 \
-                -show_entries stream=codec_type \
-                -of csv=p=0 \
-                target/harness-quickstart/quickstart.mp4 |
-                grep -qx video; then
-                echo "::warning::VHS produced an invalid terminal recording"
-                rm -f target/harness-quickstart/quickstart.mp4
-              fi
-            else
-              echo "::warning::VHS recording failed"
-              rm -f target/harness-quickstart/quickstart.mp4
-              if [[ ! -f target/harness-quickstart/result.json ]]; then
-                echo "::warning::No validator result was produced; rerunning without recording"
-                harness/tests/quickstart/run-ci.sh
-              fi
-            fi
-          else
-            echo "::warning::VHS is unavailable; running without recording"
-            harness/tests/quickstart/run-ci.sh
-          fi
-
-          jq -e '.status == "passed"' target/harness-quickstart/result.json >/dev/null || {
-            reason=$(jq -r '.failure_reason // empty' target/harness-quickstart/result.json 2>/dev/null || true)
-            echo "::error::quickstart validator failed${reason:+: $reason}"
-            exit 1
-          }
+          python3 -m pip install --quiet pyyaml
+          python3 .github/scripts/verify_registry_lock.py \
+            --lock target/harness-quickstart/iii.lock \
+            --manifest harness/iii.worker.yaml \
+            --required harness \
+            --required console \
+            --worker "$RELEASE_WORKER" \
+            --version "$RELEASE_VERSION" \
+            --output target/harness-quickstart/lock-verification.json
+          jq -n \
+            --arg worker "$RELEASE_WORKER" \
+            --arg version "$RELEASE_VERSION" \
+            --arg tag "$RELEASE_TAG" \
+            --arg run_id "$RELEASE_RUN_ID" \
+            --arg channel "$CHANNEL" \
+            '{worker: $worker, version: $version, tag: $tag, release_run_id: $run_id, channel: $channel}' \
+            >target/harness-quickstart/release-context.json
 
       - name: Show quickstart logs
         if: always()
         run: |
           shopt -s nullglob
           logs=(target/harness-quickstart/logs/*.log)
-          if ((${#logs[@]} == 0)); then
-            echo "No quickstart logs were produced."
-            exit 0
-          fi
           for log in "${logs[@]}"; do
             echo "::group::$(basename "$log")"
             cat "$log"
@@ -164,25 +106,19 @@ jobs:
         if: always()
         run: |
           {
+            echo "### Harness quickstart"
+            echo
             if [[ -f target/harness-quickstart/result.json ]]; then
-              echo "### Harness quickstart"
-              echo
               jq -r '
-                "| Status | Channel | CLI | GLM canary | Duration |",
-                "| --- | --- | --- | --- | ---: |",
-                "| \(.status) | \(.channel) | \(.cli_version) | \(.message_check) | \(.elapsed_ms) ms |",
+                "| Status | Channel | CLI | Duration |",
+                "| --- | --- | --- | ---: |",
+                "| \(.status) | \(.channel) | \(.cli_version) | \(.elapsed_ms) ms |",
                 (if .failure_reason != "" then "", "**Failure:** \(.failure_reason)" else empty end)
               ' target/harness-quickstart/result.json
             else
-              echo "### Harness quickstart"
-              echo
               echo "No quickstart result was produced."
             fi
-            if [[ -f target/harness-quickstart/quickstart.mp4 ]]; then
-              echo
-              echo "Terminal recording: \`quickstart.mp4\` in the \`harness-quickstart-${{ matrix.channel }}\` artifact."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Upload quickstart artifacts
         if: always()
@@ -193,156 +129,37 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      - name: Finalize Slack notification
-        if: ${{ always() && steps.slack_start.outputs.ts != '' && steps.slack_start.outputs.channel_id != '' }}
-        continue-on-error: true
+  dispatch-e2e:
+    name: Dispatch deployed Harness E2E CI
+    needs: validate
+    if: ${{ needs.validate.result == 'success' && inputs.cascade_e2e == true }}
+    permissions:
+      actions: write
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch deployed E2E CI
         env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_CHANNEL_ID: ${{ steps.slack_start.outputs.channel_id }}
-          SLACK_MESSAGE_TS: ${{ steps.slack_start.outputs.ts }}
-          III_CHANNEL: ${{ matrix.channel }}
-          QUICKSTART_OUTCOME: ${{ steps.quickstart.outcome }}
-          JOB_STATUS: ${{ job.status }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
-          COMMIT_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ inputs.channel }}
+          WORKER: ${{ inputs.release_worker }}
+          VERSION: ${{ inputs.release_version }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          SMOKE_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_REF: ${{ github.ref_name }}
         run: |
-          set -uo pipefail
-
-          slack_call() {
-            local method=$1 payload=$2 response error
-            if ! response=$(curl -sS --retry 3 --retry-all-errors \
-              -X POST "https://slack.com/api/${method}" \
-              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-              -H "Content-Type: application/json; charset=utf-8" \
-              -d "$payload"); then
-              echo "::warning::Slack ${method} request failed"
-              return 1
-            fi
-            if ! jq -e '.ok == true' <<<"$response" >/dev/null 2>&1; then
-              error=$(jq -r '.error // "invalid_response"' <<<"$response" 2>/dev/null || printf 'invalid_response')
-              echo "::warning::Slack ${method} failed: $error"
-              return 1
-            fi
+          set -euo pipefail
+          [[ -n "$WORKER" && -n "$VERSION" ]] || {
+            echo "::error::release_worker and release_version are required for the E2E cascade"
+            exit 2
           }
-
-          result_file=target/harness-quickstart/result.json
-          if [[ -f "$result_file" ]]; then
-            result_status=$(jq -r '.status // "failed"' "$result_file")
-            cli_version=$(jq -r '.cli_version // "unknown"' "$result_file")
-            duration=$(jq -r '((.elapsed_ms // 0) / 1000 | floor | tostring) + "s"' "$result_file")
-            failure_reason=$(jq -r '.failure_reason // ""' "$result_file")
-            message_check=$(jq -r '.message_check // "unknown"' "$result_file")
-          else
-            result_status=failed
-            cli_version=unknown
-            duration=unknown
-            message_check=unknown
-            failure_reason="No result.json was produced (validator outcome: ${QUICKSTART_OUTCOME})."
-          fi
-
-          short_sha=${COMMIT_SHA:0:7}
-          if [[ "$JOB_STATUS" == "success" && "$result_status" == "passed" ]]; then
-            icon=✅
-            label=succeeded
-            detail=$(printf "*Status:* succeeded\n*Installer channel:* \`%s\`\n*CLI:* \`%s\`\n*GLM canary:* \`%s\`\n*Duration:* %s\n*Commit:* <%s|\`%s\`>\n<%s|Open GitHub Actions run>" \
-              "$III_CHANNEL" "$cli_version" "$message_check" "$duration" \
-              "$COMMIT_URL" "$short_sha" "$RUN_URL")
-          else
-            icon=❌
-            label=failed
-            if [[ -z "$failure_reason" ]]; then
-              failure_reason="Workflow status: ${JOB_STATUS} (validator outcome: ${QUICKSTART_OUTCOME})."
-            fi
-            detail=$(printf "*Status:* failed\n*Installer channel:* \`%s\`\n*CLI:* \`%s\`\n*GLM canary:* \`%s\`\n*Duration:* %s\n*Failure:* %s\n*Commit:* <%s|\`%s\`>\n<%s|Open GitHub Actions run>" \
-              "$III_CHANNEL" "$cli_version" "$message_check" "$duration" \
-              "${failure_reason:-unknown failure}" \
-              "$COMMIT_URL" "$short_sha" "$RUN_URL")
-          fi
-
-          root_text="${icon} *Harness quickstart* ${label} · \`${III_CHANNEL}\` · GLM ${message_check} · ${duration} · <${RUN_URL}|view run>"
-          update_payload=$(
-            # shellcheck disable=SC2016
-            jq -n \
-              --arg channel "$SLACK_CHANNEL_ID" \
-              --arg ts "$SLACK_MESSAGE_TS" \
-              --arg text "$root_text" \
-              '{channel: $channel, ts: $ts, text: $text}'
-          )
-          thread_payload=$(
-            # shellcheck disable=SC2016
-            jq -n \
-              --arg channel "$SLACK_CHANNEL_ID" \
-              --arg ts "$SLACK_MESSAGE_TS" \
-              --arg text "$detail" \
-              '{channel: $channel, thread_ts: $ts, text: $text}'
-          )
-
-          failed=0
-          slack_call chat.update "$update_payload" || failed=1
-          slack_call chat.postMessage "$thread_payload" || failed=1
-          exit "$failed"
-
-      - name: Upload terminal recording to Slack thread
-        if: ${{ always() && steps.slack_start.outputs.ts != '' && steps.slack_start.outputs.channel_id != '' }}
-        continue-on-error: true
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_CHANNEL_ID: ${{ steps.slack_start.outputs.channel_id }}
-          SLACK_MESSAGE_TS: ${{ steps.slack_start.outputs.ts }}
-        run: |
-          set -uo pipefail
-
-          recording=target/harness-quickstart/quickstart.mp4
-          if [[ ! -s "$recording" ]]; then
-            echo "No terminal recording was produced; skipping the Slack upload."
-            exit 0
-          fi
-          filename=$(basename "$recording")
-          length=$(wc -c <"$recording" | tr -d '[:space:]')
-
-          # Slack external upload flow: reserve a URL, send the bytes, then
-          # attach the file to the run's thread. Needs the files:write scope.
-          ticket=$(curl -sS --retry 3 --retry-all-errors \
-            -X POST https://slack.com/api/files.getUploadURLExternal \
-            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-            --data-urlencode "filename=${filename}" \
-            --data-urlencode "length=${length}")
-          if ! jq -e '.ok == true' <<<"$ticket" >/dev/null 2>&1; then
-            error=$(jq -r '.error // "invalid_response"' <<<"$ticket" 2>/dev/null || printf 'invalid_response')
-            echo "::warning::Slack files.getUploadURLExternal failed: $error (is the files:write scope granted?)"
-            exit 1
-          fi
-          upload_url=$(jq -er '.upload_url' <<<"$ticket")
-          file_id=$(jq -er '.file_id' <<<"$ticket")
-
-          if ! curl -sS --fail --retry 3 --retry-all-errors \
-            -X POST "$upload_url" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary @"$recording" >/dev/null; then
-            echo "::warning::Slack recording upload failed"
-            exit 1
-          fi
-
-          complete_payload=$(jq -n \
-            --arg channel "$SLACK_CHANNEL_ID" \
-            --arg ts "$SLACK_MESSAGE_TS" \
-            --arg id "$file_id" \
-            --arg title "Harness quickstart terminal recording.mp4" \
-            '{
-              channel_id: $channel,
-              thread_ts: $ts,
-              initial_comment: "🎬 Terminal recording of this run",
-              files: [{id: $id, title: $title}]
-            }')
-          response=$(curl -sS --retry 3 --retry-all-errors \
-            -X POST https://slack.com/api/files.completeUploadExternal \
-            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            -d "$complete_payload")
-          if ! jq -e '.ok == true' <<<"$response" >/dev/null 2>&1; then
-            error=$(jq -r '.error // "invalid_response"' <<<"$response" 2>/dev/null || printf 'invalid_response')
-            echo "::warning::Slack files.completeUploadExternal failed: $error"
-            exit 1
-          fi
-          echo "Uploaded ${filename} (${length} bytes) to the Slack thread."
+          gh workflow run harness-e2e-deployed.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$WORKFLOW_REF" \
+            --field "channel=$CHANNEL" \
+            --field "release_worker=$WORKER" \
+            --field "release_version=$VERSION" \
+            --field "release_tag=$RELEASE_TAG" \
+            --field "release_run_id=$RELEASE_RUN_ID" \
+            --field "smoke_run_id=$SMOKE_RUN_ID"

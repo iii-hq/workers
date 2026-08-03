@@ -156,7 +156,7 @@ let bytes = reader.read_all().await?;
 
 ## Tests
 
-- `tests/e2e/` — TypeScript harness. The default suite (`run-tests.sh`) covers happy paths, safety guardrails, jobs lifecycle, fs across host and sandbox targets, adversarial protocol-break suites for streaming/exec/jobs/encoding/concurrency, plus vulnerability-regression cases under `cases-vuln-repro.ts`. The jailed suite (`run-tests-jailed.sh`, against `config-jailed.yaml`) covers the symlink-parent jail-escape regression. Case count drifts as cases are added/removed — treat `run-tests.sh`'s own summary line (or `reports/report.json`'s `total`) as ground truth rather than a number in this doc.
+- `tests/e2e/` — TypeScript harness. The default suite (`run-tests.sh`) covers happy paths, safety guardrails, jobs lifecycle, fs across host and sandbox targets, adversarial protocol-break suites for streaming/exec/jobs/encoding/concurrency, plus vulnerability-regression cases under `cases-vuln-repro.ts`. The jailed mode (`run-tests.sh --suite=jailed`, against `config-jailed.yaml`) covers the symlink-parent jail-escape regression. Case count drifts as cases are added/removed — treat `run-tests.sh`'s own summary line (or `reports/report.json`'s `total`) as ground truth rather than a number in this doc.
 - `tests/*.rs` — Rust integration tests (`jobs_lifecycle`, `host_fs_branches`, `sandbox_dispatch`, `function_handlers`) covering the host backend branches, sandbox forwarder, and every typed-registration handler. Run with `cargo test`.
 - Line coverage measured with `cargo tarpaulin` sits around 65%; `jobs.rs` is at 100% and the sandbox dispatch path is fully exercised.
 

@@ -25,10 +25,10 @@ runs=${HARNESS_E2E_RUNS:-1}
 run_dir="$artifacts_dir/stack"
 logs_dir="$artifacts_dir/logs"
 iii_port=${HARNESS_E2E_PORT:-49134}
-[[ "$iii_port" =~ ^[0-9]+$ ]] && ((iii_port >= 1 && iii_port <= 65535)) || {
+if [[ ! "$iii_port" =~ ^[0-9]+$ ]] || ((iii_port < 1 || iii_port > 65535)); then
   echo "HARNESS_E2E_PORT must be an integer from 1 through 65535" >&2
   exit 1
-}
+fi
 iii_url="ws://127.0.0.1:$iii_port"
 engine_config_template=${HARNESS_E2E_ENGINE_CONFIG:-"$script_dir/stack-config/engine.yaml"}
 # iii-worker's lifecycle helpers mutate config.yaml in their project root.
