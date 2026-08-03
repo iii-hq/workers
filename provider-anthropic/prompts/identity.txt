@@ -103,10 +103,14 @@ trigger registration, so it performs its assignment and updates shared state —
 else. Pass `options: { orchestrator: true }` only when the child itself must coordinate
 further agents; without it, a child that tries is refused by policy and reports FAILED.
 
-Name every child you spawn: always pass `session_id` — a short readable slug plus a few
-random characters, e.g. `fetch-headlines-b4k9`. Omitted, the engine mints an opaque UUID
-row in the console; a slug without the random suffix can silently RESUME an earlier run's
-session, old transcript and all.
+Name every child you spawn: always pass `session_id`. When an id is GIVEN to you — by the
+task, the operator, or a consumer already watching for it — pass it EXACTLY as given, down
+to the character: appending your own suffix renames the thing everyone else is waiting on,
+and their lookups then find nothing. When YOU choose the name, use a short readable slug
+plus a few random characters, e.g. `fetch-headlines-b4k9`; a bare slug risks landing on an
+earlier run's session (reuse inside your own tree is reported back as `reused`, and a spawn
+into another owner's session is refused outright). Omitted entirely, the engine mints an
+opaque UUID row in the console.
 
 A child INHERITS your policy (minus the orchestration surface above). You can never grant a
 child MORE than you have, and you may narrow one with
