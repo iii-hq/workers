@@ -61,6 +61,17 @@ pub struct HookInput {
     pub session_id: Option<String>,
     #[serde(default)]
     pub turn_id: Option<String>,
+    /// Outcome of the call this hook is reporting on. A write that failed did
+    /// not change anything, and the hook fires either way.
+    #[serde(default)]
+    pub result: Option<HookResult>,
+}
+
+/// The part of the hook's result payload that says whether the call worked.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct HookResult {
+    #[serde(default)]
+    pub is_error: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -134,6 +145,21 @@ pub fn session_root(metadata: Option<&Value>) -> Option<String> {
         .get("root")?
         .as_str()
         .map(str::to_string)
+}
+
+/// Collapse the platform's aliases for the same directory.
+///
+/// On macOS `/tmp` is a symlink to `/private/tmp`, and `/var` to `/private/var`.
+/// Two workers writing the same file by different names produced two rows for
+/// one file — the feed's dedupe is by path, and these are the same path spelled
+/// two ways. Resolving to the real location makes them one entry again.
+pub fn canonical(path: &str) -> String {
+    for alias in ["/tmp/", "/var/"] {
+        if let Some(rest) = path.strip_prefix(alias) {
+            return format!("/private{alias}{rest}");
+        }
+    }
+    path.to_string()
 }
 
 /// Make `path` relative to `root`, leaving anything outside it alone.
@@ -218,6 +244,14 @@ pub fn bind(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>, emitter: Cha
 async fn report(bus: &Bus, cfg: &WorkerConfig, emitter: &ChangedEmitter, input: HookInput) {
     let session_id = input.session_id.clone();
     let turn_id = input.turn_id.clone();
+    // A failed write is not a change. The hook runs after every call whether
+    // it worked or not, so without this a `shell::fs::write` refused by the
+    // filesystem jail was reported as an edit — and the file it named appeared
+    // in the feed as something that had happened.
+    if input.result.as_ref().is_some_and(|r| r.is_error) {
+        tracing::debug!("observer: the call failed, nothing changed");
+        return;
+    }
     let Some(call) = input.call else {
         tracing::debug!("observer: hook fired with no call payload");
         return;
@@ -239,7 +273,10 @@ async fn report(bus: &Bus, cfg: &WorkerConfig, emitter: &ChangedEmitter, input: 
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_else(|| ".".to_string()),
     };
-    let rel = relative(&touch.path, &root);
+    // Canonicalize both sides before comparing them: a write addressed as
+    // /tmp/x and a root of /private/tmp are the same place, and comparing the
+    // spellings would call the file "outside the workspace".
+    let rel = relative(&canonical(&touch.path), &canonical(&root));
     // `bus.read` resolves through shell, whose jail/working_dir is its own, NOT
     // this root. Handing it the root-relative path made every read outside
     // shell's cwd fail into an empty patch — silently, because the fallback
@@ -352,6 +389,35 @@ async fn record(bus: &Bus, event: &ChangedEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_collapses_the_macos_symlinked_roots() {
+        assert_eq!(canonical("/tmp/demo/a.md"), "/private/tmp/demo/a.md");
+        assert_eq!(canonical("/var/folders/x"), "/private/var/folders/x");
+        // Already real, or nothing to do with those roots: untouched.
+        assert_eq!(
+            canonical("/private/tmp/demo/a.md"),
+            "/private/tmp/demo/a.md"
+        );
+        assert_eq!(canonical("/Users/me/repo/a.rs"), "/Users/me/repo/a.rs");
+        assert_eq!(canonical("src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn one_file_addressed_two_ways_is_one_path() {
+        // The bug this exists for: /tmp/x and /private/tmp/x are the same
+        // file, and the feed keys on the path, so two spellings made two rows.
+        assert_eq!(
+            relative(
+                &canonical("/tmp/demo/a.md"),
+                &canonical("/private/tmp/demo")
+            ),
+            relative(
+                &canonical("/private/tmp/demo/a.md"),
+                &canonical("/tmp/demo")
+            ),
+        );
+    }
 
     fn call(id: &str, args: Value) -> HookCall {
         HookCall {
