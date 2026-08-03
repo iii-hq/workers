@@ -10,5 +10,5 @@ description: Policy and decision surface for human-held function calls — pre_t
 dependencies:
   state: "^0.21.3"
   configuration: "^0.21.6"
-  directory: "^1.0.0"
+  iii-directory: "^1.0.0"
   session-manager: "^1.0.0"
