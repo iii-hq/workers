@@ -375,8 +375,9 @@ async fn refresh_models_reconciles_live_catalog() {
     // every live id is kept — no family filtering, no legacy dedup
     assert!(ids.contains(&"deepseek-v4-flash"), "got {ids:?}");
     assert!(ids.contains(&"opencode-go-test-model"), "got {ids:?}");
-    // models.dev metadata applies when the network is reachable; the
-    // conservative 128K default otherwise — never 0.
+    // Curated metadata applies for known ids (deepseek-v4-flash is in the
+    // table); ids outside the curated set keep the conservative 128K default
+    // — never 0.
     let known = models
         .iter()
         .find(|m| m["id"] == "deepseek-v4-flash")

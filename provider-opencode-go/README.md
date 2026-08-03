@@ -3,8 +3,8 @@ OpenCode Go Chat Completions provider worker behind [llm-router](https://github.
 Implements the provider protocol from
 `tech-specs/2026-06-agentic/llm-router.md`: `provider::opencode_go::stream`
 (SSE chunks → `AssistantMessageEvent` frames into a router-owned channel),
-`provider::opencode_go::refresh_models` (live `GET /v1/models` enriched with
-[models.dev](https://models.dev) metadata → `router::models::reconcile`),
+`provider::opencode_go::refresh_models` (live `GET /v1/models` id list
+enriched from a hardcoded curated metadata table → `router::models::reconcile`),
 and `provider::opencode_go::abort` (cancels an in-flight upstream request).
 There is no embedding surface — the OpenCode Go API is Chat Completions only.
 
@@ -31,16 +31,19 @@ There is no embedding surface — the OpenCode Go API is Chat Completions only.
   `context_length_exceeded` → `context_overflow`, 5xx/network → `transient`,
   other 4xx → `permanent`. No transport retries here — the router owns
   retry policy.
-- **Model metadata:** discovery fetches the live model list plus the
-  `opencode` provider table from [models.dev](https://models.dev) on every
-  `refresh_models` — context windows, reasoning support/effort levels,
-  tool-call and structured-output capability come from there. Models absent
-  from models.dev fall back to conservative defaults (128K context, no
-  thinking). No static per-model table to maintain.
+- **Model metadata:** discovery fetches the live id list from `GET /v1/models`
+  (the API carries no capability data) and enriches each id from a hardcoded
+  curated table (`src/curated.rs`) covering the maintainer's model set,
+  prepared from the `opencode-go` provider entry of
+  [models.dev](https://models.dev) on 2026-08-03 — context windows, reasoning
+  support/effort levels, tool-call and structured-output capability. Ids the
+  table does not know keep conservative defaults (128K context, no thinking,
+  tools on). Same pattern as provider-openai.
 - **Reasoning:** `thinking_level` maps to the upstream `reasoning_effort`
-  (`low`/`medium`/`high`) for reasoning families (id pattern
-  `deepseek-` / `kimi-k2.7-`); non-reasoning models stream without the
-  field. Thinking content is not streamed — the OpenCode Go Chat
+  when the model's curated effort list accepts the level (e.g. `grok-4.5`
+  accepts `low`/`medium`/`high`, `deepseek-v4-flash` accepts `high`/`max`);
+  models that reason without published effort levels, and unknown ids, stream
+  without the field. Thinking content is not streamed — the OpenCode Go Chat
   Completions wire carries no reasoning deltas.
 - **Structured output:** a `response_format` with a schema maps to strict
   `json_schema` mode; without one, `json_object` mode (the caller must
