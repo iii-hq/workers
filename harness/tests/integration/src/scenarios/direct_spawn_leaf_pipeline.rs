@@ -70,6 +70,13 @@ pub(super) fn scenario() -> ScenarioFixture {
             .idempotency_key("{{run_id}}:integration-005")
             .allow_id(REGISTER)
             .allow_id(SPAWN)
+            // The barrier is a CONDITION on the wake below, and a binding may
+            // only gate itself with functions its registrant could call
+            // directly — so the arming session must hold `state::barrier`
+            // itself or `engine::register_trigger` refuses the binding.
+            // Declared in sorted order: the harness renders the policy prompt
+            // line sorted, while this list is joined in insertion order.
+            .allow_id("state::barrier")
             .allow_id("state::set"),
     )
     // The arm-and-spawn turn completes PARKED (the barrier wake is armed);
