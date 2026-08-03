@@ -133,6 +133,14 @@ rules:
   - '!browser::screencast::stop'
   - '!browser::frame'
   - '!browser::on-config-change'
+  # computer: same split as browser. screencast::*/frame exist only to feed the
+  # console viewport; the desktop surface the agent actually uses (sessions,
+  # screenshot, observe, act, displays) stays at the needs_approval default,
+  # because every act is a real click on a real machine.
+  - '!computer::screencast::start'
+  - '!computer::screencast::stop'
+  - '!computer::frame'
+  - '!computer::on-config-change'
   # rbac-proxy: internal reload + catalog-cache hooks — invoked only by the
   # engine's trigger dispatch, never agent-callable. The handlers already
   # re-fetch/ignore the event payload; these denies are defense-in-depth.
