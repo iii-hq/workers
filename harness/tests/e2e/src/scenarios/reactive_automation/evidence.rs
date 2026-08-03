@@ -14,8 +14,14 @@ pub(super) struct Evidence {
     pub(super) direct_totals: Option<Totals>,
     pub(super) stored_totals: Option<Totals>,
     pub(super) reports: Vec<FinalReport>,
-    pub(super) reactor_spawned_by_trigger: bool,
-    pub(super) finalizer_spawned_by_trigger: bool,
+    pub(super) aggregate_deliveries: usize,
+    pub(super) completion_wake_delivered: bool,
+    pub(super) report_wake_before_finalizer: bool,
+    pub(super) report_wake_delivered: bool,
+    pub(super) finalizer_spawn_count: usize,
+    pub(super) finalizer_in_tree: bool,
+    pub(super) finalizer_wrote_report: bool,
+    pub(super) root_wrote_report: bool,
     pub(super) active_run_triggers: usize,
 }
 
@@ -33,7 +39,8 @@ pub(super) struct WatchEvidence {
     pub(super) first_writer_spawn: Option<usize>,
     pub(super) trigger_catalog: Option<usize>,
     pub(super) row_change_probe: Option<usize>,
-    pub(super) state_reaction: Option<usize>,
+    pub(super) aggregate_reaction: Option<usize>,
+    pub(super) completion_wake: Option<usize>,
 }
 
 #[derive(Debug, Default)]
@@ -62,10 +69,10 @@ pub(super) struct FinalReport {
     pub(super) totals_match: Option<bool>,
     pub(super) no_notification_loss: Option<bool>,
     pub(super) no_double_counting: Option<bool>,
-    pub(super) trigger_spawned_reactor: Option<bool>,
+    pub(super) mechanical_reaction: Option<bool>,
     pub(super) no_inline_waiting: Option<bool>,
-    pub(super) reactor_session_id: Option<String>,
-    pub(super) spawning_event: Option<String>,
+    pub(super) reaction_function_id: Option<String>,
+    pub(super) reaction_event: Option<String>,
     pub(super) finalizer_session_id: Option<String>,
 }
 
@@ -102,10 +109,10 @@ impl FinalReport {
             totals_match: boolean_field(value, "totals_match"),
             no_notification_loss: boolean_field(value, "no_notification_loss"),
             no_double_counting: boolean_field(value, "no_double_counting"),
-            trigger_spawned_reactor: boolean_field(value, "trigger_spawned_reactor"),
+            mechanical_reaction: boolean_field(value, "mechanical_reaction"),
             no_inline_waiting: boolean_field(value, "no_inline_waiting"),
-            reactor_session_id: string_field(value, "reactor_session_id"),
-            spawning_event: string_field(value, "spawning_event"),
+            reaction_function_id: string_field(value, "reaction_function_id"),
+            reaction_event: string_field(value, "reaction_event"),
             finalizer_session_id: string_field(value, "finalizer_session_id"),
         }
     }
@@ -146,13 +153,13 @@ mod tests {
             "totals_match": true,
             "no_notification_loss": 1,
             "no_double_counting": "passed",
-            "trigger_spawned_reactor": "true",
+            "mechanical_reaction": "true",
             "no_inline_waiting": "1"
         }));
         assert_eq!(report.totals_match, Some(true));
         assert_eq!(report.no_notification_loss, Some(true));
         assert_eq!(report.no_double_counting, Some(true));
-        assert_eq!(report.trigger_spawned_reactor, Some(true));
+        assert_eq!(report.mechanical_reaction, Some(true));
         assert_eq!(report.no_inline_waiting, Some(true));
     }
 }

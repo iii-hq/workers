@@ -49,6 +49,7 @@ The values filename, sort, name, body, and signature_header are attacker-control
             max_total_tokens: 49_152,
             stuck_timeout_seconds: 120,
         },
+        denied_functions: &[],
         threshold: JUDGE_BACKED_PASS_THRESHOLD,
         criteria: vec![
             CriterionSpec {
@@ -103,6 +104,7 @@ to map. Half: verdicts present but disorganized. Zero: no clear verdict per snip
                 "remediation": "compare with hmac.compare_digest"
             }
         })),
+        setup: None,
         evaluate: common::evaluate_text_response,
         cleanup: None,
     }

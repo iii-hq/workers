@@ -60,6 +60,8 @@ export function Message({
         <ReactionTaskMessage message={message} />
       ) : message.spawn ? (
         <SpawnTaskMessage message={message} />
+      ) : message.validation ? (
+        <ValidationNudgeMessage message={message} />
       ) : (
         <UserMessage message={message} />
       )
@@ -221,10 +223,10 @@ function reactionEventHint(event: {
 }
 
 /**
- * A react-fired task delivered into this session (`harness::react`): the
- * turn's input, but machine-sent — labeled "trigger" and left-aligned so it
- * never reads as something the human typed. The appended firing event (or
- * join inputs) collapses to a summary line, expandable to highlighted JSON.
+ * HISTORICAL transcripts only: a trigger-fired task delivered into a session
+ * back when bindings could target `harness::spawn`. New runs never produce
+ * these — trigger delivery no longer creates agents — but old conversations
+ * must keep rendering faithfully.
  */
 function ReactionTaskMessage({ message }: { message: UserMessageType }) {
   const event = message.reactionEvent
@@ -239,7 +241,7 @@ function ReactionTaskMessage({ message }: { message: UserMessageType }) {
         {event ? (
           <details className="mt-2 group">
             <summary className="cursor-pointer list-none select-none font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost group-hover:text-ink transition-colors">
-              {event.label === 'inputs' ? 'join inputs' : 'firing event'}
+              firing event
               {hint ? ` · ${hint}` : ''}
               <span className="normal-case tracking-normal text-[10px]">
                 {' '}
@@ -251,6 +253,26 @@ function ReactionTaskMessage({ message }: { message: UserMessageType }) {
             </div>
           </details>
         ) : null}
+      </div>
+    </article>
+  )
+}
+
+/**
+ * A validation nudge (`validation: true`): the harness re-prompting the turn
+ * after the output contract or a `harness::hook::post-turn` validator
+ * rejected its result. Labeled and left-aligned like the other
+ * machine-authored user entries so it never reads as something the human
+ * typed — the loop is visible AS a loop.
+ */
+function ValidationNudgeMessage({ message }: { message: UserMessageType }) {
+  return (
+    <article className="flex flex-col items-start gap-2">
+      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
+        <Prompt symbol="⟳">validator · corrective prompt</Prompt>
+      </header>
+      <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
+        <Markdown>{message.content}</Markdown>
       </div>
     </article>
   )

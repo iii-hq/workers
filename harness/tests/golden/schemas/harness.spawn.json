@@ -473,6 +473,15 @@
               "null"
             ]
           },
+          "max_validation_retries": {
+            "description": "Override the child's validation-retry budget (output contract AND `harness::hook::post-turn` deny re-prompts). Default: worker config.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "mode": {
             "anyOf": [
               {
@@ -482,6 +491,11 @@
                 "type": "null"
               }
             ]
+          },
+          "orchestrator": {
+            "default": false,
+            "description": "Grant this child the orchestration surface. Default false: a spawned child is a LEAF — its policy gains deny globs for `harness::spawn`, `harness::send`, `engine::register_trigger`, `engine::unregister_trigger` and `engine::registered-triggers::*`, so it performs its assignment and updates shared state without spawning, messaging sessions, or touching trigger registrations. `true` skips those denies; the child still never exceeds its parent's policy.",
+            "type": "boolean"
           },
           "output": {
             "anyOf": [
@@ -668,7 +682,7 @@
         ]
       },
       "parent_session_id": {
-        "description": "Display-only parent for the console session tree, used when there is no live parent turn (e.g. a trigger-fired spawn from `harness::react`). Writes `SessionMeta.metadata.parent_session_id` so the console nests this child; it does NOT grant policy inheritance or parent-call resolution. Ignored when the dispatcher injects a real parent link (an in-turn spawn).",
+        "description": "Display-only parent for the console session tree, used when there is no live parent turn (e.g. a console- or workflow-issued spawn). Writes `SessionMeta.metadata.parent_session_id` so the console nests this child; it does NOT grant policy inheritance or parent-call resolution. Ignored when the dispatcher injects a real parent link (an in-turn spawn).",
         "type": [
           "string",
           "null"
@@ -680,24 +694,8 @@
           "null"
         ]
       },
-      "reactive_depth": {
-        "description": "Stamped by `harness::react` (not caller-supplied): reactive-chain depth, echoed on this turn's `turn-completed` event so react can cap runaway chains at `MAX_REACTIVE_DEPTH`.",
-        "format": "uint32",
-        "minimum": 0.0,
-        "type": [
-          "integer",
-          "null"
-        ]
-      },
       "session_id": {
         "description": "Spawn into this session, creating it if it does not exist (e.g. a fork, or a pre-chosen id to filter `turn-completed` subscriptions on); default: create fresh.",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "spawned_by_subscription_id": {
-        "description": "Stamped by `harness::react` (not caller-supplied): the subscription that spawned this turn. Its completion event is never delivered back to that same subscription (self-edge loop breaker).",
         "type": [
           "string",
           "null"

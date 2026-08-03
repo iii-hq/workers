@@ -372,7 +372,7 @@ where:
 # scenario against the pinned engine binary. The
 # engine is never downloaded here: pass III_BIN (CI builds it from
 # tests/integration/engine.lock; locally see that file for the pinned source).
-INTEGRATION_WORKERS := queue iii-directory session-manager context-manager state
+INTEGRATION_WORKERS := queue iii-directory session-manager context-manager state database
 INTEGRATION_PROFILE ?= release
 INTEGRATION_FLAG    := $(if $(filter release,$(INTEGRATION_PROFILE)),--release,)
 INTEGRATION_SCENARIO ?= all
@@ -401,6 +401,7 @@ integration-test:
 	  --worker-bin "session-manager=$(REPO_ROOT)/session-manager/target/$(INTEGRATION_PROFILE)/session-manager" \
 	  --worker-bin "context-manager=$(REPO_ROOT)/context-manager/target/$(INTEGRATION_PROFILE)/context-manager" \
 	  --worker-bin "state=$(REPO_ROOT)/state/target/$(INTEGRATION_PROFILE)/state" \
+	  --worker-bin "database=$(REPO_ROOT)/database/target/$(INTEGRATION_PROFILE)/database" \
 	  --scenario "$(INTEGRATION_SCENARIO)" \
 	  --artifacts-dir "$(INTEGRATION_ARTIFACTS)"
 

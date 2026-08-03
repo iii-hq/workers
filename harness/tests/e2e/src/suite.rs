@@ -21,9 +21,14 @@ use crate::scenarios::{CriterionAward, ScenarioId, ScenarioObservation, Scenario
 const MAX_RUNS: u32 = 20;
 const MAX_TECHNICAL_RETRIES: u8 = 3;
 
-fn e2e_function_policy() -> FunctionPolicy {
+fn e2e_function_policy(spec: &ScenarioSpec) -> FunctionPolicy {
     FunctionPolicy {
         allow: vec!["*".into()],
+        deny: spec
+            .denied_functions
+            .iter()
+            .map(|function| (*function).to_string())
+            .collect(),
         ..FunctionPolicy::default()
     }
 }
@@ -356,6 +361,14 @@ async fn execute(
     } = request;
     let stuck_timeout = Duration::from_secs(spec.execution.stuck_timeout_seconds);
     let filesystem_metadata = prepare_filesystem_root(spec)?;
+    if let Some(setup) = spec.setup {
+        setup(context, run_id).await.map_err(|error| {
+            subject_failure(
+                FailurePhase::Execute,
+                format!("scenario setup failed: {error}"),
+            )
+        })?;
+    }
     let response: SendResponse = context
         .trigger(
             "harness::send",
@@ -376,7 +389,7 @@ async fn execute(
                     max_turns: Some(spec.execution.max_turns),
                     max_output_tokens: spec.execution.max_output_tokens,
                     max_total_tokens: Some(spec.execution.max_total_tokens),
-                    functions: Some(e2e_function_policy()),
+                    functions: Some(e2e_function_policy(spec)),
                     metadata: filesystem_metadata,
                     ..SendOptions::default()
                 }),
@@ -713,6 +726,7 @@ mod tests {
                 max_total_tokens: 1,
                 stuck_timeout_seconds: 1,
             },
+            denied_functions: &[],
             threshold: 80,
             criteria: vec![CriterionSpec {
                 id: "objective",
@@ -720,6 +734,7 @@ mod tests {
                 description: "objective",
             }],
             judge_reference: None,
+            setup: None,
             evaluate: evaluator as ScenarioEvaluator,
             cleanup: None,
         }
@@ -727,10 +742,20 @@ mod tests {
 
     #[test]
     fn e2e_policy_allows_every_function_without_overrides() {
-        let policy = e2e_function_policy();
+        let policy = e2e_function_policy(&spec());
         assert_eq!(policy.allow, ["*"]);
         assert!(policy.deny.is_empty());
         assert_eq!(policy.expose, Default::default());
+    }
+
+    #[test]
+    fn e2e_policy_applies_scenario_denies() {
+        let mut scenario = spec();
+        scenario.denied_functions = &["state::*"];
+        let policy = e2e_function_policy(&scenario);
+
+        assert_eq!(policy.allow, ["*"]);
+        assert_eq!(policy.deny, ["state::*"]);
     }
 
     #[test]

@@ -16,6 +16,20 @@ pub const AGENT_TRIGGER_NAME: &str = "agent_trigger";
 /// dispatched).
 pub const SUBMIT_RESULT_NAME: &str = "submit_result";
 
+/// The orchestration surface a spawned child loses by default (the leaf
+/// capability wall). `subagent::child_functions` appends these deny globs
+/// unless the spawn passed `options.orchestrator: true`; denies union through
+/// [`subset_policy`]/[`clamp_policy`], so a leaf's own children stay leaves
+/// whatever they request. Enforcement is the ordinary dispatch gates — the
+/// same fail-closed globs every call already passes through.
+pub const CONTROL_PLANE_DENY: [&str; 5] = [
+    "harness::spawn",
+    "harness::send",
+    "engine::register_trigger",
+    "engine::unregister_trigger",
+    "engine::registered-triggers::*",
+];
+
 /// A compiled allow/deny matcher. Fail-closed: a call is allowed only when it
 /// matches an `allow` glob and no `deny` glob; an absent or empty allow-list
 /// denies everything.
@@ -305,20 +319,43 @@ mod tests {
     }
 
     #[test]
-    fn children_inherit_parent_policy_including_orchestration() {
-        // A child that requests nothing inherits the parent's FULL policy —
-        // same permissions as the main agent, orchestration included.
-        let inherited = subset_policy(Some(&policy(&["*"], &[])), None).unwrap();
-        let compiled = CompiledPolicy::from(Some(&inherited));
-        for id in ["state::set", "harness::spawn", "engine::register_trigger"] {
-            assert!(compiled.allows(id), "{id} must be inherited by default");
+    fn the_control_plane_deny_set_walls_off_orchestration_only() {
+        // The leaf wall is ordinary deny globs: the orchestration ids (and the
+        // registered-triggers read surface, glob-matched) go dark while the
+        // data plane stays open. Deny-overrides-allow makes it final under `*`.
+        let mut p = policy(&["*"], &[]);
+        p.deny = CONTROL_PLANE_DENY.iter().map(|s| s.to_string()).collect();
+        let compiled = CompiledPolicy::from(Some(&p));
+        for id in [
+            "harness::spawn",
+            "harness::send",
+            "engine::register_trigger",
+            "engine::unregister_trigger",
+            "engine::registered-triggers::list",
+            "engine::registered-triggers::info",
+        ] {
+            assert!(!compiled.allows(id), "{id} must be walled off");
         }
+        for id in ["state::set", "database::execute", "harness::status"] {
+            assert!(compiled.allows(id), "{id} is data-plane and must survive");
+        }
+    }
 
+    #[test]
+    fn subsetting_carries_denies_into_children() {
         // Escalation is still impossible: a narrow parent doesn't grant
-        // orchestration just because the child asks for it.
+        // orchestration because the child asks for it, and a deny-carrying
+        // parent's denies ride into the child — the leaf wall propagates.
         let requested = policy(&["harness::spawn"], &[]);
         let capped = subset_policy(Some(&policy(&["state::*"], &[])), Some(&requested)).unwrap();
         assert!(!CompiledPolicy::from(Some(&capped)).allows("harness::spawn"));
+
+        let mut parent = policy(&["*"], &[]);
+        parent.deny = CONTROL_PLANE_DENY.iter().map(|s| s.to_string()).collect();
+        let inherited = subset_policy(Some(&parent), Some(&policy(&["*"], &[]))).unwrap();
+        let compiled = CompiledPolicy::from(Some(&inherited));
+        assert!(!compiled.allows("harness::spawn"));
+        assert!(compiled.allows("state::set"));
 
         // A parentless spawn has nothing to inherit — deny-all stays deny-all.
         assert!(subset_policy(None, None).is_none());

@@ -6,6 +6,7 @@
 pub mod approve_always;
 pub mod clear_settings;
 pub mod filesystem_access_watch;
+pub mod evaluate;
 pub mod gate;
 pub mod get_pending;
 pub mod get_settings;
@@ -67,6 +68,9 @@ pub const REMOVE_ALWAYS_ALLOW_DESC: &str = "Remove a function from the session's
 pub const APPROVE_ALWAYS_ID: &str = "approval::approve-always";
 pub const APPROVE_ALWAYS_DESC: &str =
     "Record a per-session 'approve always' grant (honoured in every mode). Human/console-only.";
+
+pub const EVALUATE_ID: &str = "approval::evaluate";
+pub const EVALUATE_DESC: &str = "Report what approval::gate WOULD decide for a function id (allow / deny / needs_approval) without deciding it: no pending record, no writes. Called by the harness before binding a trigger to an ordinary function, since a trigger-fired call runs outside any turn and cannot ask a human.";
 
 pub const GET_SETTINGS_ID: &str = "approval::get-settings";
 pub const GET_SETTINGS_DESC: &str = "Read the session's effective settings (stored record or configuration defaults); never writes.";
@@ -141,6 +145,9 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     );
     register(iii, deps, RESOLVE_ID, RESOLVE_DESC, |d, r| async move {
         resolve::handle(&d, r).await
+    });
+    register(iii, deps, EVALUATE_ID, EVALUATE_DESC, |d, r| async move {
+        evaluate::handle(&d, r).await
     });
     register(
         iii,
@@ -254,7 +261,7 @@ where
 pub fn catalog() -> Vec<FunctionSpec> {
     use crate::types::{
         AlwaysAllowMutationRequest, ApproveAlwaysRequest, ClearSettingsRequest,
-        ClearSettingsResponse, EventAck, GetPendingRequest, GetPendingResponse, GetSettingsRequest,
+        ClearSettingsResponse, EvaluateRequest, EvaluateResponse, EventAck, GetPendingRequest, GetPendingResponse, GetSettingsRequest,
         GetSettingsResponse, HookInput, HookOutput, ListPendingRequest, ListPendingResponse,
         ResolveRequest, ResolveResponse, SetModeRequest, SettingsResponse,
     };
@@ -265,6 +272,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<HookInput, HookOutput>(GATE_ID, GATE_DESC),
         spec::<HookInput, HookOutput>(FILESYSTEM_ACCESS_WATCH_ID, FILESYSTEM_ACCESS_WATCH_DESC),
         spec::<ResolveRequest, ResolveResponse>(RESOLVE_ID, RESOLVE_DESC),
+        spec::<EvaluateRequest, EvaluateResponse>(EVALUATE_ID, EVALUATE_DESC),
         spec::<ListPendingRequest, ListPendingResponse>(LIST_PENDING_ID, LIST_PENDING_DESC),
         spec::<GetPendingRequest, Option<GetPendingResponse>>(GET_PENDING_ID, GET_PENDING_DESC),
         spec::<SetModeRequest, SettingsResponse>(SET_MODE_ID, SET_MODE_DESC),

@@ -34,6 +34,7 @@ perform any external action."
             max_total_tokens: 49_152,
             stuck_timeout_seconds: 120,
         },
+        denied_functions: &[],
         threshold: JUDGE_BACKED_PASS_THRESHOLD,
         criteria: vec![
             CriterionSpec {
@@ -78,6 +79,7 @@ circumstances change' conditions. Zero: no reversal conditions.",
             "reversal_examples": "storage growth outpacing archiving, single-writer throughput or vacuum saturation, per-market data-residency regulation forcing physical partitioning",
             "grading_note": "an answer recommending A can still earn constraint_reasoning, honest_costs, and reversal_conditions credit if it honestly prices in team risk and consistency costs; commitment scores the clarity of the pick, not which pick"
         })),
+        setup: None,
         evaluate: common::evaluate_text_response,
         cleanup: None,
     }

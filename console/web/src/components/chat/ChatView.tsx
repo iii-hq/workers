@@ -267,16 +267,15 @@ export function ChatView({
     conversation.id,
   ])
 
-  // Registered trigger subscriptions (notify/react bindings owned by this
-  // session): shown above the composer, unregisterable, detail on click.
-  // Polled — bindings come and go as the agent registers them mid-turn.
+  // Registered trigger subscriptions (the harness's durable binding rows,
+  // owned by this session): shown above the composer, unregisterable, detail
+  // on click. Polled — bindings come and go as the agent registers them.
   const [sessionTriggers, setSessionTriggers] = useState<SessionTriggerInfo[]>(
     [],
   )
-  // Every full row this tab has EVER polled, by engine trigger id. When a
-  // once/join binding fires and retires, the poll drops it — this cache lets
-  // the fired ghost keep its full metadata (join grouping, spawn pin, task)
-  // so the workflow strip and flow DAG survive the pipeline completing.
+  // Every full row this tab has EVER polled, by subscription id. When a once
+  // binding fires and retires, the poll drops it — this cache lets the fired
+  // ghost keep its full config/conditions after retirement.
   const seenTriggersRef = useRef<Map<string, SessionTriggerInfo>>(new Map())
   const refreshTriggers = useCallback(() => {
     const listTriggers = backend.listTriggers
@@ -298,10 +297,12 @@ export function ChatView({
   }, [refreshTriggers, backend.listTriggers])
 
   const handleUnregisterTrigger = useCallback(
-    async (triggerId: string) => {
+    async (subscriptionId: string) => {
       try {
-        await backend.unregisterTrigger?.(triggerId)
-        setSessionTriggers((rows) => rows.filter((t) => t.id !== triggerId))
+        await backend.unregisterTrigger?.(subscriptionId, conversation.id)
+        setSessionTriggers((rows) =>
+          rows.filter((t) => t.id !== subscriptionId),
+        )
       } catch (err) {
         onAppendMessage(
           conversation.id,
@@ -321,7 +322,9 @@ export function ChatView({
     if (!unreg) return
     const ids = sessionTriggers.map((t) => t.id)
     // Fire all unregisters, tolerate partial failure, surface a single notice.
-    const results = await Promise.allSettled(ids.map((id) => unreg(id)))
+    const results = await Promise.allSettled(
+      ids.map((id) => unreg(id, conversation.id)),
+    )
     const cleared = new Set(
       ids.filter((_, i) => results[i].status === 'fulfilled'),
     )

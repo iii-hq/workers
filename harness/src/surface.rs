@@ -6,17 +6,19 @@
 //! `harness::on-config-change`) are intentionally excluded — they are not part
 //! of the agent-facing surface.
 
-use crate::functions::react::REACT_ID;
 use crate::functions::{
     function_resolve::{FunctionResolveRequest, FunctionResolveResponse},
     function_trigger::{FunctionTriggerRequest, FunctionTriggerResponse},
     metrics::{SessionMetricsRequestV1, SessionMetricsResponseV1},
-    react::{ReactEvent, ReactResult},
     send::{SendRequest, SendResponse},
     session_tree::{SessionTreeRequestV1, SessionTreeResponseV1},
     spawn::{SpawnRequest, SpawnResponse},
     status::{StatusReport, StatusRequest},
     stop::{StopRequest, StopResponse},
+    triggers_list::{
+        TriggersListRequest, TriggersListResponse, TriggersUnregisterRequest,
+        TriggersUnregisterResponse, TRIGGERS_LIST_ID, TRIGGERS_UNREGISTER_ID,
+    },
 };
 use crate::functions::{
     FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, METRICS_ID, SEND_ID, SESSION_TREE_ID, SPAWN_ID,
@@ -69,6 +71,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<StatusRequest, Option<StatusReport>>(STATUS_ID),
         spec::<SessionTreeRequestV1, SessionTreeResponseV1>(SESSION_TREE_ID),
         spec::<SessionMetricsRequestV1, SessionMetricsResponseV1>(METRICS_ID),
-        spec::<ReactEvent, ReactResult>(REACT_ID),
+        spec::<TriggersListRequest, TriggersListResponse>(TRIGGERS_LIST_ID),
+        spec::<TriggersUnregisterRequest, TriggersUnregisterResponse>(TRIGGERS_UNREGISTER_ID),
     ]
 }

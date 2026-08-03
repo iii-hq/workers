@@ -1,0 +1,75 @@
+{
+  "description": "Report what approval::gate WOULD decide for a function id (allow / deny / needs_approval) without deciding it: no pending record, no writes. Called by the harness before binding a trigger to an ordinary function, since a trigger-fired call runs outside any turn and cannot ask a human.",
+  "function_id": "approval::evaluate",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "arguments": {
+        "default": null,
+        "description": "Call arguments, for deployments whose rules carry argument constraints. Defaults to `{}`."
+      },
+      "function_id": {
+        "description": "The function id to evaluate.",
+        "type": "string"
+      },
+      "session_id": {
+        "description": "Session whose effective settings apply (mode + always-allow list).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "function_id",
+      "session_id"
+    ],
+    "title": "EvaluateRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "EvaluateVerdict": {
+        "description": "What [`crate::functions::gate`] WOULD answer for this call.",
+        "oneOf": [
+          {
+            "description": "Dispatches with no human in the loop.",
+            "enum": [
+              "allow"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Refused outright.",
+            "enum": [
+              "deny"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Would hold for human approval — which a trigger-fired call, running outside any turn, has no way to obtain.",
+            "enum": [
+              "needs_approval"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "reason": {
+        "description": "Why, for the non-allow verdicts.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "verdict": {
+        "$ref": "#/definitions/EvaluateVerdict"
+      }
+    },
+    "required": [
+      "verdict"
+    ],
+    "title": "EvaluateResponse",
+    "type": "object"
+  }
+}

@@ -12,8 +12,15 @@ use crate::types::trace::strip_engine_fields;
 
 /// Scenario-declared shape of a passing run.
 pub struct FloorExpectations<'a> {
-    /// Each terminal turn's lifecycle status, in completion order.
+    /// Each completion's lifecycle status, in trace order — parked
+    /// (non-terminal) completions first, terminal turns after.
     pub turn_statuses: &'a [String],
+    /// How many of the TRAILING statuses are terminal turns. A parked
+    /// completion (a turn that ended with an armed wake) carries
+    /// `terminal: false` in its lifecycle payload, and the floor demands the
+    /// flag match the position — a run must not pass with its park missing,
+    /// nor with a turn parked that was declared terminal.
+    pub terminal_turns: usize,
     /// Distinct trace trees (one per externally initiated send).
     pub traces: usize,
 }
@@ -21,6 +28,10 @@ pub struct FloorExpectations<'a> {
 impl FloorExpectations<'_> {
     fn turns(&self) -> usize {
         self.turn_statuses.len()
+    }
+
+    fn parked(&self) -> usize {
+        self.turn_statuses.len() - self.terminal_turns
     }
 
     fn declares_failure(&self) -> bool {
@@ -35,6 +46,7 @@ pub fn floor_failure(run: &RunEvidence) -> Option<String> {
         run,
         &FloorExpectations {
             turn_statuses: &statuses,
+            terminal_turns: 1,
             traces: 1,
         },
     )
@@ -67,21 +79,22 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
     }
 }
 
-/// Terminal status `completed` with no pending calls, queued messages, or children.
+/// The scenario's declared final status, with no pending calls or queued
+/// messages. `children` is deliberately NOT a failure: spawns are
+/// fire-and-forget (the call checkpoint settles `Done` at spawn time), so a
+/// terminal turn that spawned a leaf legitimately lists it — bookkeeping, not
+/// pending work, in a tree run or otherwise.
 fn terminal_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<String> {
     let status = run.status.get("status").and_then(Value::as_str);
     let pending = status_list_len(run, "pending_function_calls");
     let queued = status_list_len(run, "queued");
-    let children = status_list_len(run, "children");
     let expected_final = expected.turn_statuses.last().map(String::as_str);
-    let tree_children = run.tree_sessions.len() > 1;
-    if status == expected_final && pending == 0 && queued == 0 && (children == 0 || tree_children) {
+    if status == expected_final && pending == 0 && queued == 0 {
         return None;
     }
     Some(format!(
         "floor: terminal status must be {expected_final:?} with nothing pending; got status \
-         {status:?}, {pending} pending call(s), {queued} queued message(s), {children} child \
-         session(s)"
+         {status:?}, {pending} pending call(s), {queued} queued message(s)"
     ))
 }
 
@@ -158,7 +171,7 @@ fn cancelled_errors_are_bound(run: &RunEvidence, expected: &FloorExpectations) -
 
 /// Validate `harness::turn-completed` from the lifecycle sink's trace events.
 fn lifecycle_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<String> {
-    let expected_terminal_turns = expected.turns();
+    let expected_turns = expected.turns();
     let lifecycle_name = format!("execute {LIFECYCLE_FUNCTION_ID}");
     let lifecycle: Vec<Option<Value>> = run
         .spans_named(&lifecycle_name)
@@ -202,16 +215,24 @@ fn lifecycle_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<
             }
         }
     }
-    let turn_count = turns.len() == expected_terminal_turns;
-    // Each turn's status must equal the declared status for its position in
-    // trace order (summary turn ids are ordered by first span start).
-    let expected_by_turn: BTreeMap<&str, &str> = run
+    let turn_count = turns.len() == expected_turns;
+    // Each turn's status AND terminal flag must match its position in trace
+    // order (summary turn ids are ordered by first span start): the first
+    // `parked()` completions are non-terminal — the session still owned an
+    // armed wake — and every turn after them is terminal.
+    let expected_by_turn: BTreeMap<&str, (&str, bool)> = run
         .traces
         .summary
         .turn_ids
         .iter()
         .map(String::as_str)
-        .zip(expected.turn_statuses.iter().map(String::as_str))
+        .zip(
+            expected
+                .turn_statuses
+                .iter()
+                .enumerate()
+                .map(|(position, status)| (status.as_str(), position >= expected.parked())),
+        )
         .collect();
     let allowed_sessions = if run.tree_sessions.is_empty() {
         BTreeSet::from([run.session_id.as_str()])
@@ -223,9 +244,11 @@ fn lifecycle_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<
             .get("turn_id")
             .and_then(Value::as_str)
             .and_then(|turn_id| expected_by_turn.get(turn_id).copied());
-        declared.is_some()
-            && payload.get("status").and_then(Value::as_str) == declared
-            && payload.get("terminal").and_then(Value::as_bool) == Some(true)
+        let Some((status, terminal)) = declared else {
+            return false;
+        };
+        payload.get("status").and_then(Value::as_str) == Some(status)
+            && payload.get("terminal").and_then(Value::as_bool) == Some(terminal)
             && payload
                 .get("session_id")
                 .and_then(Value::as_str)
@@ -257,10 +280,11 @@ fn lifecycle_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<
         return None;
     }
     Some(format!(
-        "floor: lifecycle traces must cover {expected_terminal_turns} terminal turn(s) \
-         (delivered: {delivered}, complete payloads: {complete_payloads}, expected turn count: \
-         {turn_count}, consistent retries: {consistent}, contract shape: {shape}, \
-         session/turn/status bound: {bound})"
+        "floor: lifecycle traces must cover {expected_turns} completion(s), the last {} \
+         terminal (delivered: {delivered}, complete payloads: {complete_payloads}, expected \
+         turn count: {turn_count}, consistent retries: {consistent}, contract shape: {shape}, \
+         session/turn/status/terminal bound: {bound})",
+        expected.terminal_turns
     ))
 }
 
@@ -454,6 +478,7 @@ mod tests {
     fn expectations<'a>(turn_statuses: &'a [String], traces: usize) -> FloorExpectations<'a> {
         FloorExpectations {
             turn_statuses,
+            terminal_turns: turn_statuses.len(),
             traces,
         }
     }
@@ -509,6 +534,62 @@ mod tests {
         assert!(
             floor_failure_for(&evidence, &expectations(&swapped, 1)).is_some(),
             "swapped statuses must not pass"
+        );
+    }
+
+    /// The park-then-wake shape: turn 1 completes with an armed wake
+    /// (`terminal: false`), the woken turn 2 is terminal. Two traces — the
+    /// send and the externally initiated wake.
+    #[test]
+    fn a_declared_parked_completion_requires_its_terminal_false_flag() {
+        let mut parked_payload = completed_lifecycle("turn-1", 1);
+        parked_payload["terminal"] = json!(false);
+        let mut evidence = clean_evidence();
+        evidence.turn_id = Some("turn-2".into());
+        evidence.traces = TraceEvidenceV1::new(vec![
+            TraceTreeV1 {
+                trace_id: "trace-turn-1".into(),
+                roots: vec![lifecycle_span("turn-1", parked_payload)],
+            },
+            TraceTreeV1 {
+                trace_id: "trace-turn-2".into(),
+                roots: vec![lifecycle_span("turn-2", completed_lifecycle("turn-2", 2))],
+            },
+        ]);
+        let statuses = vec!["completed".to_string(), "completed".to_string()];
+        let parked_one = FloorExpectations {
+            turn_statuses: &statuses,
+            terminal_turns: 1,
+            traces: 2,
+        };
+        assert_eq!(floor_failure_for(&evidence, &parked_one), None);
+
+        // The same evidence declared all-terminal must FAIL: the park is a
+        // real state the scenario said would not happen.
+        assert!(
+            floor_failure_for(&evidence, &expectations(&statuses, 2))
+                .unwrap()
+                .contains("terminal bound: false"),
+            "an undeclared park must not pass"
+        );
+
+        // And a run where the park never happened (both turns terminal) must
+        // fail the parked declaration — the scenario's premise was the park.
+        let mut no_park = clean_evidence();
+        no_park.turn_id = Some("turn-2".into());
+        no_park.traces = TraceEvidenceV1::new(vec![
+            TraceTreeV1 {
+                trace_id: "trace-turn-1".into(),
+                roots: vec![lifecycle_span("turn-1", completed_lifecycle("turn-1", 1))],
+            },
+            TraceTreeV1 {
+                trace_id: "trace-turn-2".into(),
+                roots: vec![lifecycle_span("turn-2", completed_lifecycle("turn-2", 2))],
+            },
+        ]);
+        assert!(
+            floor_failure_for(&no_park, &parked_one).is_some(),
+            "a missing park must not pass"
         );
     }
 

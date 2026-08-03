@@ -61,12 +61,18 @@ export interface UserMessage extends BaseMessage {
   content: string
   attachments?: Attachment[]
   notification?: boolean
-  /** A react-fired task delivered into this session — machine-sent, not typed. */
+  /** A trigger-fired task delivered into this session — machine-sent, not typed. */
   reaction?: boolean
   /** A direct `harness::spawn` task seeding this session — machine-sent, not typed. */
   spawn?: boolean
   /**
-   * The firing event (or join inputs) `harness::react` appended to the task,
+   * A validation nudge: the harness re-prompting the turn after the output
+   * contract or a `post-turn` validator rejected its result — machine-sent,
+   * never typed by anyone.
+   */
+  validation?: boolean
+  /**
+   * The firing event (or join inputs) `harness::spawn` appended to the task,
    * split off by the entry mapper: rendered as collapsible JSON, not prose.
    */
   reactionEvent?: { label: 'event' | 'inputs'; json: string }
@@ -146,24 +152,22 @@ export interface FunctionTriggerMessage extends BaseMessage {
  */
 export interface TriggerFiredData {
   subscription_id: string
-  /** Engine trigger id — correlates to a live panel row's `id`. */
+  /** Engine trigger id. */
   trigger_id?: string
-  target: 'notify' | 'spawn'
+  /**
+   * The binding's target function id (`harness::send` for a wake, else the
+   * called function). Records written before the delivery hop carry the
+   * legacy words `'notify'` / `'spawn'`; historical spawn records may also
+   * carry `model` / `child_session_id`.
+   */
+  target: string
   label?: string
   model?: string
   once: boolean
-  /** This fire unregistered the binding (once teardown / join predecessor GC). */
+  /** This fire unregistered the binding (once teardown). */
   retired: boolean
   scope?: string
   key?: string
-  child_session_id?: string
-  join?: {
-    id: string
-    key: string
-    arrived: number
-    expected: number
-    completed: boolean
-  }
   note?: string
   fired_at: number
 }

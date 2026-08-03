@@ -1,7 +1,7 @@
 //! Durable `trigger_fired` bookkeeping entries.
 //!
-//! Every real subscription fire — a notify wake, a react spawn, or a join edge —
-//! appends a `kind: "custom"` `trigger_fired` entry into the OWNER session's
+//! Every real subscription fire — a wake or a mechanical call — appends a
+//! `kind: "custom"` `trigger_fired` entry into the OWNER session's
 //! transcript (the chat that registered the trigger). Custom entries are
 //! model-invisible (excluded from default `session::messages` reads and the
 //! model context), so this is a pure UI signal with two uses on the console:
@@ -11,7 +11,7 @@
 //!     record can).
 //!
 //! Best-effort: a failed append logs and returns; it never blocks the fire's
-//! real work (the notification wake or the sub-agent spawn).
+//! real work (the notification wake or the dispatched call).
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -22,20 +22,9 @@ use crate::types::message::AgentMessage;
 /// custom_type stamped on the transcript entry (mirrored by the console mapper).
 pub const CUSTOM_TYPE: &str = "trigger_fired";
 
-/// Join-barrier progress for a react join edge fire.
-#[derive(Debug, Serialize)]
-pub struct JoinProgress<'a> {
-    pub id: &'a str,
-    pub key: &'a str,
-    pub arrived: usize,
-    pub expected: usize,
-    /// The last predecessor arrived and the downstream spawned this call.
-    pub completed: bool,
-}
-
 /// The `data` payload of a `trigger_fired` custom entry. Carries enough for the
 /// console to render both the chat notice and a standalone fired panel row after
-/// a reload (label / target / model / state watch / join progress).
+/// a reload (label / target / state watch).
 #[derive(Debug, Serialize)]
 pub struct TriggerFired<'a> {
     pub subscription_id: &'a str,
@@ -43,25 +32,20 @@ pub struct TriggerFired<'a> {
     /// (recurring) panel row. Absent when the local slot no longer maps one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trigger_id: Option<&'a str>,
-    /// `"notify"` (wakes this chat) or `"spawn"` (react sub-agent).
+    /// The binding's target function id (`harness::send` for a wake, else the
+    /// called function). Records written before the delivery hop carry the
+    /// legacy values `"notify"` / `"spawn"`.
     pub target: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<&'a str>,
-    /// Reacting sub-agent model (react only).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<&'a str>,
     pub once: bool,
-    /// This fire unregistered the binding (once teardown, or join predecessor GC).
+    /// This fire unregistered the binding (once teardown).
     pub retired: bool,
     /// state-trigger watch, extracted from the fired event when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub child_session_id: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub join: Option<JoinProgress<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<&'a str>,
     pub fired_at: i64,
@@ -160,27 +144,23 @@ mod tests {
         let rec = TriggerFired {
             subscription_id: "sub_1",
             trigger_id: None,
-            target: "notify",
+            target: "harness::send",
             label: None,
-            model: None,
             once: true,
             retired: true,
             scope: None,
             key: None,
-            child_session_id: None,
-            join: None,
             note: None,
             fired_at: 42,
         };
         let v = serde_json::to_value(&rec).unwrap();
         assert_eq!(v["subscription_id"], "sub_1");
-        assert_eq!(v["target"], "notify");
+        assert_eq!(v["target"], "harness::send");
         assert_eq!(v["once"], true);
         assert_eq!(v["retired"], true);
         assert_eq!(v["fired_at"], 42);
         // Skipped optionals must not appear.
         assert!(v.get("trigger_id").is_none());
-        assert!(v.get("model").is_none());
-        assert!(v.get("join").is_none());
+        assert!(v.get("label").is_none());
     }
 }

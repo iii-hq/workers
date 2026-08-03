@@ -184,6 +184,7 @@ jobs:
             context-manager -> target
             iii-directory -> target
             cron -> target
+            web -> target
 
       - name: Test E2E crate
         run: cargo test --locked --manifest-path harness/Cargo.toml -p harness-e2e
@@ -202,7 +203,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target/coverage/build-profraw
-          for worker in database state queue session-manager llm-router context-manager iii-directory cron; do
+          for worker in database state queue session-manager llm-router context-manager iii-directory cron web fp; do
             cargo build --locked --release --manifest-path "$worker/Cargo.toml"
           done
           mapfile -t providers < <(
@@ -251,6 +252,8 @@ jobs:
             context-manager/target/release/context-manager
             iii-directory/target/release/iii-directory
             cron/target/release/cron
+            web/target/release/web
+            fp/target/release/fp
             harness/target/release/harness
             harness/target/release/harness-e2e
           )
