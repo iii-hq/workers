@@ -30,6 +30,18 @@ pub const CONTROL_PLANE_DENY: [&str; 5] = [
     "engine::registered-triggers::*",
 ];
 
+/// The contract-discovery pair every spawned child keeps callable. The
+/// sub-agent contract mandates a `functions::list`/`::info` round before the
+/// first call, so a narrowed allow-list that omits the pair starves the child
+/// into `FAILED: ... denied by policy` — a live courier died exactly that way
+/// while its siblings, which skipped mandatory discovery, succeeded.
+/// `subagent::child_functions` unions these into any NON-EMPTY child
+/// allow-list; an empty allow (dispatch disabled) stays empty, an explicit
+/// deny still wins, and the ask-mode operator baseline is applied after — the
+/// deployment ceiling keeps the final word.
+pub const CHILD_DISCOVERY_ALLOW: [&str; 2] =
+    ["engine::functions::list", "engine::functions::info"];
+
 /// A compiled allow/deny matcher. Fail-closed: a call is allowed only when it
 /// matches an `allow` glob and no `deny` glob; an absent or empty allow-list
 /// denies everything.
@@ -139,7 +151,10 @@ pub fn clamp_policy(
 
 /// Is a child allow glob covered by the parent's allow set? Conservative: an
 /// exact match, a parent `*`, or a parent `<prefix>::*` covering the child.
-fn glob_covered(child: &str, parent_globs: &[String]) -> bool {
+/// Also used by `subagent::child_functions` to skip redundant (or dead — an
+/// exotic deny glob it cannot see stays authoritative at dispatch) discovery
+/// entries before unioning [`CHILD_DISCOVERY_ALLOW`].
+pub(crate) fn glob_covered(child: &str, parent_globs: &[String]) -> bool {
     parent_globs.iter().any(|p| {
         p == child || p == "*" || (p.ends_with("::*") && child.starts_with(&p[..p.len() - 1]))
     })

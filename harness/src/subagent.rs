@@ -137,8 +137,12 @@ pub async fn spawn_child(
 /// [`policy::CONTROL_PLANE_DENY`] — a leaf performs its assignment and updates
 /// the shared medium; it cannot spawn, message sessions, or touch trigger
 /// registrations, whatever its prompt says. Denies union through subsetting,
-/// so a leaf's own children stay leaves. Finally an ask-mode child is clamped
-/// to the configured default policy (`*` as shipped).
+/// so a leaf's own children stay leaves. Any real whitelist then keeps the
+/// contract-discovery pair ([`policy::CHILD_DISCOVERY_ALLOW`]): the sub-agent
+/// contract makes a `functions::info` round mandatory, so an allow-list of
+/// just the work functions quietly starves an obedient child. Finally an
+/// ask-mode child is clamped to the configured default policy (`*` as
+/// shipped) — the operator ceiling stays authoritative over the union.
 fn child_functions(
     cfg: &WorkerConfig,
     parent_record: Option<&TurnRecord>,
@@ -154,6 +158,19 @@ fn child_functions(
         if let Some(p) = functions.as_mut() {
             p.deny
                 .extend(policy::CONTROL_PLANE_DENY.iter().map(|s| s.to_string()));
+        }
+    }
+    if let Some(p) = functions.as_mut() {
+        // An EMPTY allow is deliberate dispatch-disabled — granting a
+        // browse-only catalog to a child that can call nothing helps nobody.
+        if !p.allow.is_empty() {
+            for id in policy::CHILD_DISCOVERY_ALLOW {
+                // Skip when already covered, and skip a dead entry when a
+                // deny glob claims it — deny wins at dispatch either way.
+                if !policy::glob_covered(id, &p.allow) && !policy::glob_covered(id, &p.deny) {
+                    p.allow.push(id.to_string());
+                }
+            }
         }
     }
     crate::functions::send::clamp_for_mode(cfg, mode, functions)
@@ -766,6 +783,71 @@ mod tests {
         assert!(compiled.allows("state::set"));
         assert!(!compiled.allows("state::get"));
         assert!(!compiled.allows("harness::spawn"));
+    }
+
+    /// Prevents: the discovery-starved courier — an allow-list of just the
+    /// work functions makes the sub-agent contract's mandatory
+    /// `functions::list`/`::info` round impossible, so the obedient child
+    /// reports FAILED while siblings that skip discovery succeed.
+    #[test]
+    fn a_narrowed_child_always_keeps_contract_discovery() {
+        let cfg = WorkerConfig::default();
+        let mut parent = parent_record(None);
+        parent.options.functions = Some(broad_policy());
+        let narrow = FunctionPolicy {
+            allow: vec!["database::executeBatch".into()],
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let child = child_functions(&cfg, Some(&parent), Some(&narrow), Some(Mode::Agent), false);
+        let compiled = policy::CompiledPolicy::from(child.as_ref());
+        assert!(compiled.allows("database::executeBatch"));
+        assert!(compiled.allows("engine::functions::list"));
+        assert!(compiled.allows("engine::functions::info"));
+        // The union grants the metadata plane only — the leaf wall and the
+        // whitelist still hold.
+        assert!(!compiled.allows("engine::register_trigger"));
+        assert!(!compiled.allows("database::execute"));
+    }
+
+    #[test]
+    fn the_discovery_union_adds_nothing_redundant_dead_or_widening() {
+        let cfg = WorkerConfig::default();
+        let mut parent = parent_record(None);
+        parent.options.functions = Some(broad_policy());
+
+        // Already covered by a glob: no duplicate entries.
+        let covered = FunctionPolicy {
+            allow: vec!["engine::*".into(), "state::set".into()],
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let child =
+            child_functions(&cfg, Some(&parent), Some(&covered), Some(Mode::Agent), false).unwrap();
+        assert_eq!(child.allow, vec!["engine::*", "state::set"]);
+
+        // Explicitly denied: deny wins, and no dead allow entry is written.
+        let denied = FunctionPolicy {
+            allow: vec!["database::executeBatch".into()],
+            deny: vec!["engine::functions::*".into()],
+            expose: Default::default(),
+        };
+        let child =
+            child_functions(&cfg, Some(&parent), Some(&denied), Some(Mode::Agent), false).unwrap();
+        assert_eq!(child.allow, vec!["database::executeBatch"]);
+        assert!(!policy::CompiledPolicy::from(Some(&child)).allows("engine::functions::info"));
+
+        // An EMPTY allow is deliberate dispatch-disabled — it must stay that
+        // way, not become a browse-only two-entry whitelist.
+        let disabled = FunctionPolicy {
+            allow: vec![],
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let child =
+            child_functions(&cfg, None, Some(&disabled), Some(Mode::Agent), false).unwrap();
+        assert!(child.allow.is_empty());
+        assert!(!policy::CompiledPolicy::from(Some(&child)).allows("engine::functions::list"));
     }
 
     #[test]
