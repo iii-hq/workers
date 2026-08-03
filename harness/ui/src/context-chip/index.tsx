@@ -17,15 +17,12 @@ import {
   isSnapshot,
 } from '../lib/metrics'
 
-/** Per-tab handler id (host.iii.on namespaces it `::<browserId>`). */
+/** Per-tab handler ids (host.iii.on namespaces them `::<browserId>`). */
 const EVENTS_FN = 'iii::harness-ui::events'
+const STATE_FN = 'iii::harness-ui::ctx-state'
 
 const WARN_THRESHOLD = 0.75
 const DANGER_THRESHOLD = 0.9
-
-/** Snapshots update after every generate step, but the push only fires at
-    turn end — poll the state row so long multi-step turns tick live. */
-const POLL_MS = 5_000
 
 export interface SessionChipProps {
   sessionId: string
@@ -38,6 +35,16 @@ interface TurnCompletedEvent {
   turn_id?: string
   terminal?: boolean
   context?: unknown
+}
+
+/** The message a `state` function trigger delivers per write (the state
+    worker's own streaming trigger type — no polling anywhere). */
+interface StateEvent {
+  type?: string
+  event_type?: string
+  scope?: string
+  key?: string
+  new_value?: unknown
 }
 
 type Tone = 'ok' | 'warn' | 'alert'
@@ -241,21 +248,37 @@ export function createContextChip(host: Host) {
       let cancelled = false
       setSnapshot(null)
       setOpen(false)
-      const read = () => {
-        host.iii
-          .trigger('state::get', { scope: 'harness_context', key: sessionId })
-          .then((value) => {
-            if (cancelled) return
-            if (isSnapshot(value) && value.session_id === sessionId)
-              setSnapshot(value)
-          })
-          .catch(() => {})
-      }
-      read()
-      const interval = window.setInterval(read, POLL_MS)
+      host.iii
+        .trigger('state::get', { scope: 'harness_context', key: sessionId })
+        .then((value) => {
+          if (cancelled) return
+          if (isSnapshot(value) && value.session_id === sessionId)
+            setSnapshot(value)
+        })
+        .catch(() => {})
       return () => {
         cancelled = true
-        window.clearInterval(interval)
+      }
+    }, [host, sessionId])
+
+    // Snapshots are written after every generate step; the state worker's
+    // `state` trigger streams each write (engine-side scope/key filter), so
+    // long multi-step turns tick live without any polling.
+    useEffect(() => {
+      const offHandler = host.iii.on<StateEvent>(STATE_FN, (event) => {
+        if (!event || event.key !== sessionId) return
+        if (event.event_type === 'state:deleted') return
+        if (isSnapshot(event.new_value) && event.new_value.session_id === sessionId)
+          setSnapshot(event.new_value)
+      })
+      const offTrigger = host.iii.registerTrigger({
+        type: 'state',
+        function_id: `${STATE_FN}::${host.iii.browserId}`,
+        config: { scope: 'harness_context', key: sessionId },
+      })
+      return () => {
+        offTrigger()
+        offHandler()
       }
     }, [host, sessionId])
 
