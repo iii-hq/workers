@@ -117,6 +117,31 @@ export interface ConfigFormProps {
 }
 
 /**
+ * Props a session chip receives from the chat host. Chips fetch their own
+ * data through `host.iii`; the host only identifies the session and what
+ * it already knows about the resolved model.
+ */
+export interface SessionChipProps {
+  sessionId: string
+  /** Resolved model id for the session, when known. */
+  modelId?: string
+  /** Context window (tokens) of the resolved model, from the catalog. */
+  contextWindow?: number
+}
+
+/**
+ * A per-session status chip rendered in the chat header's right cluster
+ * (the `chat` slot). Duplicate `id`: last registration wins — and some
+ * ids also supersede a built-in affordance (`context` replaces the
+ * host's estimate-based context meter).
+ */
+export interface SessionChipRegistration {
+  /** kebab-case, e.g. `context`; convention `<worker>-<name>` otherwise. */
+  id: string
+  render: React.ComponentType<SessionChipProps>
+}
+
+/**
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
  */
@@ -136,6 +161,9 @@ export interface Host {
       configurationId: string,
       component: React.ComponentType<ConfigFormProps>,
     ): () => void
+  }
+  chat: {
+    registerSessionChip(chip: SessionChipRegistration): () => void
   }
 }
 
