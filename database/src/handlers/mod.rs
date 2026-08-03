@@ -30,14 +30,24 @@ where
 }
 
 pub mod begin_transaction;
+pub mod browse;
+pub mod catalog;
+pub mod column_stats;
 pub mod commit_transaction;
+pub mod diagram;
 pub mod execute;
 pub mod execute_batch;
+pub mod explain;
+pub mod filter;
+pub mod health;
 pub mod list_databases;
 pub mod prepare;
 pub mod query;
 pub mod rollback_transaction;
 pub mod run_statement;
+pub mod saved;
+pub mod schema;
+pub mod table_view;
 pub mod test_connection;
 pub mod transaction;
 pub mod transaction_execute;
@@ -95,6 +105,12 @@ impl AppState {
             .databases
             .get(db)
             .is_none_or(|d| d.capture.is_statements())
+    }
+
+    /// Engine client, when the worker is connected to one. `None` in tests,
+    /// where sibling-worker calls are not available and history is skipped.
+    pub fn client(&self) -> Option<&Arc<iii_sdk::IIIClient>> {
+        self.row_changes.as_ref().map(|bus| bus.client())
     }
 
     /// Announce a committed change, if anything is listening. Every mutating

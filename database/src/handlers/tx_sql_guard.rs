@@ -53,6 +53,63 @@ pub(super) fn is_transaction_control_sql(sql: &str) -> bool {
     }
 }
 
+/// Statements that only read. Anything not on this list is treated as a
+/// write, so an unrecognised or vendor-specific verb fails closed.
+const READ_ONLY_VERBS: &[&str] = &[
+    "select", "with", "explain", "pragma", "show", "describe", "desc", "values", "table",
+];
+
+/// Keywords that mutate. Checked anywhere in the statement, not just at the
+/// front, so a data-modifying CTE (`WITH x AS (DELETE ...) SELECT ...`) is
+/// caught — it leads with `WITH` but is very much a write.
+const WRITE_KEYWORDS: &[&str] = &[
+    "insert", "update", "delete", "replace", "merge", "upsert", "drop", "create", "alter",
+    "truncate", "grant", "revoke", "attach", "detach", "reindex", "vacuum", "call", "do",
+];
+
+/// Whether `sql` is a single statement that cannot modify data.
+///
+/// Used to gate `EXPLAIN ANALYZE`, which really executes the statement — an
+/// `EXPLAIN ANALYZE DELETE FROM users` deletes users. The client-side check
+/// in the console is a convenience; this one is the authority.
+///
+/// Fails closed: anything it cannot confidently classify as a read is a
+/// write. Reuses `strip_leading_noise`, so a leading `--` or `/* */` comment
+/// cannot smuggle a verb past the check.
+pub(crate) fn is_read_only_sql(sql: &str) -> bool {
+    let head = strip_leading_noise(sql);
+    if head.is_empty() {
+        return false;
+    }
+
+    // More than one statement means the tail is unchecked; refuse rather than
+    // classify only the first. A trailing `;` alone is fine.
+    if head.trim_end().trim_end_matches(';').contains(';') {
+        return false;
+    }
+
+    let lowered = head.to_ascii_lowercase();
+    let leading = lowered
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .find(|w| !w.is_empty())
+        .unwrap_or_default();
+    if !READ_ONLY_VERBS.contains(&leading) {
+        return false;
+    }
+
+    // `PRAGMA foo = 1` writes; `PRAGMA foo` reads.
+    if leading == "pragma" && lowered.contains('=') {
+        return false;
+    }
+
+    // Word-boundary scan so `created_at` does not trip the `create` keyword,
+    // and so `EXPLAIN ANALYZE DELETE ...` is caught by its `delete`.
+    !lowered
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .any(|w| WRITE_KEYWORDS.contains(&w))
+}
+
 /// Strip any prefix of leading whitespace, `;`, line comments (`-- ...\n`),
 /// and block comments (`/* ... */`, with nesting supported) so the returned
 /// slice begins at the first character of the first real token. Returns an
@@ -253,6 +310,59 @@ mod tests {
         assert!(!is_transaction_control_sql("SELECT '漢字 🔥' AS n"));
         assert!(!is_transaction_control_sql(
             "INSERT INTO t VALUES ('مرحبا')"
+        ));
+    }
+
+    #[test]
+    fn read_only_accepts_plain_reads() {
+        for sql in [
+            "SELECT 1",
+            "  select * from users where created_at > now()",
+            "WITH x AS (SELECT 1) SELECT * FROM x",
+            "EXPLAIN SELECT * FROM t",
+            "PRAGMA table_info(users)",
+            "SHOW TABLES",
+            "VALUES (1), (2)",
+            "-- a comment\nSELECT 1",
+            "/* block */ SELECT 1",
+            "SELECT 1;",
+        ] {
+            assert!(is_read_only_sql(sql), "should be read-only: {sql}");
+        }
+    }
+
+    #[test]
+    fn read_only_rejects_writes_and_the_ways_they_hide() {
+        for sql in [
+            // Plain writes.
+            "DELETE FROM users",
+            "UPDATE users SET a = 1",
+            "DROP TABLE users",
+            // The one that matters most: EXPLAIN ANALYZE really executes.
+            "EXPLAIN ANALYZE DELETE FROM users",
+            // A data-modifying CTE leads with WITH but is a write.
+            "WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x",
+            // A second statement would go unchecked.
+            "SELECT 1; DROP TABLE users",
+            // A comment must not smuggle the verb past the check.
+            "-- SELECT\nDELETE FROM users",
+            "/* SELECT */ DROP TABLE t",
+            // PRAGMA with an assignment writes.
+            "PRAGMA journal_mode = WAL",
+            // Unknown verbs fail closed.
+            "LOCK TABLE users",
+            "",
+            "   ",
+        ] {
+            assert!(!is_read_only_sql(sql), "should be refused: {sql}");
+        }
+    }
+
+    #[test]
+    fn read_only_does_not_trip_on_identifiers_containing_keywords() {
+        // `created_at` contains "create"; a substring scan would reject this.
+        assert!(is_read_only_sql(
+            "SELECT created_at, updated_at FROM t ORDER BY created_at"
         ));
     }
 }

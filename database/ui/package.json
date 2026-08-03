@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
-    "watch": "node build.mjs --watch"
+    "watch": "node build.mjs --watch",
+    "test": "vitest run"
   },
   "dependencies": {
     "@iii-dev/console-ui": "workspace:*",
@@ -14,6 +15,7 @@
   "devDependencies": {
     "@types/react": "^19.2.14",
     "esbuild": "^0.25.0",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.6"
   }
 }
