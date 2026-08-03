@@ -249,13 +249,17 @@ mod tests {
         // Paused clock: the timer auto-advances past the deadline as soon as
         // the runtime parks waiting on the child, so the timeout path trips
         // deterministically instead of racing a real subprocess.
-        let err = run_git(
-            &std::env::temp_dir(),
-            &["daemon", "--port=0", "--reuseaddr"],
-            1,
-        )
-        .await
-        .unwrap_err();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let port_arg = format!("--port={port}");
+        let args = [
+            "daemon",
+            "--listen=127.0.0.1",
+            port_arg.as_str(),
+            "--reuseaddr",
+        ];
+        let err = run_git(&std::env::temp_dir(), &args, 1).await.unwrap_err();
         assert_eq!(err.code, crate::error::codes::GIT_TIMEOUT);
     }
 }

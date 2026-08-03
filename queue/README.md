@@ -186,8 +186,12 @@ The `durable:subscriber` trigger's `queue_config` accepts the full builtin
 
 ## Engine Compatibility
 
-Current engines route `TriggerAction::Enqueue` through this worker's
-`engine::queue::enqueue` provider and no longer load the legacy built-in by default.
+Current engines no longer load the legacy built-in by default. Engines with the
+`QueueEnqueuer` cut route `TriggerAction::Enqueue` through this worker's
+`engine::queue::enqueue` provider. Until that support is available, use
+`iii::durable::publish` with `durable:subscriber` triggers instead of named
+function queues.
+
 When connecting to an older engine, remove the legacy built-in from its config first;
 two owners of `durable:subscriber` cannot run together.
 
