@@ -76,3 +76,30 @@ Feature: context::count-tokens — estimate token usage for a message set
     Then the call succeeds
     And the response field "tokens" is 0
     And the response field "by_role.user" is 0
+
+  # Prevents: named parts leaking into the total — parts are a side
+  # breakdown for callers dissecting a prompt they also count whole
+  # (e.g. system prompt segments), so double-billing must be impossible.
+  Scenario: parts are counted individually and never added to the total
+    Given an empty history
+    When I count tokens with model "any-model" and parts:
+      """
+      { "identity": "xxxxxxxxxxxxxxxx", "guidance": "xxxxxxxx" }
+      """
+    Then the call succeeds
+    And the response field "tokens" is 0
+    And the response field "by_part.identity" is 4
+    And the response field "by_part.guidance" is 2
+
+  # Prevents: the tools share being indistinguishable inside the total —
+  # budget UIs render schemas as their own category.
+  Scenario: the tools share of the total is reported separately
+    Given an empty history
+    When I count tokens with model "any-model" and tools:
+      """
+      [{ "name": "agent_trigger", "description": "Invoke any allowed iii function.",
+         "parameters": { "type": "object", "properties": { "function": { "type": "string" } } } }]
+      """
+    Then the call succeeds
+    And the response field "tokens" exceeds 0
+    And the response field "tools_tokens" equals the response field "tokens"
