@@ -543,7 +543,6 @@ def collect(
         suite_passed = (
             all_reports_present
             and subject_passed == expected_count
-            and hard_gate_failures == 0
             and technical_failures == 0
         )
         engine_revision = (

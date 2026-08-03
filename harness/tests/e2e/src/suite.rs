@@ -87,12 +87,12 @@ pub async fn run_suite(config: SuiteRunConfig) -> Result<SuiteRunOutcome> {
                 config.progress_interval,
             )
             .await;
-            let stop = run.status.is_blocking_failure();
+            let stop = run.status.is_technical_failure();
             runs.push(run);
             if stop {
                 tracing::warn!(
                     scenario = scenario_id.as_str(),
-                    "stopping scenario after a blocking failure"
+                    "stopping scenario after a technical failure"
                 );
                 break;
             }
@@ -253,6 +253,9 @@ async fn run_once(
     report.wall_time_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
     if report.failures.is_empty() {
         if report.hard_gates.iter().any(|gate| !gate.passed) {
+            // Judge-backed scenarios skip the judge on a gate failure, leaving no
+            // criterion awards; the run must still enter the aggregate as a score.
+            report.score.get_or_insert(0);
             report.finish(RunStatus::HardGateFailed);
         } else if let Some(score) = report.score {
             report.finish(if score >= spec.threshold {

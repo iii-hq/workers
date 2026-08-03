@@ -13,10 +13,12 @@ use crate::context::E2eContext;
 use crate::report::HardGateReport;
 
 pub mod common;
+pub mod design_tradeoff;
 pub mod direct_answer;
 pub mod persistent_state;
 pub mod reactive_automation;
 pub mod security_review;
+pub mod security_triage;
 pub mod shell_coder_sandbox;
 
 /// Judge-backed scenarios keep a low semantic floor while exposing the full
@@ -160,15 +162,21 @@ pub enum ScenarioId {
     ReactiveAutomation,
     #[value(name = "shell_coder_sandbox")]
     ShellCoderSandbox,
+    #[value(name = "design_tradeoff")]
+    DesignTradeoff,
+    #[value(name = "security_triage")]
+    SecurityTriage,
 }
 
 impl ScenarioId {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::DirectAnswer,
         Self::PersistentState,
         Self::SecurityReview,
         Self::ReactiveAutomation,
         Self::ShellCoderSandbox,
+        Self::DesignTradeoff,
+        Self::SecurityTriage,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -178,6 +186,8 @@ impl ScenarioId {
             Self::SecurityReview => security_review::ID,
             Self::ReactiveAutomation => reactive_automation::ID,
             Self::ShellCoderSandbox => shell_coder_sandbox::ID,
+            Self::DesignTradeoff => design_tradeoff::ID,
+            Self::SecurityTriage => security_triage::ID,
         }
     }
 
@@ -188,6 +198,8 @@ impl ScenarioId {
             Self::SecurityReview => security_review::scenario(run_id),
             Self::ReactiveAutomation => reactive_automation::scenario(run_id),
             Self::ShellCoderSandbox => shell_coder_sandbox::scenario(run_id),
+            Self::DesignTradeoff => design_tradeoff::scenario(run_id),
+            Self::SecurityTriage => security_triage::scenario(run_id),
         }
     }
 }
@@ -208,13 +220,13 @@ pub fn selected(requested: &[ScenarioId]) -> Vec<ScenarioId> {
 mod tests {
     use super::*;
     #[test]
-    fn registry_contains_five_unique_valid_scenarios() {
+    fn registry_contains_seven_unique_valid_scenarios() {
         let mut ids = HashSet::new();
         for scenario in ScenarioId::ALL {
             assert!(ids.insert(scenario.as_str()));
             scenario.spec("run").validate().unwrap();
         }
-        assert_eq!(ids.len(), 5);
+        assert_eq!(ids.len(), 7);
     }
 
     #[test]
@@ -242,7 +254,12 @@ mod tests {
 
     #[test]
     fn judge_backed_scenarios_use_the_quality_signal_floor() {
-        for scenario in [ScenarioId::DirectAnswer, ScenarioId::SecurityReview] {
+        for scenario in [
+            ScenarioId::DirectAnswer,
+            ScenarioId::SecurityReview,
+            ScenarioId::DesignTradeoff,
+            ScenarioId::SecurityTriage,
+        ] {
             let spec = scenario.spec("run");
             assert!(spec.needs_judge());
             assert_eq!(spec.threshold, JUDGE_BACKED_PASS_THRESHOLD);

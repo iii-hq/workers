@@ -55,6 +55,13 @@ scenario through one global `allow: ["*"]` policy:
   evaluator verifies every effect, exact stdout from both environments,
   operation ordering, shutdown, and scenario-owned cleanup. Recovered function
   errors reduce its quality score without overriding those validated effects.
+- `design_tradeoff`: recommends one side of a contested database-scaling
+  decision with facts that pull in opposite directions; a judge scores
+  commitment to a single pick, constraint-grounded reasoning, honest costs of
+  the chosen option, and concrete reversal conditions.
+- `security_triage`: classifies four snippets where two are subtly exploitable
+  and two only look vulnerable; a judge scores true positives, false-positive
+  control, remediation, and clarity.
 
 List the code-defined ids used by CI:
 
@@ -132,9 +139,12 @@ attempts; a third invalid response is a `judge_error`, not a zero quality score.
 Criterion weights total 100. A run passes when every hard gate passes and its
 score reaches the scenario threshold. For repeated runs, the aggregate requires
 at least two thirds of the runs to pass and the median score to reach the
-threshold. Hard-gate and technical failures stop further repetitions for that
-subject/scenario pair and always fail the aggregate. Score-only failures retain
-the two-of-three tolerance used by the daily benchmark.
+threshold. Technical failures stop further repetitions for that
+subject/scenario pair and always fail the aggregate. A hard-gate failure is a
+quality result, not an execution error: the run keeps its objective partial
+credit (zero when every criterion is judge-delegated), enters the aggregate as
+a poor score, and shares the two-of-three tolerance used by score-only
+failures.
 
 Scenarios with a judge reference delegate every criterion score to the judge.
 Scenarios without one award every criterion objectively in code. Mechanical
@@ -199,7 +209,7 @@ zero.
 | Workflow | Trigger | Live-model runs | Gate |
 | --- | --- | ---: | --- |
 | Pull-request CI | Relevant pull-request changes | 0 | Deterministic integration only |
-| Harness E2E Main | Relevant push to `main` | 1 per subject/scenario | Score advisory; hard gates and technical failures blocking |
+| Harness E2E Main | Relevant push to `main` | 1 per subject/scenario | Score advisory; technical failures blocking |
 | Harness E2E Daily | Daily at 06:00 UTC, or manual dispatch on `main` | 3 per subject/scenario | Median score and reliability gates are evaluated; history is published on failure |
 
 The reusable workflow normally runs from `main`; a manual daily benchmark may
