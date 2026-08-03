@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785654869292,
+  "lastUpdate": 1785741807141,
   "repoUrl": "https://github.com/iii-hq/workers",
   "entries": {
     "Harness Stack Coverage": [
@@ -63,6 +63,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "Integration line coverage",
             "value": 44.96,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Guilherme de S. Vieira Beira",
+            "username": "guibeira",
+            "email": "guilherme.vieira.beira@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4b52a11e730597f7e8743e17f4a12d387943946e",
+          "message": "fix(ci): build the tag being released, not the dispatch branch (#669)\n\n`actions/checkout` with no `ref` resolves the ref that started the run. On\na `push: tags:` trigger that is the tag, so the release path was correct by\naccident. On a `workflow_dispatch` it is the branch the dispatch was started\nfrom — `alpha-release.yml` dispatches with `--ref main` — while the tag\nreaches the jobs only as metadata: the version parsed from its name and\n`tag_name` on the GitHub Release.\n\nSo a dispatched release compiles one commit and labels the artifacts with\nanother commit's version, silently. `state/v0.21.4-alpha.2` shipped this way:\nthe tag points at a commit pinning `iii-sdk = \"=0.22.0-alpha.3\"`, but the\nbinary was built from main, which pins `=0.21.6`. The published artifact\ncarries the prerelease version number and none of the code it names — it\ndoes not send `namespace` on `engine::workers::register`, so no worker\nbuilt this way can join a namespaced project.\n\nEvery checkout in the release path now takes the ref being released. The\nreusable workflows get an optional `ref` input defaulting to `''`, which is\n`actions/checkout`'s own default, so nothing changes for a tag push. The\ndispatch keeps using `--ref main`: the pipeline definition should come from\nmain, only the source it compiles should follow the tag.",
+          "timestamp": "2026-08-02T18:17:00Z",
+          "url": "https://github.com/iii-hq/workers/commit/4b52a11e730597f7e8743e17f4a12d387943946e"
+        },
+        "date": 1785741806188,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "E2E line coverage",
+            "value": 44.8,
+            "unit": "%"
+          },
+          {
+            "name": "Integration line coverage",
+            "value": 44.88,
             "unit": "%"
           }
         ]
