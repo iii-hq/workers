@@ -218,7 +218,15 @@ function ContextPopover({
         <LegendRow color={COLOR_FREE} label="Free" tokens={free} usable={usable} />
       </div>
       <div className="harness-ui-pop-foot">
-        <span>est. {snapshot.estimator ?? 'unknown'}</span>
+        <span>
+          {!snapshot.estimator || snapshot.estimator === 'heuristic'
+            ? `est. ${snapshot.estimator ?? 'unknown'}`
+            : `exact · ${
+                snapshot.estimator === 'provider'
+                  ? 'provider tokenizer'
+                  : snapshot.estimator
+              }`}
+        </span>
         {hasActuals ? (
           <span>
             last turn actual{' '}
