@@ -14,7 +14,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::core::budget::{default_reserved, preserve_recent_budget, usable};
-use crate::core::estimate::{estimator_for_model, Estimator, EstimatorKind};
+use crate::core::estimate::{by_role_from_sizes, estimator_for_model, Estimator};
 use crate::core::lease;
 use crate::core::prune::{emergency_reduce_with_sizes, prune_with_sizes, PruneParams};
 use crate::core::selection::select;
@@ -22,10 +22,11 @@ use crate::core::summary::{
     build_system_prompt, render_system_prompt, render_user_prompt, strip_media,
 };
 use crate::error::ContextError;
-use crate::functions::count_tokens::{ByRoleTokens, EstimatorName};
 use crate::functions::resolve_model;
 use crate::ports::{Deps, SummarizeRequest};
-use crate::types::{AgentFunction, AgentMessage, ModelInput, Role, ThinkingLevel};
+use crate::types::{
+    AgentFunction, AgentMessage, ByRoleTokens, EstimatorName, ModelInput, Role, ThinkingLevel,
+};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct AssembleOptions {
@@ -330,20 +331,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         });
     }
 
-    let mut by_role = ByRoleTokens {
-        user: 0,
-        assistant: 0,
-        function_result: 0,
-        custom: 0,
-    };
-    for (message, size) in working.iter().zip(&sizes) {
-        match message.role() {
-            Role::User => by_role.user += size,
-            Role::Assistant => by_role.assistant += size,
-            Role::FunctionResult => by_role.function_result += size,
-            Role::Custom => by_role.custom += size,
-        }
-    }
+    let by_role = by_role_from_sizes(&working, &sizes);
 
     Ok(AssembleResponse {
         system_prompt,
@@ -360,11 +348,8 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         breakdown: AssembleBreakdown {
             system_prompt_tokens: prompt_tokens,
             tools_tokens: tool_tokens,
-            by_role,
-            estimator: match estimator.kind() {
-                EstimatorKind::Tokenizer => EstimatorName::Tokenizer,
-                EstimatorKind::Heuristic => EstimatorName::Heuristic,
-            },
+            by_role: by_role.into(),
+            estimator: estimator.kind().into(),
         },
     })
 }

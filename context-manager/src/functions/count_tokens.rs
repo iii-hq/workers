@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::estimate::{estimate_by_role, estimate_messages, estimator_for_model};
 use crate::error::ContextError;
 use crate::ports::Deps;
-use crate::types::{AgentFunction, AgentMessage, ModelInput};
+use crate::types::{AgentFunction, AgentMessage, ByRoleTokens, EstimatorName, ModelInput};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CountTokensRequest {
@@ -34,23 +34,6 @@ pub struct CountTokensRequest {
     pub parts: Option<BTreeMap<String, String>>,
     /// Tokenizer selection; falls back to a generic estimator.
     pub model: ModelInput,
-}
-
-/// Per-role token breakdown of the `messages` array.
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct ByRoleTokens {
-    pub user: u64,
-    pub assistant: u64,
-    pub function_result: u64,
-    pub custom: u64,
-}
-
-/// Which estimator produced the count.
-#[derive(Debug, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum EstimatorName {
-    Tokenizer,
-    Heuristic,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -104,18 +87,10 @@ pub async fn handle(
 
     Ok(CountTokensResponse {
         tokens,
-        by_role: Some(ByRoleTokens {
-            user: by_role.user,
-            assistant: by_role.assistant,
-            function_result: by_role.function_result,
-            custom: by_role.custom,
-        }),
+        by_role: Some(by_role.into()),
         tools_tokens,
         by_part,
-        estimator: match estimator.kind() {
-            crate::core::estimate::EstimatorKind::Tokenizer => EstimatorName::Tokenizer,
-            crate::core::estimate::EstimatorKind::Heuristic => EstimatorName::Heuristic,
-        },
+        estimator: estimator.kind().into(),
     })
 }
 
