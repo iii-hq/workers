@@ -918,7 +918,11 @@
         total += value;
       }
       if (!complete) continue;
-      points.push({ executionId: execution.id, value: total });
+      points.push({
+        executionId: execution.id,
+        value: total,
+        timestamp: execution.completed_at || execution.started_at || "",
+      });
     }
     return points.reverse();
   }

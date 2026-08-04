@@ -84,14 +84,21 @@
     efficiencyBody: document.querySelector("#efficiency-body"),
     efficiencyCost: document.querySelector("#efficiency-cost"),
     efficiencyCostDelta: document.querySelector("#efficiency-cost-delta"),
+    efficiencyCostBaseline: document.querySelector("#efficiency-cost-baseline"),
     efficiencyCostSparkline: document.querySelector("#efficiency-cost-sparkline"),
     efficiencyDuration: document.querySelector("#efficiency-duration"),
     efficiencyDurationDelta: document.querySelector("#efficiency-duration-delta"),
+    efficiencyDurationBaseline: document.querySelector(
+      "#efficiency-duration-baseline",
+    ),
     efficiencyDurationSparkline: document.querySelector(
       "#efficiency-duration-sparkline",
     ),
     efficiencyErrors: document.querySelector("#efficiency-errors"),
     efficiencyErrorsDelta: document.querySelector("#efficiency-errors-delta"),
+    efficiencyErrorsBaseline: document.querySelector(
+      "#efficiency-errors-baseline",
+    ),
     efficiencyErrorsSparkline: document.querySelector(
       "#efficiency-errors-sparkline",
     ),
@@ -99,6 +106,9 @@
     efficiencyRunLabel: document.querySelector("#efficiency-run-label"),
     efficiencyTokens: document.querySelector("#efficiency-tokens"),
     efficiencyTokensDelta: document.querySelector("#efficiency-tokens-delta"),
+    efficiencyTokensBaseline: document.querySelector(
+      "#efficiency-tokens-baseline",
+    ),
     efficiencyTokensSparkline: document.querySelector(
       "#efficiency-tokens-sparkline",
     ),
@@ -322,15 +332,18 @@
       }),
     );
     if (baselineValue !== null) {
-      svg.append(
-        svgElement("line", {
-          x1: 0,
-          x2: width,
-          y1: y(baselineValue),
-          y2: y(baselineValue),
-          class: "efficiency-sparkline-baseline",
-        }),
-      );
+      const baselineLine = svgElement("line", {
+        x1: 0,
+        x2: width,
+        y1: y(baselineValue),
+        y2: y(baselineValue),
+        class: "efficiency-sparkline-baseline",
+      });
+      const baselineTitle = svgElement("title", {});
+      baselineTitle.textContent =
+        `Baseline ${definition.format(baselineValue)} — median of up to 7 prior comparable runs`;
+      baselineLine.append(baselineTitle);
+      svg.append(baselineLine);
     }
     svg.append(
       svgElement("polyline", {
@@ -356,8 +369,19 @@
         height,
         class: "efficiency-sparkline-hit",
       });
+      const parts = [
+        `Run ${point.executionId}`,
+        formatDate(point.timestamp),
+        definition.format(point.value),
+      ];
+      if (baselineValue !== null && baselineValue !== 0) {
+        const deltaPct = ((point.value - baselineValue) / Math.abs(baselineValue)) * 100;
+        parts.push(
+          `${deltaPct < 0 ? "↓" : "↑"} ${compactNumber(Math.abs(deltaPct), 1)}% vs baseline`,
+        );
+      }
       const title = svgElement("title", {});
-      title.textContent = `Run ${point.executionId}: ${definition.format(point.value)}`;
+      title.textContent = parts.join(" · ");
       hit.append(title);
       svg.append(hit);
     });
@@ -427,6 +451,7 @@
         metricId: "cost_usd",
         value: elements.efficiencyCost,
         delta: elements.efficiencyCostDelta,
+        baseline: elements.efficiencyCostBaseline,
         sparkline: elements.efficiencyCostSparkline,
         format: formatCurrency,
         color: palette[0],
@@ -435,6 +460,7 @@
         metricId: "tokens",
         value: elements.efficiencyTokens,
         delta: elements.efficiencyTokensDelta,
+        baseline: elements.efficiencyTokensBaseline,
         sparkline: elements.efficiencyTokensSparkline,
         format: (value) => compactNumber(value, 0),
         color: palette[1],
@@ -443,6 +469,7 @@
         metricId: "duration_seconds",
         value: elements.efficiencyDuration,
         delta: elements.efficiencyDurationDelta,
+        baseline: elements.efficiencyDurationBaseline,
         sparkline: elements.efficiencyDurationSparkline,
         format: formatDuration,
         color: palette[3],
@@ -451,6 +478,7 @@
         metricId: "function_call_errors",
         value: elements.efficiencyErrors,
         delta: elements.efficiencyErrorsDelta,
+        baseline: elements.efficiencyErrorsBaseline,
         sparkline: elements.efficiencyErrorsSparkline,
         format: (value) => compactNumber(value, 1),
         color: palette[6],
@@ -469,6 +497,12 @@
       const meta = deltaMeta(metric?.delta);
       card.delta.textContent = meta.label;
       card.delta.className = `efficiency-delta delta-${meta.css}`;
+      const baselineValue =
+        cohortRows.length && typeof metric?.comparableBaseline === "number"
+          ? metric.comparableBaseline
+          : null;
+      card.baseline.textContent =
+        baselineValue === null ? "" : `baseline ${card.format(baselineValue)}`;
       renderEfficiencySparkline(
         card.sparkline,
         card.metricId,

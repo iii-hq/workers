@@ -442,8 +442,8 @@ test("cohort sparkline sums matching contracts and skips partial executions", ()
   );
 
   assert.deepEqual(points, [
-    { executionId: "older", value: 100 },
-    { executionId: "newer", value: 300 },
+    { executionId: "older", value: 100, timestamp: "2026-07-29T06:10:00Z" },
+    { executionId: "newer", value: 300, timestamp: "2026-07-29T06:10:00Z" },
   ]);
   assert.deepEqual(cohortMetricSparkline([execution()], [], "tokens"), []);
 });
