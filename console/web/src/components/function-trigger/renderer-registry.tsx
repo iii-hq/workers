@@ -147,6 +147,17 @@ export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
 ]
 
 /**
+ * What a fenced `redactRaw` returns when the injected implementation throws.
+ *
+ * Fails CLOSED on purpose: `redactRaw` exists to keep a capability out of the
+ * raw pane and off the clipboard, so the usual "degrade to the untouched
+ * value" fallback would hand over exactly what it was declared to hide. A
+ * broken redactor costs the operator the raw view (the card, the terminal tab
+ * and the trace are all still there), never the secret.
+ */
+export const RAW_REDACTION_FAILED = '[redaction failed — value withheld]'
+
+/**
  * Fence one injected renderer: a throw inside `tryRender*` (called during
  * the host card's render, outside any boundary) degrades to a chip, and the
  * returned node mounts inside the script's scope wrapper + ErrorBoundary.
@@ -195,7 +206,24 @@ function fenceInjected(entry: RegisteredRenderer): FunctionTriggerRenderer {
       : undefined,
     FunctionIdLabel: renderer.FunctionIdLabel,
     primaryTabLabel: renderer.primaryTabLabel,
+    redactRaw: renderer.redactRaw
+      ? (value: unknown) => {
+          try {
+            return renderer.redactRaw?.(value)
+          } catch (error) {
+            console.error(`[iii-ui] redactRaw of ${renderer.id} threw`, error)
+            return RAW_REDACTION_FAILED
+          }
+        }
+      : undefined,
   }
+}
+
+/** The dispatch order for a set of injected registrations (fenced first). */
+export function functionTriggerRenderers(
+  injected: readonly RegisteredRenderer[],
+): readonly FunctionTriggerRenderer[] {
+  return [...injected.map(fenceInjected), ...FIRST_PARTY_RENDERERS]
 }
 
 /**
@@ -204,10 +232,29 @@ function fenceInjected(entry: RegisteredRenderer): FunctionTriggerRenderer {
  */
 export function useFunctionTriggerRenderers(): readonly FunctionTriggerRenderer[] {
   const injected = useExtRenderers()
-  return useMemo(
-    () => [...injected.map(fenceInjected), ...FIRST_PARTY_RENDERERS],
-    [injected],
-  )
+  return useMemo(() => functionTriggerRenderers(injected), [injected])
+}
+
+/**
+ * The redactor for one message's raw request/response: the first renderer
+ * that both declares `redactRaw` and claims `functionId`, or `undefined` when
+ * none does (the overwhelmingly common case — first-party families never
+ * declare it, so the check short-circuits before any `isMatch` call).
+ *
+ * The console deliberately knows nothing about what a worker's secrets look
+ * like; it only knows that the worker claiming these ids gets to filter what
+ * the raw pane shows and what its copy button copies.
+ */
+export function rawRedactor(
+  renderers: readonly FunctionTriggerRenderer[],
+  functionId: string,
+): ((value: unknown) => unknown) | undefined {
+  for (const renderer of renderers) {
+    if (renderer.redactRaw && renderer.isMatch(functionId)) {
+      return (value) => renderer.redactRaw?.(value)
+    }
+  }
+  return undefined
 }
 
 export function firstNonNull(

@@ -1,11 +1,30 @@
 import { ChevronRight, Copy, Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { redactAttributeEntries } from '../lib/redactAttributes'
 import type { VisualizationSpan } from '../lib/traceTransform'
 import { useCopyToClipboard } from '../lib/traceUtils'
 
 interface SpanTagsTabProps {
   span: VisualizationSpan
+  /**
+   * The span's function-trigger redactor (`spanRawRedactor` in
+   * functionTriggerFromSpan.ts), when the info tab's card has one. Attribute
+   * values (`tool.arguments` among them) run through it before they render
+   * OR are copied — the identical payload the info tab's card already hides
+   * is one tab-click away here otherwise.
+   */
+  redact?: (value: unknown) => unknown
+}
+
+/**
+ * The exact text one attribute row's copy button puts on the clipboard.
+ * Pinned as its own function so the redaction that already ran (see
+ * `entries` below) is provably what reaches the clipboard, without needing
+ * to simulate a click — console/web's tests stay jsdom-free.
+ */
+export function attributeCopyText(key: string, value: unknown): string {
+  return `${key}: ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`
 }
 
 const NAMESPACE_LABELS: Record<string, string> = {
@@ -37,13 +56,18 @@ interface AttributeGroup {
   entries: [string, unknown][]
 }
 
-export function SpanTagsTab({ span }: SpanTagsTabProps) {
+export function SpanTagsTab({ span, redact }: SpanTagsTabProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const { copiedKey, copy } = useCopyToClipboard()
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
 
   const attributes = span.attributes || {}
-  const entries = useMemo(() => Object.entries(attributes), [attributes])
+  // Redacted ONCE here — every render below and the copy button both read
+  // from this, so they cannot disagree about what is safe to show.
+  const entries = useMemo(
+    () => redactAttributeEntries(attributes, redact),
+    [attributes, redact],
+  )
 
   const filteredEntries = useMemo(() => {
     return entries.filter(([key, value]) => {
@@ -88,8 +112,7 @@ export function SpanTagsTab({ span }: SpanTagsTabProps) {
   }, [filteredEntries])
 
   const copyToClipboard = (key: string, value: unknown) => {
-    const text = `${key}: ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`
-    copy(key, text)
+    copy(key, attributeCopyText(key, value))
   }
 
   const toggleGroup = (namespace: string) => {

@@ -88,6 +88,26 @@ export interface FunctionTriggerRenderer {
   tryRenderPreview?(message: FunctionTriggerMessage): React.ReactNode | null
   FunctionIdLabel?: React.ComponentType<{ functionId: string }>
   primaryTabLabel?: string
+  /**
+   * Redact the raw request/response before the console DISPLAYS OR COPIES
+   * it. The card's `raw json` tab renders `message.input` / `message.output`
+   * verbatim and its copy button puts the same value on the clipboard, so a
+   * card that hides a secret in its own rendering has not contained it —
+   * declare the secret here and the host applies it at both exits.
+   *
+   * Consulted only for messages this renderer's `isMatch` claims (the first
+   * claiming renderer that declares it wins), once for the request and once
+   * for the response.
+   *
+   * Receives an arbitrary JSON-ish value (object, array, string, number,
+   * boolean, `null`, or `undefined` — whatever rode on the wire) and returns
+   * the redacted copy. Must be PURE and TOTAL: never mutate the input, never
+   * do I/O, never throw for any shape (cycles included). It runs inside the
+   * host card's render; a throw is fenced and fails CLOSED — the pane shows
+   * a "redaction failed" placeholder rather than the raw value, so a bug
+   * here costs you the view, never the secret.
+   */
+  redactRaw?(value: unknown): unknown
 }
 
 export type JsonValue =
