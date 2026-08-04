@@ -314,6 +314,9 @@ jobs:
     name: Validate candidate in Harness quickstart
     needs: [setup, candidate-smoke]
     if: ${{ !failure() && !cancelled() && needs.setup.outputs.staged == 'true' && needs.setup.outputs.harness_smoke == 'true' }}
+    permissions:
+      actions: write
+      contents: read
     uses: ./.github/workflows/harness-quickstart.yml
     with:
       cli_channel: latest

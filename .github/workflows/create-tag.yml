@@ -73,6 +73,14 @@ on:
           - major
           - none
         default: patch
+      registry_tag:
+        description: 'Registry channel (next = validate then promote manually; latest = publish directly)'
+        required: true
+        type: choice
+        options:
+          - next
+          - latest
+        default: next
       experimental:
         description: 'Mark the worker experimental in the registry (badge only — it still installs and resolves normally). Leave unchecked once it is stable: releasing without this clears the badge.'
         required: false
@@ -213,7 +221,7 @@ jobs:
       - name: Create and push annotated tag
         env:
           TAG: ${{ steps.versions.outputs.tag }}
-          REGISTRY_TAG: next
+          REGISTRY_TAG: ${{ inputs.registry_tag }}
           WORKER: ${{ inputs.worker }}
           NEW_VERSION: ${{ steps.versions.outputs.version }}
           EXPERIMENTAL: ${{ inputs.experimental }}
