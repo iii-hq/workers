@@ -19,6 +19,7 @@ path = "src/lib.rs"
 
 [dependencies]
 iii-sdk = "=0.21.6"
+iii-console-ui = { path = "../crates/console-ui" }
 # Re-exports the same `opentelemetry` the SDK uses, so we can carry the active
 # OTel context across `tokio::spawn` boundaries (shared `Context` global).
 # 0.21.5 adds the live span-start push, so `router::chat` renders in the

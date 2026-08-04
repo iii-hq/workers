@@ -28,7 +28,9 @@ export function WorkerConfigurationDialog({
       <DialogContent
         className={cn(
           'configuration-surface workers-tab flex h-[min(90vh,900px)] max-h-[90vh]',
-          'w-[min(calc(100vw-2rem),1180px)] max-w-none flex-col overflow-hidden p-0 font-sans',
+          // Sized to the editor's max-w-3xl content column (+ padding) —
+          // wider just manufactures dead margins around the form.
+          'w-[min(calc(100vw-2rem),880px)] max-w-none flex-col overflow-hidden p-0 font-sans',
         )}
       >
         <DialogTitle className="sr-only">worker configuration</DialogTitle>
