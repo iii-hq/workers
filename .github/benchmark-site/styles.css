@@ -1270,6 +1270,18 @@ footer {
   vector-effect: non-scaling-stroke;
 }
 
+.efficiency-sparkline-baseline {
+  stroke: var(--text-muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.6;
+  vector-effect: non-scaling-stroke;
+}
+
+.efficiency-sparkline-hit {
+  fill: transparent;
+}
+
 .efficiency-guardrail {
   display: flex;
   flex-wrap: wrap;

@@ -272,26 +272,34 @@
     }
     const absolute = Math.abs(value);
     if (absolute < 0.05) {
-      return { label: "No change in comparable cohort", css: "neutral" };
+      return { label: "No change vs baseline median", css: "neutral" };
     }
     return {
-      label: `${value < 0 ? "↓" : "↑"} ${compactNumber(absolute, 1)}% comparable cohort`,
+      label: `${value < 0 ? "↓" : "↑"} ${compactNumber(absolute, 1)}% vs baseline median`,
       css: value < 0 ? "improved" : "regressed",
     };
   }
 
-  function renderEfficiencySparkline(element, metricId, color, cohortRows) {
-    const values = executionApi
-      .cohortMetricSparkline(history.executions, cohortRows, metricId, 14)
-      .map((point) => point.value);
-    if (!values.length) {
+  function renderEfficiencySparkline(element, metricId, color, cohortRows, baseline) {
+    const points = executionApi.cohortMetricSparkline(
+      history.executions,
+      cohortRows,
+      metricId,
+      14,
+    );
+    if (!points.length) {
       element.replaceChildren();
       return;
     }
+    const definition = scenarioMetricDefinitions[metricId];
+    const values = points.map((point) => point.value);
+    const baselineValue = typeof baseline === "number" ? baseline : null;
+    const scaleValues =
+      baselineValue === null ? values : [...values, baselineValue];
     const width = 180;
     const height = 42;
-    const minimum = Math.min(...values);
-    const maximum = Math.max(...values);
+    const minimum = Math.min(...scaleValues);
+    const maximum = Math.max(...scaleValues);
     const range = maximum - minimum || 1;
     const x = (index) =>
       values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
@@ -299,7 +307,7 @@
     const svg = svgElement("svg", {
       viewBox: `0 0 ${width} ${height}`,
       role: "img",
-      "aria-label": `${scenarioMetricDefinitions[metricId].label} comparable cohort trend`,
+      "aria-label": `${definition.label} comparable cohort trend`,
     });
     const areaPoints = [
       `0,${height}`,
@@ -312,6 +320,19 @@
         fill: color,
         class: "efficiency-sparkline-area",
       }),
+    );
+    if (baselineValue !== null) {
+      svg.append(
+        svgElement("line", {
+          x1: 0,
+          x2: width,
+          y1: y(baselineValue),
+          y2: y(baselineValue),
+          class: "efficiency-sparkline-baseline",
+        }),
+      );
+    }
+    svg.append(
       svgElement("polyline", {
         points: values
           .map((value, index) => `${x(index)},${y(value)}`)
@@ -326,6 +347,20 @@
         fill: color,
       }),
     );
+    const slot = width / points.length;
+    points.forEach((point, index) => {
+      const hit = svgElement("rect", {
+        x: index * slot,
+        y: 0,
+        width: slot,
+        height,
+        class: "efficiency-sparkline-hit",
+      });
+      const title = svgElement("title", {});
+      title.textContent = `Run ${point.executionId}: ${definition.format(point.value)}`;
+      hit.append(title);
+      svg.append(hit);
+    });
     element.replaceChildren(svg);
   }
 
@@ -426,7 +461,11 @@
     );
     cards.forEach((card) => {
       const metric = overview.metrics[card.metricId];
-      card.value.textContent = card.format(metric?.operational);
+      // Value, delta, and sparkline must all read the same population; fall
+      // back to the full-suite total only while no cohort exists yet.
+      card.value.textContent = card.format(
+        cohortRows.length ? metric?.comparableCurrent : metric?.operational,
+      );
       const meta = deltaMeta(metric?.delta);
       card.delta.textContent = meta.label;
       card.delta.className = `efficiency-delta delta-${meta.css}`;
@@ -435,6 +474,7 @@
         card.metricId,
         card.color,
         cohortRows,
+        cohortRows.length ? metric?.comparableBaseline : null,
       );
     });
 
