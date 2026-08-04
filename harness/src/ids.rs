@@ -40,15 +40,8 @@ pub fn idem_user_entry_id(key: &str) -> String {
     format!("e_idem_{}", sanitize(key))
 }
 
-/// The opening task entry of a react-fired spawn (`e_react_<uuid>`). The
-/// prefix lets transcript reads mark the row as a trigger reaction even
-/// though `session::messages` does not return `origin` (the notify pattern).
-pub fn react_entry_id() -> String {
-    format!("e_react_{}", short_uuid())
-}
-
 /// The opening task entry of a direct (agent-called) spawn (`e_spawn_<uuid>`).
-/// Same pattern as `e_react_`: the prefix survives transcript reads so the
+/// Same pattern as `e_spawned_`: the prefix survives transcript reads so the
 /// console renders the task as machine-sent, not something the human typed.
 pub fn spawn_entry_id() -> String {
     format!("e_spawn_{}", short_uuid())

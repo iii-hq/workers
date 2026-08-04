@@ -18,7 +18,9 @@ use crate::turn_loop;
 use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
 use crate::types::model::ThinkingLevel;
 use crate::types::output::OutputContract;
-use crate::types::turn::{FunctionPolicy, IdemRecord, TurnOptions, TurnRecord, TurnStatus};
+use crate::types::turn::{
+    FunctionPolicy, IdemRecord, ParentLink, TurnOptions, TurnRecord, TurnStatus,
+};
 
 /// `message` is either a plain string (sugar for a user text message) or a
 /// full `AgentMessage`.
@@ -27,6 +29,12 @@ use crate::types::turn::{FunctionPolicy, IdemRecord, TurnOptions, TurnRecord, Tu
 pub enum MessageInput {
     Text(String),
     Message(Box<AgentMessage>),
+}
+
+impl From<String> for MessageInput {
+    fn from(text: String) -> Self {
+        MessageInput::Text(text)
+    }
 }
 
 /// Per-send options frozen onto the turn record (harness.md § `harness::send`).
@@ -73,6 +81,10 @@ pub struct SendOptions {
     /// Tracing passthrough.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// Per-turn override of the configured validation-retry budget (also the
+    /// bound on `harness::hook::post-turn` deny re-prompts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_validation_retries: Option<u32>,
 }
 
 /// Session create/ensure options applied when this send creates the session.
@@ -188,11 +200,16 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
 
     // Freeze the per-send options before moving the message out of `req`.
     // The provider identity prompt is fetched once here and frozen with them.
-    let identity = deps
-        .router()
-        .await
-        .system_prompt_get(provider.as_deref())
-        .await;
+    // `provider_identity_prompt: false` skips the fetch entirely — `None` is
+    // what makes `resolve_system_prompt` fall back to the embedded default.
+    let identity = if cfg.provider_identity_prompt {
+        deps.router()
+            .await
+            .system_prompt_get(provider.as_deref())
+            .await
+    } else {
+        None
+    };
     let mut options = build_options(&cfg, &req, model, provider, identity.as_deref());
     inherit_prior_functions(
         &cfg,
@@ -244,29 +261,19 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
     // Queue path: a `Running` step may be streaming — park the message as a
     // durable queue row the loop drains after the stream ends, instead of
     // appending mid-transcript.
-    let (outcome, entry) = match try_enqueue(
+    let (outcome, entry) = deliver(
         deps,
         &cfg,
         &session_id,
-        &message,
-        entry_id.as_deref(),
-        None,
-        &options,
+        options,
+        Delivery {
+            message: &message,
+            entry_id: entry_id.as_deref(),
+            origin: None,
+            lineage: &TurnLineage::default(),
+        },
     )
-    .await?
-    {
-        Some((outcome, row_entry)) => (outcome, row_entry),
-        None => {
-            // Append path (no turn / terminal / parked): persist the message,
-            // then CAS-seed the turn (or take the merge path).
-            let appended_entry = session
-                .append(&session_id, &message, entry_id.as_deref(), None, None)
-                .await?;
-            let preview = message_preview(&message);
-            let outcome = seed_or_merge(deps, &cfg, &session_id, options, preview).await?;
-            (outcome, appended_entry)
-        }
-    };
+    .await?;
 
     // Record the idempotency mapping (TTL-bound by contract).
     if let Some(key) = &req.idempotency_key {
@@ -300,7 +307,6 @@ pub async fn inject(
     origin: Option<&Value>,
 ) -> Result<StartOutcome, HarnessError> {
     let cfg = deps.cfg().await;
-    let session = deps.session().await;
 
     let options = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
         .await?
@@ -312,16 +318,20 @@ pub async fn inject(
             ))
         })?;
 
-    if let Some((outcome, _)) =
-        try_enqueue(deps, &cfg, session_id, &message, entry_id, origin, &options).await?
-    {
-        return Ok(outcome);
-    }
-    let preview = message_preview(&message);
-    session
-        .append(session_id, &message, entry_id, None, origin)
-        .await?;
-    seed_or_merge(deps, &cfg, session_id, options, preview).await
+    deliver(
+        deps,
+        &cfg,
+        session_id,
+        options,
+        Delivery {
+            message: &message,
+            entry_id,
+            origin,
+            lineage: &TurnLineage::default(),
+        },
+    )
+    .await
+    .map(|(outcome, _)| outcome)
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -410,10 +420,8 @@ async fn try_enqueue(
     deps: &Deps,
     cfg: &WorkerConfig,
     session_id: &str,
-    message: &AgentMessage,
-    entry_id: Option<&str>,
-    origin: Option<&Value>,
     options: &TurnOptions,
+    d: &Delivery<'_>,
 ) -> Result<Option<(StartOutcome, String)>, HarnessError> {
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     let prior_generation = existing.as_ref().and_then(|r| r.functions_generation);
@@ -423,15 +431,16 @@ async fn try_enqueue(
     }
 
     let id = ids::new_queued_id();
-    let entry_id = entry_id
+    let entry_id = d
+        .entry_id
         .map(str::to_string)
         .unwrap_or_else(|| ids::queued_entry_id(&id));
     let row = crate::state::QueuedMessage {
         id,
         session_id: session_id.to_string(),
-        message: message.clone(),
+        message: d.message.clone(),
         entry_id: entry_id.clone(),
-        origin: origin.cloned(),
+        origin: d.origin.cloned(),
         queued_at: AgentMessage::now_ms(),
     };
     crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms).await?;
@@ -463,7 +472,8 @@ async fn try_enqueue(
                 session_id,
                 options.clone(),
                 prior_generation,
-                message_preview(message),
+                message_preview(d.message),
+                d.lineage,
             )
             .await?;
             seeded.queued = true;
@@ -471,6 +481,54 @@ async fn try_enqueue(
         }
     };
     Ok(Some((outcome, entry_id)))
+}
+
+/// The lineage a seeded turn carries: empty for a top-level send or a
+/// notification wake, populated for a spawned child. It exists so ONE seeding
+/// path can serve every entry point — before this, the child path hand-rolled
+/// its own `TurnRecord` and `put_turn`, which skipped the CAS/merge check and
+/// clobbered a running turn whenever a spawn reused a live session id.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TurnLineage {
+    pub depth: u32,
+    pub parent: Option<ParentLink>,
+    pub display_parent_session_id: Option<String>,
+}
+
+/// One message on its way into a session: what to append, how to mark it, and
+/// the lineage the seeded turn inherits. Bundled so every seeding path takes
+/// the same shape.
+pub(crate) struct Delivery<'a> {
+    pub message: &'a AgentMessage,
+    pub entry_id: Option<&'a str>,
+    pub origin: Option<&'a Value>,
+    pub lineage: &'a TurnLineage,
+}
+
+/// The shared delivery tail of every turn-seeding path: park the message when a
+/// step is streaming, else append it and CAS-seed the turn (or merge into the
+/// running one). `start`, `inject` and the sub-agent spawn all end here, so
+/// mid-stream parking, the merge double-check and the record shape are
+/// identical for a user message, a notification wake and a child's opening
+/// task. Returns the outcome and the transcript entry id the message landed on.
+pub(crate) async fn deliver(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    session_id: &str,
+    options: TurnOptions,
+    d: Delivery<'_>,
+) -> Result<(StartOutcome, String), HarnessError> {
+    if let Some((outcome, row_entry)) = try_enqueue(deps, cfg, session_id, &options, &d).await? {
+        return Ok((outcome, row_entry));
+    }
+    let appended = deps
+        .session()
+        .await
+        .append(session_id, d.message, d.entry_id, None, d.origin)
+        .await?;
+    let preview = message_preview(d.message);
+    let outcome = seed_or_merge(deps, cfg, session_id, options, preview, d.lineage).await?;
+    Ok((outcome, appended))
 }
 
 pub(crate) fn normalize_message(input: MessageInput) -> Result<AgentMessage, HarnessError> {
@@ -533,7 +591,9 @@ fn build_options(
         output: opts.output.unwrap_or_default(),
         functions,
         metadata: opts.metadata,
-        max_validation_retries: cfg.max_validation_retries,
+        max_validation_retries: opts
+            .max_validation_retries
+            .unwrap_or(cfg.max_validation_retries),
         max_transient_resumes: cfg.max_transient_resumes,
     }
 }
@@ -596,6 +656,7 @@ async fn seed_or_merge(
     session_id: &str,
     mut options: TurnOptions,
     message_preview: Option<String>,
+    lineage: &TurnLineage,
 ) -> Result<StartOutcome, HarnessError> {
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     // Carry the session's last-acknowledged registry generation onto a new turn
@@ -635,6 +696,7 @@ async fn seed_or_merge(
                         options,
                         prior_generation,
                         message_preview,
+                        lineage,
                     )
                     .await
                 }
@@ -648,6 +710,7 @@ async fn seed_or_merge(
                 options,
                 prior_generation,
                 message_preview,
+                lineage,
             )
             .await
         }
@@ -665,6 +728,7 @@ pub(crate) async fn seed_new(
     options: TurnOptions,
     functions_generation: Option<u64>,
     message_preview: Option<String>,
+    lineage: &TurnLineage,
 ) -> Result<StartOutcome, HarnessError> {
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
@@ -674,18 +738,15 @@ pub(crate) async fn seed_new(
         status: TurnStatus::Running,
         step: 0,
         turn_count: 0,
-        depth: 0,
+        depth: lineage.depth,
         message_preview,
         abort: false,
         watermark_entry_id: None,
         stream_request_id: None,
         options,
         calls: Default::default(),
-        parent: None,
-        display_parent_session_id: None,
-        spawned_by_subscription_id: None,
-        reactive_depth: None,
-        reactive_owner_session_id: None,
+        parent: lineage.parent.clone(),
+        display_parent_session_id: lineage.display_parent_session_id.clone(),
         functions_generation,
         context_snapshot: None,
         result: None,
@@ -702,7 +763,7 @@ pub(crate) async fn seed_new(
         &turn_id,
         0,
         record.message_preview.as_deref(),
-        0,
+        lineage.depth,
     )
     .await?;
     Ok(StartOutcome {
@@ -835,7 +896,7 @@ mod tests {
         let opts = build_options(&cfg, &req, "m".into(), req.provider.clone(), None);
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("operating in agent mode"));
-        assert!(prompt.contains("# The steps for every action"));
+        assert!(prompt.contains("# System rules"));
     }
 
     #[test]

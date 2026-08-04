@@ -14,7 +14,7 @@ with a `durable:subscriber` trigger, publish with `iii::durable::publish`, and
 the worker persists messages, retries failed deliveries, moves exhausted jobs to
 DLQ, and exposes redrive/discard inspection functions.
 
-Install it with `iii worker add queue`. The built-in `iii-queue` worker must be
+Install it with `iii worker add queue`. The legacy built-in queue service must be
 removed from the engine config before this worker starts because both would own
 the same `durable:subscriber` trigger type.
 

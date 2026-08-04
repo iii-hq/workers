@@ -27,6 +27,32 @@ pub fn session_key(root: &str) -> String {
     format!("session:{root}")
 }
 
+/// Key holding the recent-changes log.
+///
+/// The log lives here rather than in a page for the same reason the workspace
+/// does: a record kept in a browser tab is a record only that tab can see. A
+/// page that was not open while an agent worked had no way to learn what it
+/// did, and a reload threw away what it had seen — so the one question the
+/// feed exists to answer went unanswered exactly when it mattered.
+pub const CHANGES_KEY: &str = "changes";
+
+/// How many changes are kept. The log is a recent-activity feed, not history:
+/// the durable record of a change is the file and its git history.
+pub const MAX_CHANGES: usize = 100;
+
+/// Fold a change into the log: newest first, one entry per path, bounded.
+///
+/// Collapsing per path is what keeps a save loop from burying every other
+/// change. Pure so the rule is testable without a bus.
+pub fn record_change<T: Clone>(log: &[T], entry: T, path_of: impl Fn(&T) -> String) -> Vec<T> {
+    let path = path_of(&entry);
+    let mut next = Vec::with_capacity(log.len() + 1);
+    next.push(entry);
+    next.extend(log.iter().filter(|e| path_of(e) != path).cloned());
+    next.truncate(MAX_CHANGES);
+    next
+}
+
 /// Normalize a workspace root to an absolute path with no trailing slash.
 ///
 /// Every filesystem call the workspace makes goes through the shell worker,

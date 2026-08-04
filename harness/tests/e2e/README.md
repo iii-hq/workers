@@ -62,6 +62,16 @@ scenario through one global `allow: ["*"]` policy:
 - `security_triage`: classifies four snippets where two are subtly exploitable
   and two only look vulnerable; a judge scores true positives, false-positive
   control, remediation, and clarity.
+- `research_pipeline`: arms article and fan-in wakes before fetching a
+  Wikipedia page, directly spawns two least-privilege analysts, and returns
+  their barrier-gated research brief in the coordinator session.
+- `mechanical_reaction`: mirrors a state event through a zero-token call
+  binding, then wakes the original session from the mirrored state write.
+- `timer_wake`: parks the original session on a relative timer, verifies the
+  fired wake turn, and checks automatic binding retirement.
+- `receiving_operation`: runs three least-privilege database couriers, keeps a
+  live ledger without model turns, and verifies a single database completion
+  wake with no polling or surviving trigger machinery.
 
 List the code-defined ids used by CI:
 
@@ -211,16 +221,25 @@ zero.
 | Pull-request CI | Relevant pull-request changes | 0 | Deterministic integration only |
 | Harness E2E Main | Relevant push to `main` | 1 per subject/scenario | Score advisory; technical failures blocking |
 | Harness E2E Daily | Daily at 06:00 UTC, or manual dispatch on `main` | 3 per subject/scenario | Median score and reliability gates are evaluated; history is published on failure |
+| Harness E2E deployed | Successful post-release smoke for Harness or a mandatory dependency | 1 per subject/scenario | Exact registry artifact, hard gates, and technical failures blocking |
 
-The reusable workflow normally runs from `main`; a manual daily benchmark may
-instead pin an exact source commit. It installs the latest published stable
-`iii` release with its `iii-init` and `iii-worker` companions, then builds the
-SQLite-backed database worker and only the provider workers required by the
-subject matrix and fixed judge from the selected source. Scenario ids come
-directly from `harness-e2e list`. Each subject/scenario pair receives a fresh
-stack, and repetitions run sequentially inside that job with unique table,
+The reusable workflow supports source and registry stack modes. Source runs
+install the latest stable `iii` release with its companion binaries, then build
+the runtime workers from the selected commit. Registry runs build only the E2E
+runner and install every runtime worker through `iii worker add`. Scenario ids
+come directly from `harness-e2e list`. Each subject/scenario pair receives a
+fresh stack, and repetitions run sequentially inside that job with unique table,
 session, and state namespaces. At most two matrix jobs make live-model calls
 concurrently.
+
+The deployed lane is a separate workflow run dispatched by the release smoke
+workflow. The release publishes first, the smoke validates the published
+installation and exact released version, and only a successful smoke dispatches
+the deployed E2E workflow. The release workflow does not wait for either child
+run. Deployed E2E jobs install `harness`, its mandatory dependencies, the
+scenario database worker, and the configured providers through `iii worker add`;
+they do not build runtime workers from the checkout. The expected release
+worker and version are checked against `iii.lock` before any model call.
 
 The scheduled benchmark runs even when `main` has not changed. This preserves
 one comparable observation per day and exposes model or infrastructure drift.
@@ -309,13 +328,15 @@ latest 100 comparable points and summaries, plus complete reports for the latest
 historical deltas are a team-facing signal and do not add a second implicit
 threshold.
 
-The launcher performs a clean first boot with isolated configuration, session,
-queue, state, and log directories. It starts the provider workers named by the
-subject and judge configuration. It executes repository binaries directly. The
-`shell_coder_sandbox` scenario tests engine-side registry installation through
-`worker::add`; the `iii worker add` CLI path remains covered by the nightly/manual
-[Harness quickstart validator](../quickstart/README.md), which runs without
-provider credentials or model calls.
+The source launcher performs a clean first boot with isolated configuration,
+session, queue, state, and log directories. It starts the provider workers
+named by the subject and judge configuration and executes repository binaries
+directly. The deployed launcher uses the same isolated layout but installs the
+runtime workers from the selected registry channel and records the resolved
+`iii.lock`, worker list, and bootstrap logs. The `shell_coder_sandbox` scenario
+tests engine-side registry installation through `worker::add`; the
+`iii worker add` CLI path remains covered by the nightly/manual [Harness
+quickstart validator](../quickstart/README.md).
 
 ## Adding a scenario
 

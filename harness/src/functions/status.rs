@@ -45,6 +45,12 @@ pub struct StatusReport {
     /// still running.
     #[serde(default)]
     pub expects_wake: bool,
+    /// WHAT the session is parked on, when `expects_wake`: each armed wake's
+    /// watch and deadline, so "parked 12m on state operation_meta/status —
+    /// never written" is readable from the outside instead of the session
+    /// just looking quietly done.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub armed_wakes: Vec<crate::bindings::ArmedWake>,
     /// Messages queued while a step streams, in arrival order; they land in
     /// the transcript when the stream ends.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -74,6 +80,9 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
             turn_id: c.turn_id,
         })
         .collect();
+    // One store read answers both: the flag (fail-closed on an unreadable
+    // store, same as `session_expects_wake`) and the detail rows behind it.
+    let armed = crate::bindings::armed_wakes(deps, &req.session_id).await;
     Ok(Some(StatusReport {
         session_id: record.session_id.clone(),
         turn_id: Some(record.turn_id.clone()),
@@ -92,6 +101,7 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
         queued,
         result: record.result.clone(),
         result_error: record.result_error.clone(),
-        expects_wake: deps.subscriptions.session_expects_wake(&req.session_id),
+        expects_wake: armed.as_ref().is_none_or(|wakes| !wakes.is_empty()),
+        armed_wakes: armed.unwrap_or_default(),
     }))
 }

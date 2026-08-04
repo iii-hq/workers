@@ -11,10 +11,10 @@
 //! Fan-out model (matches the engine exactly — see
 //! `engine/src/workers/queue/adapters/builtin/adapter.rs:196-337`):
 //! - Each `(topic, id)` subscription gets its own internal queue named
-//!   `format!("{topic}::{function_id}")` (`adapter.rs:206,229`); `topic_functions`
-//!   tracks which function ids are currently subscribed to a topic.
+//!   `format!("{topic}::{id}")`; `topic_subscriptions` tracks which
+//!   subscription ids are currently attached to a topic.
 //! - `enqueue` pushes a **separate copy** of the message onto every
-//!   subscribed function's internal queue when the topic has subscribers
+//!   subscription's internal queue when the topic has subscribers
 //!   (`adapter.rs:203-215`, broadcast — N subscribers each receive every
 //!   message, they do not compete for one shared queue); with no
 //!   subscribers it enqueues straight onto the bare topic name
@@ -28,7 +28,7 @@
 //!   functions and operators keep passing the bare topic name for these
 //!   ops regardless of how many subscribers exist.
 //! - `list_topics` mirrors `adapter.rs:558-584`: topics are enumerated
-//!   from the subscription registry (`topic_functions`), not by scanning
+//!   from the subscription registry (`topic_subscriptions`), not by scanning
 //!   every key the store happens to hold — a topic that only ever had a
 //!   bare, subscriber-less `enqueue` does not appear (same as the engine).
 //!
@@ -64,8 +64,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
-use tokio::task::JoinHandle;
+use tokio::sync::oneshot::error::TryRecvError;
+use tokio::sync::{mpsc, oneshot, Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::task::{JoinHandle, JoinSet};
 
 use crate::adapter::{FunctionQueueConfig, QueueAdapter, QueueMessage, TopicInfo};
 use crate::store::{Job, QueueStore, TopicStats};
@@ -91,25 +92,23 @@ enum Mode {
 /// shared (read-only) across a subscription's polling task(s).
 struct PollerConfig {
     /// The internal queue this subscription's poller reads from —
-    /// `format!("{topic}::{function_id}")`, not the bare topic name (see
+    /// `format!("{topic}::{id}")`, not the bare topic name (see
     /// the module doc's fan-out model).
     queue_name: String,
     function_id: String,
+    /// The trigger's stored metadata, delivered with every message (the
+    /// harness's `__binding` pointer — see `trigger.rs::RegisteredSubscriber`).
+    metadata: Option<Value>,
     condition_function_id: Option<String>,
     max_retries: u32,
     backoff_ms: u64,
     poll_interval_ms: u64,
 }
 
-/// A tracked `(topic, id)` subscription: its polling task plus the
-/// function id it targets, so `unsubscribe` can decide whether any other
-/// subscription still needs that function's entry in `topic_functions`
-/// (mirrors the engine's `trigger_function_map`, `adapter.rs:50,273-308` —
-/// folded into `subscriptions` here since the two maps always share the
-/// same `(topic, id)` key set).
+/// A tracked `(topic, id)` subscription and its polling task.
 struct Subscription {
+    cancel: oneshot::Sender<()>,
     task: JoinHandle<()>,
-    function_id: String,
 }
 
 /// Builtin transport adapter: subscriptions are backed by pure in-process
@@ -118,12 +117,10 @@ pub struct BuiltinAdapter {
     store: Arc<dyn QueueStore>,
     invoker: Arc<dyn Invoker>,
     subscriptions: Mutex<HashMap<(String, String), Subscription>>,
-    /// topic -> set of function ids currently subscribed to it. Resolves a
+    /// topic -> set of subscription ids currently attached to it. Resolves a
     /// bare topic name to its subscribers' internal queue names
-    /// (`format!("{topic}::{function_id}")`) for fan-out enqueue and all
-    /// DLQ/stat ops — mirrors the engine's `topic_functions`
-    /// (`adapter.rs:49`).
-    topic_functions: Mutex<HashMap<String, HashSet<String>>>,
+    /// (`format!("{topic}::{id}")`) for fan-out enqueue and all DLQ/stat ops.
+    topic_subscriptions: Mutex<HashMap<String, HashSet<String>>>,
     poll_interval_ms: u64,
     function_queue_configs: RwLock<HashMap<String, FunctionQueueConfig>>,
     function_deliveries: Arc<Mutex<HashMap<u64, Arc<FunctionDelivery>>>>,
@@ -162,11 +159,10 @@ struct FunctionQueueEnvelope {
     priority: Option<u8>,
 }
 
-/// `format!("{topic}::{function_id}")` — the internal queue name a
-/// subscription's messages, acks/nacks, and DLQ entries live under.
-/// Mirrors the engine's internal-queue naming (`adapter.rs:206,229`).
-fn internal_queue_name(topic: &str, function_id: &str) -> String {
-    format!("{topic}::{function_id}")
+/// The internal queue name a subscription's messages, acks/nacks, and DLQ
+/// entries live under.
+fn internal_queue_name(topic: &str, subscription_id: &str) -> String {
+    format!("{topic}::{subscription_id}")
 }
 
 impl BuiltinAdapter {
@@ -186,7 +182,7 @@ impl BuiltinAdapter {
             store,
             invoker,
             subscriptions: Mutex::new(HashMap::new()),
-            topic_functions: Mutex::new(HashMap::new()),
+            topic_subscriptions: Mutex::new(HashMap::new()),
             poll_interval_ms,
             function_queue_configs: RwLock::new(HashMap::new()),
             function_deliveries: Arc::new(Mutex::new(HashMap::new())),
@@ -213,11 +209,15 @@ impl QueueAdapter for BuiltinAdapter {
         // gets a separate copy pushed onto EACH subscriber's own internal
         // queue (broadcast); a topic with none enqueues straight onto the
         // bare topic name.
-        let function_ids = self.topic_functions.lock().await.get(topic).cloned();
-        match function_ids {
-            Some(function_ids) if !function_ids.is_empty() => {
-                for function_id in &function_ids {
-                    let queue_name = internal_queue_name(topic, function_id);
+        // Snapshot the routing set and release the adapter-wide lock BEFORE
+        // touching the store: a FileStore enqueue is blocking file I/O, and
+        // one slow disk write must delay this topic only, not every publish
+        // and un/subscribe on the worker.
+        let subscription_ids = self.topic_subscriptions.lock().await.get(topic).cloned();
+        match subscription_ids {
+            Some(subscription_ids) if !subscription_ids.is_empty() => {
+                for subscription_id in &subscription_ids {
+                    let queue_name = internal_queue_name(topic, subscription_id);
                     let _ = self.store.enqueue(&queue_name, data.clone()).await;
                 }
             }
@@ -232,6 +232,7 @@ impl QueueAdapter for BuiltinAdapter {
         topic: &str,
         id: &str,
         function_id: &str,
+        metadata: Option<Value>,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
@@ -261,38 +262,33 @@ impl QueueAdapter for BuiltinAdapter {
             _ => Mode::Concurrent,
         };
 
-        let queue_name = internal_queue_name(topic, function_id);
+        let queue_name = internal_queue_name(topic, id);
 
-        self.topic_functions
+        self.topic_subscriptions
             .lock()
             .await
             .entry(topic.to_string())
             .or_default()
-            .insert(function_id.to_string());
+            .insert(id.to_string());
 
         let cfg = PollerConfig {
             queue_name,
             function_id: function_id.to_string(),
+            metadata,
             condition_function_id,
             max_retries,
             backoff_ms,
             poll_interval_ms: self.poll_interval_ms,
         };
 
-        let task = spawn_poller(
+        let sub = spawn_poller(
             Arc::clone(&self.store),
             Arc::clone(&self.invoker),
             cfg,
             mode,
             concurrency,
         );
-        subs.insert(
-            key,
-            Subscription {
-                task,
-                function_id: function_id.to_string(),
-            },
-        );
+        subs.insert(key, sub);
 
         tracing::debug!(topic = %topic, id = %id, function_id = %function_id, ?mode, "Subscribed to queue via BuiltinAdapter");
     }
@@ -300,42 +296,44 @@ impl QueueAdapter for BuiltinAdapter {
     async fn unsubscribe(&self, topic: &str, id: &str) {
         let key = (topic.to_string(), id.to_string());
         let removed = self.subscriptions.lock().await.remove(&key);
-
         let Some(sub) = removed else {
             tracing::warn!(topic = %topic, id = %id, "No subscription found to unsubscribe");
             return;
         };
-        sub.task.abort();
-        tracing::debug!(topic = %topic, id = %id, "Unsubscribed from queue");
-
-        // Only drop `function_id` from `topic_functions[topic]` once no
-        // other subscription on this topic still targets it — mirrors the
-        // engine's ref-counted cleanup (`adapter.rs:291-307`).
-        let still_targeted = self
-            .subscriptions
-            .lock()
-            .await
-            .iter()
-            .any(|((t, _), s)| t == topic && s.function_id == sub.function_id);
-
-        if !still_targeted {
-            let mut tf = self.topic_functions.lock().await;
-            if let Some(function_ids) = tf.get_mut(topic) {
-                function_ids.remove(&sub.function_id);
-                if function_ids.is_empty() {
-                    tf.remove(topic);
+        {
+            let mut topic_subscriptions = self.topic_subscriptions.lock().await;
+            if let Some(subscription_ids) = topic_subscriptions.get_mut(topic) {
+                subscription_ids.remove(id);
+                if subscription_ids.is_empty() {
+                    topic_subscriptions.remove(topic);
                 }
             }
         }
+
+        // Stop consuming and DETACH the poller instead of awaiting it: the
+        // in-flight delivery still runs to completion and acks (dropping a
+        // JoinHandle detaches the task; aborting it would risk duplicate
+        // execution on redelivery), but callers — the trigger handler holds
+        // its registrations lock across this call — return after the map
+        // updates instead of blocking for up to one whole invocation. The
+        // store state stays untouched: the backlog, DLQ, and stats are the
+        // durable data a later same-id resubscribe reattaches to —
+        // unsubscribe fires on every routine subscriber disconnect, so
+        // destroying them here would wipe exactly what `durable:subscriber`
+        // exists to keep. A same-id resubscribe racing the detached drain is
+        // safe: two pollers on one store queue still deliver each job once.
+        let _ = sub.cancel.send(());
+        drop(sub.task);
+        tracing::debug!(topic = %topic, id = %id, "Unsubscribed from queue");
     }
 
     async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
-        let function_ids = self.topic_functions.lock().await.get(topic).cloned();
-        match function_ids {
-            Some(function_ids) if !function_ids.is_empty() => {
+        let subscription_ids = self.topic_subscriptions.lock().await.get(topic).cloned();
+        match subscription_ids {
+            Some(subscription_ids) if !subscription_ids.is_empty() => {
                 let mut total = 0u64;
-                for function_id in &function_ids {
-                    let queue_name = internal_queue_name(topic, function_id);
+                for subscription_id in &subscription_ids {
+                    let queue_name = internal_queue_name(topic, subscription_id);
                     total += self.store.redrive_dlq(&queue_name).await;
                 }
                 Ok(total)
@@ -345,11 +343,11 @@ impl QueueAdapter for BuiltinAdapter {
     }
 
     async fn redrive_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
-        let function_ids = self.topic_functions.lock().await.get(topic).cloned();
-        match function_ids {
-            Some(function_ids) if !function_ids.is_empty() => {
-                for function_id in &function_ids {
-                    let queue_name = internal_queue_name(topic, function_id);
+        let subscription_ids = self.topic_subscriptions.lock().await.get(topic).cloned();
+        match subscription_ids {
+            Some(subscription_ids) if !subscription_ids.is_empty() => {
+                for subscription_id in &subscription_ids {
+                    let queue_name = internal_queue_name(topic, subscription_id);
                     if self
                         .store
                         .redrive_dlq_message(&queue_name, message_id)
@@ -365,11 +363,11 @@ impl QueueAdapter for BuiltinAdapter {
     }
 
     async fn discard_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
-        let function_ids = self.topic_functions.lock().await.get(topic).cloned();
-        match function_ids {
-            Some(function_ids) if !function_ids.is_empty() => {
-                for function_id in &function_ids {
-                    let queue_name = internal_queue_name(topic, function_id);
+        let subscription_ids = self.topic_subscriptions.lock().await.get(topic).cloned();
+        match subscription_ids {
+            Some(subscription_ids) if !subscription_ids.is_empty() => {
+                for subscription_id in &subscription_ids {
+                    let queue_name = internal_queue_name(topic, subscription_id);
                     if self
                         .store
                         .discard_dlq_message(&queue_name, message_id)
@@ -385,12 +383,12 @@ impl QueueAdapter for BuiltinAdapter {
     }
 
     async fn dlq_count(&self, topic: &str) -> anyhow::Result<u64> {
-        let function_ids = self.topic_functions.lock().await.get(topic).cloned();
-        match function_ids {
-            Some(function_ids) if !function_ids.is_empty() => {
+        let subscription_ids = self.topic_subscriptions.lock().await.get(topic).cloned();
+        match subscription_ids {
+            Some(subscription_ids) if !subscription_ids.is_empty() => {
                 let mut total = 0u64;
-                for function_id in &function_ids {
-                    let queue_name = internal_queue_name(topic, function_id);
+                for subscription_id in &subscription_ids {
+                    let queue_name = internal_queue_name(topic, subscription_id);
                     total += self.store.topic_stats(&queue_name).await.dlq_depth;
                 }
                 Ok(total)
@@ -400,12 +398,12 @@ impl QueueAdapter for BuiltinAdapter {
     }
 
     async fn dlq_peek(&self, topic: &str, offset: u64, limit: u64) -> anyhow::Result<Vec<Value>> {
-        let function_ids = self.topic_functions.lock().await.get(topic).cloned();
-        let jobs: Vec<Job> = match function_ids {
-            Some(function_ids) if !function_ids.is_empty() => {
+        let subscription_ids = self.topic_subscriptions.lock().await.get(topic).cloned();
+        let jobs: Vec<Job> = match subscription_ids {
+            Some(subscription_ids) if !subscription_ids.is_empty() => {
                 let mut all = Vec::new();
-                for function_id in &function_ids {
-                    let queue_name = internal_queue_name(topic, function_id);
+                for subscription_id in &subscription_ids {
+                    let queue_name = internal_queue_name(topic, subscription_id);
                     all.extend(
                         self.store
                             .dlq_messages(&queue_name, offset.saturating_add(limit))
@@ -431,12 +429,12 @@ impl QueueAdapter for BuiltinAdapter {
     async fn list_topics(&self) -> anyhow::Result<Vec<TopicInfo>> {
         // Enumerated from the subscription registry, not by scanning every
         // key the store happens to hold — mirrors `adapter.rs:558-584`.
-        let topic_functions = self.topic_functions.lock().await.clone();
-        let mut infos = Vec::with_capacity(topic_functions.len());
-        for (topic, function_ids) in &topic_functions {
+        let topic_subscriptions = self.topic_subscriptions.lock().await.clone();
+        let mut infos = Vec::with_capacity(topic_subscriptions.len());
+        for (topic, subscription_ids) in &topic_subscriptions {
             let mut depth = 0u64;
-            for function_id in function_ids {
-                let queue_name = internal_queue_name(topic, function_id);
+            for subscription_id in subscription_ids {
+                let queue_name = internal_queue_name(topic, subscription_id);
                 depth += self.store.topic_stats(&queue_name).await.depth;
             }
             infos.push(TopicInfo {
@@ -468,12 +466,12 @@ impl QueueAdapter for BuiltinAdapter {
     }
 
     async fn topic_stats(&self, topic: &str) -> anyhow::Result<TopicStats> {
-        let function_ids = self.topic_functions.lock().await.get(topic).cloned();
-        match function_ids {
-            Some(function_ids) if !function_ids.is_empty() => {
+        let subscription_ids = self.topic_subscriptions.lock().await.get(topic).cloned();
+        match subscription_ids {
+            Some(subscription_ids) if !subscription_ids.is_empty() => {
                 let mut aggregate = TopicStats::default();
-                for function_id in &function_ids {
-                    let queue_name = internal_queue_name(topic, function_id);
+                for subscription_id in &subscription_ids {
+                    let queue_name = internal_queue_name(topic, subscription_id);
                     let stats = self.store.topic_stats(&queue_name).await;
                     aggregate.depth += stats.depth;
                     aggregate.dlq_depth += stats.dlq_depth;
@@ -487,9 +485,23 @@ impl QueueAdapter for BuiltinAdapter {
     }
 
     async fn shutdown(&self) {
+        // Shutdown is process exit: pollers are aborted, and any in-flight
+        // delivery is abandoned mid-invocation ON PURPOSE — its job is
+        // already recorded in-flight in the store, and recovery on the next
+        // open redelivers it (at-least-once). Draining here instead could
+        // hang exit behind one blocked invocation. Contrast `unsubscribe`,
+        // where the process keeps running and the drain preserves acks.
         let subs = self.subscriptions.lock().await.drain().collect::<Vec<_>>();
-        for (_, sub) in subs {
-            sub.task.abort();
+        let tasks = subs
+            .into_iter()
+            .map(|(_, sub)| {
+                let _ = sub.cancel.send(());
+                sub.task.abort();
+                sub.task
+            })
+            .collect::<Vec<_>>();
+        for task in tasks {
+            let _ = task.await;
         }
 
         let consumers = self
@@ -844,23 +856,43 @@ fn spawn_poller(
     cfg: PollerConfig,
     mode: Mode,
     concurrency: u32,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
+) -> Subscription {
+    let (cancel, cancelled) = oneshot::channel();
+    let task = tokio::spawn(async move {
         match mode {
-            Mode::Fifo => run_fifo(store, invoker, cfg).await,
-            Mode::Concurrent => run_concurrent(store, invoker, cfg, concurrency).await,
+            Mode::Fifo => run_fifo(store, invoker, cfg, cancelled).await,
+            Mode::Concurrent => run_concurrent(store, invoker, cfg, concurrency, cancelled).await,
         }
-    })
+    });
+    Subscription { cancel, task }
 }
 
 /// Strictly one in-flight invocation, processed in dequeue order. Mirrors
 /// the engine's `FifoWorker` (`concurrency <= 1` case) without the inline
 /// retry-in-place behavior — see the module doc's "Deliberate deviations".
-async fn run_fifo(store: Arc<dyn QueueStore>, invoker: Arc<dyn Invoker>, cfg: PollerConfig) {
+async fn run_fifo(
+    store: Arc<dyn QueueStore>,
+    invoker: Arc<dyn Invoker>,
+    cfg: PollerConfig,
+    mut cancelled: oneshot::Receiver<()>,
+) {
     loop {
+        // Cancellation is honored only between jobs: an in-flight invocation
+        // runs to completion and acks/nacks (killing it mid-call risks a
+        // duplicate execution on redelivery), and a dequeue is never dropped
+        // mid-await (it mutates store state across await points).
+        if !matches!(cancelled.try_recv(), Err(TryRecvError::Empty)) {
+            return;
+        }
         match store.dequeue(&cfg.queue_name).await {
             Some(job) => process_job(&store, &invoker, &cfg, job).await,
-            None => tokio::time::sleep(Duration::from_millis(cfg.poll_interval_ms)).await,
+            None => {
+                tokio::select! {
+                    biased;
+                    _ = &mut cancelled => return,
+                    _ = tokio::time::sleep(Duration::from_millis(cfg.poll_interval_ms)) => {}
+                }
+            }
         }
     }
 }
@@ -873,14 +905,24 @@ async fn run_concurrent(
     invoker: Arc<dyn Invoker>,
     cfg: PollerConfig,
     concurrency: u32,
+    mut cancelled: oneshot::Receiver<()>,
 ) {
     let semaphore = Arc::new(Semaphore::new(concurrency as usize));
     let cfg = Arc::new(cfg);
+    let mut tasks = JoinSet::new();
 
     loop {
-        let permit = match Arc::clone(&semaphore).acquire_owned().await {
-            Ok(permit) => permit,
-            Err(_) => return, // semaphore closed; subscription is being torn down
+        while tasks.try_join_next().is_some() {}
+        // The permit wait is the one cancellable await (`concurrency: 0`
+        // parks here forever); a dequeue is never dropped mid-await, and
+        // spawned invocations run to completion — see the drain below.
+        let permit = tokio::select! {
+            biased;
+            _ = &mut cancelled => break,
+            permit = Arc::clone(&semaphore).acquire_owned() => match permit {
+                Ok(permit) => permit,
+                Err(_) => break, // semaphore closed; subscription is being torn down
+            },
         };
 
         match store.dequeue(&cfg.queue_name).await {
@@ -888,17 +930,27 @@ async fn run_concurrent(
                 let store = Arc::clone(&store);
                 let invoker = Arc::clone(&invoker);
                 let cfg = Arc::clone(&cfg);
-                tokio::spawn(async move {
+                tasks.spawn(async move {
                     process_job(&store, &invoker, &cfg, job).await;
                     drop(permit);
                 });
             }
             None => {
                 drop(permit);
-                tokio::time::sleep(Duration::from_millis(cfg.poll_interval_ms)).await;
+                tokio::select! {
+                    biased;
+                    _ = &mut cancelled => break,
+                    _ = tokio::time::sleep(Duration::from_millis(cfg.poll_interval_ms)) => {}
+                }
             }
         }
     }
+
+    // Drain: every in-flight delivery finishes its invocation and acks or
+    // nacks. Aborting here would kill invocations whose side effects may
+    // already have applied, turning teardown into duplicate executions on
+    // redelivery.
+    while tasks.join_next().await.is_some() {}
 }
 
 async fn process_job(
@@ -910,6 +962,7 @@ async fn process_job(
     let result = invoke(
         invoker.as_ref(),
         &cfg.function_id,
+        cfg.metadata.clone(),
         cfg.condition_function_id.as_deref(),
         job.payload.clone(),
     )
@@ -933,6 +986,7 @@ async fn process_job(
 async fn invoke(
     invoker: &dyn Invoker,
     function_id: &str,
+    metadata: Option<Value>,
     condition_function_id: Option<&str>,
     payload: Value,
 ) -> Result<(), String> {
@@ -943,7 +997,10 @@ async fn invoke(
             Err(err) => return Err(err),
         }
     }
-    invoker.call(function_id, payload).await.map(|_| ())
+    invoker
+        .call_delivery(function_id, payload, metadata)
+        .await
+        .map(|_| ())
 }
 
 #[cfg(test)]
@@ -953,6 +1010,7 @@ mod tests {
     use serde_json::json;
     use std::future::Future;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tokio::sync::Notify;
     use tokio::time::{sleep, Instant};
 
     async fn wait_until<F, Fut>(mut pred: F)
@@ -1198,6 +1256,7 @@ mod tests {
     #[derive(Default)]
     struct FakeInvoker {
         calls: Mutex<Vec<(String, Value)>>,
+        delivery_metadata: Mutex<Vec<Option<Value>>>,
         fail_backend: AtomicBool,
         condition_value: Mutex<Option<Value>>,
     }
@@ -1205,6 +1264,10 @@ mod tests {
     impl FakeInvoker {
         async fn calls(&self) -> Vec<(String, Value)> {
             self.calls.lock().await.clone()
+        }
+
+        async fn delivery_metadata(&self) -> Vec<Option<Value>> {
+            self.delivery_metadata.lock().await.clone()
         }
     }
 
@@ -1223,6 +1286,97 @@ mod tests {
             } else {
                 Ok(Some(json!({"ok": true})))
             }
+        }
+
+        async fn call_delivery(
+            &self,
+            function_id: &str,
+            payload: Value,
+            metadata: Option<Value>,
+        ) -> Result<Option<Value>, String> {
+            self.delivery_metadata.lock().await.push(metadata);
+            self.call(function_id, payload).await
+        }
+    }
+
+    /// Signals when an invocation starts, then parks it until `release` —
+    /// for pinning what teardown does with an in-flight delivery.
+    #[derive(Default)]
+    struct GatedInvoker {
+        started: Notify,
+        release: Notify,
+        completed: Mutex<Vec<Value>>,
+    }
+
+    #[async_trait]
+    impl Invoker for GatedInvoker {
+        async fn call(&self, _function_id: &str, payload: Value) -> Result<Option<Value>, String> {
+            self.started.notify_one();
+            self.release.notified().await;
+            self.completed.lock().await.push(payload);
+            Ok(None)
+        }
+    }
+
+    #[derive(Default)]
+    struct GatedEnqueueStore {
+        inner: InMemoryStore,
+        entered: Notify,
+        release: Notify,
+    }
+
+    #[async_trait]
+    impl QueueStore for GatedEnqueueStore {
+        async fn enqueue(&self, topic: &str, payload: Value) -> anyhow::Result<String> {
+            if payload == json!("racing") {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            self.inner.enqueue(topic, payload).await
+        }
+
+        async fn dequeue(&self, topic: &str) -> Option<Job> {
+            self.inner.dequeue(topic).await
+        }
+
+        async fn ack(&self, topic: &str, job_id: &str) {
+            self.inner.ack(topic, job_id).await;
+        }
+
+        async fn nack(&self, topic: &str, job: Job, max_retries: u32, backoff_ms: u64) {
+            self.inner.nack(topic, job, max_retries, backoff_ms).await;
+        }
+
+        async fn requeue(&self, topic: &str, job: Job) -> anyhow::Result<()> {
+            self.inner.requeue(topic, job).await
+        }
+
+        async fn list_topics(&self) -> Vec<String> {
+            self.inner.list_topics().await
+        }
+
+        async fn topic_stats(&self, topic: &str) -> TopicStats {
+            self.inner.topic_stats(topic).await
+        }
+
+        async fn dlq_topics(&self) -> Vec<(String, u64)> {
+            self.inner.dlq_topics().await
+        }
+
+        async fn dlq_messages(&self, topic: &str, limit: u64) -> Vec<Job> {
+            self.inner.dlq_messages(topic, limit).await
+        }
+
+        async fn redrive_dlq(&self, topic: &str) -> u64 {
+            self.inner.redrive_dlq(topic).await
+        }
+
+        async fn redrive_dlq_message(&self, topic: &str, job_id: &str) -> bool {
+            self.inner.redrive_dlq_message(topic, job_id).await
+        }
+
+        async fn discard_dlq_message(&self, topic: &str, job_id: &str) -> bool {
+            self.inner.discard_dlq_message(topic, job_id).await
         }
     }
 
@@ -1295,7 +1449,7 @@ mod tests {
         let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 5);
 
         adapter
-            .subscribe("demo", "sub1", "backend", None, None)
+            .subscribe("demo", "sub1", "backend", None, None, None)
             .await;
         adapter
             .enqueue("demo", json!({"hello": "world"}), None, None)
@@ -1319,8 +1473,12 @@ mod tests {
         let invoker = Arc::new(FakeInvoker::default());
         let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 5);
 
-        adapter.subscribe("demo", "sub-a", "fn-a", None, None).await;
-        adapter.subscribe("demo", "sub-b", "fn-b", None, None).await;
+        adapter
+            .subscribe("demo", "sub-a", "fn-a", None, None, None)
+            .await;
+        adapter
+            .subscribe("demo", "sub-b", "fn-b", None, None, None)
+            .await;
 
         for i in 0..3 {
             adapter.enqueue("demo", json!(i), None, None).await;
@@ -1337,6 +1495,54 @@ mod tests {
         let fn_b_calls = calls.iter().filter(|(f, _)| f == "fn-b").count();
         assert_eq!(fn_a_calls, 3, "fn-a should receive every enqueued message");
         assert_eq!(fn_b_calls, 3, "fn-b should receive every enqueued message");
+        adapter.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn same_function_subscriptions_each_receive_their_metadata() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let invoker = Arc::new(FakeInvoker::default());
+        let adapter = BuiltinAdapter::with_poll_interval_ms(store, invoker.clone(), 5);
+
+        adapter
+            .subscribe(
+                "demo",
+                "sub-a",
+                "backend",
+                Some(json!({"binding": "a"})),
+                None,
+                None,
+            )
+            .await;
+        adapter
+            .subscribe(
+                "demo",
+                "sub-b",
+                "backend",
+                Some(json!({"binding": "b"})),
+                None,
+                None,
+            )
+            .await;
+        adapter
+            .enqueue("demo", json!({"event": 1}), None, None)
+            .await;
+
+        wait_until(|| {
+            let invoker = invoker.clone();
+            async move { invoker.calls().await.len() == 2 }
+        })
+        .await;
+
+        let calls = invoker.calls().await;
+        assert!(calls
+            .iter()
+            .all(|(function_id, payload)| function_id == "backend"
+                && payload == &json!({"event": 1})));
+        let metadata = invoker.delivery_metadata().await;
+        assert_eq!(metadata.len(), 2);
+        assert!(metadata.contains(&Some(json!({"binding": "a"}))));
+        assert!(metadata.contains(&Some(json!({"binding": "b"}))));
         adapter.shutdown().await;
     }
 
@@ -1375,6 +1581,7 @@ mod tests {
                 "sub1",
                 "backend",
                 None,
+                None,
                 config(SubscriberQueueConfig {
                     concurrency: Some(0),
                     ..Default::default()
@@ -1405,6 +1612,7 @@ mod tests {
                 "demo",
                 "sub1",
                 "backend",
+                None,
                 None,
                 config(SubscriberQueueConfig {
                     concurrency: Some(3),
@@ -1439,6 +1647,7 @@ mod tests {
                 "demo",
                 "sub1",
                 "backend",
+                None,
                 None,
                 config(SubscriberQueueConfig {
                     queue_mode: Some("fifo".to_string()),
@@ -1481,6 +1690,7 @@ mod tests {
                 "sub1",
                 "backend",
                 None,
+                None,
                 config(SubscriberQueueConfig {
                     max_retries: Some(2),
                     backoff_delay_ms: Some(1),
@@ -1517,10 +1727,10 @@ mod tests {
             })
         };
         adapter
-            .subscribe("demo", "sub-a", "fn-a", None, retry_cfg())
+            .subscribe("demo", "sub-a", "fn-a", None, None, retry_cfg())
             .await;
         adapter
-            .subscribe("demo", "sub-b", "fn-b", None, retry_cfg())
+            .subscribe("demo", "sub-b", "fn-b", None, None, retry_cfg())
             .await;
 
         adapter.enqueue("demo", json!("job"), None, None).await;
@@ -1544,20 +1754,166 @@ mod tests {
         adapter.shutdown().await;
     }
 
-    // (e) unsubscribe stops delivery.
+    // (e) unsubscribe stops delivery but keeps the durable backlog: the
+    // buffered messages survive for a later same-id resubscribe to drain.
     #[tokio::test]
-    async fn unsubscribe_stops_delivery() {
+    async fn unsubscribe_stops_delivery_and_keeps_backlog_for_rearm() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(FakeInvoker::default());
         let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 3);
 
         adapter
-            .subscribe("demo", "sub1", "backend", None, None)
+            .subscribe(
+                "demo",
+                "sub1",
+                "backend",
+                None,
+                None,
+                Some(SubscriberQueueConfig {
+                    concurrency: Some(0),
+                    ..Default::default()
+                }),
+            )
             .await;
+        adapter.enqueue("demo", json!("queued"), None, None).await;
+        let queue_name = internal_queue_name("demo", "sub1");
+        assert_eq!(store.topic_stats(&queue_name).await.depth, 1);
+
         adapter.unsubscribe("demo", "sub1").await;
+        assert_eq!(
+            store.topic_stats(&queue_name).await.depth,
+            1,
+            "the backlog is durable state and must survive unsubscribe"
+        );
+
         store.enqueue("demo", json!("after")).await.unwrap();
         sleep(Duration::from_millis(120)).await;
         assert!(invoker.calls().await.is_empty());
+
+        // Re-arming under the same id resumes exactly where it left off.
+        adapter
+            .subscribe("demo", "sub1", "backend", None, None, None)
+            .await;
+        wait_until(|| {
+            let invoker = invoker.clone();
+            async move { !invoker.calls().await.is_empty() }
+        })
+        .await;
+        assert_eq!(
+            invoker.calls().await,
+            vec![("backend".to_string(), json!("queued"))],
+            "the kept backlog drains; the bare-topic publish stays buffered"
+        );
+        adapter.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_detaches_while_the_inflight_delivery_completes() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let invoker = Arc::new(GatedInvoker::default());
+        let adapter = Arc::new(BuiltinAdapter::with_poll_interval_ms(
+            store.clone(),
+            invoker.clone(),
+            3,
+        ));
+
+        adapter
+            .subscribe("demo", "sub1", "backend", None, None, None)
+            .await;
+        adapter.enqueue("demo", json!("inflight"), None, None).await;
+        tokio::time::timeout(Duration::from_secs(1), invoker.started.notified())
+            .await
+            .expect("delivery should start");
+
+        // Returns promptly even though a delivery is parked mid-invocation:
+        // unsubscribe must never stall the control plane (the trigger
+        // handler holds its registrations lock across this call) behind one
+        // slow job.
+        tokio::time::timeout(Duration::from_secs(1), adapter.unsubscribe("demo", "sub1"))
+            .await
+            .expect("unsubscribe must not wait for the in-flight invocation");
+
+        // The detached delivery still runs to completion and acks — it is
+        // never aborted, so redelivery can't double-execute its side effects.
+        invoker.release.notify_one();
+        wait_until(|| {
+            let invoker = invoker.clone();
+            async move { invoker.completed.lock().await.as_slice() == [json!("inflight")] }
+        })
+        .await;
+        let queue_name = internal_queue_name("demo", "sub1");
+        wait_until(|| {
+            let store = store.clone();
+            let queue_name = queue_name.clone();
+            async move { store.topic_stats(&queue_name).await.delivered == 1 }
+        })
+        .await;
+        adapter.shutdown().await;
+    }
+
+    // The routing lock is released before store I/O: one parked write delays
+    // its own topic only, never the whole worker.
+    #[tokio::test]
+    async fn publish_blocked_on_store_io_does_not_block_other_topics() {
+        let store = Arc::new(GatedEnqueueStore::default());
+        let invoker = Arc::new(FakeInvoker::default());
+        let adapter = Arc::new(BuiltinAdapter::with_poll_interval_ms(
+            store.clone(),
+            invoker.clone(),
+            3,
+        ));
+
+        let paused = Some(SubscriberQueueConfig {
+            concurrency: Some(0),
+            ..Default::default()
+        });
+        adapter
+            .subscribe("demo", "sub1", "backend", None, None, paused.clone())
+            .await;
+        adapter
+            .subscribe("other", "sub2", "backend", None, None, paused)
+            .await;
+
+        let entered = store.entered.notified();
+        let publishing = {
+            let adapter = adapter.clone();
+            tokio::spawn(async move {
+                adapter.enqueue("demo", json!("racing"), None, None).await;
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(1), entered)
+            .await
+            .expect("publish should reach the store");
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            adapter.enqueue("other", json!("free"), None, None),
+        )
+        .await
+        .expect("an unrelated topic's publish must not wait on demo's store write");
+        assert_eq!(
+            store
+                .inner
+                .topic_stats(&internal_queue_name("other", "sub2"))
+                .await
+                .depth,
+            1
+        );
+
+        store.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), publishing)
+            .await
+            .expect("the gated publish should finish once released")
+            .unwrap();
+        assert_eq!(
+            store
+                .inner
+                .topic_stats(&internal_queue_name("demo", "sub1"))
+                .await
+                .depth,
+            1
+        );
+        adapter.shutdown().await;
     }
 
     // (f) condition=false skips + acks without invoking the target function.
@@ -1573,6 +1929,7 @@ mod tests {
                 "demo",
                 "sub1",
                 "backend",
+                None,
                 Some("condition".to_string()),
                 None,
             )
@@ -1599,10 +1956,10 @@ mod tests {
         let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 3);
 
         adapter
-            .subscribe("demo", "sub1", "backend", None, None)
+            .subscribe("demo", "sub1", "backend", None, None, None)
             .await;
         adapter
-            .subscribe("demo", "sub1", "other-backend", None, None)
+            .subscribe("demo", "sub1", "other-backend", None, None, None)
             .await;
         assert_eq!(adapter.subscriptions.lock().await.len(), 1);
         adapter.shutdown().await;

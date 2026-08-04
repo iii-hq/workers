@@ -63,6 +63,15 @@ pub struct E2eContext {
 }
 
 impl E2eContext {
+    /// The raw worker connection. Scenarios with a `setup` hook use it to
+    /// register TEMPORARY functions (e.g. a custom post-turn validator) —
+    /// they live exactly as long as this process's engine connection.
+    pub fn client(&self) -> &IIIClient {
+        &self.client
+    }
+}
+
+impl E2eContext {
     pub async fn connect(url: &str) -> Result<Self> {
         let client = register_worker(
             url,
@@ -456,6 +465,7 @@ mod tests {
             pending_function_calls: Vec::new(),
             children: Vec::new(),
             expects_wake,
+            armed_wakes: Vec::new(),
             queued: Vec::new(),
             result: None,
             result_error: None,

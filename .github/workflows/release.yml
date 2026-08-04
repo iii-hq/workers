@@ -34,6 +34,7 @@ on:
       - 'memory-consolidate/v*'
       - 'opencode/v*'
       - 'openwiki/v*'
+      - 'pdf/v*'
       - 'pi/v*'
       - 'provider-anthropic/v*'
       - 'provider-claude-code/v*'
@@ -146,7 +147,6 @@ jobs:
           WORKER: ${{ steps.meta.outputs.worker }}
         run: |
           set -euo pipefail
-          pip install --quiet pyyaml
           val=$(WORKER="$WORKER" python3 -c 'import os, sys, pathlib; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_iii_worker_yaml(pathlib.Path(os.environ["WORKER"])); print("false" if m.raw.get("interface_smoke") is False else "true")')
           echo "interface_smoke=$val" >> "$GITHUB_OUTPUT"
           if [[ "$val" == "false" ]]; then
@@ -273,11 +273,12 @@ jobs:
       experimental: ${{ needs.setup.outputs.experimental }}
     secrets: inherit
 
-  # Run the published Harness quickstart immediately after the registry
-  # deployment of Harness or one of its mandatory dependencies. The validator
-  # supports the stable release channels only.
-  quickstart:
-    name: Harness quickstart
+  # Dispatch the independent published-artifact smoke CI immediately after
+  # the registry deployment of Harness or one of its mandatory dependencies.
+  # The smoke CI dispatches the deployed E2E CI after it passes. The release
+  # itself intentionally does not wait for either child workflow.
+  dispatch-smoke:
+    name: Dispatch Harness smoke CI
     needs: [setup, publish]
     if: >-
       ${{
@@ -288,10 +289,32 @@ jobs:
         needs.publish.result == 'success' &&
         (needs.setup.outputs.registry_tag == 'latest' || needs.setup.outputs.registry_tag == 'next')
       }}
-    uses: ./.github/workflows/harness-quickstart.yml
-    with:
-      channel: ${{ needs.setup.outputs.registry_tag }}
-    secrets: inherit
+    permissions:
+      actions: write
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch published-artifact smoke CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ needs.setup.outputs.registry_tag }}
+          WORKER: ${{ needs.setup.outputs.worker }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          RELEASE_TAG: ${{ needs.setup.outputs.tag }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh workflow run harness-quickstart.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$WORKFLOW_REF" \
+            --field "channel=$CHANNEL" \
+            --field "release_worker=$WORKER" \
+            --field "release_version=$VERSION" \
+            --field "release_tag=$RELEASE_TAG" \
+            --field "release_run_id=$RELEASE_RUN_ID" \
+            --field cascade_e2e=true
+          echo "Dispatched Harness smoke CI for $WORKER v$VERSION ($CHANNEL)."
 
   # ──────────────────────────────────────────────────────────────
   # Announce the release in Slack (#worker-releases). Terminal job:

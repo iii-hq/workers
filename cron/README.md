@@ -2,7 +2,7 @@
 
 Schedules registered functions with cron expressions. Any function bound to a
 `cron` trigger is invoked by this worker at the next matching UTC time. The
-worker replaces the built-in `iii-cron` worker while keeping the trigger type
+worker replaces the legacy built-in cron worker while keeping the trigger type
 and payload shape stable.
 
 ## Install
@@ -85,15 +85,15 @@ with:
 All schedules use UTC. Missed fires while the worker is stopped are skipped;
 there is no catch-up replay.
 
-### Requires removing the built-in `iii-cron` worker
+### Requires removing the legacy built-in cron worker
 
-The built-in `iii-cron` worker also owns the `cron` trigger type. Two owners
+The legacy built-in cron worker also owns the `cron` trigger type. Two owners
 of the same trigger type on one engine collide - whichever registers last
-wins - so this worker requires `iii-cron` to be absent: omit it from the
+wins - so this worker requires it to be absent: omit it from the
 engine's `config.yaml` (a config that doesn't list a worker won't run it).
 
 On boot, this worker queries the engine for connected workers and refuses to
-start with a clear error if `iii-cron` is still active, so a stale config
+start with a clear error if the legacy built-in is still active, so a stale config
 fails loudly instead of silently racing the built-in worker for ownership of
 `cron`.
 

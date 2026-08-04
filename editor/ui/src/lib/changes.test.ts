@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   type ChangeEntry,
   causeLabel,
+  fromRecords,
   groupByTurn,
   groupLabel,
   MAX_ENTRIES,
@@ -141,6 +142,40 @@ describe('groupByTurn', () => {
   it('names a run by its agent session when there is one', () => {
     const log = recordChange([], event('a.ts', { session_id: 's_abcdef12', turn_id: 't_1' }), 1)
     expect(groupLabel(groupByTurn(log)[0])).toBe('agent abcdef')
+  })
+})
+
+describe('fromRecords', () => {
+  const record = {
+    path: 'a.ts',
+    cause: 'shell::fs::write',
+    kind: 'created',
+    added: 4,
+    removed: 0,
+    patch: '@@ -0,0 +1 @@',
+    truncated: false,
+    session_id: 's_rec',
+    turn_id: 't_rec',
+  }
+
+  it('restores the worker log with its provenance and no client clock', () => {
+    const log = fromRecords([], [record])
+    expect(log[0]).toMatchObject({
+      path: 'a.ts',
+      kind: 'created',
+      added: 4,
+      sessionId: 's_rec',
+      turnId: 't_rec',
+      at: null,
+    })
+    expect(log[0].patch).toContain('@@')
+  })
+
+  it('yields to a live entry for the same path', () => {
+    const live = recordChange([], event('a.ts'), 5_000)
+    const log = fromRecords(live, [record])
+    expect(log).toHaveLength(1)
+    expect(log[0].at).toBe(5_000)
   })
 })
 

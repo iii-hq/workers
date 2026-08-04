@@ -66,14 +66,14 @@ A real turn over the bus (`pong`) and a live discovery turn where Hermes enumera
 The unique value over the other agent workers: Hermes is iii's gateway to 27+ chat platforms.
 
 ```text
-27 platforms ─▶ Hermes gateway ─▶ hermes::inbound (iii-http) ─▶ republished
+27 platforms ─▶ Hermes gateway ─▶ hermes::inbound (http) ─▶ republished
                                                                     │ iii worker reacts,
                                                                     │ drives the bus
                                                                     ▼
                                                        hermes::send --to <platform> ─▶ out
 ```
 
-Point a Hermes webhook route / delivery target at the worker's `inbound_api_path` (default `/hermes/inbound`, served via iii-http). An inbound message flows in, an iii worker handles it against the full function registry, and the reply goes back out through `hermes::send`.
+Point a Hermes webhook route / delivery target at the worker's `inbound_api_path` (default `/hermes/inbound`, served via http). An inbound message flows in, an iii worker handles it against the full function registry, and the reply goes back out through `hermes::send`.
 
 ## Configuration
 
@@ -88,7 +88,7 @@ events_stream: agent::events       # translated AgentEvent frames
 raw_events_stream: hermes::events   # raw Hermes run output
 iii_context: true                   # prepend the iii runtime context on a fresh session
 hermes_executable: ""               # path to the hermes CLI; empty = resolve on PATH
-inbound_api_path: /hermes/inbound   # iii-http path the gateway delivers inbound events to
+inbound_api_path: /hermes/inbound   # http path the gateway delivers inbound events to
 ```
 
 ## Scope
@@ -100,7 +100,7 @@ Exposes the agent loop, omnichannel send, and inbound events — not Hermes's du
 Live-verified against a running engine with the Hermes CLI and an Anthropic key: the agent loop (`hermes::run` / `start` / `status` / `sessions::list`), real turns (`pong`), live iii discovery (the agent runs `iii trigger engine::workers::list` itself), and session continuity (`--resume`) all work end to end. Two parts remain to finalize against a live messaging gateway:
 
 - **Events granularity** — Hermes one-shot (`hermes -z`) prints only the final response text, so `agent::events` carries `turn_end` + `agent_end` (the final message), not per-tool frames. A richer event stream depends on a Hermes mode that emits one.
-- **Inbound trigger contract** — `hermes::inbound` republishes raw deliveries today and binds via `iii-http`; the exact gateway payload is mapped onto a dedicated `hermes::message` trigger type once verified against a running gateway.
+- **Inbound trigger contract** — `hermes::inbound` republishes raw deliveries today and binds via `http`; the exact gateway payload is mapped onto a dedicated `hermes::message` trigger type once verified against a running gateway.
 
 ## Tool profile
 

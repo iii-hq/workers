@@ -693,7 +693,7 @@ Three rules close the races and takeover surfaces inherent in self-registration:
    loss.
 3. **Boot-order recovery.** Registration is not one-shot: providers retry `register` with backoff
    until acknowledged, and re-declare on `router::ready` after a router restart. The registry and
-   catalog are durable in `iii-state`, so a restart restores the last known registry immediately
+   catalog are durable in `state`, so a restart restores the last known registry immediately
    and the re-declare pass reconciles it with reality.
 
 ## Security
@@ -753,7 +753,7 @@ catalog.
 
 - `configuration` — the `llm-router` entry (credentials/settings) and its change trigger (the
   paste-a-key discovery binding).
-- `iii-state` — model catalog and provider registry (both durable across router restarts).
+- `state` — model catalog and provider registry (both durable across router restarts).
 - Engine channels (`engine::channels::create`, `StreamChannelRef`) — `router::chat` streaming.
   Not `iii-stream` (the durable `stream::*` store): the router uses only ephemeral
   point-to-point channels.

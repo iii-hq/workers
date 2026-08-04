@@ -532,6 +532,7 @@ dependencies = [
  "clap",
  "harness",
  "iii-sdk",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",

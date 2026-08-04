@@ -70,8 +70,11 @@ import { contentHash } from '../lib/cache-key'
 import {
   type ChangeEntry,
   causeLabel,
+  fromRecords,
   groupByTurn,
   groupLabel,
+  isOutsideWorkspace,
+  outsideFolder,
   recordChange,
   relativeAge,
   seedFromStatus,
@@ -81,6 +84,19 @@ import { type ChangedEvent, useWorkspaceEvents } from '../lib/events'
 
 /** How long a row keeps its "just changed" accent after an edit lands. */
 const FLASH_MS = 12_000
+
+/** Sidebar width bounds. The floor is where the tree stops being readable;
+ *  the ceiling keeps the pane from eating the code it exists to navigate. */
+const SIDE_MIN = 180
+const SIDE_MAX = 480
+const SIDE_DEFAULT = 200
+/** Remembered per browser: a pane width is a preference of this surface, not
+ *  a fact about the workspace, so it does not belong in the shared record. */
+const SIDE_WIDTH_KEY = 'iii.editor.sideWidth'
+
+export function clampSideWidth(width: number): number {
+  return Math.min(SIDE_MAX, Math.max(SIDE_MIN, Math.round(width)))
+}
 
 /** Single-letter change marks, the way a status column reads them. */
 const KIND_MARK: Record<string, string> = {
@@ -168,6 +184,11 @@ export function EditorPage({ host }: { host: Host }) {
   const [rootInput, setRootInput] = useState('')
   const [rootOpen, setRootOpen] = useState(false)
   const [sideOpen, setSideOpen] = useState(true)
+  const [sideWidth, setSideWidth] = useState(() => {
+    const stored = Number(globalThis.localStorage?.getItem(SIDE_WIDTH_KEY))
+    return Number.isFinite(stored) && stored > 0 ? clampSideWidth(stored) : SIDE_DEFAULT
+  })
+  const [resizing, setResizing] = useState(false)
   const [buffers, setBuffers] = useState<Buffer[]>([])
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [treeRoot, setTreeRoot] = useState<TreeNode | null>(null)
@@ -193,7 +214,7 @@ export function EditorPage({ host }: { host: Host }) {
   /** The recent-changes feed. Live only: what happened while this page was
    *  open, plus a working-tree seed the first time the tab is looked at. */
   const [changeLog, setChangeLog] = useState<ChangeEntry[]>([])
-  const [changesSeeded, setChangesSeeded] = useState(false)
+  const changesSeededRef = useRef(false)
   /** Re-rendered on a slow tick so the relative ages in the feed stay honest
    *  without every row holding its own timer. */
   const [changeClock, setChangeClock] = useState(() => 0)
@@ -464,7 +485,11 @@ export function EditorPage({ host }: { host: Host }) {
 
   /** Work accumulated since the last pass: paths whose file needs re-reading,
    *  and whether the git overlay is stale. */
-  const pendingRef = useRef<{ paths: Set<string>; git: boolean }>({ paths: new Set(), git: false })
+  const pendingRef = useRef<{ paths: Set<string>; git: boolean; tree: boolean }>({
+    paths: new Set(),
+    git: false,
+    tree: false,
+  })
   /** Set by every event, cleared as a pass takes the work. */
   const wantedRef = useRef(false)
   const runningRef = useRef(false)
@@ -486,7 +511,7 @@ export function EditorPage({ host }: { host: Host }) {
       while (wantedRef.current) {
         wantedRef.current = false
         const work = pendingRef.current
-        pendingRef.current = { paths: new Set(), git: false }
+        pendingRef.current = { paths: new Set(), git: false, tree: false }
 
         await syncWorkspace()
         // One read per changed path. The event carries a patch, not the new
@@ -494,6 +519,13 @@ export function EditorPage({ host }: { host: Host }) {
         // parsing this page deliberately no longer does.
         for (const path of work.paths) await reread(path)
         if (work.git) await refreshGit()
+        // A file that was created, deleted or moved changes the *shape* of
+        // the tree, and the tree is a snapshot this page holds. Re-reading
+        // buffers and git marks leaves a brand-new file invisible until a
+        // reload: the agent's own status line reports a file the tree does
+        // not list. Structural changes reload it; a plain edit does not,
+        // because a modified file is already there.
+        if (work.tree) await loadTree()
 
         // Anything that arrived during the pass gets its own window rather than
         // an immediate re-run, so a sustained stream costs one pass per window
@@ -503,7 +535,7 @@ export function EditorPage({ host }: { host: Host }) {
     } finally {
       runningRef.current = false
     }
-  }, [refreshGit, reread, syncWorkspace])
+  }, [refreshGit, reread, syncWorkspace, loadTree])
 
   /**
    * Record what an event implies and arm the window.
@@ -515,9 +547,10 @@ export function EditorPage({ host }: { host: Host }) {
    * long a change can stay invisible.
    */
   const schedule = useCallback(
-    (path?: string, git = false) => {
+    (path?: string, git = false, tree = false) => {
       if (path !== undefined) pendingRef.current.paths.add(path)
       if (git) pendingRef.current.git = true
+      if (tree) pendingRef.current.tree = true
       wantedRef.current = true
       if (timerRef.current !== null) return
       timerRef.current = setTimeout(() => {
@@ -560,7 +593,9 @@ export function EditorPage({ host }: { host: Host }) {
         setLastChange(event)
         setChangeLog((prev) => recordChange(prev, event, now))
         setChangeClock(now)
-        schedule(event.path, true)
+        // A create, delete or move changes which files exist, so the tree
+        // has to be re-read as well as the buffers.
+        schedule(event.path, true, event.kind !== 'modified')
       }),
     [onChanged, schedule],
   )
@@ -575,11 +610,33 @@ export function EditorPage({ host }: { host: Host }) {
    * else on this page.
    */
   useEffect(() => {
-    if (mode !== 'changes' || changesSeeded) return
-    setChangesSeeded(true)
-    if (noRepo) return
-    setChangeLog((prev) => seedFromStatus(prev, status?.entries ?? []))
-  }, [mode, changesSeeded, noRepo, status])
+    // The latch is a ref, not state, and that is the whole point: flipping a
+    // state value here would change this effect's own dependencies, run its
+    // cleanup, and cancel the fetch it had just started — so the seed would
+    // arrive and be thrown away every time, and the feed would sit empty
+    // while the worker held a full log.
+    if (mode !== 'changes' || changesSeededRef.current) return
+    changesSeededRef.current = true
+    let cancelled = false
+    void (async () => {
+      // The worker's log first: those are real changes with real provenance,
+      // recorded whether or not a page was open to hear them. The working tree
+      // fills the rest — files dirty for reasons nobody observed, like an edit
+      // made in another editor before any of this was running.
+      try {
+        const recorded = await api.changes()
+        if (!cancelled) setChangeLog((prev) => fromRecords(prev, recorded.changes))
+      } catch {
+        // Older worker without the log. The working tree still seeds it.
+      }
+      if (!cancelled && !noRepo) {
+        setChangeLog((prev) => seedFromStatus(prev, status?.entries ?? []))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [mode, noRepo, status, api])
 
   /** Tick the ages while the feed is on screen, and only then. */
   useEffect(() => {
@@ -806,10 +863,47 @@ export function EditorPage({ host }: { host: Host }) {
 
   const changeGroups = useMemo(() => groupByTurn(changeLog), [changeLog])
 
+  /**
+   * Drag the sidebar edge.
+   *
+   * Pointer capture is the whole trick: without it a fast drag leaves the
+   * element and the resize stops following the cursor. Width comes from the
+   * pane's own left edge rather than a delta, so the handle stays under the
+   * pointer even if a frame is dropped.
+   */
+  const startResize = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    const pane = event.currentTarget.parentElement
+    if (!pane) return
+    const left = pane.getBoundingClientRect().left
+    event.currentTarget.setPointerCapture(event.pointerId)
+    event.preventDefault()
+    setResizing(true)
+
+    const onMove = (move: PointerEvent) => setSideWidth(clampSideWidth(move.clientX - left))
+    const onUp = () => {
+      setResizing(false)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }, [])
+
+  // Persist after the drag settles rather than on every frame: a write per
+  // pointermove is a write per pixel.
+  useEffect(() => {
+    if (resizing) return
+    try {
+      globalThis.localStorage?.setItem(SIDE_WIDTH_KEY, String(sideWidth))
+    } catch {
+      // Storage can be denied; a forgotten width is not worth an error.
+    }
+  }, [resizing, sideWidth])
+
   const lineCount = activeDraft ? activeDraft.draft.split('\n').length : 0
 
   return (
-    <div className="ed-root">
+    <div className="ed-root" data-resizing={resizing}>
       <header className="ed-head">
         <span className="ed-brand">editor</span>
         {rootOpen ? (
@@ -857,7 +951,21 @@ export function EditorPage({ host }: { host: Host }) {
 
       <div className="ed-body">
         {sideOpen && (
-          <aside className="ed-side">
+          <aside className="ed-side" style={{ ['--ed-side-width' as string]: `${sideWidth}px` }}>
+            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
+            <button
+              type="button"
+              className="ed-side-handle"
+              data-dragging={resizing}
+              aria-label="Resize the sidebar"
+              onPointerDown={startResize}
+              onKeyDown={(e) => {
+                // Keyboard resize: the handle is a real control, and a drag
+                // target that only responds to a pointer is not one.
+                if (e.key === 'ArrowLeft') setSideWidth((w) => clampSideWidth(w - 16))
+                if (e.key === 'ArrowRight') setSideWidth((w) => clampSideWidth(w + 16))
+              }}
+            />
             <div className="ed-seg">
               <button type="button" data-active={mode === 'files'} onClick={() => setMode('files')}>
                 files
@@ -900,9 +1008,22 @@ export function EditorPage({ host }: { host: Host }) {
                             the summary, the rows under it are the detail. */}
                         <div className="ed-group">
                           <span className="ed-change-by">{groupLabel(group)}</span>
-                          <span className="ed-group-files">
-                            {group.entries.length} file{group.entries.length === 1 ? '' : 's'}
-                          </span>
+                          {/* An agent can work in a folder other than the one
+                              this page has open. Saying so is the difference
+                              between "the tree is broken" and "that happened
+                              somewhere else" — and it is why the file this row
+                              names is not in the tree. */}
+                          {group.entries[0] && isOutsideWorkspace(group.entries[0]) && (
+                            <span className="ed-group-root" title={splitPath(group.entries[0].path).dir}>
+                              in {outsideFolder(group.entries[0])}
+                            </span>
+                          )}
+                          {/* "1 file" says nothing a single row below does not
+                              already say. The count earns its place only when
+                              it summarises something. */}
+                          {group.entries.length > 1 && (
+                            <span className="ed-group-files">{group.entries.length} files</span>
+                          )}
                           {(group.added > 0 || group.removed > 0) && (
                             <span>
                               <span className="ed-add">+{group.added}</span>{' '}

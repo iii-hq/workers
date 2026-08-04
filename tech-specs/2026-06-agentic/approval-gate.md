@@ -228,7 +228,7 @@ decision.
 
 The sustainability contract. The state worker's interface is `{ scope, key, value }` — **no TTL,
 no expiry** is part of that contract, so correctness MUST NOT rely on backend expiry (whether the
-deployment backs `iii-state` with Redis, the file adapter, or anything else). Instead:
+deployment backs `state` with Redis, the file adapter, or anything else). Instead:
 
 > **Every record this worker writes has an explicit deletion path, and a periodic sweep is the GC
 > backstop for any path a crash interrupts.**
@@ -359,7 +359,7 @@ iii.registerTrigger({
 Soft dependency: without the `configuration` worker the gate runs on built-in defaults
 (`{ default_mode: "manual", always_allow_seed: [], pending_timeout_ms: 1_800_000 }`) — fail-safe,
 never fail-open. Per the configuration worker's boundaries: the entry holds **deployment**
-defaults only (schema-validated, operator-editable); per-session data lives in `iii-state`, and
+defaults only (schema-validated, operator-editable); per-session data lives in `state`, and
 `configuration::set` replaces the whole value — clients read-merge-write to edit one field.
 
 ## Functions
@@ -759,7 +759,7 @@ only for "what needs human attention right now".
   [`harness::function::resolve`](harness.md#harnessfunctionresolve) (`execute` on allow, `deliver`
   on deny/timeout). Binds [`harness::turn-completed`](harness.md#trigger-types-emitted) for
   terminal-turn cleanup.
-- `iii-state` — the two scopes above.
+- `state` — the two scopes above.
 - `configuration` (soft) — the `approval-gate` entry; built-in defaults apply without it.
 - `session-manager` (soft) — `session::get` for denormalized context at hold time;
   [`session::deleted`](session-manager.md#trigger-types-emitted) for cascade cleanup. Without it,

@@ -17,6 +17,7 @@ pub fn scenario(_run_id: &str) -> ScenarioSpec {
             max_total_tokens: 32_768,
             stuck_timeout_seconds: 120,
         },
+        denied_functions: &[],
         threshold: JUDGE_BACKED_PASS_THRESHOLD,
         criteria: vec![
             CriterionSpec {
@@ -47,6 +48,7 @@ Zero: far over length or the answer is buried.",
             "authorization": "decides what an authenticated identity may access or do",
             "format": "at most two sentences for a non-technical reader"
         })),
+        setup: None,
         evaluate: common::evaluate_text_response,
         cleanup: None,
     }

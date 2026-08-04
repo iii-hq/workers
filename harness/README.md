@@ -146,11 +146,20 @@ registration, and operators can override it per provider by setting
 default). When the router serves nothing — router absent, unknown provider,
 or no declared prompt — the harness falls back to its embedded step-by-step
 default prompt ([`prompts/default.txt`](prompts/default.txt)). Spawned
-CHILDREN never get the orchestrator prompt: every child is seeded with the
+CHILDREN never get the top-level prompt: every child is seeded with the
 embedded minimal sub-agent identity
-([`prompts/subagent.txt`](prompts/subagent.txt)) — do the one task, write the
-named state destination, stop — with spawn `options.system_prompt` as the
-escape hatch.
+([`prompts/subagent.txt`](prompts/subagent.txt)) — do the one task, record
+the result where the task says, stop — and is capability-walled out of the
+orchestration surface (`harness::spawn`, `harness::send`, trigger
+registration) unless spawned with `options: { orchestrator: true }`; spawn
+`options.system_prompt` remains the identity escape hatch.
+
+No prompt prescribes an orchestration process — identity prompts carry tool
+guidance only, enforced repo-wide by [`tests/prompts.rs`](tests/prompts.rs).
+The opt-in fan-out playbook (parent-owned control plane: pick a medium, arm
+notifications, spawn leaves directly, define completion per medium) lives in
+[`skills/orchestration.md`](skills/orchestration.md) — paste it into a task
+prompt or pass it via `options.system_prompt`.
 
 An optional `mode` (`ask` | `agent`) prepends a short operating-mode
 paragraph; `ask` is also enforced structurally — the dispatch policy of an
@@ -173,8 +182,8 @@ plug into in-path. Bind with the standard two-step pattern.
 
 | Trigger type | Kind | Fires / runs |
 |---|---|---|
-| `harness::turn-started` | async event | A turn began executing (first loop step). |
-| `harness::turn-completed` | async event | A turn reached a terminal status (`completed` / `cancelled` / `failed`), carrying the result and `terminal: bool` — `false` while the session still owns an armed wake (a one-shot notify), meaning a later turn carries the run's real outcome; consumers finalize a logical exchange only on `terminal: true`. |
+| `harness::turn-started` | async event | A turn began executing (first loop step). Worker-bindable via direct engine registration only — the agent path (`engine::register_trigger`) refuses harness-internal types in every shape. |
+| `harness::turn-completed` | async event | A turn reached a terminal status (`completed` / `cancelled` / `failed`), carrying the result and `terminal: bool` — `false` while the session still owns an armed wake (a one-shot notify), meaning a later turn carries the run's real outcome; consumers finalize a logical exchange only on `terminal: true`. Worker-bindable only, same as above. |
 | `harness::hook::pre-turn` | sync hook | First step of a turn, before any model spend. May veto. |
 | `harness::hook::pre-generate` | sync hook | After context assembly, before generation. May extend the system prompt, append messages, or veto. |
 | `harness::hook::post-generate` | sync hook | After the final assistant message. Observe only. |

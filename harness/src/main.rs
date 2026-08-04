@@ -32,7 +32,7 @@ use harness::configuration::{self, ConfigCell, TriggerHandles};
 use harness::deps::Deps;
 use harness::events::TurnEvents;
 use harness::hooks::HookRegistry;
-use harness::{config, discovery, functions, manifest, queue, subscriptions};
+use harness::{config, discovery, functions, manifest, queue};
 
 /// Asset names + embedded bytes for the injected console UI; the registration
 /// contract itself lives in the shared `iii-console-ui` crate.
@@ -144,6 +144,17 @@ async fn main() -> Result<()> {
     // must exist before the trigger names it.
     ui::register(&iii);
 
+    // The one-shot deadline provider, registered with the ENGINE so `timer`
+    // shows up in engine::triggers::list and live registrations replay to it
+    // after a restart (re-armed at the same absolute `at` — the registration
+    // intercept resolves `in_ms` before the engine stores the config).
+    let timer_bus = harness::timer::TimerBus::new(iii.clone(), cfg.dispatch_timeout_ms);
+    let _timer_type = iii.register_trigger_type(iii_sdk::RegisterTriggerType::new(
+        harness::timer::TIMER_TYPE,
+        harness::timer::TIMER_DESC,
+        harness::timer::TimerHandler { bus: timer_bus },
+    ));
+
     // The queue consumer may restore durable jobs as soon as this definition
     // succeeds. Discovery and `harness::turn` are already ready; do not bind
     // lifecycle triggers or announce ready unless the queue is usable.
@@ -168,13 +179,18 @@ async fn main() -> Result<()> {
         "harness ready: harness::* functions + subscriptions + turn events + hook points + reactive function-registry cache"
     );
 
-    // Background GC of durable react bindings orphaned across restarts (their
-    // in-memory session tracking is gone; their owner session may have been
-    // deleted while this harness was down). Non-blocking — never delays ready.
+    // Background GC of durable spawn/notify bindings orphaned across restarts
+    // (their in-memory session tracking is gone; their owner session may have
+    // been deleted while this harness was down). Non-blocking — never delays
+    // ready.
     {
         let deps = deps.clone();
-        tokio::spawn(async move { subscriptions::reconcile::run(&deps).await });
+        tokio::spawn(async move { harness::bindings::gc::run(&deps).await });
     }
+    // Wake-expiry sweep: a wake whose lifecycle deadline passes unfired must
+    // wake its owner with the news — this loop is what turns `expires_at`
+    // into that notice instead of a session parked forever.
+    tokio::spawn(harness::bindings::expiry::run_loop(deps.clone()));
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("harness shutting down");

@@ -24,6 +24,7 @@ For each snippet, identify the vulnerability, explain its impact, and recommend 
             max_total_tokens: 49_152,
             stuck_timeout_seconds: 120,
         },
+        denied_functions: &[],
         threshold: JUDGE_BACKED_PASS_THRESHOLD,
         criteria: vec![
             CriterionSpec {
@@ -72,6 +73,7 @@ finding belongs to which snippet.",
                 "remediation": "allowlist destinations or accept only validated relative paths"
             }
         })),
+        setup: None,
         evaluate: common::evaluate_text_response,
         cleanup: None,
     }

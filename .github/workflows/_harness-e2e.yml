@@ -43,6 +43,11 @@ on:
         required: false
         type: string
         default: ''
+      stack_mode:
+        description: Resolve runtime workers from source binaries or the registry
+        required: false
+        type: string
+        default: source
       benchmark_lane:
         description: Stable comparison lane written to benchmark history
         required: false
@@ -68,6 +73,16 @@ on:
         required: false
         type: string
         default: ''
+      release_run_id:
+        description: GitHub Actions run that published the released worker
+        required: false
+        type: string
+        default: ''
+      smoke_run_id:
+        description: GitHub Actions smoke run that preceded this E2E run
+        required: false
+        type: string
+        default: ''
       registry_tag:
         description: Registry artifact tag associated with this run
         required: false
@@ -89,7 +104,7 @@ on:
 jobs:
   build:
     name: harness e2e build
-    if: github.ref == 'refs/heads/main' || inputs.source_ref != ''
+    if: inputs.stack_mode == 'registry' || github.ref == 'refs/heads/main' || inputs.source_ref != ''
     runs-on: ubuntu-latest
     # Instrumented cold builds are slower than regular ones.
     timeout-minutes: ${{ inputs.coverage && 60 || 45 }}
@@ -106,9 +121,11 @@ jobs:
       # stale, so the isolated E2E build needs the same Node/pnpm toolchain as
       # the regular CI worker builds.
       - name: Setup pnpm
+        if: inputs.stack_mode == 'source'
         uses: pnpm/action-setup@v5
 
       - name: Setup Node
+        if: inputs.stack_mode == 'source'
         uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -120,6 +137,11 @@ jobs:
           SUBJECTS: ${{ inputs.subjects }}
           JUDGE_MODEL: ${{ inputs.judge_model }}
           JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+          STACK_MODE: ${{ inputs.stack_mode }}
+          REGISTRY_TAG: ${{ inputs.registry_tag }}
+          RELEASE_WORKER: ${{ inputs.release_worker }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          COVERAGE: ${{ inputs.coverage }}
         run: |
           set -euo pipefail
           jq -e '
@@ -133,8 +155,22 @@ jobs:
           ' <<<"$SUBJECTS" >/dev/null
           [[ -n "$JUDGE_MODEL" ]]
           [[ "$JUDGE_PROVIDER" =~ ^[A-Za-z0-9_-]+$ ]]
+          case "$STACK_MODE" in
+            source) ;;
+            registry)
+              [[ "$REGISTRY_TAG" == "latest" || "$REGISTRY_TAG" == "next" ]]
+              [[ "$RELEASE_WORKER" =~ ^[A-Za-z0-9_-]+$ ]]
+              [[ -n "$RELEASE_VERSION" ]]
+              [[ "$COVERAGE" == "false" ]]
+              ;;
+            *)
+              echo "::error::stack_mode must be source or registry"
+              exit 2
+              ;;
+          esac
 
       - name: Install published iii release
+        if: inputs.stack_mode == 'source'
         id: engine
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -184,6 +220,7 @@ jobs:
             context-manager -> target
             iii-directory -> target
             cron -> target
+            web -> target
 
       - name: Test E2E crate
         run: cargo test --locked --manifest-path harness/Cargo.toml -p harness-e2e
@@ -191,7 +228,8 @@ jobs:
       - name: Lint E2E crate
         run: cargo clippy --locked --manifest-path harness/Cargo.toml -p harness-e2e --all-targets -- -D warnings
 
-      - name: Build E2E stack
+      - name: Build source E2E stack
+        if: inputs.stack_mode == 'source'
         env:
           SUBJECTS: ${{ inputs.subjects }}
           JUDGE_PROVIDER: ${{ inputs.judge_provider }}
@@ -202,7 +240,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target/coverage/build-profraw
-          for worker in database state queue session-manager llm-router context-manager iii-directory cron; do
+          for worker in database state queue session-manager llm-router context-manager iii-directory cron web fp; do
             cargo build --locked --release --manifest-path "$worker/Cargo.toml"
           done
           mapfile -t providers < <(
@@ -221,6 +259,10 @@ jobs:
             -p harness \
             -p harness-e2e
 
+      - name: Build registry E2E runner
+        if: inputs.stack_mode == 'registry'
+        run: cargo build --locked --release --manifest-path harness/Cargo.toml -p harness-e2e
+
       - name: Read code-defined scenarios
         id: scenarios
         env:
@@ -234,6 +276,7 @@ jobs:
           echo "json=$scenarios" >> "$GITHUB_OUTPUT"
 
       - name: Package E2E binaries
+        if: inputs.stack_mode == 'source'
         env:
           SUBJECTS: ${{ inputs.subjects }}
           JUDGE_PROVIDER: ${{ inputs.judge_provider }}
@@ -251,6 +294,8 @@ jobs:
             context-manager/target/release/context-manager
             iii-directory/target/release/iii-directory
             cron/target/release/cron
+            web/target/release/web
+            fp/target/release/fp
             harness/target/release/harness
             harness/target/release/harness-e2e
           )
@@ -267,6 +312,10 @@ jobs:
             test -x "$path"
           done
           tar -czf target/harness-e2e-stack.tar.gz "${paths[@]}"
+
+      - name: Package registry E2E runner
+        if: inputs.stack_mode == 'registry'
+        run: tar -czf target/harness-e2e-stack.tar.gz -C harness/target/release harness-e2e
 
       - name: Upload E2E binaries
         uses: actions/upload-artifact@v6
@@ -299,7 +348,22 @@ jobs:
           path: target
 
       - name: Extract E2E binaries
-        run: tar -xzf target/harness-e2e-stack.tar.gz
+        run: |
+          if [[ "${{ inputs.stack_mode }}" == registry ]]; then
+            mkdir -p target/runner
+            tar -xzf target/harness-e2e-stack.tar.gz -C target/runner
+          else
+            tar -xzf target/harness-e2e-stack.tar.gz
+          fi
+
+      - uses: actions/setup-python@v6
+        if: inputs.stack_mode == 'registry'
+        with:
+          python-version: '3.x'
+
+      - name: Install registry stack helper dependency
+        if: inputs.stack_mode == 'registry'
+        run: python3 -m pip install --quiet pyyaml
 
       - name: Prepare KVM for sandbox scenario
         if: matrix.scenario == 'shell_coder_sandbox'
@@ -312,6 +376,7 @@ jobs:
         run: mkdir -p target/harness-e2e/profraw
 
       - name: Run real-stack quality scenario
+        if: inputs.stack_mode == 'source'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
           OPENAI_API_KEY: ${{ secrets.openai_api_key }}
@@ -333,6 +398,30 @@ jobs:
           # the SIGTERM teardown. Inert when the stack is not instrumented.
           LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/harness-e2e/profraw/%m_%p%c.profraw', github.workspace) || '' }}
         run: harness/tests/e2e/run-ci.sh
+
+      - name: Run deployed-stack quality scenario
+        if: inputs.stack_mode == 'registry'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
+          OPENAI_API_KEY: ${{ secrets.openai_api_key }}
+          ZAI_API_KEY: ${{ secrets.zai_api_key }}
+          III_CHANNEL: ${{ inputs.registry_tag }}
+          HARNESS_E2E_RELEASE_WORKER: ${{ inputs.release_worker }}
+          HARNESS_E2E_RELEASE_VERSION: ${{ inputs.release_version }}
+          HARNESS_E2E_RELEASE_TAG: ${{ inputs.release_tag }}
+          HARNESS_E2E_RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          HARNESS_E2E_SMOKE_RUN_ID: ${{ inputs.smoke_run_id }}
+          HARNESS_E2E_BIN: ${{ github.workspace }}/target/runner/harness-e2e
+          HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
+          HARNESS_E2E_SCENARIO: ${{ matrix.scenario }}
+          HARNESS_E2E_RUNS: ${{ inputs.runs }}
+          HARNESS_E2E_MODEL: ${{ matrix.subject.model }}
+          HARNESS_E2E_PROVIDER: ${{ matrix.subject.provider }}
+          HARNESS_E2E_JUDGE_MODEL: ${{ inputs.judge_model }}
+          HARNESS_E2E_JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+          HARNESS_E2E_QUALITY_ADVISORY: ${{ inputs.quality_advisory }}
+          HARNESS_E2E_CI_SCORE_FLOOR: ${{ inputs.ci_score_floor }}
+        run: harness/tests/e2e/run-deployed-ci.sh
 
       - name: Write benchmark context
         if: always()
@@ -549,7 +638,7 @@ jobs:
   coverage:
     name: harness e2e coverage
     needs: [build, e2e]
-    if: always() && inputs.coverage && needs.build.result == 'success'
+    if: always() && inputs.stack_mode == 'source' && inputs.coverage && needs.build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

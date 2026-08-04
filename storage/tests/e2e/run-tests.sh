@@ -9,6 +9,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+host_home=$HOME
 
 # Path overrides (set in CI; defaults assume the harness lives at
 # storage/tests/e2e/ inside the workers repo and the iii engine is on
@@ -17,7 +18,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKER_SRC="${WORKER_SRC:-$(cd "$ROOT_DIR/../.." && pwd)}"
 III_BIN="${III_BIN:-$(command -v iii 2>/dev/null || echo "$HOME/.local/bin/iii")}"
 WORKER_BIN_TARGET="${WORKER_BIN_TARGET:-$WORKER_SRC/target/release/storage}"
-WORKER_BIN_LINK="${WORKER_BIN_LINK:-$HOME/.iii/workers/storage}"
+worker_bin_link_override=${WORKER_BIN_LINK:-}
 
 REPORT_PATH="$ROOT_DIR/reports/report.json"
 TS=$(date +%Y%m%d-%H%M%S)
@@ -100,68 +101,55 @@ for p in "${PROVIDER_LIST[@]}"; do
   if [[ "$p" != "local" ]]; then NEEDS_DOCKER=1; break; fi
 done
 
-# Recursively list descendant PIDs of the given pid. Used by cleanup() to
-# find rustfs, which is a *grandchild* of this script (script → iii →
-# storage → rustfs) and therefore invisible to a flat `pkill -P $$` filter.
-list_descendant_pids() {
-  local parent="$1" child
-  for child in $(pgrep -P "$parent" 2>/dev/null); do
-    echo "$child"
-    list_descendant_pids "$child"
-  done
-}
-
 ENGINE_PID=""
 HARNESS_PID=""
+COMPOSE_STARTED=0
+RUN_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/storage-e2e.XXXXXX")
+RUSTFS_PID_FILE="${STORAGE_E2E_RUSTFS_PID_FILE:-$RUN_ROOT/rustfs.pid}"
+export HOME="$RUN_ROOT/home"
+export XDG_CONFIG_HOME="$HOME/.config"
+export CARGO_HOME=${CARGO_HOME:-"$host_home/.cargo"}
+export RUSTUP_HOME=${RUSTUP_HOME:-"$host_home/.rustup"}
+WORKER_BIN_LINK=${worker_bin_link_override:-"$HOME/.iii/workers/storage"}
+if [[ "$NEEDS_DOCKER" -eq 1 ]]; then
+  export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-"storage-e2e-$$"}
+fi
+# shellcheck disable=SC2317 # Invoked by EXIT/INT/TERM traps.
 cleanup() {
   local code=$?
-
-  # Snapshot rustfs descendants BEFORE we kill the engine. Once iii dies,
-  # storage gets reparented to init and rustfs leaves our subtree — a
-  # post-kill walk would come up empty and orphan the sidecar.
-  # NB: space-separated string instead of a bash array. macOS ships bash
-  # 3.2 by default, and `${arr[@]}` on an empty array trips `set -u` with
-  # "unbound variable" — which broke the `port already in use` early-exit
-  # path during local validation. Word-splitting on an empty string is
-  # a no-op, so this stays correct when there are no descendants yet.
-  local rustfs_pids=""
-  local desc_pid
-  for desc_pid in $(list_descendant_pids $$); do
-    if ps -p "$desc_pid" -o comm= 2>/dev/null | grep -qx rustfs; then
-      rustfs_pids="$rustfs_pids $desc_pid"
-    fi
-  done
+  trap - EXIT INT TERM
 
   if [[ -n "$HARNESS_PID" ]] && kill -0 "$HARNESS_PID" 2>/dev/null; then
     kill "$HARNESS_PID" 2>/dev/null || true
     wait "$HARNESS_PID" 2>/dev/null || true
   fi
   if [[ -n "$ENGINE_PID" ]] && kill -0 "$ENGINE_PID" 2>/dev/null; then
-    kill "$ENGINE_PID" 2>/dev/null || true
+    kill -- "-$ENGINE_PID" 2>/dev/null || kill "$ENGINE_PID" 2>/dev/null || true
+    for _ in {1..20}; do
+      kill -0 "$ENGINE_PID" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -KILL -- "-$ENGINE_PID" 2>/dev/null || kill -KILL "$ENGINE_PID" 2>/dev/null || true
     wait "$ENGINE_PID" 2>/dev/null || true
   fi
 
-  # Belt-and-suspenders #1: SIGKILL the rustfs PIDs we snapshotted. This
-  # is the surgical path that only touches processes we know are ours.
-  local pid
-  for pid in $rustfs_pids; do
-    kill -KILL "$pid" 2>/dev/null || true
-  done
+  if [[ -s "$RUSTFS_PID_FILE" ]]; then
+    local rustfs_pid
+    rustfs_pid=$(<"$RUSTFS_PID_FILE")
+    if [[ "$rustfs_pid" =~ ^[0-9]+$ ]] && kill -0 "$rustfs_pid" 2>/dev/null; then
+      kill "$rustfs_pid" 2>/dev/null || true
+      sleep 0.5
+      kill -KILL "$rustfs_pid" 2>/dev/null || true
+    fi
+  fi
 
-  # Belt-and-suspenders #2: in CI the iii engine spawns storage in a way
-  # that takes it out of this script's pgrep -P subtree (likely setsid),
-  # so the descendant walk above misses it and PDEATHSIG's parent-thread
-  # tracking is similarly bypassed. Independent of how the tree is laid
-  # out, any rustfs process at this point must be one we just spawned —
-  # we only ever run one sidecar per test, and CI is single-user. Match
-  # by comm and by cmdline path so we cover both. After SIGKILL, rustfs
-  # may linger briefly as <defunct> until init reaps it; the script-test
-  # treats zombies as gone.
-  pkill -KILL -x rustfs 2>/dev/null || true
-  pkill -KILL -f 'target/release/rustfs' 2>/dev/null || true
-
-  if [[ "$NEEDS_DOCKER" -eq 1 && "$KEEP" -eq 0 ]]; then
+  if [[ "$COMPOSE_STARTED" -eq 1 && "$KEEP" -eq 0 ]]; then
     (cd "$ROOT_DIR" && docker compose --profile cloud down -v --remove-orphans 2>/dev/null) || true
+  fi
+  if [[ "$KEEP" -eq 0 ]]; then
+    rm -rf "$RUN_ROOT"
+  else
+    echo "[run-tests] preserved isolated project at $RUN_ROOT"
   fi
   exit "$code"
 }
@@ -290,7 +278,7 @@ ensure_rustfs() {
   echo "[run-tests] fetching rustfs ${RUSTFS_VERSION} (${os}/${arch}) — one-time, ~70-90MB compressed"
   local tmpdir
   tmpdir="$(mktemp -d -t rustfs-fetch.XXXXXX)"
-  trap "rm -rf '$tmpdir'" RETURN
+  trap 'rm -rf "$tmpdir"' RETURN
   if ! curl -fsSL --retry 3 -o "$tmpdir/$asset" "$url"; then
     echo "[run-tests] FATAL: download failed: $url" >&2
     return 1
@@ -357,24 +345,27 @@ elif command -v rustfs >/dev/null 2>&1; then
   RESOLVED_RUSTFS="$(command -v rustfs)"
 fi
 if [[ -n "${RESOLVED_RUSTFS:-}" ]]; then
-  export RUSTFS_BIN="$RESOLVED_RUSTFS"
-  echo "[run-tests] RUSTFS_BIN=$RUSTFS_BIN"
+  RUSTFS_WRAPPER="$RUN_ROOT/rustfs"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'printf "%%s\\n" "$$" > %q\n' "$RUSTFS_PID_FILE"
+    printf 'exec %q "$@"\n' "$RESOLVED_RUSTFS"
+  } >"$RUSTFS_WRAPPER"
+  chmod +x "$RUSTFS_WRAPPER"
+  export RUSTFS_BIN="$RUSTFS_WRAPPER"
+  echo "[run-tests] RUSTFS_BIN=$RESOLVED_RUSTFS (owned wrapper=$RUSTFS_WRAPPER)"
 fi
 
-# 4. Reset rustfs data tree. rustfs is stateful on disk; leftover objects
-# from a previous run would make the schema-reset case incomplete and
-# could let the silence assertion observe in-flight events from the
-# old generation.
-echo "[run-tests] resetting tests/e2e/data/storage"
-rm -rf "$ROOT_DIR/data/storage"
-mkdir -p "$ROOT_DIR/data/storage"
+# 4. Create the isolated rustfs data tree.
+mkdir -p "$RUN_ROOT/data/storage"
 
 # 4b. Bring up docker compose stack (if needed) and bootstrap buckets.
 if [[ "$NEEDS_DOCKER" -eq 1 ]]; then
-  echo "[run-tests] starting docker compose stack (profile=cloud)"
+  echo "[run-tests] starting docker compose stack (project=$COMPOSE_PROJECT_NAME, profile=cloud)"
   if [[ "$NO_PULL" -eq 0 ]]; then
     (cd "$ROOT_DIR" && docker compose --profile cloud pull --quiet) || true
   fi
+  COMPOSE_STARTED=1
   (cd "$ROOT_DIR" && docker compose --profile cloud up -d)
 
   # Wait for health.
@@ -435,10 +426,12 @@ fi
 : > "$ENGINE_LOG"
 : > "$HARNESS_LOG"
 
-ENGINE_CONFIG="./config.yaml"
+ENGINE_CONFIG_SOURCE="$ROOT_DIR/config.yaml"
 if [[ "$NEEDS_DOCKER" -eq 1 ]]; then
-  ENGINE_CONFIG="./config.all.yaml"
+  ENGINE_CONFIG_SOURCE="$ROOT_DIR/config.all.yaml"
 fi
+ENGINE_CONFIG="$RUN_ROOT/config.yaml"
+cp "$ENGINE_CONFIG_SOURCE" "$ENGINE_CONFIG"
 
 # When the s3 provider is in scope, the storage worker spawns an SQS poller
 # (storage/src/main.rs:296-308) that uses the AWS SDK default credential
@@ -466,7 +459,12 @@ if [[ "$NEEDS_S3" -eq 1 ]]; then
 fi
 
 echo "[run-tests] starting iii engine (config=$ENGINE_CONFIG)"
-( cd "$ROOT_DIR" && "$III_BIN" --no-update-check -c "$ENGINE_CONFIG" ) > "$ENGINE_LOG" 2>&1 &
+unset ANTHROPIC_API_KEY OPENAI_API_KEY ZAI_API_KEY
+if command -v setsid >/dev/null 2>&1; then
+  (cd "$RUN_ROOT" && exec setsid "$III_BIN" --no-update-check -c "$ENGINE_CONFIG") >"$ENGINE_LOG" 2>&1 &
+else
+  (cd "$RUN_ROOT" && exec "$III_BIN" --no-update-check -c "$ENGINE_CONFIG") >"$ENGINE_LOG" 2>&1 &
+fi
 ENGINE_PID=$!
 echo "[run-tests] engine pid=$ENGINE_PID"
 
@@ -543,11 +541,8 @@ if [[ -z "$sentinel" ]]; then
   if [[ "$NEEDS_DOCKER" -eq 1 ]]; then
     echo "[run-tests] === docker compose ps ===" >&2
     (cd "$ROOT_DIR" && docker compose --profile cloud ps) >&2 || true
-    echo "[run-tests] === per-container logs (last 20 lines) ===" >&2
-    for svc in minio; do
-      echo "--- $svc ---" >&2
-      (cd "$ROOT_DIR" && docker compose logs --tail=20 "$svc") >&2 || true
-    done
+    echo "[run-tests] === minio logs (last 20 lines) ===" >&2
+    (cd "$ROOT_DIR" && docker compose logs --tail=20 minio) >&2 || true
   fi
   exit 2
 fi
@@ -569,11 +564,6 @@ for r in data["results"]:
 PY
 fi
 echo "======================================================================="
-
-# 11. Optional data preservation
-if [[ "$KEEP" -eq 0 ]]; then
-  rm -rf "$ROOT_DIR/data/storage"
-fi
 
 case "$sentinel" in
   *PASS*)  exit 0 ;;

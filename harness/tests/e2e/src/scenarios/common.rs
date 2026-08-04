@@ -100,6 +100,84 @@ pub fn state_value(response: Value) -> Value {
     }
 }
 
+pub fn requested_once(arguments: &Value) -> bool {
+    arguments.get("once").and_then(Value::as_bool) == Some(true)
+        || arguments
+            .pointer("/lifecycle/once")
+            .and_then(Value::as_bool)
+            == Some(true)
+}
+
+pub fn is_wake_registration(arguments: &Value) -> bool {
+    arguments.get("function_id").is_none_or(Value::is_null)
+        && arguments.get("target").is_none_or(|target| {
+            target.is_null()
+                || target.get("function_id").and_then(Value::as_str) == Some("harness::send")
+        })
+}
+
+/// Whether ANY text block in the transcript contains `needle` — for spotting
+/// error results and machine messages regardless of which entry carried them.
+pub fn transcript_contains(transcript: &Value, needle: &str) -> bool {
+    fn walk(value: &Value, needle: &str) -> bool {
+        match value {
+            Value::String(text) => text.contains(needle),
+            Value::Array(items) => items.iter().any(|item| walk(item, needle)),
+            Value::Object(map) => map.values().any(|item| walk(item, needle)),
+            _ => false,
+        }
+    }
+    walk(transcript, needle)
+}
+
+/// Validation nudges the harness appended to this transcript — the
+/// re-prompts a `harness::hook::post-turn` validator (or the output
+/// contract) produced. Recognized by the durable entry id
+/// (`e_<turn>_nudge_<n>`) or the `validation` origin flag.
+pub fn validation_nudges(transcript: &Value) -> usize {
+    transcript
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .get("entry_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.contains("_nudge_"))
+                || entry
+                    .pointer("/origin/validation")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        })
+        .count()
+}
+
+pub fn trigger_fired_records(transcript: &Value) -> Vec<&Value> {
+    transcript
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("custom"))
+        .filter(|custom| custom.get("custom_type").and_then(Value::as_str) == Some("trigger_fired"))
+        .filter_map(|custom| custom.get("data"))
+        .collect()
+}
+
+pub async fn active_binding_count(context: &E2eContext, session_id: &str) -> anyhow::Result<usize> {
+    Ok(context
+        .trigger_value(
+            "harness::triggers::list",
+            json!({ "session_id": session_id }),
+        )
+        .await?
+        .get("subscriptions")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(usize::MAX))
+}
+
 pub fn evaluate_text_response<'a>(
     _context: &'a E2eContext,
     observation: &'a ScenarioObservation,
