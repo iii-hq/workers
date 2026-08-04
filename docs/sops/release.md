@@ -37,6 +37,7 @@ Actions → **Create Tag**:
 |---|---|
 | Worker | Folder name (must be in workflow options) |
 | Bump | `patch` / `minor` / `major` |
+| Registry channel | `next` (default: validate and promote manually) or `latest` (publish directly) |
 | Experimental | Checkbox. Marks the worker experimental in the registry — see [Experimental releases](#experimental-releases) |
 
 The workflow:
@@ -44,8 +45,12 @@ The workflow:
 1. Bumps version in the worker manifest (`Cargo.toml`, `package.json`, …).
 2. Commits `chore(<worker>): bump to vX.Y.Z` to `main`.
 3. Creates and pushes an **annotated** tag `<worker>/vX.Y.Z` with
-   `registry-tag: next` and `experimental: <true|false>` in the tag
+   the selected `registry-tag` and `experimental: <true|false>` in the tag
    message.
+
+Choose `next` for the staged candidate flow. Choose `latest` for a worker that
+does not need candidate validation and manual promotion; that release publishes
+directly to the Registry `latest` channel.
 
 ### 2. Release pipeline
 
@@ -54,7 +59,10 @@ Tag push triggers **Release** (`release.yml`):
 ```mermaid
 flowchart LR
   createTag[Create Tag] -->|"tag worker/vX.Y.Z"| setupJob[setup]
-  setupJob --> ghRelease[create public GitHub prerelease]
+  setupJob --> channel{registry-tag}
+  channel -->|latest| directPublish[publish directly to latest]
+  directPublish --> normalRelease[normal GitHub Release]
+  channel -->|next| ghRelease[create public GitHub prerelease]
   ghRelease --> buildBinary["binary: _rust-binary.yml"]
   ghRelease --> buildImage["image: _container.yml"]
   ghRelease --> buildBundle["bundle: _bundle.yml"]
@@ -74,7 +82,7 @@ flowchart LR
 | Stage | Job | Output |
 |---|---|---|
 | setup | Parse tag + `iii.worker.yaml`; detect web bundle / smoke opt-out | worker, version, deploy, targets, … |
-| create-release | Public GitHub prerelease, never repository-global Latest | Release page and downloadable assets |
+| create-release | Public GitHub prerelease for `next`, normal Release for `latest` | Release page and downloadable assets |
 | binary-build | `_rust-binary.yml` | Per-target `.tar.gz` / `.zip` + `.sha256` on the Release |
 | container-build | `_container.yml` | Multi-arch image at `ghcr.io/<owner>/<worker>` |
 | bundle-build | `_bundle.yml` | `<worker>.tar.gz` + `.sha256` on the Release |
@@ -104,16 +112,25 @@ Workers with `interface_smoke: false` skip the entire publish job.
 
 ### 4. Candidate gates
 
-Every Registry-published release resolves and installs `worker@next`, checks the
-expected version in `iii.lock`, and verifies the registered interface. Harness
-and its mandatory dependencies additionally run the published quickstart and
-deployed E2E in the same Release run. Those gates use the stable CLI and stable
-baseline stack, then replace the released worker with `worker@<exact-version>`.
+Staged releases (`registry-tag: next`) resolve and install `worker@next`, check
+the expected version in `iii.lock`, and verify the registered interface.
+Harness and its mandatory dependencies additionally run the published
+quickstart and deployed E2E in the same Release run. Those gates use the stable
+CLI and stable baseline stack, then replace the released worker with
+`worker@<exact-version>`.
 
 `interface_smoke: false` workers remain GitHub-only releases and do not enter
 the staged Registry flow.
 
-### 5. Promote to latest
+### 5. Direct latest releases
+
+When Create Tag is run with `registry-tag: latest`, the Release workflow
+publishes directly to Registry `latest`, skips candidate gates and the
+**Promote Worker** workflow, and creates a normal GitHub Release for a stable
+version. This path is intended for workers that do not need the staged
+candidate lifecycle.
+
+### 6. Promote to latest
 
 After `candidate-ready` passes, run Actions → **Promote Worker** from `main` and
 enter the worker, version, and Release run id. The workflow:
@@ -133,22 +150,24 @@ state. A rerun after Slack already accepted the root message can repeat the
 announcement, so inspect `#worker-releases` before retrying a Slack-only
 failure.
 
-### 6. Registry tag semantics
+### 7. Registry tag semantics
 
 | Channel | Typical use |
 |---|---|
-| `latest` | Last manually promoted stable worker version |
+| `latest` | Stable worker channel, updated directly or by manual promotion |
 | `next` | Current candidate created by the release pipeline |
 
 After promotion, `next` and `latest` may point to the same immutable version.
-The next release moves only `next`. The annotated Git tag records the initial
-Registry tag; the regular Create Tag workflow always writes `next`.
+The next staged release moves only `next`. The annotated Git tag records the
+initial Registry tag; Create Tag defaults to `next`, but can select `latest` for
+a direct release.
 
 ## Experimental releases
 
 Tick **Experimental** on Create Tag to mark the worker unstable in the
-registry. It is a badge and nothing else — the version publishes to `next`,
-installs normally, and resolves normally. Promotion does not clear the badge.
+registry. It is a badge and nothing else — the version publishes to the
+selected channel, installs normally, and resolves normally. Promotion does not
+clear the badge.
 
 It travels the same way the channel does: `experimental: true` in the
 annotated tag message, read by `parse_release_tag.py`, forwarded through
@@ -268,8 +287,9 @@ On failure, publish dumps `iii-engine.log` and `worker-<worker>.log` (last 200 l
 There is **no unpublish**. Recovery:
 
 1. Fix the issue on `main`.
-2. Cut a new patch via Create Tag; it publishes to `next`.
-3. Validate and manually promote the replacement.
+2. Cut a new patch via Create Tag; use `next` for a staged replacement or
+   `latest` for a direct replacement.
+3. Validate and manually promote the replacement when using `next`.
 
 GitHub Release assets for the bad version remain (immutable history).
 
