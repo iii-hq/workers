@@ -86,6 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     register_router(iii.clone()).await?;
+    llm_router::ui::register(&iii);
     tracing::info!(url = %cli.url, "llm-router registered");
 
     tokio::signal::ctrl_c().await?;
