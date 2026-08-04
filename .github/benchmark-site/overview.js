@@ -84,14 +84,21 @@
     efficiencyBody: document.querySelector("#efficiency-body"),
     efficiencyCost: document.querySelector("#efficiency-cost"),
     efficiencyCostDelta: document.querySelector("#efficiency-cost-delta"),
+    efficiencyCostBaseline: document.querySelector("#efficiency-cost-baseline"),
     efficiencyCostSparkline: document.querySelector("#efficiency-cost-sparkline"),
     efficiencyDuration: document.querySelector("#efficiency-duration"),
     efficiencyDurationDelta: document.querySelector("#efficiency-duration-delta"),
+    efficiencyDurationBaseline: document.querySelector(
+      "#efficiency-duration-baseline",
+    ),
     efficiencyDurationSparkline: document.querySelector(
       "#efficiency-duration-sparkline",
     ),
     efficiencyErrors: document.querySelector("#efficiency-errors"),
     efficiencyErrorsDelta: document.querySelector("#efficiency-errors-delta"),
+    efficiencyErrorsBaseline: document.querySelector(
+      "#efficiency-errors-baseline",
+    ),
     efficiencyErrorsSparkline: document.querySelector(
       "#efficiency-errors-sparkline",
     ),
@@ -99,6 +106,9 @@
     efficiencyRunLabel: document.querySelector("#efficiency-run-label"),
     efficiencyTokens: document.querySelector("#efficiency-tokens"),
     efficiencyTokensDelta: document.querySelector("#efficiency-tokens-delta"),
+    efficiencyTokensBaseline: document.querySelector(
+      "#efficiency-tokens-baseline",
+    ),
     efficiencyTokensSparkline: document.querySelector(
       "#efficiency-tokens-sparkline",
     ),
@@ -272,34 +282,34 @@
     }
     const absolute = Math.abs(value);
     if (absolute < 0.05) {
-      return { label: "No change in comparable cohort", css: "neutral" };
+      return { label: "No change vs baseline median", css: "neutral" };
     }
     return {
-      label: `${value < 0 ? "↓" : "↑"} ${compactNumber(absolute, 1)}% comparable cohort`,
+      label: `${value < 0 ? "↓" : "↑"} ${compactNumber(absolute, 1)}% vs baseline median`,
       css: value < 0 ? "improved" : "regressed",
     };
   }
 
-  function renderEfficiencySparkline(element, metricId, color) {
-    const values = history.executions
-      .filter((execution) => (execution.scenario_metrics || []).length)
-      .slice(0, 14)
-      .reverse()
-      .map((execution) =>
-        (execution.scenario_metrics || []).reduce(
-          (total, scenario) =>
-            total + (Number(scenario?.averages?.[metricId]) || 0),
-          0,
-        ),
-      );
-    if (!values.length) {
+  function renderEfficiencySparkline(element, metricId, color, cohortRows, baseline) {
+    const points = executionApi.cohortMetricSparkline(
+      history.executions,
+      cohortRows,
+      metricId,
+      14,
+    );
+    if (!points.length) {
       element.replaceChildren();
       return;
     }
+    const definition = scenarioMetricDefinitions[metricId];
+    const values = points.map((point) => point.value);
+    const baselineValue = typeof baseline === "number" ? baseline : null;
+    const scaleValues =
+      baselineValue === null ? values : [...values, baselineValue];
     const width = 180;
     const height = 42;
-    const minimum = Math.min(...values);
-    const maximum = Math.max(...values);
+    const minimum = Math.min(...scaleValues);
+    const maximum = Math.max(...scaleValues);
     const range = maximum - minimum || 1;
     const x = (index) =>
       values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
@@ -307,7 +317,7 @@
     const svg = svgElement("svg", {
       viewBox: `0 0 ${width} ${height}`,
       role: "img",
-      "aria-label": `${scenarioMetricDefinitions[metricId].label} operational trend`,
+      "aria-label": `${definition.label} comparable cohort trend`,
     });
     const areaPoints = [
       `0,${height}`,
@@ -320,6 +330,22 @@
         fill: color,
         class: "efficiency-sparkline-area",
       }),
+    );
+    if (baselineValue !== null) {
+      const baselineLine = svgElement("line", {
+        x1: 0,
+        x2: width,
+        y1: y(baselineValue),
+        y2: y(baselineValue),
+        class: "efficiency-sparkline-baseline",
+      });
+      const baselineTitle = svgElement("title", {});
+      baselineTitle.textContent =
+        `Baseline ${definition.format(baselineValue)} — median of up to 7 prior comparable runs`;
+      baselineLine.append(baselineTitle);
+      svg.append(baselineLine);
+    }
+    svg.append(
       svgElement("polyline", {
         points: values
           .map((value, index) => `${x(index)},${y(value)}`)
@@ -334,6 +360,31 @@
         fill: color,
       }),
     );
+    const slot = width / points.length;
+    points.forEach((point, index) => {
+      const hit = svgElement("rect", {
+        x: index * slot,
+        y: 0,
+        width: slot,
+        height,
+        class: "efficiency-sparkline-hit",
+      });
+      const parts = [
+        `Run ${point.executionId}`,
+        formatDate(point.timestamp),
+        definition.format(point.value),
+      ];
+      if (baselineValue !== null && baselineValue !== 0) {
+        const deltaPct = ((point.value - baselineValue) / Math.abs(baselineValue)) * 100;
+        parts.push(
+          `${deltaPct < 0 ? "↓" : "↑"} ${compactNumber(Math.abs(deltaPct), 1)}% vs baseline`,
+        );
+      }
+      const title = svgElement("title", {});
+      title.textContent = parts.join(" · ");
+      hit.append(title);
+      svg.append(hit);
+    });
     element.replaceChildren(svg);
   }
 
@@ -400,6 +451,7 @@
         metricId: "cost_usd",
         value: elements.efficiencyCost,
         delta: elements.efficiencyCostDelta,
+        baseline: elements.efficiencyCostBaseline,
         sparkline: elements.efficiencyCostSparkline,
         format: formatCurrency,
         color: palette[0],
@@ -408,6 +460,7 @@
         metricId: "tokens",
         value: elements.efficiencyTokens,
         delta: elements.efficiencyTokensDelta,
+        baseline: elements.efficiencyTokensBaseline,
         sparkline: elements.efficiencyTokensSparkline,
         format: (value) => compactNumber(value, 0),
         color: palette[1],
@@ -416,6 +469,7 @@
         metricId: "duration_seconds",
         value: elements.efficiencyDuration,
         delta: elements.efficiencyDurationDelta,
+        baseline: elements.efficiencyDurationBaseline,
         sparkline: elements.efficiencyDurationSparkline,
         format: formatDuration,
         color: palette[3],
@@ -424,18 +478,38 @@
         metricId: "function_call_errors",
         value: elements.efficiencyErrors,
         delta: elements.efficiencyErrorsDelta,
+        baseline: elements.efficiencyErrorsBaseline,
         sparkline: elements.efficiencyErrorsSparkline,
         format: (value) => compactNumber(value, 1),
         color: palette[6],
       },
     ];
+    const cohortRows = overview.rows.filter(
+      (row) => row.lifecycle === "comparable" && row.outcome.passed,
+    );
     cards.forEach((card) => {
       const metric = overview.metrics[card.metricId];
-      card.value.textContent = card.format(metric?.operational);
+      // Value, delta, and sparkline must all read the same population; fall
+      // back to the full-suite total only while no cohort exists yet.
+      card.value.textContent = card.format(
+        cohortRows.length ? metric?.comparableCurrent : metric?.operational,
+      );
       const meta = deltaMeta(metric?.delta);
       card.delta.textContent = meta.label;
       card.delta.className = `efficiency-delta delta-${meta.css}`;
-      renderEfficiencySparkline(card.sparkline, card.metricId, card.color);
+      const baselineValue =
+        cohortRows.length && typeof metric?.comparableBaseline === "number"
+          ? metric.comparableBaseline
+          : null;
+      card.baseline.textContent =
+        baselineValue === null ? "" : `baseline ${card.format(baselineValue)}`;
+      renderEfficiencySparkline(
+        card.sparkline,
+        card.metricId,
+        card.color,
+        cohortRows,
+        cohortRows.length ? metric?.comparableBaseline : null,
+      );
     });
 
     const passed = Number(overview.latest.totals?.passed_scenarios) || 0;
