@@ -507,7 +507,10 @@ pub async fn run_step(
             &assembled.system_prompt,
         );
         let final_request_tokens = if request_unchanged {
-            assembled.token_count
+            // `assembled.token_count` was fit against the inflated overhead
+            // (base + reservation); the reservation went unused on an
+            // unchanged request, so it is not part of the real total.
+            assembled.token_count.saturating_sub(extra_overhead_tokens)
         } else {
             let final_count = deps
                 .context()

@@ -107,11 +107,19 @@ export function parseMetrics(value: unknown): MetricsResponse | null {
 export function isSnapshot(value: unknown): value is ContextSnapshot {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const snap = value as Record<string, unknown>
+  if (typeof snap.total !== 'number' || typeof snap.usable !== 'number')
+    return false
+  const categories = snap.categories as Record<string, unknown> | undefined
+  if (!categories || typeof categories !== 'object' || Array.isArray(categories))
+    return false
+  const messages = categories.messages as Record<string, unknown> | undefined
   return (
-    typeof snap.total === 'number' &&
-    typeof snap.usable === 'number' &&
-    !!snap.categories &&
-    typeof snap.categories === 'object' &&
-    !Array.isArray(snap.categories)
+    !!messages &&
+    typeof messages === 'object' &&
+    !Array.isArray(messages) &&
+    typeof messages.user === 'number' &&
+    typeof messages.assistant === 'number' &&
+    typeof messages.function_result === 'number' &&
+    typeof messages.custom === 'number'
   )
 }

@@ -39,20 +39,36 @@ impl SnapshotMessagesV1 {
     }
 
     /// The same by-role proportions carried onto a different total
-    /// (`numerator / denominator`). `denominator == 0` has no proportions to
-    /// carry, so it yields all-zero.
+    /// (`numerator / denominator`), summing to exactly `numerator`: the
+    /// largest bucket absorbs the flooring remainder so category totals
+    /// keep reconciling with the exact request total. `denominator == 0`
+    /// has no proportions to carry, so it yields all-zero.
     fn scaled(&self, numerator: u64, denominator: u64) -> Self {
         if denominator == 0 {
             return Self::default();
         }
         let scale = numerator as f64 / denominator as f64;
         let apply = |tokens: u64| (tokens as f64 * scale) as u64;
-        Self {
+        let mut scaled = Self {
             user: apply(self.user),
             assistant: apply(self.assistant),
             function_result: apply(self.function_result),
             custom: apply(self.custom),
+        };
+        let shortfall = numerator.saturating_sub(scaled.total());
+        let largest = [
+            (&mut scaled.user, self.user),
+            (&mut scaled.assistant, self.assistant),
+            (&mut scaled.function_result, self.function_result),
+            (&mut scaled.custom, self.custom),
+        ]
+        .into_iter()
+        .max_by_key(|(_, original)| *original)
+        .map(|(bucket, _)| bucket);
+        if let Some(bucket) = largest {
+            *bucket += shortfall;
         }
+        scaled
     }
 }
 
@@ -162,9 +178,10 @@ fn count_cache() -> &'static Mutex<HashMap<u64, u64>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn cache_key(model: &str, kind: &str, content: &str) -> u64 {
+fn cache_key(model: &str, provider: Option<&str>, kind: &str, content: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     model.hash(&mut hasher);
+    provider.hash(&mut hasher);
     kind.hash(&mut hasher);
     content.hash(&mut hasher);
     hasher.finish()
@@ -228,7 +245,7 @@ struct Counted {
 /// Tokens the probe alone costs, so every part's delta subtracts the same
 /// base. Counted once per (model, provider) and cached for the process.
 async fn probe_base(router: &RouterClient, model: &str, provider: Option<&str>) -> Option<u64> {
-    let key = cache_key(model, "base", "");
+    let key = cache_key(model, provider, "base", "");
     if let Some(tokens) = cached(key) {
         return Some(tokens);
     }
@@ -249,7 +266,7 @@ async fn counted_delta(
     base: u64,
     part: Part<'_>,
 ) -> Option<Counted> {
-    let key = cache_key(model, part.kind(), &part.content_key());
+    let key = cache_key(model, provider, part.kind(), &part.content_key());
     if let Some(tokens) = cached(key) {
         return Some(Counted {
             tokens,

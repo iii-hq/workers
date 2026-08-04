@@ -276,6 +276,14 @@ export function createContextChip(host: Host) {
     const [open, setOpen] = useState(false)
     const rootRef = useRef<HTMLDivElement | null>(null)
 
+    // Both the hydration read and the streamed trigger write this state;
+    // keep whichever snapshot is newest so a slow state::get can never
+    // overwrite a fresher streamed step.
+    const acceptNewer = (value: ContextSnapshot) =>
+      setSnapshot((current) =>
+        current && current.timestamp >= value.timestamp ? current : value,
+      )
+
     useEffect(() => {
       let cancelled = false
       setSnapshot(null)
@@ -285,7 +293,7 @@ export function createContextChip(host: Host) {
         .then((value) => {
           if (cancelled) return
           if (isSnapshot(value) && value.session_id === sessionId)
-            setSnapshot(value)
+            acceptNewer(value)
         })
         .catch(() => {})
       return () => {
@@ -301,7 +309,7 @@ export function createContextChip(host: Host) {
         if (!event || event.key !== sessionId) return
         if (event.event_type === 'state:deleted') return
         if (isSnapshot(event.new_value) && event.new_value.session_id === sessionId)
-          setSnapshot(event.new_value)
+          acceptNewer(event.new_value)
       })
       const offTrigger = host.iii.registerTrigger({
         type: 'state',

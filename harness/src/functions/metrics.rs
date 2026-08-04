@@ -159,9 +159,18 @@ pub async fn handle(
                 total.observe(message);
             }
         }
-        // The turn record already carries the session's latest snapshot; do
-        // not spend a second state round trip per session re-reading it.
-        by_session.push(current.finish_session(node, turn.context_snapshot.clone()));
+        // The turn record usually carries the session's latest snapshot for
+        // free; a freshly seeded turn has not generated yet, so fall back to
+        // the durable `harness_context` row (which the previous turn wrote).
+        let context = match turn.context_snapshot.clone() {
+            Some(snapshot) => Some(snapshot),
+            None => {
+                crate::context_snapshot::get(&deps.iii, &node.session_id, cfg.session_timeout_ms)
+                    .await
+                    .unwrap_or(None)
+            }
+        };
+        by_session.push(current.finish_session(node, context));
     }
     // Partial snapshots are polled as progress signals. Trace aggregation is
     // comparatively expensive and does not help the watchdog decide whether
