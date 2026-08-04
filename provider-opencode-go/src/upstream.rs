@@ -60,6 +60,7 @@ async fn run_upstream(
     let resp = match req.json(&args.body).send().await {
         Ok(r) => r,
         Err(e) => {
+            tracing::debug!(error = %error_chain(&e), "upstream request failed");
             let _ = tx
                 .send(synthetic_error_event(
                     &format!("opencode_go fetch failed: {}", error_chain(&e)),
@@ -72,6 +73,7 @@ async fn run_upstream(
     };
 
     let status = resp.status();
+    tracing::debug!(status = %status, "upstream http response");
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
         let kind = classify(Some(status.as_u16()), &text);
@@ -94,8 +96,10 @@ async fn run_upstream(
         .await
         .is_err()
     {
+        tracing::debug!("start send failed, receiver gone");
         return; // receiver gone before the first frame
     }
+    tracing::debug!("start frame sent");
 
     let mut stream = resp.bytes_stream();
     let mut buf = String::new();
@@ -147,12 +151,14 @@ async fn run_upstream(
     }
     // Compatible gateways may close the connection after their final delta.
     if state.has_content() {
+        tracing::debug!("stream ended; emitting done");
         let _ = tx
             .send(AssistantMessageEvent::Done {
                 message: build_final(&state, &args.model),
             })
             .await;
     } else {
+        tracing::debug!("stream ended; emitting error");
         let _ = tx
             .send(synthetic_error_event(
                 "opencode_go stream ended without output or a completion event",

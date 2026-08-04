@@ -58,12 +58,14 @@ async fn run_stream_call(
 ) {
     let model = input.model.clone();
     let mut warnings = Vec::new();
+    tracing::debug!(model = %model, "stream call begin");
 
     // Token + resolve are cached (ScaffoldCache): zero engine round trips
     // on the hot path within the TTL. An auth-classified resolve failure
     // drops the cache so the next attempt re-resolves fresh — retrying
     // stays the router's job.
     let token = cache.load_token(iii, state::STATE_SCOPE).await;
+    tracing::debug!(has_token = token.is_some(), "token loaded");
     let resolved = match cache
         .resolve(
             iii,
@@ -75,6 +77,7 @@ async fn run_stream_call(
     {
         Ok(r) => r,
         Err(e) => {
+            tracing::debug!(error = %e, "resolve failed");
             let kind = classify_bus_error(&e);
             if kind == ErrorKind::AuthExpired {
                 cache.invalidate();
@@ -93,6 +96,7 @@ async fn run_stream_call(
     let cfg = match config_from_resolve(&model, input.max_output_tokens, &resolved) {
         Ok(c) => c,
         Err(e) => {
+            tracing::debug!(error = %e, "config_from_resolve failed");
             let _ = send_event(
                 sink,
                 &synthetic_error_event(&e.to_string(), &model, ErrorKind::Permanent),
@@ -153,10 +157,12 @@ async fn run_stream_call(
             warnings,
         },
     );
+    tracing::debug!(api_url = %cfg.api_url, "upstream spawned, starting pump");
     let kind = match abort_reg {
         Some(g) => pump_abortable(rx, sink, PING_INTERVAL, g.watch()).await,
         None => pump(rx, sink, PING_INTERVAL).await,
     };
+    tracing::debug!(kind = ?kind, "pump finished");
     // An upstream auth terminal means the cached credential was rotated
     // out from under us: drop the cache so the next attempt re-resolves.
     if kind == Some(ErrorKind::AuthExpired) {
