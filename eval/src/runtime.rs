@@ -693,6 +693,7 @@ fn send_options(job: &EvalJobRecordV1, variant: &crate::contract::EvalVariantV1)
         output: Some(job.request.output.clone()),
         functions: Some(job.request.functions.clone()),
         metadata: job.request.metadata.clone(),
+        max_validation_retries: None,
     }
 }
 
