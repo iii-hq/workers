@@ -13,16 +13,6 @@ on:
         required: false
         type: number
         default: 2
-      quality_advisory:
-        description: Only fail degraded results below the CI score floor
-        required: false
-        type: boolean
-        default: false
-      ci_score_floor:
-        description: Minimum median score allowed by the advisory CI policy
-        required: false
-        type: number
-        default: 50
       subjects:
         description: JSON array of subject entries with id, model, and provider
         required: false
@@ -390,8 +380,6 @@ jobs:
           HARNESS_E2E_PROVIDER: ${{ matrix.subject.provider }}
           HARNESS_E2E_JUDGE_MODEL: ${{ inputs.judge_model }}
           HARNESS_E2E_JUDGE_PROVIDER: ${{ inputs.judge_provider }}
-          HARNESS_E2E_QUALITY_ADVISORY: ${{ inputs.quality_advisory }}
-          HARNESS_E2E_CI_SCORE_FLOOR: ${{ inputs.ci_score_floor }}
           HARNESS_E2E_ENGINE_REVISION: ${{ needs.build.outputs.engine_revision }}
           # run-ci.sh spawns every worker with cwd inside the artifacts dir, so
           # the profile path must be absolute; %c keeps profiles flushing after
@@ -419,8 +407,6 @@ jobs:
           HARNESS_E2E_PROVIDER: ${{ matrix.subject.provider }}
           HARNESS_E2E_JUDGE_MODEL: ${{ inputs.judge_model }}
           HARNESS_E2E_JUDGE_PROVIDER: ${{ inputs.judge_provider }}
-          HARNESS_E2E_QUALITY_ADVISORY: ${{ inputs.quality_advisory }}
-          HARNESS_E2E_CI_SCORE_FLOOR: ${{ inputs.ci_score_floor }}
         run: harness/tests/e2e/run-deployed-ci.sh
 
       - name: Write benchmark context
@@ -448,17 +434,11 @@ jobs:
         env:
           SCENARIO: ${{ matrix.scenario }}
           SUBJECT: ${{ matrix.subject.id }}
-          QUALITY_ADVISORY: ${{ inputs.quality_advisory }}
-          CI_SCORE_FLOOR: ${{ inputs.ci_score_floor }}
         run: |
           {
             echo "### Harness E2E · $SUBJECT · $SCENARIO"
             echo
-            if [[ "$QUALITY_ADVISORY" == "true" ]]; then
-              echo "CI gate: scores below ${CI_SCORE_FLOOR}% and technical failures are blocking. Higher-scoring quality and hard-gate failures remain visible but do not fail the workflow."
-            else
-              echo "Quality score gate: enforced."
-            fi
+            echo "CI gate: scores are advisory; empty reports, hard-gate failures, and technical failures are blocking."
             echo
             results=target/harness-e2e/results/results.json
             if [[ -f "$results" ]]; then

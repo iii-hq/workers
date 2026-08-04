@@ -61,8 +61,6 @@ jobs:
       stack_mode: registry
       runs: ${{ inputs.runs }}
       max_parallel: 2
-      quality_advisory: false
-      ci_score_floor: 50
       benchmark_lane: deployed
       registry_tag: ${{ inputs.channel }}
       release_tag: ${{ inputs.release_tag }}

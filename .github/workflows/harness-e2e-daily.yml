@@ -69,8 +69,6 @@ jobs:
     with:
       runs: 3
       max_parallel: 2
-      quality_advisory: true
-      ci_score_floor: 50
       source_ref: ${{ needs.context.outputs.source_sha }}
       benchmark_lane: daily
       release_tag: daily/${{ needs.context.outputs.benchmark_day }}

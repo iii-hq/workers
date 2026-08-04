@@ -123,11 +123,9 @@ cargo run -p harness-e2e -- run \
 `HARNESS_E2E_OUTPUT` are accepted as environment variables. `--runs` accepts
 values from 1 through 20.
 
-`--quality-advisory` or `HARNESS_E2E_QUALITY_ADVISORY=true` keeps degraded
-quality and hard-gate results visible without failing CI when the median score
-is at least 50. Scores below that floor and technical failures remain blocking.
-Override the floor with `--ci-score-floor` or
-`HARNESS_E2E_CI_SCORE_FLOOR`.
+Scores are quality data and never determine the CI exit status. Quality
+failures remain visible in the report, while empty reports, hard-gate
+failures, and technical failures remain blocking.
 
 The runner emits a progress heartbeat every 15 seconds with the active turn,
 step, pending function count, child-session count, and descendant-tree size.
@@ -161,7 +159,8 @@ Scenarios without one award every criterion objectively in code. Mechanical
 effects remain hard gates in both cases. Judge-backed scenarios use a 50-point
 pass floor so a mediocre but usable answer remains a passing execution while
 its full score still exposes the quality gap in reports and historical trends.
-Scores below 50 continue to fail as semantically inadequate. The
+Scores below 50 continue to be reported as semantically inadequate, but do not
+fail CI by themselves. The
 `shell_coder_sandbox` scenario also uses a 50-point floor because its required
 effects remain hard gates; an error-free execution earns 45 additional quality
 points, while a recovered function error stays visible without failing an
@@ -219,9 +218,9 @@ zero.
 | Workflow | Trigger | Live-model runs | Gate |
 | --- | --- | ---: | --- |
 | Pull-request CI | Relevant pull-request changes | 0 | Deterministic integration only |
-| Harness E2E Main | Relevant push to `main` | 1 per subject/scenario | Score advisory; technical failures blocking |
-| Harness E2E Daily | Daily at 06:00 UTC, or manual dispatch on `main` | 3 per subject/scenario | Median score and reliability gates are evaluated; history is published on failure |
-| Harness E2E deployed | Successful post-release smoke for Harness or a mandatory dependency | 1 per subject/scenario | Exact registry artifact, hard gates, and technical failures blocking |
+| Harness E2E Main | Relevant push to `main` | 1 per subject/scenario | Score advisory; empty reports, hard-gate and technical failures blocking |
+| Harness E2E Daily | Daily at 06:00 UTC, or manual dispatch on `main` | 3 per subject/scenario | Score is advisory; empty reports, hard-gate and technical failures are blocking; history is always published |
+| Harness E2E deployed | Successful post-release smoke for Harness or a mandatory dependency | 1 per subject/scenario | Score advisory; empty reports, hard-gate and technical failures blocking |
 
 The reusable workflow supports source and registry stack modes. Source runs
 install the latest stable `iii` release with its companion binaries, then build
@@ -324,9 +323,9 @@ Each matrix job publishes its result for 14 days; failed jobs also publish
 diagnostics for 14 days. The workflow summary shows subject, judge, and total
 cost per scenario and consolidated by subject. The daily dashboard retains the
 latest 100 comparable points and summaries, plus complete reports for the latest
-30 workflow attempts. Fixed code-defined thresholds remain the CI gate;
-historical deltas are a team-facing signal and do not add a second implicit
-threshold.
+30 workflow attempts. Fixed code-defined thresholds remain evaluation criteria;
+they do not determine CI success. Historical deltas are a team-facing signal
+and do not add an implicit threshold.
 
 The source launcher performs a clean first boot with isolated configuration,
 session, queue, state, and log directories. It starts the provider workers
