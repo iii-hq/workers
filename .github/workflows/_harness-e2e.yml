@@ -95,6 +95,8 @@ on:
         required: false
       zai_api_key:
         required: false
+      deepseek_api_key:
+        required: false
 
 jobs:
   build:
@@ -214,6 +216,7 @@ jobs:
             provider-openai-codex -> target
             provider-claude-code -> target
             provider-zai -> target
+            provider-deepseek -> target
             context-manager -> target
             iii-directory -> target
             cron -> target
@@ -378,6 +381,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
           OPENAI_API_KEY: ${{ secrets.openai_api_key }}
           ZAI_API_KEY: ${{ secrets.zai_api_key }}
+          DEEPSEEK_API_KEY: ${{ secrets.deepseek_api_key }}
           III_BIN: ${{ github.workspace }}/${{ needs.build.outputs.engine_binary }}
           HARNESS_E2E_BIN: ${{ github.workspace }}/harness/target/release/harness-e2e
           HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
@@ -400,6 +404,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
           OPENAI_API_KEY: ${{ secrets.openai_api_key }}
           ZAI_API_KEY: ${{ secrets.zai_api_key }}
+          DEEPSEEK_API_KEY: ${{ secrets.deepseek_api_key }}
           III_CLI_CHANNEL: ${{ inputs.cli_channel }}
           III_WORKER_TAG: ${{ inputs.registry_tag }}
           HARNESS_E2E_RELEASE_WORKER: ${{ inputs.release_worker }}
