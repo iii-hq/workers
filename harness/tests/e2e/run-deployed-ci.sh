@@ -17,19 +17,29 @@ repo_root=$(cd -- "$harness_root/.." && pwd)
 artifact_dir=${HARNESS_E2E_ARTIFACTS_DIR:-"$repo_root/target/harness-e2e"}
 e2e_bin=${HARNESS_E2E_BIN:-"$harness_root/target/release/harness-e2e"}
 install_url=${III_INSTALL_URL:-https://install.iii.dev/iii/main/install.sh}
-channel=${III_CHANNEL:-latest}
+cli_channel=${III_CLI_CHANNEL:-latest}
+worker_tag=${III_WORKER_TAG:-latest}
 runs=${HARNESS_E2E_RUNS:-1}
 engine_port=49134
 wait_seconds=180
 add_timeout_seconds=600
 
-case "$channel" in
+if [[ -n "${III_CHANNEL:-}" ]]; then
+  echo "III_CHANNEL was split into III_CLI_CHANNEL and III_WORKER_TAG" >&2
+  exit 2
+fi
+
+case "$cli_channel" in
   latest | next) ;;
   *)
-    echo "III_CHANNEL must be latest or next" >&2
+    echo "III_CLI_CHANNEL must be latest or next" >&2
     exit 2
     ;;
 esac
+[[ "$worker_tag" =~ ^[A-Za-z0-9._-]+$ ]] || {
+  echo "III_WORKER_TAG must be a valid Registry tag" >&2
+  exit 2
+}
 [[ -x "$e2e_bin" ]] || {
   echo "Harness E2E binary is not executable: $e2e_bin" >&2
   exit 2
@@ -49,7 +59,8 @@ mkdir -p "$project_dir" "$e2e_home"
 export HOME="$e2e_home"
 export XDG_CONFIG_HOME="$e2e_home/.config"
 export PATH="$e2e_home/.local/bin:$e2e_home/.iii/bin:$PATH"
-export III_CHANNEL="$channel"
+export III_CLI_CHANNEL="$cli_channel"
+export III_WORKER_TAG="$worker_tag"
 
 iii_bin=""
 engine_pid=""
@@ -76,7 +87,8 @@ write_deployment_result() {
     --arg reason "$failure_reason" \
     --arg phase "$failure_phase" \
     --arg cli_version "$cli_version" \
-    --arg channel "$channel" \
+    --arg cli_channel "$cli_channel" \
+    --arg worker_tag "$worker_tag" \
     --arg release_worker "$HARNESS_E2E_RELEASE_WORKER" \
     --arg release_version "$HARNESS_E2E_RELEASE_VERSION" \
     --arg actual_release_version "$actual_release_version" \
@@ -89,7 +101,8 @@ write_deployment_result() {
       failure_reason: $reason,
       failure_phase: $phase,
       cli_version: $cli_version,
-      channel: $channel,
+      cli_channel: $cli_channel,
+      worker_tag: $worker_tag,
       release_worker: $release_worker,
       release_version: $release_version,
       actual_release_version: $actual_release_version,
@@ -237,10 +250,10 @@ wait_for_model() {
   die "model $provider/$model did not resolve within ${wait_seconds}s"
 }
 
-log "Installing iii from $channel"
+log "Installing iii from $cli_channel"
 curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 \
   "$install_url" -o "$run_root/install.sh"
-if [[ "$channel" == next ]]; then
+if [[ "$cli_channel" == next ]]; then
   sh "$run_root/install.sh" --next 2>&1 | tee "$log_dir/install.log"
 else
   sh "$run_root/install.sh" 2>&1 | tee "$log_dir/install.log"
@@ -255,11 +268,11 @@ printf 'workers: []\n' >"$project_dir/config.yaml"
 engine_pid=$!
 wait_for_engine
 
-workers=(harness database)
+workers=("harness@$worker_tag" "database@$worker_tag")
 declare -A providers=()
 for provider in "$HARNESS_E2E_PROVIDER" "$HARNESS_E2E_JUDGE_PROVIDER"; do
   if [[ -z "${providers[$provider]:-}" ]]; then
-    workers+=("provider-$provider")
+    workers+=("provider-$provider@$worker_tag")
     providers[$provider]=1
   fi
 done
@@ -267,6 +280,12 @@ done
 log "Installing registry stack: ${workers[*]}"
 (cd "$project_dir" && timeout --signal=TERM --kill-after=15s "$add_timeout_seconds" \
   "$iii_bin" worker add "${workers[@]}") 2>&1 | tee "$log_dir/worker-add.log"
+
+log "Installing exact release candidate: ${HARNESS_E2E_RELEASE_WORKER}@${HARNESS_E2E_RELEASE_VERSION}"
+(cd "$project_dir" && timeout --signal=TERM --kill-after=15s "$add_timeout_seconds" \
+  "$iii_bin" worker add \
+  "${HARNESS_E2E_RELEASE_WORKER}@${HARNESS_E2E_RELEASE_VERSION}" --force) \
+  2>&1 | tee "$log_dir/candidate-override.log"
 
 wait_for_functions \
   harness::send harness::status worker::add database::query state::get \
@@ -289,7 +308,7 @@ verify_args=(
   --output "$stack_dir/lock-verification.json"
 )
 for worker in "${workers[@]}"; do
-  verify_args+=(--required "$worker")
+  verify_args+=(--required "${worker%@*}")
 done
 verification=$(python3 "$repo_root/.github/scripts/verify_registry_lock.py" "${verify_args[@]}")
 actual_release_version=$(jq -r '.actual_version' <<<"$verification")

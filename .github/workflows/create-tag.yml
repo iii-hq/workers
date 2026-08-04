@@ -72,14 +72,6 @@ on:
           - major
           - none
         default: patch
-      tag:
-        description: 'Registry tag (passed to POST /publish; not part of git tag name)'
-        required: true
-        type: choice
-        options:
-          - latest
-          - next
-        default: latest
       experimental:
         description: 'Mark the worker experimental in the registry (badge only — it still installs and resolves normally). Leave unchecked once it is stable: releasing without this clears the badge.'
         required: false
@@ -159,9 +151,11 @@ jobs:
           set -euo pipefail
           current=$(python3 .github/scripts/manifest_version.py read "$WORKER/$MANIFEST")
           new_ver=$(python3 .github/scripts/manifest_version.py bump "$WORKER/$MANIFEST" --kind "$BUMP")
-          echo "current=$current" >> "$GITHUB_OUTPUT"
-          echo "version=$new_ver" >> "$GITHUB_OUTPUT"
-          echo "tag=${WORKER}/v${new_ver}" >> "$GITHUB_OUTPUT"
+          {
+            echo "current=$current"
+            echo "version=$new_ver"
+            echo "tag=${WORKER}/v${new_ver}"
+          } >> "$GITHUB_OUTPUT"
           echo "::notice::${WORKER}: ${current} -> ${new_ver}"
 
       - name: Validate manifest update
@@ -218,7 +212,7 @@ jobs:
       - name: Create and push annotated tag
         env:
           TAG: ${{ steps.versions.outputs.tag }}
-          REGISTRY_TAG: ${{ inputs.tag }}
+          REGISTRY_TAG: next
           WORKER: ${{ inputs.worker }}
           NEW_VERSION: ${{ steps.versions.outputs.version }}
           EXPERIMENTAL: ${{ inputs.experimental }}

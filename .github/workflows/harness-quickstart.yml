@@ -3,10 +3,45 @@ name: Harness quickstart
 on:
   schedule:
     - cron: "17 5 * * *"
+  workflow_call:
+    inputs:
+      cli_channel:
+        description: iii installer channel
+        type: string
+        default: latest
+      registry_tag:
+        description: Registry tag for the baseline Harness stack
+        type: string
+        default: latest
+      release_worker:
+        description: Worker whose exact candidate version must be installed
+        type: string
+        default: ''
+      release_version:
+        description: Exact candidate version
+        type: string
+        default: ''
+      release_tag:
+        description: Git tag associated with the candidate
+        type: string
+        default: ''
+      release_run_id:
+        description: Publishing Release workflow run id
+        type: string
+        default: ''
+      cascade_e2e:
+        description: Dispatch deployed E2E after quickstart
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
-      channel:
-        description: Installer channel to validate
+      cli_channel:
+        description: iii installer channel to validate
+        type: choice
+        options: [latest, next]
+        default: latest
+      registry_tag:
+        description: Registry worker tag to validate
         type: choice
         options: [latest, next]
         default: latest
@@ -35,20 +70,20 @@ permissions:
   contents: read
 
 concurrency:
-  group: harness-quickstart-${{ inputs.channel || github.event_name }}-${{ inputs.release_version || 'rolling' }}
+  group: harness-quickstart-${{ inputs.cli_channel || github.event_name }}-${{ inputs.registry_tag || github.event_name }}-${{ inputs.release_version || 'rolling' }}
   cancel-in-progress: ${{ inputs.release_version == '' }}
 
 jobs:
   validate:
-    name: harness quickstart / published registry (${{ matrix.channel }})
+    name: harness quickstart / iii ${{ matrix.lane.cli }} / workers ${{ matrix.lane.registry }}
     strategy:
       fail-fast: false
       matrix:
-        channel: >-
+        lane: >-
           ${{
             github.event_name == 'schedule'
-            && fromJSON('["latest","next"]')
-            || fromJSON(format('["{0}"]', inputs.channel))
+            && fromJSON('[{"cli":"latest","registry":"latest"},{"cli":"next","registry":"next"}]')
+            || fromJSON(format('[{{"cli":"{0}","registry":"{1}"}}]', inputs.cli_channel, inputs.registry_tag))
           }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -60,7 +95,10 @@ jobs:
         env:
           HARNESS_QUICKSTART_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-quickstart
           HARNESS_QUICKSTART_TRACE: "1"
-          III_CHANNEL: ${{ matrix.channel }}
+          III_CLI_CHANNEL: ${{ matrix.lane.cli }}
+          III_WORKER_TAG: ${{ matrix.lane.registry }}
+          HARNESS_QUICKSTART_RELEASE_WORKER: ${{ inputs.release_worker }}
+          HARNESS_QUICKSTART_RELEASE_VERSION: ${{ inputs.release_version }}
         run: harness/tests/quickstart/run-ci.sh
 
       - name: Verify the released artifact was resolved
@@ -70,7 +108,8 @@ jobs:
           RELEASE_VERSION: ${{ inputs.release_version }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           RELEASE_RUN_ID: ${{ inputs.release_run_id }}
-          CHANNEL: ${{ matrix.channel }}
+          CLI_CHANNEL: ${{ matrix.lane.cli }}
+          REGISTRY_TAG: ${{ matrix.lane.registry }}
         run: |
           set -euo pipefail
           python3 -m pip install --quiet pyyaml
@@ -87,8 +126,9 @@ jobs:
             --arg version "$RELEASE_VERSION" \
             --arg tag "$RELEASE_TAG" \
             --arg run_id "$RELEASE_RUN_ID" \
-            --arg channel "$CHANNEL" \
-            '{worker: $worker, version: $version, tag: $tag, release_run_id: $run_id, channel: $channel}' \
+            --arg cli_channel "$CLI_CHANNEL" \
+            --arg registry_tag "$REGISTRY_TAG" \
+            '{worker: $worker, version: $version, tag: $tag, release_run_id: $run_id, cli_channel: $cli_channel, registry_tag: $registry_tag}' \
             >target/harness-quickstart/release-context.json
 
       - name: Show quickstart logs
@@ -110,9 +150,9 @@ jobs:
             echo
             if [[ -f target/harness-quickstart/result.json ]]; then
               jq -r '
-                "| Status | Channel | CLI | Duration |",
-                "| --- | --- | --- | ---: |",
-                "| \(.status) | \(.channel) | \(.cli_version) | \(.elapsed_ms) ms |",
+                "| Status | CLI channel | Worker tag | CLI | Duration |",
+                "| --- | --- | --- | --- | ---: |",
+                "| \(.status) | \(.cli_channel) | \(.worker_tag) | \(.cli_version) | \(.elapsed_ms) ms |",
                 (if .failure_reason != "" then "", "**Failure:** \(.failure_reason)" else empty end)
               ' target/harness-quickstart/result.json
             else
@@ -124,7 +164,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: harness-quickstart-${{ matrix.channel }}
+          name: harness-quickstart-${{ matrix.lane.cli }}-${{ matrix.lane.registry }}
           path: target/harness-quickstart/
           retention-days: 7
           if-no-files-found: ignore
@@ -141,7 +181,8 @@ jobs:
       - name: Dispatch deployed E2E CI
         env:
           GH_TOKEN: ${{ github.token }}
-          CHANNEL: ${{ inputs.channel }}
+          CLI_CHANNEL: ${{ inputs.cli_channel }}
+          REGISTRY_TAG: ${{ inputs.registry_tag }}
           WORKER: ${{ inputs.release_worker }}
           VERSION: ${{ inputs.release_version }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -157,7 +198,8 @@ jobs:
           gh workflow run harness-e2e-deployed.yml \
             --repo "$GITHUB_REPOSITORY" \
             --ref "$WORKFLOW_REF" \
-            --field "channel=$CHANNEL" \
+            --field "cli_channel=$CLI_CHANNEL" \
+            --field "registry_tag=$REGISTRY_TAG" \
             --field "release_worker=$WORKER" \
             --field "release_version=$VERSION" \
             --field "release_tag=$RELEASE_TAG" \

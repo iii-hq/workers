@@ -78,6 +78,11 @@ on:
         required: false
         type: string
         default: ''
+      cli_channel:
+        description: iii installer channel used for a registry stack
+        required: false
+        type: string
+        default: latest
       coverage:
         description: Instrument the E2E stack and produce an LLVM coverage report
         required: false
@@ -128,6 +133,7 @@ jobs:
           JUDGE_MODEL: ${{ inputs.judge_model }}
           JUDGE_PROVIDER: ${{ inputs.judge_provider }}
           STACK_MODE: ${{ inputs.stack_mode }}
+          CLI_CHANNEL: ${{ inputs.cli_channel }}
           REGISTRY_TAG: ${{ inputs.registry_tag }}
           RELEASE_WORKER: ${{ inputs.release_worker }}
           RELEASE_VERSION: ${{ inputs.release_version }}
@@ -148,7 +154,8 @@ jobs:
           case "$STACK_MODE" in
             source) ;;
             registry)
-              [[ "$REGISTRY_TAG" == "latest" || "$REGISTRY_TAG" == "next" ]]
+              [[ "$CLI_CHANNEL" == "latest" || "$CLI_CHANNEL" == "next" ]]
+              [[ "$REGISTRY_TAG" =~ ^[A-Za-z0-9._-]+$ ]]
               [[ "$RELEASE_WORKER" =~ ^[A-Za-z0-9_-]+$ ]]
               [[ -n "$RELEASE_VERSION" ]]
               [[ "$COVERAGE" == "false" ]]
@@ -393,7 +400,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
           OPENAI_API_KEY: ${{ secrets.openai_api_key }}
           ZAI_API_KEY: ${{ secrets.zai_api_key }}
-          III_CHANNEL: ${{ inputs.registry_tag }}
+          III_CLI_CHANNEL: ${{ inputs.cli_channel }}
+          III_WORKER_TAG: ${{ inputs.registry_tag }}
           HARNESS_E2E_RELEASE_WORKER: ${{ inputs.release_worker }}
           HARNESS_E2E_RELEASE_VERSION: ${{ inputs.release_version }}
           HARNESS_E2E_RELEASE_TAG: ${{ inputs.release_tag }}

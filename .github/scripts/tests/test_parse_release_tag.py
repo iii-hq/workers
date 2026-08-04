@@ -69,6 +69,7 @@ class TestParseReleaseTag:
         assert out["registry_tag"] == "latest"
         assert out["is_prerelease"] == "false"
         assert out["dry_run"] == "false"
+        assert len(out["tag_sha"]) == 40
 
     def test_prerelease_sets_is_prerelease(self, tmp_path):
         repo = make_repo_with_tagged_worker(tmp_path, "smoke/v1.2.3-rc.1", "1.2.3-rc.1",
@@ -81,6 +82,19 @@ class TestParseReleaseTag:
         assert out["is_prerelease"] == "true"
         assert out["dry_run"] == "false"
         assert out["registry_tag"] == "next"
+
+    def test_non_numeric_prerelease_suffix_is_not_promotable_stable(self, tmp_path):
+        repo = make_repo_with_tagged_worker(
+            tmp_path,
+            "smoke/v1.2.3-preview",
+            "1.2.3-preview",
+            registry_tag_line="registry-tag: next",
+        )
+        out_path = tmp_path / "gh_output"
+        out_path.touch()
+        r = run_script(repo, "smoke/v1.2.3-preview", out_path)
+        assert r.returncode == 0
+        assert parse_outputs(out_path)["is_prerelease"] == "true"
 
     def test_dry_run_tag(self, tmp_path):
         repo = make_repo_with_tagged_worker(tmp_path, "smoke/v9.9.9-dry-run.1", "9.9.9-dry-run.1")
