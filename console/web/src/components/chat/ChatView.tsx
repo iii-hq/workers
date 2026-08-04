@@ -374,6 +374,12 @@ export function ChatView({
       ),
     [sessionTriggers, firedTriggers],
   )
+  // Registration lookup for trigger-fired cards: a fire record carries only
+  // the subscription id — the binding's config/conditions live in these rows.
+  const triggersById = useMemo(
+    () => new Map(mergedTriggers.map((t) => [t.id, t])),
+    [mergedTriggers],
+  )
 
   // The strip's rows: this tab's drafts first, then server-queued rows not
   // already covered by a draft or an arrived transcript row (a stale poll
@@ -1711,6 +1717,7 @@ export function ChatView({
         onResolveFilesystemAccess={handleFilesystemResolve}
         onManageFilesystemAccess={handleManageFilesystemAccess}
         workingDir={conversation.workingDir ?? null}
+        triggersById={triggersById}
       />
       <LiveRegion announcement={announcer.announcement} />
 

@@ -120,6 +120,19 @@ export function RegisterTriggerView({
       </div>
       {showRawConfig ? <LabeledJson label="config" value={req.config} /> : null}
 
+      {req.conditions?.length ? (
+        <>
+          <PaneLabel>only if</PaneLabel>
+          {req.conditions.map((c, i) => (
+            <ConditionRow
+              // Conditions have no id of their own; order is the identity.
+              key={`${c.function_id ?? 'condition'}-${i}`}
+              condition={c}
+            />
+          ))}
+        </>
+      ) : null}
+
       <PaneLabel>then</PaneLabel>
       <div className="px-3 py-2 border-b border-rule-2 bg-bg flex flex-col gap-1.5">
         <div className="flex items-baseline gap-2 flex-wrap">
@@ -151,6 +164,76 @@ export function RegisterTriggerView({
         <LabeledJson label="metadata" value={req.metadata} />
       ) : null}
     </div>
+  )
+}
+
+const isScalar = (v: unknown) =>
+  v === null ||
+  typeof v === 'string' ||
+  typeof v === 'number' ||
+  typeof v === 'boolean'
+
+/**
+ * One gating predicate: the condition function (accent, like the THEN call)
+ * with its config as chips — scalars and primitive arrays inline, anything
+ * nested in a compact JSON block so no field is silently dropped.
+ */
+function ConditionRow({
+  condition,
+}: {
+  condition: { function_id?: string; config?: unknown }
+}) {
+  const config =
+    condition.config &&
+    typeof condition.config === 'object' &&
+    !Array.isArray(condition.config)
+      ? (condition.config as Record<string, unknown>)
+      : null
+  const entries = config ? Object.entries(config) : []
+  const chippable = entries.filter(
+    ([, v]) => isScalar(v) || (Array.isArray(v) && v.every(isScalar)),
+  )
+  const rest = entries.filter(
+    ([, v]) => !(isScalar(v) || (Array.isArray(v) && v.every(isScalar))),
+  )
+  return (
+    <>
+      <div className="px-3 py-2 border-b border-rule-2 bg-bg flex flex-col gap-1.5">
+        <div className="flex items-baseline gap-2 flex-wrap">
+          <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+            gate
+          </span>
+          {condition.function_id ? (
+            <span className="font-mono text-[12.5px] text-accent break-all">
+              {condition.function_id}
+            </span>
+          ) : (
+            <span className="font-mono text-[12.5px] text-ink-faint italic">
+              condition
+            </span>
+          )}
+        </div>
+        {chippable.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {chippable.map(([k, v]) => (
+              <FilterChip
+                key={k}
+                label={k}
+                value={Array.isArray(v) ? v.map(String).join(', ') : String(v)}
+              />
+            ))}
+          </div>
+        ) : null}
+      </div>
+      {rest.length > 0 ? (
+        <LabeledJson
+          label="condition config"
+          value={Object.fromEntries(rest)}
+        />
+      ) : config === null && condition.config !== undefined ? (
+        <LabeledJson label="condition config" value={condition.config} />
+      ) : null}
+    </>
   )
 }
 
