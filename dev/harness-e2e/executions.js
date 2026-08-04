@@ -4,6 +4,839 @@ window.HARNESS_EXECUTIONS = {
       "actor": "ytallo",
       "attempt": 1,
       "availability": "full",
+      "completed_at": "2026-08-04T07:56:35Z",
+      "conclusion": "failure",
+      "detail_path": "runs/30885350371-1.json",
+      "event": "schedule",
+      "execution": {
+        "actor": "ytallo",
+        "attempt": 1,
+        "completed_at": "2026-08-04T07:56:35Z",
+        "conclusion": "failure",
+        "event": "schedule",
+        "head_branch": "main",
+        "head_sha": "4c0401a0537802e29fb611e5b561fdae815770cf",
+        "id": "30885350371-1",
+        "repository": "iii-hq/workers",
+        "run_id": "30885350371",
+        "started_at": "2026-08-04T06:49:05Z",
+        "workflow_name": "Harness E2E Daily",
+        "workflow_url": "https://github.com/iii-hq/workers/actions/runs/30885350371"
+      },
+      "generated_at": "2026-08-04T07:56:00.818221+00:00",
+      "id": "30885350371-1",
+      "lane": "daily",
+      "release": {
+        "registry_tag": "daily",
+        "tag": "daily/2026-08-04",
+        "url": "https://github.com/iii-hq/workers/commit/4c0401a0537802e29fb611e5b561fdae815770cf",
+        "version": "2026-08-04",
+        "worker": "main"
+      },
+      "requested_runs": 3,
+      "run_id": "30885350371",
+      "scenario_metrics": [
+        {
+          "averages": {
+            "cost_usd": 0.04366667999999999,
+            "duration_seconds": 13.536333333333332,
+            "function_call_errors": 0.0,
+            "function_calls": 1.0,
+            "sessions": 1.0,
+            "tokens": 26625.333333333332,
+            "turns": 4.0
+          },
+          "contract_fingerprint": "fnv1a32:4ed893e8",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "custom_validator",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.021650813333333335,
+            "duration_seconds": 54.11833333333333,
+            "function_call_errors": 0.0,
+            "function_calls": 0.0,
+            "sessions": 1.0,
+            "tokens": 7985.333333333333,
+            "turns": 1.0
+          },
+          "contract_fingerprint": "fnv1a32:eea232b1",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "design_tradeoff",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.011077533333333334,
+            "duration_seconds": 9.631,
+            "function_call_errors": 0.0,
+            "function_calls": 0.0,
+            "sessions": 1.0,
+            "tokens": 6294.0,
+            "turns": 1.0
+          },
+          "contract_fingerprint": "fnv1a32:9ddecf33",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "direct_answer",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.19626033333333334,
+            "duration_seconds": 47.19833333333333,
+            "function_call_errors": 0.0,
+            "function_calls": 14.666666666666666,
+            "sessions": 1.0,
+            "tokens": 117985.66666666667,
+            "turns": 10.666666666666666
+          },
+          "contract_fingerprint": "fnv1a32:8da5e3b5",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "mechanical_reaction",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.3044861866666666,
+            "duration_seconds": 69.28166666666667,
+            "function_call_errors": 0.0,
+            "function_calls": 16.333333333333332,
+            "sessions": 3.0,
+            "tokens": 182552.33333333334,
+            "turns": 19.666666666666668
+          },
+          "contract_fingerprint": "fnv1a32:fad69b9f",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "multi_subagent_validation",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.04962388,
+            "duration_seconds": 21.53333333333333,
+            "function_call_errors": 0.0,
+            "function_calls": 3.0,
+            "sessions": 1.0,
+            "tokens": 30484.333333333332,
+            "turns": 4.0
+          },
+          "contract_fingerprint": "fnv1a32:79be8d47",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "persistent_state",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.6726531466666666,
+            "duration_seconds": 169.54066666666668,
+            "function_call_errors": 0.0,
+            "function_calls": 55.333333333333336,
+            "sessions": 5.0,
+            "tokens": 399138.3333333333,
+            "turns": 34.666666666666664
+          },
+          "contract_fingerprint": "fnv1a32:3a5be718",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "reactive_automation",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.8004526533333336,
+            "duration_seconds": 273.88366666666667,
+            "function_call_errors": 1.0,
+            "function_calls": 33.0,
+            "sessions": 4.0,
+            "tokens": 477419.0,
+            "turns": 31.0
+          },
+          "contract_fingerprint": "fnv1a32:4ac92d0d",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "receiving_operation",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.36658714666666664,
+            "duration_seconds": 132.913,
+            "function_call_errors": 0.3333333333333333,
+            "function_calls": 20.333333333333332,
+            "sessions": 3.0,
+            "tokens": 214835.0,
+            "turns": 14.0
+          },
+          "contract_fingerprint": "fnv1a32:642af481",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "research_pipeline",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.016004746666666667,
+            "duration_seconds": 21.906000000000002,
+            "function_call_errors": 0.0,
+            "function_calls": 0.0,
+            "sessions": 1.0,
+            "tokens": 7001.0,
+            "turns": 1.0
+          },
+          "contract_fingerprint": "fnv1a32:b82f2ff2",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "security_review",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.020244866666666663,
+            "duration_seconds": 27.91333333333333,
+            "function_call_errors": 0.0,
+            "function_calls": 0.0,
+            "sessions": 1.0,
+            "tokens": 7215.333333333333,
+            "turns": 1.0
+          },
+          "contract_fingerprint": "fnv1a32:f9261bda",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "security_triage",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.7545666533333333,
+            "duration_seconds": 132.037,
+            "function_call_errors": 0.6666666666666666,
+            "function_calls": 23.333333333333332,
+            "sessions": 1.0,
+            "tokens": 455392.0,
+            "turns": 22.666666666666668
+          },
+          "contract_fingerprint": "fnv1a32:1e651e78",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "shell_coder_sandbox",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.24088757333333333,
+            "duration_seconds": 62.385,
+            "function_call_errors": 0.3333333333333333,
+            "function_calls": 13.0,
+            "sessions": 1.6666666666666667,
+            "tokens": 145242.33333333334,
+            "turns": 14.333333333333334
+          },
+          "contract_fingerprint": "fnv1a32:80ed5cc6",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "subagent_validation",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.23012635999999997,
+            "duration_seconds": 182.73366666666666,
+            "function_call_errors": 0.0,
+            "function_calls": 15.666666666666666,
+            "sessions": 2.0,
+            "tokens": 138005.66666666666,
+            "turns": 17.0
+          },
+          "contract_fingerprint": "fnv1a32:d518ea13",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "subagent_validation_failure",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.07380988,
+            "duration_seconds": 23.91033333333333,
+            "function_call_errors": 0.0,
+            "function_calls": 4.333333333333333,
+            "sessions": 1.0,
+            "tokens": 44401.0,
+            "turns": 6.0
+          },
+          "contract_fingerprint": "fnv1a32:9faf1659",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "timer_wake",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.3755032800000001,
+            "duration_seconds": 63.044,
+            "function_call_errors": 0.0,
+            "function_calls": 18.0,
+            "sessions": 1.0,
+            "tokens": 227220.0,
+            "turns": 16.0
+          },
+          "contract_fingerprint": "fnv1a32:c822dbb7",
+          "run_count": 1,
+          "samples": {
+            "cost_usd": 1,
+            "duration_seconds": 1,
+            "function_call_errors": 1,
+            "function_calls": 1,
+            "sessions": 1,
+            "tokens": 1,
+            "turns": 1
+          },
+          "scenario_id": "validation_chain",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.1958127,
+            "duration_seconds": 37.457499999999996,
+            "function_call_errors": 0.0,
+            "function_calls": 11.0,
+            "sessions": 1.0,
+            "tokens": 118767.5,
+            "turns": 10.0
+          },
+          "contract_fingerprint": "fnv1a32:ba1d2272",
+          "run_count": 2,
+          "samples": {
+            "cost_usd": 2,
+            "duration_seconds": 2,
+            "function_call_errors": 2,
+            "function_calls": 2,
+            "sessions": 2,
+            "tokens": 2,
+            "turns": 2
+          },
+          "scenario_id": "validation_loop",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.10481050666666665,
+            "duration_seconds": 34.70333333333333,
+            "function_call_errors": 1.6666666666666667,
+            "function_calls": 5.666666666666667,
+            "sessions": 1.0,
+            "tokens": 62602.666666666664,
+            "turns": 7.666666666666667
+          },
+          "contract_fingerprint": "fnv1a32:3764aff3",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "validation_scope_enforcement",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        },
+        {
+          "averages": {
+            "cost_usd": 0.11916358666666667,
+            "duration_seconds": 43.02533333333333,
+            "function_call_errors": 0.0,
+            "function_calls": 8.0,
+            "sessions": 1.0,
+            "tokens": 71623.0,
+            "turns": 9.0
+          },
+          "contract_fingerprint": "fnv1a32:99550b75",
+          "run_count": 3,
+          "samples": {
+            "cost_usd": 3,
+            "duration_seconds": 3,
+            "function_call_errors": 3,
+            "function_calls": 3,
+            "sessions": 3,
+            "tokens": 3,
+            "turns": 3
+          },
+          "scenario_id": "validation_self_repair",
+          "scenario_version": 1,
+          "subject_id": "glm-5-2"
+        }
+      ],
+      "source": {
+        "ref": "daily/2026-08-04",
+        "repository": "iii-hq/workers",
+        "sha": "4c0401a0537802e29fb611e5b561fdae815770cf"
+      },
+      "started_at": "2026-08-04T06:49:05Z",
+      "status": "failed",
+      "subjects": [
+        {
+          "engine_revision": "0.22.0",
+          "expected_reports": 19,
+          "hard_gate_failures": 4,
+          "id": "glm-5-2",
+          "judge": {
+            "context_window": 1000000,
+            "max_output_tokens": 128000,
+            "model": "glm-5.2",
+            "provider": "zai",
+            "supports_tools": true,
+            "supports_vision": false
+          },
+          "model": "glm-5.2",
+          "passed": false,
+          "provider": "zai",
+          "received_reports": 19,
+          "report_coverage": 1.0,
+          "retry_attempts": 0,
+          "scenario_pass_rate": 0.8421052631578947,
+          "scenarios": [
+            {
+              "hard_gate_failures": 0,
+              "id": "direct_answer",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 50.0,
+              "total_cost_usd": 0.033232599999999994,
+              "wall_time_seconds": 28.893
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "persistent_state",
+              "median_score": 90.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 90.0,
+              "total_cost_usd": 0.14887164,
+              "wall_time_seconds": 64.6
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "security_review",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 50.0,
+              "total_cost_usd": 0.04801424,
+              "wall_time_seconds": 65.718
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "reactive_automation",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 90.0,
+              "total_cost_usd": 2.01795944,
+              "wall_time_seconds": 508.622
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "shell_coder_sandbox",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 50.0,
+              "total_cost_usd": 2.26369996,
+              "wall_time_seconds": 396.111
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "design_tradeoff",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 50.0,
+              "total_cost_usd": 0.06495244,
+              "wall_time_seconds": 162.355
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "security_triage",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 50.0,
+              "total_cost_usd": 0.06073459999999999,
+              "wall_time_seconds": 83.74
+            },
+            {
+              "hard_gate_failures": 1,
+              "id": "research_pipeline",
+              "median_score": 100.0,
+              "pass_rate": 0.6666666666666666,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 90.0,
+              "total_cost_usd": 1.09976144,
+              "wall_time_seconds": 398.739
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "mechanical_reaction",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 90.0,
+              "total_cost_usd": 0.588781,
+              "wall_time_seconds": 141.595
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "timer_wake",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 90.0,
+              "total_cost_usd": 0.22142964,
+              "wall_time_seconds": 71.731
+            },
+            {
+              "hard_gate_failures": 2,
+              "id": "receiving_operation",
+              "median_score": 60.0,
+              "pass_rate": 0.0,
+              "passed": false,
+              "retries": 0,
+              "runs": 3,
+              "status": "failed",
+              "technical_failures": 1,
+              "threshold": 90.0,
+              "total_cost_usd": 2.401357960000001,
+              "wall_time_seconds": 821.651
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "validation_loop",
+              "median_score": 100.0,
+              "pass_rate": 0.5,
+              "passed": false,
+              "retries": 0,
+              "runs": 2,
+              "status": "failed",
+              "technical_failures": 1,
+              "threshold": 90.0,
+              "total_cost_usd": 0.3916254,
+              "wall_time_seconds": 74.915
+            },
+            {
+              "hard_gate_failures": 1,
+              "id": "subagent_validation",
+              "median_score": 100.0,
+              "pass_rate": 0.6666666666666666,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 90.0,
+              "total_cost_usd": 0.7226627199999999,
+              "wall_time_seconds": 187.155
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "multi_subagent_validation",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 90.0,
+              "total_cost_usd": 0.9134585599999998,
+              "wall_time_seconds": 207.845
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "subagent_validation_failure",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 90.0,
+              "total_cost_usd": 0.6903790799999999,
+              "wall_time_seconds": 548.201
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "custom_validator",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 90.0,
+              "total_cost_usd": 0.13100003999999998,
+              "wall_time_seconds": 40.609
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "validation_self_repair",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 80.0,
+              "total_cost_usd": 0.35749076,
+              "wall_time_seconds": 129.076
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "validation_scope_enforcement",
+              "median_score": 100.0,
+              "pass_rate": 1.0,
+              "passed": true,
+              "retries": 0,
+              "runs": 3,
+              "status": "passed",
+              "technical_failures": 0,
+              "threshold": 90.0,
+              "total_cost_usd": 0.31443151999999996,
+              "wall_time_seconds": 104.11
+            },
+            {
+              "hard_gate_failures": 0,
+              "id": "validation_chain",
+              "median_score": null,
+              "pass_rate": 0.0,
+              "passed": false,
+              "retries": 0,
+              "runs": 1,
+              "status": "failed",
+              "technical_failures": 1,
+              "threshold": 90.0,
+              "total_cost_usd": 0.3755032800000001,
+              "wall_time_seconds": 63.044
+            }
+          ],
+          "technical_failures": 3,
+          "total_cost_usd": 12.84534632,
+          "wall_time_seconds": 4098.71
+        }
+      ],
+      "totals": {
+        "average_score": 97.22222222222223,
+        "expected_reports": 19,
+        "function_calls": 681.0,
+        "hard_gate_failures": 4,
+        "missing_reports": 0,
+        "passed_scenarios": 16,
+        "received_reports": 19,
+        "report_coverage": 100.0,
+        "retries": 0,
+        "scenario_pass_rate": 84.21052631578947,
+        "technical_failures": 3,
+        "total_cost_usd": 12.84534632,
+        "total_tokens": 7649162.0,
+        "wall_time_seconds": 4098.71
+      },
+      "workflow_duration_seconds": 4050.0,
+      "workflow_name": "Harness E2E Daily",
+      "workflow_url": "https://github.com/iii-hq/workers/actions/runs/30885350371"
+    },
+    {
+      "actor": "ytallo",
+      "attempt": 1,
+      "availability": "full",
       "completed_at": "2026-08-03T20:40:46Z",
       "conclusion": "success",
       "detail_path": "runs/30849845674-1.json",
@@ -2457,7 +3290,7 @@ window.HARNESS_EXECUTIONS = {
       "workflow_url": "https://github.com/iii-hq/workers/actions/runs/30520846725"
     }
   ],
-  "last_update": "2026-08-03T20:40:46Z",
+  "last_update": "2026-08-04T07:56:35Z",
   "mode": "published",
   "repo_url": "https://github.com/iii-hq/workers",
   "retention": {
