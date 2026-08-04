@@ -421,7 +421,6 @@ impl TurnEvents {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub async fn emit_completed(
         &self,
         session_id: &str,

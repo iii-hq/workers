@@ -18,6 +18,7 @@ import {
   type SessionUsage,
   parseMetrics,
 } from '../lib/metrics'
+import { TONE_COLOR, toneFor } from '../lib/tone'
 
 const METRICS_ID = 'harness::metrics'
 
@@ -56,12 +57,7 @@ function MiniUsageBar({ total, usable }: { total: number; usable: number }) {
   if (usable <= 0) return null
   const ratio = Math.min(1, total / usable)
   const pct = Math.round(ratio * 100)
-  const color =
-    ratio >= 0.9
-      ? 'var(--color-alert)'
-      : ratio >= 0.75
-        ? 'var(--color-warn)'
-        : 'var(--color-accent)'
+  const color = TONE_COLOR[toneFor(ratio)]
   return (
     <span
       className="harness-ui-mini-bar"

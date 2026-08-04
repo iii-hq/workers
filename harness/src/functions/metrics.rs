@@ -159,11 +159,9 @@ pub async fn handle(
                 total.observe(message);
             }
         }
-        let context =
-            crate::context_snapshot::get(&deps.iii, &node.session_id, cfg.session_timeout_ms)
-                .await
-                .unwrap_or(None);
-        by_session.push(current.finish_session(node, context));
+        // The turn record already carries the session's latest snapshot; do
+        // not spend a second state round trip per session re-reading it.
+        by_session.push(current.finish_session(node, turn.context_snapshot.clone()));
     }
     // Partial snapshots are polled as progress signals. Trace aggregation is
     // comparatively expensive and does not help the watchdog decide whether

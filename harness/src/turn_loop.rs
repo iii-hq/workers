@@ -612,15 +612,15 @@ pub async fn run_step(
         entry_id: assistant_id.clone(),
         turn_id: record.turn_id.clone(),
     };
-    let snapshot_system_prompt = gen_system_prompt.clone();
-    let snapshot_tools = tools.clone();
     let params = ChatParams {
         request_id: format!("{}:{}", record.turn_id, payload.step),
         model: record.options.model.clone(),
         provider: record.options.provider.clone(),
-        system_prompt: gen_system_prompt,
+        // Cloned into the request so the originals stay available for the
+        // post-generation exact recount below.
+        system_prompt: gen_system_prompt.clone(),
         messages: gen_messages,
-        tools,
+        tools: tools.clone(),
         response_format,
         // Forward a cap only when the caller set one. `generation_max_output_tokens`
         // is the internal reservation context assembly budgets against; sending it
@@ -714,13 +714,8 @@ pub async fn run_step(
     // must never fail a turn that generated successfully.
     if let Some(snapshot) = record.context_snapshot.as_mut() {
         snapshot.usage = outcome.message.usage.clone();
-        crate::context_snapshot::exactify(
-            snapshot,
-            &router,
-            snapshot_system_prompt.as_deref(),
-            &snapshot_tools,
-        )
-        .await;
+        crate::context_snapshot::exactify(snapshot, &router, gen_system_prompt.as_deref(), &tools)
+            .await;
         if let Err(error) =
             crate::context_snapshot::put(&deps.iii, snapshot, cfg.session_timeout_ms).await
         {
@@ -2174,8 +2169,7 @@ async fn assemble_context(
         usable: out.usable,
         token_count: out.token_count,
         effective_max_output_tokens: out.effective_max_output_tokens,
-        compacted: out.applied.compacted,
-        summarized_head_tokens: out.applied.summarized_head_tokens,
+        applied: out.applied,
         breakdown: out.breakdown,
     })
 }
@@ -2195,36 +2189,30 @@ fn build_context_snapshot(
     final_request_tokens: u64,
     request_overhead_tokens: u64,
 ) -> crate::context_snapshot::ContextSnapshotV1 {
-    use crate::context_snapshot::{ContextSnapshotV1, SnapshotCategoriesV1, SnapshotMessagesV1};
-    let breakdown = assembled.breakdown.as_ref();
-    let messages = breakdown
-        .map(|b| SnapshotMessagesV1 {
-            user: b.by_role.user,
-            assistant: b.by_role.assistant,
-            function_result: b.by_role.function_result,
-            custom: b.by_role.custom,
-        })
-        .unwrap_or_default();
+    use crate::context_snapshot::{ContextSnapshotV1, SnapshotCategoriesV1};
+    // A context-manager that predates the breakdown response reports nothing,
+    // which is what the all-zero default says.
+    let b = assembled.breakdown.clone().unwrap_or_default();
     ContextSnapshotV1 {
         session_id: record.session_id.clone(),
         turn_id: record.turn_id.clone(),
         step,
         model: record.options.model.clone(),
         provider: record.options.provider.clone(),
-        estimator: breakdown.and_then(|b| b.estimator.clone()),
+        estimator: b.estimator,
         usable: assembled.usable,
         effective_max_output_tokens: assembled.effective_max_output_tokens,
         total: final_request_tokens,
         free: assembled.usable.saturating_sub(final_request_tokens),
         categories: SnapshotCategoriesV1 {
-            system_prompt: breakdown.map(|b| b.system_prompt_tokens).unwrap_or(0),
-            tools: breakdown.map(|b| b.tools_tokens).unwrap_or(0),
-            messages,
+            system_prompt: b.system_prompt_tokens,
+            tools: b.tools_tokens,
+            messages: b.by_role.into(),
             overhead: request_overhead_tokens,
             hook_guidance: final_request_tokens.saturating_sub(assembled.token_count),
         },
-        compacted: assembled.compacted,
-        summarized_head_tokens: assembled.summarized_head_tokens,
+        compacted: assembled.applied.compacted,
+        summarized_head_tokens: assembled.applied.summarized_head_tokens,
         usage: None,
         timestamp: AgentMessage::now_ms(),
     }
@@ -2301,8 +2289,9 @@ struct Assembled {
     token_count: u64,
     /// Model/output ceiling resolved by context-manager for this request.
     effective_max_output_tokens: u64,
-    compacted: bool,
-    summarized_head_tokens: Option<u64>,
+    /// What context-manager did to fit the window (compaction and its
+    /// bookkeeping), carried whole for the snapshot.
+    applied: crate::clients::context::Applied,
     breakdown: Option<crate::clients::context::AssembleBreakdown>,
 }
 

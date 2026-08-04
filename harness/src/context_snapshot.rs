@@ -32,6 +32,41 @@ pub struct SnapshotMessagesV1 {
     pub custom: u64,
 }
 
+impl SnapshotMessagesV1 {
+    /// What the whole messages category contributes to the request total.
+    pub fn total(&self) -> u64 {
+        self.user + self.assistant + self.function_result + self.custom
+    }
+
+    /// The same by-role proportions carried onto a different total
+    /// (`numerator / denominator`). `denominator == 0` has no proportions to
+    /// carry, so it yields all-zero.
+    fn scaled(&self, numerator: u64, denominator: u64) -> Self {
+        if denominator == 0 {
+            return Self::default();
+        }
+        let scale = numerator as f64 / denominator as f64;
+        let apply = |tokens: u64| (tokens as f64 * scale) as u64;
+        Self {
+            user: apply(self.user),
+            assistant: apply(self.assistant),
+            function_result: apply(self.function_result),
+            custom: apply(self.custom),
+        }
+    }
+}
+
+impl From<crate::clients::context::ByRoleTokens> for SnapshotMessagesV1 {
+    fn from(by_role: crate::clients::context::ByRoleTokens) -> Self {
+        Self {
+            user: by_role.user,
+            assistant: by_role.assistant,
+            function_result: by_role.function_result,
+            custom: by_role.custom,
+        }
+    }
+}
+
 /// Where the request's tokens sit. Categories are assembly-time estimates;
 /// `hook_guidance` is the measured growth after assembly (pre-generate hook
 /// appends and orphan-repair patches), 0 when the request left assembly
@@ -119,8 +154,9 @@ pub async fn delete(
 }
 
 /// Process-lifetime cache of provider token counts keyed by
-/// (model, kind, content hash) — the system prompt and tool schemas are
-/// stable across a session's steps, so each is counted over the wire once.
+/// (model, kind, content hash) — the probe base, the system prompt and the
+/// tool schemas are stable across a session's steps, so each is counted over
+/// the wire once.
 fn count_cache() -> &'static Mutex<HashMap<u64, u64>> {
     static CACHE: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -134,6 +170,18 @@ fn cache_key(model: &str, kind: &str, content: &str) -> u64 {
     hasher.finish()
 }
 
+/// Cache miss and a poisoned lock are the same thing to the caller: count it
+/// over the wire again.
+fn cached(key: u64) -> Option<u64> {
+    count_cache().lock().ok()?.get(&key).copied()
+}
+
+fn cache(key: u64, tokens: u64) {
+    if let Ok(mut cache) = count_cache().lock() {
+        cache.insert(key, tokens);
+    }
+}
+
 /// One-message probe the delta counts subtract away: provider metering
 /// endpoints refuse an empty messages array, so category counts are
 /// measured as count(probe + part) - count(probe).
@@ -145,31 +193,82 @@ fn probe_messages() -> Vec<serde_json::Value> {
     })]
 }
 
+/// The request part being counted. Carries everything the count needs: which
+/// `count_tokens` field it fills, its cache kind, and its cache content key.
+enum Part<'a> {
+    System(&'a str),
+    Tools(&'a [AgentFunction]),
+}
+
+impl Part<'_> {
+    fn kind(&self) -> &'static str {
+        match self {
+            Part::System(_) => "system_prompt",
+            Part::Tools(_) => "tools",
+        }
+    }
+
+    fn content_key(&self) -> String {
+        match self {
+            Part::System(prompt) => (*prompt).to_string(),
+            Part::Tools(tools) => serde_json::to_string(tools).unwrap_or_default(),
+        }
+    }
+}
+
+/// One part's provider-exact token count.
+#[derive(Debug, Default)]
+struct Counted {
+    tokens: u64,
+    /// Which estimator answered, when this count went over the wire. `None`
+    /// for a part that was absent or served from cache.
+    estimator: Option<String>,
+}
+
+/// Tokens the probe alone costs, so every part's delta subtracts the same
+/// base. Counted once per (model, provider) and cached for the process.
+async fn probe_base(router: &RouterClient, model: &str, provider: Option<&str>) -> Option<u64> {
+    let key = cache_key(model, "base", "");
+    if let Some(tokens) = cached(key) {
+        return Some(tokens);
+    }
+    let (base, _) = router
+        .count_tokens(model, provider, None, None, &probe_messages())
+        .await?;
+    cache(key, base);
+    Some(base)
+}
+
+/// Provider-exact tokens for one part: count(probe + part) - `base`, cached
+/// by content. `None` means the provider count failed and the caller must
+/// keep its heuristic numbers.
 async fn counted_delta(
     router: &RouterClient,
     model: &str,
     provider: Option<&str>,
-    kind: &str,
-    content_key: &str,
-    system_prompt: Option<&str>,
-    tools: Option<&[AgentFunction]>,
-) -> Option<(u64, String)> {
-    let key = cache_key(model, kind, content_key);
-    if let Some(tokens) = count_cache().lock().ok()?.get(&key).copied() {
-        return Some((tokens, "provider".into()));
+    base: u64,
+    part: Part<'_>,
+) -> Option<Counted> {
+    let key = cache_key(model, part.kind(), &part.content_key());
+    if let Some(tokens) = cached(key) {
+        return Some(Counted {
+            tokens,
+            estimator: None,
+        });
     }
-    let probe = probe_messages();
-    let (base, _) = router
-        .count_tokens(model, provider, None, None, &probe)
-        .await?;
+    let (system_prompt, tools) = match part {
+        Part::System(prompt) => (Some(prompt), None),
+        Part::Tools(tools) => (None, Some(tools)),
+    };
     let (with_part, estimator) = router
-        .count_tokens(model, provider, system_prompt, tools, &probe)
+        .count_tokens(model, provider, system_prompt, tools, &probe_messages())
         .await?;
     let tokens = with_part.saturating_sub(base);
-    if let Ok(mut cache) = count_cache().lock() {
-        cache.insert(key, tokens);
-    }
-    Some((tokens, estimator))
+    cache(key, tokens);
+    Some(Counted {
+        tokens,
+        estimator: Some(estimator),
+    })
 }
 
 /// Replace the snapshot's estimated categories with provider-exact numbers
@@ -192,78 +291,61 @@ pub async fn exactify(
         return;
     }
     let provider = snapshot.provider.clone();
+    let provider = provider.as_deref();
     let model = snapshot.model.clone();
 
-    let system_exact = match system_prompt {
-        Some(sp) if !sp.is_empty() => {
-            counted_delta(
-                &router.clone(),
-                &model,
-                provider.as_deref(),
-                "system_prompt",
-                sp,
-                Some(sp),
-                None,
-            )
-            .await
-        }
-        _ => Some((0, String::new())),
-    };
-    let tools_exact = if tools.is_empty() {
-        Some((0, String::new()))
-    } else {
-        let tools_key = serde_json::to_string(tools).unwrap_or_default();
-        counted_delta(
-            &router.clone(),
-            &model,
-            provider.as_deref(),
-            "tools",
-            &tools_key,
-            None,
-            Some(tools),
-        )
-        .await
-    };
-    let (Some((system_tokens, sys_est)), Some((tools_tokens, tools_est))) =
-        (system_exact, tools_exact)
-    else {
+    // Every part's delta subtracts the same probe base, so count it once for
+    // the whole snapshot rather than once per part.
+    let Some(base) = probe_base(router, &model, provider).await else {
         return;
     };
-    let estimator = [sys_est, tools_est]
-        .into_iter()
-        .find(|e| !e.is_empty())
+
+    let system_part = system_prompt.filter(|p| !p.is_empty()).map(Part::System);
+    let tools_part = (!tools.is_empty()).then_some(Part::Tools(tools));
+    // Independent round trips: run them together.
+    let (counted_system, counted_tools) = tokio::join!(
+        async {
+            match system_part {
+                Some(part) => counted_delta(router, &model, provider, base, part).await,
+                None => Some(Counted::default()),
+            }
+        },
+        async {
+            match tools_part {
+                Some(part) => counted_delta(router, &model, provider, base, part).await,
+                None => Some(Counted::default()),
+            }
+        },
+    );
+    let (Some(counted_system), Some(counted_tools)) = (counted_system, counted_tools) else {
+        return;
+    };
+    let estimator = counted_system
+        .estimator
+        .or(counted_tools.estimator)
         .unwrap_or_else(|| "provider".into());
 
     let remainder = billed
-        .saturating_sub(system_tokens)
-        .saturating_sub(tools_tokens);
-    let heuristic_messages = {
-        let m = &snapshot.categories.messages;
-        m.user + m.assistant + m.function_result + m.custom
-    };
+        .saturating_sub(counted_system.tokens)
+        .saturating_sub(counted_tools.tokens);
+    let heuristic_messages = snapshot.categories.messages.total();
     // Keep the by-role proportions from the estimate but rescale them onto
     // the exact remainder (providers report only the request total).
-    let scaled = if heuristic_messages > 0 {
-        let scale = remainder as f64 / heuristic_messages as f64;
-        let m = &snapshot.categories.messages;
-        SnapshotMessagesV1 {
-            user: (m.user as f64 * scale) as u64,
-            assistant: (m.assistant as f64 * scale) as u64,
-            function_result: (m.function_result as f64 * scale) as u64,
-            custom: (m.custom as f64 * scale) as u64,
-        }
+    let messages = if heuristic_messages > 0 {
+        snapshot
+            .categories
+            .messages
+            .scaled(remainder, heuristic_messages)
     } else {
         SnapshotMessagesV1 {
             user: remainder,
-            assistant: 0,
-            function_result: 0,
-            custom: 0,
+            ..SnapshotMessagesV1::default()
         }
     };
 
-    snapshot.categories.system_prompt = system_tokens;
-    snapshot.categories.tools = tools_tokens;
-    snapshot.categories.messages = scaled;
+    snapshot.categories.system_prompt = counted_system.tokens;
+    snapshot.categories.tools = counted_tools.tokens;
+    snapshot.categories.messages = messages;
     snapshot.categories.overhead = 0;
     snapshot.categories.hook_guidance = 0;
     snapshot.total = billed;

@@ -15,8 +15,10 @@ export interface SnapshotMessages {
 export interface SnapshotCategories {
   system_prompt: number
   tools: number
-  messages?: SnapshotMessages
+  messages: SnapshotMessages
   overhead: number
+  /** `#[serde(default)]` on the Rust side — absent in snapshots written
+      before the category existed. */
   hook_guidance?: number
 }
 

@@ -25,6 +25,9 @@ iii-sdk = "=0.21.8"
 # 0.21.5 adds the live span-start push (`LiveSpanStartProcessor`), so the
 # console renders `harness::turn step` while it runs instead of on close.
 iii-helpers = "=0.21.8"
+# Worker-side injectable console UI (content function + console:script/style
+# triggers + hot-reload watcher) — direct link, never published.
+iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

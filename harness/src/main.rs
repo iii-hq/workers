@@ -32,7 +32,11 @@ use harness::configuration::{self, ConfigCell, TriggerHandles};
 use harness::deps::Deps;
 use harness::events::TurnEvents;
 use harness::hooks::HookRegistry;
-use harness::{config, discovery, functions, manifest, queue, subscriptions, ui};
+use harness::{config, discovery, functions, manifest, queue, subscriptions};
+
+/// Asset names + embedded bytes for the injected console UI; the registration
+/// contract itself lives in the shared `iii-console-ui` crate.
+mod ui;
 
 #[derive(Parser, Debug)]
 #[command(

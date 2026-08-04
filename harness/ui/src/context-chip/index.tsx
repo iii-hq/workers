@@ -1,40 +1,27 @@
 /**
  * The `context` session chip — a live view of the session's context window
  * matching the console's ContextUsage aesthetic (`ctx` label, bordered bar,
- * percent, `12.3k/200k` counts). Hydrates from `harness::metrics` on mount
- * and per session change; stays live over the worker's own
- * `harness::turn-completed` trigger (Message-path binding, GC'd with the
- * tab). Click toggles an anchored popover breaking the window down by
- * category with a stacked segment bar, legend, and last-turn actuals.
+ * percent, `12.3k/200k` counts). Hydrates from the stored snapshot
+ * (`state::get` on `harness_context/<session id>`) on mount and per session
+ * change; stays live over the state worker's own `state` trigger for that
+ * key (Message-path binding, GC'd with the tab), which fires on every
+ * generate step. Click toggles an anchored popover breaking the window down
+ * by category with a stacked segment bar, legend, and last-turn actuals.
  */
 
 import { useEffect, useRef, useState } from 'react'
 import type { Host } from '@iii-dev/console-ui'
 import { formatCost, formatTokens } from '../lib/format'
-import {
-  type ContextSnapshot,
-  type SnapshotMessages,
-  isSnapshot,
-} from '../lib/metrics'
+import { type ContextSnapshot, isSnapshot } from '../lib/metrics'
+import { TONE_COLOR, toneFor } from '../lib/tone'
 
-/** Per-tab handler ids (host.iii.on namespaces them `::<browserId>`). */
-const EVENTS_FN = 'iii::harness-ui::events'
+/** Per-tab handler id (host.iii.on namespaces it `::<browserId>`). */
 const STATE_FN = 'iii::harness-ui::ctx-state'
-
-const WARN_THRESHOLD = 0.75
-const DANGER_THRESHOLD = 0.9
 
 export interface SessionChipProps {
   sessionId: string
   modelId?: string
   contextWindow?: number
-}
-
-interface TurnCompletedEvent {
-  session_id?: string
-  turn_id?: string
-  terminal?: boolean
-  context?: unknown
 }
 
 /** The message a `state` function trigger delivers per write (the state
@@ -47,57 +34,133 @@ interface StateEvent {
   new_value?: unknown
 }
 
-type Tone = 'ok' | 'warn' | 'alert'
-
-const TONE_COLOR: Record<Tone, string> = {
-  ok: 'var(--color-accent)',
-  warn: 'var(--color-warn)',
-  alert: 'var(--color-alert)',
-}
-
-function toneFor(ratio: number): Tone {
-  if (ratio >= DANGER_THRESHOLD) return 'alert'
-  if (ratio >= WARN_THRESHOLD) return 'warn'
-  return 'ok'
-}
-
 const ink = (opacity: number) =>
   `color-mix(in srgb, var(--color-ink) ${opacity}%, transparent)`
 const accent = (opacity: number) =>
   `color-mix(in srgb, var(--color-accent) ${opacity}%, transparent)`
 
-const COLOR_SYSTEM = ink(80)
-const COLOR_TOOLS = ink(55)
-const COLOR_USER = accent(95)
-const COLOR_ASSISTANT = accent(70)
-const COLOR_RESULTS = accent(45)
-const COLOR_HOOKS = ink(35)
-const COLOR_OVERHEAD = ink(20)
 const COLOR_FREE = 'var(--color-rule-2)'
 
-const EMPTY_MESSAGES: SnapshotMessages = {
-  user: 0,
-  assistant: 0,
-  function_result: 0,
-  custom: 0,
+type CategoryKey =
+  | 'system'
+  | 'tools'
+  | 'user'
+  | 'assistant'
+  | 'results'
+  | 'hooks'
+  | 'overhead'
+
+interface Category {
+  key: CategoryKey
+  label: string
+  color: string
+  tokens: number
 }
 
-function segments(snapshot: ContextSnapshot) {
+/** The three categories the legend shows as one "Conversation" row. */
+const CONVERSATION_KEYS: CategoryKey[] = ['user', 'assistant', 'results']
+
+/**
+ * Every category of the assembled window, in bar order. The single source
+ * for both the stacked bar (which draws each entry) and the legend (which
+ * merges the conversation entries into one row).
+ */
+function categories(snapshot: ContextSnapshot): Category[] {
   const cats = snapshot.categories
-  const messages = cats.messages ?? EMPTY_MESSAGES
+  const messages = cats.messages
   return [
-    { key: 'system', tokens: cats.system_prompt ?? 0, color: COLOR_SYSTEM },
-    { key: 'tools', tokens: cats.tools ?? 0, color: COLOR_TOOLS },
-    { key: 'user', tokens: messages.user ?? 0, color: COLOR_USER },
-    { key: 'assistant', tokens: messages.assistant ?? 0, color: COLOR_ASSISTANT },
+    {
+      key: 'system',
+      label: 'System prompt',
+      color: ink(80),
+      tokens: cats.system_prompt,
+    },
+    {
+      key: 'tools',
+      label: 'Function schemas',
+      color: ink(55),
+      tokens: cats.tools,
+    },
+    { key: 'user', label: 'User', color: accent(95), tokens: messages.user },
+    {
+      key: 'assistant',
+      label: 'Assistant',
+      color: accent(70),
+      tokens: messages.assistant,
+    },
     {
       key: 'results',
-      tokens: (messages.function_result ?? 0) + (messages.custom ?? 0),
-      color: COLOR_RESULTS,
+      label: 'Function results',
+      color: accent(45),
+      tokens: messages.function_result + messages.custom,
     },
-    { key: 'hooks', tokens: cats.hook_guidance ?? 0, color: COLOR_HOOKS },
-    { key: 'overhead', tokens: cats.overhead ?? 0, color: COLOR_OVERHEAD },
+    {
+      key: 'hooks',
+      label: 'Hook guidance',
+      color: ink(35),
+      // Optional on the wire (serde default): absent in snapshots written
+      // before the category existed.
+      tokens: cats.hook_guidance ?? 0,
+    },
+    {
+      key: 'overhead',
+      label: 'Overhead',
+      color: ink(20),
+      tokens: cats.overhead,
+    },
   ]
+}
+
+interface LegendEntry {
+  key: string
+  label: string
+  /** `null` renders an invisible swatch — the row is not a bar segment. */
+  color: string | null
+  tokens: number
+  badge?: string
+}
+
+/**
+ * The legend, derived from the same category array the bar draws: the three
+ * conversation entries collapse into one row, an empty hook row is dropped,
+ * and the two rows that are not bar segments (the compaction summary, free
+ * space) take their place around the overhead row.
+ */
+function legendRows(
+  snapshot: ContextSnapshot,
+  cats: Category[],
+): LegendEntry[] {
+  const conversation = cats.filter((c) => CONVERSATION_KEYS.includes(c.key))
+  const rows: LegendEntry[] = []
+  for (const category of cats) {
+    if (category.key === 'assistant') {
+      rows.push({
+        ...category,
+        label: 'Conversation',
+        tokens: conversation.reduce((sum, entry) => sum + entry.tokens, 0),
+      })
+      continue
+    }
+    if (CONVERSATION_KEYS.includes(category.key)) continue
+    if (category.key === 'hooks' && category.tokens <= 0) continue
+    if (category.key === 'overhead' && snapshot.compacted) {
+      rows.push({
+        key: 'summary',
+        label: 'Summary',
+        color: null,
+        tokens: snapshot.summarized_head_tokens ?? 0,
+        badge: 'compacted',
+      })
+    }
+    rows.push(category)
+  }
+  rows.push({
+    key: 'free',
+    label: 'Free',
+    color: COLOR_FREE,
+    tokens: snapshot.free,
+  })
+  return rows
 }
 
 function LegendRow({
@@ -138,14 +201,7 @@ function ContextPopover({
   const usable = snapshot.usable
   const pct =
     usable > 0 ? Math.round(Math.min(1, snapshot.total / usable) * 100) : 0
-  const messages = snapshot.categories.messages ?? EMPTY_MESSAGES
-  const conversation =
-    (messages.user ?? 0) +
-    (messages.assistant ?? 0) +
-    (messages.function_result ?? 0) +
-    (messages.custom ?? 0)
-  const hookGuidance = snapshot.categories.hook_guidance ?? 0
-  const free = snapshot.free ?? Math.max(0, usable - snapshot.total)
+  const cats = categories(snapshot)
   const usage = snapshot.usage
   const hasActuals =
     usage != null && (usage.input != null || usage.cache_read != null)
@@ -160,7 +216,7 @@ function ContextPopover({
         </span>
       </div>
       <div className="harness-ui-stack">
-        {segments(snapshot)
+        {cats
           .filter((segment) => segment.tokens > 0)
           .map((segment) => (
             <span
@@ -174,48 +230,16 @@ function ContextPopover({
           ))}
       </div>
       <div className="harness-ui-legend">
-        <LegendRow
-          color={COLOR_SYSTEM}
-          label="System prompt"
-          tokens={snapshot.categories.system_prompt ?? 0}
-          usable={usable}
-        />
-        <LegendRow
-          color={COLOR_TOOLS}
-          label="Function schemas"
-          tokens={snapshot.categories.tools ?? 0}
-          usable={usable}
-        />
-        <LegendRow
-          color={COLOR_ASSISTANT}
-          label="Conversation"
-          tokens={conversation}
-          usable={usable}
-        />
-        {hookGuidance > 0 ? (
+        {legendRows(snapshot, cats).map((row) => (
           <LegendRow
-            color={COLOR_HOOKS}
-            label="Hook guidance"
-            tokens={hookGuidance}
+            key={row.key}
+            color={row.color}
+            label={row.label}
+            tokens={row.tokens}
             usable={usable}
+            badge={row.badge}
           />
-        ) : null}
-        {snapshot.compacted ? (
-          <LegendRow
-            color={null}
-            label="Summary"
-            tokens={snapshot.summarized_head_tokens ?? 0}
-            usable={usable}
-            badge="compacted"
-          />
-        ) : null}
-        <LegendRow
-          color={COLOR_OVERHEAD}
-          label="Overhead"
-          tokens={snapshot.categories.overhead ?? 0}
-          usable={usable}
-        />
-        <LegendRow color={COLOR_FREE} label="Free" tokens={free} usable={usable} />
+        ))}
       </div>
       <div className="harness-ui-pop-foot">
         <span>
@@ -283,22 +307,6 @@ export function createContextChip(host: Host) {
         type: 'state',
         function_id: `${STATE_FN}::${host.iii.browserId}`,
         config: { scope: 'harness_context', key: sessionId },
-      })
-      return () => {
-        offTrigger()
-        offHandler()
-      }
-    }, [host, sessionId])
-
-    useEffect(() => {
-      const offHandler = host.iii.on<TurnCompletedEvent>(EVENTS_FN, (event) => {
-        if (!event || event.session_id !== sessionId) return
-        if (isSnapshot(event.context)) setSnapshot(event.context)
-      })
-      const offTrigger = host.iii.registerTrigger({
-        type: 'harness::turn-completed',
-        function_id: `${EVENTS_FN}::${host.iii.browserId}`,
-        config: { session_id: sessionId },
       })
       return () => {
         offTrigger()
