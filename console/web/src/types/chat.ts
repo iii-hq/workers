@@ -49,6 +49,13 @@ export interface Attachment {
   type: string
   /** present only for previewable text/image attachments under ~1MB */
   dataUrl?: string
+  /**
+   * The picked file, for attachment kinds a worker reads at send time (PDFs go
+   * through `pdf::to-markdown` — see `lib/pdf-attachments.ts`). Browser-only and
+   * deliberately not persisted: a conversation reloaded from history keeps the
+   * chip, not the bytes.
+   */
+  file?: File
 }
 
 interface BaseMessage {

@@ -1,0 +1,143 @@
+{
+  "description": "Extract a PDF as plain text, with no structure recovery. Cheaper than pdf::to-markdown and the right call when the text will be searched or embedded rather than read.",
+  "function_id": "pdf::extract-text",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "FsScope": {
+        "description": "The filesystem jail a call runs under.\n\nThe harness stamps this onto every function it dispatches, so a `path` an agent supplies has to be checked against it. Without the check these functions would read any document on the machine and hand back its text, which is a way around the scope the session was granted. Mirrors the shape the shell worker takes.",
+        "properties": {
+          "grants": {
+            "default": [],
+            "description": "Additional directories or files explicitly granted to this session.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "root": {
+            "description": "The session's working directory.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "root"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Where the PDF comes from. Exactly one of the two fields must be set.",
+    "properties": {
+      "bytes_base64": {
+        "default": null,
+        "description": "Base64-encoded PDF bytes, for a document with no path. Mutually exclusive with `path`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "fs_scope": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/FsScope"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The filesystem jail this call runs under. Stamped by the harness on an agent's call; absent on an operator or console call, which is already user-initiated and not subject to the agent's scope."
+      },
+      "max_chars": {
+        "default": null,
+        "description": "Characters to return before truncating. Omit for the configured default; `0` returns the whole document.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "path": {
+        "default": null,
+        "description": "Filesystem path to the PDF. Mutually exclusive with `bytes_base64`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Body": {
+        "description": "A body that may have been shortened to fit one response, and the numbers a caller needs to decide what to do about it.\n\nThe cap is what keeps a long document from flooding a model's context. A caller that genuinely wants the whole thing asks for `max_chars: 0`, which is the shape a worker-to-worker pipeline uses to move a document without it passing through anyone's context.",
+        "properties": {
+          "chars": {
+            "description": "Characters returned in `text`.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "preview": {
+            "description": "Leading characters of the content. Present only when the body was truncated, so a caller can see the shape of what it did not get without re-reading the start of `text`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "The content, shortened to the effective character cap.",
+            "type": "string"
+          },
+          "total_chars": {
+            "description": "Characters the document actually holds. Equal to `chars` when nothing was dropped.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "truncated": {
+            "description": "`true` when `text` stops short of the document. Ask again with `max_chars: 0` to take everything, or on the functions that accept one, narrow with a `pages` filter.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "chars",
+          "text",
+          "total_chars",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "body": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Body"
+          }
+        ],
+        "description": "The text, capped per `max_chars`."
+      },
+      "elapsed_ms": {
+        "description": "Wall-clock time for the extraction.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "source": {
+        "description": "Source label: the file name, or `<inline>` for an in-memory document.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "body",
+      "elapsed_ms",
+      "source"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

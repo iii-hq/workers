@@ -79,6 +79,7 @@ npx skills add iii-hq/iii --all
 | [`worktree`](worktree/) | Rust | Git worktree lifecycle for parallel agents — `worktree::*` mint, claim, and track isolated worktrees per repo, emit six lifecycle trigger types, and land branches back through a per-repo FIFO queue (rebase, test gate, ff-only merge). |
 | [`github`](github/) | Rust | GitHub CLI (`gh`) as an iii worker — typed `github::pr/issue/repo/run/workflow/release/search::*` functions plus `github::exec` argv passthrough and `github::api` for any GitHub REST endpoint. |
 | [`openwiki`](openwiki/) | Node | Source-grounded markdown wiki for any git repository — a lead agent plans the index and writer sub-agents store cited pages via `openwiki::write-page`, with router and heuristic fallback tiers, incremental refresh from git diffs on a per-wiki cron schedule, and a browser UI + JSON API under `/openwiki`. |
+| [`pdf`](pdf/) | Rust | Read PDFs locally — `pdf::classify` routes text-based versus scanned in tens of milliseconds and names the pages that still need OCR, `pdf::to-markdown` converts with headings, lists and tables intact, and `pdf::extract-items` / `::extract-regions` expose positions and the text inside a box. Ships a console page. |
 
 ## SDK
 
