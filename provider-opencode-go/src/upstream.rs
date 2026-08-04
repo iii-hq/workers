@@ -40,12 +40,21 @@ pub fn spawn_upstream(
     rx
 }
 
-/// Last `data: ` payload in an SSE block, if any.
-fn data_line(block: &str) -> Option<&str> {
-    block
-        .lines()
-        .filter_map(|l| l.strip_prefix("data: "))
-        .next_back()
+/// All `data` field values in an SSE block, joined with `\n` per the SSE
+/// spec (event-stream format). The optional single space after the colon is
+/// stripped; a frame may also repeat `data:` across lines.
+fn data_line(block: &str) -> Option<String> {
+    let mut parts = block.lines().filter_map(|l| {
+        l.strip_prefix("data:")
+            .map(|v| v.strip_prefix(' ').unwrap_or(v))
+    });
+    let first = parts.next()?;
+    let mut out = first.to_string();
+    for p in parts {
+        out.push('\n');
+        out.push_str(p);
+    }
+    Some(out)
 }
 
 async fn run_upstream(
@@ -121,7 +130,7 @@ async fn run_upstream(
                     },
                 ];
             }
-            let Ok(parsed) = serde_json::from_str::<Value>(data) else {
+            let Ok(parsed) = serde_json::from_str::<Value>(&data) else {
                 return vec![];
             };
             handle_chunk(&parsed, state, model)

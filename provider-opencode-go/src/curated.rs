@@ -21,6 +21,7 @@ use llm_router::types::model::{Model, ReasoningEffort};
 /// be omitted rather than guessed.
 pub(crate) struct ModelMeta {
     pub(crate) context_window: u64,
+    pub(crate) max_output: u64,
     pub(crate) reasoning: bool,
     pub(crate) reasoning_efforts: &'static [&'static str],
     pub(crate) tool_call: bool,
@@ -31,6 +32,7 @@ pub(crate) struct ModelMeta {
 pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
     match id {
         "grok-4.5" => Some(&ModelMeta {
+            max_output: 500000,
             context_window: 500_000,
             reasoning: true,
             reasoning_efforts: &["low", "medium", "high"],
@@ -38,6 +40,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: true,
         }),
         "glm-5.2" => Some(&ModelMeta {
+            max_output: 131072,
             context_window: 1_000_000,
             reasoning: true,
             reasoning_efforts: &["high", "max"],
@@ -45,6 +48,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: true,
         }),
         "glm-5.1" => Some(&ModelMeta {
+            max_output: 32768,
             context_window: 202_752,
             reasoning: true,
             reasoning_efforts: &[],
@@ -52,6 +56,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "glm-5" => Some(&ModelMeta {
+            max_output: 32768,
             context_window: 202_752,
             reasoning: true,
             reasoning_efforts: &[],
@@ -59,6 +64,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "gpt-5.6-luna" => Some(&ModelMeta {
+            max_output: 128000,
             context_window: 1_050_000,
             reasoning: true,
             reasoning_efforts: &["none", "low", "medium", "high", "xhigh", "max"],
@@ -66,6 +72,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: true,
         }),
         "kimi-k3" => Some(&ModelMeta {
+            max_output: 131072,
             context_window: 1_048_576,
             reasoning: true,
             reasoning_efforts: &["max"],
@@ -73,6 +80,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: true,
         }),
         "kimi-k2.7-code" => Some(&ModelMeta {
+            max_output: 262144,
             context_window: 262_144,
             reasoning: true,
             reasoning_efforts: &[],
@@ -80,6 +88,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: true,
         }),
         "kimi-k2.6" => Some(&ModelMeta {
+            max_output: 65536,
             context_window: 262_144,
             reasoning: true,
             reasoning_efforts: &[],
@@ -87,6 +96,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "kimi-k2.5" => Some(&ModelMeta {
+            max_output: 65536,
             context_window: 262_144,
             reasoning: true,
             reasoning_efforts: &[],
@@ -94,6 +104,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "minimax-m3" => Some(&ModelMeta {
+            max_output: 131072,
             context_window: 1_000_000,
             reasoning: true,
             reasoning_efforts: &[],
@@ -101,6 +112,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "minimax-m2.7" => Some(&ModelMeta {
+            max_output: 131072,
             context_window: 204_800,
             reasoning: true,
             reasoning_efforts: &[],
@@ -108,6 +120,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "minimax-m2.5" => Some(&ModelMeta {
+            max_output: 65536,
             context_window: 204_800,
             reasoning: true,
             reasoning_efforts: &[],
@@ -115,6 +128,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "qwen3.7-max" => Some(&ModelMeta {
+            max_output: 65536,
             context_window: 1_000_000,
             reasoning: true,
             reasoning_efforts: &[],
@@ -122,6 +136,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "qwen3.7-plus" => Some(&ModelMeta {
+            max_output: 65536,
             context_window: 1_000_000,
             reasoning: true,
             reasoning_efforts: &[],
@@ -129,6 +144,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "qwen3.8-max" => Some(&ModelMeta {
+            max_output: 131072,
             context_window: 1_000_000,
             reasoning: true,
             reasoning_efforts: &[],
@@ -136,6 +152,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: true,
         }),
         "qwen3.5-plus" => Some(&ModelMeta {
+            max_output: 65536,
             context_window: 262_144,
             reasoning: true,
             reasoning_efforts: &[],
@@ -143,6 +160,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "qwen3.6-plus" => Some(&ModelMeta {
+            max_output: 65536,
             context_window: 1_000_000,
             reasoning: true,
             reasoning_efforts: &[],
@@ -150,6 +168,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "deepseek-v4-pro" => Some(&ModelMeta {
+            max_output: 384000,
             context_window: 1_000_000,
             reasoning: true,
             reasoning_efforts: &["high", "max"],
@@ -157,6 +176,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: true,
         }),
         "deepseek-v4-flash" => Some(&ModelMeta {
+            max_output: 384000,
             context_window: 1_000_000,
             reasoning: true,
             reasoning_efforts: &["high", "max"],
@@ -164,6 +184,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: true,
         }),
         "mimo-v2-omni" => Some(&ModelMeta {
+            max_output: 128000,
             context_window: 262_144,
             reasoning: true,
             reasoning_efforts: &[],
@@ -171,6 +192,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "mimo-v2-pro" => Some(&ModelMeta {
+            max_output: 128000,
             context_window: 1_048_576,
             reasoning: true,
             reasoning_efforts: &[],
@@ -178,6 +200,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "mimo-v2.5" => Some(&ModelMeta {
+            max_output: 128000,
             context_window: 1_000_000,
             reasoning: true,
             reasoning_efforts: &[],
@@ -185,6 +208,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "mimo-v2.5-pro" => Some(&ModelMeta {
+            max_output: 128000,
             context_window: 1_048_576,
             reasoning: true,
             reasoning_efforts: &[],
@@ -192,6 +216,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
             structured_output: false,
         }),
         "hy3" => Some(&ModelMeta {
+            max_output: 64000,
             context_window: 256_000,
             reasoning: true,
             reasoning_efforts: &["none", "low", "high"],
@@ -201,6 +226,7 @@ pub(crate) fn meta(id: &str) -> Option<&'static ModelMeta> {
         // Preview variant in the subscription catalog but not on models.dev —
         // conservative defaults rather than guessing hy3-like metadata.
         "hy3-preview" => Some(&ModelMeta {
+            max_output: 4096,
             context_window: 128_000,
             reasoning: false,
             reasoning_efforts: &[],
@@ -221,7 +247,7 @@ pub fn enrich(id: &str) -> Model {
             provider: PROVIDER_ID.into(),
             display_name: Some(id.into()),
             context_window: m.context_window,
-            max_output_tokens: 4096,
+            max_output_tokens: m.max_output,
             input_limit: None,
             supports_thinking: if m.reasoning { Some(true) } else { None },
             supports_xhigh: if m.reasoning_efforts.contains(&"xhigh") {

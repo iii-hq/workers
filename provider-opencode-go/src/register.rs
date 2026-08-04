@@ -164,12 +164,17 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             .metadata(json!({ "internal": true })),
         );
     }
-    let _ = iii.register_trigger(RegisterTriggerInput {
+    if let Err(e) = iii.register_trigger(RegisterTriggerInput {
         trigger_type: "router::ready".into(),
         function_id: surface::ON_ROUTER_READY_ID.into(),
         config: json!({}),
         metadata: None,
-    });
+    }) {
+        tracing::warn!(
+            error = %e,
+            "failed to bind the router::ready trigger; the provider will not re-declare on router restarts"
+        );
+    }
 
     // Boot declare, off the boot path.
     tokio::spawn(declare_and_refresh(iii, http));

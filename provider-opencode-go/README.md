@@ -53,8 +53,9 @@ configuration entry (`providers.opencode_go.api_key`, default endpoint
   when the model's curated effort list accepts the level (e.g. `grok-4.5`
   accepts `low`/`medium`/`high`, `deepseek-v4-flash` accepts `high`/`max`);
   models that reason without published effort levels, and unknown ids, stream
-  without the field. Thinking content is not streamed — the OpenCode Go Chat
-  Completions wire carries no reasoning deltas.
+  without the field. When the upstream emits `reasoning_content` deltas they
+  are relayed as thinking blocks; models that never emit them stream text
+  only.
 - **Structured output:** a `response_format` with a schema maps to strict
   `json_schema` mode; without one, `json_object` mode (the caller must
   mention "JSON" in the prompt per OpenAI-compatible API rules).
@@ -74,7 +75,7 @@ provider, and a local stub upstream — no external API calls anywhere.
 ## Running
 
 The binary takes the standard worker CLI flags: `--url` (engine WebSocket,
-default `ws://127.0.0.1:49134`, falls back to the `III_WS_URL` environment
+default `ws://127.0.0.1:49134`, falls back to the `III_URL` environment
 variable), `--manifest` (print the registry manifest and exit), and
 `--config` (accepted but ignored with a warning — provider config comes
 from the `llm-router` configuration entry).

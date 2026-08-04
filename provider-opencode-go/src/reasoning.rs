@@ -27,13 +27,16 @@ fn supported_efforts(model: &str) -> &'static [&'static str] {
         .unwrap_or(&[])
 }
 
-fn level_str(level: ThinkingLevel) -> &'static str {
+fn level_efforts(level: ThinkingLevel) -> &'static [&'static str] {
     match level {
-        ThinkingLevel::Minimal => "minimal",
-        ThinkingLevel::Low => "low",
-        ThinkingLevel::Medium => "medium",
-        ThinkingLevel::High => "high",
-        ThinkingLevel::Xhigh => "xhigh",
+        // Some catalogs publish "none" as their floor instead of "minimal"
+        // (e.g. gpt-5.6-luna); prefer the literal level, fall back to the
+        // closest accepted floor rather than omitting the param entirely.
+        ThinkingLevel::Minimal => &["minimal", "none"],
+        ThinkingLevel::Low => &["low"],
+        ThinkingLevel::Medium => &["medium"],
+        ThinkingLevel::High => &["high"],
+        ThinkingLevel::Xhigh => &["xhigh"],
     }
 }
 
@@ -45,11 +48,10 @@ pub fn reasoning_effort_for(level: Option<ThinkingLevel>, model: &str) -> Option
     if ladder.is_empty() {
         return None;
     }
-    let want = level_str(level?);
-    if ladder.contains(&want) {
-        return Some(want);
-    }
-    None
+    level_efforts(level?)
+        .iter()
+        .find(|want| ladder.contains(want))
+        .copied()
 }
 
 #[cfg(test)]
@@ -168,6 +170,25 @@ mod tests {
         assert_eq!(
             reasoning_effort_for(Some(ThinkingLevel::Medium), "gpt-4o"),
             None
+        );
+    }
+
+    #[test]
+    fn minimal_falls_back_to_none_when_not_published() {
+        // gpt-5.6-luna publishes "none" as its floor — minimal maps to it.
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Minimal), "gpt-5.6-luna"),
+            Some("none")
+        );
+        // grok-4.5 publishes neither minimal nor none — omit the param.
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Minimal), "grok-4.5"),
+            None
+        );
+        // hy3 publishes "none" in its ladder.
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Minimal), "hy3"),
+            Some("none")
         );
     }
 

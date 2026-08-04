@@ -8,9 +8,14 @@ use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Us
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
 use serde_json::Value;
 
+/// Upper bound on a tool-call index accepted from the upstream stream;
+/// larger indices are dropped (the vec would otherwise grow to reach them).
+const MAX_TOOL_CALL_INDEX: usize = 64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenBlock {
     Text,
+    Thinking,
     Call(usize),
 }
 
@@ -190,6 +195,9 @@ fn close_open_block(
         Some(OpenBlock::Text) => events.push(AssistantMessageEvent::TextEnd {
             partial: build_partial(state, model),
         }),
+        Some(OpenBlock::Thinking) => events.push(AssistantMessageEvent::ThinkingEnd {
+            partial: build_partial(state, model),
+        }),
         Some(OpenBlock::Call(_)) => events.push(AssistantMessageEvent::FunctioncallEnd {
             partial: build_partial(state, model),
         }),
@@ -249,9 +257,31 @@ pub fn handle_chunk(
                 });
             }
         }
+        if let Some(text) = delta.get("reasoning_content").and_then(Value::as_str) {
+            if !text.is_empty() {
+                if state.open_block != Some(OpenBlock::Thinking) {
+                    close_open_block(state, model, &mut events);
+                    state.open_block = Some(OpenBlock::Thinking);
+                    events.push(AssistantMessageEvent::ThinkingStart {
+                        partial: build_partial(state, model),
+                    });
+                }
+                state.thinking.push_str(text);
+                events.push(AssistantMessageEvent::ThinkingDelta {
+                    partial: None,
+                    delta: text.to_string(),
+                });
+            }
+        }
         if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for tc in tool_calls {
                 let index = tc.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                // A hostile or malformed upstream could name an arbitrary
+                // index; the while loop below grows the vec to reach it.
+                if index >= MAX_TOOL_CALL_INDEX {
+                    tracing::debug!(index, "dropping tool-call delta with oversized index");
+                    continue;
+                }
                 while state.function_calls.len() <= index {
                     state.function_calls.push(PartialFunctionCall::default());
                 }

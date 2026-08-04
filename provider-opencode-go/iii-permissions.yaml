@@ -5,5 +5,6 @@ rules:
   # Direct provider calls bypass the router's accounting, budgets, and retry
   # policy — never agent-callable. The router invokes these worker-to-worker.
   - '!provider::opencode_go::stream'
+  - '!provider::opencode_go::abort'
   - '!provider::opencode_go::refresh_models'
   - '!provider::opencode_go::on_router_ready'

@@ -1,6 +1,8 @@
 //! Provider-scoped shims over the shared router-protocol client
-//! (`llm_router::provider_scaffold::router_client`): every call binds this
-//! crate's `PROVIDER_ID` and carries the registration token.
+//! (`llm_router::provider_scaffold::router_client`): the resolve, reconcile,
+//! and models_get wrappers bind this crate's `PROVIDER_ID` and carry the
+//! registration token. `register` forwards a declaration payload that already
+//! carries both (see `register::declare_once`).
 use crate::PROVIDER_ID;
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
