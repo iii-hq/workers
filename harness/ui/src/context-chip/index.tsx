@@ -12,7 +12,11 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Host } from '@iii-dev/console-ui'
 import { formatCost, formatTokens } from '../lib/format'
-import { type ContextSnapshot, isSnapshot } from '../lib/metrics'
+import {
+  type ContextSnapshot,
+  type SnapshotUsage,
+  isSnapshot,
+} from '../lib/metrics'
 import { TONE_COLOR, toneFor } from '../lib/tone'
 
 /** Per-tab handler id (host.iii.on namespaces it `::<browserId>`). */
@@ -111,6 +115,24 @@ function categories(snapshot: ContextSnapshot): Category[] {
   ]
 }
 
+/**
+ * The prompt cache view of the last generation. Providers bill a cache read
+ * at a fraction of fresh input and a cache write at a premium, so on a long
+ * session the hit rate drives cost more than the window size does. `null`
+ * when the provider reported no cache activity at all.
+ */
+function cacheSummary(usage: SnapshotUsage | undefined) {
+  const read = usage?.cache_read ?? 0
+  const write = usage?.cache_write ?? 0
+  if (read === 0 && write === 0) return null
+  const prompt = (usage?.input ?? 0) + read + write
+  return {
+    read,
+    write,
+    hitPct: prompt > 0 ? Math.round((read / prompt) * 100) : 0,
+  }
+}
+
 interface LegendEntry {
   key: string
   label: string
@@ -205,6 +227,7 @@ function ContextPopover({
   const usage = snapshot.usage
   const hasActuals =
     usage != null && (usage.input != null || usage.cache_read != null)
+  const cache = cacheSummary(usage)
   return (
     <div className="harness-ui-pop" role="dialog" aria-label="context breakdown">
       <div className="harness-ui-pop-head">
@@ -253,9 +276,19 @@ function ContextPopover({
         </span>
         {hasActuals ? (
           <span>
-            last turn actual{' '}
-            {formatTokens((usage?.input ?? 0) + (usage?.cache_read ?? 0))} ·
-            output {formatTokens(usage?.output ?? 0)}
+            last turn {formatTokens(usage?.input ?? 0)} in · output{' '}
+            {formatTokens(usage?.output ?? 0)}
+          </span>
+        ) : null}
+        {cache ? (
+          <span
+            title={
+              'cache read is billed at a fraction of fresh input; cache write ' +
+              'carries a premium. Hit rate is the cached share of the prompt.'
+            }
+          >
+            cache {formatTokens(cache.read)} read ·{' '}
+            {formatTokens(cache.write)} write · {cache.hitPct}% hit
           </span>
         ) : null}
         {usage?.cost_usd != null ? (
