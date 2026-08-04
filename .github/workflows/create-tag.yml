@@ -44,6 +44,7 @@ on:
           - pi
           - provider-anthropic
           - provider-claude-code
+          - provider-deepseek
           - provider-kimi
           - provider-llamacpp
           - provider-openai

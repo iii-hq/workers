@@ -38,6 +38,7 @@ on:
       - 'pi/v*'
       - 'provider-anthropic/v*'
       - 'provider-claude-code/v*'
+      - 'provider-deepseek/v*'
       - 'provider-kimi/v*'
       - 'provider-llamacpp/v*'
       - 'provider-openai/v*'
