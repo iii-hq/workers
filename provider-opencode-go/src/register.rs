@@ -183,9 +183,9 @@ mod tests {
     #[test]
     fn declaration_ships_the_identity_prompt() {
         let prompt = declaration().system_prompt.expect("declared prompt");
-        assert!(prompt.starts_with("You are an OpenCode Go iii agent worker."));
+        assert!(prompt.starts_with("You are an iii agent worker."));
         assert!(prompt.contains("agent_trigger"));
-        assert!(prompt.contains("## Autonomy and persistence"));
+        assert!(prompt.contains("Never use a function id from memory."));
     }
 
     #[test]

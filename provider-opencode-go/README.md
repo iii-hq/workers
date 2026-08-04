@@ -25,7 +25,7 @@ configuration entry (`providers.opencode_go.api_key`, default endpoint
   `https://opencode.ai/zen/go/v1/chat/completions` (overridable via
   `api_url`); Chat Completions wire format only.
 - **Identity binding:** the router returns a `registration_token` on first
-  registration; it is persisted in iii-state (scope `provider-opencode-go`,
+  registration; it is persisted in state (scope `provider-opencode-go`,
   key `registration_token`) and presented on every later
   `register`/`resolve`/`reconcile`. If that state is lost the router rejects
   re-registration — the operator must clear the binding on the router side.
