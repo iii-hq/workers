@@ -18,6 +18,13 @@ fn main() {
         std::env::var("TARGET").expect("TARGET must be set by Cargo build scripts")
     );
 
+    // Everything below builds/validates the injectable console UI bundle.
+    // Skip it when the `console-ui` feature is off (lib-only path dependents)
+    // so their builds never need a Node toolchain.
+    if std::env::var_os("CARGO_FEATURE_CONSOLE_UI").is_none() {
+        return;
+    }
+
     // `dist/` itself is not listed: include_str! reads it directly, and
     // listing it would rebuild-loop on our own output.
     println!("cargo:rerun-if-changed=ui/page.tsx");

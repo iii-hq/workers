@@ -18,4 +18,5 @@ pub mod system_prompt;
 pub mod testkit;
 pub mod triggers;
 pub mod types;
+#[cfg(feature = "console-ui")]
 pub mod ui;
