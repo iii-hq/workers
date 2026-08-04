@@ -4,8 +4,8 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: provider-opencode-go
-tags: [llm, opencode, chat-completions, provider]
-description: OpenCode Go Chat Completions provider worker behind llm-router; implements provider::opencode_go::stream, abort, and refresh_models with curated model metadata enrichment.
+tags: [llm, opencode, go, chat-completions, subscription, provider]
+description: OpenCode Go Chat Completions provider worker; implements provider::opencode_go::stream and provider::opencode_go::refresh_models behind llm-router.
 
 dependencies:
   state: "^0.21.2"

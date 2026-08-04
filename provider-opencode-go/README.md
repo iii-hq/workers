@@ -1,4 +1,5 @@
 # provider-opencode-go
+
 OpenCode Go Chat Completions provider worker behind [llm-router](https://github.com/iii-hq/workers/tree/main/llm-router).
 Implements the provider protocol from
 `tech-specs/2026-06-agentic/llm-router.md`: `provider::opencode_go::stream`
@@ -8,7 +9,14 @@ enriched from a hardcoded curated metadata table → `router::models::reconcile`
 and `provider::opencode_go::abort` (cancels an in-flight upstream request).
 There is no embedding surface — the OpenCode Go API is Chat Completions only.
 
+Install with `iii worker add provider-opencode-go`; the worker takes no
+per-worker config — credentials and endpoint live in the `llm-router`
+configuration entry (`providers.opencode_go.api_key`, default endpoint
+`https://opencode.ai/zen/go/v1/chat/completions`), exactly like
+[provider-openai](https://github.com/iii-hq/workers/tree/main/provider-openai).
+
 ## Behavior
+
 - **Registration:** self-declares via `router::provider::register` with
   backoff until acked, and re-declares on the `router::ready` trigger type.
   The model slice is populated from live discovery and the declaration
@@ -53,62 +61,20 @@ There is no embedding surface — the OpenCode Go API is Chat Completions only.
 - **Prompt caching:** upstream-managed; `prompt_tokens_details.cached_tokens`
   lands on `usage.cache_read` when the API reports it.
 
-## Install
-```bash
-iii worker add provider-opencode-go
-```
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it
-boots. The provider must be able to reach the engine's WebSocket (`--url`,
-default `ws://127.0.0.1:49134`).
-
-## Quickstart
-The provider registers itself with llm-router; you drive it through
-`router::llm`-style calls, never directly:
-
-```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let iii = register_worker("ws://localhost:49134", InitOptions::default());
-    let result = iii
-        .trigger(TriggerRequest {
-            function_id: "router::llm::chat".into(),
-            payload: json!({
-                "provider": "opencode_go",
-                "model": "deepseek-v4-flash",
-                "messages": [{"role": "user", "content": "hello"}],
-                "max_tokens": 512,
-            }),
-            action: None,
-            timeout_ms: Some(60_000),
-        })
-        .await?;
-    println!("{result:#?}");
-    Ok(())
-}
-```
-
-## Configuration
-The worker takes no per-worker config — provider settings live in the
-`llm-router` configuration entry, exactly like
-[provider-openai](https://github.com/iii-hq/workers/tree/main/provider-openai):
-
-```yaml
-# ~/.iii/config.yaml — llm-router section
-llm-router:
-  opencode_go:
-    api_key: ${OPENCODE_GO_API_KEY:}   # fallback: env on the router
-    api_url: https://opencode.ai/zen/go/v1/chat/completions  # optional override
-```
-
-The `OPENCODE_GO_API_KEY` environment variable on the router (or on the
-provider process) is the canonical credential source; a key under
-`llm-router.opencode_go.api_key` wins if both are set.
-
 ## Tests
+
 ```bash
-cargo test   # unit (pure modules + TCP stubs); no external API calls
+cargo test                                            # unit (pure modules + TCP stubs)
+III_ENGINE_BIN=$(which iii) cargo test --test integration -- --test-threads=1
 ```
+
+The integration suite spawns a real engine, the real router (path dep), this
+provider, and a local stub upstream — no external API calls anywhere.
+
+## Running
+
+The binary takes the standard worker CLI flags: `--url` (engine WebSocket,
+default `ws://127.0.0.1:49134`, falls back to the `III_WS_URL` environment
+variable), `--manifest` (print the registry manifest and exit), and
+`--config` (accepted but ignored with a warning — provider config comes
+from the `llm-router` configuration entry).

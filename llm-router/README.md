@@ -213,6 +213,8 @@ The first real provider implementing this protocol is
 implementation alongside the scripted provider in the integration tests.
 [`provider-openai/`](https://github.com/iii-hq/workers/tree/main/provider-openai) follows the same structure for the
 OpenAI Chat Completions API (native structured output, reasoning_effort).
+[`provider-opencode-go/`](https://github.com/iii-hq/workers/tree/main/provider-opencode-go) follows the same structure for the
+OpenCode Go Chat Completions API (curated model metadata, reasoning_effort).
 
 ## Local development & testing
 

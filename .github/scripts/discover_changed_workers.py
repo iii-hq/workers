@@ -66,6 +66,7 @@ E2E_WORKERS = {
     "provider-llamacpp",
     "provider-openai",
     "provider-openai-codex",
+    "provider-opencode-go",
     "provider-xai",
     "provider-zai",
 }
