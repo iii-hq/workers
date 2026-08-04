@@ -1,0 +1,3 @@
+default_timeout_ms: 5000  # per eval and per handler invocation when unspecified
+max_timeout_ms: 30000     # ceiling a request's timeout_ms is clamped to
+idle_ttl_secs: 900        # passed to sandbox::create; the daemon reaps idle VMs

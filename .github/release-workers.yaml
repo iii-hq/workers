@@ -93,6 +93,7 @@ standard_workers:
   - pubsub
   - queue
   - rbac-proxy
+  - code-runner
   - session-manager
   - slack
   - telegram-bot

@@ -1,0 +1,56 @@
+{
+  "description": "Internal pre_generate hook: appends code-runner usage guidance to the agent system prompt. Bound to harness::hook::pre-generate at worker startup; not called directly.",
+  "function_id": "code-runner::inject-guidance",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "GenerateContext": {
+        "properties": {
+          "system_prompt": {
+            "default": "",
+            "description": "The system prompt assembled so far (base + any prior hook's mutation).",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "description": "The slice of the `pre_generate` hook envelope we read (lenient: ignores every other field the harness sends). The harness nests the live generation context under `generate`.",
+    "properties": {
+      "generate": {
+        "$ref": "#/definitions/GenerateContext"
+      }
+    },
+    "title": "PreGenerateEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "PreGenerateMutations": {
+        "description": "The harness applies `system_prompt` only when the key is present, so `None` serializes to an empty object: the safe no-op that preserves the harness's assembled prompt.",
+        "properties": {
+          "system_prompt": {
+            "description": "Full replacement system prompt (base + appended guidance). The harness overwrites, it does not merge.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "description": "Hook envelope returned to the harness: the mutations to apply to the generation.",
+    "properties": {
+      "mutations": {
+        "$ref": "#/definitions/PreGenerateMutations"
+      }
+    },
+    "required": [
+      "mutations"
+    ],
+    "title": "PreGenerateResponse",
+    "type": "object"
+  }
+}

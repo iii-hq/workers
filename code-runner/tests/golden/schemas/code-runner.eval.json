@@ -1,0 +1,106 @@
+{
+  "description": "Run code in an isolated microVM. Pass lang (\"node\" or \"python\"). By default eval is ONE-SHOT: it boots a fresh VM, runs code, returns the result, and destroys the VM — nothing persists, no files, no installed packages, and the response carries no runtime_id (there is nothing left to address). Pass keep: true to leave the VM running instead: the response's runtime_id then addresses it, and is the capability code-runner::teardown needs to stop it later. Pass runtime_id on a later call to reuse that same VM (same filesystem, fresh interpreter process each time) — that runtime is never auto-stopped, you own it until you tear it down or its idle TTL reaps it, and a reaped reuse fails with code-runner::expired (retry without runtime_id to boot a fresh one). network: true asks for outbound network so npm/pip installs work, but only a runtime you already created with network can honor it (pass its runtime_id) — neither a one-shot eval nor keep: true can create a networked VM, so network: true without an existing runtime_id is refused, not silently ignored. stdout, stderr and exit_code come back verbatim — a failing script is a response, not an error.",
+  "function_id": "code-runner::eval",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Lang": {
+        "enum": [
+          "node",
+          "python"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "code": {
+        "description": "Source run as a whole file by a fresh interpreter process. Variables do NOT survive between evals; whether files and installed packages do depends on the path below.",
+        "type": "string"
+      },
+      "keep": {
+        "default": false,
+        "description": "Only meaningful when `runtime_id` is omitted. `false` (the default): one-shot — boot a VM, run `code`, return the result, destroy the VM. Nothing persists: no files, no installed packages. `true`: boot a VM and leave it running; the response's `runtime_id` addresses it for later evals (pass it back to keep working in the same filesystem) and is the capability `code-runner::teardown` needs to stop it.",
+        "type": "boolean"
+      },
+      "lang": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Lang"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Required when `runtime_id` is omitted — picks the sandbox image (\"node\" or \"python\"). On an existing runtime: omit it, or pass the runtime's own language; languages cannot be mixed in one runtime."
+      },
+      "network": {
+        "default": false,
+        "description": "Give the guest outbound network so `npm install` / `pip install` work. Create-time only, so it is meaningful only when `runtime_id` is omitted — and even then, only a caller-supplied `runtime_id`'s own creation could ever have asked for it: neither a one-shot eval nor `keep: true` can request network (both run through `sandbox::run`, which has no way to enable it), so `network: true` without a `runtime_id` is refused rather than silently ignored. Ignored (not refused) when `runtime_id` is set: that runtime's network was fixed when it was created.",
+        "type": "boolean"
+      },
+      "runtime_id": {
+        "default": null,
+        "description": "Evaluate in a SPECIFIC runtime, sharing its filesystem: the write and the run land in that VM, and it is NOT stopped afterwards — you own it. Omit this to run one-shot (see `keep`).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "timeout_ms": {
+        "default": null,
+        "description": "Wall-clock budget in milliseconds, clamped to the configured maximum.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "code"
+    ],
+    "title": "EvalRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "duration_ms": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "exit_code": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "runtime_id": {
+        "description": "Present when this eval addresses a runtime that outlives the call: the `runtime_id` you passed in, or — when you passed `keep: true` with no `runtime_id` — the one just minted for the VM this call left running. `None` on the default one-shot path: the VM is already gone by the time this response is sent, so there is nothing to address. Treat a present value as a secret: it is the capability to eval into or tear down that runtime.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "stderr": {
+        "type": "string"
+      },
+      "stdout": {
+        "type": "string"
+      },
+      "success": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "duration_ms",
+      "exit_code",
+      "stderr",
+      "stdout",
+      "success"
+    ],
+    "title": "EvalResponse",
+    "type": "object"
+  }
+}
