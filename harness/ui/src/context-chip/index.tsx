@@ -126,10 +126,14 @@ function cacheSummary(usage: SnapshotUsage | undefined) {
   const write = usage?.cache_write ?? 0
   if (read === 0 && write === 0) return null
   const prompt = (usage?.input ?? 0) + read + write
+  const hitPct = prompt > 0 ? Math.round((read / prompt) * 100) : 0
   return {
     read,
     write,
-    hitPct: prompt > 0 ? Math.round((read / prompt) * 100) : 0,
+    hitPct,
+    // A cold or broken prefix means the whole prompt is re-billed at the
+    // write premium every turn, which is worth flagging rather than dimming.
+    tone: hitPct >= 70 ? 'ok' : hitPct < 30 ? 'warn' : 'plain',
   }
 }
 
@@ -288,7 +292,10 @@ function ContextPopover({
             }
           >
             cache {formatTokens(cache.read)} read ·{' '}
-            {formatTokens(cache.write)} write · {cache.hitPct}% hit
+            {formatTokens(cache.write)} write ·{' '}
+            <span className="harness-ui-cache-hit" data-tone={cache.tone}>
+              {cache.hitPct}% hit
+            </span>
           </span>
         ) : null}
         {usage?.cost_usd != null ? (

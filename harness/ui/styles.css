@@ -162,7 +162,22 @@
   padding-top: 8px;
   border-top: 1px solid var(--color-rule-2);
   font-size: 11px;
-  color: var(--color-ink-ghost);
+  /* Provenance, actuals, cache and cost are findings, not chrome: they stay
+     at reading weight instead of the ghost tint used for decoration. */
+  color: var(--color-ink);
+}
+
+[data-iii-ui="harness"] .harness-ui-cache-hit {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink);
+}
+
+[data-iii-ui="harness"] .harness-ui-cache-hit[data-tone="ok"] {
+  color: var(--color-ok);
+}
+
+[data-iii-ui="harness"] .harness-ui-cache-hit[data-tone="warn"] {
+  color: var(--color-warn);
 }
 
 /* --- function-trigger message (chat / traces card) ------------------- */
