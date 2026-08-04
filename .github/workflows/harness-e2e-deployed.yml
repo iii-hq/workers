@@ -3,8 +3,14 @@ name: Harness E2E deployed
 on:
   workflow_dispatch:
     inputs:
-      channel:
-        description: Registry channel containing the published artifacts
+      cli_channel:
+        description: iii installer channel
+        required: true
+        type: choice
+        options: [latest, next]
+        default: latest
+      registry_tag:
+        description: Registry tag for the baseline Harness stack
         required: true
         type: choice
         options: [latest, next]
@@ -51,7 +57,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: harness-e2e-deployed-${{ inputs.release_worker }}-${{ inputs.release_version }}-${{ inputs.channel }}
+  group: harness-e2e-deployed-${{ inputs.release_worker }}-${{ inputs.release_version }}-${{ inputs.cli_channel }}-${{ inputs.registry_tag }}
   cancel-in-progress: false
 
 jobs:
@@ -62,7 +68,8 @@ jobs:
       runs: ${{ inputs.runs }}
       max_parallel: 2
       benchmark_lane: deployed
-      registry_tag: ${{ inputs.channel }}
+      cli_channel: ${{ inputs.cli_channel }}
+      registry_tag: ${{ inputs.registry_tag }}
       release_tag: ${{ inputs.release_tag }}
       release_worker: ${{ inputs.release_worker }}
       release_version: ${{ inputs.release_version }}

@@ -1,0 +1,169 @@
+name: Worker candidate smoke
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git tag containing the worker release
+        required: true
+        type: string
+      worker:
+        description: Registry worker name
+        required: true
+        type: string
+      version:
+        description: Exact candidate version expected behind next
+        required: true
+        type: string
+      api_url:
+        description: Workers Registry base URL
+        required: false
+        type: string
+        default: https://api.workers.iii.dev
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: resolve, install, and boot ${{ inputs.worker }}@next
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      III_API_URL: ${{ inputs.api_url }}
+      SMOKE_DIR: ${{ github.workspace }}/target/release-candidate-smoke
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install smoke dependencies
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Install stable iii CLI
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 \
+            https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          sh /tmp/install-iii.sh
+          {
+            echo "$HOME/.local/bin"
+            echo "$HOME/.iii/bin"
+          } >>"$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          iii --version
+
+      - name: Start empty engine
+        run: |
+          set -euo pipefail
+          mkdir -p "$SMOKE_DIR/project"
+          printf 'workers: []\n' >"$SMOKE_DIR/project/config.yaml"
+          cd "$SMOKE_DIR/project"
+          setsid iii -c config.yaml --no-update-check >"$SMOKE_DIR/engine.log" 2>&1 &
+          echo "$!" >"$SMOKE_DIR/engine.pid"
+          for _ in {1..120}; do
+            if ! kill -0 "$(cat "$SMOKE_DIR/engine.pid")" 2>/dev/null; then
+              echo "::error::iii engine exited before becoming ready"
+              cat "$SMOKE_DIR/engine.log"
+              exit 1
+            fi
+            if iii trigger engine::workers::list --json '{}' >"$SMOKE_DIR/workers-baseline.json" 2>/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::iii engine did not become ready"
+          cat "$SMOKE_DIR/engine.log"
+          exit 1
+
+      - name: Snapshot trigger baseline
+        run: |
+          set -euo pipefail
+          cd "$SMOKE_DIR/project"
+          iii trigger engine::triggers::list \
+            --json '{"include_internal": false}' >"$SMOKE_DIR/trigger-types-baseline.json"
+
+      - name: Install candidate through next
+        env:
+          WORKER: ${{ inputs.worker }}
+        run: |
+          set -euo pipefail
+          cd "$SMOKE_DIR/project"
+          timeout --signal=TERM --kill-after=15s 600 \
+            iii worker add "${WORKER}@next" --force --reset-config \
+            2>&1 | tee "$SMOKE_DIR/worker-add.log"
+
+      - name: Verify exact candidate lock
+        env:
+          WORKER: ${{ inputs.worker }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 .github/scripts/verify_registry_lock.py \
+            --lock "$SMOKE_DIR/project/iii.lock" \
+            --required "$WORKER" \
+            --worker "$WORKER" \
+            --version "$VERSION" \
+            --output "$SMOKE_DIR/lock-verification.json"
+
+      - name: Collect candidate interface
+        env:
+          WORKER: ${{ inputs.worker }}
+        run: |
+          python3 .github/scripts/collect_worker_interface.py \
+            --worker "$WORKER" \
+            --out "$SMOKE_DIR/worker-interface.json" \
+            --wait-seconds 180 \
+            --trigger-types-baseline "$SMOKE_DIR/trigger-types-baseline.json" \
+            --workers-baseline "$SMOKE_DIR/workers-baseline.json"
+          python3 .github/scripts/collect_worker_interface.py \
+            --assert-non-empty \
+            --assert-typed-schemas \
+            --assert-file "$SMOKE_DIR/worker-interface.json"
+
+      - name: Write smoke context
+        if: always()
+        env:
+          WORKER: ${{ inputs.worker }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_TAG: ${{ inputs.ref }}
+        run: |
+          mkdir -p "$SMOKE_DIR"
+          jq -n \
+            --arg worker "$WORKER" \
+            --arg version "$VERSION" \
+            --arg release_tag "$RELEASE_TAG" \
+            --arg registry_tag next \
+            '{worker: $worker, version: $version, release_tag: $release_tag, registry_tag: $registry_tag}' \
+            >"$SMOKE_DIR/release-context.json"
+
+      - name: Show logs
+        if: failure()
+        run: |
+          for log in "$SMOKE_DIR"/*.log; do
+            [[ -f "$log" ]] || continue
+            echo "::group::$(basename "$log")"
+            tail -n 300 "$log" || true
+            echo "::endgroup::"
+          done
+
+      - name: Upload smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-candidate-smoke-${{ inputs.worker }}-${{ inputs.version }}
+          path: ${{ env.SMOKE_DIR }}/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Stop smoke stack
+        if: always()
+        run: |
+          set +e
+          if [[ -f "$SMOKE_DIR/project/config.yaml" ]]; then
+            cd "$SMOKE_DIR/project"
+            iii worker remove -y "${{ inputs.worker }}" >/dev/null 2>&1 || true
+          fi
+          if [[ -f "$SMOKE_DIR/engine.pid" ]]; then
+            kill -- "-$(cat "$SMOKE_DIR/engine.pid")" 2>/dev/null || \
+              kill "$(cat "$SMOKE_DIR/engine.pid")" 2>/dev/null || true
+          fi

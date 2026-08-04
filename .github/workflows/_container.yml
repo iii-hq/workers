@@ -60,9 +60,9 @@ jobs:
         run: |
           OWNER="${GITHUB_REPOSITORY_OWNER,,}"
           BASE="ghcr.io/${OWNER}/${WORKER}"
-          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
-          echo "image_tag=${BASE}:${VERSION}" >> "$GITHUB_OUTPUT"
           {
+            echo "base=${BASE}"
+            echo "image_tag=${BASE}:${VERSION}"
             echo "tags<<EOF"
             echo "${BASE}:${VERSION}"
             echo "${BASE}:${REGISTRY_TAG}"
