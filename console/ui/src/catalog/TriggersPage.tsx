@@ -37,7 +37,7 @@ import {
   type RegisteredTrigger,
   type TriggerTypeSummary,
   triggerTypeInfo,
-  useFleetChanges,
+  useLiveSignals,
   useResource,
 } from './engine'
 import { HttpTester } from './HttpTester'
@@ -95,7 +95,13 @@ export function TriggersPage({ host }: { host: Host }) {
     return { types, bindings, functions }
   }, [host, showInternal])
   const catalog = useResource(loadCatalog)
-  useFleetChanges(host, catalog.reload)
+  // A binding registers and unregisters with its worker's function surface,
+  // so the same two engine signals cover this page.
+  useLiveSignals(
+    host,
+    ['engine::functions-available', 'engine::workers-available'],
+    catalog.reload,
+  )
 
   const describeFunction = useMemo(() => {
     const byId = new Map<string, FunctionSummary>(

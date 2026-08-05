@@ -163,6 +163,20 @@ export function StatTile({
   )
 }
 
+/**
+ * The "this page is live" marker. Every catalogue page here is driven by an
+ * engine signal rather than a timer, and the operator deserves to know that
+ * without reading the source.
+ */
+export function LiveDot() {
+  return (
+    <span className="console-catalog-live" title="live over engine signals">
+      <span className="dot" />
+      live
+    </span>
+  )
+}
+
 /** Copy-to-clipboard with the two-second confirmation the old console had. */
 export function CopyButton({
   value,
@@ -229,16 +243,19 @@ export function CatalogRow({
   secondary,
   selected,
   onClick,
+  flash,
 }: {
   primary: ReactNode
   secondary?: ReactNode
   selected: boolean
   onClick: () => void
+  /** Highlight once: this row arrived on the last live tick. */
+  flash?: boolean
 }) {
   return (
     <button
       type="button"
-      className="console-catalog-row"
+      className={`console-catalog-row${flash ? ' flash' : ''}`}
       data-selected={selected}
       onClick={onClick}
     >

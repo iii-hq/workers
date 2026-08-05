@@ -643,3 +643,236 @@
   font-size: 12.5px;
   overflow-wrap: anywhere;
 }
+
+/* --- live marker + arrival flash ------------------------------------- */
+
+[data-iii-ui="console"] .console-catalog-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="console"] .console-catalog-live .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-ok);
+  animation: console-catalog-pulse 2.4s ease-in-out infinite;
+}
+@keyframes console-catalog-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+[data-iii-ui="console"] .console-catalog-row.flash {
+  animation: console-catalog-flash 2s ease-out;
+}
+@keyframes console-catalog-flash {
+  from {
+    background: color-mix(in srgb, var(--color-ok) 22%, transparent);
+  }
+  to {
+    background: transparent;
+  }
+}
+
+/* --- schema table ---------------------------------------------------- */
+
+[data-iii-ui="console"] .console-catalog-schema {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+}
+[data-iii-ui="console"] .console-catalog-schema-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+[data-iii-ui="console"] .console-catalog-schema-head .title {
+  font-size: 12px;
+  color: var(--color-ink);
+}
+[data-iii-ui="console"] .console-catalog-schema-head .desc,
+[data-iii-ui="console"] .console-catalog-schema .desc {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="console"] .console-catalog-schema table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+[data-iii-ui="console"] .console-catalog-schema th {
+  text-align: left;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-ghost);
+  font-weight: 500;
+  padding: 0 8px 6px 0;
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="console"] .console-catalog-schema td {
+  vertical-align: top;
+  padding: 7px 8px 7px 0;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="console"] .console-catalog-schema td:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+[data-iii-ui="console"] .console-catalog-schema .field {
+  display: inline-block;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="console"] .console-catalog-schema .req {
+  margin-left: 6px;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-accent);
+}
+[data-iii-ui="console"] .console-catalog-schema .type {
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+}
+[data-iii-ui="console"] .console-catalog-schema .enum,
+[data-iii-ui="console"] .console-catalog-schema .default {
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+
+/* --- activity feed --------------------------------------------------- */
+
+[data-iii-ui="console"] .console-catalog-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+}
+[data-iii-ui="console"] .console-catalog-activity-summary {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="console"] .console-catalog-call {
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+[data-iii-ui="console"] .console-catalog-call[data-open="true"] {
+  border-color: var(--color-rule);
+}
+[data-iii-ui="console"] .console-catalog-call-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  background: transparent;
+  border: 0;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="console"] .console-catalog-call-head:hover {
+  background: var(--color-paper-2);
+}
+[data-iii-ui="console"] .console-catalog-call-head .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-ok);
+  flex: none;
+}
+[data-iii-ui="console"] .console-catalog-call-head .dot[data-ok="false"] {
+  background: var(--color-alert);
+}
+[data-iii-ui="console"] .console-catalog-call-head .ago,
+[data-iii-ui="console"] .console-catalog-call-head .worker {
+  color: var(--color-ink-ghost);
+  font-size: 11px;
+}
+[data-iii-ui="console"] .console-catalog-call-head .duration {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="console"] .console-catalog-call-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 8px 10px;
+}
+
+/* --- invoke attempt history ------------------------------------------ */
+
+[data-iii-ui="console"] .console-catalog-attempts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="console"] .console-catalog-attempt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--color-rule-2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="console"] .console-catalog-attempt:hover {
+  border-color: var(--color-ring);
+  color: var(--color-ink);
+}
+[data-iii-ui="console"] .console-catalog-attempt .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-ok);
+  flex: none;
+}
+[data-iii-ui="console"] .console-catalog-attempt .dot[data-ok="false"] {
+  background: var(--color-alert);
+}
+[data-iii-ui="console"] .console-catalog-attempt .body {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="console"] .console-catalog-attempt .duration {
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- worker detail sections ------------------------------------------ */
+
+[data-iii-ui="console"] .console-catalog-worker-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 16px;
+}
+[data-iii-ui="console"] .console-catalog-worker-section code {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}

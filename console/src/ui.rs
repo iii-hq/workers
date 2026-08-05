@@ -84,11 +84,31 @@ mod tests {
     }
 
     /// The pages are useless if their ids drift from the routes the nav and
-    /// deep links use (`#/ext/functions`, `#/ext/triggers`).
+    /// deep links use (`#/ext/functions`, `#/ext/triggers`, `#/ext/fleet`).
     #[test]
-    fn embedded_catalog_page_registers_both_pages() {
-        assert!(CATALOG_PAGE_JS.contains("functions"));
-        assert!(CATALOG_PAGE_JS.contains("triggers"));
+    fn embedded_catalog_page_registers_every_page() {
+        for id in ["functions", "triggers", "fleet"] {
+            assert!(
+                CATALOG_PAGE_JS.contains(id),
+                "built catalog-page.js is missing the `{id}` page"
+            );
+        }
+    }
+
+    /// The pages are live over engine signals, not timers. A build that lost
+    /// the subscriptions would look fine and silently go stale.
+    #[test]
+    fn embedded_catalog_page_subscribes_to_engine_signals() {
+        for signal in [
+            "engine::functions-available",
+            "engine::workers-available",
+            "trace",
+        ] {
+            assert!(
+                CATALOG_PAGE_JS.contains(signal),
+                "built catalog-page.js no longer subscribes to `{signal}`"
+            );
+        }
     }
 
     #[test]

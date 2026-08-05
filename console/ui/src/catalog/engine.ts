@@ -232,22 +232,46 @@ export async function invoke(
 let hubSeq = 0
 
 /**
- * Reload when the worker fleet changes, instead of polling.
+ * The engine's own catalogue signals. Both are internal trigger types the
+ * engine publishes itself, which is why the pages never poll:
  *
- * The engine publishes no "function registered" event, so the closest true
- * signal is the `worker` trigger type (worker manager add/remove, every
- * lifecycle stage) — the case where the catalogue actually changes under an
- * open tab. Bursts are debounced; everything else is the page's refresh
- * control. The binding filters on BOTH `operations` and `stages`: omitting
- * either matches no events.
+ * - `engine::functions-available` fires when functions are registered or
+ *   unregistered (a worker connecting registers its whole surface at once)
+ * - `engine::workers-available` fires when a worker connects or disconnects
+ * - `trace` is a coalesced "spans changed" tick carrying the affected trace
+ *   ids; it is a refetch beat, not a span feed, so a live view re-reads
+ *   `engine::traces::list` when it ticks
  */
-export function useFleetChanges(host: Host, reload: () => void) {
-  const reloadRef = useRef(reload)
-  reloadRef.current = reload
+export type LiveSignal =
+  | 'engine::functions-available'
+  | 'engine::workers-available'
+  | 'trace'
+
+/**
+ * Subscribe to engine signals for this component's lifetime and call `onTick`
+ * when any of them fires, debounced across bursts (a worker connecting emits
+ * one event per function).
+ *
+ * The binding is a per-tab handler under the `iii::` prefix, which keeps the
+ * per-event invocations span-suppressed and out of the trace feed — a live
+ * view of traces must not feed itself. It is GC'd with the tab like any
+ * Message-path trigger. A missing trigger type degrades to the page's manual
+ * refresh rather than breaking the page.
+ */
+export function useLiveSignals(
+  host: Host,
+  signals: readonly LiveSignal[],
+  onTick: () => void,
+  options: { debounceMs?: number } = {},
+) {
+  const tickRef = useRef(onTick)
+  tickRef.current = onTick
+  const debounceMs = options.debounceMs ?? 400
   const handlerId = useMemo(() => {
     hubSeq += 1
-    return `iii::console-catalog::fleet-${hubSeq}`
+    return `iii::console-catalog::live-${hubSeq}`
   }, [])
+  const key = signals.join(',')
 
   useEffect(() => {
     let timer: number | null = null
@@ -255,37 +279,215 @@ export function useFleetChanges(host: Host, reload: () => void) {
       if (timer !== null) window.clearTimeout(timer)
       timer = window.setTimeout(() => {
         timer = null
-        reloadRef.current()
-      }, 400)
+        tickRef.current()
+      }, debounceMs)
     }
 
-    let offHandler: (() => void) | undefined
-    let offTrigger: (() => void) | undefined
-    try {
-      offHandler = host.iii.on(handlerId, schedule)
-      offTrigger = host.iii.registerTrigger({
-        type: 'worker',
-        function_id: `${handlerId}::${host.iii.browserId}`,
-        config: {
-          operations: ['add', 'remove'],
-          stages: ['started', 'downloading', 'downloaded', 'done', 'failed'],
-        },
+    const offHandler = host.iii.on(handlerId, schedule)
+    const offTriggers = key
+      .split(',')
+      .map((type) => {
+        try {
+          return host.iii.registerTrigger({
+            type,
+            function_id: `${handlerId}::${host.iii.browserId}`,
+            config: {},
+          })
+        } catch {
+          return null
+        }
       })
-    } catch {
-      // No `worker` trigger type on this engine: the refresh control stands
-      // in, the page still works.
-      offTrigger?.()
-      offHandler?.()
-      offTrigger = undefined
-      offHandler = undefined
-    }
+      .filter((off): off is () => void => off !== null)
 
     return () => {
       if (timer !== null) window.clearTimeout(timer)
-      offTrigger?.()
-      offHandler?.()
+      for (const off of offTriggers) off()
+      offHandler()
     }
-  }, [host, handlerId])
+  }, [host, handlerId, key, debounceMs])
+}
+
+/** One recorded invocation of a function, read back from its span. */
+export interface CallRecord {
+  spanId: string
+  traceId: string
+  functionId: string
+  startedAtMs: number
+  durationMs: number
+  ok: boolean
+  input?: unknown
+  output?: unknown
+  worker: string
+}
+
+function eventPayload(span: Record<string, unknown>, name: string): unknown {
+  const events = Array.isArray(span.events) ? span.events : []
+  for (const event of events) {
+    if (!isRecord(event) || event.name !== name) continue
+    const attrs = Array.isArray(event.attributes) ? event.attributes : []
+    for (const attr of attrs) {
+      if (!Array.isArray(attr) || attr[0] !== 'iii.payload.json') continue
+      try {
+        return JSON.parse(String(attr[1]))
+      } catch {
+        return attr[1]
+      }
+    }
+  }
+  return undefined
+}
+
+/**
+ * Recent calls of one function, newest first.
+ *
+ * Span names are `execute <function_id>`, so the engine can filter server
+ * side instead of the page pulling the whole feed and discarding most of it.
+ */
+export async function listCalls(
+  host: Host,
+  functionId: string,
+  limit = 25,
+): Promise<CallRecord[]> {
+  const out = await host.iii.trigger('engine::traces::list', {
+    name: `execute ${functionId}`,
+    limit,
+    include_internal: true,
+  })
+  return rows(out, 'spans')
+    .map((span): CallRecord | null => {
+      if (!isRecord(span)) return null
+      const start = Number(span.start_time_unix_nano)
+      const end = Number(span.end_time_unix_nano)
+      if (!Number.isFinite(start)) return null
+      return {
+        spanId: str(span.span_id) ?? '',
+        traceId: str(span.trace_id) ?? '',
+        functionId,
+        startedAtMs: start / 1e6,
+        durationMs: Number.isFinite(end) ? (end - start) / 1e6 : 0,
+        ok: str(span.status) !== 'error',
+        input: eventPayload(span, 'iii.invocation.input'),
+        output: eventPayload(span, 'iii.invocation.output'),
+        worker: str(span.service_name) ?? 'unknown',
+      }
+    })
+    .filter((c): c is CallRecord => c !== null)
+    .sort((a, b) => b.startedAtMs - a.startedAtMs)
+}
+
+export interface WorkerRow {
+  id: string
+  name: string
+  status: string
+  runtime?: string | null
+  version?: string | null
+  functionCount: number
+  activeInvocations: number
+  connectedAtMs: number
+  tag?: string | null
+}
+
+export async function listWorkers(host: Host): Promise<WorkerRow[]> {
+  const out = await host.iii.trigger('engine::workers::list', {})
+  return rows(out, 'workers')
+    .map((row): WorkerRow | null => {
+      if (!isRecord(row)) return null
+      const id = str(row.id)
+      if (!id) return null
+      return {
+        id,
+        name: str(row.name) ?? id.slice(0, 8),
+        status: str(row.status) ?? 'unknown',
+        runtime: str(row.runtime),
+        version: str(row.version),
+        functionCount:
+          typeof row.function_count === 'number' ? row.function_count : 0,
+        activeInvocations:
+          typeof row.active_invocations === 'number'
+            ? row.active_invocations
+            : 0,
+        connectedAtMs:
+          typeof row.connected_at_ms === 'number' ? row.connected_at_ms : 0,
+        tag: str(row.tag),
+      }
+    })
+    .filter((w): w is WorkerRow => w !== null)
+}
+
+export interface WorkerDetail {
+  worker: WorkerRow
+  metrics: Record<string, unknown> | null
+  functions: FunctionSummary[]
+  triggerTypes: TriggerTypeSummary[]
+  bindings: RegisteredTrigger[]
+}
+
+/** Everything the engine knows about one worker, in a single call. */
+export async function workerInfo(
+  host: Host,
+  name: string,
+): Promise<WorkerDetail> {
+  const out = await host.iii.trigger('engine::workers::info', { name })
+  if (!isRecord(out))
+    throw new Error('engine::workers::info returned no detail')
+  const workerRow = isRecord(out.worker) ? out.worker : {}
+  const metrics = isRecord(workerRow.latest_metrics)
+    ? workerRow.latest_metrics
+    : null
+  return {
+    worker: {
+      id: str(workerRow.id) ?? name,
+      name: str(workerRow.name) ?? name,
+      status: str(workerRow.status) ?? 'unknown',
+      runtime: str(workerRow.runtime),
+      version: str(workerRow.version),
+      functionCount:
+        typeof workerRow.function_count === 'number'
+          ? workerRow.function_count
+          : 0,
+      activeInvocations:
+        typeof workerRow.active_invocations === 'number'
+          ? workerRow.active_invocations
+          : 0,
+      connectedAtMs:
+        typeof workerRow.connected_at_ms === 'number'
+          ? workerRow.connected_at_ms
+          : 0,
+      tag: str(workerRow.tag),
+    },
+    metrics,
+    functions: rows(out, 'functions')
+      .map(functionSummary)
+      .filter((f): f is FunctionSummary => f !== null),
+    triggerTypes: rows(out, 'trigger_types')
+      .map((row): TriggerTypeSummary | null => {
+        if (!isRecord(row)) return null
+        const id = str(row.id)
+        if (!id) return null
+        return {
+          id,
+          worker_name: str(row.worker_name) ?? name,
+          description: description(row.description),
+        }
+      })
+      .filter((t): t is TriggerTypeSummary => t !== null),
+    bindings: rows(out, 'registered_triggers')
+      .map((row): RegisteredTrigger | null => {
+        if (!isRecord(row)) return null
+        const id = str(row.id)
+        const trigger_type = str(row.trigger_type)
+        if (!id || !trigger_type) return null
+        return {
+          id,
+          trigger_type,
+          function_id: str(row.function_id) ?? '',
+          worker_name: str(row.worker_name) ?? name,
+          config: row.config,
+          config_summary: str(row.config_summary),
+        }
+      })
+      .filter((t): t is RegisteredTrigger => t !== null),
+  }
 }
 
 export interface Resource<T> {

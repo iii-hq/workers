@@ -1,11 +1,16 @@
 /**
  * The Functions page (`#/ext/functions`): every function registered on the
- * bus, grouped by namespace, with the detail and invoke panes on the right.
+ * bus, grouped by namespace, with the detail, schema, invoke and live
+ * activity panes on the right.
  *
- * Two calls back the page. `engine::functions::list` is the catalogue
- * (cheap, one row per function); `engine::functions::info` is fetched only
- * for the selected row, because that is where the schemas live and the
- * fleet has hundreds of functions.
+ * Live, never polled. `engine::functions-available` fires whenever functions
+ * are registered or unregistered, so a worker connecting or dying is visible
+ * here within a beat, and rows that arrived on the last tick flash once so
+ * the change is legible rather than silent.
+ *
+ * `engine::functions::list` is the catalogue (one cheap row per function);
+ * `engine::functions::info` is fetched per selection, because that is where
+ * the schemas live and the fleet has hundreds of functions.
  *
  * Internal functions are hidden by default: the console's own per-tab
  * handlers and every worker's UI plumbing register as internal, and they
@@ -23,15 +28,17 @@ import {
   TabsList,
   TabsTrigger,
 } from '@iii-dev/console-ui'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ActivityFeed } from './ActivityFeed'
 import {
   type FunctionSummary,
   functionInfo,
   listFunctions,
-  useFleetChanges,
+  useLiveSignals,
   useResource,
 } from './engine'
 import { InvokePanel } from './InvokePanel'
+import { SchemaTable } from './SchemaTable'
 import { compareGroups, namespaceOf, pretty } from './schema'
 import {
   CatalogHead,
@@ -42,6 +49,7 @@ import {
   DetailHead,
   ErrorNote,
   GroupHeader,
+  LiveDot,
   Note,
   useGroupToggle,
 } from './widgets'
@@ -60,7 +68,24 @@ export function FunctionsPage({ host }: { host: Host }) {
     [host, showInternal],
   )
   const functions = useResource(load)
-  useFleetChanges(host, functions.reload)
+  useLiveSignals(host, ['engine::functions-available'], functions.reload)
+
+  // Ids that appeared on the last tick, so an arrival is visible instead of
+  // silently changing the row count. The first load is not "new".
+  const [arrived, setArrived] = useState<ReadonlySet<string>>(new Set())
+  const seenRef = useRef<Set<string> | null>(null)
+  useEffect(() => {
+    if (!functions.data) return
+    const ids = new Set(functions.data.map((f) => f.function_id))
+    const previous = seenRef.current
+    seenRef.current = ids
+    if (!previous) return
+    const fresh = new Set([...ids].filter((id) => !previous.has(id)))
+    if (fresh.size === 0) return
+    setArrived(fresh)
+    const timer = window.setTimeout(() => setArrived(new Set()), 2000)
+    return () => window.clearTimeout(timer)
+  }, [functions.data])
 
   const groups = useMemo(() => {
     const needle = search.trim().toLowerCase()
@@ -103,6 +128,7 @@ export function FunctionsPage({ host }: { host: Host }) {
           onRefresh={functions.reload}
           loading={functions.loading}
         >
+          <LiveDot />
           <Button
             variant="pill"
             size="sm"
@@ -126,7 +152,7 @@ export function FunctionsPage({ host }: { host: Host }) {
             description={
               search.trim()
                 ? 'no function id, worker, or description contains that text.'
-                : 'workers register their functions on connect — start one and it lists here.'
+                : 'workers register their functions on connect — start one and it appears here live.'
             }
           />
         ) : (
@@ -146,6 +172,7 @@ export function FunctionsPage({ host }: { host: Host }) {
                       primary={fn.function_id}
                       secondary={fn.description ?? undefined}
                       selected={selected === fn.function_id}
+                      flash={arrived.has(fn.function_id)}
                       onClick={() =>
                         setSelected((prev) =>
                           prev === fn.function_id ? null : fn.function_id,
@@ -184,6 +211,15 @@ function FunctionDetailPane({
     [host, functionId],
   )
   const detail = useResource(load)
+  const [tab, setTab] = useState('invoke')
+  const [prefill, setPrefill] = useState<{ value: unknown; nonce: number }>()
+
+  // Replaying from the activity feed hands the recorded input to the invoke
+  // editor and moves the operator there — the whole point of the button.
+  const replay = useCallback((value: unknown) => {
+    setPrefill({ value, nonce: Date.now() })
+    setTab('invoke')
+  }, [])
 
   return (
     <>
@@ -216,9 +252,14 @@ function FunctionDetailPane({
       ) : detail.data === null ? (
         <Note>loading detail…</Note>
       ) : (
-        <Tabs defaultValue="invoke" className="console-catalog-tabs">
+        <Tabs
+          value={tab}
+          onValueChange={setTab}
+          className="console-catalog-tabs"
+        >
           <TabsList>
             <TabsTrigger value="invoke">invoke</TabsTrigger>
+            <TabsTrigger value="activity">activity</TabsTrigger>
             <TabsTrigger value="request">request</TabsTrigger>
             <TabsTrigger value="response">response</TabsTrigger>
             <TabsTrigger value="triggers">
@@ -233,16 +274,24 @@ function FunctionDetailPane({
               host={host}
               functionId={functionId}
               requestSchema={detail.data.request_schema}
+              prefill={prefill}
+            />
+          </TabsContent>
+          <TabsContent value="activity">
+            <ActivityFeed
+              host={host}
+              functionId={functionId}
+              onReplay={replay}
             />
           </TabsContent>
           <TabsContent value="request">
-            <SchemaPane
+            <SchemaTable
               schema={detail.data.request_schema}
               empty="this function registered no request schema."
             />
           </TabsContent>
           <TabsContent value="response">
-            <SchemaPane
+            <SchemaTable
               schema={detail.data.response_schema}
               empty="this function registered no response schema."
             />
@@ -272,16 +321,5 @@ function FunctionDetailPane({
         </Tabs>
       )}
     </>
-  )
-}
-
-function SchemaPane({ schema, empty }: { schema: unknown; empty: string }) {
-  if (schema === undefined || schema === null) return <Note>{empty}</Note>
-  return (
-    <JsonHighlight
-      code={pretty(schema)}
-      className="console-catalog-json"
-      wrap
-    />
   )
 }
