@@ -1,0 +1,71 @@
+schema_version: 1
+
+defaults:
+  release_workflow: release.yml
+  allow_direct_latest: true
+  required_validation: smoke
+
+standard_workers:
+  - acp
+  - approval-gate
+  - bridge
+  - browser
+  - claude-code
+  - codex
+  - computer
+  - devin
+  - console
+  - grok
+  - context-manager
+  - cron
+  - database
+  - editor
+  - email
+  - eval
+  - harness
+  - hermes
+  - http
+  - iii-directory
+  - lsp
+  - image-resize
+  - llm-router
+  - fp
+  - github
+  - mcp
+  - memory
+  - memory-consolidate
+  - opencode
+  - openwiki
+  - pdf
+  - pi
+  - provider-anthropic
+  - provider-claude-code
+  - provider-deepseek
+  - provider-kimi
+  - provider-llamacpp
+  - provider-openai
+  - provider-openai-codex
+  - provider-xai
+  - provider-zai
+  - pubsub
+  - queue
+  - rbac-proxy
+  - session-manager
+  - slack
+  - telegram-bot
+  - shell
+  - state
+  - worktree
+  - storage
+  - scrapling
+  - web
+
+special_workers:
+  lsp-vscode:
+    release_workflow: release-lsp-vscode.yml
+    manifest: package.json
+
+policies:
+  harness:
+    allow_direct_latest: false
+    required_validation: full

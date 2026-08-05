@@ -1,4 +1,5 @@
 name: Promote Worker
+run-name: Promote · ${{ inputs.worker }}@${{ inputs.version || 'next' }} · ${{ inputs.operation_id || 'manual' }}
 
 on:
   workflow_dispatch:
@@ -14,6 +15,26 @@ on:
         default: ''
       release_run_id:
         description: 'Release run with the candidate evidence (empty = auto-locate the run for the release tag)'
+        required: false
+        type: string
+        default: ''
+      candidate_evidence_run_id:
+        description: 'Run containing candidate evidence; empty uses the Release run'
+        required: false
+        type: string
+        default: ''
+      e2e_run_id:
+        description: 'Deployed E2E run; required for Harness and auto-located when empty'
+        required: false
+        type: string
+        default: ''
+      operation_id:
+        description: 'Release Control promotion operation UUID'
+        required: false
+        type: string
+        default: ''
+      step_id:
+        description: 'Release Control promotion step UUID'
         required: false
         type: string
         default: ''
@@ -42,6 +63,9 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Install release tooling
+        run: pip install --quiet pyyaml
+
       - name: Validate dispatch context
         run: |
           set -euo pipefail
@@ -53,6 +77,8 @@ jobs:
             echo "::error::worker must be a Registry slug"
             exit 2
           }
+          python3 .github/scripts/release_catalog.py validate
+          python3 .github/scripts/release_catalog.py get "$WORKER" release_workflow >/dev/null
 
       # A promotion always ships the candidate behind `next`, so the dispatch
       # only has to name the worker: the version comes from the Registry and
@@ -65,6 +91,8 @@ jobs:
         env:
           VERSION_INPUT: ${{ inputs.version }}
           RUN_ID_INPUT: ${{ inputs.release_run_id }}
+          EVIDENCE_RUN_ID_INPUT: ${{ inputs.candidate_evidence_run_id }}
+          E2E_RUN_ID_INPUT: ${{ inputs.e2e_run_id }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -109,15 +137,44 @@ jobs:
             exit 2
           }
 
+          evidence_run_id="${EVIDENCE_RUN_ID_INPUT:-$run_id}"
+          [[ "$evidence_run_id" =~ ^[0-9]+$ ]] || {
+            echo "::error::candidate_evidence_run_id must be numeric"
+            exit 2
+          }
+
+          e2e_run_id="$E2E_RUN_ID_INPUT"
+          if [[ "$WORKER" == harness && -z "$e2e_run_id" ]]; then
+            title="Harness E2E · ${WORKER}@${version} ·"
+            e2e_run_id=$(gh api -X GET \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/harness-e2e-deployed.yml/runs" \
+              -f event=workflow_dispatch -f status=completed \
+              --jq "[.workflow_runs[] | select(.conclusion == \"success\" and (.display_title | startswith(\"${title}\")))] | first | .id // empty")
+            [[ -n "$e2e_run_id" ]] || {
+              echo "::error::No green deployed Harness E2E run found for ${WORKER}@${version}"
+              exit 2
+            }
+            echo "::notice::Harness E2E evidence expected in run ${e2e_run_id}"
+          fi
+          if [[ -n "$e2e_run_id" && ! "$e2e_run_id" =~ ^[0-9]+$ ]]; then
+            echo "::error::e2e_run_id must be numeric"
+            exit 2
+          fi
+
           {
             echo "VERSION=${version}"
             echo "RELEASE_RUN_ID=${run_id}"
+            echo "EVIDENCE_RUN_ID=${evidence_run_id}"
+            echo "E2E_RUN_ID=${e2e_run_id}"
+            echo "PROMOTION_OPERATION_ID=${{ inputs.operation_id || format('github:{0}', github.run_id) }}"
+            echo "PROMOTION_STEP_ID=${{ inputs.step_id || 'promote' }}"
           } >>"$GITHUB_ENV"
           echo "version=${version}" >>"$GITHUB_OUTPUT"
 
       - name: Validate Release workflow run
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.worker }}/v${{ steps.resolve.outputs.version }}
         run: |
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_RUN_ID" >release-run.json
@@ -126,11 +183,33 @@ jobs:
             echo "::error::run $RELEASE_RUN_ID belongs to '$run_name', expected 'Release'"
             exit 1
           }
+          jq -e '.path | startswith(".github/workflows/release.yml@")' release-run.json >/dev/null || {
+            echo "::error::run $RELEASE_RUN_ID did not execute release.yml"
+            exit 1
+          }
           event=$(jq -r .event release-run.json)
           [[ "$event" == push || "$event" == workflow_dispatch ]] || {
             echo "::error::Release run event '$event' is not promotable"
             exit 1
           }
+          if [[ "$event" == push ]]; then
+            jq -e --arg tag "$TAG" '.head_branch == $tag' release-run.json >/dev/null || {
+              echo "::error::push run $RELEASE_RUN_ID is not for tag $TAG"
+              exit 1
+            }
+          fi
+          if [[ "$EVIDENCE_RUN_ID" == "$RELEASE_RUN_ID" ]]; then
+            cp release-run.json evidence-run.json
+          else
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$EVIDENCE_RUN_ID" >evidence-run.json
+            jq -e '
+              (.path | startswith(".github/workflows/release.yml@")) or
+              (.path | startswith(".github/workflows/repair-worker-release.yml@"))
+            ' evidence-run.json >/dev/null || {
+              echo "::error::run $EVIDENCE_RUN_ID cannot produce candidate evidence"
+              exit 1
+            }
+          fi
 
       - name: Download candidate evidence
         env:
@@ -139,7 +218,7 @@ jobs:
           set -euo pipefail
           artifact="release-candidate-${WORKER}-${VERSION}"
           mkdir -p evidence
-          gh run download "$RELEASE_RUN_ID" \
+          gh run download "$EVIDENCE_RUN_ID" \
             --repo "$GITHUB_REPOSITORY" \
             --name "$artifact" \
             --dir evidence
@@ -153,6 +232,7 @@ jobs:
             --evidence evidence/release-candidate.json \
             --repository "$GITHUB_REPOSITORY" \
             --release-run-id "$RELEASE_RUN_ID" \
+            --evidence-run-id "$EVIDENCE_RUN_ID" \
             --worker "$WORKER" \
             --version "$VERSION" \
             --output validated-candidate.json
@@ -165,16 +245,53 @@ jobs:
             echo "::error::Git tag resolves to $tag_sha, evidence records $evidence_sha"
             exit 1
           }
-          run_attempt=$(jq -r .run_attempt release-run.json)
+          run_attempt=$(jq -r .run_attempt evidence-run.json)
           evidence_attempt=$(jq -r .run_attempt validated-candidate.json)
           [[ "$run_attempt" == "$evidence_attempt" ]] || {
-            echo "::error::Release run attempt is $run_attempt, evidence records $evidence_attempt"
+            echo "::error::Evidence run attempt is $run_attempt, evidence records $evidence_attempt"
             exit 1
           }
 
           deploy=$(jq -r .deploy validated-candidate.json)
-          echo "tag=$tag" >>"$GITHUB_OUTPUT"
-          echo "deploy=$deploy" >>"$GITHUB_OUTPUT"
+          image_digest=$(jq -r '.image_digest // empty' validated-candidate.json)
+          {
+            echo "tag=$tag"
+            echo "deploy=$deploy"
+            echo "image_digest=$image_digest"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Validate deployed Harness E2E evidence
+        if: inputs.worker == 'harness'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$E2E_RUN_ID" >e2e-run.json
+          jq -e '
+            .name == "Harness E2E deployed" and
+            .event == "workflow_dispatch" and
+            .conclusion == "success" and
+            (.path | startswith(".github/workflows/harness-e2e-deployed.yml@"))
+          ' e2e-run.json >/dev/null
+          mkdir -p e2e-evidence
+          gh run download "$E2E_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "harness-e2e-evidence-${WORKER}-${VERSION}" \
+            --dir e2e-evidence
+          python3 .github/scripts/harness_e2e_evidence.py validate \
+            --evidence e2e-evidence/harness-e2e-evidence.json \
+            --repository "$GITHUB_REPOSITORY" \
+            --release-run-id "$RELEASE_RUN_ID" \
+            --e2e-run-id "$E2E_RUN_ID" \
+            --worker "$WORKER" \
+            --version "$VERSION" \
+            --output validated-harness-e2e.json
+          run_attempt=$(jq -r .run_attempt e2e-run.json)
+          evidence_attempt=$(jq -r .run_attempt validated-harness-e2e.json)
+          [[ "$run_attempt" == "$evidence_attempt" ]] || {
+            echo "::error::E2E run attempt is $run_attempt, evidence records $evidence_attempt"
+            exit 1
+          }
 
       - name: Validate GitHub prerelease
         env:
@@ -214,12 +331,25 @@ jobs:
         run: |
           set -euo pipefail
           owner=${GITHUB_REPOSITORY_OWNER,,}
+          digest="${{ steps.candidate.outputs.image_digest }}"
           version_ref="ghcr.io/${owner}/${WORKER}:${VERSION}"
           latest_ref="ghcr.io/${owner}/${WORKER}:latest"
-          docker buildx imagetools create --tag "$latest_ref" "$version_ref"
+          if [[ -n "$digest" ]]; then
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+              echo "::error::candidate evidence has an invalid image digest"
+              exit 1
+            }
+            digest_ref="ghcr.io/${owner}/${WORKER}@${digest}"
+          else
+            echo "::warning::legacy candidate evidence has no digest; promoting from the immutable version tag"
+            digest_ref="$version_ref"
+          fi
           docker buildx imagetools inspect "$version_ref" --raw >version-manifest.json
+          docker buildx imagetools inspect "$digest_ref" --raw >digest-manifest.json
+          cmp version-manifest.json digest-manifest.json
+          docker buildx imagetools create --tag "$latest_ref" "$digest_ref"
           docker buildx imagetools inspect "$latest_ref" --raw >latest-manifest.json
-          cmp version-manifest.json latest-manifest.json
+          cmp digest-manifest.json latest-manifest.json
 
       - name: Finalize GitHub Release
         env:
@@ -237,6 +367,7 @@ jobs:
 
       - name: Announce promoted release
         id: slack
+        continue-on-error: true
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL: worker-releases
@@ -284,6 +415,10 @@ jobs:
             echo
             echo "- Candidate: \`${WORKER}@${VERSION}\`"
             echo "- Release run: [${RELEASE_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID})"
+            echo "- Candidate evidence run: [${EVIDENCE_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${EVIDENCE_RUN_ID})"
+            if [[ -n "$E2E_RUN_ID" ]]; then
+              echo "- Deployed E2E run: [${E2E_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${E2E_RUN_ID})"
+            fi
             if [[ -f registry-promotion.json ]]; then
               previous=$(jq -r '.previous_latest // "none"' registry-promotion.json)
               changed=$(jq -r .changed registry-promotion.json)
@@ -295,6 +430,53 @@ jobs:
             fi
           } >>"$GITHUB_STEP_SUMMARY"
 
+      - name: Write promotion result
+        if: always()
+        env:
+          OPERATION_ID: ${{ inputs.operation_id || format('github:{0}', github.run_id) }}
+          STEP_ID: ${{ inputs.step_id || 'promote' }}
+          NOTIFICATION_RESULT: ${{ steps.slack.outcome }}
+          DEPLOY: ${{ steps.candidate.outputs.deploy }}
+        run: |
+          registry=false
+          github_release=false
+          image_alias=false
+          [[ -s registry-promotion.json ]] && registry=true
+          [[ -s github-release-after.json ]] && github_release=true
+          if [[ "$DEPLOY" != image || -s latest-manifest.json ]]; then image_alias=true; fi
+          status=failed
+          if [[ "$registry" == true ]]; then status=partial; fi
+          if [[ "$registry" == true && "$github_release" == true && "$image_alias" == true ]]; then
+            status=succeeded
+          fi
+          jq -n \
+            --argjson schema_version 2 \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg promotion_run_id "$GITHUB_RUN_ID" \
+            --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg operation_id "$OPERATION_ID" \
+            --arg step_id "$STEP_ID" \
+            --arg worker "$WORKER" \
+            --arg version "$VERSION" \
+            --arg release_run_id "$RELEASE_RUN_ID" \
+            --arg candidate_evidence_run_id "$EVIDENCE_RUN_ID" \
+            --arg e2e_run_id "$E2E_RUN_ID" \
+            --arg status "$status" \
+            --arg notification "${NOTIFICATION_RESULT:-skipped}" \
+            --argjson registry "$registry" \
+            --argjson github_release "$github_release" \
+            --argjson image_alias "$image_alias" \
+            '{schema_version: $schema_version, repository: $repository,
+              promotion_run_id: $promotion_run_id, run_attempt: $run_attempt,
+              operation_id: $operation_id, step_id: $step_id,
+              worker: $worker, version: $version,
+              release_run_id: $release_run_id,
+              candidate_evidence_run_id: $candidate_evidence_run_id,
+              e2e_run_id: ($e2e_run_id | if length > 0 then . else null end),
+              status: $status, notification: $notification,
+              results: {registry: $registry, github_release: $github_release, image_alias: $image_alias}}' \
+            >promotion-result.json
+
       - name: Upload promotion evidence
         if: always()
         uses: actions/upload-artifact@v6
@@ -303,8 +485,12 @@ jobs:
           path: |
             validated-candidate.json
             release-run.json
+            evidence-run.json
+            e2e-run.json
+            validated-harness-e2e.json
             github-release-before.json
             github-release-after.json
             registry-promotion.json
+            promotion-result.json
           retention-days: 30
           if-no-files-found: warn

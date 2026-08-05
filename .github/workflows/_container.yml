@@ -16,11 +16,6 @@ on:
         description: 'Semver version (e.g., 1.2.3)'
         required: true
         type: string
-      registry_tag:
-        description: 'Registry tag to also push (latest, next, ...)'
-        required: false
-        type: string
-        default: latest
       dockerfile:
         description: 'Dockerfile path relative to <worker>/'
         required: false
@@ -35,6 +30,9 @@ on:
       image_tag:
         description: 'Fully-qualified versioned image reference (ghcr.io/...:<version>)'
         value: ${{ jobs.build.outputs.image_tag }}
+      image_digest:
+        description: 'Immutable digest produced by the multi-arch build'
+        value: ${{ jobs.build.outputs.image_digest }}
 
 permissions:
   contents: read
@@ -46,6 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.refs.outputs.image_tag }}
+      image_digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -56,19 +55,15 @@ jobs:
         env:
           WORKER: ${{ inputs.worker }}
           VERSION: ${{ inputs.version }}
-          REGISTRY_TAG: ${{ inputs.registry_tag }}
         run: |
           OWNER="${GITHUB_REPOSITORY_OWNER,,}"
           BASE="ghcr.io/${OWNER}/${WORKER}"
           {
             echo "base=${BASE}"
             echo "image_tag=${BASE}:${VERSION}"
-            echo "tags<<EOF"
-            echo "${BASE}:${VERSION}"
-            echo "${BASE}:${REGISTRY_TAG}"
-            echo "EOF"
+            echo "tags=${BASE}:${VERSION}"
           } >> "$GITHUB_OUTPUT"
-          echo "::notice::image=${BASE}:${VERSION} (also :${REGISTRY_TAG})"
+          echo "::notice::image=${BASE}:${VERSION}; mutable aliases move only after Registry publication"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -85,6 +80,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        id: push
         uses: docker/build-push-action@v7
         with:
           context: ${{ inputs.worker }}

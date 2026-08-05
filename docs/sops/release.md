@@ -1,304 +1,275 @@
 # Worker release
 
-**Sources of truth:**
-[`.github/workflows/create-tag.yml`](../../.github/workflows/create-tag.yml),
-[`.github/workflows/release.yml`](../../.github/workflows/release.yml),
-[`.github/workflows/release-lsp-vscode.yml`](../../.github/workflows/release-lsp-vscode.yml),
-[`.github/workflows/_rust-binary.yml`](../../.github/workflows/_rust-binary.yml),
-[`.github/workflows/_container.yml`](../../.github/workflows/_container.yml),
-[`.github/workflows/_bundle.yml`](../../.github/workflows/_bundle.yml),
-[`.github/workflows/_publish-registry.yml`](../../.github/workflows/_publish-registry.yml),
-[`.github/workflows/_candidate-smoke.yml`](../../.github/workflows/_candidate-smoke.yml),
-[`.github/workflows/promote-worker.yml`](../../.github/workflows/promote-worker.yml),
-[`.github/scripts/parse_release_tag.py`](../../.github/scripts/parse_release_tag.py).
-On conflict, the workflow wins — update this doc.
+The worker release pipeline is an executor for manual operators and Release
+Control. Both use the same version rules, immutable evidence, and repair paths.
 
-Operational SOP for cutting a worker version, monitoring the pipeline, and
-verifying registry publish. One-time wiring is in [`new-worker.md`](new-worker.md) §6.
+**Sources of truth:**
+[`.github/release-workers.yaml`](../../.github/release-workers.yaml),
+[`create-tag.yml`](../../.github/workflows/create-tag.yml),
+[`release.yml`](../../.github/workflows/release.yml),
+[`promote-worker.yml`](../../.github/workflows/promote-worker.yml),
+[`repair-worker-release.yml`](../../.github/workflows/repair-worker-release.yml),
+[`manifest_version.py`](../../.github/scripts/manifest_version.py), and
+[`parse_release_tag.py`](../../.github/scripts/parse_release_tag.py).
+On conflict, those files win; update this SOP in the same change.
+
+## Release contract
+
+The standard pipeline accepts a worker slug from
+`.github/release-workers.yaml`. GitHub renders the input as text because Actions
+cannot populate a choice dynamically; the workflow rejects slugs outside the
+catalog. `lsp-vscode` is cataloged but routes to its specialized workflow.
+
+Release versions use this deliberately small grammar:
+
+```text
+MAJOR.MINOR.PATCH[-experimental|-alpha|-beta]
+```
+
+Numbered or arbitrary prerelease suffixes and build metadata are rejected. The
+maturity ladder is `experimental -> alpha -> beta -> stable`. At the same
+version core, a release may advance or skip a maturity but may not repeat or
+move backwards. Once a stable tag exists for a core, no prerelease can be
+created for that core.
+
+The Registry's `experimental` flag is a separate worker badge. For example,
+`0.2.0-beta` may have `experimental: false`, while a stable `0.2.0` may still
+have `experimental: true`.
+
+Every v2 annotated Git tag carries the durable execution identity:
+
+```text
+worker: shell
+version: 0.2.0-beta
+release-contract: 2
+operation-id: <Release Control operation or github:<run-id>>
+step-id: <operation step or create-tag>
+source-sha: <previewed main SHA or unknown>
+maturity: beta
+registry-tag: next
+experimental: false
+```
+
+Legacy v1 tags and candidate evidence remain readable during the staged
+migration. All newly created tags and evidence use contract v2.
 
 ## Prerequisites
 
-- **Branch:** Create Tag requires `main` (preflight enforces it).
-- **Access:** GitHub Actions on this repo; org secrets configured (do not paste
-  values):
-  - `III_CI_APP_ID` / `III_CI_APP_PRIVATE_KEY` — bot commit + tag push in Create Tag
-  - `WORKERS_REGISTRY_API_KEY` — publish, skills, and Registry tag promotion
-- **Worker wired:** `create-tag.yml` options + `release.yml` tag pattern (see
-  [`new-worker.md`](new-worker.md) §6).
-- **Local green:** lint + tests for the worker; Rust binary: `--manifest` JSON valid.
+- Dispatch **Create Tag** from `main`.
+- Configure `III_CI_APP_ID`, `III_CI_APP_PRIVATE_KEY`, and
+  `WORKERS_REGISTRY_API_KEY` as repository or organization secrets.
+- Add the worker to `.github/release-workers.yaml`; see
+  [`new-worker.md`](new-worker.md#6-release-wiring-one-time-per-worker).
+- Run the worker's lint and test suite before creating a release.
 
-## Standard release (happy path)
+## Create a release
 
-### 1. Create Tag
-
-Actions → **Create Tag**:
+Actions -> **Create Tag** accepts:
 
 | Input | Meaning |
 |---|---|
-| Worker | Folder name (must be in workflow options) |
-| Bump | `patch` / `minor` / `major` |
-| Registry channel | `next` (default: validate and promote manually) or `latest` (publish directly) |
-| Experimental | Checkbox. Marks the worker experimental in the registry — see [Experimental releases](#experimental-releases) |
+| `worker` | Cataloged worker slug |
+| `bump` | `patch`, `minor`, `major`, or `none` |
+| `target_version` | Optional exact version; overrides `bump` and `suffix` |
+| `suffix` | `none`, `experimental`, `alpha`, or `beta` |
+| `registry_tag` | `next` for a candidate, `latest` for a direct stable release |
+| `experimental` | Independent Registry badge |
+| `operation_id`, `step_id` | Optional Release Control correlation IDs |
+| `expected_current_version` | Optional compare-and-swap guard for the manifest |
+| `source_sha` | Optional preview SHA; the worker path must still match it |
 
-The workflow:
+The workflow resolves the new version before mutating the repository. Examples
+from manifest version `0.1.0`:
 
-1. Bumps version in the worker manifest (`Cargo.toml`, `package.json`, …).
-2. Commits `chore(<worker>): bump to vX.Y.Z` to `main`.
-3. Creates and pushes an **annotated** tag `<worker>/vX.Y.Z` with
-   the selected `registry-tag` and `experimental: <true|false>` in the tag
-   message.
+| Intent | Result |
+|---|---|
+| `patch` + `none` | `0.1.1` |
+| `minor` + `alpha` | `0.2.0-alpha` |
+| `none` + `beta` | `0.1.0-beta` |
+| exact `1.0.0-experimental` | `1.0.0-experimental` |
 
-Choose `next` for the staged candidate flow. Choose `latest` for a worker that
-does not need candidate validation and manual promotion; that release publishes
-directly to the Registry `latest` channel.
+An exact target is authoritative. Release Control should send
+`expected_current_version` and `source_sha` from its preview so a stale plan
+fails before a version commit is written.
 
-### 2. Release pipeline
+The workflow validates tag history, updates the manifest and Cargo lock when
+needed, pushes the version commit to `main`, then creates the annotated
+`<worker>/v<version>` tag. A concurrent push is retried once only when the
+selected worker did not change. A matching existing tag is treated as an
+idempotent result.
 
-Tag push triggers **Release** (`release.yml`):
+Prereleases always publish to `next`. Harness also cannot publish directly to
+`latest`; it must pass the candidate and deployed-E2E gates before promotion.
+Other stable workers may use either channel.
+
+## Release pipeline
+
+Pushing a standard worker tag triggers **Release**:
 
 ```mermaid
 flowchart LR
-  createTag[Create Tag] -->|"tag worker/vX.Y.Z"| setupJob[setup]
-  setupJob --> channel{registry-tag}
-  channel -->|latest| directPublish[publish directly to latest]
-  directPublish --> normalRelease[normal GitHub Release]
-  channel -->|next| ghRelease[create public GitHub prerelease]
-  ghRelease --> buildBinary["binary: _rust-binary.yml"]
-  ghRelease --> buildImage["image: _container.yml"]
-  ghRelease --> buildBundle["bundle: _bundle.yml"]
-  buildBinary --> publishJob[_publish-registry.yml]
-  buildImage --> publishJob
-  buildBundle --> publishJob
-  publishJob --> candidateSmoke[resolve / install / boot next]
-  candidateSmoke --> harnessGate{Harness or dependency?}
-  harnessGate -->|yes| quickstart[Harness quickstart]
-  quickstart --> e2e[Harness deployed E2E]
-  harnessGate -->|no| evidence[candidate evidence]
-  e2e --> evidence
-  evidence --> promotion[manual Promote Worker]
-  promotion --> latest[Registry latest + GitHub Release]
+  tag[Annotated worker tag] --> setup[Validate catalog, tag, and manifest]
+  setup --> build[Build one immutable artifact]
+  build --> registry[Publish exact version to Registry]
+  registry --> alias[Move image next or latest alias by digest]
+  registry --> candidate{Channel is next?}
+  candidate -->|yes| smoke[Install exact candidate and smoke]
+  smoke --> evidence[Candidate evidence]
+  candidate -->|no| result[Terminal release result]
+  alias --> evidence
+  evidence --> result
+  evidence --> promote[Promote Worker]
+  promote --> latest[Registry and image latest]
 ```
 
-| Stage | Job | Output |
-|---|---|---|
-| setup | Parse tag + `iii.worker.yaml`; detect web bundle / smoke opt-out | worker, version, deploy, targets, … |
-| create-release | Public GitHub prerelease for `next`, normal Release for `latest` | Release page and downloadable assets |
-| binary-build | `_rust-binary.yml` | Per-target `.tar.gz` / `.zip` + `.sha256` on the Release |
-| container-build | `_container.yml` | Multi-arch image at `ghcr.io/<owner>/<worker>` |
-| bundle-build | `_bundle.yml` | `<worker>.tar.gz` + `.sha256` on the Release |
-| publish | `_publish-registry.yml` | Registry manifest + optional skills upload |
-| candidate-smoke | Resolve `next`, install it, boot it, and verify the exact lock/interface | Published-artifact evidence |
-| candidate-ready | Fold required gate results into one immutable artifact | `release-candidate-<worker>-<version>` |
+`deploy` in `iii.worker.yaml` selects exactly one build path:
 
-`deploy` from `iii.worker.yaml` selects exactly one build job.
-
-### 3. What publish does
-
-[`_publish-registry.yml`](../../.github/workflows/_publish-registry.yml):
-
-1. Boots a clean `iii` engine (`workers: []`).
-2. Starts the **released artifact** (mode from `manifest_version.py deploy-mode`):
-   - `release-binary` — downloads Linux gnu tarball from the GitHub Release
-   - `release-bundle` — extracts `<worker>.tar.gz`, runs `node ./index.mjs`
-   - `iii-add` — `iii worker add ./<worker>` (non-binary/bundle deploys with `runtime`/`scripts.start`, e.g. image workers)
-   - `cargo-run` — `cargo run` from source (remaining Rust workers)
-3. Uses `config.collect.yaml` when present (sidecar-free boot).
-4. Collects function + trigger interface (120 s timeout); asserts non-empty.
-5. Resolves release assets and normalized manifest `tags` into `payload.json`.
-6. `POST /publish` to `https://api.workers.iii.dev`.
-7. `POST /w/<worker>/skills` when `skills/*.md` exist (skipped when absent).
-
-Workers with `interface_smoke: false` skip the entire publish job.
-
-### 4. Candidate gates
-
-Staged releases (`registry-tag: next`) resolve and install `worker@next`, check
-the expected version in `iii.lock`, and verify the registered interface.
-Harness and its mandatory dependencies additionally run the published
-quickstart and deployed E2E in the same Release run. Those gates use the stable
-CLI and stable baseline stack, then replace the released worker with
-`worker@<exact-version>`.
-
-`interface_smoke: false` workers remain GitHub-only releases and do not enter
-the staged Registry flow.
-
-### 5. Direct latest releases
-
-When Create Tag is run with `registry-tag: latest`, the Release workflow
-publishes directly to Registry `latest`, skips candidate gates and the
-**Promote Worker** workflow, and creates a normal GitHub Release for a stable
-version. This path is intended for workers that do not need the staged
-candidate lifecycle.
-
-### 6. Promote to latest
-
-After `candidate-ready` passes, run Actions → **Promote Worker** from `main` and
-enter the worker. Version and Release run id are optional: a promotion always
-ships the candidate behind `next`, so the workflow resolves the version from
-the Registry and locates the Release run from the resulting tag. Fill them in
-only for the repair paths — retrying an interrupted promotion after `next`
-already moved on, or pointing at a dispatched Release re-run (whose run is not
-findable by tag). The workflow:
-
-1. Downloads and validates the candidate evidence and Git tag commit.
-2. Confirms `next` still points to the exact candidate.
-3. Moves the Registry `latest` tag with source and destination preconditions.
-4. For image workers, moves `ghcr.io/<owner>/<worker>:latest` to the immutable
-   version digest.
-5. Converts the existing GitHub prerelease to a normal release without changing
-   the repository-global GitHub Latest release.
-6. Posts the final Slack announcement.
-
-Registry, GitHub Release, and GHCR promotion operations are idempotent. If one
-of those later steps fails, rerun the same promotion to repair the remaining
-state. A rerun after Slack already accepted the root message can repeat the
-announcement, so inspect `#worker-releases` before retrying a Slack-only
-failure.
-
-### 7. Registry tag semantics
-
-| Channel | Typical use |
+| Deploy | Build output |
 |---|---|
-| `latest` | Stable worker channel, updated directly or by manual promotion |
-| `next` | Current candidate created by the release pipeline |
+| `binary` | Per-target archive and checksum attached to the GitHub Release |
+| `bundle` | Worker bundle and checksum attached to the GitHub Release |
+| `image` | Immutable `ghcr.io/<owner>/<worker>:<version>` plus its digest |
 
-After promotion, `next` and `latest` may point to the same immutable version.
-The next staged release moves only `next`. The annotated Git tag records the
-initial Registry tag; Create Tag defaults to `next`, but can select `latest` for
-a direct release.
+The publish job boots the released artifact, captures its typed function and
+trigger interface, builds the Registry payload, publishes the exact version,
+and uploads skills when present. Workers with `interface_smoke: false` remain
+GitHub-only releases and skip Registry gates.
 
-## Experimental releases
+For image workers, the mutable `next` or `latest` alias moves only after the
+Registry publish succeeds. The alias source is the immutable digest emitted by
+the build, and the workflow verifies the version reference, digest, and final
+alias resolve to the same manifest.
 
-Tick **Experimental** on Create Tag to mark the worker unstable in the
-registry. It is a badge and nothing else — the version publishes to the
-selected channel, installs normally, and resolves normally. Promotion does not
-clear the badge.
+### Candidate evidence
 
-It travels the same way the channel does: `experimental: true` in the
-annotated tag message, read by `parse_release_tag.py`, forwarded through
-`release.yml` to the publish payload. Anything but the literal `true` — a
-missing line, a lightweight tag, a typo — publishes as stable.
+A `next` release must resolve and install the exact candidate, verify the lock
+and registered interface, and write
+`release-candidate-<worker>-<version>/release-candidate.json`. Schema v2 binds
+the original Release run, evidence-producing run, run attempt, tag SHA, source
+SHA, operation identity, maturity, gate results, and image digest.
 
-**Leave it unticked once the worker settles.** Publishing a later release
-without the flag clears the badge. Registry tag promotion and experimental
-maturity are independent states.
+Harness dependencies do not implicitly run the Harness suite. They can be
+released and promoted independently like other workers. Harness itself needs a
+separate successful **Harness E2E deployed** run before promotion.
 
-For what the registry does with the flag, see
-[`EXPERIMENTAL_WORKERS.md`](https://github.com/iii-hq/registry/blob/main/docs/EXPERIMENTAL_WORKERS.md)
-in the registry repo.
+Every Release run also attempts to upload
+`release-result-<run-id>/release-result.json`. It classifies the terminal state
+as `succeeded`, `partial`, or `failed`, records the last durable phase and all
+job outcomes, and treats a Slack failure as a notification issue rather than a
+failed publication.
 
-## Variants
+## Promote a candidate
 
-### Re-run a failed release
+After candidate evidence is ready, dispatch **Promote Worker** from `main`.
+Normally only `worker` is needed: the workflow resolves `next`, locates the
+Release run, and downloads its evidence. `version`, `release_run_id`, and
+`candidate_evidence_run_id` are explicit overrides for repaired evidence or an
+interrupted promotion after `next` moved.
 
-Actions → **Release** → `workflow_dispatch` → enter the existing tag
-(e.g. `session-manager/v0.1.0`). No new tag or version bump needed.
-Concurrency group `release-${{ github.ref }}` serializes per tag.
-Duplicate `POST /publish` responses are accepted only when the exact version
-already exists and the requested Registry tag still points to it.
+Promotion performs these guarded, idempotent changes:
 
-### Prerelease
+1. Validate the candidate artifact, evidence-producing run attempt, and current
+   Git tag SHA.
+2. Require stable `MAJOR.MINOR.PATCH` maturity and confirm Registry `next` still
+   points to the candidate.
+3. For Harness, validate a deployed-E2E evidence artifact tied to the same
+   release and E2E run attempt. `e2e_run_id` can be supplied or auto-located.
+4. Move Registry `latest` with source and destination preconditions.
+5. For images, move GHCR `latest` from the recorded immutable digest.
+6. Convert the GitHub prerelease to a normal release without changing the
+   repository-global GitHub Latest release.
+7. Attempt the Slack announcement without making notification delivery part of
+   publication success.
 
-Create Tag cannot produce prerelease suffixes. Push a manual **annotated** tag:
+The terminal `promotion-<worker>-<version>` artifact records `succeeded`,
+`partial`, or `failed` plus each external surface. Release Control is the
+approval boundary; the workflow does not add a second GitHub Environment
+approval.
 
-```text
-<worker>/vX.Y.Z-beta.1
-```
+## Run deployed Harness E2E
 
-With tag message including `registry-tag: next`. Marks the GitHub Release as
-prerelease; still builds, publishes, and runs candidate gates, but cannot be
-promoted by **Promote Worker** until a stable `MAJOR.MINOR.PATCH` is released.
+Dispatch **Harness E2E deployed** with the candidate worker, exact version,
+release tag and Release run id. The suite installs the requested Registry
+state and verifies the exact release worker version. It always emits
+`harness-e2e-evidence-<worker>-<version>`; a failed suite produces evidence with
+`e2e_ready: false` and then fails the gate.
 
-### Alpha release from a feature branch
+Only a Harness promotion requires this artifact. Releasing a Harness dependency
+does not couple that worker's promotion to Harness E2E.
 
-Actions → **Alpha Release** → choose the worker and select the feature branch
-in **Use workflow from**. The workflow refuses `main`, derives the next
-`<worker>/vX.Y.Z-alpha.N` version from the branch manifest and existing alpha
-tags, then creates an ephemeral commit reachable only from that annotated tag.
-It never pushes the selected branch or `main`.
+## Repair an interrupted release
 
-The tag annotation always contains `registry-tag: next`; alpha releases cannot
-publish to `latest`. The regular **Release** workflow runs from that tag and
-creates a GitHub prerelease, release assets, and the registry entry on `next`.
+Do not create a replacement version solely because a later external side
+effect failed. Dispatch **Repair worker release** with the exact worker,
+version, original Release run id, and one explicit action:
 
-### Dry run
+| Action | Purpose |
+|---|---|
+| `verify` | Verify Registry, GitHub Release, and image alias state |
+| `candidate-smoke` | Repeat the exact `next` smoke and emit new candidate evidence |
+| `container-alias` | Reconcile only the selected `next` or `latest` image alias |
+| `github-release` | Create or reconcile GitHub prerelease/release state |
+| `notification` | Explicitly repeat the release notification |
 
-Tag shape: `<worker>/vX.Y.Z-dry-run.1` (parsed by `parse_release_tag.py`).
+Use `channel=original` for the tag's original channel. Select `next` or
+`latest` only when repairing a known partial candidate, direct release, or
+promotion. Repair validates the catalog, tag manifest, original run and
+available evidence before acting, and writes a terminal
+`release-repair-<worker>-<version>-<run-id>` artifact.
 
-- Runs the full build matrix
-- Skips GitHub Release asset upload and registry publish
-- Useful to validate a new worker's pipeline before `v0.1.0`
+The workflow never rewrites a version or Git tag. Registry versions and GitHub
+Release assets remain immutable history.
 
-### Skills-only update
+## Prerelease from a feature branch
 
-Actions → **Publish worker skills** — worker must be in
-`ALLOWED_WORKERS` ([`parse_publish_workers_input.py`](../../.github/scripts/parse_publish_workers_input.py)).
-No version bump; updates skill markdown on the registry channel you pick.
+Actions -> **Prerelease from branch** can cut `experimental`, `alpha`, or
+`beta` from a non-`main` branch. It writes the chosen version to an ephemeral
+commit reachable only through the annotated tag, pushes no branch, fixes the
+channel to `next`, and dispatches the standard Release workflow.
+
+Use an exact prerelease target when advancing maturity at the same version core.
+There are no `.1`, `.2`, or other numbered suffixes.
+
+## Specialized and legacy variants
 
 ### LSP VS Code extension
 
 `lsp-vscode` uses
-[`release-lsp-vscode.yml`](../../.github/workflows/release-lsp-vscode.yml)
-(VS Code extension packaging, separate tag pattern `lsp-vscode/v*`). The
-Marketplace/OpenVSX package name remains `iii-lsp`.
+[`release-lsp-vscode.yml`](../../.github/workflows/release-lsp-vscode.yml).
+Package and publish targets remain independent; retry a failed target with the
+same existing tag instead of creating another version.
 
-The extension release workflow packages the VSIX once and then publishes it via
-separate jobs:
+### Skills-only update
 
-| Job | External side effect |
-|---|---|
-| `publish-vscode` | Publishes the VSIX to VS Code Marketplace |
-| `publish-openvsx` | Publishes the same VSIX to OpenVSX |
-| `github-release` | Uploads the VSIX to the GitHub Release |
+Actions -> **Publish worker skills** updates skill Markdown without a version
+bump. Its narrower `ALLOWED_WORKERS` list applies only to that out-of-band
+operation, not to the release catalog.
 
-If only one target fails, do **not** create another version bump. Either use
-GitHub Actions "Re-run failed jobs" for the same run, or dispatch **Release LSP
-VS Code** manually with the existing tag and the failed target:
+### Legacy dry run
 
-| Input | Example |
-|---|---|
-| `tag` | `lsp-vscode/v0.2.7` |
-| `publish_target` | `openvsx`, `vscode-marketplace`, or `github-release` |
-
-Use `publish_target=all` only for the first publish attempt or when all targets
-are known to be safe to run again.
-
-### Pre-bumped manifest
-
-If a merged PR already set the manifest version (e.g. a breaking change
-that names its own release), use Create Tag with **Bump = none**: it
-releases the manifest version as-is, skips the bump commit, and still
-refuses existing tags.
+Contract-v1 tags shaped `<worker>/vX.Y.Z-dry-run.N` still run builds while
+skipping GitHub Release and Registry mutation. Contract v2 does not create new
+dry-run versions; validate changes through CI or a branch prerelease.
 
 ## Troubleshooting
 
-| Symptom | Likely cause | Fix |
+| Symptom | Likely cause | Action |
 |---|---|---|
-| Tag pushed, nothing ran | Missing `'<worker>/v*'` in `release.yml` | Add pattern (§6 in `new-worker.md`); dispatch Release manually meanwhile |
-| setup fails | Invalid tag shape or bad `iii.worker.yaml` | Tag must match `worker/vVERSION`; `deploy` must be `binary`\|`image`\|`bundle` |
-| binary-build fails on one target | Cross-compile issue | Consider `targets:` subset in `iii.worker.yaml` (`shell` is POSIX-only); other targets still upload (`fail-fast: false`) |
-| interface collection times out | Worker crashes on clean runner (#104 class) | Ship `config.collect.yaml`; check `iii-engine.log`, `worker-<name>.log` in the job |
-| Worker exits before collection | Missing parent dir, sidecar, bad default path | Same as above; reproduce locally with no `data/` dir |
-| artifact resolution 404 | Build job didn't upload for that target | Check GitHub Release assets for the tag |
-| publish HTTP non-200 | Registry rejection or bad payload | Response body printed in job log; verify `WORKERS_REGISTRY_API_KEY` |
-| publish skipped entirely | `interface_smoke: false` | Expected for stdio/discovery-only workers |
-| promotion evidence rejected | Wrong run/worker/version, failed gate, or prerelease semver | Use the candidate's successful Release run and exact stable version |
-| promotion returns `409` | `next` advanced or `latest` changed concurrently | Do not promote the stale candidate; inspect the current Registry tags |
+| Create Tag rejects worker | Slug absent from the catalog | Add it to `.github/release-workers.yaml` and run catalog validation |
+| Version rejected | Invalid grammar, backward maturity, or stable core already tagged | Choose a forward version or maturity |
+| Source/version guard fails | Release Control preview is stale | Refresh the plan; do not bypass the guard blindly |
+| Setup rejects a tag | Annotation, catalog, or manifest version mismatch | Inspect the annotated tag and tagged manifest |
+| Registry publish fails | Interface boot, schema, payload, or Registry error | Inspect `iii-engine.log`, worker log, and response body |
+| Image alias fails after Registry success | GHCR digest/alias reconciliation failed | Run repair action `container-alias` for the same version |
+| Candidate evidence is rejected | Wrong worker/version/run attempt/tag SHA or a failed gate | Use the exact successful Release or repair evidence run |
+| Harness promotion lacks E2E | No green deployed evidence for that release | Dispatch Harness E2E deployed with the exact release identity |
+| Promotion becomes partial | Registry changed but a later surface failed | Repair the failed `latest` surface; do not cut another version |
+| Slack failed | Publication succeeded but notification did not | Use repair action `notification` after checking for duplicates |
 
-On failure, publish dumps `iii-engine.log` and `worker-<worker>.log` (last 200 lines).
+## Roll forward and verify
 
-## Rollback
-
-There is **no unpublish**. Recovery:
-
-1. Fix the issue on `main`.
-2. Cut a new patch via Create Tag; use `next` for a staged replacement or
-   `latest` for a direct replacement.
-3. Validate and manually promote the replacement when using `next`.
-
-GitHub Release assets for the bad version remain (immutable history).
-
-## Post-release verification
+There is no unpublish. For a defective artifact, fix `main`, release a new patch
+to `next`, validate it, and promote it. Do not move immutable version tags.
 
 On a clean host:
 
@@ -307,29 +278,10 @@ iii worker add <name>
 iii worker info <name>
 ```
 
-Confirm:
+Confirm the resolved version, published function/trigger interface, GitHub
+Release assets, and — for images — the expected channel digest.
 
-- Version matches the tag you cut.
-- Function and trigger types match expectations.
-- GitHub Release has complete assets (per-target archives + `.sha256` for
-  binary/bundle deploys).
-
-## Announce & organize
-
-Slack announcement is automatic: a successful candidate posts `🧪` with its
-`next` status, while **Promote Worker** posts the final `🚀 ... promoted to
-@latest` message. `SLACK_BOT_TOKEN` is org-level (the same
-bot as the iii engine release pipeline); the bot must be invited to
-`#worker-releases`. The GitHub release-notes body is posted as a thread
-reply under the announcement. Ticket association rides on PR titles —
-`(MOT-##) type: description` — enforced by the `PR Linear Check` workflow
-(`no-ticket` label for bump/typo/CI-only PRs).
-
-After a release session — any number of tags — run `/release-sync` in Claude
-Code from the repo root. Same-day tags form one **wave** = one Linear
-document on team iii (`Release YYYY-MM-DD`) holding the combined
-per-worker note, with shipped `MOT-###` issues carrying a
-`release · YYYY-MM-DD` label. Catch-up
-semantics: tags released without running the skill are picked up on the
-next run. Conventions and setup checklist:
-[Release workflow — workers](https://linear.app/motia/document/release-workflow-workers-a3240a17967f).
+Slack announcements remain in `#worker-releases`. Candidate messages use
+`next`; promotion messages identify `latest`. Ticket association rides on PR
+titles (`(MOT-##) type: description`) or the `no-ticket` label for changes that
+do not belong to a Linear issue.

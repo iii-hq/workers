@@ -1,4 +1,5 @@
 name: Harness E2E deployed
+run-name: Harness E2E · ${{ inputs.release_worker }}@${{ inputs.release_version }} · ${{ inputs.operation_id || 'manual' }}
 
 on:
   workflow_dispatch:
@@ -43,6 +44,10 @@ on:
         description: Number of executions per scenario
         type: number
         default: 1
+      operation_id:
+        description: Release Control operation UUID
+        type: string
+        default: ''
 
 permissions:
   actions: read
@@ -75,3 +80,48 @@ jobs:
       openai_api_key: ${{ secrets.OPENAI_API_KEY }}
       zai_api_key: ${{ secrets.ZAI_API_KEY }}
       deepseek_api_key: ${{ secrets.DEEPSEEK_API_KEY }}
+
+  evidence:
+    name: Record deployed E2E evidence
+    needs: [e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Build E2E evidence
+        env:
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag || format('{0}/v{1}', inputs.release_worker, inputs.release_version) }}
+          OPERATION_ID: ${{ inputs.operation_id || format('github:{0}', github.run_id) }}
+          STEP_ID: harness-e2e
+          SUITE_RESULT: ${{ needs.e2e.result }}
+        run: |
+          python3 .github/scripts/harness_e2e_evidence.py build \
+            --repository "${{ github.repository }}" \
+            --release-run-id "$RELEASE_RUN_ID" \
+            --e2e-run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --operation-id "$OPERATION_ID" \
+            --step-id "$STEP_ID" \
+            --release-tag "$RELEASE_TAG" \
+            --release-worker "${{ inputs.release_worker }}" \
+            --release-version "${{ inputs.release_version }}" \
+            --registry-tag "${{ inputs.registry_tag }}" \
+            --cli-channel "${{ inputs.cli_channel }}" \
+            --suite-result "$SUITE_RESULT" \
+            --output harness-e2e-evidence.json
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-evidence-${{ inputs.release_worker }}-${{ inputs.release_version }}
+          path: harness-e2e-evidence.json
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Require deployed E2E gate
+        run: jq -e '.e2e_ready == true' harness-e2e-evidence.json >/dev/null
