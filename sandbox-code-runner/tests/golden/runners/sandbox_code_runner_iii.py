@@ -1,12 +1,12 @@
 # sandbox-code-runner guest iii library — planted at runtime creation. Do not edit
-# in place. make_iii() returns the global every eval and handler gets: a
+# in place. make_iii() returns the global every run and handler gets: a
 # LAZY handle on the real iii-sdk client (pip-installed at runtime
 # creation). Nothing connects until the first attribute access, so code
 # that never touches `iii` pays nothing.
 #
 # NOT named iii.py: `python3 <script>` puts the script's own directory at
 # sys.path[0], and a sibling iii.py would shadow the SDK's real `iii`
-# package for every eval and handler.
+# package for every run and handler.
 import os
 
 

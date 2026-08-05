@@ -547,9 +547,9 @@ fn wait_bounded(mut child: std::process::Child, secs: u64) -> WrapperOutcome {
     }
 }
 
-/// Plant the eval wrapper + iii library + the code file into `dir` and run
-/// `<interpreter> eval.<ext> code.<ext>` with the given env — exactly the
-/// argv/env shape `eval` execs inside the VM.
+/// Plant the run wrapper + iii library + the code file into `dir` and run
+/// `<interpreter> run.<ext> code.<ext>` with the given env — exactly the
+/// argv/env shape `run` execs inside the VM.
 fn run_eval_wrapper(lang: Lang, code: &str, envs: &[(&str, &str)], dir: &Path) -> WrapperOutcome {
     std::fs::create_dir_all(dir).unwrap();
     let wrapper = dir.join(basename(lang.run_wrapper_path()));

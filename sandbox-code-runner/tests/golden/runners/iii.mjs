@@ -1,5 +1,5 @@
 // sandbox-code-runner guest iii library — planted at runtime creation. Do not edit
-// in place. makeIii() returns the global every eval and handler gets: a
+// in place. makeIii() returns the global every run and handler gets: a
 // LAZY handle on the real iii-sdk client (planted at /node_modules/iii-sdk).
 // Nothing connects until the first property access, so code that never
 // touches `iii` pays nothing.
@@ -26,7 +26,7 @@ export async function makeIii() {
     }
     // The SDK console.debug's its own lifecycle lines — "[OTel] ..." at
     // setup, "[iii] Worker registered with ID: ..." ASYNCHRONOUSLY on
-    // connect — and console.debug is stdout, which for an eval IS the
+    // connect — and console.debug is stdout, which for a run IS the
     // result surface. Filter exactly those prefixed debug lines,
     // permanently but only once code actually uses `iii` (this function
     // is lazy); every other console.debug still goes through untouched.
@@ -54,7 +54,7 @@ export async function makeIii() {
   // its keys, or reading its prototype must answer something useful and
   // must never dial the engine — an agent's first move against an unknown
   // global is exactly that probing, and an opaque `{}` here cost a live
-  // session six blind evals (console-a2795be8).
+  // session six blind runs (console-a2795be8).
   const HINT =
     "[iii: lazy iii-sdk client — connects on first use. e.g. await iii.trigger({ function_id: 'worker::fn', payload: {} }); registerFunction(id, handler, opts?); docs: https://iii.dev/docs/reference/sdk-node]";
 

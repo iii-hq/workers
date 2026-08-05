@@ -5,7 +5,7 @@
 // only the sentinel. Exit 0 = result, exit 1 = {"error": "..."}. A
 // malformed/missing envelope has no sentinel to frame a reply with: it is
 // reported on stderr and the process exits non-zero with no stdout at all.
-// Handlers get the same `iii` global evaluated code gets, built by the
+// Handlers get the same `iii` global run code gets, built by the
 // sibling iii.mjs (planted next to this file at runtime creation).
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';

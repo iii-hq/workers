@@ -104,8 +104,9 @@ sandbox-code-runner's debug log, and the caller receives exactly what
 `handler` returned, JSON-serialized.
 
 The runtime backing a namespace is entirely an implementation detail — you
-never see or manage its `runtime_id`. It carries no network access (there
-is no `network` field on this request either).
+never see or manage its `runtime_id`. Like every runtime it is networked —
+see [the `iii` global](#the-iii-global) below for what that means for
+identity and reach.
 
 ## The `iii` global
 
@@ -230,7 +231,7 @@ refusal (e.g. capacity) maps to `sandbox-code-runner::capacity`.
 
 | code | meaning |
 |---|---|
-| `sandbox-code-runner::invalid_request` | malformed field, wrong lang, namespace violation, id already taken, `network: true` with no runtime to honor it, `teardown` given both or neither of `runtime_id`/`namespace` |
+| `sandbox-code-runner::invalid_request` | malformed field, wrong lang, namespace violation, id already taken, `teardown` given both or neither of `runtime_id`/`namespace` |
 | `sandbox-code-runner::runtime_not_found` | unknown `runtime_id`, or a `namespace` teardown naming one with no live runtime |
 | `sandbox-code-runner::expired` | the runtime's idle VM was reaped; retry the call that discovered it (a fresh `run`, or `register_function` again) |
 | `sandbox-code-runner::capacity` | the daemon refused a new sandbox (its concurrency/image caps) |

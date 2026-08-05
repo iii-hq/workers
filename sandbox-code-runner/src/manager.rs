@@ -1498,6 +1498,37 @@ mod tests {
         m.run(eval_req("1", Some(Lang::Node), None))
             .await
             .expect("eval succeeds");
+        let planted: Vec<(String, String)> = fake
+            .calls()
+            .iter()
+            .filter(|(id, _)| id == "sandbox::fs::write")
+            .map(|(_, p)| {
+                (
+                    p["path"].as_str().unwrap().to_string(),
+                    p["content"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        let find = |path: &str| {
+            planted
+                .iter()
+                .find(|(p, _)| p == path)
+                .unwrap_or_else(|| panic!("{path} was not planted"))
+                .1
+                .clone()
+        };
+        assert_eq!(
+            find("/opt/sandbox-code-runner/invoke.mjs"),
+            crate::runner::INVOKE_MJS
+        );
+        assert_eq!(
+            find("/opt/sandbox-code-runner/iii.mjs"),
+            crate::runner::III_MJS
+        );
+        assert_eq!(
+            find("/opt/sandbox-code-runner/run.mjs"),
+            crate::runner::RUN_MJS
+        );
         let bundle = fake
             .calls()
             .into_iter()

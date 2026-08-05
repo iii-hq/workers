@@ -137,9 +137,11 @@ mod tests {
         // Each needle is a fact an agent gets wrong without the guidance:
         // the three function ids, that run is one-shot unless kept, that
         // runtime_id is the thing to reuse, the handler signature
-        // register_function expects, that it needs no runtime_id, the
-        // network flag's limits, and that a run reuse can come back
-        // sandbox-code-runner::expired.
+        // register_function expects, that it needs no runtime_id, and
+        // that a run reuse can come back sandbox-code-runner::expired.
+        // (Every VM being networked is pinned separately below, in
+        // guidance_states_the_iii_global_rules_plainly's "outbound
+        // network" needle — no need to duplicate it here.)
         for needle in [
             "sandbox-code-runner::run",
             "sandbox-code-runner::register_function",
@@ -147,7 +149,6 @@ mod tests {
             "runtime_id",
             "keep: true",
             "handler(payload)",
-            "network",
             "sandbox-code-runner::expired",
             "namespace",
             "iii.trigger",

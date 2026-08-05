@@ -28,7 +28,7 @@ pub const RUN_DESC: &str =
      is never auto-stopped, you own it until you tear it down or its idle TTL reaps it, and a \
      reaped reuse fails with sandbox-code-runner::expired (retry without runtime_id to boot a \
      fresh one). Every VM boots with outbound network, so npm/pip installs work on any path. \
-     Run code gets a global `iii` — the real iii-sdk client, lazily connected to the engine on \
+     Code you run gets a global `iii` — the real iii-sdk client, lazily connected to the engine on \
      first use: `await iii.trigger({ function_id, payload })` (Node) / \
      `iii.trigger({'function_id': ..., 'payload': ...})` (Python, synchronous) invokes any \
      bus function, and the full SDK surface is available. Functions registered with \
@@ -54,7 +54,7 @@ pub const REGISTER_DESC: &str =
      with the trigger payload and returns its JSON-serialized result. The first registered id \
      in a namespace claims it; later ids must share both the namespace and its lang. \
      `description` is what engine::functions::info shows a caller — write one. Handlers get \
-     the same global `iii` run code gets (the real iii-sdk client, lazily connected) — but a \
+     the same global `iii` that run code gets (the real iii-sdk client, lazily connected) — but a \
      handler that triggers a function registered on ITS OWN runtime waits on the runtime's \
      one-exec-at-a-time slot and can only time out; call across runtimes or workers instead. \
      Functions stop resolving when their namespace is torn down \

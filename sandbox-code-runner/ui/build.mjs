@@ -64,7 +64,13 @@ const guestSdkOptions = {
   // registerFunction() call produced a wall of mangled code that CUT OFF
   // the actual TypeError (seen live in console-a2795be8). Unminified,
   // frames carry real identifiers and one-sane-line code frames; the
-  // ~1.5MB plant is a one-time cost per runtime creation.
+  // ~1.5MB plant is a one-time cost per runtime creation. That is well
+  // past the 1 MiB "documented inline comfort zone" sandbox-code-runner
+  // itself enforces on tenant source (MAX_SOURCE_BYTES in
+  // src/manager.rs) — it works against the real daemon today, but if the
+  // daemon ever starts enforcing that ceiling on sandbox::fs::write's
+  // inline `content`, this plant will need to move to a chunked or
+  // staged write instead.
   minify: false,
   logLevel: 'info',
 }
