@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785830223537,
+  "lastUpdate": 1785917063803,
   "repoUrl": "https://github.com/iii-hq/workers",
   "entries": {
     "Harness E2E Quality": [
@@ -1199,6 +1199,285 @@ window.BENCHMARK_DATA = {
             "value": 100,
             "unit": "percent",
             "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30885350371-1\",\"run_id\":\"30885350371\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30885350371\"},\"expected_reports\":19,\"generated_at\":\"2026-08-04T07:56:00.818221+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":false,\"received_reports\":19,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-04\",\"url\":\"https://github.com/iii-hq/workers/commit/4c0401a0537802e29fb611e5b561fdae815770cf\",\"version\":\"2026-08-04\",\"worker\":\"main\"},\"requested_runs\":3,\"scenario\":\"suite\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-04\",\"repository\":\"iii-hq/workers\",\"sha\":\"4c0401a0537802e29fb611e5b561fdae815770cf\"},\"status\":\"failed\",\"subject\":{\"id\":\"glm-5-2\",\"model\":\"glm-5.2\",\"provider\":\"zai\"},\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30885350371\"}"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "workers-ci[bot]",
+            "email": "workers-ci[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "workers-ci[bot]",
+            "email": "workers-ci[bot]@users.noreply.github.com"
+          },
+          "id": "a4b7b49463e78b2b588292d416cbbf2e7f23d1d6",
+          "message": "chore(fp): bump to v0.2.5",
+          "timestamp": "2026-08-05T05:09:56Z",
+          "url": "https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6"
+        },
+        "date": 1785917062723,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "quality::deepseek-v4-flash::direct_answer::median_score",
+            "value": 100,
+            "range": "100–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"direct_answer\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::direct_answer::pass_rate",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"direct_answer\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::persistent_state::median_score",
+            "value": 90,
+            "range": "90–90",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"persistent_state\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::persistent_state::pass_rate",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"persistent_state\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::security_review::median_score",
+            "value": 100,
+            "range": "100–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"security_review\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::security_review::pass_rate",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"security_review\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::reactive_automation::median_score",
+            "value": 100,
+            "range": "100–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"reactive_automation\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::reactive_automation::pass_rate",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"reactive_automation\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::shell_coder_sandbox::median_score",
+            "value": 80,
+            "range": "70–80",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":false,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"shell_coder_sandbox\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"failed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::shell_coder_sandbox::pass_rate",
+            "value": 0,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":false,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"shell_coder_sandbox\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"failed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::design_tradeoff::median_score",
+            "value": 100,
+            "range": "100–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"design_tradeoff\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::design_tradeoff::pass_rate",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"design_tradeoff\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::security_triage::median_score",
+            "value": 100,
+            "range": "100–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"security_triage\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::security_triage::pass_rate",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"security_triage\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":50.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::research_pipeline::median_score",
+            "value": 100,
+            "range": "55–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"research_pipeline\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::research_pipeline::pass_rate",
+            "value": 66.66666666666666,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"research_pipeline\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::mechanical_reaction::median_score",
+            "value": 100,
+            "range": "100–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"mechanical_reaction\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::mechanical_reaction::pass_rate",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"mechanical_reaction\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::timer_wake::median_score",
+            "value": 100,
+            "range": "30–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"timer_wake\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::timer_wake::pass_rate",
+            "value": 66.66666666666666,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"timer_wake\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::receiving_operation::median_score",
+            "value": 100,
+            "range": "100–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"receiving_operation\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::receiving_operation::pass_rate",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"receiving_operation\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::validation_loop::median_score",
+            "value": 100,
+            "range": "100–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"validation_loop\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::validation_loop::pass_rate",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"validation_loop\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::subagent_validation::median_score",
+            "value": 100,
+            "range": "70–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"subagent_validation\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::subagent_validation::pass_rate",
+            "value": 66.66666666666666,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"subagent_validation\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::multi_subagent_validation::median_score",
+            "value": 100,
+            "range": "100–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"multi_subagent_validation\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::multi_subagent_validation::pass_rate",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"multi_subagent_validation\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::subagent_validation_failure::median_score",
+            "value": 100,
+            "range": "100–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"subagent_validation_failure\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::subagent_validation_failure::pass_rate",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"subagent_validation_failure\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::custom_validator::median_score",
+            "value": 100,
+            "range": "100–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"custom_validator\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::custom_validator::pass_rate",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"custom_validator\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::validation_self_repair::median_score",
+            "value": 100,
+            "range": "100–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"validation_self_repair\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":80.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::validation_self_repair::pass_rate",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"validation_self_repair\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":80.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::validation_scope_enforcement::median_score",
+            "value": 100,
+            "range": "100–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"validation_scope_enforcement\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::validation_scope_enforcement::pass_rate",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"validation_scope_enforcement\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::validation_chain::median_score",
+            "value": 100,
+            "range": "100–100",
+            "unit": "points",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"validation_chain\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::validation_chain::pass_rate",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":true,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"runs\":3,\"scenario\":\"validation_chain\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"passed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"threshold\":90.0,\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::suite::scenario_pass_rate",
+            "value": 94.73684210526315,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"expected_reports\":19,\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":false,\"received_reports\":19,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"scenario\":\"suite\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"failed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
+          },
+          {
+            "name": "quality::deepseek-v4-flash::suite::report_coverage",
+            "value": 100,
+            "unit": "percent",
+            "extra": "{\"engine_revision\":\"0.22.0\",\"execution\":{\"actor\":\"ytallo\",\"attempt\":1,\"event\":\"schedule\",\"id\":\"30982733353-1\",\"run_id\":\"30982733353\",\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"},\"expected_reports\":19,\"generated_at\":\"2026-08-05T08:03:26.284525+00:00\",\"judge\":{\"context_window\":1000000,\"max_output_tokens\":128000,\"model\":\"glm-5.2\",\"provider\":\"zai\",\"supports_tools\":true,\"supports_vision\":false},\"lane\":\"daily\",\"passed\":false,\"received_reports\":19,\"release\":{\"registry_tag\":\"daily\",\"tag\":\"daily/2026-08-05\",\"url\":\"https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\",\"version\":\"2026-08-05\",\"worker\":\"main\"},\"requested_runs\":3,\"scenario\":\"suite\",\"schema_version\":2,\"source\":{\"ref\":\"daily/2026-08-05\",\"repository\":\"iii-hq/workers\",\"sha\":\"a4b7b49463e78b2b588292d416cbbf2e7f23d1d6\"},\"status\":\"failed\",\"subject\":{\"id\":\"deepseek-v4-flash\",\"model\":\"deepseek-v4-flash\",\"provider\":\"deepseek\"},\"workflow_url\":\"https://github.com/iii-hq/workers/actions/runs/30982733353\"}"
           }
         ]
       }
