@@ -245,7 +245,7 @@ export function FunctionTriggerCard({
   const renderers = useFunctionTriggerRenderers()
   // The raw request/response as this card is allowed to show them. An
   // injected renderer that claims this function id may declare `redactRaw`
-  // (a runtime id is a capability, so code-runner does) — apply it
+  // (a runtime id is a capability, so sandbox-code-runner does) — apply it
   // ONCE here, then use `rawInput`/`rawOutput` everywhere below: every pane
   // derives both its body and its copy text from the value it is handed, so
   // redacting at the source covers the clipboard too. Card LOGIC keeps

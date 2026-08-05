@@ -16,15 +16,16 @@ import {
  * No `redact` prop, deliberately: this tab's data comes from
  * `engine::logs::list` — real OTel LOG records, a signal entirely separate
  * from the span/trace data `SpanTagsTab`/`SpanLogsTab`/`SpanErrorsTab` read.
- * A runtime_id can only reach it if code-runner actually emits OTel log
- * records, which it does not: the crate never calls
+ * A runtime_id can only reach it if sandbox-code-runner actually emits OTel
+ * log records, which it does not: the crate never calls
  * `iii_helpers::observability::Logger` (the only API that emits a real OTel
- * LogRecord — zero call sites in `code-runner/src`), and its own
+ * LogRecord — zero call sites in `sandbox-code-runner/src`), and its own
  * `main.rs` builds its `tracing_subscriber` from a plain `fmt()` layer with
  * no OTel bridge attached, so its `tracing::info!`/`warn!`/`error!` calls
  * go to that process's own stdout only, never to the engine's log store.
- * (No code-runner log line carries a runtime_id today either — the closest,
- * `manager.rs`'s runtime-created line, logs the namespace and language.)
+ * (No sandbox-code-runner log line carries a runtime_id today either — the
+ * closest, `manager.rs`'s runtime-created line, logs the namespace and
+ * language.)
  * If the worker ever adopts `Logger` or a tracing→OTel bridge, revisit
  * this — see `SpanPanel.redaction-coverage.test.ts`, which enforces that
  * every tab has either a `redact` wiring or a written reason like this one.

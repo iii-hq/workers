@@ -196,8 +196,9 @@ export function MessageList({
   )
   // Same registry `FunctionTriggerCard` uses for its own raw pane: an
   // assistant-turn copy serializes each call's arguments the same way the
-  // call's own card does, so a worker's `redactRaw` (e.g. code-runner's
-  // runtime_id) has to cover this exit too — see function-trigger-copy.ts.
+  // call's own card does, so a worker's `redactRaw` (e.g.
+  // sandbox-code-runner's runtime_id) has to cover this exit too — see
+  // function-trigger-copy.ts.
   const renderers = useFunctionTriggerRenderers()
   const redactFor = (functionId: string) => rawRedactor(renderers, functionId)
 

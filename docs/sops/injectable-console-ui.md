@@ -292,8 +292,9 @@ pattern belongs in shared console code.
 - It gets an arbitrary JSON-ish value (object, array, string, number,
   boolean, `null`, `undefined`) and returns the redacted copy. Deep-walk it:
   ids hide in nested arrays, in log lines, in error messages, and in object
-  KEYS. `code-runner/ui/src/lib/shared.tsx` (`redactRuntimeIdsDeep`) is the
-  reference implementation — a shape-preserving walk with cycle protection.
+  KEYS. `sandbox-code-runner/ui/src/lib/shared.tsx` (`redactRuntimeIdsDeep`)
+  is the reference implementation — a shape-preserving walk with cycle
+  protection.
 - Pure and total: never mutate the input, never do I/O, never throw.
 - It runs during the host card's render, so it is fenced — and fails
   **closed**: a throw renders `[redaction failed — value withheld]` in place

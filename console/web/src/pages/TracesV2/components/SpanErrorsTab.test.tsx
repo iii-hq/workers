@@ -34,7 +34,7 @@ function maskDeep(value: unknown): unknown {
 
 function errorSpan(): VisualizationSpan {
   return {
-    name: 'execute code-runner::eval',
+    name: 'execute sandbox-code-runner::run',
     span_id: 's-1',
     trace_id: 't-1',
     duration_ms: 12,
@@ -49,8 +49,8 @@ function errorSpan(): VisualizationSpan {
         timestamp_unix_nano: 1,
         attributes: {
           'exception.type': 'NamespaceDenied',
-          'exception.message': `registered id "x" must start with this runtime's namespace "code-runner::${SECRET}::"`,
-          'exception.stacktrace': `at eval (code-runner::${SECRET}::hello)`,
+          'exception.message': `registered id "x" must start with this runtime's namespace "sandbox-code-runner::${SECRET}::"`,
+          'exception.stacktrace': `at eval (sandbox-code-runner::${SECRET}::hello)`,
         },
       },
     ],

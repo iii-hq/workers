@@ -29,7 +29,7 @@ function maskDeep(value: unknown): unknown {
 
 function spanWithPayloadEvent(payloadJson: string): VisualizationSpan {
   return {
-    name: 'execute code-runner::eval',
+    name: 'execute sandbox-code-runner::run',
     span_id: 's-1',
     trace_id: 't-1',
     duration_ms: 12,

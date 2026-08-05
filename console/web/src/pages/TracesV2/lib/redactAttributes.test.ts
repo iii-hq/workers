@@ -4,7 +4,7 @@ import { redactAttributeEntries } from './redactAttributes'
 const SECRET = 'rt-3f9a2c1e-7b64-4d0a-9c11-5e8ab2d4f077'
 const MASKED = 'rt-3f9a…'
 
-/** A worker-shaped redactor, matching the code-runner/code-runner shape. */
+/** A worker-shaped redactor, matching the sandbox-code-runner/sandbox-code-runner shape. */
 function mask(value: unknown): unknown {
   if (typeof value === 'string') return value.replaceAll(SECRET, MASKED)
   if (value === null || typeof value !== 'object') return value

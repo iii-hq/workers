@@ -263,11 +263,11 @@ describe('spanRawRedactor', () => {
 
   it('resolves the redactor of the renderer claiming the span’s own explicit function id', () => {
     const span = vis({
-      attributes: { 'faas.invoked_name': 'code-runner::eval' },
+      attributes: { 'faas.invoked_name': 'sandbox-code-runner::run' },
     })
     const renderers = [
       renderer({
-        isMatch: (id) => id === 'code-runner::eval',
+        isMatch: (id) => id === 'sandbox-code-runner::run',
         redactRaw: () => 'redacted',
       }),
     ]
@@ -277,7 +277,7 @@ describe('spanRawRedactor', () => {
   it('resolves through the ancestor chain, same as spanFunctionId', () => {
     const trigger = vis({
       span_id: 'trigger',
-      attributes: { function_id: 'code-runner::eval' },
+      attributes: { function_id: 'sandbox-code-runner::run' },
     })
     const inner = vis({
       span_id: 'inner',
@@ -286,7 +286,7 @@ describe('spanRawRedactor', () => {
     })
     const renderers = [
       renderer({
-        isMatch: (id) => id === 'code-runner::eval',
+        isMatch: (id) => id === 'sandbox-code-runner::run',
         redactRaw: () => 'redacted',
       }),
     ]
@@ -305,7 +305,7 @@ describe('spanRawRedactor', () => {
     const span = vis({ attributes: { 'faas.invoked_name': 'shell::exec' } })
     const renderers = [
       renderer({
-        isMatch: (id) => id === 'code-runner::eval',
+        isMatch: (id) => id === 'sandbox-code-runner::run',
         redactRaw: () => 'x',
       }),
     ]

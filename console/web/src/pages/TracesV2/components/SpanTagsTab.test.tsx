@@ -22,7 +22,7 @@ import { attributeCopyText, SpanTagsTab } from './SpanTagsTab'
 const SECRET = 'rt-3f9a2c1e-7b64-4d0a-9c11-5e8ab2d4f077'
 const MASKED = 'rt-3f9a…'
 
-/** A worker-shaped redactor, matching code-runner/code-runner's shape. */
+/** A worker-shaped redactor, matching sandbox-code-runner/sandbox-code-runner's shape. */
 function maskDeep(value: unknown): unknown {
   if (typeof value === 'string') return value.replaceAll(SECRET, MASKED)
   if (value === null || typeof value !== 'object') return value
@@ -37,7 +37,7 @@ function maskDeep(value: unknown): unknown {
 
 function span(attributes: Record<string, unknown>): VisualizationSpan {
   return {
-    name: 'execute code-runner::eval',
+    name: 'execute sandbox-code-runner::run',
     span_id: 's-1',
     trace_id: 't-1',
     duration_ms: 12,

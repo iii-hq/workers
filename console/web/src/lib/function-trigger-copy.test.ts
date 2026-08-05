@@ -68,7 +68,7 @@ describe('functionTriggerToText', () => {
   it('runs the input through `redact` before serializing, when given', () => {
     const SECRET = 'rt-3f9a2c1e-7b64-4d0a-9c11-5e8ab2d4f077'
     const call = fcall({
-      functionId: 'code-runner::eval',
+      functionId: 'sandbox-code-runner::run',
       input: { runtime_id: SECRET, code: '1+1' },
     })
     const redact = (v: unknown) =>
@@ -115,9 +115,9 @@ describe('assistantCopyText', () => {
     const MASKED = 'rt-3f9a…'
     const mask = (v: unknown) =>
       JSON.parse(JSON.stringify(v).replaceAll(SECRET, MASKED))
-    /** Only claims code-runner::eval — proves dispatch is per-call, not global. */
+    /** Only claims sandbox-code-runner::run — proves dispatch is per-call, not global. */
     const redactFor = (functionId: string) =>
-      functionId === 'code-runner::eval' ? mask : undefined
+      functionId === 'sandbox-code-runner::run' ? mask : undefined
 
     it('redacts a claimed call and leaves an unclaimed one untouched', () => {
       const text = assistantCopyText(
@@ -125,7 +125,7 @@ describe('assistantCopyText', () => {
         [
           fcall({
             id: 'c1',
-            functionId: 'code-runner::eval',
+            functionId: 'sandbox-code-runner::run',
             input: { runtime_id: SECRET, code: '1+1' },
           }),
           fcall({

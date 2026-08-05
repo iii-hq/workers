@@ -52,7 +52,7 @@ vi.mock('@/components/ui/Tabs', () => ({
 
 const SECRET = 'rt-3f9a2c1e-7b64-4d0a-9c11-5e8ab2d4f077'
 const MASKED = 'rt-3f9a…'
-const FN = 'code-runner::eval'
+const FN = 'sandbox-code-runner::run'
 
 /** A worker-shaped redactor: every string, object keys included. */
 function maskDeep(value: unknown): unknown {
@@ -69,10 +69,10 @@ function maskDeep(value: unknown): unknown {
 
 function register(renderer: Partial<FunctionTriggerRenderer>) {
   injected.push({
-    scope: 'code-runner',
-    path: 'code-runner/page.js',
+    scope: 'sandbox-code-runner',
+    path: 'sandbox-code-runner/page.js',
     renderer: {
-      id: 'code-runner/page.js#test',
+      id: 'sandbox-code-runner/page.js#test',
       isMatch: (functionId) => functionId === FN,
       tryRender: () => null,
       ...renderer,
@@ -89,7 +89,7 @@ function message(
     functionId: FN,
     createdAt: 0,
     input: { runtime_id: SECRET, code: `// ran in ${SECRET}` },
-    output: { registered: [`code-runner::${SECRET}::foo`] },
+    output: { registered: [`sandbox-code-runner::${SECRET}::foo`] },
     durationMs: 12,
     ...extra,
   }
