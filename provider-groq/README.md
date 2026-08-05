@@ -40,10 +40,11 @@ is always read from that endpoint's `/models` sibling.
   chat completion surface, so they are dropped; the absence of a context window
   is what tells them apart. A gateway that reports no windows for anything is
   left alone, since requiring the field there would empty the catalog.
-- **Pricing:** Groq's pricing page renders its figures client-side and ships
-  none in the document, so these rows come from published third-party tracking
-  rather than from Groq directly. Worth re-checking before anyone leans on the
-  cost display.
+- **Pricing:** comes from the listing, which quotes a per-token rate per model;
+  the catalog carries USD per MTok, so each is scaled and rounded. A rate that
+  will not parse is dropped rather than guessed at, because a wrong number on a
+  cost display is worse than no number. Nothing about pricing is kept locally:
+  a hand-maintained table beside a live one would go stale in silence.
 - **Token counting:** Groq is an inference host, so a Llama, a GPT-OSS and a
   Qwen model sit behind one endpoint with three different tokenizers between
   them. The vocabulary is therefore chosen per model rather than per provider,
