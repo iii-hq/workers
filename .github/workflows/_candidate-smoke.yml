@@ -37,6 +37,14 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
+      # The interface gate must run with the pipeline's current validation
+      # logic, not the logic frozen into the release tag — a dispatched re-run
+      # of an already-published candidate (release SOP § re-run) picks up gate
+      # fixes from the calling ref this way. On tag pushes both refs coincide.
+      - uses: actions/checkout@v5
+        with:
+          path: pipeline-scripts
+
       - name: Install smoke dependencies
         run: python3 -m pip install --quiet pyyaml
 
@@ -109,13 +117,13 @@ jobs:
         env:
           WORKER: ${{ inputs.worker }}
         run: |
-          python3 .github/scripts/collect_worker_interface.py \
+          python3 pipeline-scripts/.github/scripts/collect_worker_interface.py \
             --worker "$WORKER" \
             --out "$SMOKE_DIR/worker-interface.json" \
             --wait-seconds 180 \
             --trigger-types-baseline "$SMOKE_DIR/trigger-types-baseline.json" \
             --workers-baseline "$SMOKE_DIR/workers-baseline.json"
-          python3 .github/scripts/collect_worker_interface.py \
+          python3 pipeline-scripts/.github/scripts/collect_worker_interface.py \
             --assert-non-empty \
             --assert-typed-schemas \
             --assert-file "$SMOKE_DIR/worker-interface.json"
