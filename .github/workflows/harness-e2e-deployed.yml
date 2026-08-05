@@ -39,14 +39,6 @@ on:
         description: Optional JSON subject matrix
         type: string
         default: ''
-      judge_model:
-        description: Optional fixed judge model id
-        type: string
-        default: ''
-      judge_provider:
-        description: Optional fixed judge provider id
-        type: string
-        default: ''
       runs:
         description: Number of executions per scenario
         type: number
@@ -76,8 +68,8 @@ jobs:
       release_run_id: ${{ inputs.release_run_id }}
       smoke_run_id: ${{ inputs.smoke_run_id }}
       subjects: ${{ inputs.subjects || vars.HARNESS_E2E_SUBJECTS || '[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]' }}
-      judge_model: ${{ inputs.judge_model || vars.HARNESS_E2E_JUDGE_MODEL || 'claude-sonnet-4-6' }}
-      judge_provider: ${{ inputs.judge_provider || vars.HARNESS_E2E_JUDGE_PROVIDER || 'anthropic' }}
+      judge_model: ${{ vars.HARNESS_E2E_JUDGE_MODEL || 'claude-sonnet-4-6' }}
+      judge_provider: ${{ vars.HARNESS_E2E_JUDGE_PROVIDER || 'anthropic' }}
     secrets:
       anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
       openai_api_key: ${{ secrets.OPENAI_API_KEY }}
