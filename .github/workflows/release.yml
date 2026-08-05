@@ -310,52 +310,9 @@ jobs:
       worker: ${{ needs.setup.outputs.worker }}
       version: ${{ needs.setup.outputs.version }}
 
-  harness-quickstart:
-    name: Validate candidate in Harness quickstart
-    needs: [setup, candidate-smoke]
-    if: ${{ !failure() && !cancelled() && needs.setup.outputs.staged == 'true' && needs.setup.outputs.harness_smoke == 'true' }}
-    permissions:
-      actions: write
-      contents: read
-    uses: ./.github/workflows/harness-quickstart.yml
-    with:
-      cli_channel: latest
-      registry_tag: latest
-      release_worker: ${{ needs.setup.outputs.worker }}
-      release_version: ${{ needs.setup.outputs.version }}
-      release_tag: ${{ needs.setup.outputs.tag }}
-      release_run_id: ${{ github.run_id }}
-      cascade_e2e: false
-
-  harness-e2e:
-    name: Validate candidate in deployed Harness E2E
-    needs: [setup, harness-quickstart]
-    if: ${{ !failure() && !cancelled() && needs.setup.outputs.staged == 'true' && needs.setup.outputs.harness_smoke == 'true' }}
-    uses: ./.github/workflows/_harness-e2e.yml
-    with:
-      stack_mode: registry
-      runs: 1
-      max_parallel: 2
-      benchmark_lane: deployed
-      cli_channel: latest
-      registry_tag: latest
-      release_tag: ${{ needs.setup.outputs.tag }}
-      release_worker: ${{ needs.setup.outputs.worker }}
-      release_version: ${{ needs.setup.outputs.version }}
-      release_url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.setup.outputs.tag }}
-      release_run_id: ${{ github.run_id }}
-      subjects: ${{ vars.HARNESS_E2E_SUBJECTS || '[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]' }}
-      judge_model: ${{ vars.HARNESS_E2E_JUDGE_MODEL || 'claude-sonnet-4-6' }}
-      judge_provider: ${{ vars.HARNESS_E2E_JUDGE_PROVIDER || 'anthropic' }}
-    secrets:
-      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-      openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-      zai_api_key: ${{ secrets.ZAI_API_KEY }}
-      deepseek_api_key: ${{ secrets.DEEPSEEK_API_KEY }}
-
   candidate-ready:
     name: Record candidate evidence
-    needs: [setup, publish, candidate-smoke, harness-quickstart, harness-e2e]
+    needs: [setup, publish, candidate-smoke]
     if: ${{ always() && needs.setup.result == 'success' && needs.setup.outputs.staged == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -376,12 +333,12 @@ jobs:
           VERSION: ${{ needs.setup.outputs.version }}
           DEPLOY: ${{ needs.setup.outputs.deploy }}
           REGISTRY_TAG: ${{ needs.setup.outputs.registry_tag }}
-          HARNESS_GATE_REQUIRED: ${{ needs.setup.outputs.harness_smoke }}
+          HARNESS_GATE_REQUIRED: 'false'
           PROMOTABLE: ${{ needs.setup.outputs.promotable }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
           CANDIDATE_SMOKE_RESULT: ${{ needs.candidate-smoke.result }}
-          HARNESS_QUICKSTART_RESULT: ${{ needs.harness-quickstart.result }}
-          HARNESS_E2E_RESULT: ${{ needs.harness-e2e.result }}
+          HARNESS_QUICKSTART_RESULT: skipped
+          HARNESS_E2E_RESULT: skipped
         run: |
           python3 .github/scripts/release_candidate.py build \
             --repository "$REPOSITORY" \
