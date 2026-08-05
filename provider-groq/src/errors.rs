@@ -37,6 +37,23 @@ pub fn classify(status: Option<u16>, message: &str) -> ErrorKind {
     }
 }
 
+/// Whether a rate-limit message describes a single request too large for the
+/// whole per-minute allowance, rather than a spent quota.
+///
+/// Groq phrases it as `... (TPM): Limit 8000, Requested 39082, please reduce
+/// your message size ...`. `None` when the message carries no such pair, which
+/// leaves the caller on the ordinary rate-limit reading.
+fn requested_exceeds_limit(msg: &str) -> Option<bool> {
+    let number_after = |label: &str| -> Option<u64> {
+        let rest = msg.split_once(label)?.1.trim_start();
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    };
+    let limit = number_after("Limit")?;
+    let requested = number_after("Requested")?;
+    Some(requested > limit)
+}
+
 /// Map router bus errors surfaced through `router::provider::resolve`.
 pub fn classify_bus_error(err: &Error) -> ErrorKind {
     match err {
@@ -65,12 +82,24 @@ fn classify_error_value(v: &Value, status: Option<u16>) -> Option<ErrorKind> {
     let msg = err.get("message").and_then(Value::as_str).unwrap_or("");
     match code {
         "context_length_exceeded" => return Some(ErrorKind::ContextOverflow),
-        // Observed live: a prompt over the per-minute token budget comes back
-        // as HTTP 413 with this code. The status alone reads as "too big for
-        // the model", which would send the router off to compact a prompt that
-        // was never too big — it was too big *this minute*. The code is the
-        // truth, so it wins over the status.
-        "rate_limit_exceeded" => return Some(ErrorKind::RateLimited),
+        // A per-minute token budget, reported as HTTP 413. The status alone
+        // reads as "too big for the model", so the code has to be read — but
+        // the code alone is not enough either, because two different failures
+        // share it.
+        //
+        // If the quota for the minute is merely spent, waiting fixes it and
+        // this is a rate limit. If one request is larger than the entire
+        // per-minute allowance, waiting fixes nothing: no amount of backoff
+        // makes a 39k request fit an 8k budget, and retrying only burns the
+        // turn. Groq states both numbers, so the request is compared against
+        // the limit and the answer follows from that — a prompt that must
+        // shrink is an overflow, whatever the code says.
+        "rate_limit_exceeded" => {
+            return Some(match requested_exceeds_limit(msg) {
+                Some(true) => ErrorKind::ContextOverflow,
+                _ => ErrorKind::RateLimited,
+            })
+        }
         // Billing walls, not rate limits: the router's backoff cannot fix them.
         "insufficient_quota" | "insufficient_balance" => return Some(ErrorKind::Permanent),
         "invalid_api_key" | "authentication_error" | "account_deactivated" => {
@@ -170,13 +199,28 @@ mod tests {
     }
 
     #[test]
-    fn a_413_carrying_a_rate_limit_code_is_a_rate_limit_not_an_overflow() {
-        // Captured live: the per-minute token budget is reported as HTTP 413.
-        // Reading the status alone would send the router off to compact a
-        // prompt that was never too large for the model.
-        let body = r#"{"error":{"message":"Request too large for model `llama-3.3-70b-versatile` on tokens per minute (TPM): Limit 12000, Requested 40638, please reduce your message size and try again.","type":"tokens","code":"rate_limit_exceeded"}}"#;
-        assert_eq!(classify(Some(413), body), ErrorKind::RateLimited);
-        assert!(classify(Some(413), body).is_retryable());
+    fn a_request_bigger_than_the_whole_budget_is_an_overflow_not_a_rate_limit() {
+        // Captured live, and retried three times before this distinction
+        // existed: no amount of backoff makes a 39082-token request fit an
+        // 8000-token minute. Only a smaller prompt does, which is what the
+        // upstream is asking for.
+        let body = r#"{"error":{"message":"Request too large for model `openai/gpt-oss-120b` in organization `org_x` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Requested 39082, please reduce your message size and try again.","type":"tokens","code":"rate_limit_exceeded"}}"#;
+        assert_eq!(classify(Some(413), body), ErrorKind::ContextOverflow);
+        assert!(!classify(Some(413), body).is_retryable());
+    }
+
+    #[test]
+    fn a_merely_spent_quota_stays_a_retryable_rate_limit() {
+        // The other half of the same code: the request fits the budget, the
+        // budget is just used up for now, and waiting is exactly the fix.
+        let body = r#"{"error":{"message":"Rate limit reached for model `llama-3.3-70b-versatile` on tokens per minute (TPM): Limit 300000, Requested 12000, please try again in 1.5s.","type":"tokens","code":"rate_limit_exceeded"}}"#;
+        assert_eq!(classify(Some(429), body), ErrorKind::RateLimited);
+        assert!(classify(Some(429), body).is_retryable());
+
+        // No numbers to compare: the ordinary rate-limit reading stands.
+        let bare = r#"{"error":{"message":"Rate limit reached","type":"tokens","code":"rate_limit_exceeded"}}"#;
+        assert_eq!(classify(Some(429), bare), ErrorKind::RateLimited);
+
         // A 413 with nothing to read still means the prompt did not fit.
         assert_eq!(classify(Some(413), ""), ErrorKind::ContextOverflow);
     }
