@@ -385,7 +385,7 @@ impl RuntimeManager {
     }
 
     /// Boot a sandbox, plant this language's guest files (runner, iii
-    /// library, eval wrapper — plus the embedded SDK bundle for Node),
+    /// library, run wrapper — plus the embedded SDK bundle for Node),
     /// install the Python SDK where applicable, mint the record. Used by
     /// `namespace_runtime` AND by every `run` that has no `runtime_id` —
     /// one-shot and `keep: true` alike — since only `sandbox::create` can
@@ -546,7 +546,7 @@ impl RuntimeManager {
     ///    there is nothing left to address, and returning a dead id would
     ///    be worse than none.
     ///
-    /// Every path runs the code under the eval wrapper, so the code gets the
+    /// Every path runs the code under the run wrapper, so the code gets the
     /// lazy `iii` SDK global (`III_URL` is in the runtime's env from
     /// `create`).
     pub async fn run(self: &Arc<Self>, req: RunRequest) -> Result<RunResponse, CodeRunnerError> {
@@ -624,7 +624,7 @@ impl RuntimeManager {
         }
     }
 
-    /// Write `code` into the runtime and run it under the eval wrapper.
+    /// Write `code` into the runtime and run it under the run wrapper.
     /// Returns `runtime_id: None` — each caller decides what id, if any,
     /// its own caller may see.
     async fn run_into(
@@ -637,7 +637,7 @@ impl RuntimeManager {
         let _guard = record.exec_lock.lock().await;
 
         let file = format!(
-            "/tmp/code-runner/eval-{}.{}",
+            "/tmp/sandbox-code-runner/run-{}.{}",
             uuid::Uuid::new_v4(),
             record.lang.ext()
         );
@@ -658,9 +658,9 @@ impl RuntimeManager {
             .exec_guest(
                 runtime_id,
                 record,
-                vec![record.lang.eval_wrapper_path().to_string(), file],
+                vec![record.lang.run_wrapper_path().to_string(), file],
                 None,
-                "code-runner:eval",
+                "sandbox-code-runner:run",
                 timeout_ms,
             )
             .await?;
@@ -1059,7 +1059,7 @@ impl RuntimeManager {
         let _guard = record.exec_lock.lock().await;
 
         let path = format!(
-            "/opt/code-runner/fns/{}.{}",
+            "/opt/sandbox-code-runner/fns/{}.{}",
             uuid::Uuid::new_v4(),
             record.lang.ext()
         );
@@ -1182,7 +1182,7 @@ impl RuntimeManager {
                     source_path.to_string(),
                 ],
                 Some(stdin_b64),
-                &format!("code-runner:{function_id}"),
+                &format!("sandbox-code-runner:{function_id}"),
                 timeout_ms,
             )
             .await?;
@@ -1305,13 +1305,13 @@ mod tests {
             assert_eq!(payload["timeout_ms"], 5_000);
             let args = payload["args"].as_array().expect("argv array");
             assert_eq!(
-                args[0], "/opt/code-runner/eval.mjs",
-                "code runs UNDER THE EVAL WRAPPER, never the bare interpreter"
+                args[0], "/opt/sandbox-code-runner/run.mjs",
+                "code runs UNDER THE RUN WRAPPER, never the bare interpreter"
             );
             assert!(args[1]
                 .as_str()
                 .unwrap()
-                .starts_with("/tmp/code-runner/eval-"));
+                .starts_with("/tmp/sandbox-code-runner/run-"));
             Ok(ok_exec())
         });
         let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
@@ -1332,9 +1332,9 @@ mod tests {
             ids,
             vec![
                 "sandbox::create",
-                "sandbox::fs::write", // run.mjs
+                "sandbox::fs::write", // invoke.mjs
                 "sandbox::fs::write", // iii.mjs
-                "sandbox::fs::write", // eval.mjs
+                "sandbox::fs::write", // run.mjs
                 "sandbox::fs::write", // /node_modules/iii-sdk/package.json
                 "sandbox::fs::write", // /node_modules/iii-sdk/dist/index.mjs
                 "sandbox::fs::write", // the code
@@ -1391,7 +1391,7 @@ mod tests {
 
     /// A Python boot has one extra step between the plant and the eval:
     /// `pip install iii-sdk` (the SDK's compiled deps cannot be planted).
-    /// The eval itself still runs under the eval wrapper.
+    /// The eval itself still runs under the run wrapper.
     #[tokio::test]
     async fn a_python_ephemeral_eval_pip_installs_the_sdk_then_runs_the_wrapper() {
         let fake = happy_fake();
@@ -1402,7 +1402,7 @@ mod tests {
                 assert_eq!(args[1], "pip");
                 assert!(args.iter().any(|a| a == "iii-sdk"), "{args:?}");
             } else {
-                assert_eq!(args[0], "/opt/code-runner/eval.py");
+                assert_eq!(args[0], "/opt/sandbox-code-runner/run.py");
             }
             Ok(ok_exec())
         });
@@ -1447,7 +1447,7 @@ mod tests {
 
     /// `create` plants the full guest-file table for the language —
     /// runner, iii library (NOT named iii.py — sys.path[0] shadowing),
-    /// eval wrapper — before anything can exec.
+    /// run wrapper — before anything can exec.
     #[tokio::test]
     async fn create_plants_the_guest_file_table() {
         let fake = happy_fake();
@@ -1474,12 +1474,18 @@ mod tests {
                 .1
                 .clone()
         };
-        assert_eq!(find("/opt/code-runner/run.py"), crate::runner::RUN_PY);
         assert_eq!(
-            find("/opt/code-runner/code_runner_iii.py"),
+            find("/opt/sandbox-code-runner/invoke.py"),
+            crate::runner::INVOKE_PY
+        );
+        assert_eq!(
+            find("/opt/sandbox-code-runner/sandbox_code_runner_iii.py"),
             crate::runner::III_PY
         );
-        assert_eq!(find("/opt/code-runner/eval.py"), crate::runner::EVAL_PY);
+        assert_eq!(
+            find("/opt/sandbox-code-runner/run.py"),
+            crate::runner::RUN_PY
+        );
     }
 
     /// The Node table additionally carries the embedded SDK at root
@@ -1730,7 +1736,7 @@ mod tests {
             .into_iter()
             .find(|(id, _)| id == "sandbox::exec")
             .expect("exec happened");
-        assert_eq!(exec.1["env"]["III_WORKER_NAME"], "code-runner:eval");
+        assert_eq!(exec.1["env"]["III_WORKER_NAME"], "sandbox-code-runner:run");
     }
 
     #[tokio::test]
@@ -2097,9 +2103,9 @@ mod tests {
                     && p["path"]
                         .as_str()
                         .unwrap()
-                        .starts_with("/opt/code-runner/fns/")
+                        .starts_with("/opt/sandbox-code-runner/fns/")
             })
-            .expect("source planted under /opt/code-runner/fns/");
+            .expect("source planted under /opt/sandbox-code-runner/fns/");
         assert!(plant.1["path"].as_str().unwrap().ends_with(".mjs"));
         assert_eq!(
             plant.1["content"],
@@ -2177,11 +2183,11 @@ mod tests {
         fake.with_responder("sandbox::exec", |payload| {
             let args = payload["args"].as_array().expect("argv array");
             assert_eq!(args.len(), 2, "the sentinel must NOT be in argv: {args:?}");
-            assert_eq!(args[0], "/opt/code-runner/run.mjs");
+            assert_eq!(args[0], "/opt/sandbox-code-runner/invoke.mjs");
             assert!(args[1]
                 .as_str()
                 .unwrap()
-                .starts_with("/opt/code-runner/fns/"));
+                .starts_with("/opt/sandbox-code-runner/fns/"));
             let env = decode_envelope(payload);
             let sentinel = env["sentinel"]
                 .as_str()
@@ -2248,7 +2254,10 @@ mod tests {
         let fake = happy_fake();
         probe_free(&fake);
         fake.with_responder("sandbox::exec", |payload| {
-            assert_eq!(payload["env"]["III_WORKER_NAME"], "code-runner:app::env");
+            assert_eq!(
+                payload["env"]["III_WORKER_NAME"],
+                "sandbox-code-runner:app::env"
+            );
             let sentinel = decode_envelope(payload)["sentinel"]
                 .as_str()
                 .unwrap()
@@ -2387,7 +2396,7 @@ mod tests {
             if payload["path"]
                 .as_str()
                 .unwrap_or("")
-                .starts_with("/opt/code-runner/fns/")
+                .starts_with("/opt/sandbox-code-runner/fns/")
             {
                 m_clone.runtimes.lock().unwrap().clear();
             }

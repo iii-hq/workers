@@ -59,6 +59,14 @@ fn require(lang: Lang) -> bool {
     );
 }
 
+/// The final path segment of a `Lang` accessor's path — deriving a guest
+/// file's on-disk name from `runner_path()` / `iii_lib_path()` /
+/// `run_wrapper_path()` instead of hardcoding it, so this harness can't
+/// drift from the plant table the way a hardcoded copy silently could.
+fn basename(path: &str) -> &str {
+    path.rsplit_once('/').unwrap().1
+}
+
 /// Write the runner (plus its sibling `iii` library, which it now imports
 /// unconditionally) + a handler source into `dir` (caller-owned, so a fake
 /// SDK can be planted beside them first), run `<interpreter> <runner>
@@ -74,10 +82,10 @@ fn spawn_runner_env(
     dir: &std::path::Path,
 ) -> RunOutcome {
     std::fs::create_dir_all(dir).unwrap();
-    let runner = dir.join(format!("run.{}", lang.ext()));
+    let runner = dir.join(basename(lang.runner_path()));
     let source = dir.join(format!("handler.{}", lang.ext()));
     std::fs::write(&runner, lang.runner_source()).unwrap();
-    let lib_name = lang.iii_lib_path().rsplit_once('/').unwrap().1;
+    let lib_name = basename(lang.iii_lib_path());
     std::fs::write(dir.join(lib_name), lang.iii_lib_source()).unwrap();
     std::fs::write(&source, handler_src).unwrap();
 
@@ -143,12 +151,30 @@ fn run_runner(lang: Lang, handler_src: &str, payload: &str) -> RunOutcome {
 fn goldens_pin_every_guest_script() {
     let mut failures = Vec::new();
     for (name, contents) in [
-        ("run.mjs", Lang::Node.runner_source()),
-        ("run.py", Lang::Python.runner_source()),
-        ("iii.mjs", Lang::Node.iii_lib_source()),
-        ("code_runner_iii.py", Lang::Python.iii_lib_source()),
-        ("eval.mjs", Lang::Node.eval_wrapper_source()),
-        ("eval.py", Lang::Python.eval_wrapper_source()),
+        (
+            basename(Lang::Node.runner_path()),
+            Lang::Node.runner_source(),
+        ),
+        (
+            basename(Lang::Python.runner_path()),
+            Lang::Python.runner_source(),
+        ),
+        (
+            basename(Lang::Node.iii_lib_path()),
+            Lang::Node.iii_lib_source(),
+        ),
+        (
+            basename(Lang::Python.iii_lib_path()),
+            Lang::Python.iii_lib_source(),
+        ),
+        (
+            basename(Lang::Node.run_wrapper_path()),
+            Lang::Node.run_wrapper_source(),
+        ),
+        (
+            basename(Lang::Python.run_wrapper_path()),
+            Lang::Python.run_wrapper_source(),
+        ),
     ] {
         if let Err(msg) = support::check_golden(&format!("runners/{name}"), contents) {
             failures.push(msg);
@@ -526,9 +552,9 @@ fn wait_bounded(mut child: std::process::Child, secs: u64) -> WrapperOutcome {
 /// argv/env shape `eval` execs inside the VM.
 fn run_eval_wrapper(lang: Lang, code: &str, envs: &[(&str, &str)], dir: &Path) -> WrapperOutcome {
     std::fs::create_dir_all(dir).unwrap();
-    let wrapper = dir.join(format!("eval.{}", lang.ext()));
-    std::fs::write(&wrapper, lang.eval_wrapper_source()).unwrap();
-    let lib_name = lang.iii_lib_path().rsplit_once('/').unwrap().1;
+    let wrapper = dir.join(basename(lang.run_wrapper_path()));
+    std::fs::write(&wrapper, lang.run_wrapper_source()).unwrap();
+    let lib_name = basename(lang.iii_lib_path());
     std::fs::write(dir.join(lib_name), lang.iii_lib_source()).unwrap();
     let code_file = dir.join(format!("code.{}", lang.ext()));
     std::fs::write(&code_file, code).unwrap();
@@ -563,7 +589,7 @@ fn node_eval_wrapper_is_lazy_and_connects_only_on_use() {
     let log = dir.join("sdk.log");
     let envs: &[(&str, &str)] = &[
         ("III_URL", "ws://localhost:49134"),
-        ("III_WORKER_NAME", "code-runner:eval"),
+        ("III_WORKER_NAME", "sandbox-code-runner:run"),
         ("FAKE_SDK_LOG", log.to_str().unwrap()),
     ];
 
@@ -593,7 +619,7 @@ fn node_eval_wrapper_is_lazy_and_connects_only_on_use() {
     assert_eq!(log_entries[0]["event"], "register");
     assert_eq!(log_entries[0]["url"], "ws://localhost:49134");
     assert_eq!(
-        log_entries[0]["workerName"], "code-runner:eval",
+        log_entries[0]["workerName"], "sandbox-code-runner:run",
         "III_WORKER_NAME must reach the SDK"
     );
     assert_eq!(
@@ -614,7 +640,7 @@ fn python_eval_wrapper_is_lazy_and_connects_only_on_use() {
     let log = dir.join("sdk.log");
     let envs: &[(&str, &str)] = &[
         ("III_URL", "ws://localhost:49134"),
-        ("III_WORKER_NAME", "code-runner:eval"),
+        ("III_WORKER_NAME", "sandbox-code-runner:run"),
         ("FAKE_SDK_LOG", log.to_str().unwrap()),
     ];
 
@@ -642,7 +668,7 @@ fn python_eval_wrapper_is_lazy_and_connects_only_on_use() {
     let log_entries = sdk_log(&log);
     assert_eq!(log_entries.len(), 2, "{log_entries:?}");
     assert_eq!(log_entries[0]["event"], "register");
-    assert_eq!(log_entries[0]["worker_name"], "code-runner:eval");
+    assert_eq!(log_entries[0]["worker_name"], "sandbox-code-runner:run");
     assert_eq!(log_entries[1]["event"], "shutdown");
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -889,7 +915,7 @@ fn python_handlers_get_iii_through_the_runner() {
 }
 
 /// Regression for the round-2 finding: `sentinel` used to be bound at
-/// MODULE scope in `run.py`, and Python always registers the running
+/// MODULE scope in `invoke.py`, and Python always registers the running
 /// script as `sys.modules['__main__']` — so a handler could read it
 /// straight off that module by name and forge a winning frame before the
 /// runner ever wrote its own. `sentinel` now lives inside `main()`, so the

@@ -1,4 +1,4 @@
-# code-runner guest iii library — planted at runtime creation. Do not edit
+# sandbox-code-runner guest iii library — planted at runtime creation. Do not edit
 # in place. make_iii() returns the global every eval and handler gets: a
 # LAZY handle on the real iii-sdk client (pip-installed at runtime
 # creation). Nothing connects until the first attribute access, so code

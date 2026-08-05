@@ -1,5 +1,5 @@
-//! The language table and the runner protocol — how code-runner talks to a
-//! process inside the guest.
+//! The language table and the runner protocol — how sandbox-code-runner
+//! talks to a process inside the guest.
 //!
 //! Every guest process (an eval and a registered-function call alike) gets a
 //! global `iii`: a LAZY handle on the real iii-sdk client
@@ -77,18 +77,18 @@ impl Lang {
     /// Where `create` plants this language's runner inside the guest.
     pub fn runner_path(self) -> &'static str {
         match self {
-            Self::Node => "/opt/code-runner/run.mjs",
-            Self::Python => "/opt/code-runner/run.py",
+            Self::Node => "/opt/sandbox-code-runner/invoke.mjs",
+            Self::Python => "/opt/sandbox-code-runner/invoke.py",
         }
     }
     pub fn runner_source(self) -> &'static str {
         match self {
-            Self::Node => RUN_MJS,
-            Self::Python => RUN_PY,
+            Self::Node => INVOKE_MJS,
+            Self::Python => INVOKE_PY,
         }
     }
     /// Where `create` plants the guest `iii` library. The runner and the
-    /// eval wrapper both resolve it RELATIVE to their own file, so the
+    /// run wrapper both resolve it RELATIVE to their own file, so the
     /// trio only has to land in one directory together (which also lets
     /// tests run them from a scratch dir with no `/opt` at all). The
     /// Python file is deliberately NOT `iii.py`: `python3 <script>` puts
@@ -96,8 +96,8 @@ impl Lang {
     /// `iii.py` would shadow the SDK's real `iii` package.
     pub fn iii_lib_path(self) -> &'static str {
         match self {
-            Self::Node => "/opt/code-runner/iii.mjs",
-            Self::Python => "/opt/code-runner/code_runner_iii.py",
+            Self::Node => "/opt/sandbox-code-runner/iii.mjs",
+            Self::Python => "/opt/sandbox-code-runner/sandbox_code_runner_iii.py",
         }
     }
     pub fn iii_lib_source(self) -> &'static str {
@@ -106,40 +106,43 @@ impl Lang {
             Self::Python => III_PY,
         }
     }
-    /// Where `create` plants the eval wrapper — what `eval` execs instead
-    /// of the bare interpreter, so evaluated code gets the `iii` global.
-    pub fn eval_wrapper_path(self) -> &'static str {
+    /// Where `create` plants the run wrapper — what `run` execs instead
+    /// of the bare interpreter, so the code it runs gets the `iii` global.
+    pub fn run_wrapper_path(self) -> &'static str {
         match self {
-            Self::Node => "/opt/code-runner/eval.mjs",
-            Self::Python => "/opt/code-runner/eval.py",
+            Self::Node => "/opt/sandbox-code-runner/run.mjs",
+            Self::Python => "/opt/sandbox-code-runner/run.py",
         }
     }
-    pub fn eval_wrapper_source(self) -> &'static str {
+    pub fn run_wrapper_source(self) -> &'static str {
         match self {
-            Self::Node => EVAL_MJS,
-            Self::Python => EVAL_PY,
+            Self::Node => RUN_MJS,
+            Self::Python => RUN_PY,
         }
     }
     /// Everything `create` plants into a fresh runtime of this language,
     /// as `(path, content)` pairs. Node additionally gets the embedded
     /// SDK bundle at root `/node_modules` — the ESM resolver walks UP
-    /// from the importing file, so that one location serves eval files in
-    /// `/tmp/code-runner`, handlers in `/opt/code-runner/fns`, and any
-    /// file a tenant writes anywhere else. Python's SDK comes from the
-    /// `pip install` step in `create` instead — see the module doc.
+    /// from the importing file, so that one location serves run files in
+    /// `/tmp/sandbox-code-runner`, handlers in `/opt/sandbox-code-runner/fns`,
+    /// and any file a tenant writes anywhere else. Python's SDK comes from
+    /// the `pip install` step in `create` instead — see the module doc.
     pub fn guest_files(self) -> &'static [(&'static str, &'static str)] {
         match self {
             Self::Node => &[
-                ("/opt/code-runner/run.mjs", RUN_MJS),
-                ("/opt/code-runner/iii.mjs", III_MJS),
-                ("/opt/code-runner/eval.mjs", EVAL_MJS),
+                ("/opt/sandbox-code-runner/invoke.mjs", INVOKE_MJS),
+                ("/opt/sandbox-code-runner/iii.mjs", III_MJS),
+                ("/opt/sandbox-code-runner/run.mjs", RUN_MJS),
                 ("/node_modules/iii-sdk/package.json", SDK_PACKAGE_JSON),
                 ("/node_modules/iii-sdk/dist/index.mjs", SDK_BUNDLE_MJS),
             ],
             Self::Python => &[
-                ("/opt/code-runner/run.py", RUN_PY),
-                ("/opt/code-runner/code_runner_iii.py", III_PY),
-                ("/opt/code-runner/eval.py", EVAL_PY),
+                ("/opt/sandbox-code-runner/invoke.py", INVOKE_PY),
+                (
+                    "/opt/sandbox-code-runner/sandbox_code_runner_iii.py",
+                    III_PY,
+                ),
+                ("/opt/sandbox-code-runner/run.py", RUN_PY),
             ],
         }
     }
@@ -170,7 +173,7 @@ pub const SDK_PACKAGE_JSON: &str = include_str!(concat!(
 /// before the process ends. A malformed envelope is a separate, earlier
 /// failure mode: there is no sentinel yet to frame a reply with, so it goes
 /// to stderr instead and stdout is never touched.
-pub const RUN_MJS: &str = r#"// code-runner runner — planted at runtime creation. Do not edit in place.
+pub const INVOKE_MJS: &str = r#"// sandbox-code-runner invoke runner — planted at runtime creation. Do not edit in place.
 // Protocol: argv = [source_path]; stdin = JSON envelope
 // {"sentinel": "<uuid>", "payload": <payload>}, consumed before the
 // handler's source ever loads. Result = JSON printed after a line holding
@@ -194,7 +197,7 @@ async function main() {
   }
   if (envelope === null || typeof envelope !== 'object' || typeof envelope.sentinel !== 'string') {
     process.stderr.write(
-      'code-runner runner: malformed envelope on stdin (expected {"sentinel": "...", "payload": ...})\n'
+      'sandbox-code-runner invoke runner: malformed envelope on stdin (expected {"sentinel": "...", "payload": ...})\n'
     );
     process.exitCode = 1;
     return;
@@ -225,7 +228,7 @@ async function main() {
   // Shut the iii client down BEFORE the frame, so any output it produces
   // lands in the logs region and never after the result line — and so the
   // process can exit without the exec timing out on an open socket. Capped
-  // and unref'd for the same reason as the eval wrapper's.
+  // and unref'd for the same reason as the run wrapper's.
   const c = client();
   if (c) {
     await Promise.race([
@@ -241,7 +244,7 @@ async function main() {
 await main();
 "#;
 
-/// Same single-emit shape as `RUN_MJS`, and now the same scoping shape too:
+/// Same single-emit shape as `INVOKE_MJS`, and now the same scoping shape too:
 /// the envelope, `sentinel`, and `payload` all live inside `main()`, never
 /// at module scope. Python always registers the running script as
 /// `sys.modules['__main__']`, so a module-level `sentinel = ...` would have
@@ -251,8 +254,8 @@ await main();
 /// calling `sys.exit()` itself, so `sys.exit(main())` at module scope is the
 /// only exit call and it stays OUTSIDE every `try`: the malformed-envelope
 /// path returns 1 before the result-framing `try` is ever entered, exactly
-/// as `RUN_MJS`'s `return` does before its own inner `try`.
-pub const RUN_PY: &str = r#"# code-runner runner — planted at runtime creation. Do not edit in place.
+/// as `INVOKE_MJS`'s `return` does before its own inner `try`.
+pub const INVOKE_PY: &str = r#"# sandbox-code-runner invoke runner — planted at runtime creation. Do not edit in place.
 # Protocol: argv = [source_path]; stdin = JSON envelope
 # {"sentinel": "<uuid>", "payload": <payload>}, consumed before the
 # handler's source ever loads. Result = JSON printed after a line holding
@@ -270,8 +273,8 @@ import sys
 
 
 def install_iii():
-    lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "code_runner_iii.py")
-    spec = importlib.util.spec_from_file_location("code_runner_iii", lib)
+    lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_code_runner_iii.py")
+    spec = importlib.util.spec_from_file_location("sandbox_code_runner_iii", lib)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     # A builtin, not a module-level name: builtins are the fallback of every
@@ -292,7 +295,7 @@ def main():
 
     if not isinstance(envelope, dict) or not isinstance(envelope.get("sentinel"), str):
         sys.stderr.write(
-            'code-runner runner: malformed envelope on stdin (expected {"sentinel": "...", "payload": ...})\n'
+            'sandbox-code-runner invoke runner: malformed envelope on stdin (expected {"sentinel": "...", "payload": ...})\n'
         )
         return 1
 
@@ -302,7 +305,7 @@ def main():
     iii_obj = install_iii()
 
     def run():
-        spec = importlib.util.spec_from_file_location("code_runner_handler", source)
+        spec = importlib.util.spec_from_file_location("sandbox_code_runner_handler", source)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         handler = getattr(mod, "handler", None)
@@ -338,10 +341,10 @@ sys.exit(main())
 /// The guest `iii` global — Node. A LAZY handle on the real iii-sdk
 /// client: `makeIii()` never connects by itself; the first property access
 /// calls `registerWorker(III_URL)` and every later access reaches the same
-/// live client. Resolved by the runner and the eval wrapper as a SIBLING
-/// import, so the same bytes work from `/opt/code-runner` in a VM and from
-/// a scratch dir in tests.
-pub const III_MJS: &str = r#"// code-runner guest iii library — planted at runtime creation. Do not edit
+/// live client. Resolved by the runner and the run wrapper as a SIBLING
+/// import, so the same bytes work from `/opt/sandbox-code-runner` in a VM and
+/// from a scratch dir in tests.
+pub const III_MJS: &str = r#"// sandbox-code-runner guest iii library — planted at runtime creation. Do not edit
 // in place. makeIii() returns the global every eval and handler gets: a
 // LAZY handle on the real iii-sdk client (planted at /node_modules/iii-sdk).
 // Nothing connects until the first property access, so code that never
@@ -465,7 +468,7 @@ export async function makeIii() {
 /// The guest `iii` global — Python. Same lazy contract as [`III_MJS`]; the
 /// SDK itself comes from the `pip install iii-sdk` step at runtime
 /// creation.
-pub const III_PY: &str = r#"# code-runner guest iii library — planted at runtime creation. Do not edit
+pub const III_PY: &str = r#"# sandbox-code-runner guest iii library — planted at runtime creation. Do not edit
 # in place. make_iii() returns the global every eval and handler gets: a
 # LAZY handle on the real iii-sdk client (pip-installed at runtime
 # creation). Nothing connects until the first attribute access, so code
@@ -523,29 +526,29 @@ def make_iii():
     return _LazyIii()
 "#;
 
-/// What `eval` execs instead of the bare interpreter — Node. Installs the
-/// lazy `iii` global, rebases argv so the evaluated file sees itself at
+/// What `run` execs instead of the bare interpreter — Node. Installs the
+/// lazy `iii` global, rebases argv so the target file sees itself at
 /// `argv[1]`, and otherwise behaves exactly like `node <file>`: same
 /// stdout/stderr, and an uncaught error (a rejected top-level `await
 /// import`) prints its stack and exits non-zero on its own — the
 /// `finally` shutdown runs first, capped and unref'd so it can neither
 /// hang the exec nor keep an idle loop alive.
-pub const EVAL_MJS: &str = r#"// code-runner eval wrapper — planted at runtime creation. Do not edit in
-// place. Runs an eval file as `node <file>` would, with the `iii` global (a
+pub const RUN_MJS: &str = r#"// sandbox-code-runner run wrapper — planted at runtime creation. Do not edit in
+// place. Runs a file as `node <file>` would, with the `iii` global (a
 // lazy handle on the real iii-sdk client — see iii.mjs) installed first. If
-// the eval used iii, the client is shut down after the run so the process
+// the run used iii, the client is shut down after the run so the process
 // can exit.
 import { pathToFileURL } from 'node:url';
 import { makeIii } from './iii.mjs';
 
 const target = process.argv[2];
 if (!target) {
-  process.stderr.write('code-runner eval wrapper: missing target file argument\n');
+  process.stderr.write('sandbox-code-runner run wrapper: missing target file argument\n');
   process.exit(1);
 }
 const { iii, client } = await makeIii();
 globalThis.iii = iii;
-// [node, eval.mjs, file] -> [node, file]: the evaluated file sees the argv
+// [node, run.mjs, file] -> [node, file]: the target file sees the argv
 // a direct run would have given it.
 process.argv.splice(1, 2, target);
 try {
@@ -561,14 +564,14 @@ try {
 }
 "#;
 
-/// What `eval` execs instead of the bare interpreter — Python. Same
-/// contract as [`EVAL_MJS`]: a raised exception propagates out of
+/// What `run` execs instead of the bare interpreter — Python. Same
+/// contract as [`RUN_MJS`]: a raised exception propagates out of
 /// `runpy.run_path` (after the `finally` shutdown), prints its traceback,
 /// and exits non-zero, exactly as `python3 <file>` does.
-pub const EVAL_PY: &str = r#"# code-runner eval wrapper — planted at runtime creation. Do not edit in
-# place. Runs an eval file as `python3 <file>` would, with the `iii`
+pub const RUN_PY: &str = r#"# sandbox-code-runner run wrapper — planted at runtime creation. Do not edit in
+# place. Runs a file as `python3 <file>` would, with the `iii`
 # builtin (a lazy handle on the real iii-sdk client — see
-# code_runner_iii.py) installed first. If the eval used iii, the client is
+# sandbox_code_runner_iii.py) installed first. If the run used iii, the client is
 # shut down after the run so the process can exit.
 import builtins
 import importlib.util
@@ -577,20 +580,20 @@ import runpy
 import sys
 
 if len(sys.argv) < 2:
-    sys.stderr.write("code-runner eval wrapper: missing target file argument\n")
+    sys.stderr.write("sandbox-code-runner run wrapper: missing target file argument\n")
     sys.exit(1)
 
-_lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "code_runner_iii.py")
-_spec = importlib.util.spec_from_file_location("code_runner_iii", _lib)
+_lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_code_runner_iii.py")
+_spec = importlib.util.spec_from_file_location("sandbox_code_runner_iii", _lib)
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 # A builtin, not a module global: builtins are the fallback of every
-# module's name lookup, so `iii` resolves inside the evaluated file.
+# module's name lookup, so `iii` resolves inside the target file.
 _iii = _mod.make_iii()
 builtins.iii = _iii
 
 _target = sys.argv[1]
-# [eval.py, file, ...] -> [file, ...]: the evaluated file sees the argv a
+# [run.py, file, ...] -> [file, ...]: the target file sees the argv a
 # direct run would have given it.
 sys.argv = sys.argv[1:]
 try:
@@ -662,16 +665,31 @@ mod tests {
         assert_eq!(Lang::Python.interpreter(), "python3");
         assert_eq!(Lang::Node.ext(), "mjs");
         assert_eq!(Lang::Python.ext(), "py");
-        assert_eq!(Lang::Node.runner_path(), "/opt/code-runner/run.mjs");
-        assert_eq!(Lang::Python.runner_path(), "/opt/code-runner/run.py");
-        assert_eq!(Lang::Node.iii_lib_path(), "/opt/code-runner/iii.mjs");
+        assert_eq!(
+            Lang::Node.runner_path(),
+            "/opt/sandbox-code-runner/invoke.mjs"
+        );
+        assert_eq!(
+            Lang::Python.runner_path(),
+            "/opt/sandbox-code-runner/invoke.py"
+        );
+        assert_eq!(
+            Lang::Node.iii_lib_path(),
+            "/opt/sandbox-code-runner/iii.mjs"
+        );
         assert_eq!(
             Lang::Python.iii_lib_path(),
-            "/opt/code-runner/code_runner_iii.py",
+            "/opt/sandbox-code-runner/sandbox_code_runner_iii.py",
             "must never be iii.py — sys.path[0] would shadow the SDK package"
         );
-        assert_eq!(Lang::Node.eval_wrapper_path(), "/opt/code-runner/eval.mjs");
-        assert_eq!(Lang::Python.eval_wrapper_path(), "/opt/code-runner/eval.py");
+        assert_eq!(
+            Lang::Node.run_wrapper_path(),
+            "/opt/sandbox-code-runner/run.mjs"
+        );
+        assert_eq!(
+            Lang::Python.run_wrapper_path(),
+            "/opt/sandbox-code-runner/run.py"
+        );
     }
 
     /// The plant table is what `create` writes; pin the entries whose
@@ -684,9 +702,9 @@ mod tests {
         assert_eq!(
             node_paths,
             vec![
-                "/opt/code-runner/run.mjs",
-                "/opt/code-runner/iii.mjs",
-                "/opt/code-runner/eval.mjs",
+                "/opt/sandbox-code-runner/invoke.mjs",
+                "/opt/sandbox-code-runner/iii.mjs",
+                "/opt/sandbox-code-runner/run.mjs",
                 "/node_modules/iii-sdk/package.json",
                 "/node_modules/iii-sdk/dist/index.mjs",
             ]
@@ -695,9 +713,9 @@ mod tests {
         assert_eq!(
             py_paths,
             vec![
-                "/opt/code-runner/run.py",
-                "/opt/code-runner/code_runner_iii.py",
-                "/opt/code-runner/eval.py",
+                "/opt/sandbox-code-runner/invoke.py",
+                "/opt/sandbox-code-runner/sandbox_code_runner_iii.py",
+                "/opt/sandbox-code-runner/run.py",
             ]
         );
         assert!(
@@ -726,7 +744,7 @@ mod tests {
         );
     }
 
-    /// The runner and the eval wrapper resolve the iii library RELATIVE to
+    /// The runner and the run wrapper resolve the iii library RELATIVE to
     /// their own file (`./iii.mjs`, `os.path.dirname(__file__)`), so all
     /// three of a language's files must be planted into ONE directory —
     /// this pins that the path table actually puts them there.
@@ -735,7 +753,7 @@ mod tests {
         for lang in [Lang::Node, Lang::Python] {
             let dir_of = |p: &str| p.rsplit_once('/').unwrap().0.to_string();
             assert_eq!(dir_of(lang.runner_path()), dir_of(lang.iii_lib_path()));
-            assert_eq!(dir_of(lang.runner_path()), dir_of(lang.eval_wrapper_path()));
+            assert_eq!(dir_of(lang.runner_path()), dir_of(lang.run_wrapper_path()));
         }
     }
 

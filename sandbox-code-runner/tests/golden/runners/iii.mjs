@@ -1,4 +1,4 @@
-// code-runner guest iii library — planted at runtime creation. Do not edit
+// sandbox-code-runner guest iii library — planted at runtime creation. Do not edit
 // in place. makeIii() returns the global every eval and handler gets: a
 // LAZY handle on the real iii-sdk client (planted at /node_modules/iii-sdk).
 // Nothing connects until the first property access, so code that never
