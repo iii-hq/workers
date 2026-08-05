@@ -277,15 +277,29 @@ for provider in "$HARNESS_E2E_PROVIDER" "$HARNESS_E2E_JUDGE_PROVIDER"; do
   fi
 done
 
+# The registry's /resolve sits at ~7s per call and a stack install issues
+# dozens of them; one transient network blip fails the whole add. Retry the
+# full command — worker add is idempotent (re-adds are no-ops).
+add_with_retry() {
+  local label=$1; shift
+  local attempt
+  for attempt in 1 2 3; do
+    if (cd "$project_dir" && timeout --signal=TERM --kill-after=15s "$add_timeout_seconds" \
+      "$iii_bin" worker add "$@") 2>&1 | tee -a "$log_dir/$label.log"; then
+      return 0
+    fi
+    log "worker add ($label) failed on attempt $attempt; retrying in 15s"
+    sleep 15
+  done
+  return 1
+}
+
 log "Installing registry stack: ${workers[*]}"
-(cd "$project_dir" && timeout --signal=TERM --kill-after=15s "$add_timeout_seconds" \
-  "$iii_bin" worker add "${workers[@]}") 2>&1 | tee "$log_dir/worker-add.log"
+add_with_retry worker-add "${workers[@]}"
 
 log "Installing exact release candidate: ${HARNESS_E2E_RELEASE_WORKER}@${HARNESS_E2E_RELEASE_VERSION}"
-(cd "$project_dir" && timeout --signal=TERM --kill-after=15s "$add_timeout_seconds" \
-  "$iii_bin" worker add \
-  "${HARNESS_E2E_RELEASE_WORKER}@${HARNESS_E2E_RELEASE_VERSION}" --force) \
-  2>&1 | tee "$log_dir/candidate-override.log"
+add_with_retry candidate-override \
+  "${HARNESS_E2E_RELEASE_WORKER}@${HARNESS_E2E_RELEASE_VERSION}" --force
 
 wait_for_functions \
   harness::send harness::status worker::add database::query state::get \
