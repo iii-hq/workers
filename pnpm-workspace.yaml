@@ -10,7 +10,7 @@ packages:
   - console/web
   - console/ui
   - browser/ui
-  - code-runner/ui
+  - sandbox-code-runner/ui
   - computer/ui
   - database/ui
   - editor/ui

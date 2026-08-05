@@ -1,13 +1,13 @@
 [workspace]
 
 [package]
-name = "code-runner"
+name = "sandbox-code-runner"
 version = "0.1.0"
 edition = "2021"
 publish = false
 
 [[bin]]
-name = "code-runner"
+name = "sandbox-code-runner"
 path = "src/main.rs"
 
 [lib]

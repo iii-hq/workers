@@ -1,6 +1,6 @@
 //! End-to-end: engine → code-runner → iii-sandbox → microVM → runner.
 //!
-//! GATED: set CODE_RUNNER_E2E=1 to run (needs /dev/kvm, network for the
+//! GATED: set SANDBOX_CODE_RUNNER_E2E=1 to run (needs /dev/kvm, network for the
 //! first image pull, and an engine binary — same convention as
 //! node-engine's integration test). Skips silently otherwise so
 //! `cargo test` is green on machines without virtualization.
@@ -8,10 +8,10 @@
 use std::time::Duration;
 
 fn gated() -> bool {
-    if std::env::var("CODE_RUNNER_E2E").as_deref() == Ok("1") {
+    if std::env::var("SANDBOX_CODE_RUNNER_E2E").as_deref() == Ok("1") {
         return false;
     }
-    eprintln!("SKIPPED: set CODE_RUNNER_E2E=1 (and III_BIN) to run the e2e test");
+    eprintln!("SKIPPED: set SANDBOX_CODE_RUNNER_E2E=1 (and III_BIN) to run the e2e test");
     true
 }
 
@@ -506,7 +506,7 @@ fn full_loop_eval_register_trigger_teardown() {
     wait_for_listen(port, Duration::from_secs(30));
 
     cleanup.worker = Some(
-        std::process::Command::new(env!("CARGO_BIN_EXE_code-runner"))
+        std::process::Command::new(env!("CARGO_BIN_EXE_sandbox-code-runner"))
             .arg("--url")
             .arg(format!("ws://127.0.0.1:{port}"))
             .arg("--config")

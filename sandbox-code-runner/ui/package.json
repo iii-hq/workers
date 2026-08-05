@@ -1,5 +1,5 @@
 {
-  "name": "@iii-workers/code-runner-ui",
+  "name": "@iii-workers/sandbox-code-runner-ui",
   "private": true,
   "version": "0.0.0",
   "type": "module",

@@ -16,7 +16,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use code_runner::runner::{split_sentinel, Lang};
+use sandbox_code_runner::runner::{split_sentinel, Lang};
 
 const SENTINEL: &str = "0f7f37e2-golden-sentinel";
 

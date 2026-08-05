@@ -2,17 +2,17 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use code_runner::engine::{Engine as _, IIIEngine};
-use code_runner::error::{classify_probe_error, ProbeOutcome};
-use code_runner::manager::RuntimeManager;
-use code_runner::{config, functions, manifest};
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
+use sandbox_code_runner::engine::{Engine as _, IIIEngine};
+use sandbox_code_runner::error::{classify_probe_error, ProbeOutcome};
+use sandbox_code_runner::manager::RuntimeManager;
+use sandbox_code_runner::{config, functions, manifest};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "code-runner",
+    name = "sandbox-code-runner",
     version,
     about = "Run Node.js and Python in iii-sandbox microVMs: eval, register bus functions, teardown"
 )]
@@ -34,7 +34,7 @@ fn worker_metadata() -> WorkerMetadata {
     WorkerMetadata {
         runtime: "rust".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        name: "code-runner".to_string(),
+        name: "sandbox-code-runner".to_string(),
         os: std::env::consts::OS.to_string(),
         pid: Some(std::process::id()),
         telemetry: None,
@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
     functions::register_all(&iii, &manager);
     functions::setup_harness_hooks(&iii);
     // Injected console UI: the function-trigger cards for the ops above.
-    code_runner::ui::register(&iii);
+    sandbox_code_runner::ui::register(&iii);
 
     // Startup probe: is the iii-sandbox daemon serving? Fail OPEN — the
     // operator may add it later, and every call meanwhile errors with the

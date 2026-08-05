@@ -1,5 +1,5 @@
 //! Wire-schema snapshots for the statically registered `code-runner::*`
-//! functions. `code_runner::functions::catalog()` is the single source of
+//! functions. `sandbox_code_runner::functions::catalog()` is the single source of
 //! truth; each entry is serialized to pretty JSON and compared against
 //! `tests/golden/schemas/<id>.json` (`::` maps to `.` in filenames).
 //!
@@ -7,7 +7,7 @@
 
 mod support;
 
-use code_runner::functions::{catalog, FunctionSpec};
+use sandbox_code_runner::functions::{catalog, FunctionSpec};
 
 fn golden_file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))
@@ -70,12 +70,12 @@ fn every_schema_is_typed() {
 /// in CI, not just at deploy-time via register_all's assert.
 #[test]
 fn static_ids_and_catalog_match_exactly() {
-    let cataloged: Vec<&str> = code_runner::functions::catalog()
+    let cataloged: Vec<&str> = sandbox_code_runner::functions::catalog()
         .iter()
         .map(|s| s.function_id)
         .collect();
     assert_eq!(
-        code_runner::functions::STATIC_IDS,
+        sandbox_code_runner::functions::STATIC_IDS,
         cataloged.as_slice(),
         "STATIC_IDS and catalog() must list the same ids in the same order"
     );
