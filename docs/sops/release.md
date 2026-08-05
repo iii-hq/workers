@@ -133,7 +133,12 @@ candidate lifecycle.
 ### 6. Promote to latest
 
 After `candidate-ready` passes, run Actions → **Promote Worker** from `main` and
-enter the worker, version, and Release run id. The workflow:
+enter the worker. Version and Release run id are optional: a promotion always
+ships the candidate behind `next`, so the workflow resolves the version from
+the Registry and locates the Release run from the resulting tag. Fill them in
+only for the repair paths — retrying an interrupted promotion after `next`
+already moved on, or pointing at a dispatched Release re-run (whose run is not
+findable by tag). The workflow:
 
 1. Downloads and validates the candidate evidence and Git tag commit.
 2. Confirms `next` still points to the exact candidate.

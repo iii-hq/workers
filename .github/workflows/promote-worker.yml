@@ -8,13 +8,15 @@ on:
         required: true
         type: string
       version:
-        description: Stable semver candidate version
-        required: true
+        description: 'Candidate version (empty = whatever next resolves to; set it only to retry an interrupted promotion after next moved on)'
+        required: false
         type: string
+        default: ''
       release_run_id:
-        description: Release workflow run containing the candidate evidence
-        required: true
+        description: 'Release run with the candidate evidence (empty = auto-locate the run for the release tag)'
+        required: false
         type: string
+        default: ''
 
 permissions:
   actions: read
@@ -27,13 +29,11 @@ concurrency:
 
 jobs:
   promote:
-    name: Promote ${{ inputs.worker }} v${{ inputs.version }}
+    name: Promote ${{ inputs.worker }}@${{ inputs.version || 'next' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       WORKER: ${{ inputs.worker }}
-      VERSION: ${{ inputs.version }}
-      RELEASE_RUN_ID: ${{ inputs.release_run_id }}
       API_URL: https://api.workers.iii.dev
     steps:
       - uses: actions/checkout@v5
@@ -53,14 +53,67 @@ jobs:
             echo "::error::worker must be a Registry slug"
             exit 2
           }
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-            echo "::error::version must be stable semver MAJOR.MINOR.PATCH"
+
+      # A promotion always ships the candidate behind `next`, so the dispatch
+      # only has to name the worker: the version comes from the Registry and
+      # the Release run is located from the resulting tag (tag-push runs carry
+      # the tag as head_branch). Both inputs remain as overrides for the repair
+      # path — re-running an interrupted promotion after `next` moved on, or a
+      # dispatched Release re-run whose head_branch is `main`.
+      - name: Resolve candidate from next
+        id: resolve
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+          RUN_ID_INPUT: ${{ inputs.release_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$VERSION_INPUT"
+          if [[ -z "$version" ]]; then
+            version=$(python3 - <<'PY'
+          import os
+          import sys
+
+          sys.path.insert(0, ".github/scripts")
+          from registry_release import RegistryError, resolve_version
+
+          try:
+              version = resolve_version(os.environ["API_URL"], os.environ["WORKER"], "next", allow_missing=True)
+          except RegistryError as error:
+              raise SystemExit(str(error))
+          if not version:
+              raise SystemExit(f"{os.environ['WORKER']} has no candidate behind next in the Registry")
+          print(version)
+          PY
+            )
+            echo "::notice::next resolves to ${WORKER}@${version}"
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::candidate must be stable semver MAJOR.MINOR.PATCH (got ${version}); prereleases are not promotable"
             exit 2
           }
-          [[ "$RELEASE_RUN_ID" =~ ^[0-9]+$ ]] || {
+
+          run_id="$RUN_ID_INPUT"
+          if [[ -z "$run_id" ]]; then
+            tag="${WORKER}/v${version}"
+            run_id=$(gh api -X GET "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs" \
+              -f head_branch="$tag" --jq '.workflow_runs[0].id // empty')
+            [[ -n "$run_id" ]] || {
+              echo "::error::No Release run found for tag ${tag}; pass release_run_id explicitly"
+              exit 2
+            }
+            echo "::notice::candidate evidence expected in Release run ${run_id}"
+          fi
+          [[ "$run_id" =~ ^[0-9]+$ ]] || {
             echo "::error::release_run_id must be numeric"
             exit 2
           }
+
+          {
+            echo "VERSION=${version}"
+            echo "RELEASE_RUN_ID=${run_id}"
+          } >>"$GITHUB_ENV"
+          echo "version=${version}" >>"$GITHUB_OUTPUT"
 
       - name: Validate Release workflow run
         env:
@@ -246,7 +299,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: promotion-${{ inputs.worker }}-${{ inputs.version }}
+          name: promotion-${{ inputs.worker }}-${{ steps.resolve.outputs.version }}
           path: |
             validated-candidate.json
             release-run.json
