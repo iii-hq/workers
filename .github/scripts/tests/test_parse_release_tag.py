@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from _test_helpers import GIT_HERMETIC_ENV
 
@@ -29,6 +30,33 @@ def make_repo_with_tagged_worker(tmp_path, tag, version, deploy="binary",
         f'manifest: Cargo.toml\nbin: {worker}-bin\n'
     )
     (w / "Cargo.toml").write_text(f'[package]\nname = "{worker}"\nversion = "{version}"\n')
+    catalog_dir = tmp_path / ".github"
+    catalog_dir.mkdir()
+    (catalog_dir / "release-workers.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "release_control": {"harness_e2e_profiles": 1},
+                "harness_e2e": {
+                    "required_profile": "release",
+                    "scenarios": [{"id": "persistent_state", "group": "Operations"}],
+                    "profiles": {
+                        "release": {"scenarios": ["persistent_state"]},
+                        "full": {"scenarios": "all"},
+                    },
+                },
+                "defaults": {
+                    "release_workflow": "release.yml",
+                    "allow_direct_latest": True,
+                    "required_validation": "smoke",
+                    "release_control_enabled": True,
+                },
+                "standard_workers": [worker],
+                "special_workers": {},
+                "policies": {},
+            }
+        )
+    )
     run("git", "add", ".")
     run("git", "commit", "-q", "-m", "init")
     body = f"Release {tag}\n\n{registry_tag_line}\n"
@@ -95,6 +123,74 @@ class TestParseReleaseTag:
         r = run_script(repo, "smoke/v1.2.3-preview", out_path)
         assert r.returncode == 0
         assert parse_outputs(out_path)["is_prerelease"] == "true"
+
+    def test_v2_tag_exposes_release_control_identity(self, tmp_path):
+        metadata = "\n".join(
+            [
+                "release-contract: 2",
+                "worker: smoke",
+                "version: 1.2.3-alpha",
+                "maturity: alpha",
+                "registry-tag: next",
+                "experimental: false",
+                "operation-id: 11111111-1111-1111-1111-111111111111",
+                "step-id: 22222222-2222-2222-2222-222222222222",
+                f"source-sha: {'a' * 40}",
+            ]
+        )
+        repo = make_repo_with_tagged_worker(
+            tmp_path,
+            "smoke/v1.2.3-alpha",
+            "1.2.3-alpha",
+            registry_tag_line=metadata,
+        )
+        out_path = tmp_path / "gh_output"
+        out_path.touch()
+        result = run_script(repo, "smoke/v1.2.3-alpha", out_path)
+        assert result.returncode == 0, result.stderr
+        output = parse_outputs(out_path)
+        assert output["release_contract"] == "2"
+        assert output["maturity"] == "alpha"
+        assert output["operation_id"] == "11111111-1111-1111-1111-111111111111"
+
+    def test_v2_prerelease_cannot_publish_latest(self, tmp_path):
+        metadata = "\n".join(
+            [
+                "release-contract: 2",
+                "worker: smoke",
+                "version: 1.2.3-beta",
+                "maturity: beta",
+                "registry-tag: latest",
+                "experimental: false",
+                "operation-id: op",
+                "step-id: step",
+                "source-sha: unknown",
+            ]
+        )
+        repo = make_repo_with_tagged_worker(
+            tmp_path,
+            "smoke/v1.2.3-beta",
+            "1.2.3-beta",
+            registry_tag_line=metadata,
+        )
+        out_path = tmp_path / "gh_output"
+        out_path.touch()
+        result = run_script(repo, "smoke/v1.2.3-beta", out_path)
+        assert result.returncode != 0
+        assert "must publish to next" in result.stderr
+
+    def test_missing_channel_fails_closed_to_next(self, tmp_path):
+        repo = make_repo_with_tagged_worker(
+            tmp_path,
+            "smoke/v1.2.3",
+            "1.2.3",
+            registry_tag_line="experimental: false",
+        )
+        out_path = tmp_path / "gh_output"
+        out_path.touch()
+        result = run_script(repo, "smoke/v1.2.3", out_path)
+        assert result.returncode == 0, result.stderr
+        assert parse_outputs(out_path)["registry_tag"] == "next"
 
     def test_dry_run_tag(self, tmp_path):
         repo = make_repo_with_tagged_worker(tmp_path, "smoke/v9.9.9-dry-run.1", "9.9.9-dry-run.1")

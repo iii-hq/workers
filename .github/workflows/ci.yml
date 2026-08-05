@@ -26,6 +26,16 @@ jobs:
           package-manager-cache: false
       - run: pip install --quiet pytest pyyaml
       - run: pytest .github/scripts/tests/ -v
+      - name: Validate GitHub Actions workflows
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            -o /tmp/actionlint.tar.gz
+          echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  /tmp/actionlint.tar.gz' \
+            | sha256sum --check
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint -color
       - run: node --test .github/benchmark-site/*.test.cjs
 
   # ──────────────────────────────────────────────────────────────

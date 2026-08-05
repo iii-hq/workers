@@ -13,19 +13,23 @@ def build_args(**overrides):
     values = {
         "repository": "iii-hq/workers",
         "release_run_id": "1234",
+        "evidence_run_id": "1234",
         "run_attempt": 1,
         "tag_sha": "a" * 40,
+        "source_sha": "b" * 40,
         "release_tag": "harness/v1.2.3",
         "worker": "harness",
         "version": "1.2.3",
+        "maturity": "stable",
         "deploy": "binary",
         "registry_tag": "next",
-        "harness_gate_required": True,
+        "operation_id": "op-1",
+        "step_id": "step-1",
+        "image_digest": "",
         "promotable": True,
         "publish_result": "success",
         "candidate_smoke_result": "success",
-        "harness_quickstart_result": "success",
-        "harness_e2e_result": "success",
+        "container_alias_result": "skipped",
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -36,6 +40,8 @@ def validate_args(evidence: Path, **overrides):
         "evidence": evidence,
         "repository": "iii-hq/workers",
         "release_run_id": "1234",
+        "evidence_run_id": "1234",
+        "operation_id": "op-1",
         "worker": "harness",
         "version": "1.2.3",
         "output": None,
@@ -56,19 +62,11 @@ def test_build_marks_complete_harness_candidate_ready():
     assert evidence["promotable"] is True
 
 
-def test_build_requires_harness_e2e_when_applicable():
-    evidence = build_evidence(build_args(harness_e2e_result="failure"))
-    assert evidence["candidate_ready"] is False
-
-
 def test_non_harness_candidate_ignores_skipped_harness_gates():
     evidence = build_evidence(
         build_args(
             worker="pdf",
             release_tag="pdf/v1.2.3",
-            harness_gate_required=False,
-            harness_quickstart_result="skipped",
-            harness_e2e_result="skipped",
         )
     )
     assert evidence["candidate_ready"] is True
@@ -98,8 +96,48 @@ def test_validate_rejects_mismatched_or_unready_evidence(tmp_path, override, mes
 
 def test_validate_rejects_prerelease_version(tmp_path):
     evidence = build_evidence(
-        build_args(version="1.2.3-alpha.1", release_tag="harness/v1.2.3-alpha.1", promotable=False)
+        build_args(
+            version="1.2.3-alpha",
+            maturity="alpha",
+            release_tag="harness/v1.2.3-alpha",
+            promotable=False,
+        )
     )
     path = write_evidence(tmp_path, evidence)
     with pytest.raises(SystemExit, match="stable semver"):
-        validate_evidence(validate_args(path, version="1.2.3-alpha.1"))
+        validate_evidence(validate_args(path, version="1.2.3-alpha"))
+
+
+def test_image_candidate_requires_alias_and_digest():
+    evidence = build_evidence(
+        build_args(
+            worker="image-resize",
+            release_tag="image-resize/v1.2.3",
+            deploy="image",
+            image_digest="sha256:" + "c" * 64,
+            container_alias_result="failure",
+        )
+    )
+    assert evidence["candidate_ready"] is False
+
+
+def test_validate_accepts_legacy_schema_one_evidence(tmp_path):
+    legacy = {
+        "schema_version": 1,
+        "repository": "iii-hq/workers",
+        "release_run_id": "1234",
+        "run_attempt": 1,
+        "tag_sha": "a" * 40,
+        "release_tag": "harness/v1.2.3",
+        "worker": "harness",
+        "version": "1.2.3",
+        "deploy": "binary",
+        "registry_tag": "next",
+        "harness_gate_required": False,
+        "promotable": True,
+        "candidate_ready": True,
+        "results": {"publish": "success", "candidate_smoke": "success"},
+    }
+    path = write_evidence(tmp_path, legacy)
+    result = validate_evidence(validate_args(path, operation_id=""))
+    assert result["schema_version"] == 1

@@ -17,6 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version", required=True)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--required", action="append", default=[])
+    parser.add_argument("--expected-versions-json", default="{}")
     parser.add_argument("--output", type=Path)
     return parser.parse_args()
 
@@ -58,11 +59,31 @@ def main() -> None:
             + ", ".join(missing)
         )
 
+    try:
+        expected_versions = json.loads(args.expected_versions_json)
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"invalid_expected_versions: {error}") from error
+    if not isinstance(expected_versions, dict):
+        raise SystemExit("invalid_expected_versions: expected a JSON object")
+
+    mismatches: list[str] = []
+    resolved_versions: dict[str, str] = {}
+    for worker, expected in sorted(expected_versions.items()):
+        record = workers.get(worker)
+        resolved = record.get("version") if isinstance(record, dict) else None
+        resolved_versions[str(worker)] = str(resolved or "")
+        if str(resolved or "") != str(expected):
+            mismatches.append(f"{worker}: expected {expected}, resolved {resolved or 'unknown'}")
+    if mismatches:
+        raise SystemExit("stack_version_mismatch: " + "; ".join(mismatches))
+
     result = {
         "worker": args.worker,
         "expected_version": args.version,
         "actual_version": str(actual_version),
         "required_workers": sorted(required),
+        "expected_versions": expected_versions,
+        "resolved_versions": resolved_versions,
     }
     rendered = json.dumps(result, sort_keys=True)
     if args.output:
