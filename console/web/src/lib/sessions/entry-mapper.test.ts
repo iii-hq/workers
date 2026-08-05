@@ -422,6 +422,7 @@ describe('entrySegments', () => {
           retired: true,
           scope: 'cache-repl-pipeline',
           key: 'facts',
+          payload: { event: { db: 'primary', op: 'update' } },
           fired_at: 42,
         },
       },
@@ -431,7 +432,12 @@ describe('entrySegments', () => {
       role: 'system',
       kind: 'trigger-fired',
       createdAt: 42,
-      trigger: { subscription_id: 'sub_1', target: 'spawn', retired: true },
+      trigger: {
+        subscription_id: 'sub_1',
+        target: 'spawn',
+        retired: true,
+        payload: { event: { db: 'primary', op: 'update' } },
+      },
     })
     expect((notice as { content: string }).content).toBe(
       'cache-repl-pipeline/facts · spawned claude-sonnet-4-6 · unregistered',

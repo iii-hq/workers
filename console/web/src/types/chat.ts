@@ -176,6 +176,13 @@ export interface TriggerFiredData {
   scope?: string
   key?: string
   note?: string
+  /**
+   * What the fire delivered: the payload sent to a ƒ-call target (post
+   * conditions/projection/stamping; the attempted payload when dispatch
+   * failed), or the post-conditions event of a wake. Absent on skip/expiry/gc
+   * records and on records from before this field existed.
+   */
+  payload?: unknown
   fired_at: number
 }
 
