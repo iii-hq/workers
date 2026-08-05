@@ -153,11 +153,12 @@ rows = iii.trigger({'function_id': 'database::query',
   `iii` raises a clear "not installed" error on first use.
 - **Identity and reach.** The guest connects to the engine as an ordinary
   worker (`III_URL` is set at runtime creation and rides the sandbox
-  gateway), named `code-runner:eval` or `code-runner:<function_id>`. What
-  guest code may call is whatever the engine lets a connected worker call
-  — the same trust model as a worker process you run yourself. The VM's
-  network also reaches the internet and, via the gateway, services on the
-  engine host's loopback — do not run code you would not run as a worker.
+  gateway), named `sandbox-code-runner:run` or
+  `sandbox-code-runner:<function_id>`. What guest code may call is whatever
+  the engine lets a connected worker call — the same trust model as a
+  worker process you run yourself. The VM's network also reaches the
+  internet and, via the gateway, services on the engine host's loopback —
+  do not run code you would not run as a worker.
 - **Self-calls stall.** A registered handler that triggers a function
   living on ITS OWN runtime waits on that runtime's one-exec-at-a-time
   slot — the very slot its own call is holding — so it can only time out.

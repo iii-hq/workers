@@ -1,4 +1,4 @@
-//! Build script for the `code-runner` worker.
+//! Build script for the `sandbox-code-runner` worker.
 //!
 //! 1. Forwards the build-time target triple to the binary as `env!("TARGET")`
 //!    (used by `manifest.rs` for the registry `supported_targets` field).

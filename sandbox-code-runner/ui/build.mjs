@@ -32,12 +32,12 @@ const options = {
 /**
  * The guest SDK bundle: the published `iii-sdk` npm package, with its whole
  * dependency graph (ws, @opentelemetry/api, @iii-dev/helpers) inlined into
- * ONE node ESM file. code-runner embeds it and plants it into every Node
- * runtime at /node_modules/iii-sdk — the guest gets the real SDK with no
+ * ONE node ESM file. sandbox-code-runner embeds it and plants it into every
+ * Node runtime at /node_modules/iii-sdk — the guest gets the real SDK with no
  * registry access and no npm install at boot. `bufferutil`/`utf-8-validate`
- * are ws's OPTIONAL native accelerators, referenced in a try/catch it
- * handles being absent — external here so esbuild doesn't fail resolving
- * binaries that were never going to be bundled.
+ * are ws's OPTIONAL native accelerators, referenced in a try/catch it handles
+ * being absent — external here so esbuild doesn't fail resolving binaries
+ * that were never going to be bundled.
  */
 const guestSdkOptions = {
   stdin: {
@@ -77,9 +77,9 @@ if (process.argv.includes('--watch')) {
   await esbuild.build(guestSdkOptions)
 
   // The planted package's manifest. The SDK reads `../package.json` at
-  // runtime (its own version string), so code-runner plants the bundle at
-  // /node_modules/iii-sdk/dist/index.mjs with this file beside it — the
-  // real package's layout. Generated from the resolved dependency so the
+  // runtime (its own version string), so sandbox-code-runner plants the
+  // bundle at /node_modules/iii-sdk/dist/index.mjs with this file beside it —
+  // the real package's layout. Generated from the resolved dependency so the
   // version can never drift from what was actually bundled.
   // Read through the node_modules symlink — the package's `exports` map
   // does not expose ./package.json to require().
