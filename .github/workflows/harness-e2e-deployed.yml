@@ -57,7 +57,7 @@ jobs:
     uses: ./.github/workflows/_harness-e2e.yml
     with:
       stack_mode: registry
-      runs: ${{ inputs.runs }}
+      runs: ${{ fromJSON(format('{0}', inputs.runs || 1)) }}
       max_parallel: 2
       benchmark_lane: deployed
       cli_channel: ${{ inputs.cli_channel }}
