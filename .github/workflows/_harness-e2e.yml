@@ -110,6 +110,16 @@ jobs:
       engine_binary: ${{ steps.engine.outputs.binary }}
       engine_revision: ${{ steps.engine.outputs.version }}
     steps:
+      # The registry-mode stack build filled a standard runner's disk (the
+      # harness 1.7.1 release died packaging harness-e2e-stack.tar.gz with
+      # ENOSPC). Preinstalled toolchains this job never touches hold ~30GB;
+      # drop them before building.
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.source_ref }}
