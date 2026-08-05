@@ -36,7 +36,25 @@ use crate::ports::{LeaseCell, LeaseStore};
 /// whole-snapshot replaces the inner `Arc` under the write lock.
 pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 
-pub const CONFIG_ID: &str = "context-manager";
+pub const DEFAULT_CONFIG_ID: &str = "context-manager";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_FN_ID: &str = "context::on-config-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
@@ -51,7 +69,7 @@ const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 /// value, so this is safe to call every boot).
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "Context Manager",
         "description": "Model-ready context assembly tuning: token-budget reserves, \
                         function-result prune thresholds, compaction tail size, the \
@@ -89,14 +107,14 @@ async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     try_get_config_value(iii)
         .await?
-        .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
+        .ok_or_else(|| format!("configuration `{config_entry}` not found", config_entry = config_id()))
 }
 
 /// Returns `Ok(None)` when the entry does not exist. The engine's
 /// missing-entry codes vary in case (`function_not_found`,
 /// `STATEMENT_NOT_FOUND`, `NOT_FOUND`), so match case-insensitively.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
+    match trigger_with_retry(iii, "configuration::get", json!({ "id": config_id() })).await {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
@@ -162,7 +180,7 @@ pub fn register_config_trigger(
         trigger_type: "configuration".to_string(),
         function_id: CONFIG_FN_ID.to_string(),
         config: json!({
-            "configuration_id": CONFIG_ID,
+            "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
         metadata: None,

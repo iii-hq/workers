@@ -568,7 +568,7 @@ async fn max_value_bytes_rejects_oversized_set() {
     call(
         &iii,
         "configuration::set",
-        json!({"id": configuration::CONFIG_ID, "value": {"max_value_bytes": 10}}),
+        json!({"id": configuration::config_id(), "value": {"max_value_bytes": 10}}),
     )
     .await
     .expect("configuration::set max_value_bytes");
@@ -610,7 +610,7 @@ async fn max_value_bytes_rejects_oversized_set() {
     call(
         &iii,
         "configuration::set",
-        json!({"id": configuration::CONFIG_ID, "value": {"triggers_enabled": false}}),
+        json!({"id": configuration::config_id(), "value": {"triggers_enabled": false}}),
     )
     .await
     .expect("configuration::set triggers_enabled=false");
@@ -634,7 +634,7 @@ async fn max_value_bytes_rejects_oversized_set() {
     call(
         &iii,
         "configuration::set",
-        json!({"id": configuration::CONFIG_ID, "value": StateConfig::default().to_json()}),
+        json!({"id": configuration::config_id(), "value": StateConfig::default().to_json()}),
     )
     .await
     .expect("restore default configuration");

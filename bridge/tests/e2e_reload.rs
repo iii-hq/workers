@@ -40,7 +40,7 @@ fn echo_fn() -> RegisterFunction {
 async fn set_bridge_config(iii: &Arc<IIIClient>, value: Value) {
     iii.trigger(TriggerRequest {
         function_id: "configuration::set".to_string(),
-        payload: json!({ "id": configuration::CONFIG_ID, "value": value }),
+        payload: json!({ "id": configuration::config_id(), "value": value }),
         action: None,
         timeout_ms: Some(10_000),
     })

@@ -15,7 +15,25 @@ use crate::trigger::QueueTriggerHandler;
 #[cfg(test)]
 use crate::{adapter::SwappableAdapter, boot, trigger::Invoker};
 
-pub const CONFIG_ID: &str = "queue";
+pub const DEFAULT_CONFIG_ID: &str = "queue";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 pub const CONFIG_FN_ID: &str = "queue::on-config-change";
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
@@ -27,7 +45,7 @@ pub fn new_cell(config: QueueConfig) -> ConfigCell {
 
 pub async fn register_config(iii: &IIIClient, seed: Option<&QueueConfig>) -> Result<(), String> {
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "Queue",
         "description": "Durable queue worker settings: transport persistence and named function queues.",
         "schema": QueueConfig::json_schema(),
@@ -54,7 +72,8 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<QueueConfig, String> {
         Some(value) if !value.is_null() => QueueConfig::from_json(&value).map(|c| c.normalized()),
         _ => {
             tracing::info!(
-                "no `{CONFIG_ID}` configuration value stored; using durable packaged default"
+                "no `{config_entry}` configuration value stored; using durable packaged default",
+                config_entry = config_id()
             );
             Ok(QueueConfig::packaged_default())
         }
@@ -69,7 +88,7 @@ pub async fn persist_config(iii: &IIIClient, config: &QueueConfig) -> Result<(),
     trigger_with_retry(
         iii,
         "configuration::set",
-        json!({ "id": CONFIG_ID, "value": config.to_json() }),
+        json!({ "id": config_id(), "value": config.to_json() }),
         CONFIG_BUS_TIMEOUT_MS,
     )
     .await?;
@@ -98,7 +117,7 @@ pub fn register_config_trigger(
         trigger_type: "configuration".to_string(),
         function_id: CONFIG_FN_ID.to_string(),
         config: json!({
-            "configuration_id": CONFIG_ID,
+            "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
         metadata: None,
@@ -156,7 +175,7 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
     match trigger_with_retry(
         iii,
         "configuration::get",
-        json!({ "id": CONFIG_ID }),
+        json!({ "id": config_id() }),
         CONFIG_BUS_TIMEOUT_MS,
     )
     .await

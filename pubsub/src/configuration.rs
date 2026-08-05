@@ -24,7 +24,25 @@ use crate::boot::{ApplyLock, ConfigCell};
 use crate::config::PubSubConfig;
 use crate::hub::Hub;
 
-pub const CONFIG_ID: &str = "pubsub";
+pub const DEFAULT_CONFIG_ID: &str = "pubsub";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_FN_ID: &str = "pubsub::on-config-change";
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
@@ -38,7 +56,7 @@ const CONFIG_BUS_TIMEOUT_MS: u64 = 10_000;
 /// included only when nothing is stored yet, so runtime edits survive restarts.
 pub async fn register_config(iii: &IIIClient, seed: Option<&PubSubConfig>) -> Result<(), String> {
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "PubSub",
         "description": "PubSub worker settings — the pub/sub backend adapter (`local` in-process broadcast, or `redis` for cross-instance delivery). The adapter hot-swaps at runtime: a change rebuilds the backend and re-subscribes live subscriptions onto it.",
         "schema": PubSubConfig::json_schema(),
@@ -64,7 +82,7 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<PubSubConfig, String> {
     match try_get_config_value(iii).await? {
         Some(value) if !value.is_null() => PubSubConfig::from_json(&value),
         _ => {
-            tracing::info!("no `{CONFIG_ID}` configuration value stored; using built-in default");
+            tracing::info!("no `{config_entry}` configuration value stored; using built-in default", config_entry = config_id());
             Ok(PubSubConfig::default())
         }
     }
@@ -81,7 +99,7 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
     match trigger_with_retry(
         iii,
         "configuration::get",
-        json!({ "id": CONFIG_ID }),
+        json!({ "id": config_id() }),
         CONFIG_BUS_TIMEOUT_MS,
     )
     .await
@@ -136,7 +154,7 @@ pub fn register_config_trigger(
         trigger_type: "configuration".to_string(),
         function_id: CONFIG_FN_ID.to_string(),
         config: json!({
-            "configuration_id": CONFIG_ID,
+            "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
         metadata: None,

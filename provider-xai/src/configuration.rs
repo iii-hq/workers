@@ -18,7 +18,25 @@ use crate::config::WorkerConfig;
 /// Hot-swappable config snapshot shared with the stream handler.
 pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 
-pub const CONFIG_ID: &str = "provider-xai";
+pub const DEFAULT_CONFIG_ID: &str = "provider-xai";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_FN_ID: &str = "provider::xai::on-config-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
@@ -31,7 +49,7 @@ pub fn new_cell() -> ConfigCell {
 /// when no stored value exists yet.
 pub async fn register_config(iii: &IIIClient) -> Result<(), String> {
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "xAI Provider",
         "description": "xAI provider behaviour: enable Agent Tools (live X / web search via the /v1/responses API) and pick which server-side tools to offer. Credentials and endpoints are managed by the llm-router configuration entry, not here.",
         "schema": WorkerConfig::json_schema(),
@@ -59,7 +77,7 @@ async fn should_seed_default(iii: &IIIClient) -> Result<bool, String> {
 
 /// `Ok(None)` when the entry does not exist (`NOT_FOUND`).
 async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
+    match trigger_with_retry(iii, "configuration::get", json!({ "id": config_id() })).await {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
@@ -97,7 +115,7 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
         trigger_type: "configuration".to_string(),
         function_id: CONFIG_FN_ID.to_string(),
         config: json!({
-            "configuration_id": CONFIG_ID,
+            "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
         metadata: None,

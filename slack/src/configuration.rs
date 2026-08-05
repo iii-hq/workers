@@ -16,7 +16,25 @@ use crate::ingress;
 
 pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 
-pub const CONFIG_ID: &str = "slack";
+pub const DEFAULT_CONFIG_ID: &str = "slack";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_FN_ID: &str = "slack::on-config-change";
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
@@ -28,7 +46,7 @@ fn config_rpc_timeout_ms(seed: Option<&WorkerConfig>) -> u64 {
 
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "Slack",
         "description": "Slack worker: bot/user tokens, optional channel/team scoping, and RPC timeout. Configurable here or via env (${SLACK_BOT_TOKEN}).",
         "schema": WorkerConfig::json_schema(),
@@ -76,7 +94,7 @@ async fn try_get_config_value(iii: &IIIClient, timeout_ms: u64) -> Result<Option
     match trigger_with_retry(
         iii,
         "configuration::get",
-        json!({ "id": CONFIG_ID }),
+        json!({ "id": config_id() }),
         timeout_ms,
     )
     .await
@@ -128,7 +146,7 @@ pub fn register_config_trigger(
         trigger_type: "configuration".to_string(),
         function_id: CONFIG_FN_ID.to_string(),
         config: json!({
-            "configuration_id": CONFIG_ID,
+            "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
         metadata: None,

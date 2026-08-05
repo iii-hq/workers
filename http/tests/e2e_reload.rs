@@ -86,7 +86,7 @@ async fn global_middleware_added_via_config_set_blocks_without_restart() {
     });
     iii.trigger(TriggerRequest {
         function_id: "configuration::set".to_string(),
-        payload: json!({ "id": configuration::CONFIG_ID, "value": new_value }),
+        payload: json!({ "id": configuration::config_id(), "value": new_value }),
         action: None,
         timeout_ms: Some(10_000),
     })
@@ -166,7 +166,7 @@ async fn cors_restricted_via_config_set_applies_without_restart() {
     });
     iii.trigger(TriggerRequest {
         function_id: "configuration::set".to_string(),
-        payload: json!({ "id": configuration::CONFIG_ID, "value": new_value }),
+        payload: json!({ "id": configuration::config_id(), "value": new_value }),
         action: None,
         timeout_ms: Some(10_000),
     })
@@ -319,7 +319,7 @@ async fn host_port_change_rebinds_listener_without_restart() {
     let new_value = json!({ "host": "127.0.0.1", "port": p2 });
     iii.trigger(TriggerRequest {
         function_id: "configuration::set".to_string(),
-        payload: json!({ "id": configuration::CONFIG_ID, "value": new_value }),
+        payload: json!({ "id": configuration::config_id(), "value": new_value }),
         action: None,
         timeout_ms: Some(10_000),
     })

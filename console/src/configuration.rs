@@ -28,7 +28,25 @@ use serde_json::{json, Value};
 
 use crate::ui_assets::UiControl;
 
-pub const CONFIG_ID: &str = "console";
+pub const DEFAULT_CONFIG_ID: &str = "console";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
@@ -140,7 +158,7 @@ pub async fn register_console_config(iii: &IIIClient) {
     };
 
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "Console",
         "description": "Console UI preferences — Traces V2 saved views \
                         (grouping, filters, display settings, hidden functions), \
@@ -153,7 +171,7 @@ pub async fn register_console_config(iii: &IIIClient) {
     }
 
     match trigger_with_retry(iii, "configuration::register", payload).await {
-        Ok(_) => tracing::info!(id = CONFIG_ID, "console configuration registered"),
+        Ok(_) => tracing::info!(id = config_id(), "console configuration registered"),
         Err(e) => tracing::warn!(
             error = %e,
             "console configuration registration failed; skipping \
@@ -218,7 +236,7 @@ pub async fn start_injectable_ui_sync(iii: &Arc<IIIClient>, control: UiControl) 
         trigger_type: "configuration".to_string(),
         function_id: CONFIG_CHANGE_FN_ID.to_string(),
         config: json!({
-            "configuration_id": CONFIG_ID,
+            "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
         metadata: None,
@@ -268,7 +286,7 @@ pub struct ConfigChangeRequest {}
 
 /// `Ok(None)` when the entry does not exist or holds `null`.
 async fn existing_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
+    match trigger_with_retry(iii, "configuration::get", json!({ "id": config_id() })).await {
         Ok(resp) => Ok(resp.get("value").filter(|v| !v.is_null()).cloned()),
         Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
