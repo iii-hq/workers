@@ -165,11 +165,36 @@ stop_owned_orphans() {
   kill -KILL "${pids[@]}" 2>/dev/null || true
 }
 
+# Worker-level logs are the only view into wake/binding delivery; the engine
+# log alone cannot explain a lost notification. Collected before teardown so
+# failed scenario jobs ship them in the diagnostics artifact.
+collect_worker_logs() {
+  [[ -n "$iii_bin" && -n "$engine_pid" ]] || return 0
+  kill -0 "$engine_pid" 2>/dev/null || return 0
+  local name
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    timeout 20 "$iii_bin" worker logs "$name" --port "$engine_port" \
+      >"$log_dir/worker-$name.log" 2>&1 || true
+  done < <(python3 - "$project_dir/config.yaml" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+config = yaml.safe_load(Path(sys.argv[1]).read_text()) or {}
+for worker in config.get("workers") or []:
+    if isinstance(worker, dict) and worker.get("name"):
+        print(worker["name"])
+PY
+  )
+}
+
 cleanup() {
   local status=$?
   trap - EXIT INT TERM ERR
   set +e
   snapshot_stack
+  collect_worker_logs
   stop_workers
   stop_engine
   stop_owned_orphans
