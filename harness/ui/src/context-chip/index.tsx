@@ -280,7 +280,7 @@ function ContextPopover({
         </span>
         {hasActuals ? (
           <span>
-            last turn {formatTokens(usage?.input ?? 0)} in · output{' '}
+            last step {formatTokens(usage?.input ?? 0)} in · output{' '}
             {formatTokens(usage?.output ?? 0)}
           </span>
         ) : null}
