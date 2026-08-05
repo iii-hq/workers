@@ -1,0 +1,12 @@
+iii: v1
+name: provider-groq
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: provider-groq
+tags: [llm, groq, chat-completions, provider]
+description: Groq Chat Completions provider worker; implements provider::groq::stream and provider::groq::refresh_models behind llm-router.
+
+dependencies:
+  state: "^0.21.2"
+  llm-router: "^1.0.0"
