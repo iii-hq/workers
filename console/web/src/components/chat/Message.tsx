@@ -482,8 +482,8 @@ function NotificationMessage({
         <summary className="flex items-center gap-2 px-3 py-2 cursor-pointer list-none select-none hover:bg-paper-2 transition-colors">
           {icon}
           <span className="min-w-0 flex-1 font-mono text-[13px] text-ink truncate">
-            triggered <span className="text-ink">notification</span>{' '}
-            <span className="text-ink-faint">by {parsed.name}</span>
+            <span className="text-ink">notification</span> triggered{' '}
+            <span className="text-ink-faint">{parsed.name}</span>
           </span>
           <span
             aria-hidden
@@ -535,7 +535,7 @@ function NotificationMessage({
  * A subscription fire, rendered in the same visual language as a
  * `FunctionTriggerCard` header — it IS a function call, just one the
  * trigger made instead of the agent. The ⚡ (in place of ✓/✗) marks the
- * autonomous origin, and "by <name>" says which binding fired it.
+ * autonomous origin, and the trailing faint name says which binding fired it.
  * Wake/spawn fires have no called function; they keep the summary text.
  *
  * `registration` is the binding's configuration — from the harness store
@@ -571,16 +571,18 @@ function TriggerFiredNotice({
       <span className="min-w-0 flex-1 font-mono text-[13px] text-ink truncate">
         {t && (called || notified) ? (
           <>
-            triggered{' '}
             {called ? (
               <>
+                triggered{' '}
                 <span className="text-accent italic font-semibold">ƒ</span>{' '}
                 <span className="text-ink">{called}</span>
               </>
             ) : (
-              <span className="text-ink">notification</span>
+              <>
+                <span className="text-ink">notification</span> triggered
+              </>
             )}
-            <span className="text-ink-faint"> by {triggerFiredName(t)}</span>
+            <span className="text-ink-faint"> {triggerFiredName(t)}</span>
             {t.retired ? (
               <span className="text-ink-ghost"> · unregistered</span>
             ) : null}
