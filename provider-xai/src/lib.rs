@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod configuration;
+pub mod count_tokens;
 pub mod curated;
 pub mod discovery;
 pub mod errors;

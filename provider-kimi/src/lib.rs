@@ -4,6 +4,7 @@
 //! stream. Spec: tech-specs/2026-06-agentic/llm-router.md § The provider protocol.
 
 pub mod config;
+pub mod count_tokens;
 pub mod curated;
 pub mod discovery;
 pub mod errors;

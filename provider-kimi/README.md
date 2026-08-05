@@ -12,6 +12,11 @@ Implements the provider protocol from
 Moonshot chat families, enriched with a curated capability snapshot →
 `router::models::reconcile`).
 
+`provider::kimi::count_tokens` counts a prompt through Moonshot's own
+estimator endpoint behind `router::count_tokens`, so the number is the
+upstream's rather than a local reconstruction of it. Counting never runs the
+model.
+
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with

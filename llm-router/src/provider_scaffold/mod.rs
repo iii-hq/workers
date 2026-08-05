@@ -11,6 +11,7 @@
 pub mod aborts;
 pub mod cache;
 pub mod chat_framing;
+pub mod endpoint_count;
 pub mod names;
 pub mod pump;
 pub mod router_client;

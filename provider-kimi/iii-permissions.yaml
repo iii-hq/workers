@@ -8,3 +8,4 @@ rules:
   - '!provider::kimi::stream'
   - '!provider::kimi::refresh_models'
   - '!provider::kimi::on_router_ready'
+  - '!provider::kimi::count_tokens'
