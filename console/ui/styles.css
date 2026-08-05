@@ -2,7 +2,8 @@
  * The console worker's own console stylesheet, shipped as its own
  * `console:style` asset (console/styles.css). Every rule is scoped under
  * `[data-iii-ui="console"]`, the wrapper the console mounts around every
- * injected render — here, the injectable-UI toggle form on the Workers tab.
+ * injected render — the injectable-UI toggle form on the Workers tab and
+ * the two engine-catalogue pages (functions, triggers).
  * Styling uses the console's design tokens, so light/dark theming is free.
  */
 
@@ -169,4 +170,276 @@
   font-size: 12px;
   line-height: 1.5;
   color: var(--color-alert);
+}
+
+/* ── the engine catalogue pages (functions, triggers) ───────────────── */
+
+/* The host pane is `flex-1 min-h-0 overflow-y-auto`, so the page owns its
+ * own height and scrolls each column separately. Container queries, not
+ * media queries: the pane width is what matters, not the viewport. */
+[data-iii-ui="console"] .console-catalog {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  container-type: inline-size;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink);
+}
+[data-iii-ui="console"] .console-catalog *,
+[data-iii-ui="console"] .console-catalog *::before,
+[data-iii-ui="console"] .console-catalog *::after {
+  box-sizing: border-box;
+}
+
+[data-iii-ui="console"] .console-catalog-head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="console"] .console-catalog-head-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="console"] .console-catalog-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--color-ink-faint);
+  font-weight: 600;
+}
+[data-iii-ui="console"] .console-catalog-search {
+  width: 100%;
+}
+
+[data-iii-ui="console"] .console-catalog-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+[data-iii-ui="console"] .console-catalog-list {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 12px 20px 24px;
+}
+[data-iii-ui="console"] .console-catalog-detail {
+  flex: none;
+  width: 46%;
+  min-width: 340px;
+  overflow-y: auto;
+  border-left: 1px solid var(--color-rule);
+  background: var(--color-panel);
+}
+/* Below this the two panes are both too narrow to read, so they stack.
+ * The console page pane is roughly 790px with the chat dock open. */
+@container (max-width: 760px) {
+  [data-iii-ui="console"] .console-catalog-body {
+    flex-direction: column;
+  }
+  [data-iii-ui="console"] .console-catalog-detail {
+    width: 100%;
+    min-width: 0;
+    border-left: 0;
+    border-top: 1px solid var(--color-rule);
+  }
+}
+
+/* --- list: collapsible group, then its rows -------------------------- */
+[data-iii-ui="console"] .console-catalog-section {
+  margin-bottom: 14px;
+}
+[data-iii-ui="console"] .console-catalog-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 0;
+  background: transparent;
+  border: 0;
+  color: var(--color-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="console"] .console-catalog-group .chevron {
+  color: var(--color-ink-ghost);
+  transition: transform 0.12s ease;
+}
+[data-iii-ui="console"] .console-catalog-group .chevron[data-open="true"] {
+  transform: rotate(90deg);
+}
+[data-iii-ui="console"] .console-catalog-group .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-ink-faint);
+  font-weight: 600;
+}
+[data-iii-ui="console"] .console-catalog-group .meta {
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="console"] .console-catalog-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--color-ink);
+  font: inherit;
+  cursor: pointer;
+}
+[data-iii-ui="console"] .console-catalog-row:hover {
+  background: var(--color-paper-2);
+}
+[data-iii-ui="console"] .console-catalog-row:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 1px;
+}
+[data-iii-ui="console"] .console-catalog-row[data-selected="true"] {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+[data-iii-ui="console"] .console-catalog-row .primary {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="console"] .console-catalog-row .secondary {
+  font-size: 11.5px;
+  color: var(--color-ink-faint);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* --- detail pane ----------------------------------------------------- */
+[data-iii-ui="console"] .console-catalog-detail-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  background: var(--color-panel);
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="console"] .console-catalog-detail-title {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="console"] .console-catalog-detail-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="console"] .console-catalog-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="console"] .console-catalog-chip {
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  font-size: 11.5px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+[data-iii-ui="console"] .console-catalog-chip .k {
+  color: var(--color-ink-ghost);
+  margin-right: 6px;
+}
+[data-iii-ui="console"] .console-catalog-id {
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="console"] .console-catalog-tabs {
+  padding: 12px 16px 20px;
+}
+
+/* --- invoke panel ---------------------------------------------------- */
+[data-iii-ui="console"] .console-catalog-invoke {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+}
+[data-iii-ui="console"] .console-catalog-editor {
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  min-height: 120px;
+  max-height: 320px;
+  overflow: auto;
+}
+[data-iii-ui="console"] .console-catalog-invoke-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+[data-iii-ui="console"] .console-catalog-ok {
+  color: var(--color-ok);
+}
+[data-iii-ui="console"] .console-catalog-invalid {
+  color: var(--color-alert);
+}
+[data-iii-ui="console"] .console-catalog-result,
+[data-iii-ui="console"] .console-catalog-json {
+  display: block;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  background: var(--color-bg);
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 420px;
+  overflow: auto;
+}
+
+/* --- bindings, notes, errors ----------------------------------------- */
+[data-iii-ui="console"] .console-catalog-binding {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="console"] .console-catalog-binding:last-child {
+  border-bottom: 0;
+}
+[data-iii-ui="console"] .console-catalog-binding-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="console"] .console-catalog-note {
+  padding: 12px 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="console"] .console-catalog-error {
+  border: 1px solid var(--color-alert);
+  border-radius: 6px;
+  color: var(--color-alert);
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
