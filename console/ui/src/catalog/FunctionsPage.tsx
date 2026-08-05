@@ -38,6 +38,7 @@ import {
   CatalogRow,
   CatalogShell,
   Chip,
+  CopyButton,
   DetailHead,
   ErrorNote,
   GroupHeader,
@@ -207,7 +208,9 @@ function FunctionDetailPane({
           ) : null
         }
         onClose={onClose}
-      />
+      >
+        <CopyButton value={functionId} label="copy id" />
+      </DetailHead>
       {detail.error ? (
         <ErrorNote call="engine::functions::info" message={detail.error} />
       ) : detail.data === null ? (

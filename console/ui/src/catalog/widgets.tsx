@@ -62,6 +62,7 @@ export function CatalogHead({
   onRefresh,
   loading,
   children,
+  below,
 }: {
   title: string
   count: ReactNode
@@ -71,6 +72,8 @@ export function CatalogHead({
   onRefresh: () => void
   loading: boolean
   children?: ReactNode
+  /** Row under the search box: filter chips, when the page has them. */
+  below?: ReactNode
 }) {
   return (
     <div className="console-catalog-head">
@@ -91,7 +94,96 @@ export function CatalogHead({
         aria-label={searchPlaceholder}
         className="console-catalog-search"
       />
+      {below}
     </div>
+  )
+}
+
+/**
+ * One chip per family that actually has entries, plus `all`. Families with
+ * nothing registered are not rendered: an empty filter is a dead control.
+ */
+export function FilterChips<T extends string>({
+  counts,
+  selected,
+  onSelect,
+}: {
+  counts: ReadonlyMap<T, number>
+  selected: T | null
+  onSelect: (next: T | null) => void
+}) {
+  const entries = [...counts.entries()].filter(([, n]) => n > 0).sort()
+  if (entries.length < 2) return null
+  const total = entries.reduce((n, [, count]) => n + count, 0)
+  return (
+    <div className="console-catalog-filters">
+      <button
+        type="button"
+        className="console-catalog-filter"
+        data-selected={selected === null}
+        onClick={() => onSelect(null)}
+      >
+        all <span className="count">{total}</span>
+      </button>
+      {entries.map(([key, count]) => (
+        <button
+          key={key}
+          type="button"
+          className="console-catalog-filter"
+          data-selected={selected === key}
+          onClick={() => onSelect(selected === key ? null : key)}
+        >
+          {key} <span className="count">{count}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** A labelled fact in the detail pane: next run, method, topic, status. */
+export function StatTile({
+  label,
+  value,
+  hint,
+  tone,
+}: {
+  label: string
+  value: string
+  hint?: string
+  tone?: 'ok' | 'warn' | 'alert'
+}) {
+  return (
+    <div className="console-catalog-tile">
+      <span className="label">{label}</span>
+      <span className="value" data-tone={tone}>
+        {value}
+      </span>
+      {hint ? <span className="hint">{hint}</span> : null}
+    </div>
+  )
+}
+
+/** Copy-to-clipboard with the two-second confirmation the old console had. */
+export function CopyButton({
+  value,
+  label = 'copy',
+}: {
+  value: string
+  label?: string
+}) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <Button
+      variant="pill"
+      size="sm"
+      onClick={() => {
+        void navigator.clipboard.writeText(value)
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 2000)
+      }}
+    >
+      {copied ? 'copied' : label}
+    </Button>
   )
 }
 
@@ -100,11 +192,16 @@ export function GroupHeader({
   meta,
   open,
   onToggle,
+  tone,
+  toneLabel,
 }: {
   label: string
   meta: string
   open: boolean
   onToggle: () => void
+  /** Family color for the leading tag, when the page groups by family. */
+  tone?: string
+  toneLabel?: string
 }) {
   return (
     <button
@@ -116,6 +213,11 @@ export function GroupHeader({
       <span className="chevron" data-open={open}>
         ▸
       </span>
+      {toneLabel ? (
+        <span className="console-catalog-tag" data-tone={tone}>
+          {toneLabel}
+        </span>
+      ) : null}
       <span className="label">{label}</span>
       <span className="meta">{meta}</span>
     </button>
@@ -155,6 +257,7 @@ export function DetailHead({
   title: string
   subtitle?: ReactNode
   onClose: () => void
+  /** Actions left of `close` — copy buttons, mostly. */
   children?: ReactNode
 }) {
   return (
@@ -193,9 +296,17 @@ export function ErrorNote({
 }
 
 /** Key/value chips for a trigger config, ids, counts. */
-export function Chip({ k, v }: { k: string; v: ReactNode }) {
+export function Chip({
+  k,
+  v,
+  tone,
+}: {
+  k: string
+  v: ReactNode
+  tone?: string
+}) {
   return (
-    <span className="console-catalog-chip">
+    <span className="console-catalog-chip" data-tone={tone}>
       <span className="k">{k}</span>
       {v}
     </span>
