@@ -48,6 +48,10 @@ on:
         description: Release Control operation UUID
         type: string
         default: ''
+      step_id:
+        description: Release Control operation step UUID
+        type: string
+        default: ''
       stack_versions:
         description: JSON object of worker slugs to exact candidate versions required in iii.lock
         type: string
@@ -103,7 +107,7 @@ jobs:
           RELEASE_RUN_ID: ${{ inputs.release_run_id }}
           RELEASE_TAG: ${{ inputs.release_tag || format('{0}/v{1}', inputs.release_worker, inputs.release_version) }}
           OPERATION_ID: ${{ inputs.operation_id || format('github:{0}', github.run_id) }}
-          STEP_ID: harness-e2e
+          STEP_ID: ${{ inputs.step_id || 'harness-e2e' }}
           SUITE_RESULT: ${{ needs.e2e.result }}
           STACK_VERSIONS: ${{ inputs.stack_versions }}
         run: |
