@@ -7,7 +7,13 @@ use crate::runner::Lang;
 pub struct EvalRequest {
     /// Source run as a whole file by a fresh interpreter process. Variables
     /// do NOT survive between evals; whether files and installed packages
-    /// do depends on the path below.
+    /// do depends on the path below. A global `iii` is in scope — the real
+    /// iii-sdk client, lazily connected to the engine on first use:
+    /// `await iii.trigger({ function_id, payload })` in Node,
+    /// `iii.trigger({'function_id': ..., 'payload': ...})` in Python.
+    /// Functions registered with `iii.registerFunction` live only until
+    /// this process exits — use code-runner::register_function (callable
+    /// through `iii.trigger`) for one that persists.
     pub code: String,
     /// Evaluate in a SPECIFIC runtime, sharing its filesystem: the write and
     /// the run land in that VM, and it is NOT stopped afterwards — you own
@@ -24,20 +30,11 @@ pub struct EvalRequest {
     /// Nothing persists: no files, no installed packages. `true`: boot a VM
     /// and leave it running; the response's `runtime_id` addresses it for
     /// later evals (pass it back to keep working in the same filesystem) and
-    /// is the capability `code-runner::teardown` needs to stop it.
+    /// is the capability `code-runner::teardown` needs to stop it. Every
+    /// runtime boots with outbound network (the `iii` global's engine link
+    /// needs it), so npm/pip installs work on any path.
     #[serde(default)]
     pub keep: bool,
-    /// Give the guest outbound network so `npm install` / `pip install`
-    /// work. Create-time only, so it is meaningful only when `runtime_id` is
-    /// omitted — and even then, only a caller-supplied `runtime_id`'s own
-    /// creation could ever have asked for it: neither a one-shot eval nor
-    /// `keep: true` can request network (both run through `sandbox::run`,
-    /// which has no way to enable it), so `network: true` without a
-    /// `runtime_id` is refused rather than silently ignored. Ignored (not
-    /// refused) when `runtime_id` is set: that runtime's network was fixed
-    /// when it was created.
-    #[serde(default)]
-    pub network: bool,
     /// Wall-clock budget in milliseconds, clamped to the configured maximum.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
@@ -55,7 +52,6 @@ impl std::fmt::Debug for EvalRequest {
             )
             .field("lang", &self.lang)
             .field("keep", &self.keep)
-            .field("network", &self.network)
             .field("timeout_ms", &self.timeout_ms)
             .finish()
     }
@@ -104,7 +100,6 @@ mod tests {
             runtime_id: Some("rt-secret-capability".into()),
             lang: Some(Lang::Node),
             keep: false,
-            network: false,
             timeout_ms: None,
         };
         let rendered = format!("{req:?}");

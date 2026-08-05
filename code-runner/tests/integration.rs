@@ -142,8 +142,6 @@ async fn live_sandbox_ids(iii: &iii_sdk::IIIClient) -> std::collections::HashSet
 ///   (checked via `sandbox::list`, not just the response shape);
 /// - `keep: true` DOES leave exactly one live sandbox, and its `runtime_id`
 ///   addresses that same VM (same filesystem) for a later eval;
-/// - `network: true` with no `runtime_id` is refused over the real bus, not
-///   silently dropped;
 /// - `register_function` with NO `runtime_id` works, and the function it
 ///   publishes answers real calls on the real bus;
 /// - `teardown` by `namespace` unregisters it and stops its runtime.
@@ -212,19 +210,6 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
         "the kept runtime's filesystem must persist across evals: {reused}"
     );
     assert_eq!(reused["runtime_id"], runtime_id);
-
-    // network: true with no runtime_id is refused over the real bus —
-    // sandbox::run genuinely has no way to honor it.
-    let refused = iii
-        .trigger(eval(
-            serde_json::json!({ "lang": "python", "code": "1", "network": true }),
-        ))
-        .await;
-    assert!(
-        refused.is_err(),
-        "network: true with no runtime_id must be refused over the real bus, not silently \
-         ignored: {refused:?}"
-    );
 
     // register_function with NO runtime_id: code-runner resolves its own
     // namespace runtime, and the function answers real calls on the bus.
@@ -298,6 +283,208 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
         after_all, before,
         "live sandboxes must return exactly to baseline after cleanup — before {before:?}, \
          after {after_all:?}"
+    );
+}
+
+/// Proves the guest `iii` global against REAL VMs — the planted Node SDK
+/// bundle, the pip-installed Python SDK, the eval wrapper, and the
+/// runner-side install, none of which a `FakeEngine` test can execute for
+/// real:
+///
+/// - evaluated NODE code triggers a bus function mid-run through the
+///   embedded SDK and gets the answer;
+/// - evaluated PYTHON code does the same through the pip-installed SDK;
+/// - `iii.registerFunction` from an eval is live WHILE the process runs
+///   (provable by self-trigger through the engine) and gone after it
+///   exits — the documented ephemeral semantics;
+/// - persistence goes through `code-runner::register_function`, callable
+///   via `iii.trigger` from inside an eval;
+/// - a registered handler itself uses `iii` (cross-runtime call).
+async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
+    let eval = |payload: serde_json::Value| iii_sdk::protocol::TriggerRequest {
+        function_id: "code-runner::eval".into(),
+        payload,
+        action: None,
+        timeout_ms: Some(60_000),
+    };
+    let trigger =
+        |function_id: &str, payload: serde_json::Value| iii_sdk::protocol::TriggerRequest {
+            function_id: function_id.into(),
+            payload,
+            action: None,
+            timeout_ms: Some(35_000),
+        };
+
+    let before = live_sandbox_ids(iii).await;
+
+    // A plain registered function to be the CALLEE of guest code — its
+    // runtime (ce-e2e-iii, python) is distinct from any eval's VM.
+    iii.trigger(trigger(
+        "code-runner::register_function",
+        serde_json::json!({
+            "function_id": "ce-e2e-iii::double",
+            "lang": "python",
+            "source": "def handler(p):\n    return {'doubled': p['n'] * 2}\n",
+            "description": "e2e iii callee",
+        }),
+    ))
+    .await
+    .expect("register the callee");
+
+    // The embedded Node SDK: an eval triggers the callee mid-run.
+    let called = iii
+        .trigger(eval(serde_json::json!({
+            "lang": "node",
+            "code": "const r = await iii.trigger({ function_id: 'ce-e2e-iii::double', payload: { n: 21 } });\nconsole.log('got', r.doubled);",
+            "timeout_ms": 30_000,
+        })))
+        .await
+        .expect("node eval that uses iii.trigger");
+    assert_eq!(called["stdout"], "got 42\n", "{called}");
+    assert_eq!(called["exit_code"], 0, "{called}");
+
+    // The pip-installed Python SDK: same round trip (this is the only
+    // place the create-time `pip install iii-sdk` path is proven live).
+    let called_py = iii
+        .trigger(eval(serde_json::json!({
+            "lang": "python",
+            "code": "r = iii.trigger({'function_id': 'ce-e2e-iii::double', 'payload': {'n': 21}})\nprint('got', r['doubled'])",
+            "timeout_ms": 30_000,
+        })))
+        .await
+        .expect("python eval that uses iii.trigger");
+    assert_eq!(called_py["stdout"], "got 42\n", "{called_py}");
+
+    // iii.registerFunction is the SDK's own, so it is LIVE only while the
+    // eval process runs: the eval proves liveness by triggering its own
+    // registration THROUGH THE ENGINE, and the bus proves the ephemerality
+    // right after the process exits.
+    let ephemeral = iii
+        .trigger(eval(serde_json::json!({
+            "lang": "node",
+            "code": "iii.registerFunction('ce-e2e-ephemeral-echo', async (data) => ({ pong: data.ping }), { description: 'dies with the eval process' });\nconst r = await iii.trigger({ function_id: 'ce-e2e-ephemeral-echo', payload: { ping: 7 } });\nconsole.log('pong', r.pong);",
+            "timeout_ms": 30_000,
+        })))
+        .await
+        .expect("eval that self-registers and self-triggers");
+    assert_eq!(ephemeral["stdout"], "pong 7\n", "{ephemeral}");
+    let dead = iii
+        .trigger(iii_sdk::protocol::TriggerRequest {
+            function_id: "ce-e2e-ephemeral-echo".into(),
+            payload: serde_json::json!({ "ping": 1 }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await;
+    assert!(
+        dead.is_err(),
+        "an iii.registerFunction registration must die with the eval process: {dead:?}"
+    );
+
+    // The error UX regression guard (console-a2795be8): a wrong-signature
+    // SDK call must die with a SHORT, readable error naming the method —
+    // with a minified bundle, node's code-frame print was hundreds of KB
+    // of mangled source that hit the exec output cap and CUT OFF the
+    // actual message. Assert the property (short + names the call site),
+    // not the SDK's exact message, so SDK upgrades don't break this.
+    let bad_call = iii
+        .trigger(eval(serde_json::json!({
+            "lang": "node",
+            "code": "iii.registerFunction({ function_id: 'demo::hello', handler: async () => ({}) });",
+            "timeout_ms": 30_000,
+        })))
+        .await
+        .expect("the wrong-signature eval still settles as a response");
+    assert_eq!(bad_call["exit_code"], 1, "{bad_call}");
+    let stderr = bad_call["stderr"].as_str().unwrap_or_default();
+    assert!(
+        stderr.contains("registerFunction"),
+        "the error must name the failing call: {stderr}"
+    );
+    assert!(
+        stderr.len() < 4_000,
+        "a wrong-signature error must be a readable page, not a {}-byte \
+         minified-code dump",
+        stderr.len()
+    );
+
+    // Persistence goes through code-runner::register_function — callable
+    // from inside an eval via iii.trigger, surviving the eval's exit.
+    let registered = iii
+        .trigger(eval(serde_json::json!({
+            "lang": "node",
+            "code": "const r = await iii.trigger({ function_id: 'code-runner::register_function', payload: { function_id: 'ce-e2e-iii::treble', lang: 'node', source: 'export function handler(p) { return { trebled: p.n * 3 }; }', description: 'e2e persistent registration from inside an eval' }, timeout_ms: 60000 });\nconsole.log('registered', r.function_id);",
+            "timeout_ms": 90_000,
+        })))
+        .await
+        .expect("eval that registers persistently through the bus");
+    assert_eq!(
+        registered["stdout"], "registered ce-e2e-iii::treble\n",
+        "{registered}"
+    );
+    let trebled = iii
+        .trigger(trigger(
+            "ce-e2e-iii::treble",
+            serde_json::json!({ "n": 14 }),
+        ))
+        .await
+        .expect("the persistently-registered function answers after the eval exited");
+    assert_eq!(trebled["trebled"], 42, "{trebled}");
+
+    // A handler using iii itself: cross-runtime call from the python
+    // namespace runtime to the node one.
+    iii.trigger(trigger(
+        "code-runner::register_function",
+        serde_json::json!({
+            "function_id": "ce-e2e-iii::describe",
+            "lang": "python",
+            "source": "def handler(p):\n    r = iii.trigger({'function_id': 'ce-e2e-iii::treble', 'payload': {'n': p['n']}})\n    return {'trebled': r['trebled']}\n",
+            "description": "e2e handler-side iii probe",
+        }),
+    ))
+    .await
+    .expect("register the iii-using handler");
+    let described = iii
+        .trigger(trigger(
+            "ce-e2e-iii::describe",
+            serde_json::json!({ "n": 4 }),
+        ))
+        .await
+        .expect("the iii-using handler answers");
+    assert_eq!(described["trebled"], 12, "{described}");
+
+    // One namespace teardown covers both language runtimes and all three
+    // functions, and the live-sandbox count returns exactly to baseline.
+    let td = iii
+        .trigger(trigger(
+            "code-runner::teardown",
+            serde_json::json!({ "namespace": "ce-e2e-iii" }),
+        ))
+        .await
+        .expect("teardown the iii namespace");
+    assert_eq!(td["torn_down"], true, "{td}");
+    let mut unregistered: Vec<String> = td["unregistered"]
+        .as_array()
+        .expect("unregistered array")
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    unregistered.sort();
+    assert_eq!(
+        unregistered,
+        vec![
+            "ce-e2e-iii::describe".to_string(),
+            "ce-e2e-iii::double".to_string(),
+            "ce-e2e-iii::treble".to_string(),
+        ],
+        "{td}"
+    );
+
+    let after = live_sandbox_ids(iii).await;
+    assert_eq!(
+        after, before,
+        "live sandboxes must return to baseline after the iii step — before {before:?}, \
+         after {after:?}"
     );
 }
 
@@ -435,6 +622,7 @@ fn full_loop_eval_register_trigger_teardown() {
                         );
 
                         one_shot_keep_and_namespace_over_the_real_chain(&iii).await;
+                        iii_global_over_the_real_chain(&iii).await;
 
                         booted = true;
                         break;

@@ -3,6 +3,9 @@
 Run Node.js and Python in isolated microVMs: iterate on code with
 `code-runner::eval`, publish working functions to the bus with
 `code-runner::register_function`, clean up with `code-runner::teardown`.
+Code running inside the VM gets a global `iii` — the real
+[iii-sdk](https://iii.dev/docs/reference/sdk-node) client, lazily
+connected to the engine ([details below](#the-iii-global)).
 
 code-runner delegates every execution to the
 [iii-sandbox daemon](https://workers.iii.dev/workers/iii-sandbox)
@@ -63,15 +66,12 @@ script is a response (`success: false`, `stderr`), not an error — errors
 are reserved for infrastructure (unknown runtime, expired VM, timeouts,
 capacity).
 
-**`network` needs an existing runtime.** Outbound network
-(`npm install` / `pip install`) can only ever be enabled on a runtime's
-*own* creation — and neither the one-shot path nor `keep: true` can create
-one with network, because both run through the daemon's `sandbox::run`,
-which has no network flag at all. Passing `network: true` without an
-explicit `runtime_id` is therefore refused outright (`invalid_request`),
-not silently ignored. `network: true` is still accepted, and still
-ignored, when reusing an existing runtime by `runtime_id` — that runtime's
-network was fixed when it was created.
+**Every VM has outbound network.** The `iii` global's engine link rides
+the sandbox's network gateway, so networking is always enabled —
+`npm install` / `pip install` work in every runtime, one-shot evals
+included. (Earlier versions had a `network` request field with refusal
+semantics; it is gone, and a request still carrying it is ignored
+harmlessly.)
 
 ## Registering a function
 
@@ -105,6 +105,64 @@ JSON-serialized.
 The runtime backing a namespace is entirely an implementation detail — you
 never see or manage its `runtime_id`. It carries no network access (there
 is no `network` field on this request either).
+
+## The `iii` global
+
+Evaluated code and registered handlers both see a global `iii`: the real
+iii-sdk client
+([Node reference](https://iii.dev/docs/reference/sdk-node),
+[Python reference](https://iii.dev/docs/reference/sdk-python)), created
+lazily — nothing dials the engine until the first use, so code that never
+touches `iii` pays nothing.
+
+```js
+// node — the SDK's IIIClient; trigger returns a Promise
+const rows = await iii.trigger({
+  function_id: "database::query",
+  payload: { sql: "SELECT 1" },
+});
+```
+
+```python
+# python — synchronous (the SDK's trigger_async exists too)
+rows = iii.trigger({'function_id': 'database::query',
+                    'payload': {'sql': 'SELECT 1'}})
+```
+
+- **The full SDK surface is available** — `trigger`, `registerFunction`,
+  `registerTrigger`, connection-state listeners, `shutdown` (the wrapper
+  calls it for you after the run) — exactly as the reference documents it.
+  The global explains itself: `console.log(iii)` / `repr(iii)` print a
+  usage hint before anything has connected, and after first use
+  `Object.keys(iii)` / `dir(iii)` list the client's callable surface —
+  none of which opens a connection by itself.
+- **SDK registrations are ephemeral.** `iii.registerFunction` registers
+  THIS guest process, and an eval's process exits moments later — its
+  registrations (and trigger bindings) go with it. They are genuinely live
+  while it runs (an eval can trigger its own registration through the
+  engine); for a function that outlives the process, call
+  `code-runner::register_function` through `iii.trigger` — everything in
+  the section above applies.
+- **Delivery.** Node runtimes get the SDK planted at
+  `/node_modules/iii-sdk` from a bundle embedded in code-runner — no
+  registry, no `npm install`, works offline. Python runtimes
+  `pip install iii-sdk` once at runtime creation (its pydantic-core
+  dependency is compiled per-platform, so planting is not an option); if
+  that install fails — no PyPI route, say — the runtime still works and
+  `iii` raises a clear "not installed" error on first use.
+- **Identity and reach.** The guest connects to the engine as an ordinary
+  worker (`III_URL` is set at runtime creation and rides the sandbox
+  gateway), named `code-runner:eval` or `code-runner:<function_id>`. What
+  guest code may call is whatever the engine lets a connected worker call
+  — the same trust model as a worker process you run yourself. The VM's
+  network also reaches the internet and, via the gateway, services on the
+  engine host's loopback — do not run code you would not run as a worker.
+- **Self-calls stall.** A registered handler that triggers a function
+  living on ITS OWN runtime waits on that runtime's one-exec-at-a-time
+  slot — the very slot its own call is holding — so it can only time out.
+  Calls to functions on other runtimes, to other workers, and from evals
+  (whose runtimes host no registered functions) all work, including
+  nested.
 
 ## Teardown and expiry
 

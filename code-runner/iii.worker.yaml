@@ -5,7 +5,7 @@ deploy: binary
 manifest: Cargo.toml
 bin: code-runner
 tags: [nodejs, python, eval, sandbox, microvm]
-description: Run Node.js and Python in iii-sandbox microVMs — eval code, register bus functions from working source, and tear down runtimes on demand.
+description: Run Node.js and Python in iii-sandbox microVMs — eval code, register bus functions from working source, and tear down runtimes on demand. Guest code gets the real iii-sdk client as a global `iii`, lazily connected to the engine.
 
 # code-runner has no V8 (or any other platform-restricted)
 # dependency — everything it links (iii-sdk, tokio, serde, schemars, clap,

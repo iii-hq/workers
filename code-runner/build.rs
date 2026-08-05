@@ -35,6 +35,11 @@ fn main() {
     let dist_assets = [
         ui_dir.join("dist").join("page.js"),
         ui_dir.join("dist").join("styles.css"),
+        // The guest SDK bundle `src/runner.rs` embeds and plants into every
+        // Node runtime (+ its generated package manifest) — built by the
+        // same `pnpm build`, from the pinned `iii-sdk` dependency.
+        ui_dir.join("dist").join("iii-sdk-guest.mjs"),
+        ui_dir.join("dist").join("iii-sdk-guest-package.json"),
     ];
 
     if dist_assets

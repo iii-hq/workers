@@ -9,7 +9,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@iii-dev/console-ui": "workspace:*"
+    "@iii-dev/console-ui": "workspace:*",
+    "iii-sdk": "0.22.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.14",

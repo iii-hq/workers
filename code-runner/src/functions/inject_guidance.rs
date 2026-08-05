@@ -17,7 +17,7 @@ pub const GUIDANCE_HOOK_DESC: &str =
 /// The single canonical copy of the code-runner usage guidance. Pure USAGE
 /// guidance: the hook only fires while this worker is present, so it carries no
 /// "look for it / install it" discovery text.
-const CODE_RUNNER_GUIDANCE: &str = "code-runner runs Node.js and Python in isolated microVMs (iii-sandbox). `code-runner::eval` with lang \"node\" or \"python\" is ONE-SHOT by default: it boots a fresh VM, runs the code, returns the result, and destroys the VM — nothing persists, no files, no installed packages, and the response carries no runtime_id (there is nothing left to address). Pass keep: true to leave the VM running instead: the response's runtime_id then addresses it — treat it as a secret — and is the capability `code-runner::teardown` needs. Pass that runtime_id back on a later eval to keep working in the same VM (filesystem persists between evals in one runtime; variables do not) — that runtime is never auto-stopped, and a reuse can fail with code-runner::expired if it was idle-reaped; if it does, just eval again the same way (fresh keep: true, or a fresh one-shot) rather than reusing the dead id. network is create-time only and only a runtime you already hold with network can honor it — neither a one-shot eval nor keep: true can ever create a networked VM, so network: true without an existing runtime_id is refused, not silently ignored. `code-runner::register_function` needs no runtime_id at all: pass function_id, source (must define handler(payload) in lang), description, and lang — code-runner keeps one persistent runtime per namespace (the segment of function_id before `::`) and language automatically, creating it on the first registration and reusing it for later ones in the same namespace and lang. Call `code-runner::teardown` with EITHER runtime_id (a kept eval's runtime) or namespace (e.g. \"app\" for ids like app::greet) — never both, never neither — to unregister its functions and stop its microVM(s). Idle runtimes are reaped after the configured TTL, but a reaped runtime's functions are NOT unregistered at that moment: the next call into it fails with code-runner::expired, and only then are its functions unregistered. Don't assume a function id is free to reuse just because the TTL has passed.";
+const CODE_RUNNER_GUIDANCE: &str = "code-runner runs Node.js and Python in isolated microVMs (iii-sandbox). `code-runner::eval` with lang \"node\" or \"python\" is ONE-SHOT by default: it boots a fresh VM, runs the code, returns the result, and destroys the VM — nothing persists, no files, no installed packages, and the response carries no runtime_id (there is nothing left to address). Pass keep: true to leave the VM running instead: the response's runtime_id then addresses it — treat it as a secret — and is the capability `code-runner::teardown` needs. Pass that runtime_id back on a later eval to keep working in the same VM (filesystem persists between evals in one runtime; variables do not) — that runtime is never auto-stopped, and a reuse can fail with code-runner::expired if it was idle-reaped; if it does, just eval again the same way (fresh keep: true, or a fresh one-shot) rather than reusing the dead id. Every VM boots with outbound network, so npm/pip installs work on any path. Evaluated code and registered handlers get a global `iii` — the REAL iii-sdk client, lazily connected to the engine on first use: `await iii.trigger({ function_id: 'worker::fn', payload })` in Node, `iii.trigger({'function_id': 'worker::fn', 'payload': ...})` (synchronous) in Python, with the full SDK surface behind it (registerFunction, registerTrigger, and the rest). Two sharp edges: functions registered with iii.registerFunction are EPHEMERAL — they die when the eval or handler process exits, so persist through code-runner::register_function (callable via iii.trigger); and a handler that triggers a function registered on the very runtime it executes in waits on that runtime's one-exec-at-a-time slot and can only time out — call across runtimes or workers instead. `code-runner::register_function` needs no runtime_id at all: pass function_id, source (must define handler(payload) in lang), description, and lang — code-runner keeps one persistent runtime per namespace (the segment of function_id before `::`) and language automatically, creating it on the first registration and reusing it for later ones in the same namespace and lang. Call `code-runner::teardown` with EITHER runtime_id (a kept eval's runtime) or namespace (e.g. \"app\" for ids like app::greet) — never both, never neither — to unregister its functions and stop its microVM(s). Idle runtimes are reaped after the configured TTL, but a reaped runtime's functions are NOT unregistered at that moment: the next call into it fails with code-runner::expired, and only then are its functions unregistered. Don't assume a function id is free to reuse just because the TTL has passed.";
 
 /// The slice of the `pre_generate` hook envelope we read (lenient: ignores every
 /// other field the harness sends). The harness nests the live generation context
@@ -145,6 +145,9 @@ mod tests {
             "network",
             "code-runner::expired",
             "namespace",
+            "iii.trigger",
+            "iii.registerFunction",
+            "iii-sdk",
         ] {
             assert!(
                 CODE_RUNNER_GUIDANCE.contains(needle),
@@ -175,5 +178,23 @@ mod tests {
             !CODE_RUNNER_GUIDANCE.contains("session"),
             "session binding was removed; the guidance must not mention it"
         );
+    }
+
+    /// The iii-global claims an agent gets wrong without them: it is the
+    /// real SDK client, SDK-made registrations die with the guest process,
+    /// same-runtime self-calls stall out, and every VM is networked.
+    #[test]
+    fn guidance_states_the_iii_global_rules_plainly() {
+        for needle in [
+            "REAL iii-sdk client",
+            "EPHEMERAL",
+            "one-exec-at-a-time",
+            "outbound network",
+        ] {
+            assert!(
+                CODE_RUNNER_GUIDANCE.contains(needle),
+                "guidance is missing: {needle}"
+            );
+        }
     }
 }

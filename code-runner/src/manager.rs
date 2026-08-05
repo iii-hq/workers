@@ -14,6 +14,14 @@
 //! rather than queueing them, so serialization is this module's job — the
 //! mutex covers each whole write+exec sequence, giving the same
 //! one-command-at-a-time semantics node-engine's runtimes have.
+//!
+//! Every runtime boots with outbound network and `III_URL` in its
+//! environment: guest code's `iii` global is the real iii-sdk client,
+//! connected straight to the engine over the sandbox gateway (the guest's
+//! /etc/hosts maps `localhost` to it — see `guest_engine_url`). That is
+//! also why EVERY eval path boots through `sandbox::create` + the
+//! guest-file plant rather than the daemon's one-call `sandbox::run`:
+//! `sandbox::run` can neither enable networking nor set create-time env.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -36,6 +44,10 @@ const CREATE_TIMEOUT_MS: u64 = 300_000;
 /// Trigger timeout for `sandbox::fs::*` and `sandbox::stop` — local to the
 /// daemon, no meaningful timeout pressure.
 const FS_TIMEOUT_MS: u64 = 30_000;
+/// In-guest deadline for `create`'s `pip install iii-sdk` step — a cold
+/// PyPI fetch of pydantic-core and friends can take a while on a slow
+/// link, and killing it just corrupts a partial site-packages.
+const SDK_INSTALL_TIMEOUT_MS: u64 = 120_000;
 /// Added to the exec's in-daemon deadline for the bus round trip, so the
 /// daemon's timeout (which carries the real diagnostic) fires first.
 const EXEC_MARGIN_MS: u64 = 5_000;
@@ -143,6 +155,9 @@ type NamespaceKey = (String, Lang);
 pub struct RuntimeManager {
     cfg: Arc<CodeRunnerConfig>,
     engine: Arc<dyn Engine>,
+    /// The engine URL guest SDK clients connect to, set as `III_URL` in
+    /// every runtime's create-time env — see [`guest_engine_url`].
+    guest_engine_url: String,
     runtimes: Mutex<HashMap<String, Arc<RuntimeRecord>>>,
     /// `(namespace, lang)` → the runtime backing it, so every
     /// `register_function` call in one namespace (and language) shares one
@@ -190,11 +205,28 @@ fn str_field(v: &Value, k: &str) -> String {
         .to_string()
 }
 
+/// The engine URL as a GUEST must dial it. A networked sandbox's
+/// /etc/hosts maps the NAME `localhost` to the per-sandbox gateway (which
+/// the daemon proxies to the host's loopback), but an IP LITERAL bypasses
+/// /etc/hosts entirely and lands on the guest's own empty loopback — so a
+/// loopback-IP engine address (the common `--url ws://127.0.0.1:<port>`)
+/// must travel as `localhost`. Non-loopback addresses pass through
+/// untouched: the guest reaches them over its outbound network like any
+/// other host.
+fn guest_engine_url(engine_url: &str) -> String {
+    engine_url
+        .replace("://127.0.0.1", "://localhost")
+        .replace("://[::1]", "://localhost")
+}
+
 impl RuntimeManager {
-    pub fn new(cfg: Arc<CodeRunnerConfig>, engine: Arc<dyn Engine>) -> Arc<Self> {
+    /// `engine_url` is the address THIS worker was pointed at (`--url`);
+    /// guests get the [`guest_engine_url`] form of it as `III_URL`.
+    pub fn new(cfg: Arc<CodeRunnerConfig>, engine: Arc<dyn Engine>, engine_url: &str) -> Arc<Self> {
         Arc::new(Self {
             cfg,
             engine,
+            guest_engine_url: guest_engine_url(engine_url),
             runtimes: Mutex::new(HashMap::new()),
             namespaces: Mutex::new(HashMap::new()),
             namespace_create_lock: tokio::sync::Mutex::new(()),
@@ -304,43 +336,6 @@ impl RuntimeManager {
         }
     }
 
-    /// Map a failed `sandbox::run` call — the create path for BOTH a
-    /// one-shot eval and `keep: true` (see `eval`'s no-`runtime_id` arm).
-    /// There is no live record yet, so nothing needs expiring: the daemon's
-    /// own `keep_sandbox` semantics already stop the VM on a sub-step
-    /// failure (`sandbox_daemon::run::run_inner`), so a failure here never
-    /// leaves an addressable orphan the way a bare `sandbox::create`
-    /// failure can.
-    ///
-    /// Deliberately narrower than `map_failure`: past its own `create`
-    /// step, `sandbox::run` wraps every sub-step failure in `RunStepFailed`,
-    /// whose own `Display` unconditionally embeds the real `sandbox_id`
-    /// (`"during sandbox::run step '{step}' (sandbox_id={sandbox_id}): ..."`)
-    /// regardless of the inner failure's own code. `classify_sandbox_error`'s
-    /// `Other` arm passes the daemon's message straight through, which for
-    /// `sandbox::run` specifically could leak that id — something
-    /// `sandbox_id` must never do (module doc). Only the Gone/Timeout/
-    /// Capacity codes, whose messages here are fixed or daemon-diagnostic
-    /// text rather than the id-bearing wrapper prose, are passed through
-    /// with real detail; anything else collapses to a fixed, id-free
-    /// message.
-    fn map_run_failure(raw: &str) -> CodeRunnerError {
-        match classify_sandbox_error(raw) {
-            SandboxFailure::Gone => CodeRunnerError::Engine(
-                "the sandbox was reaped or lost while running; retry".to_string(),
-            ),
-            SandboxFailure::Timeout => CodeRunnerError::Timeout,
-            SandboxFailure::Capacity(m) => CodeRunnerError::Capacity(m),
-            SandboxFailure::Other(_) => CodeRunnerError::Engine(
-                "sandbox::run failed; its full diagnostic could embed a sandbox_id, which must \
-                 not reach the caller, so only this generic message is returned. Retry, or use \
-                 keep: true and check code-runner::teardown's response for whether a runtime \
-                 survived."
-                    .to_string(),
-            ),
-        }
-    }
-
     /// Every `sandbox::*` call against a LIVE runtime goes through here: on
     /// `Gone` (S002/S004 — the daemon reaped or lost the VM) the runtime is
     /// expired — bus functions unregistered, record forgotten — before the
@@ -389,18 +384,22 @@ impl RuntimeManager {
         }
     }
 
-    /// Boot a sandbox, plant this language's runner, mint the record. Used
-    /// only by `namespace_runtime` — a namespace runtime needs the runner
-    /// planted (`invoke_registered` execs it), unlike a kept-eval runtime
-    /// (minted via `sandbox::run` in `eval`, which never registers a bus
-    /// function and so never needs it).
+    /// Boot a sandbox, plant this language's guest files (runner, iii
+    /// library, eval wrapper — plus the embedded SDK bundle for Node),
+    /// install the Python SDK where applicable, mint the record. Used by
+    /// `namespace_runtime` AND by every `eval` that has no `runtime_id` —
+    /// one-shot and `keep: true` alike — since only `sandbox::create` can
+    /// enable networking and set the create-time env the guest SDK link
+    /// (`III_URL`) depends on.
     ///
-    /// Always creates without network: nothing in this worker's surface can
-    /// ask for one anymore (`register_function` carries no `network` field,
-    /// and `eval`'s own runtime-creation path goes through `sandbox::run`,
-    /// which has no way to request it either — see `eval`'s network
-    /// refusal). If a networked namespace runtime becomes a real need, this
-    /// is the parameter to reintroduce.
+    /// Always creates WITH network: the guest `iii` global is a real
+    /// iii-sdk client dialing the engine through the sandbox gateway, and
+    /// the gateway only exists on a networked VM. (Outbound internet —
+    /// npm/pip installs included — comes with that NIC; there is no
+    /// engine-only network mode in the daemon.) `OTEL_ENABLED=false`
+    /// keeps guest SDK clients from starting telemetry exporters whose
+    /// timers and console prints would pollute eval output and delay
+    /// process exit.
     async fn create(&self, lang: Lang) -> Result<(String, Arc<RuntimeRecord>), CodeRunnerError> {
         let created = self
             .engine
@@ -409,7 +408,11 @@ impl RuntimeManager {
                 json!({
                     "image": lang.image(),
                     "idle_timeout_secs": self.cfg.effective_idle_ttl_secs(),
-                    "network": false,
+                    "network": true,
+                    "env": {
+                        "III_URL": self.guest_engine_url,
+                        "OTEL_ENABLED": "false",
+                    },
                 }),
                 CREATE_TIMEOUT_MS,
             )
@@ -423,24 +426,30 @@ impl RuntimeManager {
             })?
             .to_string();
 
-        // Plant the runner. On failure, stop the sandbox rather than leak
-        // it: the caller never received an id, so nothing could ever address
-        // this VM again — it would sit in a daemon slot until the idle
-        // reaper. (node-engine leaked a slot per failed create until the
-        // same guard was added.)
-        let planted = self
-            .engine
-            .call(
-                "sandbox::fs::write".to_string(),
-                json!({
-                    "sandbox_id": sandbox_id,
-                    "path": lang.runner_path(),
-                    "content": lang.runner_source(),
-                    "parents": true,
-                }),
-                FS_TIMEOUT_MS,
-            )
-            .await;
+        // Plant the guest files. On failure, stop the sandbox rather than
+        // leak it: the caller never received an id, so nothing could ever
+        // address this VM again — it would sit in a daemon slot until the
+        // idle reaper. (node-engine leaked a slot per failed create until
+        // the same guard was added.)
+        let mut planted = Ok(Value::Null);
+        for (path, content) in lang.guest_files() {
+            planted = self
+                .engine
+                .call(
+                    "sandbox::fs::write".to_string(),
+                    json!({
+                        "sandbox_id": sandbox_id,
+                        "path": path,
+                        "content": content,
+                        "parents": true,
+                    }),
+                    FS_TIMEOUT_MS,
+                )
+                .await;
+            if planted.is_err() {
+                break;
+            }
+        }
         if let Err(raw) = planted {
             if let Err(stop_raw) = self
                 .engine
@@ -465,6 +474,47 @@ impl RuntimeManager {
             return Err(Self::map_failure(&raw));
         }
 
+        // Python's SDK cannot be planted (pydantic-core is compiled
+        // per-platform), so it is pip-installed once per runtime, here,
+        // while nothing else can be running in the VM. DEGRADES rather
+        // than fails: a dead registry must not take plain `eval` down
+        // with it — the guest's `iii` then raises a clear
+        // "not installed" error on first use instead.
+        if lang == Lang::Python {
+            let install = self
+                .engine
+                .call(
+                    "sandbox::exec".to_string(),
+                    json!({
+                        "sandbox_id": sandbox_id,
+                        "cmd": "python3",
+                        "args": [
+                            "-m", "pip", "install",
+                            "--quiet", "--disable-pip-version-check",
+                            "iii-sdk",
+                        ],
+                        "timeout_ms": SDK_INSTALL_TIMEOUT_MS,
+                    }),
+                    SDK_INSTALL_TIMEOUT_MS + EXEC_MARGIN_MS,
+                )
+                .await;
+            let ok = matches!(
+                &install,
+                Ok(v) if v.get("exit_code").and_then(|c| c.as_i64()) == Some(0)
+            );
+            if !ok {
+                let detail = match &install {
+                    Ok(v) => str_field(v, "stderr"),
+                    Err(raw) => raw.clone(),
+                };
+                tracing::warn!(
+                    error = %stderr_tail(&detail),
+                    "pip install iii-sdk failed; this Python runtime's `iii` global will \
+                     error on first use"
+                );
+            }
+        }
+
         let runtime_id = format!("rt-{}", uuid::Uuid::new_v4());
         let record = Arc::new(RuntimeRecord {
             sandbox_id,
@@ -485,13 +535,21 @@ impl RuntimeManager {
     /// 1. `runtime_id` present → reuse that VM via write+exec. NOT stopped —
     ///    the caller owns it. `lang` mismatch is refused; `network` stays
     ///    documented-as-ignored (the caller already chose this runtime).
-    /// 2. `runtime_id` absent, `keep: true` → `sandbox::run
-    ///    {keep_sandbox: true}`; the returned `sandbox_id` gets a minted
-    ///    `runtime_id`, recorded and returned.
-    /// 3. `runtime_id` absent, default → `sandbox::run` (VM auto-stops); the
-    ///    response carries no `runtime_id` — there is nothing left to
-    ///    address, and returning a dead id would be worse than none.
-    pub async fn eval(&self, req: EvalRequest) -> Result<EvalResponse, CodeRunnerError> {
+    /// 2. `runtime_id` absent, `keep: true` → boot a runtime (`create`, so
+    ///    the guest files are planted), eval into it, leave it running; the
+    ///    minted `runtime_id` is recorded and returned. A FAILED eval
+    ///    destroys the fresh runtime instead: an `Err` carries no
+    ///    `runtime_id`, so keeping the VM would strand it in a daemon slot
+    ///    nobody can ever address.
+    /// 3. `runtime_id` absent, default → same boot, destroyed after the
+    ///    eval, success or failure; the response carries no `runtime_id` —
+    ///    there is nothing left to address, and returning a dead id would
+    ///    be worse than none.
+    ///
+    /// Every path runs the code under the eval wrapper, so evaluated code
+    /// gets the lazy `iii` SDK global (`III_URL` is in the runtime's env
+    /// from `create`).
+    pub async fn eval(self: &Arc<Self>, req: EvalRequest) -> Result<EvalResponse, CodeRunnerError> {
         if req.code.is_empty() {
             return Err(CodeRunnerError::InvalidRequest(
                 "code must not be empty".into(),
@@ -503,6 +561,7 @@ impl RuntimeManager {
                 req.code.len()
             )));
         }
+        let timeout_ms = self.cfg.clamp_timeout(req.timeout_ms).as_millis() as u64;
 
         if let Some(id) = &req.runtime_id {
             let record = self.get(id)?;
@@ -515,62 +574,9 @@ impl RuntimeManager {
                     )));
                 }
             }
-            // `network` stays documented-as-ignored here: the caller named
-            // this runtime, so they know which one they got.
-
-            let timeout_ms = self.cfg.clamp_timeout(req.timeout_ms).as_millis() as u64;
-            let _guard = record.exec_lock.lock().await;
-
-            let file = format!(
-                "/tmp/code-runner/eval-{}.{}",
-                uuid::Uuid::new_v4(),
-                record.lang.ext()
-            );
-            self.sandbox_call(
-                id,
-                "sandbox::fs::write",
-                json!({
-                    "sandbox_id": record.sandbox_id,
-                    "path": file,
-                    "content": req.code,
-                    "parents": true,
-                }),
-                FS_TIMEOUT_MS,
-            )
-            .await?;
-
-            let out = self
-                .sandbox_call(
-                    id,
-                    "sandbox::exec",
-                    json!({
-                        "sandbox_id": record.sandbox_id,
-                        "cmd": record.lang.interpreter(),
-                        "args": [file],
-                        "timeout_ms": timeout_ms,
-                    }),
-                    timeout_ms + EXEC_MARGIN_MS,
-                )
-                .await?;
-
-            if out
-                .get("timed_out")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                return Err(CodeRunnerError::Timeout);
-            }
-            return Ok(EvalResponse {
-                runtime_id: Some(id.clone()),
-                stdout: str_field(&out, "stdout"),
-                stderr: str_field(&out, "stderr"),
-                exit_code: out.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(-1),
-                success: out
-                    .get("success")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
-                duration_ms: out.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0),
-            });
+            let mut resp = self.eval_into(id, &record, &req.code, timeout_ms).await?;
+            resp.runtime_id = Some(id.clone());
+            return Ok(resp);
         }
 
         let lang = req.lang.ok_or_else(|| {
@@ -579,42 +585,85 @@ impl RuntimeManager {
             )
         })?;
 
-        // Neither a one-shot eval nor `keep: true` can ever create a
-        // networked runtime — both boot through `sandbox::run`, whose
-        // request has no `network` field at all (confirmed against
-        // iii-sandbox's own `RunRequest`/`handle_run`, which always creates
-        // with `network: None` → the daemon's own `false` default,
-        // regardless of `keep_sandbox`). Silently dropping `network: true`
-        // here would surface later as an unexplainable `pip install`
-        // failure, so this refuses instead — matching the convention this
-        // worker already uses elsewhere for a `network` request that cannot
-        // be honoured.
-        if req.network {
-            return Err(CodeRunnerError::InvalidRequest(
-                "network: true needs an existing runtime_id: sandbox::run — which backs both a \
-                 one-shot eval and keep: true — has no way to enable outbound networking, so \
-                 neither path can ever create a networked runtime. Pass an explicit runtime_id \
-                 for a runtime that already has network, or drop network: true."
-                    .into(),
-            ));
+        let (id, record) = self.create(lang).await?;
+        let result = self.eval_into(&id, &record, &req.code, timeout_ms).await;
+
+        // The caller receives the id ONLY on a kept, successful eval; on
+        // every other outcome the runtime must not outlive this call.
+        let keep = req.keep && result.is_ok();
+        if !keep {
+            match self.destroy_runtime(&id).await {
+                // Already gone — the eval itself discovered the VM reaped
+                // and expired the record. That IS the destroyed outcome.
+                Ok(_) | Err(CodeRunnerError::RuntimeNotFound(_)) => {}
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "one-shot eval cleanup failed; the daemon's idle reaper is the backstop"
+                ),
+            }
         }
 
-        let timeout_ms = self.cfg.clamp_timeout(req.timeout_ms).as_millis() as u64;
+        let mut resp = result.map_err(Self::redact_boot_eval_error)?;
+        resp.runtime_id = keep.then_some(id);
+        Ok(resp)
+    }
+
+    /// Freshly-booted eval runtimes are internal until the response hands
+    /// the id out, so an `Expired`/`RuntimeNotFound` raced mid-eval must
+    /// not quote an id this caller never held (`error.rs`'s id-quoting
+    /// exception covers only ids the caller supplied). Mirrors
+    /// `redact_register_error`.
+    fn redact_boot_eval_error(e: CodeRunnerError) -> CodeRunnerError {
+        match e {
+            CodeRunnerError::Expired(_) | CodeRunnerError::RuntimeNotFound(_) => {
+                CodeRunnerError::Engine(
+                    "the eval's VM was reaped or lost mid-run; retry".to_string(),
+                )
+            }
+            other => other,
+        }
+    }
+
+    /// Write `code` into the runtime and run it under the eval wrapper.
+    /// Returns `runtime_id: None` — each caller decides what id, if any,
+    /// its own caller may see.
+    async fn eval_into(
+        self: &Arc<Self>,
+        runtime_id: &str,
+        record: &Arc<RuntimeRecord>,
+        code: &str,
+        timeout_ms: u64,
+    ) -> Result<EvalResponse, CodeRunnerError> {
+        let _guard = record.exec_lock.lock().await;
+
+        let file = format!(
+            "/tmp/code-runner/eval-{}.{}",
+            uuid::Uuid::new_v4(),
+            record.lang.ext()
+        );
+        self.sandbox_call(
+            runtime_id,
+            "sandbox::fs::write",
+            json!({
+                "sandbox_id": record.sandbox_id,
+                "path": file,
+                "content": code,
+                "parents": true,
+            }),
+            FS_TIMEOUT_MS,
+        )
+        .await?;
+
         let out = self
-            .engine
-            .call(
-                "sandbox::run".to_string(),
-                json!({
-                    "image": lang.image(),
-                    "lang": lang.image(),
-                    "code": req.code,
-                    "timeout_ms": timeout_ms,
-                    "keep_sandbox": req.keep,
-                }),
-                CREATE_TIMEOUT_MS + timeout_ms + EXEC_MARGIN_MS,
+            .exec_guest(
+                runtime_id,
+                record,
+                vec![record.lang.eval_wrapper_path().to_string(), file],
+                None,
+                "code-runner:eval",
+                timeout_ms,
             )
-            .await
-            .map_err(|raw| Self::map_run_failure(&raw))?;
+            .await?;
 
         if out
             .get("timed_out")
@@ -623,33 +672,8 @@ impl RuntimeManager {
         {
             return Err(CodeRunnerError::Timeout);
         }
-
-        let runtime_id = if req.keep {
-            let sandbox_id = out
-                .get("sandbox_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    CodeRunnerError::Engine(
-                        "sandbox::run left a sandbox running but returned no sandbox_id".into(),
-                    )
-                })?
-                .to_string();
-            let id = format!("rt-{}", uuid::Uuid::new_v4());
-            let record = Arc::new(RuntimeRecord {
-                sandbox_id,
-                lang,
-                exec_lock: tokio::sync::Mutex::new(()),
-                namespace: Mutex::new(None),
-                functions: Mutex::new(Vec::new()),
-            });
-            self.runtimes.lock().unwrap().insert(id.clone(), record);
-            Some(id)
-        } else {
-            None
-        };
-
         Ok(EvalResponse {
-            runtime_id,
+            runtime_id: None,
             stdout: str_field(&out, "stdout"),
             stderr: str_field(&out, "stderr"),
             exit_code: out.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(-1),
@@ -659,6 +683,41 @@ impl RuntimeManager {
                 .unwrap_or(false),
             duration_ms: out.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0),
         })
+    }
+
+    /// One guest exec. `III_URL` (and the SDK itself) is already in the
+    /// runtime from `create`; the only per-exec env is a worker name, so
+    /// a guest that does use `iii` shows up in the engine's worker list
+    /// as something identifiable instead of `hostname:pid`. The caller
+    /// MUST already hold `record.exec_lock` — this is the exec half of
+    /// the write+exec sequence that lock serializes.
+    async fn exec_guest(
+        self: &Arc<Self>,
+        runtime_id: &str,
+        record: &RuntimeRecord,
+        args: Vec<String>,
+        stdin_b64: Option<String>,
+        worker_name: &str,
+        timeout_ms: u64,
+    ) -> Result<Value, CodeRunnerError> {
+        let mut payload = json!({
+            "sandbox_id": record.sandbox_id,
+            "cmd": record.lang.interpreter(),
+            "args": args,
+            "env": { "III_WORKER_NAME": worker_name },
+            "timeout_ms": timeout_ms,
+        });
+        if let Some(stdin) = stdin_b64 {
+            payload["stdin"] = json!(stdin);
+        }
+
+        self.sandbox_call(
+            runtime_id,
+            "sandbox::exec",
+            payload,
+            timeout_ms + EXEC_MARGIN_MS,
+        )
+        .await
     }
 
     /// Destroy one runtime (whatever kind it is): drain in-flight work,
@@ -1085,9 +1144,9 @@ impl RuntimeManager {
     /// One bus call of a registered function: exec the runner against the
     /// planted source with the payload on stdin. Handler prints are logged
     /// at debug, not returned — the caller gets exactly what `handler`
-    /// returned.
+    /// returned. Handlers get the same lazy `iii` global evals do.
     async fn invoke_registered(
-        &self,
+        self: &Arc<Self>,
         runtime_id: &str,
         function_id: &str,
         source_path: &str,
@@ -1115,17 +1174,16 @@ impl RuntimeManager {
             .encode(serde_json::to_vec(&envelope).expect("a Value serializes"));
 
         let out = self
-            .sandbox_call(
+            .exec_guest(
                 runtime_id,
-                "sandbox::exec",
-                json!({
-                    "sandbox_id": record.sandbox_id,
-                    "cmd": record.lang.interpreter(),
-                    "args": [record.lang.runner_path(), source_path],
-                    "stdin": stdin_b64,
-                    "timeout_ms": timeout_ms,
-                }),
-                timeout_ms + EXEC_MARGIN_MS,
+                &record,
+                vec![
+                    record.lang.runner_path().to_string(),
+                    source_path.to_string(),
+                ],
+                Some(stdin_b64),
+                &format!("code-runner:{function_id}"),
+                timeout_ms,
             )
             .await?;
 
@@ -1188,11 +1246,9 @@ mod tests {
                 "duration_ms": 12, "success": true })
     }
 
-    /// The daemon calls a kept-eval reuse and a namespace-runtime creation
-    /// both go through: create + runner plant, then write + exec, then
-    /// stop. Also answers a plain `sandbox::run` with the ephemeral
-    /// (no-`sandbox_id`) shape — tests that need the kept shape override it
-    /// with a responder.
+    /// The daemon calls every eval and registration path goes through:
+    /// create + guest-file plant (+ pip install for Python), then write +
+    /// exec, then stop.
     fn happy_fake() -> Arc<FakeEngine> {
         let fake = FakeEngine::new();
         fake.with_response(
@@ -1208,7 +1264,6 @@ mod tests {
             "sandbox::stop",
             Ok(json!({ "sandbox_id": "sb-1", "stopped": true })),
         );
-        fake.with_response("sandbox::run", Ok(ok_exec()));
         fake
     }
 
@@ -1218,7 +1273,6 @@ mod tests {
             runtime_id,
             lang,
             keep: false,
-            network: false,
             timeout_ms: None,
         }
     }
@@ -1240,24 +1294,27 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // eval: the ephemeral and kept-eval (`sandbox::run`) paths.
+    // eval: the boot paths (no runtime_id) — one-shot and keep: true.
     // ---------------------------------------------------------------
 
     #[tokio::test]
-    async fn an_ephemeral_eval_makes_one_sandbox_run_call_and_leaves_no_runtime() {
-        let fake = FakeEngine::new();
-        fake.with_responder("sandbox::run", |payload| {
-            assert_eq!(payload["image"], "node");
-            assert_eq!(payload["lang"], "node");
-            assert_eq!(payload["code"], "console.log(2+2)");
-            assert_eq!(payload["keep_sandbox"], false);
+    async fn an_ephemeral_eval_boots_evals_and_destroys_its_vm() {
+        let fake = happy_fake();
+        fake.with_responder("sandbox::exec", |payload| {
+            assert_eq!(payload["cmd"], "node");
             assert_eq!(payload["timeout_ms"], 5_000);
-            Ok(
-                json!({ "stdout": "4\n", "stderr": "", "exit_code": 0, "timed_out": false,
-                       "duration_ms": 12, "success": true }),
-            )
+            let args = payload["args"].as_array().expect("argv array");
+            assert_eq!(
+                args[0], "/opt/code-runner/eval.mjs",
+                "code runs UNDER THE EVAL WRAPPER, never the bare interpreter"
+            );
+            assert!(args[1]
+                .as_str()
+                .unwrap()
+                .starts_with("/tmp/code-runner/eval-"));
+            Ok(ok_exec())
         });
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let out = m
             .eval(eval_req("console.log(2+2)", Some(Lang::Node), None))
             .await
@@ -1265,48 +1322,202 @@ mod tests {
         assert_eq!(out.runtime_id, None, "nothing left to address");
         assert_eq!(out.stdout, "4\n");
         assert!(out.success);
-        let calls = fake.calls();
-        assert_eq!(calls.len(), 1, "one call: sandbox::run");
-        assert_eq!(calls[0].0, "sandbox::run");
         assert!(
             m.runtimes.lock().unwrap().is_empty(),
             "an ephemeral eval must not leave an addressable runtime behind"
         );
+
+        let ids: Vec<String> = fake.calls().into_iter().map(|(id, _)| id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "sandbox::create",
+                "sandbox::fs::write", // run.mjs
+                "sandbox::fs::write", // iii.mjs
+                "sandbox::fs::write", // eval.mjs
+                "sandbox::fs::write", // /node_modules/iii-sdk/package.json
+                "sandbox::fs::write", // /node_modules/iii-sdk/dist/index.mjs
+                "sandbox::fs::write", // the code
+                "sandbox::exec",
+                "sandbox::stop", // the one-shot VM is destroyed
+            ]
+        );
+        let create = fake
+            .calls()
+            .into_iter()
+            .find(|(id, _)| id == "sandbox::create")
+            .unwrap();
+        assert_eq!(create.1["image"], "node");
     }
 
+    /// Every runtime boots networked, with the guest-facing engine URL and
+    /// the OTel kill-switch in its create-time env. The URL is the
+    /// NORMALIZED one: a loopback IP would dodge the guest's /etc/hosts
+    /// gateway mapping, so `127.0.0.1` must travel as `localhost`.
     #[tokio::test]
-    async fn a_python_ephemeral_eval_selects_the_python_image_and_lang() {
-        let fake = FakeEngine::new();
-        fake.with_responder("sandbox::run", |payload| {
-            assert_eq!(payload["image"], "python");
-            assert_eq!(payload["lang"], "python");
-            Ok(
-                json!({ "stdout": "4\n", "stderr": "", "exit_code": 0, "timed_out": false,
-                       "duration_ms": 1, "success": true }),
-            )
+    async fn create_boots_with_network_and_the_guest_engine_url() {
+        let fake = happy_fake();
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:4912");
+        m.eval(eval_req("1", Some(Lang::Node), None))
+            .await
+            .expect("eval succeeds");
+        let create = fake
+            .calls()
+            .into_iter()
+            .find(|(id, _)| id == "sandbox::create")
+            .expect("created");
+        assert_eq!(create.1["network"], true);
+        assert_eq!(create.1["env"]["III_URL"], "ws://localhost:4912");
+        assert_eq!(create.1["env"]["OTEL_ENABLED"], "false");
+    }
+
+    #[test]
+    fn guest_engine_url_rewrites_loopback_ips_only() {
+        assert_eq!(
+            guest_engine_url("ws://127.0.0.1:49134"),
+            "ws://localhost:49134"
+        );
+        assert_eq!(guest_engine_url("ws://[::1]:49134"), "ws://localhost:49134");
+        assert_eq!(
+            guest_engine_url("ws://localhost:49134"),
+            "ws://localhost:49134"
+        );
+        assert_eq!(
+            guest_engine_url("wss://engine.prod.example:443"),
+            "wss://engine.prod.example:443",
+            "a remote engine address must pass through untouched"
+        );
+    }
+
+    /// A Python boot has one extra step between the plant and the eval:
+    /// `pip install iii-sdk` (the SDK's compiled deps cannot be planted).
+    /// The eval itself still runs under the eval wrapper.
+    #[tokio::test]
+    async fn a_python_ephemeral_eval_pip_installs_the_sdk_then_runs_the_wrapper() {
+        let fake = happy_fake();
+        fake.with_responder("sandbox::exec", |payload| {
+            let args = payload["args"].as_array().expect("argv array");
+            assert_eq!(payload["cmd"], "python3");
+            if args[0] == "-m" {
+                assert_eq!(args[1], "pip");
+                assert!(args.iter().any(|a| a == "iii-sdk"), "{args:?}");
+            } else {
+                assert_eq!(args[0], "/opt/code-runner/eval.py");
+            }
+            Ok(ok_exec())
         });
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         m.eval(eval_req("print(2+2)", Some(Lang::Python), None))
             .await
             .expect("eval succeeds");
+        let create = fake
+            .calls()
+            .into_iter()
+            .find(|(id, _)| id == "sandbox::create")
+            .unwrap();
+        assert_eq!(create.1["image"], "python");
+        let execs = fake
+            .calls()
+            .iter()
+            .filter(|(id, _)| id == "sandbox::exec")
+            .count();
+        assert_eq!(execs, 2, "one pip install + one eval exec");
+    }
+
+    /// A failed pip install DEGRADES the runtime (its `iii` errors on
+    /// first use, guest-side) — it must never take `eval` itself down.
+    #[tokio::test]
+    async fn a_failed_sdk_install_degrades_but_does_not_fail_the_eval() {
+        let fake = happy_fake();
+        fake.with_responder("sandbox::exec", |payload| {
+            if payload["args"][0] == "-m" {
+                return Ok(json!({ "stdout": "", "stderr": "no route to pypi",
+                                   "exit_code": 1, "timed_out": false,
+                                   "duration_ms": 5, "success": false }));
+            }
+            Ok(ok_exec())
+        });
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
+        let out = m
+            .eval(eval_req("print(2+2)", Some(Lang::Python), None))
+            .await
+            .expect("the eval must still run");
+        assert!(out.success);
+    }
+
+    /// `create` plants the full guest-file table for the language —
+    /// runner, iii library (NOT named iii.py — sys.path[0] shadowing),
+    /// eval wrapper — before anything can exec.
+    #[tokio::test]
+    async fn create_plants_the_guest_file_table() {
+        let fake = happy_fake();
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
+        m.eval(eval_req("print(1)", Some(Lang::Python), None))
+            .await
+            .expect("eval succeeds");
+        let planted: Vec<(String, String)> = fake
+            .calls()
+            .iter()
+            .filter(|(id, _)| id == "sandbox::fs::write")
+            .map(|(_, p)| {
+                (
+                    p["path"].as_str().unwrap().to_string(),
+                    p["content"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        let find = |path: &str| {
+            planted
+                .iter()
+                .find(|(p, _)| p == path)
+                .unwrap_or_else(|| panic!("{path} was not planted"))
+                .1
+                .clone()
+        };
+        assert_eq!(find("/opt/code-runner/run.py"), crate::runner::RUN_PY);
+        assert_eq!(
+            find("/opt/code-runner/code_runner_iii.py"),
+            crate::runner::III_PY
+        );
+        assert_eq!(find("/opt/code-runner/eval.py"), crate::runner::EVAL_PY);
+    }
+
+    /// The Node table additionally carries the embedded SDK at root
+    /// /node_modules, where the ESM upward walk from ANY tenant file
+    /// ends.
+    #[tokio::test]
+    async fn a_node_create_plants_the_sdk_bundle_at_the_root() {
+        let fake = happy_fake();
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
+        m.eval(eval_req("1", Some(Lang::Node), None))
+            .await
+            .expect("eval succeeds");
+        let bundle = fake
+            .calls()
+            .into_iter()
+            .find(|(id, p)| {
+                id == "sandbox::fs::write" && p["path"] == "/node_modules/iii-sdk/dist/index.mjs"
+            })
+            .expect("SDK bundle planted");
+        assert_eq!(bundle.1["content"], crate::runner::SDK_BUNDLE_MJS);
+        assert!(
+            fake.calls().iter().any(|(id, p)| {
+                id == "sandbox::fs::write" && p["path"] == "/node_modules/iii-sdk/package.json"
+            }),
+            "the SDK's manifest must be planted beside the bundle"
+        );
+        let execs = fake
+            .calls()
+            .iter()
+            .filter(|(id, _)| id == "sandbox::exec")
+            .count();
+        assert_eq!(execs, 1, "no install step for Node — the SDK is embedded");
     }
 
     #[tokio::test]
     async fn keep_true_mints_a_runtime_id_and_it_addresses_the_kept_vm() {
-        let fake = FakeEngine::new();
-        fake.with_responder("sandbox::run", |payload| {
-            assert_eq!(payload["keep_sandbox"], true);
-            Ok(
-                json!({ "stdout": "4\n", "stderr": "", "exit_code": 0, "timed_out": false,
-                       "duration_ms": 1, "success": true, "sandbox_id": "sb-kept-1" }),
-            )
-        });
-        fake.with_response(
-            "sandbox::fs::write",
-            Ok(json!({ "bytes_written": 1, "path": "p" })),
-        );
-        fake.with_response("sandbox::exec", Ok(ok_exec()));
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let fake = happy_fake();
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
 
         let mut req = eval_req("1", Some(Lang::Node), None);
         req.keep = true;
@@ -1317,9 +1528,13 @@ mod tests {
             .expect("keep: true mints a runtime_id");
         assert!(id.starts_with("rt-"));
         assert!(m.runtimes.lock().unwrap().contains_key(&id));
+        assert!(
+            !fake.calls().iter().any(|(id, _)| id == "sandbox::stop"),
+            "a kept VM must not be stopped"
+        );
 
         // The minted id addresses that VM: a later eval reuses it via
-        // write+exec, no second sandbox::run.
+        // write+exec, no second create.
         let before = fake.calls().len();
         let out2 = m
             .eval(eval_req("2", None, Some(id.clone())))
@@ -1332,49 +1547,76 @@ mod tests {
         assert_eq!(calls[before + 1].0, "sandbox::exec");
     }
 
+    /// keep: true hands out the id only on SUCCESS: an `Err` response has
+    /// no `runtime_id` field, so keeping the VM would strand it in a
+    /// daemon slot nothing can ever address (exactly what the pre-broker
+    /// `sandbox::run keep_sandbox` path used to do on a timeout).
     #[tokio::test]
-    async fn keep_true_without_a_returned_sandbox_id_is_an_engine_error() {
-        let fake = FakeEngine::new();
-        // Malformed daemon reply: keep was requested but no sandbox_id came
-        // back — must not silently mint an unaddressable "kept" runtime.
-        fake.with_response("sandbox::run", Ok(ok_exec()));
-        let m = RuntimeManager::new(cfg(), fake.clone());
+    async fn keep_true_with_a_failed_eval_destroys_the_fresh_runtime() {
+        let fake = happy_fake();
+        fake.with_response("sandbox::exec", Err(wrapped("S200", "deadline")));
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let mut req = eval_req("1", Some(Lang::Node), None);
         req.keep = true;
         let err = m.eval(req).await.unwrap_err();
+        assert_eq!(err.code(), "code-runner::timeout");
+        assert!(m.runtimes.lock().unwrap().is_empty());
+        assert!(
+            fake.calls().iter().any(|(id, _)| id == "sandbox::stop"),
+            "the unaddressable VM must be destroyed"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_without_a_returned_sandbox_id_is_an_engine_error() {
+        let fake = happy_fake();
+        // Malformed daemon reply: created, but no sandbox_id came back —
+        // must not silently mint an unaddressable runtime.
+        fake.with_response("sandbox::create", Ok(json!({ "image": "node" })));
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
+        let err = m
+            .eval(eval_req("1", Some(Lang::Node), None))
+            .await
+            .unwrap_err();
         assert_eq!(err.code(), "code-runner::engine");
+        assert!(err.to_string().contains("no sandbox_id"), "{err}");
         assert!(m.runtimes.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn a_timed_out_run_is_a_timeout_error() {
-        let fake = FakeEngine::new();
+    async fn a_timed_out_ephemeral_eval_is_a_timeout_and_still_destroys_the_vm() {
+        let fake = happy_fake();
         fake.with_response(
-            "sandbox::run",
+            "sandbox::exec",
             Ok(
                 json!({ "stdout": "", "stderr": "", "exit_code": serde_json::Value::Null,
                        "timed_out": true, "duration_ms": 5000, "success": false }),
             ),
         );
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let err = m
             .eval(eval_req("while(1);", Some(Lang::Node), None))
             .await
             .unwrap_err();
         assert_eq!(err.code(), "code-runner::timeout");
+        assert!(m.runtimes.lock().unwrap().is_empty());
+        assert!(
+            fake.calls().iter().any(|(id, _)| id == "sandbox::stop"),
+            "the timed-out one-shot VM must still be destroyed"
+        );
     }
 
     #[tokio::test]
-    async fn a_null_exit_code_from_sandbox_run_maps_to_negative_one() {
-        let fake = FakeEngine::new();
+    async fn a_null_exit_code_from_the_exec_maps_to_negative_one() {
+        let fake = happy_fake();
         fake.with_response(
-            "sandbox::run",
+            "sandbox::exec",
             Ok(
                 json!({ "stdout": "", "stderr": "boot noise", "exit_code": serde_json::Value::Null,
                        "timed_out": false, "duration_ms": 1, "success": false }),
             ),
         );
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let out = m
             .eval(eval_req("1", Some(Lang::Node), None))
             .await
@@ -1383,13 +1625,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sandbox_run_gone_maps_to_a_retry_error_and_creates_nothing() {
-        let fake = FakeEngine::new();
+    async fn create_gone_maps_to_a_retry_error_and_creates_nothing() {
+        let fake = happy_fake();
         fake.with_response(
-            "sandbox::run",
+            "sandbox::create",
             Err(wrapped("S002", "no sandbox with that id sb-9")),
         );
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let err = m
             .eval(eval_req("1", Some(Lang::Node), None))
             .await
@@ -1400,13 +1642,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sandbox_run_capacity_maps_to_capacity_and_calls_nothing_else() {
+    async fn create_capacity_maps_to_capacity_and_calls_nothing_else() {
         let fake = FakeEngine::new();
         fake.with_response(
-            "sandbox::run",
+            "sandbox::create",
             Err(wrapped("S400", "max_concurrent_sandboxes reached")),
         );
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let err = m
             .eval(eval_req("1", Some(Lang::Node), None))
             .await
@@ -1416,10 +1658,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sandbox_run_timeout_wire_error_maps_to_timeout() {
+    async fn create_timeout_wire_error_maps_to_timeout() {
         let fake = FakeEngine::new();
-        fake.with_response("sandbox::run", Err(wrapped("S200", "deadline")));
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        fake.with_response("sandbox::create", Err(wrapped("S200", "deadline")));
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let err = m
             .eval(eval_req("1", Some(Lang::Node), None))
             .await
@@ -1427,74 +1669,27 @@ mod tests {
         assert_eq!(err.code(), "code-runner::timeout");
     }
 
-    /// The load-bearing regression `map_run_failure` exists for: past its
-    /// own `create` step, `sandbox::run` wraps a sub-step failure in
-    /// `RunStepFailed`, whose OWN `Display` embeds the REAL `sandbox_id`
-    /// regardless of the inner failure's code — so an `Other`-classified
-    /// failure must not pass the daemon's raw message through.
+    /// A VM reaped MID-EVAL on the boot path: this caller never held the
+    /// freshly-minted runtime id (only a kept SUCCESS hands it out), so
+    /// the error must not quote it — `error.rs`'s id-quoting exception
+    /// covers only ids the caller supplied. Mirrors
+    /// `redact_register_error` / `redact_proxy_error`.
     #[tokio::test]
-    async fn a_sandbox_run_other_failure_never_leaks_a_sandbox_id() {
-        let fake = FakeEngine::new();
-        let sandbox_id = "11111111-2222-3333-4444-555555555555";
-        fake.with_response(
-            "sandbox::run",
-            Err(format!(
-                r#"remote error (invocation_failed): handler error: {{"type":"validation","code":"S216","message":"during sandbox::run step `fs::write (code)` (sandbox_id={sandbox_id}): disk full","docs_url":"x","fix":null,"retryable":false}}"#
-            )),
-        );
-        let m = RuntimeManager::new(cfg(), fake.clone());
+    async fn a_mid_eval_reap_on_the_boot_path_redacts_the_id_and_leaves_nothing() {
+        let fake = happy_fake();
+        fake.with_response("sandbox::exec", Err(wrapped("S004", "sandbox stopped")));
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let err = m
             .eval(eval_req("1", Some(Lang::Node), None))
             .await
             .unwrap_err();
         assert_eq!(err.code(), "code-runner::engine");
         assert!(
-            !err.to_string().contains(sandbox_id),
-            "the caller-facing error leaked the sandbox_id: {err}"
+            !err.to_string().contains("rt-"),
+            "a boot-path caller was handed a runtime_id it never held: {err}"
         );
-    }
-
-    // ---------------------------------------------------------------
-    // eval: `network` refusal on the no-`runtime_id` paths.
-    // ---------------------------------------------------------------
-
-    #[tokio::test]
-    async fn network_true_without_a_runtime_id_is_refused_ephemeral_and_kept() {
-        // No responder configured for sandbox::run at all: the refusal must
-        // happen before any daemon call, or this test would error on the
-        // unconfigured call instead of proving the refusal.
-        let fake = FakeEngine::new();
-        let m = RuntimeManager::new(cfg(), fake.clone());
-
-        let mut ephemeral = eval_req("1", Some(Lang::Node), None);
-        ephemeral.network = true;
-        let err = m.eval(ephemeral).await.unwrap_err();
-        assert_eq!(err.code(), "code-runner::invalid_request");
-        assert!(err.to_string().contains("network"), "{err}");
-
-        let mut kept = eval_req("1", Some(Lang::Node), None);
-        kept.network = true;
-        kept.keep = true;
-        let err = m.eval(kept).await.unwrap_err();
-        assert_eq!(err.code(), "code-runner::invalid_request");
-
-        assert!(
-            fake.calls().is_empty(),
-            "refused before any daemon call: {:?}",
-            fake.calls()
-        );
-    }
-
-    #[tokio::test]
-    async fn network_true_with_an_explicit_runtime_id_is_ignored_not_refused() {
-        let fake = happy_fake();
-        let m = RuntimeManager::new(cfg(), fake.clone());
-        let id = seed_runtime(&m, Lang::Node, "sb-1");
-        let mut req = eval_req("1", None, Some(id));
-        req.network = true;
-        m.eval(req)
-            .await
-            .expect("network is ignored, not refused, on an explicit runtime_id");
+        assert!(err.to_string().contains("retry"), "{err}");
+        assert!(m.runtimes.lock().unwrap().is_empty());
     }
 
     // ---------------------------------------------------------------
@@ -1504,7 +1699,7 @@ mod tests {
     #[tokio::test]
     async fn eval_with_runtime_id_reuses_the_sandbox_via_write_and_exec() {
         let fake = happy_fake();
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let id = seed_runtime(&m, Lang::Node, "sb-1");
         let out = m
             .eval(eval_req("2", None, Some(id.clone())))
@@ -1512,15 +1707,36 @@ mod tests {
             .expect("reuse succeeds");
         assert_eq!(out.runtime_id, Some(id));
         let calls = fake.calls();
-        assert_eq!(calls.len(), 2, "only write + exec — no create, no run");
-        assert_eq!(calls[0].0, "sandbox::fs::write");
-        assert_eq!(calls[1].0, "sandbox::exec");
+        let ids: Vec<&str> = calls.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["sandbox::fs::write", "sandbox::exec"],
+            "write + exec — no create"
+        );
+    }
+
+    /// The per-exec env is just the worker NAME the guest SDK client
+    /// announces itself with if the code uses `iii` — the engine link
+    /// (`III_URL`) is create-time env, already in the VM.
+    #[tokio::test]
+    async fn an_eval_exec_carries_the_guest_worker_name() {
+        let fake = happy_fake();
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
+        let id = seed_runtime(&m, Lang::Node, "sb-1");
+        m.eval(eval_req("1", None, Some(id))).await.unwrap();
+
+        let exec = fake
+            .calls()
+            .into_iter()
+            .find(|(id, _)| id == "sandbox::exec")
+            .expect("exec happened");
+        assert_eq!(exec.1["env"]["III_WORKER_NAME"], "code-runner:eval");
     }
 
     #[tokio::test]
     async fn a_mismatched_lang_on_an_existing_runtime_is_refused() {
         let fake = happy_fake();
-        let m = RuntimeManager::new(cfg(), fake);
+        let m = RuntimeManager::new(cfg(), fake, "ws://127.0.0.1:1");
         let id = seed_runtime(&m, Lang::Node, "sb-1");
         let err = m
             .eval(eval_req("1", Some(Lang::Python), Some(id.clone())))
@@ -1535,7 +1751,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_runtime_id_is_not_found() {
-        let m = RuntimeManager::new(cfg(), happy_fake());
+        let m = RuntimeManager::new(cfg(), happy_fake(), "ws://127.0.0.1:1");
         let err = m
             .eval(eval_req("1", None, Some("rt-nope".into())))
             .await
@@ -1545,7 +1761,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_and_oversized_code_are_invalid_requests() {
-        let m = RuntimeManager::new(cfg(), happy_fake());
+        let m = RuntimeManager::new(cfg(), happy_fake(), "ws://127.0.0.1:1");
         let err = m
             .eval(eval_req("", Some(Lang::Node), None))
             .await
@@ -1561,7 +1777,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_requires_a_lang() {
-        let m = RuntimeManager::new(cfg(), happy_fake());
+        let m = RuntimeManager::new(cfg(), happy_fake(), "ws://127.0.0.1:1");
         let err = m.eval(eval_req("1", None, None)).await.unwrap_err();
         assert_eq!(err.code(), "code-runner::invalid_request");
         assert!(err.to_string().contains("lang"), "{err}");
@@ -1570,7 +1786,7 @@ mod tests {
     #[tokio::test]
     async fn requested_timeout_is_clamped_on_the_reuse_path() {
         let fake = happy_fake();
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let id = seed_runtime(&m, Lang::Node, "sb-1");
         let mut req = eval_req("1", None, Some(id));
         req.timeout_ms = Some(999_999);
@@ -1581,15 +1797,12 @@ mod tests {
 
     #[tokio::test]
     async fn requested_timeout_is_clamped_on_the_ephemeral_path() {
-        let fake = FakeEngine::new();
-        fake.with_responder("sandbox::run", |payload| {
+        let fake = happy_fake();
+        fake.with_responder("sandbox::exec", |payload| {
             assert_eq!(payload["timeout_ms"], 30_000);
-            Ok(
-                json!({ "stdout": "", "stderr": "", "exit_code": 0, "timed_out": false,
-                       "duration_ms": 1, "success": true }),
-            )
+            Ok(ok_exec())
         });
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let mut req = eval_req("1", Some(Lang::Node), None);
         req.timeout_ms = Some(999_999);
         m.eval(req).await.unwrap();
@@ -1601,7 +1814,7 @@ mod tests {
     #[tokio::test]
     async fn an_eval_failure_on_a_caller_supplied_runtime_does_not_reap() {
         let fake = happy_fake();
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let id = seed_runtime(&m, Lang::Node, "sb-1");
 
         fake.with_response("sandbox::exec", Err(wrapped("S200", "deadline")));
@@ -1641,7 +1854,7 @@ mod tests {
                        "timed_out": false, "duration_ms": 3, "success": false }),
             ),
         );
-        let m = RuntimeManager::new(cfg(), fake);
+        let m = RuntimeManager::new(cfg(), fake, "ws://127.0.0.1:1");
         let id = seed_runtime(&m, Lang::Node, "sb-1");
         let out = m.eval(eval_req("syntax(", None, Some(id))).await.unwrap();
         assert!(!out.success);
@@ -1654,7 +1867,7 @@ mod tests {
     #[tokio::test]
     async fn a_reaped_sandbox_expires_the_runtime() {
         let fake = happy_fake();
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let id = seed_runtime(&m, Lang::Node, "sb-1");
         fake.with_response(
             "sandbox::fs::write",
@@ -1677,7 +1890,7 @@ mod tests {
     #[tokio::test]
     async fn a_concurrent_exec_error_never_leaks_the_sandbox_id_to_the_caller() {
         let fake = happy_fake();
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let id = seed_runtime(&m, Lang::Node, "sb-1");
 
         fake.with_response(
@@ -1719,7 +1932,7 @@ mod tests {
 
     #[tokio::test]
     async fn teardown_refuses_both_runtime_id_and_namespace() {
-        let m = RuntimeManager::new(cfg(), happy_fake());
+        let m = RuntimeManager::new(cfg(), happy_fake(), "ws://127.0.0.1:1");
         let err = m
             .teardown(TeardownRequest {
                 runtime_id: Some("rt-x".into()),
@@ -1733,7 +1946,7 @@ mod tests {
 
     #[tokio::test]
     async fn teardown_refuses_neither_runtime_id_nor_namespace() {
-        let m = RuntimeManager::new(cfg(), happy_fake());
+        let m = RuntimeManager::new(cfg(), happy_fake(), "ws://127.0.0.1:1");
         let err = m
             .teardown(TeardownRequest {
                 runtime_id: None,
@@ -1753,7 +1966,7 @@ mod tests {
     #[tokio::test]
     async fn teardown_by_id_stops_the_sandbox_and_forgets_the_record() {
         let fake = happy_fake();
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let id = seed_runtime(&m, Lang::Node, "sb-1");
         let out = m.teardown(td_by_id(&id)).await.unwrap();
         assert!(out.torn_down);
@@ -1777,7 +1990,7 @@ mod tests {
     #[tokio::test]
     async fn teardown_of_an_already_reaped_sandbox_still_succeeds() {
         let fake = happy_fake();
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let id = seed_runtime(&m, Lang::Node, "sb-1");
         fake.with_response("sandbox::stop", Err(wrapped("S004", "already stopped")));
         let out = m.teardown(td_by_id(&id)).await.unwrap();
@@ -1792,7 +2005,7 @@ mod tests {
     #[tokio::test]
     async fn teardown_waits_for_an_in_flight_eval_before_stopping_the_sandbox() {
         let fake = happy_fake();
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let id = seed_runtime(&m, Lang::Node, "sb-1");
 
         let record = m.runtimes.lock().unwrap().get(&id).expect("exists").clone();
@@ -1870,7 +2083,7 @@ mod tests {
     async fn register_creates_a_namespace_runtime_when_none_exists() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let out = m.register(reg_req("app::greet", Lang::Node)).await.unwrap();
         assert_eq!(out.function_id, "app::greet");
         assert!(out.registered);
@@ -1903,7 +2116,7 @@ mod tests {
     async fn a_second_registration_in_the_same_namespace_and_lang_reuses_the_runtime() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         m.register(reg_req("app::a", Lang::Node)).await.unwrap();
         m.register(reg_req("app::b", Lang::Node)).await.unwrap();
         assert_eq!(creates(&fake), 1, "one namespace runtime, reused");
@@ -1916,7 +2129,7 @@ mod tests {
     async fn the_same_namespace_gets_a_separate_runtime_per_language() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         m.register(reg_req("app::a", Lang::Node)).await.unwrap();
         m.register(reg_req("app::b", Lang::Python)).await.unwrap();
         assert_eq!(creates(&fake), 2);
@@ -1935,7 +2148,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
             Ok(json!({ "sandbox_id": "sb-1" }))
         });
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
 
         let (m1, m2) = (m.clone(), m.clone());
         let (r1, r2) = tokio::join!(
@@ -1960,7 +2173,7 @@ mod tests {
     async fn a_registered_function_call_execs_the_runner_and_parses_the_result() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         fake.with_responder("sandbox::exec", |payload| {
             let args = payload["args"].as_array().expect("argv array");
             assert_eq!(args.len(), 2, "the sentinel must NOT be in argv: {args:?}");
@@ -2027,6 +2240,32 @@ mod tests {
         );
     }
 
+    /// A registered-function exec carries a worker name derived from the
+    /// FUNCTION id, so a handler that uses `iii` shows up in the engine's
+    /// worker list as the function it serves.
+    #[tokio::test]
+    async fn a_registered_invoke_carries_the_function_worker_name() {
+        let fake = happy_fake();
+        probe_free(&fake);
+        fake.with_responder("sandbox::exec", |payload| {
+            assert_eq!(payload["env"]["III_WORKER_NAME"], "code-runner:app::env");
+            let sentinel = decode_envelope(payload)["sentinel"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            Ok(json!({
+                "stdout": format!("\n{sentinel}\nnull\n"),
+                "stderr": "", "exit_code": 0, "timed_out": false,
+                "duration_ms": 1, "success": true
+            }))
+        });
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
+        m.register(reg_req("app::env", Lang::Node)).await.unwrap();
+        fake.invoke("app::env", serde_json::json!({}))
+            .await
+            .expect("invocation succeeds");
+    }
+
     /// Adversarial review, backend leak: `app::greet`'s caller never
     /// supplied a `runtime_id` and never held one — unlike a direct
     /// `code-runner::eval`/`teardown` call, where `error.rs`'s id-quoting
@@ -2035,7 +2274,7 @@ mod tests {
     async fn a_proxy_invocation_never_leaks_the_runtime_id_to_its_caller() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         m.register(reg_req("app::greet", Lang::Node)).await.unwrap();
         let rt = m
             .namespaces
@@ -2066,7 +2305,7 @@ mod tests {
     async fn a_throwing_handler_surfaces_as_handler_error() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         fake.with_responder("sandbox::exec", |payload| {
             let env = decode_envelope(payload);
             let sentinel = env["sentinel"].as_str().unwrap();
@@ -2095,7 +2334,7 @@ mod tests {
                 "timed_out": false, "duration_ms": 3, "success": false
             }))
         });
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         m.register(reg_req("app::crash", Lang::Node)).await.unwrap();
         let err = fake
             .invoke("app::crash", serde_json::json!({}))
@@ -2112,7 +2351,7 @@ mod tests {
             "engine::functions::info",
             Ok(serde_json::json!({ "function_id": "app::greet", "description": "exists" })),
         );
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let err = m
             .register(reg_req("app::greet", Lang::Node))
             .await
@@ -2142,7 +2381,7 @@ mod tests {
     async fn a_registration_racing_a_teardown_never_leaks_the_runtime_id_to_its_direct_caller() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let m_clone = m.clone();
         fake.with_responder("sandbox::fs::write", move |payload| {
             if payload["path"]
@@ -2174,7 +2413,7 @@ mod tests {
             "engine::functions::info",
             Err("remote error: FORBIDDEN: rbac denies functions.info".into()),
         );
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let err = m
             .register(reg_req("app::greet", Lang::Node))
             .await
@@ -2193,7 +2432,7 @@ mod tests {
                     .into(),
             ),
         );
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let err = m
             .register(reg_req("app::greet", Lang::Node))
             .await
@@ -2210,7 +2449,7 @@ mod tests {
     async fn the_first_id_claims_the_namespace_for_the_runtime() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         m.register(reg_req("app::a", Lang::Node)).await.unwrap();
         m.register(reg_req("app::b", Lang::Node))
             .await
@@ -2222,7 +2461,7 @@ mod tests {
     async fn malformed_function_ids_are_refused() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         for bad in [
             "noseparator",
             "::x",
@@ -2240,7 +2479,7 @@ mod tests {
     async fn teardown_unregisters_registered_functions() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         m.register(reg_req("app::a", Lang::Node)).await.unwrap();
         let out = m.teardown(td_by_ns("app")).await.unwrap();
         assert_eq!(out.unregistered, vec!["app::a".to_string()]);
@@ -2254,7 +2493,7 @@ mod tests {
     async fn expiry_unregisters_registered_functions() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         m.register(reg_req("app::a", Lang::Node)).await.unwrap();
         let rt = m
             .namespaces
@@ -2277,7 +2516,7 @@ mod tests {
     async fn a_call_that_discovers_its_own_runtime_is_gone_unregisters_itself_without_deadlock() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         m.register(reg_req("app::self_destruct", Lang::Node))
             .await
             .unwrap();
@@ -2301,7 +2540,7 @@ mod tests {
     async fn a_torn_down_function_is_uncallable() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         m.register(reg_req("app::a", Lang::Node)).await.unwrap();
         m.teardown(td_by_ns("app")).await.unwrap();
         assert!(fake.invoke("app::a", serde_json::json!({})).await.is_err());
@@ -2311,7 +2550,7 @@ mod tests {
     async fn register_caps_are_enforced() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
 
         let mut req = reg_req("app::x", Lang::Node);
         req.source = String::new();
@@ -2348,7 +2587,7 @@ mod tests {
     async fn max_functions_per_runtime_is_enforced() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
 
         for i in 0..MAX_FUNCTIONS_PER_RUNTIME {
             m.register(reg_req(&format!("app::f{i}"), Lang::Node))
@@ -2371,7 +2610,7 @@ mod tests {
     async fn concurrent_registrations_of_the_same_id_leave_exactly_one_winner() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
 
         let (m1, m2) = (m.clone(), m.clone());
         let (r1, r2) = tokio::join!(
@@ -2404,7 +2643,7 @@ mod tests {
             "engine::functions::info",
             Err("remote error: FORBIDDEN: rbac denies functions.info".into()),
         );
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         let err = m
             .register(reg_req("app::greet", Lang::Node))
             .await
@@ -2424,7 +2663,7 @@ mod tests {
     async fn teardown_releases_the_claim_for_reuse() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         m.register(reg_req("app::a", Lang::Node)).await.unwrap();
         m.teardown(td_by_ns("app")).await.unwrap();
         m.register(reg_req("app::a", Lang::Node))
@@ -2439,7 +2678,7 @@ mod tests {
     async fn seeded_static_ids_cannot_be_claimed_and_survive_unrelated_teardown() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         m.seed_static_ids(&["code-runner::eval"]);
 
         let before = fake.calls().len();
@@ -2467,7 +2706,7 @@ mod tests {
 
     #[tokio::test]
     async fn teardown_by_namespace_with_no_runtime_is_not_found() {
-        let m = RuntimeManager::new(cfg(), happy_fake());
+        let m = RuntimeManager::new(cfg(), happy_fake(), "ws://127.0.0.1:1");
         let err = m.teardown(td_by_ns("app")).await.unwrap_err();
         assert_eq!(err.code(), "code-runner::runtime_not_found");
     }
@@ -2476,7 +2715,7 @@ mod tests {
     async fn teardown_by_namespace_accepts_the_bare_and_double_colon_forms() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         m.register(reg_req("app::a", Lang::Node)).await.unwrap();
         let out = m.teardown(td_by_ns("app::")).await.unwrap();
         assert!(out.torn_down);
@@ -2487,7 +2726,7 @@ mod tests {
     async fn teardown_by_namespace_tears_down_every_language_and_aggregates_unregistered() {
         let fake = happy_fake();
         probe_free(&fake);
-        let m = RuntimeManager::new(cfg(), fake.clone());
+        let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
         m.register(reg_req("app::a", Lang::Node)).await.unwrap();
         m.register(reg_req("app::b", Lang::Python)).await.unwrap();
         assert_eq!(m.runtimes.lock().unwrap().len(), 2);
@@ -2516,7 +2755,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_malformed_teardown_namespace_is_an_invalid_request() {
-        let m = RuntimeManager::new(cfg(), happy_fake());
+        let m = RuntimeManager::new(cfg(), happy_fake(), "ws://127.0.0.1:1");
         for bad in ["", "My-App", "a..b", ".hidden", "has::colons"] {
             let err = m.teardown(td_by_ns(bad)).await.unwrap_err();
             assert_eq!(err.code(), "code-runner::invalid_request", "{bad}");

@@ -5,8 +5,11 @@
 // only the sentinel. Exit 0 = result, exit 1 = {"error": "..."}. A
 // malformed/missing envelope has no sentinel to frame a reply with: it is
 // reported on stderr and the process exits non-zero with no stdout at all.
+// Handlers get the same `iii` global evaluated code gets, built by the
+// sibling iii.mjs (planted next to this file at runtime creation).
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { makeIii } from './iii.mjs';
 
 async function main() {
   const [source] = process.argv.slice(2);
@@ -26,6 +29,9 @@ async function main() {
   }
   const { sentinel, payload } = envelope;
 
+  const { iii, client } = await makeIii();
+  globalThis.iii = iii;
+
   let body;
   let code;
   try {
@@ -43,6 +49,19 @@ async function main() {
     body = JSON.stringify({ error: String((e && e.message) || e) });
     code = 1;
   }
+
+  // Shut the iii client down BEFORE the frame, so any output it produces
+  // lands in the logs region and never after the result line — and so the
+  // process can exit without the exec timing out on an open socket. Capped
+  // and unref'd for the same reason as the eval wrapper's.
+  const c = client();
+  if (c) {
+    await Promise.race([
+      c.shutdown().catch(() => {}),
+      new Promise((r) => setTimeout(r, 2000).unref()),
+    ]);
+  }
+
   process.stdout.write('\n' + sentinel + '\n' + body + '\n');
   process.exitCode = code;
 }

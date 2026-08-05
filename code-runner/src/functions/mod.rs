@@ -27,11 +27,14 @@ pub const EVAL_DESC: &str =
      that same VM (same filesystem, fresh interpreter process each time) — that runtime is \
      never auto-stopped, you own it until you tear it down or its idle TTL reaps it, and a \
      reaped reuse fails with code-runner::expired (retry without runtime_id to boot a fresh \
-     one). network: true asks for outbound network so npm/pip installs work, but only a \
-     runtime you already created with network can honor it (pass its runtime_id) — neither a \
-     one-shot eval nor keep: true can create a networked VM, so network: true without an \
-     existing runtime_id is refused, not silently ignored. stdout, stderr and exit_code come \
-     back verbatim — a failing script is a response, not an error.";
+     one). Every VM boots with outbound network, so npm/pip installs work on any path. \
+     Evaluated code gets a global `iii` — the real iii-sdk client, lazily connected to the \
+     engine on first use: `await iii.trigger({ function_id, payload })` (Node) / \
+     `iii.trigger({'function_id': ..., 'payload': ...})` (Python, synchronous) invokes any \
+     bus function, and the full SDK surface is available. Functions registered with \
+     iii.registerFunction die when the eval process exits — register through \
+     code-runner::register_function (via iii.trigger) for one that persists. stdout, stderr \
+     and exit_code come back verbatim — a failing script is a response, not an error.";
 
 pub const TEARDOWN_ID: &str = "code-runner::teardown";
 pub const TEARDOWN_DESC: &str =
@@ -50,9 +53,12 @@ pub const REGISTER_DESC: &str =
      (python); each call runs it in a fresh interpreter process with the trigger payload and \
      returns its JSON-serialized result. The first registered id in a namespace claims it; \
      later ids must share both the namespace and its lang. `description` is what \
-     engine::functions::info shows a caller — write one. Functions stop resolving when their \
-     namespace is torn down (code-runner::teardown namespace=...) or its runtime is reaped for \
-     idleness.";
+     engine::functions::info shows a caller — write one. Handlers get the same global `iii` \
+     evaluated code gets (the real iii-sdk client, lazily connected) — but a handler that \
+     triggers a function registered on ITS OWN runtime waits on the runtime's \
+     one-exec-at-a-time slot and can only time out; call across runtimes or workers instead. \
+     Functions stop resolving when their namespace is torn down (code-runner::teardown \
+     namespace=...) or its runtime is reaped for idleness.";
 
 /// Every id this worker registers on its own client, in registration order.
 /// `register_all` asserts it registered exactly this list, and the schema
@@ -206,7 +212,11 @@ mod tests {
     fn register_all_registers_exactly_static_ids() {
         let iii = Arc::new(IIIClient::new("ws://127.0.0.1:1"));
         let engine = Arc::new(IIIEngine::new(iii.clone()));
-        let manager = RuntimeManager::new(Arc::new(CodeRunnerConfig::default()), engine);
+        let manager = RuntimeManager::new(
+            Arc::new(CodeRunnerConfig::default()),
+            engine,
+            "ws://127.0.0.1:1",
+        );
         register_all(&iii, &manager);
     }
 }

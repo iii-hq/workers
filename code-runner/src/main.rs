@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
     ));
 
     let engine = Arc::new(IIIEngine::new(iii.clone()));
-    let manager = RuntimeManager::new(cfg.clone(), engine.clone());
+    let manager = RuntimeManager::new(cfg.clone(), engine.clone(), &cli.url);
     functions::register_all(&iii, &manager);
     functions::setup_harness_hooks(&iii);
     // Injected console UI: the function-trigger cards for the ops above.
