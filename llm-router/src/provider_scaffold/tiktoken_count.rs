@@ -1,30 +1,28 @@
-//! Shared local prompt token estimation for provider workers
+//! Local prompt token counting for the OpenAI families
 //! (`provider::openai::count_tokens`, `provider::openai-codex::count_tokens`)
-//! with the tiktoken tokenizers (vocabularies embedded in the binary). These
-//! providers expose no metering endpoint, so the count is computed from the
-//! text their wire mappers would send plus the published chat-framing
-//! constants; it never runs the model, costs nothing, and needs no network.
-//! Each provider keeps its own request/response wire types and validation —
-//! this module is the counting seam they both call.
+//! with the tiktoken tokenizers, whose vocabularies are embedded in the
+//! binary. These providers expose no metering endpoint, so the count is
+//! computed locally; it never runs the model, costs nothing, and needs no
+//! network.
+//!
+//! Only the encoder lives here. Which text a request contributes and what the
+//! chat framing costs are in
+//! [`crate::provider_scaffold::chat_framing`], shared with every other local
+//! counter so the two cannot drift apart.
 
-use serde_json::json;
 use tiktoken_rs::{cl100k_base_singleton, o200k_base_singleton, CoreBPE};
 
-use crate::provider_scaffold::names::encode_tool_name;
-use crate::types::content::ContentBlock;
+use crate::provider_scaffold::chat_framing::count_framed_chat;
 use crate::types::messages::AgentMessage;
 use crate::types::model::AgentFunction;
 
+// The framing rules and the message walk are shared with every other local
+// counter; only the encoder below is tiktoken's own. Re-exported so existing
+// callers keep importing them from here.
+pub use crate::provider_scaffold::chat_framing::{TOKENS_PER_MESSAGE, TOKENS_REPLY_PRIMING};
+
 /// The count is a local tokenizer estimate, not a provider-metered value.
 pub const ESTIMATOR_TIKTOKEN: &str = "tiktoken";
-
-/// Chat-framing overhead per wire message row (role tag + separators),
-/// OpenAI's published ~4-tokens-per-message heuristic for ChatML-framed
-/// conversations. The system prompt is one such row.
-pub const TOKENS_PER_MESSAGE: u64 = 4;
-
-/// Reply priming the API appends to every prompt (the assistant start tag).
-pub const TOKENS_REPLY_PRIMING: u64 = 2;
 
 /// Tokenizer for a model id. Namespaced ids (`ns/model`) select on the bare
 /// model id. cl100k_base covers the gpt-3.5 and non-o gpt-4 generations
@@ -49,36 +47,6 @@ fn wants_cl100k(bare: &str) -> bool {
     }
 }
 
-/// The text a message contributes to the wire: text blocks, plus each
-/// function call's encoded name and serialized arguments, plus function
-/// result bodies. Thinking blocks are dropped (never replayed on this wire),
-/// images are skipped (their token cost is model-specific, not textual), and
-/// custom messages never reach the provider.
-fn message_text(message: &AgentMessage) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-    let content = match message {
-        AgentMessage::User(m) => &m.content,
-        AgentMessage::Assistant(m) => &m.content,
-        AgentMessage::FunctionResult(m) => &m.content,
-        AgentMessage::Custom(_) => return None,
-    };
-    for block in content {
-        match block {
-            ContentBlock::Text { text } => parts.push(text.clone()),
-            ContentBlock::FunctionCall {
-                function_id,
-                arguments,
-                ..
-            } => {
-                parts.push(encode_tool_name(function_id));
-                parts.push(arguments.to_string());
-            }
-            _ => {}
-        }
-    }
-    Some(parts.join("\n"))
-}
-
 fn count(bpe: &CoreBPE, text: &str) -> u64 {
     bpe.encode_ordinary(text).len() as u64
 }
@@ -95,31 +63,17 @@ pub fn count_chat_tokens(
     messages: &[AgentMessage],
 ) -> u64 {
     let bpe = encoder_for(model);
-    let mut tokens = TOKENS_REPLY_PRIMING;
-    if let Some(system) = system_prompt.filter(|s| !s.is_empty()) {
-        tokens += TOKENS_PER_MESSAGE + count(bpe, system);
-    }
-    for message in messages {
-        if let Some(text) = message_text(message) {
-            tokens += TOKENS_PER_MESSAGE + count(bpe, &text);
-        }
-    }
-    for tool in tools {
-        let schema = json!({
-            "name": encode_tool_name(&tool.name),
-            "description": tool.description,
-            "parameters": tool.parameters,
-        });
-        tokens += count(bpe, &schema.to_string());
-    }
-    tokens
+    count_framed_chat(system_prompt, tools, messages, |text| count(bpe, text))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider_scaffold::chat_framing::message_text;
+    use crate::types::content::ContentBlock;
     use crate::types::events::StopReason;
     use crate::types::messages::{AssistantMessage, AssistantRoleTag, UserMessage, UserRoleTag};
+    use serde_json::json;
 
     fn user(text: &str) -> AgentMessage {
         AgentMessage::User(UserMessage {

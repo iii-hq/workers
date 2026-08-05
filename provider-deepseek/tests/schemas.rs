@@ -43,6 +43,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "provider::deepseek::abort",
             "provider::deepseek::refresh_models",
             "provider::deepseek::on_router_ready",
+            "provider::deepseek::count_tokens",
         ]
     );
 }
