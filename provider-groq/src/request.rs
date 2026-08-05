@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 pub struct BodyArgs {
     pub model: String,
-    pub max_tokens: u64,
+    pub max_tokens: Option<u64>,
     pub system_prompt: String,
     pub messages: Vec<AgentMessage>,
     pub tools: Vec<AgentFunction>,
@@ -43,13 +43,18 @@ pub fn build_response_format(rf: &ResponseFormat) -> Value {
 pub fn build_body(args: &BodyArgs) -> Value {
     let mut body = json!({
         "model": args.model,
-        "max_completion_tokens": args.max_tokens,
         "messages": to_wire_messages(&args.messages, &args.system_prompt),
         "stream": true,
         // Without this there is no usage chunk at all — Groq documents
         // `include_usage` as the way to get token stats before `[DONE]`.
         "stream_options": { "include_usage": true },
     });
+    // Omitted rather than defaulted: Groq charges reserved output against the
+    // per-minute budget, so a ceiling nobody asked for is spent budget nobody
+    // asked to spend.
+    if let Some(max_tokens) = args.max_tokens {
+        body["max_completion_tokens"] = json!(max_tokens);
+    }
     let wire_tools = functions_to_wire(&args.tools);
     if !wire_tools.is_empty() {
         body["tools"] = Value::Array(wire_tools);
@@ -81,7 +86,7 @@ mod tests {
     fn args() -> BodyArgs {
         BodyArgs {
             model: "llama-3.3-70b-versatile".into(),
-            max_tokens: 4096,
+            max_tokens: Some(4096),
             system_prompt: "be brief".into(),
             messages: vec![AgentMessage::User(UserMessage {
                 role: UserRoleTag::User,
@@ -169,7 +174,7 @@ mod tests {
         let cfg = GroqConfig {
             credential_value: "sk-test".into(),
             model: "llama-3.3-70b-versatile".into(),
-            max_tokens: 4096,
+            max_tokens: Some(4096),
             api_url: crate::config::DEFAULT_API_URL.into(),
         };
         let h = build_headers(&cfg);

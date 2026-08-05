@@ -63,6 +63,19 @@ is always read from that endpoint's `/models` sibling.
   being wrong. Meta's repositories are gated behind a licence click a worker
   cannot perform, so Llama resolves through a public mirror of the identical
   tokenizer. Counting is local, needs no credential, and costs nothing.
+- **Reserved output costs budget.** Groq's per-minute token limit counts the
+  output a request reserves, not only the prompt it sends. Measured: `"hi"`
+  asking for this model's full 32,768 ceiling is rejected on a 12,000 TPM key,
+  while the identical prompt with the field omitted succeeds. So no ceiling is
+  invented here; `max_completion_tokens` rides only when a caller or the
+  operator asked for one.
+
+  The consequence is worth knowing before blaming a prompt: on a small key the
+  ceiling, not the conversation, is usually what exceeds the limit. A 7k prompt
+  against a 12,000 TPM key leaves under 5k for output, so a caller reserving
+  the model's advertised 32,768 fails every time while the same prompt with a
+  modest ceiling goes through. Either raise the tier or lower the requested
+  output budget.
 - **Errors:** 401/403 → `auth_expired`, 429 → `rate_limited`, 413 and
   `context_length_exceeded` → `context_overflow`, **498 (flex-tier capacity
   exhausted) → `transient`** because the same request may be served later,

@@ -8,13 +8,24 @@ use llm_router::types::router::ProviderResolveResponse;
 // Groq's OpenAI-compatible surface lives under `/openai/v1`, not at the
 // bare host: the documented base_url is `https://api.groq.com/openai/v1`.
 pub const DEFAULT_API_URL: &str = "https://api.groq.com/openai/v1/chat/completions";
+/// Ceiling applied when an operator sets `max_tokens` in the router config
+/// slice but the caller asks for nothing. Deliberately not applied otherwise:
+/// see `GroqConfig::max_tokens`.
 pub const DEFAULT_MAX_TOKENS: u64 = 8192;
 
 #[derive(Debug, Clone)]
 pub struct GroqConfig {
     pub credential_value: String,
     pub model: String,
-    pub max_tokens: u64,
+    /// Output ceiling for the request, or `None` to send none at all.
+    ///
+    /// Groq counts reserved output against the per-minute token budget, not
+    /// just the prompt: a two-word prompt asking for this model's full 32,768
+    /// output ceiling is rejected on a 12,000 TPM key, while the same prompt
+    /// with the field omitted succeeds. So a ceiling nobody asked for is never
+    /// invented here; without one the model runs to its own default and the
+    /// budget is charged for what the prompt actually costs.
+    pub max_tokens: Option<u64>,
     pub api_url: String,
 }
 
@@ -83,9 +94,7 @@ pub fn config_from_resolve(
     Ok(GroqConfig {
         credential_value,
         model: model.to_string(),
-        max_tokens: effective_max_tokens
-            .or(resolved.max_tokens)
-            .unwrap_or(DEFAULT_MAX_TOKENS),
+        max_tokens: effective_max_tokens.or(resolved.max_tokens),
         api_url,
     })
 }
@@ -182,14 +191,18 @@ mod tests {
     }
 
     #[test]
-    fn max_tokens_precedence_effective_then_configured_then_default() {
+    fn max_tokens_precedence_is_caller_then_operator_then_nothing() {
         let key = Some(Credential::ApiKey { key: "sk".into() });
         let cfg = config_from_resolve("m", Some(1000), &resolved(key.clone(), Some(2000))).unwrap();
-        assert_eq!(cfg.max_tokens, 1000);
+        assert_eq!(cfg.max_tokens, Some(1000));
         let cfg = config_from_resolve("m", None, &resolved(key.clone(), Some(2000))).unwrap();
-        assert_eq!(cfg.max_tokens, 2000);
+        assert_eq!(cfg.max_tokens, Some(2000));
+
+        // Nobody asked for a ceiling, so none is invented. Defaulting here
+        // would reserve output that Groq charges against the per-minute
+        // budget, which is how a two-word prompt gets rejected on a small key.
         let cfg = config_from_resolve("m", None, &resolved(key, None)).unwrap();
-        assert_eq!(cfg.max_tokens, DEFAULT_MAX_TOKENS);
+        assert_eq!(cfg.max_tokens, None);
     }
 
     #[test]
