@@ -258,8 +258,10 @@ async fn call_direct(
 ) -> Result<Value, String> {
     match function_id {
         "coder::info" => {
-            let _input: info::InfoInput = decode_payload(payload)?;
-            serialize_result(info::handle(surface.resolver.clone(), surface.cfg.clone()).await)
+            let input: info::InfoInput = decode_payload(payload)?;
+            serialize_result(
+                info::handle(surface.resolver.clone(), surface.cfg.clone(), input).await,
+            )
         }
         "coder::create-file" => {
             let input = decode_payload(payload)?;
