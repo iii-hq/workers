@@ -24,7 +24,7 @@ Two surfaces in one worker:
 | `dispatch.rs` | event routing + mention gating + context capture; interaction → approval |
 | `turn.rs` | model resolution, thread backfill, `harness::send` |
 | `stream.rs` | native `chat.startStream`/`appendStream`/`stopStream` (+ `chat.update` fallback) |
-| `kv.rs` | thread↔session mapping, pending context buffer, approval callbacks (iii-state) |
+| `kv.rs` | thread↔session mapping, pending context buffer, approval callbacks (state) |
 | `ingress.rs` | register/unregister the events + interactions HTTP routes per config |
 | `surface.rs` | typed function catalog for golden schema tests |
 

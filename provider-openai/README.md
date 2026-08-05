@@ -26,7 +26,7 @@ costs nothing, and needs no network).
   endpoint that does not end in `/responses` keeps the Chat Completions wire
   format for compatible gateways that have not migrated.
 - **Identity binding:** the router returns a `registration_token` on first
-  registration; it is persisted in iii-state (scope `provider-openai`,
+  registration; it is persisted in state (scope `provider-openai`,
   key `registration_token`) and presented on every later
   `register`/`resolve`/`reconcile`. If that state is lost the router rejects
   re-registration — the operator must clear the binding on the router side.

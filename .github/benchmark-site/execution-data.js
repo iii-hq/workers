@@ -888,8 +888,48 @@
     return groups;
   }
 
+  function cohortMetricSparkline(executions, cohortRows, metricId, limit = 14) {
+    const basket = (cohortRows || [])
+      .filter((row) => row && row.scenarioId)
+      .map((row) => ({
+        key: `${row.subjectId || ""}::${row.scenarioId}`,
+        fingerprint: row.fingerprint || "",
+      }));
+    if (!basket.length) return [];
+    const points = [];
+    for (const execution of executions || []) {
+      if (points.length >= limit) break;
+      const metrics = execution?.scenario_metrics || [];
+      if (!metrics.length) continue;
+      let total = 0;
+      let complete = true;
+      for (const item of basket) {
+        const scenario = metrics.find(
+          (candidate) =>
+            `${candidate?.subject_id || ""}::${candidate?.scenario_id || ""}` ===
+              item.key &&
+            (candidate?.contract_fingerprint || "") === item.fingerprint,
+        );
+        const value = numberOrNull(scenario?.averages?.[metricId]);
+        if (value === null) {
+          complete = false;
+          break;
+        }
+        total += value;
+      }
+      if (!complete) continue;
+      points.push({
+        executionId: execution.id,
+        value: total,
+        timestamp: execution.completed_at || execution.started_at || "",
+      });
+    }
+    return points.reverse();
+  }
+
   return {
     buildEfficiencyOverview,
+    cohortMetricSparkline,
     contractFingerprint,
     executionEfficiencyTotalsFromDetail,
     executionsWithinDays,

@@ -24,7 +24,7 @@ own default bind address and port. Point `api_url` at any running
   LLAMACPP_API_KEY`; the post-register refresh discovers the live catalog
   from the resolved server.
 - **Identity binding:** the router returns a `registration_token` on first
-  registration; it is persisted in iii-state (scope `provider-llamacpp`,
+  registration; it is persisted in state (scope `provider-llamacpp`,
   key `registration_token`) and presented on every later
   `register`/`resolve`/`reconcile`. If that state is lost the router rejects
   re-registration — the operator must clear the binding on the router side.

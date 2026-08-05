@@ -8,7 +8,6 @@ pub mod function_resolve;
 pub mod function_trigger;
 pub mod metrics;
 pub mod on_session_deleted;
-pub mod react;
 pub mod send;
 pub mod session_tree;
 pub mod spawn;
@@ -17,6 +16,8 @@ pub mod stop;
 pub mod subscribe;
 pub mod sweep_pending;
 pub mod teardown;
+pub mod trigger_deliver;
+pub mod triggers_list;
 pub mod turn;
 
 use std::future::Future;
@@ -39,12 +40,14 @@ pub const SEND_DESC: &str =
 
 pub const SPAWN_ID: &str = "harness::spawn";
 pub const SPAWN_DESC: &str =
-    "Spawn a sub-agent fire-and-forget: seeds a child session/turn and returns \
-     {child_session_id, child_turn_id} immediately. The child's result is NEVER delivered back \
-     to the caller — register consumers (state triggers, or harness::turn-completed -> \
-     harness::react) BEFORE spawning. The task must include literal values for every required \
-     resource selector (for example `db: \"primary\"`). Omit child `max_turns` unless its budget \
-     covers discovery, contract lookup, work, and the deliverable.";
+    "Spawn a sub-agent in a child session (direct call only — never a trigger target). \
+     Fire-and-forget: returns { child_session_id, child_turn_id } immediately; the child's \
+     outcome reaches you only through whatever destination its task names. The child is a \
+     LEAF by default (no spawn/send/trigger registration); pass options.orchestrator: true \
+     to grant the orchestration surface, still capped by the caller's own policy. The task \
+     must include literal values for every required resource selector (for example \
+     `db: \"primary\"`). Omit child `max_turns` unless its budget covers discovery, \
+     contract lookup, work, and the deliverable.";
 
 pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =
@@ -197,10 +200,10 @@ fn register_internal<Req, Resp, F, Fut>(
     );
 }
 
-/// Like [`register`], but the handler also receives the per-invocation
-/// `metadata` sidecar (`engine::register_trigger`'s `metadata`). Used by the
-/// trigger-bridge target `harness::react`.
-fn register_with_metadata<Req, Resp, F, Fut>(
+/// [`register`] variant for a target kept OFF the agent catalog
+/// (`metadata.internal = true`): trigger-bridge plumbing the interceptor binds
+/// by id, never something an agent discovers or calls.
+fn register_internal_with_metadata<Req, Resp, F, Fut>(
     iii: &Arc<IIIClient>,
     deps: &Arc<Deps>,
     id: &str,
@@ -212,16 +215,40 @@ fn register_with_metadata<Req, Resp, F, Fut>(
     F: Fn(Arc<Deps>, Req, Option<Value>) -> Fut + Send + Sync + Clone + 'static,
     Fut: Future<Output = Result<Resp, HarnessError>> + Send + 'static,
 {
-    let deps = deps.clone();
-    iii.register_function(
+    register_with_metadata_meta(
+        iii,
+        deps,
         id,
-        RegisterFunction::new_async(move |req: Req, meta: Option<Value>| {
-            let deps = deps.clone();
-            let handler = handler.clone();
-            async move { handler(deps, req, meta).await.map_err(Error::from) }
-        })
-        .description(description),
+        description,
+        Some(serde_json::json!({ "internal": true })),
+        handler,
     );
+}
+
+fn register_with_metadata_meta<Req, Resp, F, Fut>(
+    iii: &Arc<IIIClient>,
+    deps: &Arc<Deps>,
+    id: &str,
+    description: &str,
+    metadata: Option<Value>,
+    handler: F,
+) where
+    Req: DeserializeOwned + JsonSchema + Send + 'static,
+    Resp: Serialize + JsonSchema + Send + 'static,
+    F: Fn(Arc<Deps>, Req, Option<Value>) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = Result<Resp, HarnessError>> + Send + 'static,
+{
+    let deps = deps.clone();
+    let mut registration = RegisterFunction::new_async(move |req: Req, meta: Option<Value>| {
+        let deps = deps.clone();
+        let handler = handler.clone();
+        async move { handler(deps, req, meta).await.map_err(Error::from) }
+    })
+    .description(description);
+    if let Some(meta) = metadata {
+        registration = registration.metadata(meta);
+    }
+    iii.register_function(id, registration);
 }
 
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
@@ -231,6 +258,18 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, SPAWN_ID, SPAWN_DESC, |d, r| async move {
         spawn::handle(&d, r).await
     });
+    // The ONE fire handler every agent-registered binding routes through.
+    // Registered, kept off the catalog: agents describe their target in the
+    // registration and never call this themselves.
+    register_internal_with_metadata(
+        iii,
+        deps,
+        trigger_deliver::DELIVER_ID,
+        trigger_deliver::DELIVER_DESC,
+        |d, ev: trigger_deliver::DeliverEvent, meta| async move {
+            trigger_deliver::handle(&d, ev.0, meta).await
+        },
+    );
     register_trace_hidden(iii, deps, TURN_ID, TURN_DESC, |d, r| async move {
         turn::handle(&d, r).await
     });
@@ -267,6 +306,21 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register_internal(iii, deps, TEARDOWN_ID, TEARDOWN_DESC, |d, r| async move {
         teardown::handle(&d, r).await
     });
+    register(
+        iii,
+        deps,
+        triggers_list::TRIGGERS_LIST_ID,
+        triggers_list::TRIGGERS_LIST_DESC,
+        |d, r| async move { triggers_list::list(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        triggers_list::TRIGGERS_UNREGISTER_ID,
+        triggers_list::TRIGGERS_UNREGISTER_DESC,
+        |d, r| async move { triggers_list::unregister(&d, r).await },
+    );
+
     // Trusted control-plane (console) — registered, kept off the agent catalog.
     register_internal(iii, deps, UNQUEUE_ID, UNQUEUE_DESC, |d, r| async move {
         send::unqueue(&d, r).await
@@ -326,24 +380,6 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         crate::subscriptions::ON_SESSION_DELETED_ID,
         crate::subscriptions::ON_SESSION_DELETED_DESC,
         |d, r| async move { on_session_deleted::handle(&d, r).await },
-    );
-
-    // The single shared subscription fire handler — registered once, kept off
-    // the catalog. Bound to by every subscription's trigger via the engine proxy.
-    crate::subscriptions::notify_agent::register(deps.clone());
-
-    // Internal trigger-bridge target — fired only by subscriptions the agent
-    // binds via engine::register_trigger. Visible in the catalog (its
-    // description points binders at engine::register_trigger), but a direct
-    // call arrives without the trigger metadata sidecar and no-ops; deployment
-    // permission policies additionally deny it to agents. The event is the
-    // payload; the reaction spec arrives as the metadata sidecar.
-    register_with_metadata(
-        iii,
-        deps,
-        react::REACT_ID,
-        react::REACT_DESC,
-        |d, ev: react::ReactEvent, meta| async move { react::handle(&d, ev.0, meta).await },
     );
 
     tracing::info!("all harness::* functions registered");

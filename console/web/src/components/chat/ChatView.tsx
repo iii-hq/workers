@@ -33,6 +33,11 @@ import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
+import {
+  expandPdfAttachments,
+  isPdfAttachment,
+  summaryLabel,
+} from '@/lib/pdf-attachments'
 import { newMessageId } from '@/lib/session-id'
 import { cn } from '@/lib/utils'
 import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
@@ -267,16 +272,15 @@ export function ChatView({
     conversation.id,
   ])
 
-  // Registered trigger subscriptions (notify/react bindings owned by this
-  // session): shown above the composer, unregisterable, detail on click.
-  // Polled — bindings come and go as the agent registers them mid-turn.
+  // Registered trigger subscriptions (the harness's durable binding rows,
+  // owned by this session): shown above the composer, unregisterable, detail
+  // on click. Polled — bindings come and go as the agent registers them.
   const [sessionTriggers, setSessionTriggers] = useState<SessionTriggerInfo[]>(
     [],
   )
-  // Every full row this tab has EVER polled, by engine trigger id. When a
-  // once/join binding fires and retires, the poll drops it — this cache lets
-  // the fired ghost keep its full metadata (join grouping, spawn pin, task)
-  // so the workflow strip and flow DAG survive the pipeline completing.
+  // Every full row this tab has EVER polled, by subscription id. When a once
+  // binding fires and retires, the poll drops it — this cache lets the fired
+  // ghost keep its full config/conditions after retirement.
   const seenTriggersRef = useRef<Map<string, SessionTriggerInfo>>(new Map())
   const refreshTriggers = useCallback(() => {
     const listTriggers = backend.listTriggers
@@ -298,10 +302,12 @@ export function ChatView({
   }, [refreshTriggers, backend.listTriggers])
 
   const handleUnregisterTrigger = useCallback(
-    async (triggerId: string) => {
+    async (subscriptionId: string) => {
       try {
-        await backend.unregisterTrigger?.(triggerId)
-        setSessionTriggers((rows) => rows.filter((t) => t.id !== triggerId))
+        await backend.unregisterTrigger?.(subscriptionId, conversation.id)
+        setSessionTriggers((rows) =>
+          rows.filter((t) => t.id !== subscriptionId),
+        )
       } catch (err) {
         onAppendMessage(
           conversation.id,
@@ -321,7 +327,9 @@ export function ChatView({
     if (!unreg) return
     const ids = sessionTriggers.map((t) => t.id)
     // Fire all unregisters, tolerate partial failure, surface a single notice.
-    const results = await Promise.allSettled(ids.map((id) => unreg(id)))
+    const results = await Promise.allSettled(
+      ids.map((id) => unreg(id, conversation.id)),
+    )
     const cleared = new Set(
       ids.filter((_, i) => results[i].status === 'fulfilled'),
     )
@@ -365,6 +373,12 @@ export function ChatView({
         seenTriggersRef.current,
       ),
     [sessionTriggers, firedTriggers],
+  )
+  // Registration lookup for trigger-fired cards: a fire record carries only
+  // the subscription id — the binding's config/conditions live in these rows.
+  const triggersById = useMemo(
+    () => new Map(mergedTriggers.map((t) => [t.id, t])),
+    [mergedTriggers],
   )
 
   // The strip's rows: this tab's drafts first, then server-queued rows not
@@ -498,6 +512,29 @@ export function ChatView({
             attachedBlocks = (
               await expandFileMentions(workingDir, mentionPaths)
             ).blocks
+          }
+        }
+        // Same expansion as the live send path: a queued message's PDFs have
+        // to reach the agent as markdown too, or editing a queued message
+        // would silently drop the document it carried.
+        if (
+          backend.id === 'real' &&
+          payload.attachments.some(isPdfAttachment)
+        ) {
+          const expanded = await expandPdfAttachments(payload.attachments)
+          if (expanded.blocks.length > 0) {
+            attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
+          }
+          // Same reporting as the live send path. Staying silent here would let
+          // an edited queued message lose its document with no explanation.
+          for (const failure of expanded.failures) {
+            onAppendMessage(
+              conversationId,
+              makeSystemNotice(
+                `could not read ${failure.name} — ${failure.reason}`,
+                'warn',
+              ),
+            )
           }
         }
         try {
@@ -989,6 +1026,44 @@ export function ChatView({
             conversationId,
             makeSystemNotice(
               `could not attach ${failure.path} — ${failure.reason}`,
+              'warn',
+            ),
+          )
+        }
+      }
+
+      // A PDF is not text: read as bytes it reaches the model as noise, so the
+      // `pdf` worker converts it on this machine and the markdown is appended
+      // as another attachment block. Failures never block the send — an
+      // unreadable document becomes a placeholder block plus a warn notice, so
+      // the model knows it was handed something it could not read.
+      if (backend.id === 'real' && payload.attachments.some(isPdfAttachment)) {
+        const expanded = await expandPdfAttachments(payload.attachments)
+        if (expanded.blocks.length > 0) {
+          attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
+        }
+        // Relabel the chip with what the worker made of the document. The
+        // expansion runs before the model is called, so it never shows up as a
+        // function call — without this a person has no way to tell the PDF was
+        // read at all.
+        if (expanded.read.length > 0 && !willQueue) {
+          const byId = new Map(expanded.read.map((r) => [r.id, r]))
+          onPatchMessage(conversationId, userMsg.id, {
+            // `file` is dropped here as well as relabelled. It has done its job
+            // by now, and keeping it would hold the whole document in memory
+            // for as long as the conversation stays open.
+            attachments: (userMsg.attachments ?? []).map(({ file, ...a }) => {
+              void file
+              const summary = byId.get(a.id)
+              return summary ? { ...a, name: summaryLabel(a.name, summary) } : a
+            }),
+          })
+        }
+        for (const failure of expanded.failures) {
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              `could not read ${failure.name} — ${failure.reason}`,
               'warn',
             ),
           )
@@ -1642,6 +1717,7 @@ export function ChatView({
         onResolveFilesystemAccess={handleFilesystemResolve}
         onManageFilesystemAccess={handleManageFilesystemAccess}
         workingDir={conversation.workingDir ?? null}
+        triggersById={triggersById}
       />
       <LiveRegion announcement={announcer.announcement} />
 

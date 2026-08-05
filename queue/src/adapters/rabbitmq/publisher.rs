@@ -1,4 +1,4 @@
-//! Publishes `Job`s to fanout exchanges, per-function subscriber queues, and
+//! Publishes `Job`s to fanout exchanges, per-subscription queues, and
 //! DLQs.
 //!
 //! 1:1 port of `engine/src/workers/queue/adapters/rabbitmq/publisher.rs` — no
@@ -64,12 +64,17 @@ impl Publisher {
             .await
     }
 
-    pub async fn requeue(&self, topic: &str, job: &Job, function_id: Option<&str>) -> Result<()> {
-        if let Some(fid) = function_id {
-            // Per-function subscriber queue: publish directly to the function's
+    pub async fn requeue(
+        &self,
+        topic: &str,
+        job: &Job,
+        subscription_id: Option<&str>,
+    ) -> Result<()> {
+        if let Some(id) = subscription_id {
+            // Per-subscription queue: publish directly to the binding's
             // queue (default exchange) to avoid re-fanning out to all subscribers.
             let names = RabbitNames::new(topic);
-            let queue_name = names.function_queue(fid);
+            let queue_name = names.subscriber_queue(id);
             let headers = self.build_headers(job);
             self.publish_to_exchange("", &queue_name, job, Some(headers))
                 .await
@@ -83,11 +88,11 @@ impl Publisher {
         topic: &str,
         job: &Job,
         error: &str,
-        function_id: Option<&str>,
+        subscription_id: Option<&str>,
     ) -> Result<()> {
         let names = RabbitNames::new(topic);
-        let dlq_name = if let Some(fid) = function_id {
-            names.function_dlq(fid)
+        let dlq_name = if let Some(id) = subscription_id {
+            names.subscriber_dlq(id)
         } else {
             names.dlq()
         };

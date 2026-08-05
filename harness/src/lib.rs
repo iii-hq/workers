@@ -7,8 +7,10 @@
 //! function calls, and repeat until the turn stops — as durable enqueued steps
 //! so a crash resumes mid-turn.
 
+pub mod bindings;
 pub mod budget;
 pub mod clients;
+pub mod conditions;
 pub mod config;
 pub mod configuration;
 pub mod contract;
@@ -31,6 +33,7 @@ pub mod state;
 pub mod subagent;
 pub mod subscriptions;
 pub mod surface;
+pub mod timer;
 pub(crate) mod trace_tags;
 pub mod trigger;
 pub mod turn_loop;

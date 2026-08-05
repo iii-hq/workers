@@ -192,6 +192,7 @@ jobs:
           SESSION_MANAGER_BIN: ${{ github.workspace }}/session-manager/target/release/session-manager
           CONTEXT_MANAGER_BIN: ${{ github.workspace }}/context-manager/target/release/context-manager
           STATE_BIN: ${{ github.workspace }}/state/target/release/state
+          DATABASE_BIN: ${{ github.workspace }}/database/target/release/database
           CONSOLE_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/console-e2e
           LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
         run: pnpm test:e2e

@@ -237,7 +237,7 @@ mod tests {
         assert_eq!(prompt, include_str!("../prompts/identity.txt"));
         assert!(prompt.starts_with("You are an iii agent worker."));
         assert!(prompt.contains("agent_trigger"));
-        assert!(prompt.contains("## Autonomy and persistence"));
+        assert!(prompt.contains("Never use a function id from memory."));
         assert_eq!(declaration.supports_model_listing, Some(true));
         assert!(declaration.models.is_none());
     }

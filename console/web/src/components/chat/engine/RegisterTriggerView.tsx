@@ -1,20 +1,11 @@
 import type { ReactNode } from 'react'
-import { PipeStepList } from '@/components/chat/fp/PipeView'
-import {
-  pipeRequestSchema,
-  safeParseRequest as safeParseFpRequest,
-} from '@/components/chat/fp/parsers'
 import { Chip, MetaRow, StatusPill } from '@/components/chat/sandbox/shared'
 import { JsonHighlight } from '@/lib/syntax'
 import {
   configFilters,
   describeCron,
-  type ReactOptions,
-  type ReactSpec,
   type RegisterTriggerRequest,
   type RegisterTriggerResponse,
-  reactOptionsSchema,
-  reactSpecSchema,
   registerTriggerRequestSchema,
   registerTriggerResponseSchema,
   safeParseRequest,
@@ -30,11 +21,11 @@ interface RegisterTriggerViewProps {
 
 /**
  * A trigger registration is a cause→effect rule: WHEN an event fires (filtered
- * by `config`) THEN run an action (`function_id` + `metadata`). The view reads
- * that way — a labeled `when` block (the event + its filter chips) above a
- * `then` block (the action: spawn a sub-agent / notify the session / call a
- * function) — so a binding's meaning is legible at a glance. Raw payloads stay
- * one tab away in RAW JSON; this view is the readable one.
+ * by `config`) THEN deliver (notify the session, or call a plain function —
+ * a binding never starts an agent). The view reads that way — a labeled
+ * `when` block (the event + its filter chips) above a `then` block — so a
+ * binding's meaning is legible at a glance. Raw payloads stay one tab away in
+ * RAW JSON; this view is the readable one.
  */
 export function RegisterTriggerView({
   input,
@@ -49,29 +40,6 @@ export function RegisterTriggerView({
   // than an empty terminal pane (the switch always mounts this component).
   if (!req) return <LabeledJson label="request" value={input} />
 
-  // A `harness::react` binding runs in one of two modes: spawn a sub-agent
-  // (`task`, + `model`) or dispatch a plain function call (`call`). The
-  // non-strict schema parses ANY object, so the mode fields decide whether
-  // this is really a react spec; neither present → raw metadata fallback.
-  const parsedReact =
-    req.function_id === 'harness::react'
-      ? safeParseRequest<ReactSpec>(reactSpecSchema, req.metadata)
-      : null
-  const react = parsedReact?.task || parsedReact?.call ? parsedReact : null
-  const call = react?.call ?? null
-  const spawn = call ? null : react
-  // A call-mode target that is itself a pipe renders as its step route —
-  // the whole point of the binding is legible as event → pipeline.
-  const callPipe =
-    call?.function_id === 'fp::pipe'
-      ? (safeParseFpRequest(pipeRequestSchema, call.payload)?.through ?? null)
-      : null
-  const allow = spawn
-    ? safeParseRequest<ReactOptions>(reactOptionsSchema, spawn.options)
-        ?.functions?.allow
-    : undefined
-  const allowUniq = allow ? Array.from(new Set(allow)) : []
-
   const resp = running
     ? null
     : safeParseResponse<RegisterTriggerResponse>(
@@ -80,6 +48,9 @@ export function RegisterTriggerView({
       )
   const regId = resp?.id ?? resp?.subscription_id
   const once = resp?.once ?? req.once
+  const target =
+    req.target ??
+    (req.function_id ? { function_id: req.function_id } : undefined)
 
   // Cron schedules read as WHEN content, not as an opaque config dump: the
   // expression chip plus (for the common shapes) a human reading of it.
@@ -149,98 +120,120 @@ export function RegisterTriggerView({
       </div>
       {showRawConfig ? <LabeledJson label="config" value={req.config} /> : null}
 
+      {req.conditions?.length ? (
+        <>
+          <PaneLabel>only if</PaneLabel>
+          {req.conditions.map((c, i) => (
+            <ConditionRow
+              // Conditions have no id of their own; order is the identity.
+              key={`${c.function_id ?? 'condition'}-${i}`}
+              condition={c}
+            />
+          ))}
+        </>
+      ) : null}
+
       <PaneLabel>then</PaneLabel>
       <div className="px-3 py-2 border-b border-rule-2 bg-bg flex flex-col gap-1.5">
         <div className="flex items-baseline gap-2 flex-wrap">
           <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-            {spawn ? 'spawn sub-agent' : call || req.function_id ? 'call' : 'notify'}
+            {target ? 'call' : 'notify'}
           </span>
-          {spawn ? (
+          {target ? (
             <span className="font-mono text-[12.5px] text-accent break-all">
-              {spawn.model ?? 'inherited model'}
-            </span>
-          ) : call ? (
-            // The binding's real effect is the inner target, not the
-            // harness::react plumbing it rides on.
-            <span className="font-mono text-[12.5px] text-accent break-all">
-              {call.function_id}
-            </span>
-          ) : req.function_id ? (
-            <span className="font-mono text-[12.5px] text-accent break-all">
-              {req.function_id}
+              {target.function_id}
             </span>
           ) : (
             <span className="font-mono text-[12.5px] text-ink-faint italic">
               this session
             </span>
           )}
-          {call?.event_into ? (
-            <FilterChip label="event into" value={call.event_into} />
-          ) : null}
-          {spawn?.session_id ? (
-            <>
-              <span className="font-mono text-[11px] text-ink-ghost">→</span>
-              <span
-                className="font-mono text-[11.5px] text-ink-faint"
-                title={spawn.session_id}
-              >
-                {shortenId(spawn.session_id)}
-              </span>
-            </>
+          {target?.event_into !== undefined ? (
+            <FilterChip
+              label="event into"
+              value={target.event_into || '(root)'}
+            />
           ) : null}
         </div>
-        {allowUniq.length ? (
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
-              allow
-            </span>
-            {allowUniq.map((fn) => (
-              <Chip key={fn}>
-                <span className="text-ink">{fn}</span>
-              </Chip>
-            ))}
-          </div>
-        ) : null}
-        {react?.join ? (
-          <div className="font-mono text-[12px] text-ink flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="text-ink-faint uppercase tracking-[0.06em] text-[10px]">
-              join
-            </span>
-            <span className="text-accent break-all">{react.join.id}</span>
-            <span className="text-ink-ghost">·</span>
-            <span>
-              key <span className="text-ink-faint">{react.join.key}</span>
-            </span>
-            <span className="text-ink-ghost">·</span>
-            <span>
-              expect{' '}
-              <span className="text-ink-faint">
-                [{react.join.expect.join(', ')}]
-              </span>
-            </span>
-            {react.join.rearm ? (
-              <>
-                <span className="text-ink-ghost">·</span>
-                <span className="text-accent">rearm</span>
-              </>
-            ) : null}
-          </div>
-        ) : null}
       </div>
 
-      {callPipe?.length ? (
-        <div>
-          <PaneLabel>pipeline</PaneLabel>
-          <PipeStepList through={callPipe} />
-        </div>
-      ) : call?.payload !== undefined && !isEmpty(call.payload) ? (
-        <LabeledJson label="payload" value={call.payload} />
-      ) : spawn?.task ? (
-        <LabeledText label="task" text={spawn.task} />
-      ) : !react && req.metadata !== undefined && !isEmpty(req.metadata) ? (
+      {target?.payload !== undefined ? (
+        <LabeledJson label="payload" value={target.payload} />
+      ) : null}
+      {req.metadata !== undefined && !isEmpty(req.metadata) ? (
         <LabeledJson label="metadata" value={req.metadata} />
       ) : null}
     </div>
+  )
+}
+
+const isScalar = (v: unknown) =>
+  v === null ||
+  typeof v === 'string' ||
+  typeof v === 'number' ||
+  typeof v === 'boolean'
+
+/**
+ * One gating predicate: the condition function (accent, like the THEN call)
+ * with its config as chips — scalars and primitive arrays inline, anything
+ * nested in a compact JSON block so no field is silently dropped.
+ */
+function ConditionRow({
+  condition,
+}: {
+  condition: { function_id?: string; config?: unknown }
+}) {
+  const config =
+    condition.config &&
+    typeof condition.config === 'object' &&
+    !Array.isArray(condition.config)
+      ? (condition.config as Record<string, unknown>)
+      : null
+  const entries = config ? Object.entries(config) : []
+  const chippable = entries.filter(
+    ([, v]) => isScalar(v) || (Array.isArray(v) && v.every(isScalar)),
+  )
+  const rest = entries.filter(
+    ([, v]) => !(isScalar(v) || (Array.isArray(v) && v.every(isScalar))),
+  )
+  return (
+    <>
+      <div className="px-3 py-2 border-b border-rule-2 bg-bg flex flex-col gap-1.5">
+        <div className="flex items-baseline gap-2 flex-wrap">
+          <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+            gate
+          </span>
+          {condition.function_id ? (
+            <span className="font-mono text-[12.5px] text-accent break-all">
+              {condition.function_id}
+            </span>
+          ) : (
+            <span className="font-mono text-[12.5px] text-ink-faint italic">
+              condition
+            </span>
+          )}
+        </div>
+        {chippable.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {chippable.map(([k, v]) => (
+              <FilterChip
+                key={k}
+                label={k}
+                value={Array.isArray(v) ? v.map(String).join(', ') : String(v)}
+              />
+            ))}
+          </div>
+        ) : null}
+      </div>
+      {rest.length > 0 ? (
+        <LabeledJson
+          label="condition config"
+          value={Object.fromEntries(rest)}
+        />
+      ) : config === null && condition.config !== undefined ? (
+        <LabeledJson label="condition config" value={condition.config} />
+      ) : null}
+    </>
   )
 }
 
@@ -270,17 +263,6 @@ function LabeledJson({ label, value }: { label: string; value: unknown }) {
     <div>
       <PaneLabel>{label}</PaneLabel>
       <JsonHighlight code={JSON.stringify(value ?? null, null, 2)} />
-    </div>
-  )
-}
-
-function LabeledText({ label, text }: { label: string; text: string }) {
-  return (
-    <div>
-      <PaneLabel>{label}</PaneLabel>
-      <pre className="bg-bg overflow-auto max-h-60 px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink whitespace-pre-wrap break-words">
-        <code>{text}</code>
-      </pre>
     </div>
   )
 }

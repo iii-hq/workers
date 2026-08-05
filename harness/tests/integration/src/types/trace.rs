@@ -27,6 +27,15 @@ impl TraceEvidenceV1 {
         Self { traces, summary }
     }
 
+    /// [`Self::new`] with the turn count scoped to `session_id`'s own spans —
+    /// the collector's constructor, so a child session nested in the tracked
+    /// session's trace never counts as one of its turns.
+    pub fn for_session(traces: Vec<TraceTreeV1>, session_id: &str) -> Self {
+        let mut evidence = Self::new(traces);
+        evidence.summary = TraceSummaryV1::from_traces_owned(&evidence.traces, Some(session_id));
+        evidence
+    }
+
     pub fn spans(&self) -> impl Iterator<Item = &TraceSpanV1> {
         self.traces.iter().flat_map(TraceTreeV1::spans)
     }
@@ -35,10 +44,18 @@ impl TraceEvidenceV1 {
         self.spans().filter(|span| span.name == name).collect()
     }
 
-    pub fn is_stable_for(&self, expected_terminal_turns: usize, lifecycle_sink: &str) -> bool {
-        if self.summary.pending_span_count != 0
-            || self.summary.turn_ids.len() != expected_terminal_turns
-        {
+    /// Stable when every expected completion has arrived: `total_turns`
+    /// distinct turn ids in the traces (parked completions included), of
+    /// which exactly `terminal_turns` carry a `terminal: true` lifecycle
+    /// payload. The split matters for park-then-wake runs — the parked turn
+    /// is real trace evidence but never terminal.
+    pub fn is_stable_for(
+        &self,
+        terminal_turns: usize,
+        total_turns: usize,
+        lifecycle_sink: &str,
+    ) -> bool {
+        if self.summary.pending_span_count != 0 || self.summary.turn_ids.len() != total_turns {
             return false;
         }
 
@@ -61,7 +78,7 @@ impl TraceEvidenceV1 {
             })
             .collect::<BTreeSet<_>>();
 
-        lifecycle_turns.len() == expected_terminal_turns
+        lifecycle_turns.len() == terminal_turns
             && lifecycle_turns
                 .iter()
                 .all(|turn_id| self.summary.turn_ids.contains(turn_id))
@@ -80,9 +97,22 @@ pub struct TraceSummaryV1 {
 
 impl TraceSummaryV1 {
     fn from_traces(traces: &[TraceTreeV1]) -> Self {
+        Self::from_traces_owned(traces, None)
+    }
+
+    /// `owner: Some(session)` counts turn ids only from that session's spans:
+    /// an in-turn `harness::spawn` nests the child's whole turn under the
+    /// parent's trace, and a child's turns are not the tracked session's
+    /// completions. `None` keeps the count-everything behavior for callers
+    /// with no session to scope by.
+    fn from_traces_owned(traces: &[TraceTreeV1], owner: Option<&str>) -> Self {
         let spans: Vec<_> = traces.iter().flat_map(TraceTreeV1::spans).collect();
         let mut turn_ids = spans
             .iter()
+            .filter(|span| match owner {
+                Some(owner) => span.attribute("iii.session.id") == Some(owner),
+                None => true,
+            })
             .filter_map(|span| span.attribute("iii.message.id"))
             .map(str::to_owned)
             .collect::<BTreeSet<_>>()
@@ -402,11 +432,14 @@ mod tests {
             trace_id: "trace-1".into(),
             roots: vec![lifecycle],
         }]);
-        assert!(evidence.is_stable_for(1, "integration-probe::turn-completed"));
+        assert!(evidence.is_stable_for(1, 1, "integration-probe::turn-completed"));
+        // A parked completion counts toward the TOTAL but not the terminal
+        // count: this all-terminal evidence must fail a declared park.
+        assert!(!evidence.is_stable_for(0, 1, "integration-probe::turn-completed"));
 
         let mut pending = evidence.clone();
         pending.traces[0].roots[0].pending = true;
         pending.summary = TraceSummaryV1::from_traces(&pending.traces);
-        assert!(!pending.is_stable_for(1, "integration-probe::turn-completed"));
+        assert!(!pending.is_stable_for(1, 1, "integration-probe::turn-completed"));
     }
 }

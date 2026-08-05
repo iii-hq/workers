@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Parse a release tag and emit setup outputs for release.yml.
 
-Writes 12 keys to $GITHUB_OUTPUT:
+Writes 13 keys to $GITHUB_OUTPUT:
     tag, worker, version, deploy, language, bin, manifest,
-    registry_tag, is_prerelease, dry_run, targets, experimental
+    registry_tag, is_prerelease, dry_run, targets, experimental, tag_sha
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import argparse
 import os
 import pathlib
 import re
+import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -19,7 +20,7 @@ import _lib  # noqa: E402
 
 TAG_RE = re.compile(r"^([a-z0-9][a-z0-9_-]*)/v(.+)$")
 DRY_RUN_RE = re.compile(r"-dry-run\.\d+$")
-PRERELEASE_RE = re.compile(r"-[a-z]+\.\d+$")
+STABLE_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,10 +37,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if DRY_RUN_RE.search(version):
         dry_run, is_pre = "true", "true"
-    elif PRERELEASE_RE.search(version):
-        dry_run, is_pre = "false", "true"
-    else:
+    elif STABLE_VERSION_RE.fullmatch(version):
         dry_run, is_pre = "false", "false"
+    else:
+        dry_run, is_pre = "false", "true"
 
     worker_dir = pathlib.Path(worker)
     try:
@@ -57,6 +58,9 @@ def main(argv: list[str] | None = None) -> int:
 
     annotation = _lib.read_tag_annotation(raw)
     registry_tag = annotation.get("registry-tag", "latest") or "latest"
+    tag_sha = subprocess.check_output(
+        ["git", "rev-list", "-n", "1", raw], text=True
+    ).strip()
 
     # Anything but a literal `true` is false: a lightweight tag, a missing
     # line, or a typo publishes as stable. Marking a worker experimental is
@@ -87,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         ("dry_run", dry_run),
         ("targets", targets),
         ("experimental", experimental),
+        ("tag_sha", tag_sha),
     ]
 
     gh_out = os.environ.get("GITHUB_OUTPUT")

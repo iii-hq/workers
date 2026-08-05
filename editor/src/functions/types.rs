@@ -743,3 +743,37 @@ pub struct SaveOutput {
     /// True when the file did not exist and was created.
     pub created: bool,
 }
+
+/// One recorded change, as `editor::changes` returns it. Mirrors the
+/// `editor::changed` event: the log is those events, kept.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChangeRecord {
+    /// Path relative to the workspace root the change was recorded against.
+    pub path: String,
+    /// Function that performed the write, e.g. `shell::fs::write`.
+    pub cause: String,
+    /// `created`, `modified`, `deleted`, or `moved`.
+    pub kind: String,
+    pub added: u32,
+    pub removed: u32,
+    /// Unified patch for the change, empty when there was nothing to compare.
+    #[serde(default)]
+    pub patch: String,
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default)]
+    pub root: String,
+    /// The harness session and turn the write happened in, absent when it
+    /// happened outside a turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+}
+
+/// Response of `editor::changes`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChangesView {
+    /// Newest first, one entry per path.
+    pub changes: Vec<ChangeRecord>,
+}

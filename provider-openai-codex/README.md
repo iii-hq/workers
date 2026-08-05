@@ -46,7 +46,7 @@ provider id `openai`.
 - **Registration:** self-declares via `router::provider::register` with backoff,
   and re-declares on the `router::ready` trigger. It advertises dynamic model
   listing and `credential_env_var: None`; identity binds via the
-  `registration_token` persisted in iii-state (scope `provider-openai-codex`).
+  `registration_token` persisted in state (scope `provider-openai-codex`).
 - **Models:** fetches the account-scoped Codex catalog from authenticated
   `GET /backend-api/codex/models?client_version=…` at startup, on explicit
   refresh, after router readiness, and every three minutes. Picker-visible

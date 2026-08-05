@@ -12,6 +12,10 @@ version: 1
 rules:
   # Gate, state, auth, routing — agents must not call these directly.
   - '!approval::resolve'
+  # Read-only verdict probe. The harness calls it worker-to-worker before
+  # binding a trigger to an ordinary function; an agent probing its own
+  # approval posture is reconnaissance, not a tool.
+  - '!approval::evaluate'
   - '!hook-fanout::publish_collect'
   - '!state::set'
   - '!state::update'
@@ -97,8 +101,10 @@ rules:
   # turn is the internal loop step; function::trigger/resolve forge call ids
   # and parked results; stop cancels turns. harness::spawn is the only
   # model-reachable way to start new turns and is left at the needs_approval
-  # default (the harness self-enforces depth/fan-out/policy subsetting). The
-  # internal config/cron hooks must never be agent-callable.
+  # default (the harness self-enforces depth/fan-out and walls spawned
+  # children out of the control plane unless the spawn passes
+  # options.orchestrator). The internal config/cron hooks must never be
+  # agent-callable.
   - '!harness::send'
   - '!harness::run'
   - '!harness::turn'
@@ -113,10 +119,11 @@ rules:
   - '!eval::step'
   - '!eval::on-turn-completed'
   - '!eval::sweep'
-  # Trigger-bridge target: fired only by subscriptions (engine-side, bypassing
-  # this gate). Never agent-callable directly — the model binds it via
-  # engine::register_trigger and names its id from the system prompt.
-  - '!harness::react'
+  # The shaping hop for a trigger bound to an ordinary function: the engine
+  # fires it, agents never call it. Agents name their real target in
+  # engine::register_trigger's `function_id`, which is checked against the
+  # registrant's own policy at registration.
+  - '!harness::trigger-call'
   - '!context::on-config-change'
   - '!approval::on-config-change'
   # browser: console-UI plumbing, never agent-callable. pick::* and hint are
@@ -184,6 +191,10 @@ rules:
   - '!openwiki::on-turn-completed'
   - '!openwiki::on-config-change'
 
+  # pdf: internal target. The hot-reload hook follows the same pattern as the
+  # other on-config-change denies.
+  - '!pdf::on-config-change'
+
   # Read-only / introspection (extend below for your tools).
   - state::get
   - state::list
@@ -192,11 +203,17 @@ rules:
   - router::models::budget
   - router::models::supports
   - router::provider::list
-  # harness::status is read-only (current turn status for a session).
+  # harness::status is read-only (current turn status for a session), and
+  # harness::triggers::list is the matching read over a session's own trigger
+  # bindings. The teardown half (harness::triggers::unregister) is NOT listed:
+  # agents unregister through the intercepted engine::unregister_trigger,
+  # which enforces ownership; the standalone teardown stays behind the
+  # needs_approval default for the console's privileged path.
   - harness::status
   - eval::status
   - eval::result
   - eval::assert::exact
+  - harness::triggers::list
   - oauth::anthropic::status
   - oauth::openai-codex::status
   - engine::functions::list
@@ -207,9 +224,15 @@ rules:
   - engine::workers::info
   - engine::registered-triggers::list
   - engine::registered-triggers::info
-  # Reactive subscriptions: agents bind events to `harness::react` and tear
-  # them down. The trigger fires `harness::react` engine-side (bypassing this
-  # gate); registering/unregistering the binding is the agent-facing surface.
+  # Subscriptions: engine::register_trigger is intercepted by the harness and
+  # produces a binding that either WAKES the registering session or CALLS a
+  # plain function — a binding never starts an agent (`harness::spawn` is
+  # refused as a target, so nothing fires engine-side past this gate
+  # anymore). Call targets are checked at registration against the
+  # registrant's own policy AND the approval gate's verdict, so a binding
+  # cannot grant an unattended call the session could not make itself.
+  # Bindings registered against the removed `harness::react` / spawn targets
+  # are purged on startup; register a wake and spawn directly instead.
   - engine::register_trigger
   - engine::unregister_trigger
   - worker::list
@@ -307,3 +330,14 @@ rules:
   # HTTP-trigger verification; it enforces size/timeout caps and server-side
   # SSRF protection, so it is allowed by default.
   - web::fetch
+
+  # pdf: every function is a pure read of a document the agent could already
+  # reach through the filesystem scope, and reaching it any other way returns
+  # binary noise. Nothing here writes, spends, or leaves the machine, and each
+  # response is capped by the worker's own configuration. Gating these would
+  # mean an approval prompt to read a file the agent is already allowed to open.
+  - pdf::classify
+  - pdf::to-markdown
+  - pdf::extract-text
+  - pdf::extract-items
+  - pdf::extract-regions

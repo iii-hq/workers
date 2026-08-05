@@ -186,12 +186,6 @@ export const engineTriggersListDone = base(
   wrapHarness({
     triggers: [
       {
-        id: 'database::row-change',
-        worker_name: 'Andersons-MBP.localdomain:28943',
-        description:
-          'Postgres logical replication. Stubbed in v1.0 pending tokio-postgres replication slot support.',
-      },
-      {
         id: 'directory::prompts::on-change',
         worker_name: 'iii-directory',
         description:
@@ -206,6 +200,12 @@ export const engineTriggersListDone = base(
       { id: 'http', worker_name: 'http', description: 'HTTP API trigger' },
       { id: 'log', worker_name: 'log', description: 'Log event trigger' },
       { id: 'state', worker_name: 'state', description: 'State trigger' },
+      {
+        id: 'storage::object-created',
+        worker_name: 'Andersons-MBP.localdomain:28943',
+        description:
+          'Fires when an object is written to a configured bucket whose notifications source is wired up.',
+      },
       { id: 'stream', worker_name: 'stream', description: 'Stream trigger' },
     ],
   }),
@@ -561,24 +561,18 @@ export const engineWorkerRegisterRunning = base(
 
 /* ---------------- engine::register_trigger ---------------- */
 
-export const engineRegisterTriggerReact = base(
-  'engine-register-trigger-react',
+export const engineRegisterTriggerSpawn = base(
+  'engine-register-trigger-spawn',
   'engine::register_trigger',
   {
     trigger_type: 'state',
-    function_id: 'harness::react',
+    function_id: 'harness::spawn',
     config: { key: 'build', scope: 'ops' },
     metadata: {
       model: 'claude-sonnet-5',
       session_id: 'console-f0aac029-62a3-43f8-953b-45d0d903a866',
       task: 'You are the GATE REVIEWER for a deploy pipeline. Both state records ops/build and ops/tests must be green before you approve.',
       options: { functions: { allow: ['state::get'] } },
-      join: {
-        id: 'gate-decision-join',
-        key: 'build',
-        expect: ['build', 'tests'],
-        rearm: true,
-      },
     },
   },
   wrapHarness({ id: 'trg-abc123def456' }),
@@ -593,49 +587,6 @@ export const engineRegisterTriggerCron = base(
     config: { expression: '0 0 3 * * *' },
   },
   wrapHarness({ id: 'trg-cron-01' }),
-)
-
-/** Call-mode reaction: the event dispatches an fp::pipe instead of spawning
- * a sub-agent — the THEN pane renders the pipeline's step route. Mirrors a
- * live turn-completed → count-check → state::set binding. */
-export const engineRegisterTriggerCallPipe = base(
-  'engine-register-trigger-call-pipe',
-  'engine::register_trigger',
-  {
-    trigger_type: 'harness::turn-completed',
-    function_id: 'harness::react',
-    config: {
-      parent_session_id: 'console-b048edc6-3a09-41f7-884e-fec9ba1b17e2',
-    },
-    metadata: {
-      call: {
-        function_id: 'fp::pipe',
-        payload: {
-          through: [
-            {
-              function: 'database::query',
-              payload: {
-                db: 'sqlite_db',
-                sql: "SELECT COUNT(*) AS n FROM scan_progress WHERE scan_run = 'sec-m8k4' AND status IN ('done','failed')",
-              },
-            },
-            { function: 'fp::get', payload: { path: '/rows/0/n' } },
-            { function: 'fp::when', payload: { op: '>=', to: 12 } },
-            {
-              function: 'state::set',
-              into: '/value/batches_done',
-              payload: {
-                key: 'turn_complete',
-                scope: 'run-sec-m8k4',
-                value: { done: true, run_id: 'sec-m8k4' },
-              },
-            },
-          ],
-        },
-      },
-    },
-  },
-  wrapHarness({ id: 'sub_2a77e6f39bad' }),
 )
 
 export const engineRegisterTriggerSubscribe = base(
@@ -658,7 +609,7 @@ export const engineRegisterTriggerRunning = base(
   'engine::register_trigger',
   {
     trigger_type: 'state',
-    function_id: 'harness::react',
+    function_id: 'harness::spawn',
     config: { scope: 'ops' },
     metadata: { model: 'claude-sonnet-5', task: 'watch for changes' },
   },
@@ -685,9 +636,8 @@ export const engineFixtures = [
   engineWorkerInfoNotFound,
   engineWorkerRegisterDone,
   engineWorkerRegisterRunning,
-  engineRegisterTriggerReact,
+  engineRegisterTriggerSpawn,
   engineRegisterTriggerCron,
-  engineRegisterTriggerCallPipe,
   engineRegisterTriggerSubscribe,
   engineRegisterTriggerRunning,
   engineRunning,

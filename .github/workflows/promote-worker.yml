@@ -1,0 +1,257 @@
+name: Promote Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker:
+        description: Worker candidate to promote
+        required: true
+        type: string
+      version:
+        description: Stable semver candidate version
+        required: true
+        type: string
+      release_run_id:
+        description: Release workflow run containing the candidate evidence
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+  packages: write
+
+concurrency:
+  group: promote-worker-${{ inputs.worker }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote ${{ inputs.worker }} v${{ inputs.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      WORKER: ${{ inputs.worker }}
+      VERSION: ${{ inputs.version }}
+      RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+      API_URL: https://api.workers.iii.dev
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Validate dispatch context
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" == main ]] || {
+            echo "::error::Promotions must be dispatched from main"
+            exit 2
+          }
+          [[ "$WORKER" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || {
+            echo "::error::worker must be a Registry slug"
+            exit 2
+          }
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::version must be stable semver MAJOR.MINOR.PATCH"
+            exit 2
+          }
+          [[ "$RELEASE_RUN_ID" =~ ^[0-9]+$ ]] || {
+            echo "::error::release_run_id must be numeric"
+            exit 2
+          }
+
+      - name: Validate Release workflow run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_RUN_ID" >release-run.json
+          run_name=$(jq -r .name release-run.json)
+          [[ "$run_name" == Release ]] || {
+            echo "::error::run $RELEASE_RUN_ID belongs to '$run_name', expected 'Release'"
+            exit 1
+          }
+          event=$(jq -r .event release-run.json)
+          [[ "$event" == push || "$event" == workflow_dispatch ]] || {
+            echo "::error::Release run event '$event' is not promotable"
+            exit 1
+          }
+
+      - name: Download candidate evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact="release-candidate-${WORKER}-${VERSION}"
+          mkdir -p evidence
+          gh run download "$RELEASE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$artifact" \
+            --dir evidence
+          test -s evidence/release-candidate.json
+
+      - name: Validate candidate identity and gates
+        id: candidate
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/release_candidate.py validate \
+            --evidence evidence/release-candidate.json \
+            --repository "$GITHUB_REPOSITORY" \
+            --release-run-id "$RELEASE_RUN_ID" \
+            --worker "$WORKER" \
+            --version "$VERSION" \
+            --output validated-candidate.json
+
+          tag="${WORKER}/v${VERSION}"
+          git fetch origin "+refs/tags/${tag}:refs/tags/${tag}"
+          tag_sha=$(git rev-list -n 1 "$tag")
+          evidence_sha=$(jq -r .tag_sha validated-candidate.json)
+          [[ "$tag_sha" == "$evidence_sha" ]] || {
+            echo "::error::Git tag resolves to $tag_sha, evidence records $evidence_sha"
+            exit 1
+          }
+          run_attempt=$(jq -r .run_attempt release-run.json)
+          evidence_attempt=$(jq -r .run_attempt validated-candidate.json)
+          [[ "$run_attempt" == "$evidence_attempt" ]] || {
+            echo "::error::Release run attempt is $run_attempt, evidence records $evidence_attempt"
+            exit 1
+          }
+
+          deploy=$(jq -r .deploy validated-candidate.json)
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "deploy=$deploy" >>"$GITHUB_OUTPUT"
+
+      - name: Validate GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.candidate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease,url >github-release-before.json
+          jq -e --arg tag "$TAG" '.tagName == $tag and .isDraft == false' \
+            github-release-before.json >/dev/null
+
+      - name: Promote Registry release tag
+        env:
+          WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+        run: |
+          python3 .github/scripts/registry_release.py \
+            --api-url "$API_URL" \
+            --worker "$WORKER" \
+            --version "$VERSION" \
+            --output registry-promotion.json
+
+      - name: Set up Docker Buildx
+        if: steps.candidate.outputs.deploy == 'image'
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to ghcr.io
+        if: steps.candidate.outputs.deploy == 'image'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote image latest alias
+        if: steps.candidate.outputs.deploy == 'image'
+        run: |
+          set -euo pipefail
+          owner=${GITHUB_REPOSITORY_OWNER,,}
+          version_ref="ghcr.io/${owner}/${WORKER}:${VERSION}"
+          latest_ref="ghcr.io/${owner}/${WORKER}:latest"
+          docker buildx imagetools create --tag "$latest_ref" "$version_ref"
+          docker buildx imagetools inspect "$version_ref" --raw >version-manifest.json
+          docker buildx imagetools inspect "$latest_ref" --raw >latest-manifest.json
+          cmp version-manifest.json latest-manifest.json
+
+      - name: Finalize GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.candidate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --prerelease=false --latest=false
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease,url >github-release-after.json
+          jq -e --arg tag "$TAG" \
+            '.tagName == $tag and .isDraft == false and .isPrerelease == false' \
+            github-release-after.json >/dev/null
+
+      - name: Announce promoted release
+        id: slack
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          CHANNEL: worker-releases
+          TAG: ${{ steps.candidate.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_url=$(jq -r .url github-release-after.json)
+          text="🚀 ${WORKER} v${VERSION} promoted to @latest — <${release_url}|GitHub Release>"
+          payload=$(jq -n --arg channel "$CHANNEL" --arg text "$text" \
+            '{channel: $channel, text: $text}')
+          resp=$(curl -sf -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            -d "$payload")
+          jq -e .ok <<<"$resp" >/dev/null || {
+            echo "::error::Slack API error: $(jq -r .error <<<"$resp")"
+            exit 1
+          }
+          echo "ts=$(jq -r .ts <<<"$resp")" >>"$GITHUB_OUTPUT"
+
+          notes=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null || true)
+          if [[ -n "$notes" ]]; then
+            notes=$(printf '%s' "$notes" | head -c 2900)
+            thread_payload=$(jq -n \
+              --arg channel "$CHANNEL" \
+              --arg text "$notes" \
+              --arg ts "$(jq -r .ts <<<"$resp")" \
+              '{channel: $channel, text: $text, thread_ts: $ts}')
+            thread_resp=$(curl -sf -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              -d "$thread_payload")
+            jq -e .ok <<<"$thread_resp" >/dev/null || {
+              echo "::error::Slack thread API error: $(jq -r .error <<<"$thread_resp")"
+              exit 1
+            }
+          fi
+
+      - name: Write promotion summary
+        if: always()
+        run: |
+          {
+            echo "### Worker promotion"
+            echo
+            echo "- Candidate: \`${WORKER}@${VERSION}\`"
+            echo "- Release run: [${RELEASE_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID})"
+            if [[ -f registry-promotion.json ]]; then
+              previous=$(jq -r '.previous_latest // "none"' registry-promotion.json)
+              changed=$(jq -r .changed registry-promotion.json)
+              echo "- Previous latest: \`${previous}\`"
+              echo "- Registry changed: \`${changed}\`"
+            fi
+            if [[ -f github-release-after.json ]]; then
+              echo "- GitHub Release: $(jq -r .url github-release-after.json)"
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload promotion evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: promotion-${{ inputs.worker }}-${{ inputs.version }}
+          path: |
+            validated-candidate.json
+            release-run.json
+            github-release-before.json
+            github-release-after.json
+            registry-promotion.json
+          retention-days: 30
+          if-no-files-found: warn

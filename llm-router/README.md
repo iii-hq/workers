@@ -139,7 +139,7 @@ within seconds — no restart.
   another worker's environment shows up as `configured: false`.
 - **Registration-token recovery.** Re-registering a provider id without its
   original token is rejected (anti-takeover). If a provider durably lost its
-  token, delete the router's registry state (iii-state scope `llm-router`,
+  token, delete the router's registry state (state scope `llm-router`,
   key `registry`) and restart the affected providers to re-bind; pasted
   credentials in the configuration entry are unaffected.
 

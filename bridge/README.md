@@ -49,25 +49,25 @@ entry does not un-register its handler — the SDK has no unregister — so the
 function id stays live but its handler returns `bridge_error` until the worker
 is restarted.
 
-## Requires removing the built-in `iii-bridge` worker
+## Requires removing the legacy built-in bridge worker
 
-The built-in `iii-bridge` worker registers the same function ids
+The legacy built-in bridge worker registers the same function ids
 (`bridge.invoke`, `bridge.invoke_async`, plus any configured forward/expose
 names). Two workers registering the same function id on one engine collide —
-whichever registers last wins — so this worker requires `iii-bridge` to be
+whichever registers last wins — so this worker requires the legacy built-in to be
 absent: omit it from the engine's `config.yaml` (a config that doesn't list a
 worker won't run it). This is a duplicate-function-id collision, not a trigger
 type conflict — `bridge` registers no trigger types.
 
 On boot, this worker queries the engine for connected workers and refuses to
-start with a clear error if `iii-bridge` is still active, so a stale config
+start with a clear error if the legacy built-in is still active, so a stale config
 fails loudly instead of silently racing the built-in worker for ownership of
 `bridge.invoke`/`bridge.invoke_async`.
 
 The engine's own state/queue/stream/configuration **bridge adapters** are
-unaffected by this worker or by removing `iii-bridge`: those adapters open
+unaffected by this worker or by removing the legacy built-in: those adapters open
 their own direct SDK connections to bridge engine-internal subsystems and never
-depended on the `iii-bridge` worker.
+depended on the legacy built-in worker.
 
 ## Parity vs builtin
 

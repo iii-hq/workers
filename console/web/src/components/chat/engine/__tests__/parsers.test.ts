@@ -1,3 +1,5 @@
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import {
   coerceJsonObject,
@@ -11,7 +13,6 @@ import {
   isEngineListFunction,
   parseFunctionInfoResponse,
   parseTriggerInfoResponse,
-  reactSpecSchema,
   registeredTriggersListRequestSchema,
   registeredTriggersListResponseSchema,
   registerTriggerRequestSchema,
@@ -29,6 +30,7 @@ import {
   workersRegisterRequestSchema,
   workersRegisterResponseSchema,
 } from '../parsers'
+import { RegisterTriggerView } from '../RegisterTriggerView'
 
 function wrap<T>(details: T) {
   return {
@@ -444,65 +446,73 @@ describe('engine::register_trigger', () => {
     expect(isEngineListFunction('engine::register_trigger')).toBe(true)
   })
 
-  it('parses a state-trigger → harness::react registration', () => {
+  it('parses a state-trigger → call-binding registration', () => {
     const req = safeParseRequest(registerTriggerRequestSchema, {
       trigger_type: 'state',
-      function_id: 'harness::react',
+      function_id: 'database::execute',
       config: { key: 'build', scope: 'ops' },
       metadata: {
-        model: 'claude-sonnet-5',
-        task: 'You are the GATE REVIEWER',
-        options: { functions: { allow: ['state::get'] } },
-        join: {
-          id: 'gate-decision-join',
-          key: 'build',
-          expect: ['build', 'tests'],
-          rearm: true,
-        },
+        payload: { db: 'primary', sql: 'INSERT INTO builds DEFAULT VALUES' },
+        event_into: '/event',
       },
     })
     expect(req?.trigger_type).toBe('state')
-    expect(req?.function_id).toBe('harness::react')
-    const react = safeParseRequest(reactSpecSchema, req?.metadata)
-    expect(react?.model).toBe('claude-sonnet-5')
-    expect(react?.join?.expect).toEqual(['build', 'tests'])
-    expect(react?.join?.rearm).toBe(true)
+    expect(req?.function_id).toBe('database::execute')
+    expect(req?.metadata).toMatchObject({ event_into: '/event' })
   })
 
-  it('rejects a react spec whose join.expect is a count, not an array', () => {
-    expect(
-      safeParseRequest(reactSpecSchema, {
-        model: 'm',
-        task: 't',
-        join: { id: 'j', key: 'build', expect: 2 },
-      }),
-    ).toBeNull()
-  })
-
-  it('parses a call-mode react spec (no model/task, a call target)', () => {
-    // The exact live shape that fell through to a raw metadata dump: a
-    // turn-completed binding whose reaction is an fp::pipe dispatch.
-    const react = safeParseRequest(reactSpecSchema, {
-      call: {
-        function_id: 'fp::pipe',
-        payload: {
-          through: [
-            { function: 'database::query', payload: { db: 'sqlite_db' } },
-            { function: 'fp::get', payload: { path: '/rows/0/n' } },
-            { function: 'fp::when', payload: { op: '>=', to: 12 } },
-            { function: 'state::set', into: '/value/batches_done' },
-          ],
-        },
+  it('renders an explicit long-form target', () => {
+    const input = {
+      trigger_type: 'state',
+      config: { key: 'build', scope: 'ops' },
+      target: {
+        function_id: 'database::execute',
+        payload: { deployment: 'deploy-42' },
+        event_into: '/args/event',
       },
-    })
-    expect(react?.call?.function_id).toBe('fp::pipe')
-    expect(react?.model).toBeUndefined()
-    // event_into passthrough
-    expect(
-      safeParseRequest(reactSpecSchema, {
-        call: { function_id: 'state::set', event_into: '/value' },
-      })?.call?.event_into,
-    ).toBe('/value')
+    }
+    const req = safeParseRequest(registerTriggerRequestSchema, input)
+    expect(req?.target).toEqual(input.target)
+
+    const html = renderToStaticMarkup(
+      createElement(RegisterTriggerView, {
+        input,
+        output: { subscription_id: 'sub-1', once: false },
+      }),
+    )
+    expect(html).toContain('database::execute')
+    expect(html).toContain('deploy-42')
+    expect(html).toContain('/args/event')
+    expect(html).not.toContain('this session')
+  })
+
+  it('parses and renders gating conditions', () => {
+    const input = {
+      trigger_type: 'state',
+      config: { scope: 'rx_run' },
+      label: 'wake when all couriers done',
+      once: true,
+      conditions: [
+        {
+          function_id: 'state::barrier',
+          config: {
+            expect: ['acme', 'globex', 'initech'],
+            id: 'all_couriers_done',
+            key_from: '/key',
+          },
+        },
+      ],
+    }
+    const req = safeParseRequest(registerTriggerRequestSchema, input)
+    expect(req?.conditions).toEqual(input.conditions)
+
+    const html = renderToStaticMarkup(
+      createElement(RegisterTriggerView, { input, output: undefined }),
+    )
+    expect(html).toContain('only if')
+    expect(html).toContain('state::barrier')
+    expect(html).toContain('acme, globex, initech')
+    expect(html).toContain('all_couriers_done')
   })
 
   it('parses the harness subscribe variant (no function_id, has label/once)', () => {
@@ -540,18 +550,18 @@ describe('engine::register_trigger', () => {
   })
 
   it('recovers a double-encoded request through the full render chain', () => {
-    // The exact shape from the screenshot: the whole payload is one JSON
-    // string. index.tsx does coerceJsonObject(unwrapEnvelope(input)).
+    // The whole payload arrives as one JSON string; index.tsx does
+    // coerceJsonObject(unwrapEnvelope(input)).
     const stringified = JSON.stringify({
-      trigger_type: 'harness::turn-completed',
-      function_id: 'harness::react',
+      trigger_type: 'state',
+      function_id: 'database::execute',
       config: { session_id: 'analyst-2-deep' },
-      metadata: { model: 'claude-sonnet-5', task: 'deep dive' },
+      metadata: { payload: { db: 'primary' }, event_into: '/event' },
     })
     const input = coerceJsonObject(unwrapEnvelope(stringified))
     const req = safeParseRequest(registerTriggerRequestSchema, input)
-    expect(req?.trigger_type).toBe('harness::turn-completed')
-    expect(req?.function_id).toBe('harness::react')
+    expect(req?.trigger_type).toBe('state')
+    expect(req?.function_id).toBe('database::execute')
     expect(configFilters(req?.config)).toEqual([
       { label: 'session', value: 'analyst-2-deep' },
     ])
