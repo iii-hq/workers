@@ -48,6 +48,13 @@ pub struct TriggerFired<'a> {
     pub key: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<&'a str>,
+    /// What this fire delivered: the final dispatched payload of a ƒ-call
+    /// (post-conditions, post-projection, post-filesystem-stamping — the
+    /// attempted payload when the dispatch failed), or the post-conditions
+    /// event a wake injected. `None` on skip/gc/expiry records — nothing was
+    /// delivered. Uncapped by design; see the 2026-08-05 spec.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<&'a Value>,
     pub fired_at: i64,
 }
 
@@ -151,6 +158,7 @@ mod tests {
             scope: None,
             key: None,
             note: None,
+            payload: None,
             fired_at: 42,
         };
         let v = serde_json::to_value(&rec).unwrap();
@@ -162,5 +170,26 @@ mod tests {
         // Skipped optionals must not appear.
         assert!(v.get("trigger_id").is_none());
         assert!(v.get("label").is_none());
+        assert!(v.get("payload").is_none());
+    }
+
+    #[test]
+    fn record_carries_the_delivered_payload_when_present() {
+        let payload = json!({ "event": { "db": "primary", "op": "update", "affected_rows": 1 } });
+        let rec = TriggerFired {
+            subscription_id: "sub_1",
+            trigger_id: None,
+            target: "receiving::check_completion",
+            label: None,
+            once: false,
+            retired: false,
+            scope: None,
+            key: None,
+            note: None,
+            payload: Some(&payload),
+            fired_at: 42,
+        };
+        let v = serde_json::to_value(&rec).unwrap();
+        assert_eq!(v["payload"], payload);
     }
 }

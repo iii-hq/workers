@@ -153,6 +153,7 @@ pub async fn notify_wake_lost(deps: &Deps, binding: &Binding, cause: WakeLost<'_
             scope,
             key,
             note: Some(&note),
+            payload: None,
             fired_at: AgentMessage::now_ms(),
         },
     )

@@ -301,6 +301,7 @@ pub async fn handle(
             scope: fired::event_state_watch(&event).0,
             key: fired::event_state_watch(&event).1,
             note: note.as_deref(),
+            payload: None,
             fired_at: now,
         },
     )
@@ -585,6 +586,7 @@ async fn record_stop(deps: &Deps, binding: &Binding, event: &Value, skip: Skip) 
             scope,
             key,
             note: Some(&skip.reason),
+            payload: None,
             fired_at: AgentMessage::now_ms(),
         },
     )

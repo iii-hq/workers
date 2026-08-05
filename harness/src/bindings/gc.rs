@@ -135,6 +135,7 @@ pub async fn retire_stale_spawn_binding(deps: &Deps, binding: &crate::bindings::
             scope: None,
             key: None,
             note: Some("harness::spawn is no longer a binding target; the binding was retired"),
+            payload: None,
             fired_at: crate::subscriptions::fired::now_ms(),
         },
     )
