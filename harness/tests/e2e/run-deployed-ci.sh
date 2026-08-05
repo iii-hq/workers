@@ -268,7 +268,7 @@ printf 'workers: []\n' >"$project_dir/config.yaml"
 engine_pid=$!
 wait_for_engine
 
-workers=("harness@$worker_tag" "database@$worker_tag")
+workers=("harness@$worker_tag" "database@$worker_tag" "fp@$worker_tag" "web@$worker_tag")
 declare -A providers=()
 for provider in "$HARNESS_E2E_PROVIDER" "$HARNESS_E2E_JUDGE_PROVIDER"; do
   if [[ -z "${providers[$provider]:-}" ]]; then
