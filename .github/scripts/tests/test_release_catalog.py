@@ -29,6 +29,7 @@ def test_rejects_policy_for_unknown_worker(tmp_path: Path):
                     "release_workflow": "release.yml",
                     "allow_direct_latest": True,
                     "required_validation": "smoke",
+                    "release_control_enabled": True,
                 },
                 "standard_workers": [],
                 "special_workers": {},

@@ -83,6 +83,11 @@ on:
         required: false
         type: string
         default: latest
+      stack_versions:
+        description: JSON object of exact worker versions required in a registry E2E stack
+        required: false
+        type: string
+        default: '{}'
       coverage:
         description: Instrument the E2E stack and produce an LLVM coverage report
         required: false
@@ -149,6 +154,7 @@ jobs:
           REGISTRY_TAG: ${{ inputs.registry_tag }}
           RELEASE_WORKER: ${{ inputs.release_worker }}
           RELEASE_VERSION: ${{ inputs.release_version }}
+          STACK_VERSIONS: ${{ inputs.stack_versions }}
           COVERAGE: ${{ inputs.coverage }}
         run: |
           set -euo pipefail
@@ -170,6 +176,14 @@ jobs:
               [[ "$REGISTRY_TAG" =~ ^[A-Za-z0-9._-]+$ ]]
               [[ "$RELEASE_WORKER" =~ ^[A-Za-z0-9_-]+$ ]]
               [[ -n "$RELEASE_VERSION" ]]
+              jq -e --arg worker "$RELEASE_WORKER" --arg version "$RELEASE_VERSION" '
+                type == "object" and
+                all(to_entries[];
+                  (.key | test("^[a-z0-9][a-z0-9_-]*$")) and
+                  (.value | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+(-(experimental|alpha|beta))?$"))
+                ) and
+                .[$worker] == $version
+              ' <<<"$STACK_VERSIONS" >/dev/null
               [[ "$COVERAGE" == "false" ]]
               ;;
             *)
@@ -428,6 +442,7 @@ jobs:
           HARNESS_E2E_RELEASE_TAG: ${{ inputs.release_tag }}
           HARNESS_E2E_RELEASE_RUN_ID: ${{ inputs.release_run_id }}
           HARNESS_E2E_SMOKE_RUN_ID: ${{ inputs.smoke_run_id }}
+          HARNESS_E2E_STACK_VERSIONS: ${{ inputs.stack_versions }}
           HARNESS_E2E_BIN: ${{ github.workspace }}/target/runner/harness-e2e
           HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
           HARNESS_E2E_SCENARIO: ${{ matrix.scenario }}

@@ -52,6 +52,8 @@ def load_catalog(path: Path = CATALOG_PATH) -> dict[str, dict[str, Any]]:
             raise ValueError(f"{slug}: required_validation must be smoke|full")
         if not isinstance(config.get("allow_direct_latest"), bool):
             raise ValueError(f"{slug}: allow_direct_latest must be boolean")
+        if not isinstance(config.get("release_control_enabled"), bool):
+            raise ValueError(f"{slug}: release_control_enabled must be boolean")
     return catalog
 
 
@@ -95,7 +97,13 @@ def main(argv: list[str] | None = None) -> int:
     get.add_argument("worker")
     get.add_argument(
         "field",
-        choices=("release_workflow", "manifest", "allow_direct_latest", "required_validation"),
+        choices=(
+            "release_workflow",
+            "manifest",
+            "allow_direct_latest",
+            "required_validation",
+            "release_control_enabled",
+        ),
     )
     subparsers.add_parser("json")
     args = parser.parse_args(argv)

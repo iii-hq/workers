@@ -48,6 +48,10 @@ on:
         description: Release Control operation UUID
         type: string
         default: ''
+      stack_versions:
+        description: JSON object of worker slugs to exact candidate versions required in iii.lock
+        type: string
+        default: '{}'
 
 permissions:
   actions: read
@@ -72,6 +76,7 @@ jobs:
       release_version: ${{ inputs.release_version }}
       release_run_id: ${{ inputs.release_run_id }}
       smoke_run_id: ${{ inputs.smoke_run_id }}
+      stack_versions: ${{ inputs.stack_versions }}
       subjects: ${{ inputs.subjects || vars.HARNESS_E2E_SUBJECTS || '[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]' }}
       judge_model: ${{ vars.HARNESS_E2E_JUDGE_MODEL || 'claude-sonnet-4-6' }}
       judge_provider: ${{ vars.HARNESS_E2E_JUDGE_PROVIDER || 'anthropic' }}
@@ -100,6 +105,7 @@ jobs:
           OPERATION_ID: ${{ inputs.operation_id || format('github:{0}', github.run_id) }}
           STEP_ID: harness-e2e
           SUITE_RESULT: ${{ needs.e2e.result }}
+          STACK_VERSIONS: ${{ inputs.stack_versions }}
         run: |
           python3 .github/scripts/harness_e2e_evidence.py build \
             --repository "${{ github.repository }}" \
@@ -113,6 +119,7 @@ jobs:
             --release-version "${{ inputs.release_version }}" \
             --registry-tag "${{ inputs.registry_tag }}" \
             --cli-channel "${{ inputs.cli_channel }}" \
+            --stack-versions "$STACK_VERSIONS" \
             --suite-result "$SUITE_RESULT" \
             --output harness-e2e-evidence.json
 

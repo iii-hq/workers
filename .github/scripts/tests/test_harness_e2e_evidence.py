@@ -22,6 +22,7 @@ def build_args(**overrides):
         "registry_tag": "next",
         "cli_channel": "next",
         "suite_result": "success",
+        "stack_versions": '{"harness":"1.2.3","state":"0.22.0"}',
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -29,6 +30,7 @@ def build_args(**overrides):
 
 def test_build_marks_matching_green_suite_ready():
     assert build_evidence(build_args())["e2e_ready"] is True
+    assert build_evidence(build_args())["stack_versions"]["state"] == "0.22.0"
 
 
 def test_build_rejects_latest_as_promotion_evidence():
@@ -46,6 +48,7 @@ def test_validate_checks_release_identity(tmp_path):
         worker="harness",
         version="1.2.3",
         operation_id="",
+        stack_versions='{"harness":"1.2.3","state":"0.22.0"}',
         output=None,
     )
     assert validate_evidence(args)["e2e_ready"] is True

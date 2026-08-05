@@ -1,9 +1,14 @@
 schema_version: 1
 
+release_control:
+  contract: 2
+  harness_stack_versions: 1
+
 defaults:
   release_workflow: release.yml
   allow_direct_latest: true
   required_validation: smoke
+  release_control_enabled: true
 
 standard_workers:
   - acp
@@ -64,6 +69,7 @@ special_workers:
   lsp-vscode:
     release_workflow: release-lsp-vscode.yml
     manifest: package.json
+    release_control_enabled: false
 
 policies:
   harness:

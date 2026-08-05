@@ -11,11 +11,22 @@ STABLE_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
 
 def build_evidence(args: argparse.Namespace) -> dict:
+    try:
+        stack_versions = json.loads(args.stack_versions)
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"invalid stack_versions: {error}") from error
+    if not isinstance(stack_versions, dict):
+        raise SystemExit("stack_versions must be a JSON object")
+    if not stack_versions:
+        stack_versions = {args.release_worker: args.release_version}
+    if stack_versions.get(args.release_worker) != args.release_version:
+        raise SystemExit("stack_versions must contain the exact release worker version")
     ready = (
         args.suite_result == "success"
         and args.registry_tag == "next"
         and bool(args.release_run_id)
         and bool(args.release_tag)
+        and bool(stack_versions)
     )
     return {
         "schema_version": 2,
@@ -31,6 +42,7 @@ def build_evidence(args: argparse.Namespace) -> dict:
         "registry_tag": args.registry_tag,
         "cli_channel": args.cli_channel,
         "suite_result": args.suite_result,
+        "stack_versions": stack_versions,
         "e2e_ready": ready,
         "artifacts": ["harness-e2e-benchmark", "harness-e2e-dashboard"],
     }
@@ -55,6 +67,9 @@ def validate_evidence(args: argparse.Namespace) -> dict:
         for key, value in expected.items()
         if evidence.get(key) != value
     ]
+    stack_versions = evidence.get("stack_versions")
+    if not isinstance(stack_versions, dict) or stack_versions.get(args.worker) != args.version:
+        failures.append("stack_versions must contain the exact released worker version")
     if args.operation_id and evidence.get("operation_id") != args.operation_id:
         failures.append(
             f"operation_id: expected {args.operation_id!r}, got {evidence.get('operation_id')!r}"
@@ -84,6 +99,7 @@ def main() -> None:
         "registry_tag",
         "cli_channel",
         "suite_result",
+        "stack_versions",
     ):
         build.add_argument(f"--{name.replace('_', '-')}", required=True)
     build.add_argument("--run-attempt", type=int, required=True)
