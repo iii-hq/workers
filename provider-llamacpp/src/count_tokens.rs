@@ -146,3 +146,27 @@ pub async fn handle(
         estimator: ESTIMATOR_METERED.into(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_count_route_is_a_server_root_path() {
+        // Verified against a running llama-server: this is the URL that
+        // answers `{"input_tokens": N}`. The Anthropic-compatible route sits
+        // at the server root, so the whole `/v1/chat/completions` tail goes.
+        assert_eq!(
+            count_tokens_url("http://127.0.0.1:8080/v1/chat/completions"),
+            "http://127.0.0.1:8080/v1/messages/count_tokens"
+        );
+    }
+
+    #[test]
+    fn a_server_root_configured_directly_keeps_working() {
+        assert_eq!(
+            count_tokens_url("http://127.0.0.1:8080/"),
+            "http://127.0.0.1:8080/v1/messages/count_tokens"
+        );
+    }
+}

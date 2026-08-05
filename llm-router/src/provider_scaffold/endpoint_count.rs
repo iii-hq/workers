@@ -22,22 +22,20 @@ pub const ESTIMATOR_METERED: &str = "metered";
 /// finalizes a turn.
 pub const COUNT_TOKENS_TIMEOUT_SECS: u64 = 20;
 
-/// The `/…/sibling` of a configured endpoint path — how every provider here
-/// derives a counting URL from the messages URL it was configured with, so a
-/// proxy or gateway keeps serving both.
-pub fn sibling_url(api_url: &str, sibling: &str) -> String {
-    format!("{}/{sibling}", api_url.trim_end_matches('/'))
-}
-
-/// Replace the last path segment of a configured endpoint (`…/v1/chat/completions`
-/// → `…/v1/<replacement>`), for upstreams whose counting route is a peer of the
-/// chat route rather than a child of it.
-pub fn peer_url(api_url: &str, replacement: &str) -> String {
-    let trimmed = api_url.trim_end_matches('/');
-    match trimmed.rfind('/') {
-        Some(cut) => format!("{}/{replacement}", &trimmed[..cut]),
-        None => format!("{trimmed}/{replacement}"),
-    }
+/// A route under the provider's API base, derived from the chat endpoint it
+/// was configured with (`…/v1/chat/completions` + `tokenizers/estimate` →
+/// `…/v1/tokenizers/estimate`). Deriving rather than hardcoding is what keeps
+/// a proxy or gateway serving the counting route too; the suffix stripped is
+/// the same one each provider's discovery strips for its models route.
+///
+/// Trimming a single trailing segment would be wrong here: `chat/completions`
+/// is two, so a naive cut lands on `…/v1/chat/tokenizers/estimate`, which no
+/// upstream serves.
+pub fn base_route_url(api_url: &str, route: &str) -> String {
+    let base = api_url
+        .strip_suffix("/chat/completions")
+        .unwrap_or_else(|| api_url.trim_end_matches('/'));
+    format!("{base}/{route}")
 }
 
 /// POST a counting request and pull the number out of the reply.
@@ -85,4 +83,39 @@ pub async fn post_count(
             "provider/bad_response: counting reply carried no token count: {excerpt}"
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_route_hangs_off_the_api_base_not_the_chat_path() {
+        // `chat/completions` is two segments. Cutting one would produce
+        // `…/v1/chat/tokenizers/…`, which no upstream serves — the mistake
+        // this test exists to keep out.
+        assert_eq!(
+            base_route_url(
+                "https://api.moonshot.ai/v1/chat/completions",
+                "tokenizers/estimate-token-count"
+            ),
+            "https://api.moonshot.ai/v1/tokenizers/estimate-token-count"
+        );
+        assert_eq!(
+            base_route_url("https://api.x.ai/v1/chat/completions", "tokenize-text"),
+            "https://api.x.ai/v1/tokenize-text"
+        );
+    }
+
+    #[test]
+    fn a_base_configured_directly_keeps_working() {
+        assert_eq!(
+            base_route_url("https://gateway.internal/v1", "tokenize-text"),
+            "https://gateway.internal/v1/tokenize-text"
+        );
+        assert_eq!(
+            base_route_url("https://gateway.internal/v1/", "tokenize-text"),
+            "https://gateway.internal/v1/tokenize-text"
+        );
+    }
 }

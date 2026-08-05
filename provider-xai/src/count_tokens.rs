@@ -19,7 +19,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::chat_framing::frame;
-use llm_router::provider_scaffold::endpoint_count::{peer_url, post_count};
+use llm_router::provider_scaffold::endpoint_count::{base_route_url, post_count};
 use llm_router::provider_scaffold::vocabulary_count::ESTIMATOR_TOKENIZER;
 use llm_router::types::events::ErrorKind;
 use llm_router::types::messages::AgentMessage;
@@ -107,7 +107,7 @@ pub async fn handle(
 
     let text_tokens = post_count(
         http,
-        peer_url(&cfg.api_url, "tokenize-text"),
+        base_route_url(&cfg.api_url, "tokenize-text"),
         headers,
         json!({ "model": cfg.model, "text": framed.joined() }),
         // The reply is the tokens themselves, so the count is their number.

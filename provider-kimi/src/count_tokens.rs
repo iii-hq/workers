@@ -11,7 +11,9 @@
 
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
-use llm_router::provider_scaffold::endpoint_count::{peer_url, post_count, ESTIMATOR_METERED};
+use llm_router::provider_scaffold::endpoint_count::{
+    base_route_url, post_count, ESTIMATOR_METERED,
+};
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
 use schemars::JsonSchema;
@@ -102,7 +104,7 @@ pub async fn handle(
 
     let tokens = post_count(
         http,
-        peer_url(&cfg.api_url, "tokenizers/estimate-token-count"),
+        base_route_url(&cfg.api_url, "tokenizers/estimate-token-count"),
         headers,
         body,
         // Moonshot wraps the number: `{"data": {"total_tokens": N}}`.
