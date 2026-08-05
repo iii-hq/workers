@@ -27,7 +27,7 @@ import { CellInspector } from './CellInspector'
 import { ColumnStatsPanel } from './ColumnStatsPanel'
 import { browseTableRef, type DbDriver, type TableSort, tableColumns } from './db-data'
 import { FilterBar } from './FilterBar'
-import { AlertCircle, type IconProps, Table2 } from './icons'
+import { AlertCircle, type IconProps, Table2, X } from './icons'
 import { Pagination } from './pagination'
 import { RowDetail } from './RowDetail'
 import { ResultGrid } from './result-grid'
@@ -51,9 +51,18 @@ interface TableDataPanelProps {
    * there.
    */
   initialFilters?: FilterSpec[]
+  /**
+   * Bumped by the page's refresh. Re-reads the page and columns in place —
+   * a refresh must not remount the panel, because a remount wipes filters,
+   * sort, and the cursor.
+   */
+  refreshToken?: number
 }
 
 const TableIcon = (p: IconProps) => <Table2 size={28} {...p} />
+
+/** The modifier key, written the way this keyboard has it. */
+const MOD = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent) ? '⌘' : 'ctrl+'
 
 export function TableDataPanel({
   host,
@@ -64,6 +73,7 @@ export function TableDataPanel({
   onOpenInSql,
   onFollow,
   initialFilters,
+  refreshToken,
 }: TableDataPanelProps) {
   const [page, setPage] = useState(0)
   const [pageSize, setPageSize] = useState(PAGE_SIZE)
@@ -85,17 +95,20 @@ export function TableDataPanel({
     setSelectedRow(null)
   }, [])
 
-  const pageFetcher = useCallback(
-    () =>
-      browseTableRef(host, db, table, {
-        page,
-        pageSize,
-        sort: sort ? [{ column: sort.column, direction: sort.dir }] : [],
-        filters: JSON.parse(appliedKey) as FilterSpec[],
-      }),
-    [host, db, table, page, pageSize, sort, appliedKey],
-  )
-  const columnsFetcher = useCallback(() => tableColumns(host, db, driver, table), [host, db, driver, table])
+  // `refreshToken` re-creates the fetchers so the reads re-run in place.
+  const pageFetcher = useCallback(() => {
+    void refreshToken
+    return browseTableRef(host, db, table, {
+      page,
+      pageSize,
+      sort: sort ? [{ column: sort.column, direction: sort.dir }] : [],
+      filters: JSON.parse(appliedKey) as FilterSpec[],
+    })
+  }, [host, db, table, page, pageSize, sort, appliedKey, refreshToken])
+  const columnsFetcher = useCallback(() => {
+    void refreshToken
+    return tableColumns(host, db, driver, table)
+  }, [host, db, driver, table, refreshToken])
   const pageRead = useDatabaseRead(enabled, pageFetcher)
   const columnsRead = useDatabaseRead(enabled, columnsFetcher)
 
@@ -154,13 +167,22 @@ export function TableDataPanel({
   }, [total, hasMore, page, pageSize])
 
   if (pageRead.error) {
+    // The filter bar stays: when a filter itself caused the failure, hiding
+    // it traps the user with no way to edit or remove the offending chip.
     return (
-      <StatusPanel
-        variant="alert"
-        icon={<AlertCircle size={18} />}
-        headline="database read failed"
-        detail={pageRead.error}
-      />
+      <div className="db-data">
+        <div className="db-data-main">
+          <FilterBar columns={columnInfo} filters={filters} onChange={changeFilters} />
+          <div className="db-pad">
+            <StatusPanel
+              variant="alert"
+              icon={<AlertCircle size={18} />}
+              headline="database read failed"
+              detail={pageRead.error}
+            />
+          </div>
+        </div>
+      </div>
     )
   }
 
@@ -187,7 +209,7 @@ export function TableDataPanel({
             title={filtering ? 'no matching rows' : 'empty table'}
             description={
               filtering
-                ? `no rows in ${table} match the ${applied.length} filter${applied.length === 1 ? '' : 's'} above.`
+                ? `no rows in ${table} match the ${applied.length} filter${applied.length === 1 ? '' : 's'} above`
                 : `${table} has no rows`
             }
           />
@@ -203,15 +225,27 @@ export function TableDataPanel({
     <div className="db-data">
       <div className="db-data-main">
         <FilterBar columns={columnInfo} filters={filters} onChange={changeFilters} />
-        <div className="db-data-bar">
+        <div className="db-data-bar db-toolbar">
           <span className="name">{table}</span>
-          <span>{result.columns?.length ?? Object.keys(rows[0] ?? {}).length} columns</span>
+          <span>
+            {(() => {
+              const n = result.columns?.length ?? Object.keys(rows[0] ?? {}).length
+              return `${n} column${n === 1 ? '' : 's'}`
+            })()}
+          </span>
           {/* A count is only trustworthy when it is described: "12,443 rows"
               beside three active filters reads as the table's size. The
               worker counts with the same filters applied, so say so. */}
-          <span>
-            {total !== null ? `${total.toLocaleString()} rows` : '… rows'}
+          <span className={total === null ? 'db-pulse' : undefined}>
+            {total !== null ? `${total.toLocaleString()} row${total === 1 ? '' : 's'}` : '… rows'}
             {filtering ? ' matching' : ''}
+          </span>
+          {/* The audible twin of the counts: rows and page after each load,
+              silence while loading. */}
+          <span className="db-sr-only" role="status">
+            {pageRead.loading
+              ? ''
+              : `${(total ?? rows.length).toLocaleString()} rows, page ${page + 1} of ${totalPages}`}
           </span>
           {sort ? (
             <button
@@ -226,8 +260,8 @@ export function TableDataPanel({
             </button>
           ) : null}
           {pageRead.loading ? (
-            <span className="db-pulse" style={{ color: 'var(--color-ink-ghost)' }}>
-              refreshing…
+            <span className="db-pulse" style={{ color: 'var(--color-ink-faint)' }}>
+              · refreshing…
             </span>
           ) : null}
           {view.view.hidden.length > 0 ? (
@@ -273,6 +307,11 @@ export function TableDataPanel({
           />
         </div>
         <div className="db-data-foot">
+          {/* Advertised nowhere else — without this line the roving-cursor
+              grid reads as mouse-only. */}
+          <span className="db-kbd-hint">
+            arrows move · pgup/pgdn turn pages · {MOD}c copies a cell · {MOD}⇧c the row
+          </span>
           <Pagination
             currentPage={page + 1}
             totalPages={totalPages}
@@ -295,17 +334,34 @@ export function TableDataPanel({
       {detailRow || keyboard.cursor ? (
         <div className="db-rowdetail">
           <Tabs defaultValue={detailRow ? 'row' : 'cell'}>
-            <TabsList>
-              <TabsTrigger value="row" disabled={!detailRow}>
-                row
-              </TabsTrigger>
-              <TabsTrigger value="cell" disabled={!keyboard.cursor}>
-                cell
-              </TabsTrigger>
-              <TabsTrigger value="stats" disabled={!cursorColumn}>
-                stats
-              </TabsTrigger>
-            </TabsList>
+            {/* The inspector opens implicitly (row click, cell cursor) — so
+                it must close explicitly too: without this button, a cell
+                cursor pinned the panel open with no way out. */}
+            <div className="db-inspector-head">
+              <TabsList>
+                <TabsTrigger value="row" disabled={!detailRow}>
+                  row
+                </TabsTrigger>
+                <TabsTrigger value="cell" disabled={!keyboard.cursor}>
+                  cell
+                </TabsTrigger>
+                <TabsTrigger value="stats" disabled={!cursorColumn}>
+                  stats
+                </TabsTrigger>
+              </TabsList>
+              <button
+                type="button"
+                className="db-icon-btn"
+                onClick={() => {
+                  setSelectedRow(null)
+                  keyboard.setCursor(null)
+                }}
+                aria-label="close inspector"
+                title="close inspector"
+              >
+                <X size={12} />
+              </button>
+            </div>
             <TabsContent value="row">
               {detailRow ? (
                 <RowDetail

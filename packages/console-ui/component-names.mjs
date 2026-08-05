@@ -44,6 +44,7 @@ export const componentNames = [
   'Tooltip',
   'TooltipContent',
   'TooltipTrigger',
+  'WorkerConfigurationDialog',
 ]
 
 export default componentNames
