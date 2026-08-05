@@ -101,8 +101,10 @@ pub struct SnapshotCategoriesV1 {
     pub hook_guidance: u64,
 }
 
-/// One generation's context accounting. `total <= usable` always holds for
-/// a generation that ran; `free = usable - total`.
+/// One generation's context accounting. `free = usable - total`, floored at
+/// zero: once provider usage lands, `total` is what was billed, which can
+/// exceed the `usable` budget the window was fit into — that budget was
+/// derived before the generation from an estimate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ContextSnapshotV1 {
     pub session_id: String,
@@ -161,6 +163,9 @@ pub async fn get(
     Ok(serde_json::from_value(v).ok())
 }
 
+/// Drop a session's snapshot row. Called when the session itself is deleted
+/// (`harness::on-session-deleted`), so the state worker does not keep a row
+/// for a session nobody can read any more.
 pub async fn delete(
     iii: &IIIClient,
     session_id: &str,
@@ -169,12 +174,18 @@ pub async fn delete(
     crate::state::state_delete(iii, CONTEXT_SCOPE, session_id, timeout_ms).await
 }
 
+/// A cached count and the estimator that answered it. Caching the estimator
+/// is what keeps the provenance honest: without it every step after the first
+/// would report its counts as coming from the provider's own default rather
+/// than from the tokenizer that actually produced them.
+type CachedCount = (u64, Option<String>);
+
 /// Process-lifetime cache of provider token counts keyed by
 /// (model, kind, content hash) — the probe base, the system prompt and the
 /// tool schemas are stable across a session's steps, so each is counted over
 /// the wire once.
-fn count_cache() -> &'static Mutex<HashMap<u64, u64>> {
-    static CACHE: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();
+fn count_cache() -> &'static Mutex<HashMap<u64, CachedCount>> {
+    static CACHE: OnceLock<Mutex<HashMap<u64, CachedCount>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -189,13 +200,13 @@ fn cache_key(model: &str, provider: Option<&str>, kind: &str, content: &str) -> 
 
 /// Cache miss and a poisoned lock are the same thing to the caller: count it
 /// over the wire again.
-fn cached(key: u64) -> Option<u64> {
-    count_cache().lock().ok()?.get(&key).copied()
+fn cached(key: u64) -> Option<CachedCount> {
+    count_cache().lock().ok()?.get(&key).cloned()
 }
 
-fn cache(key: u64, tokens: u64) {
+fn cache(key: u64, tokens: u64, estimator: Option<String>) {
     if let Ok(mut cache) = count_cache().lock() {
-        cache.insert(key, tokens);
+        cache.insert(key, (tokens, estimator));
     }
 }
 
@@ -237,8 +248,8 @@ impl Part<'_> {
 #[derive(Debug, Default)]
 struct Counted {
     tokens: u64,
-    /// Which estimator answered, when this count went over the wire. `None`
-    /// for a part that was absent or served from cache.
+    /// Which estimator answered this count, over the wire or from the cache.
+    /// `None` only for a part the request did not carry.
     estimator: Option<String>,
 }
 
@@ -246,13 +257,15 @@ struct Counted {
 /// base. Counted once per (model, provider) and cached for the process.
 async fn probe_base(router: &RouterClient, model: &str, provider: Option<&str>) -> Option<u64> {
     let key = cache_key(model, provider, "base", "");
-    if let Some(tokens) = cached(key) {
+    if let Some((tokens, _)) = cached(key) {
         return Some(tokens);
     }
+    // The base is subtracted away from every part, so which estimator counted
+    // it never reaches the snapshot; only the parts' estimators do.
     let (base, _) = router
         .count_tokens(model, provider, None, None, &probe_messages())
         .await?;
-    cache(key, base);
+    cache(key, base, None);
     Some(base)
 }
 
@@ -267,11 +280,8 @@ async fn counted_delta(
     part: Part<'_>,
 ) -> Option<Counted> {
     let key = cache_key(model, provider, part.kind(), &part.content_key());
-    if let Some(tokens) = cached(key) {
-        return Some(Counted {
-            tokens,
-            estimator: None,
-        });
+    if let Some((tokens, estimator)) = cached(key) {
+        return Some(Counted { tokens, estimator });
     }
     let (system_prompt, tools) = match part {
         Part::System(prompt) => (Some(prompt), None),
@@ -281,7 +291,7 @@ async fn counted_delta(
         .count_tokens(model, provider, system_prompt, tools, &probe_messages())
         .await?;
     let tokens = with_part.saturating_sub(base);
-    cache(key, tokens);
+    cache(key, tokens, Some(estimator.clone()));
     Some(Counted {
         tokens,
         estimator: Some(estimator),

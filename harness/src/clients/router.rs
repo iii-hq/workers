@@ -54,6 +54,14 @@ pub struct ChatOutcome {
     pub error: Option<String>,
 }
 
+/// Ceiling for `count_tokens`, independent of the generation-sized router
+/// timeout. Counting is a tokenizer pass, not a model call, and it runs on the
+/// path that finalizes a turn: inheriting a timeout measured in minutes would
+/// let one slow counting endpoint hold `turn-completed` open for as long as a
+/// whole generation. A count that has not answered by now is not worth the
+/// wait — the caller keeps its estimate.
+const COUNT_TOKENS_TIMEOUT_MS: u64 = 10_000;
+
 #[derive(Clone)]
 pub struct RouterClient {
     iii: Arc<IIIClient>,
@@ -479,7 +487,7 @@ impl RouterClient {
                 function_id: "router::count_tokens".into(),
                 payload,
                 action: None,
-                timeout_ms: Some(self.timeout_ms),
+                timeout_ms: Some(self.timeout_ms.min(COUNT_TOKENS_TIMEOUT_MS)),
             })
             .await
             .ok()?;

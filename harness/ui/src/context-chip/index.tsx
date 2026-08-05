@@ -345,7 +345,14 @@ export function createContextChip(host: Host) {
     // `state` trigger streams each write (engine-side scope/key filter), so
     // long multi-step turns tick live without any polling.
     useEffect(() => {
-      const offHandler = host.iii.on<StateEvent>(STATE_FN, (event) => {
+      // The id carries the session, because the engine-side filter is keyed to
+      // one: two chips mounted at once (two sessions visible, or an unmount
+      // racing the next mount) would otherwise register conflicting filters
+      // under one id, and either teardown would take the other's stream with
+      // it. `on()` appends `::<browserId>` itself, so the trigger repeats it
+      // to address the same handler.
+      const eventFn = `${STATE_FN}::${sessionId}`
+      const offHandler = host.iii.on<StateEvent>(eventFn, (event) => {
         if (!event || event.key !== sessionId) return
         if (event.event_type === 'state:deleted') return
         if (isSnapshot(event.new_value) && event.new_value.session_id === sessionId)
@@ -353,7 +360,7 @@ export function createContextChip(host: Host) {
       })
       const offTrigger = host.iii.registerTrigger({
         type: 'state',
-        function_id: `${STATE_FN}::${host.iii.browserId}`,
+        function_id: `${eventFn}::${host.iii.browserId}`,
         config: { scope: 'harness_context', key: sessionId },
       })
       return () => {

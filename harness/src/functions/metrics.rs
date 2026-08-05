@@ -137,6 +137,7 @@ pub async fn handle(
     let mut complete = tree.complete;
     let mut total = UsageAccumulator::default();
     let mut by_session = Vec::with_capacity(tree.sessions.len());
+    let mut missing_context = Vec::new();
     for node in &tree.sessions {
         if !session.exists(&node.session_id).await? {
             complete = false;
@@ -160,17 +161,27 @@ pub async fn handle(
             }
         }
         // The turn record usually carries the session's latest snapshot for
-        // free; a freshly seeded turn has not generated yet, so fall back to
-        // the durable `harness_context` row (which the previous turn wrote).
-        let context = match turn.context_snapshot.clone() {
-            Some(snapshot) => Some(snapshot),
-            None => {
-                crate::context_snapshot::get(&deps.iii, &node.session_id, cfg.session_timeout_ms)
-                    .await
-                    .unwrap_or(None)
-            }
-        };
+        // free. A freshly seeded turn has not generated yet, so its record has
+        // none and the durable `harness_context` row is the fallback — noted
+        // here, read after the walk.
+        let context = turn.context_snapshot.clone();
+        if context.is_none() {
+            missing_context.push(by_session.len());
+        }
         by_session.push(current.finish_session(node, context));
+    }
+    // One state read per session whose record carried no snapshot — collected
+    // for the final response only, so a large tree does not pay a round trip
+    // per session on every poll (see the note below on partial responses).
+    if complete {
+        for index in missing_context {
+            let session_id = by_session[index].session_id.clone();
+            if let Ok(snapshot) =
+                crate::context_snapshot::get(&deps.iii, &session_id, cfg.session_timeout_ms).await
+            {
+                by_session[index].context = snapshot;
+            }
+        }
     }
     // Partial snapshots are polled as progress signals. Trace aggregation is
     // comparatively expensive and does not help the watchdog decide whether

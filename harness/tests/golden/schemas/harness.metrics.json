@@ -18,7 +18,7 @@
     "additionalProperties": false,
     "definitions": {
       "ContextSnapshotV1": {
-        "description": "One generation's context accounting. `total <= usable` always holds for a generation that ran; `free = usable - total`.",
+        "description": "One generation's context accounting. `free = usable - total`, floored at zero: once provider usage lands, `total` is what was billed, which can exceed the `usable` budget the window was fit into — that budget was derived before the generation from an estimate.",
         "properties": {
           "categories": {
             "$ref": "#/definitions/SnapshotCategoriesV1"
