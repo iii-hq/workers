@@ -407,6 +407,17 @@ function TriggerFiredTerminal({
           </span>
         )}
       </div>
+      {t.payload !== undefined ? (
+        <div data-function-pane="payload">
+          <PaneHeader
+            label="payload"
+            copyText={JSON.stringify(t.payload, null, 2)}
+          />
+          <div className="max-h-64 overflow-auto">
+            <JsonHighlight code={JSON.stringify(t.payload, null, 2)} wrap />
+          </div>
+        </div>
+      ) : null}
       {registration ? (
         <RegistrationTerminal registration={registration} />
       ) : null}
