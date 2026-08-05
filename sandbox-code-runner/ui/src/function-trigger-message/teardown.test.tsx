@@ -1,5 +1,5 @@
 /**
- * `code-runner::teardown` card — every state rendered for real, with the
+ * `sandbox-code-runner::teardown` card — every state rendered for real, with the
  * capability rule (a full `rt-<uuid>` never reaches the DOM) asserted on each.
  *
  * Renders against a stubbed `@iii-dev/console-ui`: the real package's JS entry
@@ -25,7 +25,7 @@ const r = createTeardownRenderer({} as any)
 const msg = (over: any) => ({
   id: 'm',
   role: 'function-trigger',
-  functionId: 'code-runner::teardown',
+  functionId: 'sandbox-code-runner::teardown',
   input: { runtime_id: ID },
   createdAt: 0,
   ...over,
@@ -35,10 +35,12 @@ const html = (node: any) => renderToStaticMarkup(node)
 
 describe('teardown card', () => {
   it('matches only its own op', () => {
-    expect(r.isMatch('code-runner::teardown')).toBe(true)
-    expect(r.isMatch('code-runner::eval')).toBe(false)
-    expect(r.isMatch('code-runner::inject-guidance')).toBe(false)
-    expect(r.tryRender(msg({ functionId: 'code-runner::eval' }))).toBeNull()
+    expect(r.isMatch('sandbox-code-runner::teardown')).toBe(true)
+    expect(r.isMatch('sandbox-code-runner::run')).toBe(false)
+    expect(r.isMatch('sandbox-code-runner::inject-guidance')).toBe(false)
+    expect(
+      r.tryRender(msg({ functionId: 'sandbox-code-runner::run' })),
+    ).toBeNull()
   })
 
   it('empty unregistered reads as normal', () => {
@@ -172,7 +174,7 @@ describe('teardown card', () => {
                 schema_version: 1,
                 status: 'denied',
                 denied_by: 'user',
-                function_id: 'code-runner::teardown',
+                function_id: 'sandbox-code-runner::teardown',
                 reason: 'Rejected by operator.',
                 args_excerpt: { runtime_id: ID },
               },

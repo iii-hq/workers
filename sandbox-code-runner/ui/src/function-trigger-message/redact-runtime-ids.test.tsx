@@ -1,9 +1,9 @@
 /**
  * The capability sweep: `runtime_id` is a capability — whoever holds one can
- * eval into or tear down that sandbox — so the full value must never reach the
+ * run into or tear down that sandbox — so the full value must never reach the
  * DOM. `RuntimeChip` truncates the `runtime_id` FIELD, but every other site
- * that renders free text has to redact independently, and code-runner gives
- * that text three ways in:
+ * that renders free text has to redact independently, and sandbox-code-runner
+ * gives that text three ways in:
  *
  *  - ERROR MESSAGES QUOTE IT BY DESIGN. `RuntimeNotFound` is
  *    "unknown runtime_id {id}" and `Expired` is "runtime {id} expired: …"
@@ -35,8 +35,8 @@ import type {
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { redactRuntimeIdsDeep, truncateRuntimeId } from '../lib/shared'
-import { createEvalRenderer } from './eval'
 import { createRegisterFunctionRenderer } from './register-function'
+import { createRunRenderer } from './run'
 import { createTeardownRenderer } from './teardown'
 
 // Hoisted above these imports by vitest, so every renderer module above
@@ -123,9 +123,9 @@ const CARDS: {
   errorOutput: unknown
 }[] = [
   {
-    name: 'eval',
-    renderer: createEvalRenderer(HOST),
-    functionId: 'code-runner::eval',
+    name: 'run',
+    renderer: createRunRenderer(HOST),
+    functionId: 'sandbox-code-runner::run',
     input: {
       code: CODE,
       runtime_id: RUNTIME_ID,
@@ -149,7 +149,7 @@ const CARDS: {
   {
     name: 'register_function',
     renderer: createRegisterFunctionRenderer(HOST),
-    functionId: 'code-runner::register_function',
+    functionId: 'sandbox-code-runner::register_function',
     input: {
       runtime_id: RUNTIME_ID,
       // A caller is free to name a function after its runtime — nothing stops
@@ -165,7 +165,7 @@ const CARDS: {
   {
     name: 'teardown',
     renderer: createTeardownRenderer(HOST),
-    functionId: 'code-runner::teardown',
+    functionId: 'sandbox-code-runner::teardown',
     input: { runtime_id: RUNTIME_ID },
     output: {
       runtime_id: RUNTIME_ID,
@@ -225,7 +225,7 @@ describe('redactRuntimeIdsDeep', () => {
   it('redacts ids nested in objects, arrays and object KEYS', () => {
     const value = {
       runtime_id: RUNTIME_ID,
-      registered: [`code-runner::${RUNTIME_ID}::foo`, { nested: [{ deep: STDERR }] }],
+      registered: [`sandbox-code-runner::${RUNTIME_ID}::foo`, { nested: [{ deep: STDERR }] }],
       // A payload keyed by runtime id: the key itself is the capability.
       [`runtime:${RUNTIME_ID}`]: { note: `owned by ${RUNTIME_ID}` },
     }

@@ -14,8 +14,9 @@ pub struct CodeRunnerConfig {
     #[serde(default = "default_max_timeout_ms")]
     pub max_timeout_ms: u64,
     /// Passed to `sandbox::create` as `idle_timeout_secs`. The daemon's idle
-    /// reaper is the ONLY reaper — code-runner runs no sweep of its own; a
-    /// reaped VM surfaces as `code-runner::expired` on the next call.
+    /// reaper is the ONLY reaper — sandbox-code-runner runs no sweep of its
+    /// own; a reaped VM surfaces as `sandbox-code-runner::expired` on the
+    /// next call.
     #[serde(default = "default_idle_ttl_secs")]
     pub idle_ttl_secs: u64,
 }

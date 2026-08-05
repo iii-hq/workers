@@ -1,9 +1,9 @@
 {
-  "description": "Destroy a runtime: unregister every bus function it registered, stop its microVM(s), and free the slot(s). Pass exactly one of runtime_id (a kept eval's runtime, from code-runner::eval keep=true) or namespace (a register_function namespace, e.g. \"app\" for ids like app::greet) — never both, never neither.",
-  "function_id": "code-runner::teardown",
+  "description": "Destroy a runtime: unregister every bus function it registered, stop its microVM(s), and free the slot(s). Pass exactly one of runtime_id (a kept run's runtime, from sandbox-code-runner::run keep=true) or namespace (a register_function namespace, e.g. \"app\" for ids like app::greet) — never both, never neither.",
+  "function_id": "sandbox-code-runner::teardown",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Exactly one of `runtime_id` (a runtime you got back from `code-runner::eval keep=true`) or `namespace` (a `register_function` namespace, e.g. \"app\" for ids like `app::greet`) must be set — never both, never neither.",
+    "description": "Exactly one of `runtime_id` (a runtime you got back from `sandbox-code-runner::run keep=true`) or `namespace` (a `register_function` namespace, e.g. \"app\" for ids like `app::greet`) must be set — never both, never neither.",
     "properties": {
       "namespace": {
         "default": null,

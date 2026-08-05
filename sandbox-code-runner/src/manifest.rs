@@ -16,7 +16,7 @@ pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description: "Run Node.js and Python in iii-sandbox microVMs: eval code, register \
+        description: "Run Node.js and Python in iii-sandbox microVMs: run code, register \
                       bus functions whose handlers execute inside the VM, tear down."
             .to_string(),
         default_config: serde_json::json!({

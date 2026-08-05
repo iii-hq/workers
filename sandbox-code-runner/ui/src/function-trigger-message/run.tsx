@@ -1,5 +1,5 @@
 /**
- * Injected function-trigger renderer for `code-runner::eval`.
+ * Injected function-trigger renderer for `sandbox-code-runner::run`.
  *
  * The default card prints the request as JSON, which turns `code` into one
  * escaped single-line string and `stdout`/`stderr` into two more — unreadable,
@@ -9,7 +9,7 @@
  *
  * What this card exists to make obvious:
  *
- *  - A NON-ZERO EXIT IS NOT AN ERROR. code-runner reserves errors for
+ *  - A NON-ZERO EXIT IS NOT AN ERROR. sandbox-code-runner reserves errors for
  *    infrastructure failures (`error.rs`); a script that throws comes back as
  *    an ordinary response with its own compiler/runtime message in `stderr`.
  *    So a failing exit reads as "your code exited N, here is stderr" (warn),
@@ -21,7 +21,7 @@
  *    the default — which boots a VM, runs the code, and destroys it before
  *    this response is even sent. A one-shot response carries no
  *    `runtime_id` (there is nothing left to address), which is why
- *    `EvalResponse.runtime_id` is optional on the wire now.
+ *    `RunResponse.runtime_id` is optional on the wire now.
  *  - `network` — create-time only, and the flag that makes `npm install` /
  *    `pip install` possible inside the guest. `sandbox::run` — which now
  *    backs both the one-shot and `keep: true` paths — has no way to enable
@@ -36,7 +36,7 @@
  *    routed through `redactRuntimeIds` first.
  *
  * Error outputs render their own compact card rather than falling through:
- * code-runner's error messages quote the runtime_id BY DESIGN
+ * sandbox-code-runner's error messages quote the runtime_id BY DESIGN
  * (`unknown runtime_id {id}`, `runtime {id} expired: …` — error.rs), so the
  * console's default view would print the capability verbatim on an ordinary
  * mistake.
@@ -66,7 +66,7 @@ import {
   unwrapEnvelope,
 } from '../lib/shared'
 
-const FUNCTION_ID = 'code-runner::eval'
+const FUNCTION_ID = 'sandbox-code-runner::run'
 
 /** Lines of source shown before the block collapses behind a toggle… */
 const CODE_CLAMP_LINES = 14
@@ -75,7 +75,7 @@ const CODE_CLAMP_CHARS = 2000
 
 type Lang = 'node' | 'python'
 
-interface EvalRequest {
+interface RunRequest {
   code?: string
   runtimeId?: string
   /** Only ever a value `langToPrism` can honestly map; anything else is dropped
@@ -87,7 +87,7 @@ interface EvalRequest {
   timeoutMs?: number
 }
 
-function parseRequest(input: unknown): EvalRequest {
+function parseRequest(input: unknown): RunRequest {
   const obj = asRecord(input) ?? {}
   return {
     code: typeof obj.code === 'string' ? obj.code : undefined,
@@ -108,7 +108,7 @@ function Chips({
   req,
   runtimeId,
 }: {
-  req: EvalRequest
+  req: RunRequest
   runtimeId?: string
 }) {
   return (
@@ -118,14 +118,14 @@ function Chips({
         <span className="cr-ui-chip">reused runtime</span>
       ) : req.keep ? (
         <span
-          className="cr-ui-chip cr-eval-fresh"
-          title="No runtime_id, keep: true: boots a fresh VM and leaves it running — the response's runtime_id addresses it for later evals."
+          className="cr-ui-chip cr-run-fresh"
+          title="No runtime_id, keep: true: boots a fresh VM and leaves it running — the response's runtime_id addresses it for later runs."
         >
           keeps the VM
         </span>
       ) : (
         <span
-          className="cr-ui-chip cr-eval-fresh"
+          className="cr-ui-chip cr-run-fresh"
           title="No runtime_id, no keep: one-shot — boots a fresh VM, runs the code, and destroys the VM before this response is sent. Nothing persists: no files, no installed packages."
         >
           one-shot
@@ -145,8 +145,8 @@ function Chips({
 
 /**
  * `network` is create-time only ("Ignored when `runtime_id` is set" —
- * eval.rs), so on an explicitly reused runtime it is reported as ignored
- * rather than as a capability this eval has.
+ * run.rs), so on an explicitly reused runtime it is reported as ignored
+ * rather than as a capability this run has.
  *
  * Without a `runtime_id`, `sandbox::run` — which now backs both the
  * one-shot and `keep: true` paths — has no way to enable networking at
@@ -154,13 +154,13 @@ function Chips({
  * silently dropping it. `network: false` needs no chip: it is simply
  * guaranteed, the same way it always was on this path.
  */
-function NetworkChip({ req }: { req: EvalRequest }) {
+function NetworkChip({ req }: { req: RunRequest }) {
   if (!req.runtimeId) {
     if (!req.network) return null
     return (
       <span
-        className="cr-ui-chip cr-eval-net off"
-        title="Neither a one-shot eval nor keep: true can create a networked VM — sandbox::run has no network flag at all. This request will be refused; pass an explicit runtime_id for a runtime that already has network."
+        className="cr-ui-chip cr-run-net off"
+        title="Neither a one-shot run nor keep: true can create a networked VM — sandbox::run has no network flag at all. This request will be refused; pass an explicit runtime_id for a runtime that already has network."
       >
         <span className="k">network </span>
         refused: no runtime_id
@@ -169,7 +169,7 @@ function NetworkChip({ req }: { req: EvalRequest }) {
   }
   if (!req.network) return null
   return (
-    <span className="cr-ui-chip cr-eval-net off">
+    <span className="cr-ui-chip cr-run-net off">
       <span className="k">network </span>
       ignored on reuse
     </span>
@@ -350,8 +350,8 @@ function PreviewView({
   )
 }
 
-export function createEvalRenderer(host: Host): FunctionTriggerRenderer {
-  void host // the eval card reads nothing off the host
+export function createRunRenderer(host: Host): FunctionTriggerRenderer {
+  void host // the run card reads nothing off the host
 
   const render = (
     message: FunctionTriggerMessage,
@@ -377,9 +377,9 @@ export function createEvalRenderer(host: Host): FunctionTriggerRenderer {
         />
       )
     }
-    // Our own error card, never a fall-through: code-runner's error messages
-    // carry the runtime_id capability by design (error.rs), so the console's
-    // default view would print it unredacted.
+    // Our own error card, never a fall-through: sandbox-code-runner's error
+    // messages carry the runtime_id capability by design (error.rs), so the
+    // console's default view would print it unredacted.
     const err = errorInfo(message.output)
     if (err) {
       return (
@@ -391,7 +391,7 @@ export function createEvalRenderer(host: Host): FunctionTriggerRenderer {
       )
     }
     // No parseable response body — an aborted call, or a reloaded session
-    // whose last call never paired. A normal state, and NOT a completed eval,
+    // whose last call never paired. A normal state, and NOT a completed run,
     // so let the console's own "response · empty" card have it rather than
     // asserting an exit status that never happened.
     if (!asRecord(unwrapEnvelope(message.output))) return null
@@ -399,7 +399,7 @@ export function createEvalRenderer(host: Host): FunctionTriggerRenderer {
   }
 
   return {
-    id: 'code-runner/page.js#eval',
+    id: 'sandbox-code-runner/page.js#run',
     isMatch: (functionId) => functionId === FUNCTION_ID,
     tryRender: (message) => render(message, !!message.running),
     tryRenderRunning: (message) => render(message, true),

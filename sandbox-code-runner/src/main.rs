@@ -14,7 +14,7 @@ use sandbox_code_runner::{config, functions, manifest};
 #[command(
     name = "sandbox-code-runner",
     version,
-    about = "Run Node.js and Python in iii-sandbox microVMs: eval, register bus functions, teardown"
+    about = "Run Node.js and Python in iii-sandbox microVMs: run, register bus functions, teardown"
 )]
 struct Cli {
     /// Operator config file.
@@ -106,12 +106,12 @@ async fn main() -> Result<()> {
                 // `engine::functions::info` itself means THIS engine can't
                 // dispatch the probe, not that `sandbox::create` is absent.
                 // Only mis-words a log line here (this path always fails
-                // open — code-runner keeps serving either way), but should
-                // still say the honest thing.
+                // open — sandbox-code-runner keeps serving either way), but
+                // should still say the honest thing.
                 if classify_probe_error(&raw, "sandbox::create") == ProbeOutcome::Free {
                     tracing::warn!(
-                        "iii-sandbox is NOT installed on this engine — every code-runner call \
-                         will fail until an operator runs `iii worker add iii-sandbox`"
+                        "iii-sandbox is NOT installed on this engine — every sandbox-code-runner \
+                         call will fail until an operator runs `iii worker add iii-sandbox`"
                     );
                 } else {
                     tracing::warn!(error = %raw, "could not verify iii-sandbox presence");
@@ -123,10 +123,10 @@ async fn main() -> Result<()> {
     tracing::info!(
         idle_ttl_secs = cfg.idle_ttl_secs,
         default_timeout_ms = cfg.default_timeout_ms,
-        "code-runner ready"
+        "sandbox-code-runner ready"
     );
     tokio::signal::ctrl_c().await?;
-    tracing::info!("code-runner shutting down");
+    tracing::info!("sandbox-code-runner shutting down");
     iii.shutdown_async().await;
     Ok(())
 }

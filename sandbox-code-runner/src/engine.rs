@@ -46,7 +46,7 @@ pub trait Engine: Send + Sync + 'static {
 /// with no description at all is indistinguishable from a missing function in
 /// the catalog, which is worse than a generic line.
 pub const DEFAULT_DYNAMIC_DESC: &str =
-    "Registered at runtime by code-runner; the handler runs inside an iii-sandbox microVM.";
+    "Registered at runtime by sandbox-code-runner; the handler runs inside an iii-sandbox microVM.";
 
 pub struct IIIEngine {
     iii: Arc<IIIClient>,

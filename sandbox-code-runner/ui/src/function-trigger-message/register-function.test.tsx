@@ -3,7 +3,7 @@
  *
  * What this file is actually guarding: the claims the card makes. It must
  * never print the runtime_id capability (not even out of an error message,
- * which code-runner quotes it into by design), never assert an outcome that
+ * which sandbox-code-runner quotes it into by design), never assert an outcome that
  * did not happen (no output, non-record input), never claim a language the
  * request does not carry, and never flood the feed with an unbounded source.
  *
@@ -33,7 +33,7 @@ vi.mock('@iii-dev/console-ui', () => ({
   ),
 }))
 
-const FUNCTION_ID = 'code-runner::register_function'
+const FUNCTION_ID = 'sandbox-code-runner::register_function'
 const RUNTIME_ID = 'rt-3f9a2c1e-7b64-4d0a-9c11-5e8ab2d4f077'
 const TRUNCATED = truncateRuntimeId(RUNTIME_ID)
 const SOURCE = 'export function handler(payload) {\n  return payload\n}\n'
@@ -68,9 +68,9 @@ describe('matching', () => {
   it('claims only its own function id', () => {
     expect(renderer.isMatch(FUNCTION_ID)).toBe(true)
     for (const other of [
-      'code-runner::eval',
-      'code-runner::teardown',
-      'code-runner::inject-guidance',
+      'sandbox-code-runner::run',
+      'sandbox-code-runner::teardown',
+      'sandbox-code-runner::inject-guidance',
       'node-engine::register_function',
     ]) {
       expect(renderer.isMatch(other)).toBe(false)
@@ -175,7 +175,7 @@ describe('the runtime id is a capability', () => {
    * preview states show no id, truncated or otherwise: there is nothing to
    * show. The error state is different: a message that HAPPENS to embed an
    * id (as error.rs's `Expired`/`RuntimeNotFound` would on the direct
-   * eval/teardown paths, or a stray one on some other path) must still come
+   * run/teardown paths, or a stray one on some other path) must still come
    * back truncated, never whole — belt-and-braces, since this card never
    * assumes an error message is safe.
    */
@@ -202,11 +202,11 @@ describe('the runtime id is a capability', () => {
     expect(errored).toContain(TRUNCATED)
   })
 
-  /** (a) code-runner's own error messages quote the id — error.rs. */
+  /** (a) sandbox-code-runner's own error messages quote the id — error.rs. */
   it('renders errors itself, redacted, rather than falling through', () => {
     for (const message of [
-      `code-runner::runtime_not_found: unknown runtime_id ${RUNTIME_ID}`,
-      `code-runner::expired: runtime ${RUNTIME_ID} expired: its idle VM was reaped`,
+      `sandbox-code-runner::runtime_not_found: unknown runtime_id ${RUNTIME_ID}`,
+      `sandbox-code-runner::expired: runtime ${RUNTIME_ID} expired: its idle VM was reaped`,
     ]) {
       const out = html(renderer.tryRender(msg({ output: { error: message } })))
       expect(out).not.toBeNull()

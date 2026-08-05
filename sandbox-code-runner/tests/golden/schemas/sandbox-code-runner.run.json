@@ -1,0 +1,101 @@
+{
+  "description": "Run code in an isolated microVM. Pass lang (\"node\" or \"python\"). By default run is ONE-SHOT: it boots a fresh VM, runs code, returns the result, and destroys the VM — nothing persists, no files, no installed packages, and the response carries no runtime_id (there is nothing left to address). Pass keep: true to leave the VM running instead: the response's runtime_id then addresses it, and is the capability sandbox-code-runner::teardown needs to stop it later. Pass runtime_id on a later call to reuse that same VM (same filesystem, fresh interpreter process each time) — that runtime is never auto-stopped, you own it until you tear it down or its idle TTL reaps it, and a reaped reuse fails with sandbox-code-runner::expired (retry without runtime_id to boot a fresh one). Every VM boots with outbound network, so npm/pip installs work on any path. Run code gets a global `iii` — the real iii-sdk client, lazily connected to the engine on first use: `await iii.trigger({ function_id, payload })` (Node) / `iii.trigger({'function_id': ..., 'payload': ...})` (Python, synchronous) invokes any bus function, and the full SDK surface is available. Functions registered with iii.registerFunction die when the run process exits — register through sandbox-code-runner::register_function (via iii.trigger) for one that persists. stdout, stderr and exit_code come back verbatim — a failing script is a response, not an error.",
+  "function_id": "sandbox-code-runner::run",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Lang": {
+        "enum": [
+          "node",
+          "python"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "code": {
+        "description": "Source run as a whole file by a fresh interpreter process. Variables do NOT survive between runs; whether files and installed packages do depends on the path below. A global `iii` is in scope — the real iii-sdk client, lazily connected to the engine on first use: `await iii.trigger({ function_id, payload })` in Node, `iii.trigger({'function_id': ..., 'payload': ...})` in Python. Functions registered with `iii.registerFunction` live only until this process exits — use sandbox-code-runner::register_function (callable through `iii.trigger`) for one that persists.",
+        "type": "string"
+      },
+      "keep": {
+        "default": false,
+        "description": "Only meaningful when `runtime_id` is omitted. `false` (the default): one-shot — boot a VM, run `code`, return the result, destroy the VM. Nothing persists: no files, no installed packages. `true`: boot a VM and leave it running; the response's `runtime_id` addresses it for later runs (pass it back to keep working in the same filesystem) and is the capability `sandbox-code-runner::teardown` needs to stop it. Every runtime boots with outbound network (the `iii` global's engine link needs it), so npm/pip installs work on any path.",
+        "type": "boolean"
+      },
+      "lang": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Lang"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Required when `runtime_id` is omitted — picks the sandbox image (\"node\" or \"python\"). On an existing runtime: omit it, or pass the runtime's own language; languages cannot be mixed in one runtime."
+      },
+      "runtime_id": {
+        "default": null,
+        "description": "Run in a SPECIFIC runtime, sharing its filesystem: the write and the run land in that VM, and it is NOT stopped afterwards — you own it. Omit this to run one-shot (see `keep`).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "timeout_ms": {
+        "default": null,
+        "description": "Wall-clock budget in milliseconds, clamped to the configured maximum.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "code"
+    ],
+    "title": "RunRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "duration_ms": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "exit_code": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "runtime_id": {
+        "description": "Present when this run addresses a runtime that outlives the call: the `runtime_id` you passed in, or — when you passed `keep: true` with no `runtime_id` — the one just minted for the VM this call left running. `None` on the default one-shot path: the VM is already gone by the time this response is sent, so there is nothing to address. Treat a present value as a secret: it is the capability to run into or tear down that runtime.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "stderr": {
+        "type": "string"
+      },
+      "stdout": {
+        "type": "string"
+      },
+      "success": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "duration_ms",
+      "exit_code",
+      "stderr",
+      "stdout",
+      "success"
+    ],
+    "title": "RunResponse",
+    "type": "object"
+  }
+}

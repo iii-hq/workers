@@ -1,14 +1,14 @@
 /**
- * Entry for the code-runner worker's injected console UI — compiled by
- * esbuild (react + @iii-dev/console-ui external) into dist/page.js and served
- * over the `console:script` trigger (see src/ui.rs). The stylesheet is its
- * own asset: ./styles.css ships over `console:style` as
- * code-runner/styles.css — the console mounts and link-swaps it,
+ * Entry for the sandbox-code-runner worker's injected console UI — compiled
+ * by esbuild (react + @iii-dev/console-ui external) into dist/page.js and
+ * served over the `console:script` trigger (see src/ui.rs). The stylesheet
+ * is its own asset: ./styles.css ships over `console:style` as
+ * sandbox-code-runner/styles.css — the console mounts and link-swaps it,
  * styles-before-scripts on boot.
  *
  * The worker's only console contribution is how its function triggers render:
  *
- * - src/function-trigger-message/ — the per-op cards (eval, register_function,
+ * - src/function-trigger-message/ — the per-op cards (run, register_function,
  *   teardown)
  * - src/lib/shared.tsx            — the frame those cards share
  *
@@ -17,10 +17,10 @@
  */
 
 import type { Host } from '@iii-dev/console-ui'
-import { createCodeRunnerRenderers } from './src/function-trigger-message'
+import { createSandboxCodeRunnerRenderers } from './src/function-trigger-message'
 
 export default function setup(host: Host) {
-  const removers = createCodeRunnerRenderers(host).map((renderer) =>
+  const removers = createSandboxCodeRunnerRenderers(host).map((renderer) =>
     host.functionTriggers.register(renderer),
   )
   // The loader already disposes every registration; returning the removers

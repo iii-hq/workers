@@ -1,5 +1,5 @@
 /**
- * The eval card's own checks — the rules that are specific to THIS card and
+ * The run card's own checks — the rules that are specific to THIS card and
  * that a wrong answer on would be a lie in the feed:
  *
  *  - a non-zero exit reads as the script failing, never as a system error;
@@ -28,7 +28,7 @@ import type {
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { truncateRuntimeId } from '../lib/shared'
-import { createEvalRenderer } from './eval'
+import { createRunRenderer } from './run'
 
 vi.mock('@iii-dev/console-ui', () => ({
   Tooltip: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
@@ -48,11 +48,11 @@ vi.mock('@iii-dev/console-ui', () => ({
   ),
 }))
 
-const FUNCTION_ID = 'code-runner::eval'
+const FUNCTION_ID = 'sandbox-code-runner::run'
 const RUNTIME_ID = 'rt-3f9a2c1e-7b64-4d0a-9c11-5e8ab2d4f077'
 const TRUNCATED = truncateRuntimeId(RUNTIME_ID)
 
-const renderer: FunctionTriggerRenderer = createEvalRenderer({} as Host)
+const renderer: FunctionTriggerRenderer = createRunRenderer({} as Host)
 
 function msg(extra: Partial<FunctionTriggerMessage>): FunctionTriggerMessage {
   return {
@@ -86,13 +86,13 @@ const OK_RES = {
   duration_ms: 12,
 }
 
-describe('createEvalRenderer', () => {
+describe('createRunRenderer', () => {
   it('claims only its own function id', () => {
     expect(renderer.isMatch(FUNCTION_ID)).toBe(true)
     for (const other of [
-      'code-runner::teardown',
-      'code-runner::register_function',
-      'code-runner::inject-guidance',
+      'sandbox-code-runner::teardown',
+      'sandbox-code-runner::register_function',
+      'sandbox-code-runner::inject-guidance',
       'node-engine::eval',
     ]) {
       expect(renderer.isMatch(other)).toBe(false)
@@ -173,7 +173,7 @@ describe('the runtime capability', () => {
           running: false,
           output: {
             error: {
-              message: `code-runner::expired: runtime ${RUNTIME_ID} expired: its idle VM was reaped`,
+              message: `sandbox-code-runner::expired: runtime ${RUNTIME_ID} expired: its idle VM was reaped`,
             },
           },
         }),
@@ -214,7 +214,7 @@ describe('a gate denial', () => {
   const DENIAL_OUTPUT = {
     error: {
       kind: 'function_error',
-      message: 'Permission denied: code-runner::eval matched rule no-eval.',
+      message: 'Permission denied: sandbox-code-runner::run matched rule no-eval.',
       details: {
         schema_version: 1,
         status: 'denied',
@@ -222,7 +222,7 @@ describe('a gate denial', () => {
         function_id: FUNCTION_ID,
         rule_id: 'no-eval',
         rule_action: 'deny',
-        reason: 'Permission denied: code-runner::eval matched rule no-eval.',
+        reason: 'Permission denied: sandbox-code-runner::run matched rule no-eval.',
         // The gate's own excerpt of what the caller submitted — including
         // the runtime_id the caller passed — is the leak this test rules out.
         args_excerpt: {
@@ -288,7 +288,7 @@ describe('the runtime-origin and network chips', () => {
   })
 
   /**
-   * Neither a one-shot eval nor `keep: true` can ever create a networked
+   * Neither a one-shot run nor `keep: true` can ever create a networked
    * VM (`sandbox::run` has no network flag at all), so `network: true`
    * without a `runtime_id` always means the worker will refuse the call —
    * the card must say so, not claim network is "on". `network: false`
@@ -303,7 +303,7 @@ describe('the runtime-origin and network chips', () => {
     expect(quiet).not.toContain('network')
   })
 
-  /** eval.rs: "Ignored when `runtime_id` is set" — do not claim otherwise. */
+  /** run.rs: "Ignored when `runtime_id` is set" — do not claim otherwise. */
   it('reports network as ignored on a reused runtime', () => {
     const out = settled(
       { code: 'x', runtime_id: RUNTIME_ID, network: true },

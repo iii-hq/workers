@@ -50,10 +50,10 @@ describe('redactRuntimeIds', () => {
   })
 
   /** error.rs quotes the id by design — `unknown runtime_id {id}`. */
-  it('replaces the id embedded in code-runner own error messages', () => {
+  it('replaces the id embedded in sandbox-code-runner own error messages', () => {
     for (const message of [
-      `code-runner::runtime_not_found: unknown runtime_id ${RUNTIME_ID}`,
-      `code-runner::expired: runtime ${RUNTIME_ID} expired: its idle VM was reaped`,
+      `sandbox-code-runner::runtime_not_found: unknown runtime_id ${RUNTIME_ID}`,
+      `sandbox-code-runner::expired: runtime ${RUNTIME_ID} expired: its idle VM was reaped`,
     ]) {
       expect(redactRuntimeIds(message)).not.toContain(RUNTIME_ID)
       expect(redactRuntimeIds(message)).toContain(TRUNCATED)
@@ -74,7 +74,7 @@ describe('redactRuntimeIds', () => {
    * `\b` never fires between two word characters, and hex digits ARE word
    * characters — so a runtime id glued to `[A-Za-z0-9_]` on either side
    * matched neither anchor and passed through whole. Proven against the real
-   * shapes this worker produces: eval stdout/stderr embedding an id inside a
+   * shapes this worker produces: run stdout/stderr embedding an id inside a
    * filename or identifier, and register_function/teardown ids suffixed with
    * `::a`-style segments.
    */

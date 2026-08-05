@@ -1,8 +1,8 @@
 //! The worker's error taxonomy, plus the classifier that turns iii-sandbox
-//! wire errors (S-codes embedded as JSON in the message) into code-runner
-//! terms. Every variant maps to a stable `code-runner::<snake_case>` wire
-//! code; handlers convert into the SDK error so the engine surfaces
-//! `code: message` to callers.
+//! wire errors (S-codes embedded as JSON in the message) into
+//! sandbox-code-runner terms. Every variant maps to a stable
+//! `sandbox-code-runner::<snake_case>` wire code; handlers convert into the
+//! SDK error so the engine surfaces `code: message` to callers.
 
 use iii_sdk::errors::Error;
 
@@ -13,7 +13,7 @@ use iii_sdk::errors::Error;
 pub enum CodeRunnerError {
     InvalidRequest(String),
     RuntimeNotFound(String),
-    /// `code-runner::teardown namespace=…` naming a namespace with no
+    /// `sandbox-code-runner::teardown namespace=…` naming a namespace with no
     /// runtime backing it. Same wire code as `RuntimeNotFound` (both mean
     /// "nothing addressable by this"), a distinct variant only because the
     /// message wording differs — `RuntimeNotFound`'s hardcodes "runtime_id".
@@ -23,7 +23,7 @@ pub enum CodeRunnerError {
     /// gone — re-create the runtime.
     Expired(String),
     /// The daemon refused a new sandbox (its `max_concurrent_sandboxes` or a
-    /// per-image cap — code-runner keeps no cap of its own).
+    /// per-image cap — sandbox-code-runner keeps no cap of its own).
     Capacity(String),
     /// The exec blew its in-daemon deadline.
     Timeout,
@@ -36,15 +36,15 @@ pub enum CodeRunnerError {
 impl CodeRunnerError {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::InvalidRequest(_) => "code-runner::invalid_request",
+            Self::InvalidRequest(_) => "sandbox-code-runner::invalid_request",
             Self::RuntimeNotFound(_) | Self::NamespaceNotFound(_) => {
-                "code-runner::runtime_not_found"
+                "sandbox-code-runner::runtime_not_found"
             }
-            Self::Expired(_) => "code-runner::expired",
-            Self::Capacity(_) => "code-runner::capacity",
-            Self::Timeout => "code-runner::timeout",
-            Self::HandlerError(_) => "code-runner::handler_error",
-            Self::Engine(_) => "code-runner::engine",
+            Self::Expired(_) => "sandbox-code-runner::expired",
+            Self::Capacity(_) => "sandbox-code-runner::capacity",
+            Self::Timeout => "sandbox-code-runner::timeout",
+            Self::HandlerError(_) => "sandbox-code-runner::handler_error",
+            Self::Engine(_) => "sandbox-code-runner::engine",
         }
     }
 
@@ -58,7 +58,7 @@ impl CodeRunnerError {
             ),
             Self::Expired(id) => format!(
                 "runtime {id} expired: its idle VM was reaped and its functions \
-                 unregistered — call eval again without this runtime_id to boot a fresh one \
+                 unregistered — call run again without this runtime_id to boot a fresh one \
                  (its filesystem starts empty)"
             ),
             Self::Capacity(m) => m.clone(),
@@ -83,7 +83,7 @@ impl From<CodeRunnerError> for Error {
     }
 }
 
-/// How a `sandbox::*` call failed, in code-runner terms. `Gone` (not
+/// How a `sandbox::*` call failed, in sandbox-code-runner terms. `Gone` (not
 /// `Expired`) because only the manager knows which runtime_id to name and
 /// which record to clean up.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,7 +131,7 @@ pub fn classify_sandbox_error(raw: &str) -> SandboxFailure {
         // the bus trigger deadline (timeout_ms + margin) outlives the
         // daemon's in-daemon exec deadline (timeout_ms): a daemon slower
         // than that margin can leave `exec_in_progress` true after
-        // code-runner already released its lock. The daemon's own message
+        // sandbox-code-runner already released its lock. The daemon's own message
         // embeds `sandbox_id` ("concurrent exec on sandbox {id}: …"), and
         // `sandbox_id` must never reach a caller (see the module doc and
         // `RuntimeRecord`'s no-`Debug` note) — a caller holding it could
@@ -187,28 +187,31 @@ mod tests {
     fn codes_are_stable_wire_strings() {
         assert_eq!(
             CodeRunnerError::InvalidRequest("x".into()).code(),
-            "code-runner::invalid_request"
+            "sandbox-code-runner::invalid_request"
         );
         assert_eq!(
             CodeRunnerError::RuntimeNotFound("r".into()).code(),
-            "code-runner::runtime_not_found"
+            "sandbox-code-runner::runtime_not_found"
         );
         assert_eq!(
             CodeRunnerError::Expired("r".into()).code(),
-            "code-runner::expired"
+            "sandbox-code-runner::expired"
         );
         assert_eq!(
             CodeRunnerError::Capacity("full".into()).code(),
-            "code-runner::capacity"
+            "sandbox-code-runner::capacity"
         );
-        assert_eq!(CodeRunnerError::Timeout.code(), "code-runner::timeout");
+        assert_eq!(
+            CodeRunnerError::Timeout.code(),
+            "sandbox-code-runner::timeout"
+        );
         assert_eq!(
             CodeRunnerError::HandlerError("x".into()).code(),
-            "code-runner::handler_error"
+            "sandbox-code-runner::handler_error"
         );
         assert_eq!(
             CodeRunnerError::Engine("x".into()).code(),
-            "code-runner::engine"
+            "sandbox-code-runner::engine"
         );
     }
 
@@ -217,14 +220,14 @@ mod tests {
         let e = CodeRunnerError::RuntimeNotFound("rt-7".into());
         assert_eq!(
             e.to_string(),
-            "code-runner::runtime_not_found: unknown runtime_id rt-7"
+            "sandbox-code-runner::runtime_not_found: unknown runtime_id rt-7"
         );
     }
 
     #[test]
     fn converts_into_sdk_handler_error_preserving_code() {
         let sdk: iii_sdk::errors::Error = CodeRunnerError::Timeout.into();
-        assert!(sdk.to_string().contains("code-runner::timeout"));
+        assert!(sdk.to_string().contains("sandbox-code-runner::timeout"));
     }
 
     /// The daemon embeds `{type, code, message, …}` JSON inside the error

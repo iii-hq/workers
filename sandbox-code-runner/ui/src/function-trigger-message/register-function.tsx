@@ -1,5 +1,6 @@
 /**
- * Injected function-trigger renderer for `code-runner::register_function`.
+ * Injected function-trigger renderer for
+ * `sandbox-code-runner::register_function`.
  *
  * The default card prints the request as JSON, which turns `source` — the
  * whole point of the call — into one escaped single-line string, and buries
@@ -8,10 +9,10 @@
  *
  *   - the NAMESPACE the id claims (the segment before `::`). The first
  *     registration in a namespace claims it and every later id there must
- *     share it — AND must share its `lang`: code-runner keeps one persistent
- *     runtime per (namespace, lang) automatically (manager.rs `namespace_of`
- *     + `namespace_runtime` + `reserve`), so this is the common surprise —
- *     it gets its own line, not a substring of a blob.
+ *     share it — AND must share its `lang`: sandbox-code-runner keeps one
+ *     persistent runtime per (namespace, lang) automatically (manager.rs
+ *     `namespace_of` + `namespace_runtime` + `reserve`), so this is the
+ *     common surprise — it gets its own line, not a substring of a blob.
  *   - whether the source actually defines `handler(payload)`. That convention
  *     is what the runner loads and calls (register.rs's `source` doc); a
  *     source without it registers fine and then fails on every call.
@@ -21,15 +22,15 @@
  *
  * NO `runtime_id` ON THIS WIRE AT ALL: the runtime backing a namespace is an
  * implementation detail this call never sees or names — `lang` (required)
- * decides which runner it needs, and code-runner creates or reuses that
- * namespace's runtime itself. `lang` IS on the request, unlike before this
- * redesign, so the source is highlighted honestly rather than guessed —
+ * decides which runner it needs, and sandbox-code-runner creates or reuses
+ * that namespace's runtime itself. `lang` IS on the request, unlike before
+ * this redesign, so the source is highlighted honestly rather than guessed —
  * `guessPrism` below is now only a fallback for a malformed request missing
  * it.
  *
  * No capability lives on this request either, but a caller is free to name a
  * function, description, or source after a runtime id it holds from
- * elsewhere (e.g. planting source that calls back into a `keep: true` eval's
+ * elsewhere (e.g. planting source that calls back into a `keep: true` run's
  * runtime) — every free-text field still goes through `redactRuntimeIds` as
  * belt-and-braces, and errors render through this card's own `ErrorCard`
  * rather than falling through to the console's default view.
@@ -55,7 +56,7 @@ import {
   unwrapEnvelope,
 } from '../lib/shared'
 
-const FUNCTION_ID = 'code-runner::register_function'
+const FUNCTION_ID = 'sandbox-code-runner::register_function'
 
 /** Lines of source shown before the block collapses behind a toggle… */
 const COLLAPSE_AFTER = 14
@@ -477,7 +478,7 @@ export function createRegisterFunctionRenderer(
   }
 
   return {
-    id: 'code-runner/page.js#register-function',
+    id: 'sandbox-code-runner/page.js#register-function',
     isMatch,
     tryRender: (message) => render(message, !!message.running),
     tryRenderRunning: (message) => render(message, true),

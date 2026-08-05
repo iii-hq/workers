@@ -1,16 +1,16 @@
 /**
- * `code-runner::teardown` — destroys one or more runtimes: it unregisters
- * every bus function they put on the bus and stops the sandbox microVM(s)
- * behind them (`RuntimeManager::destroy_runtime` drains in-flight evals,
- * unregisters, then calls `sandbox::stop` — manager.rs).
+ * `sandbox-code-runner::teardown` — destroys one or more runtimes: it
+ * unregisters every bus function they put on the bus and stops the sandbox
+ * microVM(s) behind them (`RuntimeManager::destroy_runtime` drains in-flight
+ * runs, unregisters, then calls `sandbox::stop` — manager.rs).
  *
  * The card answers one question: WHICH function ids stopped resolving. That is
  * the consequence a reader cannot recover from anywhere else. An empty
- * `unregistered` list is the COMMON case — a runtime that only ever ran evals
+ * `unregistered` list is the COMMON case — a runtime that only ever ran code
  * registered nothing — so it reads as normal, never as a failure.
  *
  * TWO addressing modes, never both, never neither: `runtime_id` (a kept
- * eval's runtime — `code-runner::eval keep=true`) or `namespace` (every
+ * run's runtime — `sandbox-code-runner::run keep=true`) or `namespace` (every
  * runtime, one per language, backing a `register_function` namespace). The
  * response echoes whichever one addressed the call, never both — see
  * `targetOf`.
@@ -41,7 +41,7 @@ import {
   unwrapEnvelope,
 } from '../lib/shared'
 
-const FUNCTION_ID = 'code-runner::teardown'
+const FUNCTION_ID = 'sandbox-code-runner::teardown'
 
 /** Ids listed before the list collapses — a runtime may hold up to 64. */
 const GONE_CLAMP = 12
@@ -186,7 +186,7 @@ export function createTeardownRenderer(host: Host): FunctionTriggerRenderer {
         <DeniedCard op="teardown" reason={denied.reason} deniedBy={denied.deniedBy} />
       )
     }
-    // Our own error card, never a fall-through: code-runner's error MESSAGES
+    // Our own error card, never a fall-through: sandbox-code-runner's error MESSAGES
     // carry the runtime_id by design on the by-id path — `unknown runtime_id
     // {id}`, `runtime {id} expired: …` (error.rs) — and the default view
     // would print that capability verbatim on an ordinary stale-id mistake.
@@ -210,7 +210,7 @@ export function createTeardownRenderer(host: Host): FunctionTriggerRenderer {
     return <SettledView message={message} />
   }
   return {
-    id: 'code-runner/page.js#teardown',
+    id: 'sandbox-code-runner/page.js#teardown',
     isMatch: (functionId) => functionId === FUNCTION_ID,
     tryRender: (message) => render(message, !!message.running),
     tryRenderRunning: (message) => render(message, true),

@@ -7,8 +7,8 @@
  * The five shared specifiers stay EXTERNAL — they resolve at runtime
  * through the console's import map (a bundled React copy would surface as
  * a cryptic "Invalid hook call"). Everything else the page needs gets
- * bundled in. `--watch` pairs with the worker's III_CODE_RUNNER_UI_WATCH
- * poller for the hot-reload dev loop.
+ * bundled in. `--watch` pairs with the worker's
+ * III_SANDBOX_CODE_RUNNER_UI_WATCH poller for the hot-reload dev loop.
  */
 
 import esbuild from 'esbuild'

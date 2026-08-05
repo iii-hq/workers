@@ -1,12 +1,12 @@
-//! The statically registered `code-runner::*` functions.
+//! The statically registered `sandbox-code-runner::*` functions.
 //!
 //! Each `<verb>.rs` holds its typed request/response structs; the handler
 //! bodies are thin wrappers over `RuntimeManager`, which is what the tests
 //! drive directly.
 
-pub mod eval;
 pub mod inject_guidance;
 pub mod register;
+pub mod run;
 pub mod teardown;
 
 use std::sync::Arc;
@@ -16,56 +16,56 @@ use iii_sdk::{IIIClient, RegisterFunction};
 
 use crate::manager::RuntimeManager;
 
-pub const EVAL_ID: &str = "code-runner::eval";
-pub const EVAL_DESC: &str =
-    "Run code in an isolated microVM. Pass lang (\"node\" or \"python\"). By default eval is \
+pub const RUN_ID: &str = "sandbox-code-runner::run";
+pub const RUN_DESC: &str =
+    "Run code in an isolated microVM. Pass lang (\"node\" or \"python\"). By default run is \
      ONE-SHOT: it boots a fresh VM, runs code, returns the result, and destroys the VM — \
      nothing persists, no files, no installed packages, and the response carries no \
      runtime_id (there is nothing left to address). Pass keep: true to leave the VM running \
      instead: the response's runtime_id then addresses it, and is the capability \
-     code-runner::teardown needs to stop it later. Pass runtime_id on a later call to reuse \
-     that same VM (same filesystem, fresh interpreter process each time) — that runtime is \
-     never auto-stopped, you own it until you tear it down or its idle TTL reaps it, and a \
-     reaped reuse fails with code-runner::expired (retry without runtime_id to boot a fresh \
-     one). Every VM boots with outbound network, so npm/pip installs work on any path. \
-     Evaluated code gets a global `iii` — the real iii-sdk client, lazily connected to the \
-     engine on first use: `await iii.trigger({ function_id, payload })` (Node) / \
+     sandbox-code-runner::teardown needs to stop it later. Pass runtime_id on a later call to \
+     reuse that same VM (same filesystem, fresh interpreter process each time) — that runtime \
+     is never auto-stopped, you own it until you tear it down or its idle TTL reaps it, and a \
+     reaped reuse fails with sandbox-code-runner::expired (retry without runtime_id to boot a \
+     fresh one). Every VM boots with outbound network, so npm/pip installs work on any path. \
+     Run code gets a global `iii` — the real iii-sdk client, lazily connected to the engine on \
+     first use: `await iii.trigger({ function_id, payload })` (Node) / \
      `iii.trigger({'function_id': ..., 'payload': ...})` (Python, synchronous) invokes any \
      bus function, and the full SDK surface is available. Functions registered with \
-     iii.registerFunction die when the eval process exits — register through \
-     code-runner::register_function (via iii.trigger) for one that persists. stdout, stderr \
-     and exit_code come back verbatim — a failing script is a response, not an error.";
+     iii.registerFunction die when the run process exits — register through \
+     sandbox-code-runner::register_function (via iii.trigger) for one that persists. stdout, \
+     stderr and exit_code come back verbatim — a failing script is a response, not an error.";
 
-pub const TEARDOWN_ID: &str = "code-runner::teardown";
+pub const TEARDOWN_ID: &str = "sandbox-code-runner::teardown";
 pub const TEARDOWN_DESC: &str =
     "Destroy a runtime: unregister every bus function it registered, stop its microVM(s), and \
-     free the slot(s). Pass exactly one of runtime_id (a kept eval's runtime, from \
-     code-runner::eval keep=true) or namespace (a register_function namespace, e.g. \"app\" for \
-     ids like app::greet) — never both, never neither.";
+     free the slot(s). Pass exactly one of runtime_id (a kept run's runtime, from \
+     sandbox-code-runner::run keep=true) or namespace (a register_function namespace, e.g. \
+     \"app\" for ids like app::greet) — never both, never neither.";
 
-pub const REGISTER_ID: &str = "code-runner::register_function";
+pub const REGISTER_ID: &str = "sandbox-code-runner::register_function";
 pub const REGISTER_DESC: &str =
     "Publish a bus function whose handler executes inside a microVM. No runtime_id needed: \
-     code-runner keeps one persistent runtime per namespace (the segment of function_id before \
-     `::`) and language — the first registration in a namespace boots it, later ones in the \
-     same namespace and lang reuse it automatically. `source` must DEFINE handler(payload) in \
-     `lang` — `export function handler(payload) {...}` (node) or `def handler(payload): ...` \
-     (python); each call runs it in a fresh interpreter process with the trigger payload and \
-     returns its JSON-serialized result. The first registered id in a namespace claims it; \
-     later ids must share both the namespace and its lang. `description` is what \
-     engine::functions::info shows a caller — write one. Handlers get the same global `iii` \
-     evaluated code gets (the real iii-sdk client, lazily connected) — but a handler that \
-     triggers a function registered on ITS OWN runtime waits on the runtime's \
+     sandbox-code-runner keeps one persistent runtime per namespace (the segment of \
+     function_id before `::`) and language — the first registration in a namespace boots it, \
+     later ones in the same namespace and lang reuse it automatically. `source` must DEFINE \
+     handler(payload) in `lang` — `export function handler(payload) {...}` (node) or \
+     `def handler(payload): ...` (python); each call runs it in a fresh interpreter process \
+     with the trigger payload and returns its JSON-serialized result. The first registered id \
+     in a namespace claims it; later ids must share both the namespace and its lang. \
+     `description` is what engine::functions::info shows a caller — write one. Handlers get \
+     the same global `iii` run code gets (the real iii-sdk client, lazily connected) — but a \
+     handler that triggers a function registered on ITS OWN runtime waits on the runtime's \
      one-exec-at-a-time slot and can only time out; call across runtimes or workers instead. \
-     Functions stop resolving when their namespace is torn down (code-runner::teardown \
-     namespace=...) or its runtime is reaped for idleness.";
+     Functions stop resolving when their namespace is torn down \
+     (sandbox-code-runner::teardown namespace=...) or its runtime is reaped for idleness.";
 
 /// Every id this worker registers on its own client, in registration order.
 /// `register_all` asserts it registered exactly this list, and the schema
 /// test pins `catalog()` to it — the two hand-maintained lists must not
 /// drift apart.
 pub const STATIC_IDS: &[&str] = &[
-    EVAL_ID,
+    RUN_ID,
     TEARDOWN_ID,
     REGISTER_ID,
     inject_guidance::GUIDANCE_HOOK_ID,
@@ -74,22 +74,22 @@ pub const STATIC_IDS: &[&str] = &[
 pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<RuntimeManager>) {
     // Seed the local claims registry with this worker's own ids BEFORE
     // registering anything, so `RuntimeManager::register`'s reservation
-    // check refuses a caller-supplied `code-runner::*` id from the moment
-    // this function starts, rather than depending on the
+    // check refuses a caller-supplied `sandbox-code-runner::*` id from the
+    // moment this function starts, rather than depending on the
     // `engine::functions::info` probe (a network round trip) to catch it.
     manager.seed_static_ids(STATIC_IDS);
 
     let mut registered: Vec<&str> = Vec::new();
 
     let m = manager.clone();
-    registered.push(EVAL_ID);
+    registered.push(RUN_ID);
     iii.register_function(
-        EVAL_ID,
-        RegisterFunction::new_async(move |req: eval::EvalRequest| {
+        RUN_ID,
+        RegisterFunction::new_async(move |req: run::RunRequest| {
             let m = m.clone();
-            async move { m.eval(req).await.map_err(Error::from) }
+            async move { m.run(req).await.map_err(Error::from) }
         })
-        .description(EVAL_DESC),
+        .description(RUN_DESC),
     );
 
     let m = manager.clone();
@@ -131,7 +131,7 @@ pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<RuntimeManager>) {
         "register_all must register exactly STATIC_IDS — the lists must not drift"
     );
 
-    tracing::info!("code-runner functions registered");
+    tracing::info!("sandbox-code-runner functions registered");
 }
 
 /// Bind the `pre_generate` hook so the guidance reaches the agent's system
@@ -145,7 +145,9 @@ pub fn setup_harness_hooks(iii: &Arc<IIIClient>) {
         config: serde_json::json!({ "on_error": "fail_open" }),
         metadata: None,
     }) {
-        Ok(_) => tracing::info!("code-runner pre-generate hook bound (guidance injection active)"),
+        Ok(_) => tracing::info!(
+            "sandbox-code-runner pre-generate hook bound (guidance injection active)"
+        ),
         Err(e) => tracing::warn!(error = %e, "guidance hook binding failed; continuing without it"),
     }
 }
@@ -182,7 +184,7 @@ where
 /// Every statically registered function, in registration order.
 pub fn catalog() -> Vec<FunctionSpec> {
     vec![
-        spec::<eval::EvalRequest, eval::EvalResponse>(EVAL_ID, EVAL_DESC),
+        spec::<run::RunRequest, run::RunResponse>(RUN_ID, RUN_DESC),
         spec::<teardown::TeardownRequest, teardown::TeardownResponse>(TEARDOWN_ID, TEARDOWN_DESC),
         spec::<register::RegisterRequest, register::RegisterResponse>(REGISTER_ID, REGISTER_DESC),
         spec::<inject_guidance::PreGenerateEvent, inject_guidance::PreGenerateResponse>(
@@ -199,9 +201,9 @@ mod tests {
     use crate::engine::IIIEngine;
     use iii_sdk::IIIClient;
 
-    /// Before `code-runner` had a `[[bin]]` target, nothing ever called
-    /// `register_all` — `main` is the only caller, and the `--manifest`
-    /// smoke test returns before it runs. Its trailing
+    /// Before `sandbox-code-runner` had a `[[bin]]` target, nothing ever
+    /// called `register_all` — `main` is the only caller, and the
+    /// `--manifest` smoke test returns before it runs. Its trailing
     /// `assert_eq!(registered, STATIC_IDS, ...)` is real protection: a
     /// function registered but left out of `STATIC_IDS` could be claimed by
     /// tenant code and hit iii-sdk's documented panic-on-duplicate-id. Drive

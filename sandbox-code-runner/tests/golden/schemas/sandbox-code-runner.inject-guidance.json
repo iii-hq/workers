@@ -1,6 +1,6 @@
 {
-  "description": "Internal pre_generate hook: appends code-runner usage guidance to the agent system prompt. Bound to harness::hook::pre-generate at worker startup; not called directly.",
-  "function_id": "code-runner::inject-guidance",
+  "description": "Internal pre_generate hook: appends sandbox-code-runner usage guidance to the agent system prompt. Bound to harness::hook::pre-generate at worker startup; not called directly.",
+  "function_id": "sandbox-code-runner::inject-guidance",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {

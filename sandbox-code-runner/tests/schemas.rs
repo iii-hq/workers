@@ -1,4 +1,4 @@
-//! Wire-schema snapshots for the statically registered `code-runner::*`
+//! Wire-schema snapshots for the statically registered `sandbox-code-runner::*`
 //! functions. `sandbox_code_runner::functions::catalog()` is the single source of
 //! truth; each entry is serialized to pretty JSON and compared against
 //! `tests/golden/schemas/<id>.json` (`::` maps to `.` in filenames).
@@ -31,10 +31,10 @@ fn catalog_lists_every_function_in_registration_order() {
     assert_eq!(
         ids,
         vec![
-            "code-runner::eval",
-            "code-runner::teardown",
-            "code-runner::register_function",
-            "code-runner::inject-guidance"
+            "sandbox-code-runner::run",
+            "sandbox-code-runner::teardown",
+            "sandbox-code-runner::register_function",
+            "sandbox-code-runner::inject-guidance"
         ]
     );
 }

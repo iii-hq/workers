@@ -6,8 +6,9 @@ use crate::runner::Lang;
 #[derive(Deserialize, JsonSchema)]
 pub struct RegisterRequest {
     /// e.g. "my-app::greet". The first registration in a namespace (the
-    /// segment before `::`) claims it; later ids must share it. code-runner
-    /// keeps ONE persistent runtime per (namespace, lang) — the first
+    /// segment before `::`) claims it; later ids must share it.
+    /// sandbox-code-runner keeps ONE persistent runtime per (namespace, lang)
+    /// — the first
     /// registration creates it, later ones reuse it — as an implementation
     /// detail you never see or manage.
     pub function_id: String,

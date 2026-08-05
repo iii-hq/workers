@@ -1,23 +1,25 @@
-//! `code-runner::inject-guidance` — a `pre_generate` hook that contributes the
-//! `code-runner::*` usage guidance to the agent's system prompt, ONLY while this
-//! worker is connected. The binding dies with the worker, so the guidance is
-//! presence-gated for free: a deployment without code-runner never pays for it,
-//! and the text is never hand-duplicated into a static harness prompt.
+//! `sandbox-code-runner::inject-guidance` — a `pre_generate` hook that
+//! contributes the `sandbox-code-runner::*` usage guidance to the agent's
+//! system prompt, ONLY while this worker is connected. The binding dies with
+//! the worker, so the guidance is presence-gated for free: a deployment
+//! without sandbox-code-runner never pays for it, and the text is never
+//! hand-duplicated into a static harness prompt.
 //!
 //! Mirrors `web/src/functions/inject_guidance.rs`.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub const GUIDANCE_HOOK_ID: &str = "code-runner::inject-guidance";
+pub const GUIDANCE_HOOK_ID: &str = "sandbox-code-runner::inject-guidance";
 pub const GUIDANCE_HOOK_DESC: &str =
-    "Internal pre_generate hook: appends code-runner usage guidance to the agent system \
-     prompt. Bound to harness::hook::pre-generate at worker startup; not called directly.";
+    "Internal pre_generate hook: appends sandbox-code-runner usage guidance to the agent \
+     system prompt. Bound to harness::hook::pre-generate at worker startup; not called \
+     directly.";
 
-/// The single canonical copy of the code-runner usage guidance. Pure USAGE
-/// guidance: the hook only fires while this worker is present, so it carries no
-/// "look for it / install it" discovery text.
-const CODE_RUNNER_GUIDANCE: &str = "code-runner runs Node.js and Python in isolated microVMs (iii-sandbox). `code-runner::eval` with lang \"node\" or \"python\" is ONE-SHOT by default: it boots a fresh VM, runs the code, returns the result, and destroys the VM — nothing persists, no files, no installed packages, and the response carries no runtime_id (there is nothing left to address). Pass keep: true to leave the VM running instead: the response's runtime_id then addresses it — treat it as a secret — and is the capability `code-runner::teardown` needs. Pass that runtime_id back on a later eval to keep working in the same VM (filesystem persists between evals in one runtime; variables do not) — that runtime is never auto-stopped, and a reuse can fail with code-runner::expired if it was idle-reaped; if it does, just eval again the same way (fresh keep: true, or a fresh one-shot) rather than reusing the dead id. Every VM boots with outbound network, so npm/pip installs work on any path. Evaluated code and registered handlers get a global `iii` — the REAL iii-sdk client, lazily connected to the engine on first use: `await iii.trigger({ function_id: 'worker::fn', payload })` in Node, `iii.trigger({'function_id': 'worker::fn', 'payload': ...})` (synchronous) in Python, with the full SDK surface behind it (registerFunction, registerTrigger, and the rest). Two sharp edges: functions registered with iii.registerFunction are EPHEMERAL — they die when the eval or handler process exits, so persist through code-runner::register_function (callable via iii.trigger); and a handler that triggers a function registered on the very runtime it executes in waits on that runtime's one-exec-at-a-time slot and can only time out — call across runtimes or workers instead. `code-runner::register_function` needs no runtime_id at all: pass function_id, source (must define handler(payload) in lang), description, and lang — code-runner keeps one persistent runtime per namespace (the segment of function_id before `::`) and language automatically, creating it on the first registration and reusing it for later ones in the same namespace and lang. Call `code-runner::teardown` with EITHER runtime_id (a kept eval's runtime) or namespace (e.g. \"app\" for ids like app::greet) — never both, never neither — to unregister its functions and stop its microVM(s). Idle runtimes are reaped after the configured TTL, but a reaped runtime's functions are NOT unregistered at that moment: the next call into it fails with code-runner::expired, and only then are its functions unregistered. Don't assume a function id is free to reuse just because the TTL has passed.";
+/// The single canonical copy of the sandbox-code-runner usage guidance. Pure
+/// USAGE guidance: the hook only fires while this worker is present, so it
+/// carries no "look for it / install it" discovery text.
+const CODE_RUNNER_GUIDANCE: &str = "sandbox-code-runner runs Node.js and Python in isolated microVMs (iii-sandbox). `sandbox-code-runner::run` with lang \"node\" or \"python\" is ONE-SHOT by default: it boots a fresh VM, runs the code, returns the result, and destroys the VM — nothing persists, no files, no installed packages, and the response carries no runtime_id (there is nothing left to address). Pass keep: true to leave the VM running instead: the response's runtime_id then addresses it — treat it as a secret — and is the capability `sandbox-code-runner::teardown` needs. Pass that runtime_id back on a later run to keep working in the same VM (filesystem persists between runs in one runtime; variables do not) — that runtime is never auto-stopped, and a reuse can fail with sandbox-code-runner::expired if it was idle-reaped; if it does, just run again the same way (fresh keep: true, or a fresh one-shot) rather than reusing the dead id. Every VM boots with outbound network, so npm/pip installs work on any path. Run code and registered handlers get a global `iii` — the REAL iii-sdk client, lazily connected to the engine on first use: `await iii.trigger({ function_id: 'worker::fn', payload })` in Node, `iii.trigger({'function_id': 'worker::fn', 'payload': ...})` (synchronous) in Python, with the full SDK surface behind it (registerFunction, registerTrigger, and the rest). Two sharp edges: functions registered with iii.registerFunction are EPHEMERAL — they die when the run or handler process exits, so persist through sandbox-code-runner::register_function (callable via iii.trigger); and a handler that triggers a function registered on the very runtime it executes in waits on that runtime's one-exec-at-a-time slot and can only time out — call across runtimes or workers instead. `sandbox-code-runner::register_function` needs no runtime_id at all: pass function_id, source (must define handler(payload) in lang), description, and lang — sandbox-code-runner keeps one persistent runtime per namespace (the segment of function_id before `::`) and language automatically, creating it on the first registration and reusing it for later ones in the same namespace and lang. Call `sandbox-code-runner::teardown` with EITHER runtime_id (a kept run's runtime) or namespace (e.g. \"app\" for ids like app::greet) — never both, never neither — to unregister its functions and stop its microVM(s). Idle runtimes are reaped after the configured TTL, but a reaped runtime's functions are NOT unregistered at that moment: the next call into it fails with sandbox-code-runner::expired, and only then are its functions unregistered. Don't assume a function id is free to reuse just because the TTL has passed.";
 
 /// The slice of the `pre_generate` hook envelope we read (lenient: ignores every
 /// other field the harness sends). The harness nests the live generation context
@@ -94,7 +96,10 @@ mod tests {
             sp.starts_with("BASE PROMPT\n\n"),
             "the base prompt must be preserved, guidance appended after it"
         );
-        assert!(sp.contains("code-runner::eval"), "guidance content present");
+        assert!(
+            sp.contains("sandbox-code-runner::run"),
+            "guidance content present"
+        );
     }
 
     #[test]
@@ -130,20 +135,20 @@ mod tests {
     #[test]
     fn guidance_covers_this_worker_s_surface() {
         // Each needle is a fact an agent gets wrong without the guidance:
-        // the three function ids, that eval is one-shot unless kept, that
+        // the three function ids, that run is one-shot unless kept, that
         // runtime_id is the thing to reuse, the handler signature
         // register_function expects, that it needs no runtime_id, the
-        // network flag's limits, and that an eval reuse can come back
-        // code-runner::expired.
+        // network flag's limits, and that a run reuse can come back
+        // sandbox-code-runner::expired.
         for needle in [
-            "code-runner::eval",
-            "code-runner::register_function",
-            "code-runner::teardown",
+            "sandbox-code-runner::run",
+            "sandbox-code-runner::register_function",
+            "sandbox-code-runner::teardown",
             "runtime_id",
             "keep: true",
             "handler(payload)",
             "network",
-            "code-runner::expired",
+            "sandbox-code-runner::expired",
             "namespace",
             "iii.trigger",
             "iii.registerFunction",
@@ -157,18 +162,18 @@ mod tests {
     }
 
     /// The core behavior change this guidance must state plainly, not hedge:
-    /// eval is one-shot by default and nothing persists unless `keep: true`,
+    /// run is one-shot by default and nothing persists unless `keep: true`,
     /// and `register_function` needs no `runtime_id` at all. A wrong or
     /// vague claim here becomes an agent's confident wrong belief.
     #[test]
     fn guidance_states_one_shot_eval_and_runtime_id_free_register_plainly() {
         assert!(
             CODE_RUNNER_GUIDANCE.contains("ONE-SHOT by default"),
-            "guidance must state plainly that eval defaults to one-shot"
+            "guidance must state plainly that run defaults to one-shot"
         );
         assert!(
             CODE_RUNNER_GUIDANCE.contains("nothing persists, no files, no installed packages"),
-            "guidance must state plainly that a one-shot eval leaves nothing behind"
+            "guidance must state plainly that a one-shot run leaves nothing behind"
         );
         assert!(
             CODE_RUNNER_GUIDANCE.contains("needs no runtime_id at all"),

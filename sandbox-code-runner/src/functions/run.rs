@@ -4,18 +4,18 @@ use serde::{Deserialize, Serialize};
 use crate::runner::Lang;
 
 #[derive(Deserialize, JsonSchema)]
-pub struct EvalRequest {
+pub struct RunRequest {
     /// Source run as a whole file by a fresh interpreter process. Variables
-    /// do NOT survive between evals; whether files and installed packages
+    /// do NOT survive between runs; whether files and installed packages
     /// do depends on the path below. A global `iii` is in scope — the real
     /// iii-sdk client, lazily connected to the engine on first use:
     /// `await iii.trigger({ function_id, payload })` in Node,
     /// `iii.trigger({'function_id': ..., 'payload': ...})` in Python.
     /// Functions registered with `iii.registerFunction` live only until
-    /// this process exits — use code-runner::register_function (callable
-    /// through `iii.trigger`) for one that persists.
+    /// this process exits — use sandbox-code-runner::register_function
+    /// (callable through `iii.trigger`) for one that persists.
     pub code: String,
-    /// Evaluate in a SPECIFIC runtime, sharing its filesystem: the write and
+    /// Run in a SPECIFIC runtime, sharing its filesystem: the write and
     /// the run land in that VM, and it is NOT stopped afterwards — you own
     /// it. Omit this to run one-shot (see `keep`).
     #[serde(default)]
@@ -29,10 +29,10 @@ pub struct EvalRequest {
     /// one-shot — boot a VM, run `code`, return the result, destroy the VM.
     /// Nothing persists: no files, no installed packages. `true`: boot a VM
     /// and leave it running; the response's `runtime_id` addresses it for
-    /// later evals (pass it back to keep working in the same filesystem) and
-    /// is the capability `code-runner::teardown` needs to stop it. Every
-    /// runtime boots with outbound network (the `iii` global's engine link
-    /// needs it), so npm/pip installs work on any path.
+    /// later runs (pass it back to keep working in the same filesystem) and
+    /// is the capability `sandbox-code-runner::teardown` needs to stop it.
+    /// Every runtime boots with outbound network (the `iii` global's engine
+    /// link needs it), so npm/pip installs work on any path.
     #[serde(default)]
     pub keep: bool,
     /// Wall-clock budget in milliseconds, clamped to the configured maximum.
@@ -42,9 +42,9 @@ pub struct EvalRequest {
 
 // `code` is tenant-authored source; `runtime_id` — when present — is a
 // capability. Hand-rolled `Debug` keeps both out of `{:?}`.
-impl std::fmt::Debug for EvalRequest {
+impl std::fmt::Debug for RunRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EvalRequest")
+        f.debug_struct("RunRequest")
             .field("code", &"<redacted>")
             .field(
                 "runtime_id",
@@ -58,13 +58,13 @@ impl std::fmt::Debug for EvalRequest {
 }
 
 #[derive(Serialize, JsonSchema)]
-pub struct EvalResponse {
-    /// Present when this eval addresses a runtime that outlives the call:
+pub struct RunResponse {
+    /// Present when this run addresses a runtime that outlives the call:
     /// the `runtime_id` you passed in, or — when you passed `keep: true`
     /// with no `runtime_id` — the one just minted for the VM this call left
     /// running. `None` on the default one-shot path: the VM is already gone
     /// by the time this response is sent, so there is nothing to address.
-    /// Treat a present value as a secret: it is the capability to eval into
+    /// Treat a present value as a secret: it is the capability to run into
     /// or tear down that runtime.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime_id: Option<String>,
@@ -75,9 +75,9 @@ pub struct EvalResponse {
     pub duration_ms: u64,
 }
 
-impl std::fmt::Debug for EvalResponse {
+impl std::fmt::Debug for RunResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EvalResponse")
+        f.debug_struct("RunResponse")
             .field(
                 "runtime_id",
                 &self.runtime_id.as_ref().map(|_| "<redacted>"),
@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn debug_does_not_leak_code_or_the_runtime_id() {
-        let req = EvalRequest {
+        let req = RunRequest {
             code: "SECRET_TENANT_SOURCE_1234".into(),
             runtime_id: Some("rt-secret-capability".into()),
             lang: Some(Lang::Node),
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn response_debug_does_not_leak_the_runtime_id() {
-        let res = EvalResponse {
+        let res = RunResponse {
             runtime_id: Some("rt-secret-capability".into()),
             stdout: String::new(),
             stderr: String::new(),
@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn response_omits_runtime_id_on_the_wire_when_absent() {
-        let res = EvalResponse {
+        let res = RunResponse {
             runtime_id: None,
             stdout: String::new(),
             stderr: String::new(),

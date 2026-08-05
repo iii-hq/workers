@@ -1,18 +1,19 @@
 /**
- * Shared building blocks for every code-runner function-trigger renderer.
+ * Shared building blocks for every sandbox-code-runner function-trigger
+ * renderer.
  *
- * The three cards (eval / register_function / teardown) differ only in their
+ * The three cards (run / register_function / teardown) differ only in their
  * body — the frame, the runtime-id chip, the terminal streams, the exit
  * status and the id list are identical, and live here.
  *
- * SECURITY — `runtime_id` is a capability: whoever holds one can eval into
+ * SECURITY — `runtime_id` is a capability: whoever holds one can run into
  * or tear down that runtime. It is NEVER rendered in full. `RuntimeChip` is
  * the only sanctioned way to show one: truncated, with the full value
  * reachable only by an explicit click-to-copy. Any other text that could
  * embed one (an error message, a line of stdout, a function id) goes through
  * `redactRuntimeIds` first.
  *
- * What code-runner is NOT: node-engine. An eval here returns a PROCESS
+ * What sandbox-code-runner is NOT: node-engine. A run here returns a PROCESS
  * result — stdout, stderr, exit code — not a completion value plus captured
  * console lines. A non-zero exit is a normal response carrying the user's own
  * compiler or runtime message; errors are reserved for infrastructure
@@ -48,9 +49,9 @@ export function isErrorOutput(value: unknown): boolean {
   )
 }
 
-export const FUNCTION_PREFIX = 'code-runner::'
+export const FUNCTION_PREFIX = 'sandbox-code-runner::'
 
-/** `code-runner::eval` → `eval` (the op pill's label). */
+/** `sandbox-code-runner::run` → `run` (the op pill's label). */
 export function opName(functionId: string): string {
   return functionId.startsWith(FUNCTION_PREFIX)
     ? functionId.slice(FUNCTION_PREFIX.length)
@@ -58,10 +59,10 @@ export function opName(functionId: string): string {
 }
 
 /**
- * The Prism id for an eval request's `lang`, or `undefined` when there is no
+ * The Prism id for a run request's `lang`, or `undefined` when there is no
  * honest answer.
  *
- * Only `eval` carries a language: `register_function`'s request has no `lang`
+ * Only `run` carries a language: `register_function`'s request has no `lang`
  * field at all (the language belongs to the runtime the function is being
  * registered into), so that card CANNOT know it from the payload. `undefined`
  * means "render unhighlighted" — never guess a language onto a code block,
@@ -82,7 +83,7 @@ export function truncateRuntimeId(runtimeId: string): string {
 
 /**
  * `manager.rs` mints `rt-<uuid>` (`format!("rt-{}", Uuid::new_v4())`), and
- * code-runner's own error MESSAGES quote it by design — `RuntimeNotFound` is
+ * sandbox-code-runner's own error MESSAGES quote it by design — `RuntimeNotFound` is
  * "unknown runtime_id {id}" and `Expired` is "runtime {id} expired: …"
  * (error.rs, a documented exception to the redaction convention: those go to
  * the caller who already holds the id). The console feed is not that caller,
@@ -200,7 +201,7 @@ export function RuntimeChip({ runtimeId }: { runtimeId: string }) {
         </button>
       </TooltipTrigger>
       <TooltipContent>
-        A runtime id is a capability — anyone holding it can eval into or tear
+        A runtime id is a capability — anyone holding it can run into or tear
         down that sandbox, so only a prefix is shown. Click to copy the full id.
       </TooltipContent>
     </Tooltip>
@@ -210,14 +211,14 @@ export function RuntimeChip({ runtimeId }: { runtimeId: string }) {
 /* --- card frame -------------------------------------------------------- */
 
 /**
- * The frame every code-runner card shares: op pill, caller-supplied chips,
- * the "code-runner ui" attribution tag (so an override is distinguishable
- * from first-party rendering), and the body.
+ * The frame every sandbox-code-runner card shares: op pill, caller-supplied
+ * chips, the "sandbox-code-runner ui" attribution tag (so an override is
+ * distinguishable from first-party rendering), and the body.
  */
 export function CardShell({
   op,
   running,
-  tag = 'code-runner ui',
+  tag = 'sandbox-code-runner ui',
   chips,
   children,
 }: {
@@ -298,9 +299,9 @@ export function Stream({
 /* --- exit status -------------------------------------------------------- */
 
 /**
- * The one-line verdict on an eval: exit code, what it means, how long it took.
+ * The one-line verdict on a run: exit code, what it means, how long it took.
  *
- * A non-zero exit is NOT an error. code-runner reserves errors for
+ * A non-zero exit is NOT an error. sandbox-code-runner reserves errors for
  * infrastructure failures; a script that throws comes back as an ordinary
  * response with its message in `stderr`. So a failing exit is `--color-warn`
  * ("your program failed") and never `--color-alert` ("the system failed").
@@ -382,10 +383,10 @@ export function TimeoutChip({ ms }: { ms?: number }) {
 /* --- errors -------------------------------------------------------------- */
 
 /**
- * Pull the message out of a code-runner error output. Checked at both the raw
- * value and its unwrapped envelope — the same two places every renderer's
- * `isErrorOutput` check looks — since which level carries the `{ error }` key
- * depends on the path the failure took.
+ * Pull the message out of a sandbox-code-runner error output. Checked at
+ * both the raw value and its unwrapped envelope — the same two places every
+ * renderer's `isErrorOutput` check looks — since which level carries the
+ * `{ error }` key depends on the path the failure took.
  */
 export function errorInfo(output: unknown): { message: string } | undefined {
   const direct = asRecord(output)
@@ -408,9 +409,9 @@ export function errorInfo(output: unknown): { message: string } | undefined {
 }
 
 /**
- * The error card every code-runner renderer shows instead of falling through
- * to the console's default error view: code-runner's error MESSAGES carry the
- * runtime_id capability by design (`unknown runtime_id {id}`,
+ * The error card every sandbox-code-runner renderer shows instead of falling
+ * through to the console's default error view: sandbox-code-runner's error
+ * MESSAGES carry the runtime_id capability by design (`unknown runtime_id {id}`,
  * `runtime {id} expired: …` — error.rs), so the unredacted default view would
  * print it verbatim on an ordinary mistake.
  *
