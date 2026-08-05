@@ -174,7 +174,7 @@ collect_worker_logs() {
   local name
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
-    timeout 20 "$iii_bin" worker logs "$name" --port "$engine_port" \
+    (cd "$project_dir" && timeout 20 "$iii_bin" worker logs "$name") \
       >"$log_dir/worker-$name.log" 2>&1 || true
   done < <(python3 - "$project_dir/config.yaml" <<'PY'
 import sys
