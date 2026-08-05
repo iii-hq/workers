@@ -137,6 +137,12 @@ fn evaluate<'a>(
             .filter(|record| record.get("target").and_then(Value::as_str) == Some("harness::send"))
             .collect();
         let call_delivered = call_records.len() == 1;
+        // A delivered ƒ-call fire always records what it dispatched; only a
+        // skip/gc/expiry record omits `payload`, and neither of those can
+        // have produced the mirror write `mirror_valid` checks below — so
+        // pinning presence here catches a regression that stops recording it.
+        let call_payload_recorded =
+            call_records.len() == 1 && call_records[0].get("payload").is_some();
         let parent_woken = wake_records.len() == 1
             && wake_records[0].get("retired").and_then(Value::as_bool) == Some(true)
             && observation.metrics.totals.sessions == 1
@@ -147,7 +153,8 @@ fn evaluate<'a>(
         let active_bindings = common::active_binding_count(context, &names.root_session).await?;
         let no_errors = observation.metrics.totals.function_call_errors == 0;
         let confirmed = observation.response.to_ascii_lowercase().contains("mirror");
-        let mechanical_mirror = exact_source_write && mirror_valid && call_delivered;
+        let mechanical_mirror =
+            exact_source_write && mirror_valid && call_delivered && call_payload_recorded;
         let clean_completion = active_bindings == 0 && no_errors && confirmed;
 
         Ok(ObjectiveEvaluation {
@@ -168,7 +175,7 @@ fn evaluate<'a>(
                     mechanical_mirror,
                     format!(
                         "exact_source_write={exact_source_write}, mirror_valid={mirror_valid}, \
-                         call_delivered={call_delivered}"
+                         call_delivered={call_delivered}, call_payload_recorded={call_payload_recorded}"
                     ),
                 ),
                 common::gate(

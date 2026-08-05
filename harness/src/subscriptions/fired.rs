@@ -60,12 +60,21 @@ pub struct TriggerFired<'a> {
 
 /// Append the fired record into the owner session. Best-effort — logs and
 /// returns on error so a transcript hiccup never blocks the fire.
+///
+/// The `payload` field is uncapped by design, so it is the likeliest reason an
+/// append ever fails (the transport ceiling). When a record carrying a
+/// payload fails to append, retry ONCE with `payload: None` (same entry id —
+/// session-manager dedups on it, so a partially-succeeded first attempt is
+/// harmless): the bookkeeping the timeline and the fired-panel ghost row
+/// actually need (ids, label, the `retired` flag) then survives even when the
+/// payload itself cannot be persisted.
 pub async fn emit(
     session: &SessionClient,
     owner_session_id: &str,
     entry_id: &str,
     rec: TriggerFired<'_>,
 ) {
+    let had_payload = rec.payload.is_some();
     let data = match serde_json::to_value(&rec) {
         Ok(v) => v,
         Err(e) => {
@@ -73,22 +82,62 @@ pub async fn emit(
             return;
         }
     };
-    if let Err(e) = session
-        .append_custom(
-            owner_session_id,
-            CUSTOM_TYPE,
-            data,
-            entry_id,
-            Some(&json!({ "trigger_fired": true })),
-        )
+    let origin = json!({ "trigger_fired": true });
+    let Err(e) = session
+        .append_custom(owner_session_id, CUSTOM_TYPE, data, entry_id, Some(&origin))
         .await
-    {
+    else {
+        return;
+    };
+    if !had_payload {
         tracing::warn!(
             error = %e,
             session_id = %owner_session_id,
             entry_id = %entry_id,
             "trigger_fired record append failed (non-fatal)"
         );
+        return;
+    }
+    tracing::warn!(
+        error = %e,
+        session_id = %owner_session_id,
+        entry_id = %entry_id,
+        "trigger_fired append failed with a payload attached; retrying once with the payload dropped"
+    );
+    let retry_data = match serde_json::to_value(drop_payload(rec)) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "trigger_fired retry record serialize failed; dropping");
+            return;
+        }
+    };
+    if let Err(e2) = session
+        .append_custom(
+            owner_session_id,
+            CUSTOM_TYPE,
+            retry_data,
+            entry_id,
+            Some(&origin),
+        )
+        .await
+    {
+        tracing::warn!(
+            error = %e2,
+            session_id = %owner_session_id,
+            entry_id = %entry_id,
+            "trigger_fired record append failed (non-fatal)"
+        );
+    }
+}
+
+/// `rec` with its payload dropped — the shape retried when an append carrying
+/// a payload fails. Serializing this is exactly equivalent to serializing the
+/// original record with `payload: None`, since the field is
+/// `skip_serializing_if = "Option::is_none"`.
+fn drop_payload(rec: TriggerFired<'_>) -> TriggerFired<'_> {
+    TriggerFired {
+        payload: None,
+        ..rec
     }
 }
 
@@ -191,5 +240,39 @@ mod tests {
         };
         let v = serde_json::to_value(&rec).unwrap();
         assert_eq!(v["payload"], payload);
+    }
+
+    #[test]
+    fn drop_payload_clears_only_the_payload_field() {
+        let payload = json!({ "returning": ["row1", "row2"] });
+        let rec = TriggerFired {
+            subscription_id: "sub_1",
+            trigger_id: Some("trig_1"),
+            target: "receiving::check_completion",
+            label: Some("lbl"),
+            once: false,
+            retired: false,
+            scope: Some("scope"),
+            key: Some("key"),
+            note: Some("note"),
+            payload: Some(&payload),
+            fired_at: 42,
+        };
+        let stripped = drop_payload(rec);
+        assert_eq!(stripped.subscription_id, "sub_1");
+        assert_eq!(stripped.trigger_id, Some("trig_1"));
+        assert_eq!(stripped.target, "receiving::check_completion");
+        assert_eq!(stripped.label, Some("lbl"));
+        assert!(!stripped.once);
+        assert!(!stripped.retired);
+        assert_eq!(stripped.scope, Some("scope"));
+        assert_eq!(stripped.key, Some("key"));
+        assert_eq!(stripped.note, Some("note"));
+        assert!(stripped.payload.is_none());
+        assert_eq!(stripped.fired_at, 42);
+
+        // Equivalent to serializing the original with `payload: None`.
+        let v = serde_json::to_value(&stripped).unwrap();
+        assert!(v.get("payload").is_none());
     }
 }
