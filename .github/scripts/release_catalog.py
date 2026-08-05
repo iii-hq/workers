@@ -10,6 +10,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _lib  # noqa: E402
+from harness_e2e_profiles import load_profile_catalog  # noqa: E402
 
 CATALOG_PATH = Path(".github/release-workers.yaml")
 
@@ -54,6 +55,7 @@ def load_catalog(path: Path = CATALOG_PATH) -> dict[str, dict[str, Any]]:
             raise ValueError(f"{slug}: allow_direct_latest must be boolean")
         if not isinstance(config.get("release_control_enabled"), bool):
             raise ValueError(f"{slug}: release_control_enabled must be boolean")
+    load_profile_catalog(path)
     return catalog
 
 

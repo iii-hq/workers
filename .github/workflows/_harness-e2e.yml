@@ -88,11 +88,42 @@ on:
         required: false
         type: string
         default: '{}'
+      validation_profile:
+        description: Scenario profile resolved for this execution
+        required: false
+        type: string
+        default: full
+      scenarios_json:
+        description: Exact scenario ids; required for custom and checked for named profiles
+        required: false
+        type: string
+        default: '[]'
+      catalog_sha:
+        description: Release catalog SHA used by the caller preview
+        required: false
+        type: string
+        default: ''
       coverage:
         description: Instrument the E2E stack and produce an LLVM coverage report
         required: false
         type: boolean
         default: false
+    outputs:
+      validation_profile:
+        description: Resolved scenario profile
+        value: ${{ jobs.build.outputs.validation_profile }}
+      scenarios_json:
+        description: Resolved scenario ids
+        value: ${{ jobs.build.outputs.scenarios }}
+      required_scenarios_json:
+        description: Canonical promotion gate
+        value: ${{ jobs.build.outputs.required_scenarios }}
+      profile_digest:
+        description: Digest of the canonical scenario catalog and release gate
+        value: ${{ jobs.build.outputs.profile_digest }}
+      catalog_sha:
+        description: Catalog commit used by the suite
+        value: ${{ jobs.build.outputs.catalog_sha }}
     secrets:
       anthropic_api_key:
         required: false
@@ -112,6 +143,10 @@ jobs:
     timeout-minutes: ${{ inputs.coverage && 60 || 45 }}
     outputs:
       scenarios: ${{ steps.scenarios.outputs.json }}
+      required_scenarios: ${{ steps.scenarios.outputs.required }}
+      validation_profile: ${{ steps.scenarios.outputs.profile }}
+      profile_digest: ${{ steps.scenarios.outputs.profile_digest }}
+      catalog_sha: ${{ steps.scenarios.outputs.catalog_sha }}
       engine_binary: ${{ steps.engine.outputs.binary }}
       engine_revision: ${{ steps.engine.outputs.version }}
     steps:
@@ -290,14 +325,27 @@ jobs:
       - name: Read code-defined scenarios
         id: scenarios
         env:
+          VALIDATION_PROFILE: ${{ inputs.validation_profile }}
+          REQUESTED_SCENARIOS: ${{ inputs.scenarios_json }}
+          EXPECTED_CATALOG_SHA: ${{ inputs.catalog_sha }}
           # The instrumented binary would otherwise drop default.profraw in cwd.
           LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/build-profraw/%m_%p.profraw', github.workspace) || '' }}
         run: |
           set -euo pipefail
-          scenarios=$(harness/target/release/harness-e2e list)
-          jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' \
-            <<<"$scenarios" >/dev/null
-          echo "json=$scenarios" >> "$GITHUB_OUTPUT"
+          available=$(harness/target/release/harness-e2e list)
+          resolved=$(python3 .github/scripts/harness_e2e_profiles.py \
+            --available-json "$available" \
+            --profile "$VALIDATION_PROFILE" \
+            --scenarios-json "$REQUESTED_SCENARIOS" \
+            --catalog-sha "${{ github.sha }}" \
+            --expected-catalog-sha "$EXPECTED_CATALOG_SHA")
+          {
+            echo "json=$(jq -c .scenarios <<<"$resolved")"
+            echo "required=$(jq -c .required_scenarios <<<"$resolved")"
+            echo "profile=$(jq -r .validation_profile <<<"$resolved")"
+            echo "profile_digest=$(jq -r .profile_digest <<<"$resolved")"
+            echo "catalog_sha=$(jq -r .catalog_sha <<<"$resolved")"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Package E2E binaries
         if: inputs.stack_mode == 'source'

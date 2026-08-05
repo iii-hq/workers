@@ -24,7 +24,7 @@ on:
         type: string
         default: ''
       e2e_run_id:
-        description: 'Deployed E2E run; required for Harness and auto-located when empty'
+        description: 'Promotion-ready deployed E2E run; required for Harness and auto-located when empty'
         required: false
         type: string
         default: ''
@@ -146,12 +146,32 @@ jobs:
           e2e_run_id="$E2E_RUN_ID_INPUT"
           if [[ "$WORKER" == harness && -z "$e2e_run_id" ]]; then
             title="Harness E2E · ${WORKER}@${version} ·"
-            e2e_run_id=$(gh api -X GET \
+            mapfile -t e2e_candidates < <(gh api -X GET \
               "repos/${GITHUB_REPOSITORY}/actions/workflows/harness-e2e-deployed.yml/runs" \
               -f event=workflow_dispatch -f status=completed \
-              --jq "[.workflow_runs[] | select(.conclusion == \"success\" and (.display_title | startswith(\"${title}\")))] | first | .id // empty")
+              -f per_page=100 \
+              --jq ".workflow_runs[] | select(.conclusion == \"success\" and (.display_title | startswith(\"${title}\"))) | .id")
+            for candidate_id in "${e2e_candidates[@]}"; do
+              candidate_dir=$(mktemp -d)
+              if gh run download "$candidate_id" \
+                --repo "$GITHUB_REPOSITORY" \
+                --name "harness-e2e-evidence-${WORKER}-${version}" \
+                --dir "$candidate_dir" >/dev/null 2>&1 && \
+                python3 .github/scripts/harness_e2e_evidence.py validate \
+                  --evidence "$candidate_dir/harness-e2e-evidence.json" \
+                  --repository "$GITHUB_REPOSITORY" \
+                  --release-run-id "$run_id" \
+                  --e2e-run-id "$candidate_id" \
+                  --worker "$WORKER" \
+                  --version "$version" >/dev/null 2>&1; then
+                e2e_run_id="$candidate_id"
+                rm -r "$candidate_dir"
+                break
+              fi
+              rm -r "$candidate_dir"
+            done
             [[ -n "$e2e_run_id" ]] || {
-              echo "::error::No green deployed Harness E2E run found for ${WORKER}@${version}"
+              echo "::error::No promotion-ready deployed Harness E2E run found for ${WORKER}@${version}"
               exit 2
             }
             echo "::notice::Harness E2E evidence expected in run ${e2e_run_id}"

@@ -36,6 +36,15 @@ def make_repo_with_tagged_worker(tmp_path, tag, version, deploy="binary",
         yaml.safe_dump(
             {
                 "schema_version": 1,
+                "release_control": {"harness_e2e_profiles": 1},
+                "harness_e2e": {
+                    "required_profile": "release",
+                    "scenarios": [{"id": "persistent_state", "group": "Operations"}],
+                    "profiles": {
+                        "release": {"scenarios": ["persistent_state"]},
+                        "full": {"scenarios": "all"},
+                    },
+                },
                 "defaults": {
                     "release_workflow": "release.yml",
                     "allow_direct_latest": True,

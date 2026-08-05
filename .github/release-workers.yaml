@@ -3,6 +3,44 @@ schema_version: 1
 release_control:
   contract: 2
   harness_stack_versions: 1
+  harness_e2e_profiles: 1
+
+harness_e2e:
+  required_profile: release
+  scenarios:
+    - { id: direct_answer, group: Quality }
+    - { id: persistent_state, group: Operations }
+    - { id: security_review, group: Quality }
+    - { id: reactive_automation, group: Operations }
+    - { id: shell_coder_sandbox, group: Operations }
+    - { id: design_tradeoff, group: Quality }
+    - { id: security_triage, group: Quality }
+    - { id: research_pipeline, group: Operations }
+    - { id: mechanical_reaction, group: Operations }
+    - { id: timer_wake, group: Operations }
+    - { id: receiving_operation, group: Operations }
+    - { id: validation_loop, group: Validation }
+    - { id: subagent_validation, group: Validation }
+    - { id: multi_subagent_validation, group: Validation }
+    - { id: subagent_validation_failure, group: Validation }
+    - { id: custom_validator, group: Validation }
+    - { id: validation_self_repair, group: Validation }
+    - { id: validation_scope_enforcement, group: Validation }
+    - { id: validation_chain, group: Validation }
+  profiles:
+    release:
+      scenarios:
+        - persistent_state
+        - reactive_automation
+        - mechanical_reaction
+        - timer_wake
+        - receiving_operation
+        - validation_loop
+        - subagent_validation
+        - validation_scope_enforcement
+        - validation_chain
+    full:
+      scenarios: all
 
 defaults:
   release_workflow: release.yml
