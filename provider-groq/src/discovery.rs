@@ -1,19 +1,18 @@
-//! Catalog reconcile. Groq's `GET /models` is the source of truth for the
-//! id list, and unusually it carries the context window and an active flag
-//! per model too. Those are taken live; everything the listing cannot say
-//! (display name, output ceiling, capabilities, pricing) is enriched from
-//! the local table (curated.rs) and pushed through the router's single
-//! write path.
+//! Catalog reconcile. Groq's `GET /models` is the source of truth for far
+//! more than the id list: display name, context window, output ceiling,
+//! modalities, supported features and live per-token pricing all come from
+//! it, and are pushed through the router's single write path. Only the
+//! floor for a row that reports none of this lives locally (curated.rs).
 //! The configured credential gates the slice — no key → empty catalog, so the
 //! picker never shows unusable rows.
 use crate::config::{credential_parts, DEFAULT_API_URL};
-use crate::curated::enrich;
+use crate::curated::base;
 use crate::errors::upstream_unavailable;
 use crate::{router_client, state};
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
-use llm_router::types::model::Model;
+use llm_router::types::model::{Model, Pricing};
 use llm_router::types::router::{RefreshModelsRequest, RefreshModelsResponse};
 use serde_json::Value;
 
@@ -28,58 +27,138 @@ pub fn models_url(api_url: &str) -> String {
         .unwrap_or_else(|| "https://api.groq.com/openai/v1/models".to_string())
 }
 
-/// `{ "data": [ { "id", "context_window", "active" } ] }` → enriched catalog
-/// rows.
+/// One live listing row → a catalog Model.
 ///
-/// Groq's listing says more than most: it carries the context window per
-/// model and marks whether the model is currently serving. Both are taken
-/// over the local snapshot, because the live answer is the true one — a
-/// window Groq raises reaches the router without a release, and a model that
-/// is not `active` cannot serve a turn, so offering it would only produce a
-/// failure the picker could have avoided.
-///
-/// Speech and moderation models share this listing with chat models. They
-/// have no chat completion surface, so serving them would put unroutable rows
-/// in the picker; they are dropped by the absence of a context window, which
-/// is what distinguishes them here.
-pub fn parse_live_models(json: &Value) -> Vec<Model> {
-    let Some(rows) = json.get("data").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    // Whether this listing reports context windows at all. Groq does, and a
-    // row without one is a speech or moderation model rather than a chat
-    // model. A gateway that reports none for anything is a different story:
-    // requiring the field there would empty the catalog, so the rule only
-    // applies when the listing has shown it knows how to speak it.
-    let reports_windows = rows
-        .iter()
-        .any(|raw| raw.get("context_window").and_then(Value::as_u64).is_some());
+/// Groq reports far more than a provider usually does — display name, window,
+/// output ceiling, modalities, supported features, and live per-token pricing
+/// — so the row is read rather than looked up. Anything the listing omits
+/// falls back to [`base`], which claims no capability it has not been told
+/// about.
+fn from_listing(raw: &Value) -> Option<Model> {
+    let id = raw
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
 
-    rows.iter()
-        .filter(|raw| {
-            // Absent `active` means an older or proxied listing that does not
-            // report it: serve the model rather than hide it.
-            raw.get("active").and_then(Value::as_bool).unwrap_or(true)
-        })
-        .filter_map(|raw| {
-            let id = raw
-                .get("id")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())?;
-            let window = raw
-                .get("context_window")
-                .and_then(Value::as_u64)
-                .filter(|w| *w > 0);
-            if reports_windows && window.is_none() {
-                return None;
-            }
-            let mut model = enrich(id);
-            if let Some(window) = window {
-                model.context_window = window;
-            }
-            Some(model)
-        })
-        .collect()
+    // A model that is not serving cannot answer a turn, so offering it would
+    // only produce a failure the picker could have avoided. An absent flag
+    // means a listing that does not report it: serve the model.
+    if !raw.get("active").and_then(Value::as_bool).unwrap_or(true) {
+        return None;
+    }
+    // Speech and moderation models share this listing with chat models and
+    // have no chat completion surface. Modality is what tells them apart:
+    // Whisper reports a context window like everything else (448), so a
+    // missing-window rule would let it through.
+    if !is_chat_model(raw) {
+        return None;
+    }
+
+    // An absent list and an empty one say different things: a listing that
+    // omits the field has told us nothing, while one that sends `[]` has said
+    // the model supports none of these. Only the first leaves a capability
+    // unknown.
+    let features = raw
+        .get("supported_features")
+        .and_then(Value::as_array)
+        .map(|f| {
+            f.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_ascii_lowercase)
+                .collect::<Vec<_>>()
+        });
+    let declared = |name: &str| features.as_ref().map(|list| list.iter().any(|f| f == name));
+
+    let mut model = base(id);
+    if let Some(name) = raw.get("name").and_then(Value::as_str) {
+        model.display_name = Some(name.to_string());
+    }
+    if let Some(window) = raw
+        .get("context_window")
+        .and_then(Value::as_u64)
+        .filter(|w| *w > 0)
+    {
+        model.context_window = window;
+    }
+    if let Some(output) = raw
+        .get("max_completion_tokens")
+        .and_then(Value::as_u64)
+        .filter(|o| *o > 0)
+    {
+        model.max_output_tokens = output;
+    }
+    model.supports_tools = declared("tools");
+    model.supports_thinking = declared("reasoning");
+    model.supports_structured_output = declared("structured_outputs");
+    if let Some(modalities) = input_modalities(raw) {
+        model.supports_vision = Some(modalities.iter().any(|m| m == "image"));
+    }
+    // Groq's ladder of reasoning efforts stops at `high`; nothing here has a
+    // tier above it.
+    if model.supports_thinking == Some(true) {
+        model.supports_xhigh = Some(false);
+    }
+    model.pricing = pricing_from(raw);
+    Some(model)
+}
+
+/// Whether a listing row is a chat model: it takes text in and produces text
+/// out. Audio in (Whisper) or speech out (Orpheus) is a different surface
+/// this worker does not serve.
+fn is_chat_model(raw: &Value) -> bool {
+    let text_in = input_modalities(raw).is_none_or(|m| m.iter().any(|m| m == "text"));
+    let text_out =
+        modalities(raw, "output_modalities").is_none_or(|m| m.iter().any(|m| m == "text"));
+    text_in && text_out
+}
+
+fn input_modalities(raw: &Value) -> Option<Vec<String>> {
+    modalities(raw, "input_modalities")
+}
+
+fn modalities(raw: &Value, field: &str) -> Option<Vec<String>> {
+    let list: Vec<String> = raw
+        .get(field)?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_ascii_lowercase)
+        .collect();
+    (!list.is_empty()).then_some(list)
+}
+
+/// Groq quotes prices per single token as strings; the catalog carries USD
+/// per MTok, so each is scaled. A price that will not parse is dropped rather
+/// than guessed at — a wrong number on a cost display is worse than none.
+fn pricing_from(raw: &Value) -> Option<Pricing> {
+    let pricing = raw.get("pricing")?;
+    let per_mtok = |field: &str| -> Option<f64> {
+        pricing
+            .get(field)?
+            .as_str()
+            .and_then(|s| s.parse::<f64>().ok())
+            // Scaling by a million leaves binary-float dust — 0.00000079
+            // becomes 0.7899999999999999, which would reach a cost display
+            // verbatim. Six decimals is finer than any published rate.
+            .map(|per_token| (per_token * 1_000_000.0 * 1_000_000.0).round() / 1_000_000.0)
+    };
+    let input = per_mtok("prompt");
+    let output = per_mtok("completion");
+    let cache_read = per_mtok("input_cache_read");
+    (input.is_some() || output.is_some()).then_some(Pricing {
+        input,
+        output,
+        cache_read,
+        cache_write: None,
+    })
+}
+
+/// `{ "data": [ … ] }` → enriched catalog rows.
+pub fn parse_live_models(json: &Value) -> Vec<Model> {
+    json.get("data")
+        .and_then(Value::as_array)
+        .map(|rows| rows.iter().filter_map(from_listing).collect())
+        .unwrap_or_default()
 }
 
 enum FetchOutcome {
@@ -188,88 +267,128 @@ mod tests {
         );
     }
 
-    #[test]
-    fn live_ids_are_enriched_and_malformed_rows_skipped() {
-        let json = serde_json::json!({
-            "object": "list",
-            "data": [
-                { "id": "llama-3.1-8b-instant", "context_window": 131072, "active": true },
-                { "id": "llama-3.3-70b-versatile", "context_window": 131072, "active": true },
-                { "id": "", "context_window": 131072 },
-                { "context_window": 131072 },
-            ]
-        });
-        let models = parse_live_models(&json);
-        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]);
-        assert_eq!(
-            models[1].display_name.as_deref(),
-            Some("Llama 3.3 70B Versatile")
-        );
+    /// A row exactly as `GET /models` returns it, captured from the live API.
+    /// Testing against invented shapes is how a listing parser passes while
+    /// the real one does not.
+    fn live_row(id: &str) -> Value {
+        match id {
+            "llama-3.3-70b-versatile" => serde_json::json!({
+                "id": "llama-3.3-70b-versatile", "object": "model", "owned_by": "Meta",
+                "active": true, "context_window": 131072, "max_completion_tokens": 32768,
+                "hugging_face_id": "meta-llama/Llama-3.3-70B-Instruct",
+                "name": "Llama 3.3 70B Versatile",
+                "input_modalities": ["text"], "output_modalities": ["text"],
+                "pricing": { "prompt": "0.00000059", "completion": "0.00000079",
+                             "input_cache_read": "0" },
+                "supported_features": ["tools", "json_mode"],
+            }),
+            "openai/gpt-oss-20b" => serde_json::json!({
+                "id": "openai/gpt-oss-20b", "object": "model", "owned_by": "OpenAI",
+                "active": true, "context_window": 131072, "max_completion_tokens": 65536,
+                "hugging_face_id": "openai/gpt-oss-20b", "name": "GPT OSS 20B",
+                "input_modalities": ["text"], "output_modalities": ["text"],
+                "pricing": { "prompt": "0.000000075", "completion": "0.0000003",
+                             "input_cache_read": "0.0000000375" },
+                "supported_features": ["tools", "json_mode", "structured_outputs", "reasoning"],
+            }),
+            "qwen/qwen3.6-27b" => serde_json::json!({
+                "id": "qwen/qwen3.6-27b", "object": "model", "active": true,
+                "context_window": 131072, "max_completion_tokens": 16384,
+                "name": "Qwen/Qwen3.6-27B",
+                "input_modalities": ["text", "image"], "output_modalities": ["text"],
+                "supported_features": ["tools", "json_mode", "reasoning"],
+            }),
+            "whisper-large-v3" => serde_json::json!({
+                "id": "whisper-large-v3", "object": "model", "active": true,
+                "context_window": 448, "max_completion_tokens": 448,
+                "input_modalities": ["audio"], "output_modalities": ["transcription"],
+                "supported_features": [],
+            }),
+            "canopylabs/orpheus-v1-english" => serde_json::json!({
+                "id": "canopylabs/orpheus-v1-english", "object": "model", "active": true,
+                "context_window": 4000, "max_completion_tokens": 50000,
+                "input_modalities": ["text"], "output_modalities": ["speech"],
+                "supported_features": [],
+            }),
+            other => serde_json::json!({ "id": other, "object": "model" }),
+        }
     }
 
     #[test]
-    fn the_live_context_window_wins_over_the_local_snapshot() {
-        // Groq raising a window should reach the router without a release.
-        let json = serde_json::json!({
-            "data": [{ "id": "llama-3.3-70b-versatile", "context_window": 262_144 }]
-        });
-        let models = parse_live_models(&json);
-        assert_eq!(models[0].context_window, 262_144);
+    fn a_live_row_is_read_rather_than_looked_up() {
+        let m = from_listing(&live_row("llama-3.3-70b-versatile")).unwrap();
+        assert_eq!(m.display_name.as_deref(), Some("Llama 3.3 70B Versatile"));
+        assert_eq!(m.context_window, 131_072);
+        assert_eq!(m.max_output_tokens, 32_768);
+        assert_eq!(m.supports_tools, Some(true));
+        // Groq quotes per single token; the catalog carries per MTok.
+        let p = m.pricing.unwrap();
+        assert_eq!(p.input, Some(0.59));
+        assert_eq!(p.output, Some(0.79));
     }
 
     #[test]
-    fn inactive_models_are_not_offered() {
-        // A model that cannot serve a turn would only produce a failure the
-        // picker could have avoided.
+    fn capabilities_come_from_the_listing_and_differ_between_families() {
+        // The whole reason none of this is a provider-wide constant.
+        let llama = from_listing(&live_row("llama-3.3-70b-versatile")).unwrap();
+        let gpt_oss = from_listing(&live_row("openai/gpt-oss-20b")).unwrap();
+        let qwen = from_listing(&live_row("qwen/qwen3.6-27b")).unwrap();
+
+        assert_eq!(llama.supports_thinking, Some(false));
+        assert_eq!(gpt_oss.supports_thinking, Some(true));
+        assert_eq!(gpt_oss.supports_structured_output, Some(true));
+        assert_eq!(llama.supports_structured_output, Some(false));
+        // Vision is per model too: Qwen takes images, Llama does not.
+        assert_eq!(qwen.supports_vision, Some(true));
+        assert_eq!(llama.supports_vision, Some(false));
+    }
+
+    #[test]
+    fn speech_models_are_dropped_by_modality_not_by_window() {
+        // Whisper reports a context window (448) like everything else, so a
+        // missing-window rule would let it into the picker.
+        assert!(from_listing(&live_row("whisper-large-v3")).is_none());
+        assert!(from_listing(&live_row("canopylabs/orpheus-v1-english")).is_none());
+        assert!(from_listing(&live_row("llama-3.3-70b-versatile")).is_some());
+    }
+
+    #[test]
+    fn an_inactive_model_is_not_offered() {
+        let mut row = live_row("llama-3.3-70b-versatile");
+        row["active"] = serde_json::json!(false);
+        assert!(from_listing(&row).is_none());
+    }
+
+    #[test]
+    fn a_sparse_row_survives_on_the_floor_claiming_nothing() {
+        // A gateway behind an api_url override that reports only ids: the
+        // model still routes, and no capability is invented for it.
+        let m = from_listing(&live_row("some-proxied-model")).unwrap();
+        assert_eq!(m.id, "some-proxied-model");
+        assert_eq!(m.context_window, crate::curated::UNKNOWN_CONTEXT_WINDOW);
+        assert_eq!(m.supports_tools, None);
+        assert_eq!(m.supports_vision, None);
+        assert!(m.pricing.is_none());
+    }
+
+    #[test]
+    fn a_price_that_will_not_parse_is_dropped_rather_than_guessed() {
+        let mut row = live_row("llama-3.3-70b-versatile");
+        row["pricing"] = serde_json::json!({ "prompt": "free", "completion": "free" });
+        assert!(from_listing(&row).unwrap().pricing.is_none());
+    }
+
+    #[test]
+    fn malformed_rows_are_skipped_and_bad_payloads_yield_empty() {
         let json = serde_json::json!({
             "data": [
-                { "id": "llama-3.1-8b-instant", "context_window": 131072, "active": true },
-                { "id": "retired-model", "context_window": 131072, "active": false },
+                live_row("llama-3.3-70b-versatile"),
+                { "id": "" },
+                { "object": "model" },
             ]
         });
         let ids: Vec<String> = parse_live_models(&json).into_iter().map(|m| m.id).collect();
-        assert_eq!(ids, ["llama-3.1-8b-instant"]);
-    }
-
-    #[test]
-    fn speech_models_sharing_the_listing_are_dropped() {
-        // Whisper has no chat completion surface, and no context window in the
-        // listing, which is how it is told apart from a chat model.
-        let json = serde_json::json!({
-            "data": [
-                { "id": "llama-3.1-8b-instant", "context_window": 131072 },
-                { "id": "whisper-large-v3", "active": true },
-            ]
-        });
-        let ids: Vec<String> = parse_live_models(&json).into_iter().map(|m| m.id).collect();
-        assert_eq!(ids, ["llama-3.1-8b-instant"]);
-    }
-
-    #[test]
-    fn a_listing_that_reports_no_windows_at_all_keeps_every_row() {
-        // A gateway that omits the field for everything must not be emptied:
-        // the rule only applies once the listing has shown it speaks it.
-        let json = serde_json::json!({
-            "data": [{ "id": "some-proxied-model" }, { "id": "another-one" }]
-        });
-        let ids: Vec<String> = parse_live_models(&json).into_iter().map(|m| m.id).collect();
-        assert_eq!(ids, ["some-proxied-model", "another-one"]);
-    }
-
-    #[test]
-    fn unknown_ids_survive_discovery_with_defaults() {
-        // A model Groq ships before this table is updated must still be
-        // routable — the row degrades, it never disappears.
-        let json = serde_json::json!({ "data": [{ "id": "brand-new-model" }] });
-        let models = parse_live_models(&json);
-        assert_eq!(models.len(), 1);
-        assert_eq!(models[0].id, "brand-new-model");
-        assert_eq!(models[0].display_name, None);
-    }
-
-    #[test]
-    fn missing_or_malformed_data_yields_empty() {
+        assert_eq!(ids, ["llama-3.3-70b-versatile"]);
         assert!(parse_live_models(&serde_json::json!({})).is_empty());
         assert!(parse_live_models(&serde_json::json!({ "data": "nope" })).is_empty());
     }

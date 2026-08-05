@@ -65,6 +65,12 @@ fn classify_error_value(v: &Value, status: Option<u16>) -> Option<ErrorKind> {
     let msg = err.get("message").and_then(Value::as_str).unwrap_or("");
     match code {
         "context_length_exceeded" => return Some(ErrorKind::ContextOverflow),
+        // Observed live: a prompt over the per-minute token budget comes back
+        // as HTTP 413 with this code. The status alone reads as "too big for
+        // the model", which would send the router off to compact a prompt that
+        // was never too big — it was too big *this minute*. The code is the
+        // truth, so it wins over the status.
+        "rate_limit_exceeded" => return Some(ErrorKind::RateLimited),
         // Billing walls, not rate limits: the router's backoff cannot fix them.
         "insufficient_quota" | "insufficient_balance" => return Some(ErrorKind::Permanent),
         "invalid_api_key" | "authentication_error" | "account_deactivated" => {
@@ -161,6 +167,18 @@ mod tests {
         let body = r#"{"error":{"message":"quota exceeded","type":"invalid_request_error","code":"insufficient_quota"}}"#;
         assert_eq!(classify(Some(400), body), ErrorKind::Permanent);
         assert!(!classify(Some(400), body).is_retryable());
+    }
+
+    #[test]
+    fn a_413_carrying_a_rate_limit_code_is_a_rate_limit_not_an_overflow() {
+        // Captured live: the per-minute token budget is reported as HTTP 413.
+        // Reading the status alone would send the router off to compact a
+        // prompt that was never too large for the model.
+        let body = r#"{"error":{"message":"Request too large for model `llama-3.3-70b-versatile` on tokens per minute (TPM): Limit 12000, Requested 40638, please reduce your message size and try again.","type":"tokens","code":"rate_limit_exceeded"}}"#;
+        assert_eq!(classify(Some(413), body), ErrorKind::RateLimited);
+        assert!(classify(Some(413), body).is_retryable());
+        // A 413 with nothing to read still means the prompt did not fit.
+        assert_eq!(classify(Some(413), ""), ErrorKind::ContextOverflow);
     }
 
     #[test]

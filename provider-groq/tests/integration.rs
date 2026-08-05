@@ -201,7 +201,7 @@ const STUB_401: &str = "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/j
 /// The `GET /models` payload, in Groq's documented shape. Carries one id
 /// the local table knows and one it does not, so discovery is exercised on
 /// both paths.
-const STUB_MODELS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"object\":\"list\",\"data\":[{\"id\":\"llama-3.3-70b-versatile\",\"object\":\"model\",\"context_window\":131072,\"active\":true},{\"id\":\"llama-3.1-8b-instant\",\"object\":\"model\",\"context_window\":131072,\"active\":true},{\"id\":\"groq-vNext\",\"object\":\"model\",\"context_window\":32768,\"active\":true}]}";
+const STUB_MODELS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"object\":\"list\",\"data\":[{\"id\":\"llama-3.3-70b-versatile\",\"object\":\"model\",\"active\":true,\"context_window\":131072,\"max_completion_tokens\":32768,\"name\":\"Llama 3.3 70B Versatile\",\"input_modalities\":[\"text\"],\"output_modalities\":[\"text\"],\"pricing\":{\"prompt\":\"0.00000059\",\"completion\":\"0.00000079\"},\"supported_features\":[\"tools\",\"json_mode\"]},{\"id\":\"llama-3.1-8b-instant\",\"object\":\"model\",\"active\":true,\"context_window\":131072,\"max_completion_tokens\":131072,\"name\":\"Llama 3.1 8B Instant\",\"input_modalities\":[\"text\"],\"output_modalities\":[\"text\"],\"supported_features\":[\"tools\",\"json_mode\"]},{\"id\":\"whisper-large-v3\",\"object\":\"model\",\"active\":true,\"context_window\":448,\"input_modalities\":[\"audio\"],\"output_modalities\":[\"transcription\"]},{\"id\":\"groq-vNext\",\"object\":\"model\",\"active\":true}]}";
 
 async fn stub_upstream(completions_response: &'static str) -> StubUpstream {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -495,16 +495,24 @@ async fn refresh_models_discovers_the_live_catalog() {
     assert_eq!(known["display_name"], "Llama 3.3 70B Versatile");
     assert_eq!(known["context_window"], 131_072);
     assert_eq!(known["max_output_tokens"], 32_768);
-    assert_eq!(known["supports_structured_output"], true);
+    assert_eq!(known["supports_structured_output"], false);
     assert_eq!(known["supports_thinking"], false);
+    assert_eq!(known["supports_tools"], true);
     assert_eq!(known["pricing"]["input"], 0.59);
 
     // an unknown row survives on the live window plus conservative defaults,
     // rather than vanishing before a table catches up
     let next = models.iter().find(|m| m["id"] == "groq-vNext").unwrap();
-    assert_eq!(next["context_window"], 32_768);
+    assert_eq!(next["context_window"], 8_192);
     assert!(next["display_name"].is_null());
+    assert!(
+        next["supports_tools"].is_null(),
+        "no capability is invented"
+    );
     assert!(next.get("pricing").is_none() || next["pricing"].is_null());
+
+    // a speech model sharing the listing never reaches the picker
+    assert!(models.iter().all(|m| m["id"] != "whisper-large-v3"));
 
     router_iii.shutdown();
     provider_iii.shutdown();
