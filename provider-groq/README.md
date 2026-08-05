@@ -37,9 +37,19 @@ is always read from that endpoint's `/models` sibling.
   so a model Groq ships tomorrow is routable today.
 
   Speech and moderation models share the listing with chat models. They have no
-  chat completion surface, so they are dropped; the absence of a context window
-  is what tells them apart. A gateway that reports no windows for anything is
-  left alone, since requiring the field there would empty the catalog.
+  chat completion surface, so they are dropped; modality is what tells them
+  apart, since a speech model reports a context window like everything else.
+
+  The listing is also per account: an Enterprise-gated model is simply absent
+  for a key without access to it, which is the argument for reading it rather
+  than shipping a table that would offer models an operator cannot reach.
+
+  `groq/compound` and `groq/compound-mini` are systems rather than models: a
+  collection of models and tools that Groq runs together, with web search and
+  code execution of their own. They report no `tools` feature, so the catalog
+  marks them `supports_tools: false` and they will refuse a request carrying
+  function definitions. That is the system declining to take someone else's
+  tools, not a capability gap to route around.
 - **Pricing:** comes from the listing, which quotes a per-token rate per model;
   the catalog carries USD per MTok, so each is scaled and rounded. A rate that
   will not parse is dropped rather than guessed at, because a wrong number on a
