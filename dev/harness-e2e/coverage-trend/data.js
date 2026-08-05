@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785830228056,
+  "lastUpdate": 1785917069986,
   "repoUrl": "https://github.com/iii-hq/workers",
   "entries": {
     "Harness Stack Coverage": [
@@ -191,6 +191,36 @@ window.BENCHMARK_DATA = {
           {
             "name": "Integration line coverage",
             "value": 45.14,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "workers-ci[bot]",
+            "email": "workers-ci[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "workers-ci[bot]",
+            "email": "workers-ci[bot]@users.noreply.github.com"
+          },
+          "id": "a4b7b49463e78b2b588292d416cbbf2e7f23d1d6",
+          "message": "chore(fp): bump to v0.2.5",
+          "timestamp": "2026-08-05T05:09:56Z",
+          "url": "https://github.com/iii-hq/workers/commit/a4b7b49463e78b2b588292d416cbbf2e7f23d1d6"
+        },
+        "date": 1785917069155,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "E2E line coverage",
+            "value": 44.15,
+            "unit": "%"
+          },
+          {
+            "name": "Integration line coverage",
+            "value": 45.16,
             "unit": "%"
           }
         ]
