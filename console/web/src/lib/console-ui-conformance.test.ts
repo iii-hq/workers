@@ -55,6 +55,7 @@ import {
 import { components } from '@/lib/console-api'
 import { Markdown } from '@/lib/markdown'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
+import { WorkerConfigurationDialog } from '@/pages/Workers/components/WorkerConfigurationDialog'
 
 /**
  * The type-level check: assigning each real component to the package's
@@ -95,6 +96,7 @@ const conformance: {
   Tooltip: typeof ConsoleUi.Tooltip
   TooltipContent: typeof ConsoleUi.TooltipContent
   TooltipTrigger: typeof ConsoleUi.TooltipTrigger
+  WorkerConfigurationDialog: typeof ConsoleUi.WorkerConfigurationDialog
 } = {
   Badge,
   Button,
@@ -129,6 +131,7 @@ const conformance: {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
+  WorkerConfigurationDialog,
 }
 
 describe('@iii-dev/console-ui surface', () => {
