@@ -164,10 +164,8 @@ export function FunctionMentionPill({
       contentEditable={false}
       data-function-id={functionId}
       className={cn(
-        'inline-flex items-center gap-1 px-1.5 h-[20px] -mt-[2px] border align-middle font-mono text-[13px] text-ink select-none transition-colors',
-        selected
-          ? 'bg-paper-2 border-accent cursor-pointer'
-          : 'bg-panel border-rule',
+        'inline-flex items-center gap-1 px-1.5 h-[20px] -mt-[2px] rounded-xs align-middle font-mono text-[13px] text-ink select-none transition-colors',
+        selected ? 'bg-surface-selected cursor-pointer' : 'bg-surface',
         pillRef && 'cursor-pointer',
       )}
     >

@@ -81,10 +81,10 @@ export function ViewsDropdown({
           <button
             type="button"
             className={cn(
-              'inline-flex items-center gap-2 h-8 px-2.5 border font-mono text-[12px] lowercase transition-colors',
+              'inline-flex items-center gap-2 h-8 px-2.5 rounded-sm font-mono text-[12px] lowercase transition-colors',
               activeView
-                ? 'border-accent text-ink'
-                : 'border-rule text-ink-faint hover:text-ink',
+                ? 'bg-accent-muted text-ink'
+                : 'bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover',
             )}
             aria-label="switch traces view"
           >
@@ -159,7 +159,7 @@ export function ViewsDropdown({
               value={nameInput}
               onChange={(e) => setNameInput(e.target.value)}
               placeholder="view name"
-              className="h-8 px-2 font-mono text-[12px] bg-bg border border-rule text-ink placeholder:text-ink-ghost focus:outline-none focus:border-accent transition-colors"
+              className="h-8 px-2 font-mono text-[12px] rounded-sm bg-surface border border-transparent text-ink placeholder:text-ink-ghost hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors"
             />
             <div className="flex items-center justify-end gap-2">
               <DialogClose asChild>

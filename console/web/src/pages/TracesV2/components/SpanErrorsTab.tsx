@@ -81,7 +81,7 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
   return (
     <div className="p-5 space-y-4">
       {/* Error cell with alert stripe */}
-      <div className="border border-rule border-l-2 border-l-alert bg-alert/5 p-4">
+      <div className="rounded-md bg-alert-muted p-4">
         <div className="flex items-start gap-3">
           <span className="size-[18px] shrink-0 flex items-center justify-center text-alert">
             <AlertCircle className="w-4 h-4" />
@@ -116,7 +116,7 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
             <button
               type="button"
               onClick={copyStackTrace}
-              className="flex items-center gap-1.5 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint hover:text-ink hover:bg-panel transition-colors"
+              className="flex items-center gap-1.5 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint hover:text-ink hover:bg-surface-hover rounded-xs transition-colors"
             >
               {copiedKey === 'stackTrace' ? (
                 <span className="text-accent">copied</span>
@@ -128,7 +128,7 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
               )}
             </button>
           </div>
-          <pre className="border border-rule bg-bg px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink overflow-x-auto whitespace-pre-wrap break-words max-h-[400px] overflow-y-auto">
+          <pre className="rounded-sm bg-bg px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink overflow-x-auto whitespace-pre-wrap break-words max-h-[400px] overflow-y-auto">
             {stackLines.map(({ line, id }) => {
               const isFrameLine =
                 /^\s+at\s/.test(line) ||
@@ -140,7 +140,7 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
                   className={
                     isFrameLine
                       ? hasLineNumber
-                        ? 'text-ink hover:bg-panel'
+                        ? 'text-ink hover:bg-surface-hover'
                         : 'text-ink-faint'
                       : 'text-alert font-medium'
                   }
@@ -154,7 +154,7 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
       )}
 
       {!displayMessage && !displayType && !displayStack && (
-        <div className="border border-rule bg-bg p-4 text-center">
+        <div className="rounded-md bg-surface p-4 text-center">
           <p className="font-mono text-[13px] text-ink-faint lowercase">
             no additional error details
           </p>

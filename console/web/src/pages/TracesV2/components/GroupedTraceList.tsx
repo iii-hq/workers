@@ -215,7 +215,7 @@ function GroupHeaderRow({
       onClick={onToggle}
       aria-expanded={isExpanded}
       className={cn(
-        'w-full flex items-center gap-2 px-3 py-2 text-left border-b border-rule-2 transition-colors hover:bg-panel',
+        'w-full flex items-center gap-2 px-3 py-2 text-left border-b border-rule-2 transition-colors hover:bg-surface-hover',
         containsSelection && 'border-l-2 border-l-accent',
       )}
       title={`${heading} (${group.trace_ids.length} trace${group.trace_ids.length === 1 ? '' : 's'})`}
@@ -295,7 +295,7 @@ function GroupMembers({
 
   if (isLoading && !data) {
     return (
-      <div className="flex items-center gap-2 pl-10 py-2 border-b border-rule-2 font-mono text-[11px] text-ink-faint lowercase">
+      <div className="flex items-center gap-2 pl-8 py-2 font-mono text-[11px] text-ink-faint lowercase">
         <Loader2 className="w-3 h-3 animate-spin" />
         loading traces…
       </div>
@@ -309,14 +309,14 @@ function GroupMembers({
 
   if (rows.length === 0) {
     return (
-      <div className="pl-10 py-2 border-b border-rule-2 font-mono text-[11px] text-ink-faint lowercase">
+      <div className="pl-8 py-2 font-mono text-[11px] text-ink-faint lowercase">
         no visible traces in this group.
       </div>
     )
   }
 
   return (
-    <div className="pl-6 border-l border-rule-2 ml-4">
+    <div className="pl-5 ml-3">
       {rows.map((trace) => (
         <div key={trace.traceId} data-trace-row-id={trace.traceId}>
           <TraceListRow

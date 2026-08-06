@@ -97,10 +97,10 @@ export function GroupByPicker({
         aria-haspopup="dialog"
         aria-expanded={open}
         className={cn(
-          'inline-flex items-center gap-2 h-8 px-2.5 border font-mono text-[12px] lowercase transition-colors',
+          'inline-flex items-center gap-2 h-8 px-2.5 rounded-sm font-mono text-[12px] lowercase transition-colors',
           open || isActive
-            ? 'border-accent text-ink'
-            : 'border-rule text-ink-faint hover:text-ink',
+            ? 'bg-accent-muted text-ink'
+            : 'bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover',
         )}
       >
         <Layers className="w-3 h-3" />
@@ -144,7 +144,7 @@ export function GroupByPicker({
               left: pos.left,
               zIndex: 50,
             }}
-            className="w-[280px] bg-bg border border-rule shadow-[0_8px_24px_rgba(0,0,0,0.18)]"
+            className="w-[280px] rounded-md bg-panel-raised shadow-floating"
           >
             <div className="p-1">
               {PRESETS.map((preset) => (
@@ -153,7 +153,7 @@ export function GroupByPicker({
                   type="button"
                   onClick={() => apply(preset.value)}
                   className={cn(
-                    'w-full flex items-center gap-2 px-2 py-1.5 text-left font-mono text-[12px] lowercase transition-colors hover:bg-panel',
+                    'w-full flex items-center gap-2 px-2 py-1.5 text-left font-mono text-[12px] rounded-xs lowercase transition-colors hover:bg-surface-hover',
                     preset.value === value ? 'text-ink' : 'text-ink-faint',
                   )}
                 >
@@ -179,7 +179,7 @@ export function GroupByPicker({
                   if (next) apply(next)
                 }}
                 placeholder="e.g. iii.tag.message, service.name"
-                className="w-full h-8 px-2 font-mono text-[12px] bg-bg border border-rule text-ink placeholder:text-ink-ghost focus:outline-none focus:border-accent transition-colors lowercase"
+                className="w-full h-8 px-2 font-mono text-[12px] rounded-sm bg-surface border border-transparent text-ink placeholder:text-ink-ghost hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors lowercase"
               />
               <div>
                 {filtered.map((key) => (
@@ -188,7 +188,7 @@ export function GroupByPicker({
                     type="button"
                     onClick={() => apply(key)}
                     className={cn(
-                      'w-full flex items-center gap-2 px-2 py-1 text-left font-mono text-[11px] lowercase truncate transition-colors hover:bg-panel',
+                      'w-full flex items-center gap-2 px-2 py-1 text-left font-mono text-[11px] rounded-xs lowercase truncate transition-colors hover:bg-surface-hover',
                       key === value ? 'text-ink' : 'text-ink-faint',
                     )}
                   >

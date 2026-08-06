@@ -69,7 +69,10 @@ export function ModeToggle<T extends string>({
     <div
       role={groupRole}
       aria-label={ariaLabel}
-      className={cn('inline-flex border border-rule p-[2px]', className)}
+      className={cn(
+        'inline-flex rounded-sm bg-surface p-[2px] gap-[2px]',
+        className,
+      )}
     >
       {options.map((opt, idx) => {
         const active = opt.value === value
@@ -92,9 +95,9 @@ export function ModeToggle<T extends string>({
             onKeyDown={isRadio ? (e) => handleRadioKeyDown(e, idx) : undefined}
             title={opt.title}
             className={cn(
-              'font-mono text-[13px] px-3 py-1 transition-colors lowercase',
+              'font-mono text-[13px] px-3 py-1 rounded-xs transition-colors lowercase',
               active
-                ? 'bg-ink text-bg'
+                ? 'bg-accent-muted text-ink'
                 : 'bg-transparent text-ink-faint hover:text-ink',
             )}
           >

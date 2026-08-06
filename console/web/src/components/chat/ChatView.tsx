@@ -4,6 +4,7 @@ import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAcces
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
 import { LiveRegion } from '@/components/ui/LiveRegion'
+import { PageHeader } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { useApprovalSettings } from '@/hooks/use-approval-settings'
 import { uid } from '@/hooks/use-conversations'
@@ -128,6 +129,8 @@ interface ChatViewProps {
   modelOptions: ModelOption[]
   catalogLoading?: boolean
   density?: 'route' | 'dock'
+  /** Close the hosting pane — the header's standard ✕ when present. */
+  onRequestClose?: () => void
   onUpdateModel: (id: string, model: ModelId) => void
   onUpdateMode: (id: string, mode: Mode) => void
   onUpdateWorkingDir: (id: string, dir: string) => void
@@ -142,6 +145,7 @@ export function ChatView({
   modelOptions,
   catalogLoading,
   density = 'route',
+  onRequestClose,
   onUpdateModel,
   onUpdateMode,
   onUpdateWorkingDir,
@@ -1638,11 +1642,52 @@ export function ChatView({
       data-chat-session-hydrated={conversation.hydrated}
       className="flex-1 flex flex-col min-w-0 min-h-0"
     >
-      <header
-        className={cn(
-          'flex items-center justify-between py-3 border-b border-rule gap-3 whitespace-nowrap',
-          headerPad,
-        )}
+      <PageHeader
+        className={headerPad}
+        onClose={onRequestClose}
+        actions={
+          <div className="flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.06em]">
+            {sessionChips}
+            {hasInjectedContextChip ? null : (
+              <ContextUsage
+                messages={conversation.messages}
+                contextWindow={contextWindow}
+              />
+            )}
+            <ExportSessionButton
+              conversation={conversation}
+              onExported={(filename) =>
+                announcer.announce(`session exported as ${filename}`)
+              }
+            />
+            <div className="flex items-center gap-2">
+              <StatusDot
+                tone={
+                  conversation.status === 'error'
+                    ? 'alert'
+                    : streamingIndicator
+                      ? 'accent'
+                      : 'ink'
+                }
+                pulse={streamingIndicator}
+              />
+              <span
+                className="text-ink-faint"
+                title={
+                  conversation.status === 'error'
+                    ? conversation.statusReason
+                    : undefined
+                }
+              >
+                {streamingIndicator
+                  ? 'working'
+                  : conversation.status === 'error'
+                    ? 'error'
+                    : 'ready'}
+              </span>
+            </div>
+          </div>
+        }
       >
         <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex items-center gap-2 min-w-0 flex-1">
           <span className="text-accent flex-shrink-0" aria-hidden>
@@ -1680,48 +1725,7 @@ export function ChatView({
             </>
           )}
         </div>
-        <div className="flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.06em] flex-shrink-0">
-          {sessionChips}
-          {hasInjectedContextChip ? null : (
-            <ContextUsage
-              messages={conversation.messages}
-              contextWindow={contextWindow}
-            />
-          )}
-          <ExportSessionButton
-            conversation={conversation}
-            onExported={(filename) =>
-              announcer.announce(`session exported as ${filename}`)
-            }
-          />
-          <div className="flex items-center gap-2">
-            <StatusDot
-              tone={
-                conversation.status === 'error'
-                  ? 'alert'
-                  : streamingIndicator
-                    ? 'accent'
-                    : 'ink'
-              }
-              pulse={streamingIndicator}
-            />
-            <span
-              className="text-ink-faint"
-              title={
-                conversation.status === 'error'
-                  ? conversation.statusReason
-                  : undefined
-              }
-            >
-              {streamingIndicator
-                ? 'working'
-                : conversation.status === 'error'
-                  ? 'error'
-                  : 'ready'}
-            </span>
-          </div>
-        </div>
-      </header>
+      </PageHeader>
 
       {approvalSettings.settings.mode === 'full' ? (
         <FullPermissionsBanner
@@ -1806,7 +1810,7 @@ export function ChatView({
           />
           {queuedStrip.length > 0 ? (
             <section
-              className="mb-1 border border-rule bg-bg"
+              className="mb-1 rounded-md bg-surface"
               aria-label="queued messages"
             >
               {/* The message being edited is pulled out of the queue and lives

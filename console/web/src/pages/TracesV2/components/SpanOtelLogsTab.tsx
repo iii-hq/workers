@@ -148,7 +148,7 @@ function JsonValue({ value }: { value: unknown }) {
         </span>
       </button>
       {expanded ? (
-        <pre className="mt-1.5 px-3 py-2 border border-rule bg-bg font-mono text-[12.5px] leading-[1.55] text-ink overflow-x-auto whitespace-pre-wrap break-all">
+        <pre className="mt-1.5 px-3 py-2 rounded-sm bg-bg font-mono text-[12.5px] leading-[1.55] text-ink overflow-x-auto whitespace-pre-wrap break-all">
           {pretty}
         </pre>
       ) : (
@@ -211,7 +211,7 @@ function LogCard({ log, index, firstLogMs }: LogCardProps) {
   return (
     <div
       className={cn(
-        'border border-rule overflow-hidden',
+        'rounded-md border border-rule-2 overflow-hidden',
         severity.rail,
         severity.cardBg,
       )}
@@ -246,7 +246,7 @@ function LogCard({ log, index, firstLogMs }: LogCardProps) {
               <span aria-hidden className="text-ink-ghost">
                 ·
               </span>
-              <span className="px-1 py-0.5 border border-rule bg-bg text-ink-faint lowercase">
+              <span className="px-1 py-0.5 rounded-xs bg-surface text-ink-faint lowercase">
                 {log.service_name}
               </span>
             </>

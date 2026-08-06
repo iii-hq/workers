@@ -266,7 +266,7 @@ export function MessageList({
 
   return (
     <div ref={containerRef} className={cn('flex-1 overflow-y-auto', listPad)}>
-      <div className="mx-auto max-w-[760px] flex flex-col gap-y-8">
+      <div className="mx-auto max-w-[720px] flex flex-col gap-y-8">
         {header}
         {messages.map((m, i) => {
           // Assistant turns copy their prose plus the calls that follow them;

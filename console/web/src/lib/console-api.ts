@@ -31,8 +31,16 @@ import {
 } from '@/components/ui/DropdownMenu'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { FileDiff } from '@/components/ui/FileDiff'
 import { Input } from '@/components/ui/Input'
 import { MarkdownPreview } from '@/components/ui/MarkdownPreview'
+import {
+  PageBody,
+  PageHeader,
+  PageMain,
+  PageShell,
+  PageSidebar,
+} from '@/components/ui/PageChrome'
 import { Select } from '@/components/ui/Select'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
@@ -73,7 +81,13 @@ export const components: ConsoleApi['components'] = {
   DropdownMenuSeparator,
   EmptyState,
   ErrorBoundary,
+  FileDiff,
   Input,
+  PageShell,
+  PageHeader,
+  PageBody,
+  PageSidebar,
+  PageMain,
   Select,
   Skeleton,
   StatusDot,

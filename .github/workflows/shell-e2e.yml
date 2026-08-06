@@ -52,9 +52,14 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: shell/tests/e2e/workers/harness/package-lock.json
+
+      # shell/build.rs builds the injectable UI (shell/ui) via pnpm.
+      # Version comes from the repo-root package.json `packageManager` field.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
 
       - name: Install iii engine (latest from main)
         run: |

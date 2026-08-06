@@ -20,6 +20,7 @@ mod scode;
 mod target;
 mod telemetry;
 mod triggers;
+mod ui;
 
 use configuration::AppState;
 use functions::types::{KillRequest, StatusRequest};
@@ -414,6 +415,10 @@ async fn main() -> Result<()> {
     // fs::* keep Value handlers (preserving S210) and read the live host backend
     // + sandbox toggle from AppState; the typed schema is attached separately.
     register_fs(&iii, &state);
+
+    // Injected console UI: the explorer page + shell::* trigger renderers
+    // (assets embedded from ui/dist; see src/ui.rs).
+    ui::register(&iii);
 
     // Background reaper: time-based eviction of finished JobRecords. Without
     // it, an agent that uses exec_bg + status-polling (and never calls
