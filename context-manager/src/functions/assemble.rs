@@ -1,8 +1,8 @@
 //! `context::assemble` — build the model-ready context from a history
 //! (context-manager.md § context::assemble). The pipeline, in order:
-//! count -> (if over) prune function outputs -> (if still over) compact
-//! the head -> (if still over) emergency-reduce function results ->
-//! assemble the final list or return a structured overflow.
+//! cap results (always) -> age-prune (always) -> (if over) compact ->
+//! (if still over) emergency-reduce function results -> assemble the
+//! final list or return a structured overflow.
 //!
 //! Structural guarantees: `role: "custom"` messages never reach the
 //! model-facing list (nor the count); `applied.tail_start_index`
@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 use crate::core::budget::{default_reserved, preserve_recent_budget, usable};
 use crate::core::estimate::{by_role_from_sizes, estimator_for_model, Estimator};
 use crate::core::lease;
-use crate::core::prune::{emergency_reduce_with_sizes, prune_with_sizes, PruneParams};
+use crate::core::prune::{
+    cap_results_with_sizes, emergency_reduce_with_sizes, prune_with_sizes, PruneParams,
+};
 use crate::core::selection::select;
 use crate::core::summary::{
     build_system_prompt, render_system_prompt, render_user_prompt, strip_media,
@@ -46,6 +48,10 @@ pub struct AssembleOptions {
     /// safety reduction may still replace their oversized results.
     #[serde(default)]
     pub protected_functions: Option<Vec<String>>,
+    /// Per-result cap override for this call; `null` uses the worker
+    /// config (default 20000), `0` disables the cap pass.
+    #[serde(default)]
+    pub max_result_tokens: Option<u64>,
     /// Estimated tokens for final provider request fields and framing
     /// not otherwise represented by the prompt, messages, or tools.
     #[serde(default)]
@@ -96,6 +102,10 @@ pub struct Applied {
     pub initial_token_count: u64,
     pub pruned: bool,
     pub pruned_tokens: u64,
+    /// Results rewritten by the unconditional per-result cap pass.
+    pub capped_parts: u64,
+    /// Estimated tokens freed by the cap pass.
+    pub capped_tokens: u64,
     pub compacted: bool,
     /// Present when compacted; the caller should persist it and pass
     /// it back as `options.previous_summary` (compaction round trip).
@@ -237,6 +247,8 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         initial_token_count,
         pruned: false,
         pruned_tokens: 0,
+        capped_parts: 0,
+        capped_tokens: 0,
         compacted: false,
         summary: None,
         tail_start_index: None,
@@ -246,8 +258,24 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
 
     let mut token_count = initial_token_count;
 
-    // Step 1: prune function outputs.
-    if token_count > usable_budget && options.allow_prune.unwrap_or(true) {
+    // Step 0: cap oversized single results — always, any age (the spec's
+    // unconditional ceiling; 0 disables). Runs before prune so a whale
+    // that is ALSO aged only pays the cheaper placeholder rewrite once.
+    let max_result_tokens = options
+        .max_result_tokens
+        .unwrap_or(config.max_result_tokens);
+    if max_result_tokens > 0 {
+        let cap = cap_results_with_sizes(&mut working, &mut sizes, max_result_tokens, estimator);
+        applied.capped_parts = cap.capped_parts;
+        applied.capped_tokens = cap.capped_tokens;
+        token_count = total(&sizes, prompt_tokens);
+    }
+
+    // Step 1: prune aged function outputs — always, not only over budget
+    // (context-manager.md § context::assemble). min_free_tokens batches
+    // the history rewrites so provider prefix caches are not invalidated
+    // for peanuts.
+    if options.allow_prune.unwrap_or(true) {
         let params = PruneParams {
             protect_recent_tokens: config.protect_recent_tokens,
             min_free_tokens: config.min_free_tokens,

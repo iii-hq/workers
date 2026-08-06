@@ -265,6 +265,16 @@
               "null"
             ]
           },
+          "max_result_tokens": {
+            "default": null,
+            "description": "Per-result cap override for this call; `null` uses the worker config (default 20000), `0` disables the cap pass.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "previous_summary": {
             "default": null,
             "description": "Persisted summary from a prior compaction (see the spec's \"The compaction round trip\"); rendered into the system prompt and used as the anchor if compaction triggers again.",
@@ -869,6 +879,18 @@
       "Applied": {
         "description": "What the pipeline actually did this call.",
         "properties": {
+          "capped_parts": {
+            "description": "Results rewritten by the unconditional per-result cap pass.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "capped_tokens": {
+            "description": "Estimated tokens freed by the cap pass.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "compacted": {
             "type": "boolean"
           },
@@ -922,6 +944,8 @@
           }
         },
         "required": [
+          "capped_parts",
+          "capped_tokens",
           "compacted",
           "initial_token_count",
           "pruned",

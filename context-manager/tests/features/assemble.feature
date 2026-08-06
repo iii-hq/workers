@@ -1,13 +1,13 @@
 @pure
 Feature: context::assemble — the model-ready context pipeline
 
-  Contract (context-manager.md § context::assemble): count -> (if over)
-  prune function outputs -> (if still over) compact the head ->
-  assemble the final list. The response reports what actually happened
-  (`applied`), the budget it fit into (`usable`), and how the model was
-  resolved. Every successful response fits its reported usable budget.
-  Busy leases, failed summarisers, disabled passes, and irreducible
-  inputs fail with context/overflow instead of leaking an invalid request.
+  Contract (context-manager.md § context::assemble): cap results (always)
+  -> age-prune (always) -> (if over) compact -> (if still over) emergency
+  -> overflow. The response reports what actually happened (`applied`),
+  the budget it fit into (`usable`), and how the model was resolved.
+  Every successful response fits its reported usable budget. Busy
+  leases, failed summarisers, disabled passes, and irreducible inputs
+  fail with context/overflow instead of leaking an invalid request.
 
   # Prevents: the happy path being mangled — a context under budget
   # must pass through byte-identical, with nothing applied and no
@@ -27,9 +27,11 @@ Feature: context::assemble — the model-ready context pipeline
     And the response messages equal the request history
     And the summariser was never invoked
 
-  # Prevents: prune kicking in while the context still fits — pruning
-  # under budget destroys context for nothing.
-  Scenario: prune never runs under budget
+  # Prevents: aged verbose outputs riding in context until the window
+  # overflows — the evidence session re-sent one 85k-token result on ~35
+  # consecutive calls. Prune is age-based now: under budget, outputs
+  # outside the protected window are still placeholdered.
+  Scenario: aged verbose outputs are pruned even under budget
     Given the router knows model "big" with context window 200000 and max output 8000
     And config "protect_recent_tokens" is 0
     And config "min_free_tokens" is 1
@@ -39,8 +41,35 @@ Feature: context::assemble — the model-ready context pipeline
     And a user message "next"
     And a user message "done"
     When I assemble the history with model "big"
-    Then the response field "applied.pruned" is false
-    And response message 2 text has 20000 chars
+    Then the call succeeds
+    And the response field "applied.pruned" is true
+    And the response field "token_count" does not exceed 172000
+
+  # Prevents: a single whale result consuming the window even while the
+  # total request still fits — the cap is unconditional.
+  Scenario: an oversized single result is capped even under budget
+    Given the router knows model "big" with context window 200000 and max output 8000
+    And a user message "dump the traces"
+    And an assistant function call "c1" to "engine::traces::list"
+    And a function result for call "c1" from "engine::traces::list" of ~50000 tokens
+    And a user message "now analyze"
+    When I assemble the history with model "big"
+    Then the call succeeds
+    And the response field "applied.capped_parts" is 1
+    And response message 2 text contains "re-call engine::traces::list for the full data"
+
+  Scenario: max_result_tokens 0 disables the cap pass
+    Given the router knows model "big" with context window 200000 and max output 8000
+    And a user message "dump the traces"
+    And an assistant function call "c1" to "engine::traces::list"
+    And a function result for call "c1" from "engine::traces::list" of ~50000 tokens
+    And a user message "now analyze"
+    When I assemble the history with model "big" and options:
+      """
+      { "max_result_tokens": 0 }
+      """
+    Then the call succeeds
+    And the response field "applied.capped_parts" is 0
 
   # Prevents: an over-budget context reaching the model when freeing
   # old tool outputs would have been enough — the cheap pass must run
@@ -68,9 +97,12 @@ Feature: context::assemble — the model-ready context pipeline
     And the summariser was never invoked
 
   # Regression for MOT-4014: the newest result is inside every normal
-  # protection window, but a multi-megabyte result must still become a
-  # bounded transcript reference before the request reaches a provider.
-  Scenario: a 4.98 MB latest function result is reduced despite recent-turn protection
+  # protection window, but a multi-megabyte result must still be bounded
+  # before the request reaches a provider. The unconditional per-result
+  # cap (no recency exemption) now catches this before prune or
+  # emergency reduction ever run — recency protects from age-based
+  # prune, but never from the size-based cap.
+  Scenario: a 4.98 MB latest function result is capped despite recent-turn protection
     Given inline model "large" with context window 272000 and max output 128000
     And config "protect_recent_tokens" is 2000000
     And config "min_free_tokens" is 2000000
@@ -79,13 +111,11 @@ Feature: context::assemble — the model-ready context pipeline
     And a function result for call "latest-call" from "session::messages" of ~1245000 tokens
     When I assemble the history with model "large"
     Then the call succeeds
-    And the response field "applied.pruned" is true
+    And the response field "applied.pruned" is false
+    And the response field "applied.capped_parts" is 1
     And the response field "token_count" does not exceed 124000
-    And response message 2 text does not exceed 1000 chars
-    And response message 2 text contains "session transcript"
-    And the response field "messages.2.details.context_reference.kind" is "function_result_reference"
-    And the response field "messages.2.details.context_reference.original_estimated_tokens" exceeds 1200000
-    And the response field "messages.2.details.context_reference.retrieval_hint" contains "function_call_id"
+    And response message 2 text does not exceed 100000 chars
+    And response message 2 text contains "re-call session::messages for the full data"
     And the response messages have as many messages as the request
     And every response message keeps its function_call_id
     And call/result pairing is intact in the response messages
