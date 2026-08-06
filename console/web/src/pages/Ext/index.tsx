@@ -21,6 +21,7 @@ import { useEffect, useRef } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { useExtPageRoute } from '@/hooks/use-hash-route'
 import { useExtPages } from '@/lib/ui-slots'
+import type { PanelSide } from '@/types/injectable-ui'
 
 interface ExtPageProps {
   onMissing: () => void
@@ -30,9 +31,31 @@ interface ExtPageProps {
    * injected page regardless of what the hash currently names.
    */
   pageId?: string
+  /**
+   * Which side of the workspace tab this pane occupies — forwarded to the
+   * page render so extensions can mirror their layout (e.g. put a sidebar
+   * against the outer edge). Defaults to `'left'`, the single-column case.
+   */
+  panelSide?: PanelSide
+  /**
+   * Stable id of the hosting workspace tab — forwarded so extensions can
+   * key per-tab UI state. Empty when rendered outside a workspace tab.
+   */
+  tabId?: string
+  /**
+   * Close the hosting pane — forwarded so the page's `PageHeader` ✕ works.
+   * Absent when rendered outside a closable pane.
+   */
+  onRequestClose?: () => void
 }
 
-export function ExtPage({ onMissing, pageId: pageIdProp }: ExtPageProps) {
+export function ExtPage({
+  onMissing,
+  pageId: pageIdProp,
+  panelSide = 'left',
+  tabId = '',
+  onRequestClose,
+}: ExtPageProps) {
   const routePageId = useExtPageRoute()
   const pageId = pageIdProp ?? routePageId
   const pages = useExtPages()
@@ -80,7 +103,11 @@ export function ExtPage({ onMissing, pageId: pageIdProp }: ExtPageProps) {
   const Body = page.render
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
-      <Body />
+      <Body
+        panelSide={panelSide}
+        tabId={tabId}
+        onRequestClose={onRequestClose}
+      />
     </div>
   )
 }

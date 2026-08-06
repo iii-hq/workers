@@ -1,14 +1,5 @@
-import {
-  formatAgeSecs,
-  pillForExit,
-  truncateMiddle,
-} from '@/components/chat/sandbox/format'
-import { AnsiOutput } from '@/components/chat/sandbox/terminal/AnsiOutput'
-import {
-  Chip,
-  FooterPill,
-  Terminal,
-} from '@/components/chat/sandbox/terminal/Terminal'
+import { formatAgeSecs, pillForExit, truncateMiddle } from '../lib/format'
+import { AnsiOutput, Chip, FooterPill, Terminal } from '../lib/terminal'
 import {
   formatArgv,
   formatEpochMs,

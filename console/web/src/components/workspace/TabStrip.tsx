@@ -1,12 +1,6 @@
-import { Columns2, Plus, RectangleHorizontal, X } from 'lucide-react'
+import { Plus, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/DropdownMenu'
 import { cn } from '@/lib/utils'
 import { tabLabel, type WorkspaceTab } from '@/lib/workspace-tabs'
 
@@ -17,20 +11,21 @@ interface TabStripProps {
   extPageTitles: ReadonlyMap<string, string>
   onActivate: (id: string) => void
   onClose: (id: string) => void
-  /** Create an EMPTY tab with the chosen column count. */
-  onCreate: (columns: 1 | 2) => void
+  /** Create an EMPTY single-column tab (panes grow via the edge zones). */
+  onCreate: () => void
   onRename: (id: string, name: string) => void
   /** Move the tab at `from` to position `to` (indexes into `tabs`). */
   onReorder: (from: number, to: number) => void
 }
 
-/** Hold a tab still this long to pick it up for reordering. */
-const LONG_PRESS_MS = 2000
+/** Touch: hold a tab still this long to pick it up for reordering (a
+    mouse/pen drag starts on movement alone — see the slop check). */
+const TOUCH_PICKUP_MS = 500
 /**
- * Pointer travel that turns a pending long-press back into a click.
- * Generous because holding a trackpad press still for 2s drifts a little.
+ * Pointer travel that decides the press: with a mouse/pen it BEGINS the
+ * reorder drag; on touch it cancels the pickup so the strip can scroll.
  */
-const PRESS_SLOP_PX = 12
+const PRESS_SLOP_PX = 6
 
 /** A press that may become a reorder drag once the timer fires. */
 interface PendingPress {
@@ -56,16 +51,17 @@ interface ActiveDrag {
 /**
  * The header's workspace tab strip: one pill per saved tab (active carries
  * the selection tint), a close affordance while more than one tab exists,
- * and a `+` dropdown that creates an empty one- or two-column tab (screens
- * are attached from the empty panes). Right-click opens a context menu;
- * its rename action swaps the label for an inline input — Enter commits,
- * Escape (or clicking away) cancels.
+ * and a `+` button that creates an empty single-column tab (screens attach
+ * from the empty pane; splits grow via the workspace edge zones).
+ * Double-click (or the right-click menu) swaps the label for an inline
+ * rename input — Enter commits, Escape (or clicking away) cancels.
  *
- * Pressing a tab for two seconds picks it up for reordering: the tab
- * follows the pointer, neighbours slide out of the way, and releasing
- * commits the new order through `onReorder` (Escape drops it in place).
- * Layout is only reordered on commit, so the rects captured at pickup
- * stay valid for the whole drag.
+ * Dragging a tab reorders it: a mouse/pen picks it up as soon as the
+ * press moves, touch picks it up after a short hold (so the strip can
+ * still scroll). The tab follows the pointer, neighbours slide out of the
+ * way, and releasing commits the new order through `onReorder` (Escape
+ * drops it in place). Layout is only reordered on commit, so the rects
+ * captured at pickup stay valid for the whole drag.
  */
 export function TabStrip({
   tabs,
@@ -224,6 +220,11 @@ export function TabStrip({
                 onActivate(tab.id)
               }
             }}
+            onDoubleClick={() => {
+              if (renamingId === tab.id || dragRef.current) return
+              cancelPress()
+              setRenamingId(tab.id)
+            }}
             onPointerDown={(e) => {
               if (e.button !== 0 || renamingId === tab.id || dragRef.current)
                 return
@@ -246,7 +247,13 @@ export function TabStrip({
                 y: e.clientY,
                 index,
                 el: e.currentTarget,
-                timer: window.setTimeout(beginDrag, LONG_PRESS_MS),
+                // Touch keeps a short-hold pickup (movement scrolls the
+                // strip). Mouse/pen picks up on movement — the timer is a
+                // stationary-hold fallback.
+                timer: window.setTimeout(
+                  beginDrag,
+                  e.pointerType === 'touch' ? TOUCH_PICKUP_MS : 2000,
+                ),
               }
             }}
             onPointerMove={(e) => {
@@ -256,7 +263,14 @@ export function TabStrip({
                 Math.hypot(e.clientX - press.x, e.clientY - press.y) >
                   PRESS_SLOP_PX
               ) {
-                cancelPress()
+                if (press.pointerType === 'touch') {
+                  // Let the finger scroll the strip.
+                  cancelPress()
+                } else {
+                  // Mouse/pen: movement IS the drag gesture.
+                  clearTimeout(press.timer)
+                  beginDrag()
+                }
               }
               const d = dragRef.current
               if (!d) return
@@ -345,26 +359,15 @@ export function TabStrip({
         )
       })}
 
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            aria-label="new tab"
-            title="new tab"
-            className="flex items-center justify-center size-7 shrink-0 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover data-[state=open]:bg-surface data-[state=open]:text-ink transition-colors"
-          >
-            <Plus className="size-4" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" sideOffset={6}>
-          <DropdownMenuItem onSelect={() => onCreate(1)}>
-            <RectangleHorizontal className="size-3.5 text-ink-faint" />1 column
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => onCreate(2)}>
-            <Columns2 className="size-3.5 text-ink-faint" />2 columns
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <button
+        type="button"
+        aria-label="new tab"
+        title="new tab"
+        onClick={onCreate}
+        className="flex items-center justify-center size-7 shrink-0 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors"
+      >
+        <Plus className="size-4" />
+      </button>
 
       {menu ? (
         <TabContextMenu

@@ -16,3 +16,4 @@ pub mod scode;
 pub mod target;
 pub mod telemetry;
 pub mod triggers;
+pub mod ui;

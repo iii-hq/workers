@@ -57,13 +57,39 @@ export interface ConsoleApi {
   tokens: readonly string[]
 }
 
+/**
+ * Where the workspace pane hosting the page sits. `'right'` only for the
+ * rightmost column of a multi-column tab — a single-column tab is `'left'`,
+ * so pages can treat `'left'` as the default orientation.
+ */
+export type PanelSide = 'left' | 'right'
+
+/** Props the host passes to every registered page render component. */
+export interface PageRenderProps {
+  panelSide: PanelSide
+  /**
+   * Stable id of the workspace tab whose pane hosts this render — the key
+   * for per-tab UI state (workspace tabs persist across reloads). Empty
+   * string when the page renders outside a workspace tab.
+   */
+  tabId: string
+  /**
+   * Close the pane hosting this page (a split drops the column; a
+   * single-column tab detaches back to the attach affordance). Pass it to
+   * `PageHeader`'s `onClose` — every page header carries the standard ✕.
+   * Absent when the page renders outside a closable pane.
+   */
+  onRequestClose?: () => void
+}
+
 export interface PageRegistration {
   /** kebab-case, unique per tab; convention `<worker>-<name>`. Routes at `#/ext/<id>`. */
   id: string
   /** Nav label. */
   title: string
-  /** The page body (right pane). */
-  render: React.ComponentType
+  /** The page body (right pane). Receives `PageRenderProps` — a plain
+      `() => <Page />` render stays valid and simply ignores them. */
+  render: React.ComponentType<PageRenderProps>
 }
 
 /**

@@ -25,6 +25,23 @@ iii -c ./config.yaml
 
 `iii worker add shell` does not currently pull `iii-sandbox` along — run `iii worker add iii-sandbox` separately before using `shell::exec { target: sandbox }` or any `shell::fs::*` sandbox-target path. Plain host-targeted `shell::exec` works without it.
 
+## Injected console UI (`ui/`, `src/ui.rs`)
+
+The worker ships UI into any running console (SOP:
+`workers/docs/sops/injectable-console-ui.md`): the shell explorer page
+(`#/ext/shell` — files/git/search sidebar beside the console's shared Monaco
+editor and `FileDiff`) and the `shell::*` function-trigger renderers (moved
+out of the console SPA; the console's `first-party/shell` family is gone).
+The explorer acts through the worker's own functions: `coder::tree/read-file/
+create-file/search` and `shell::exec` (git, argv form, `cwd`-scoped).
+
+Building the worker therefore needs Node + pnpm on PATH: `build.rs` runs
+`pnpm install && pnpm build` in `ui/` when `ui/dist/` is missing or stale and
+`include_str!`s the outputs (`SKIP_UI_BUILD=1` uses existing `ui/dist/`
+as-is). Dev loop: `cd ui && pnpm watch` plus `III_SHELL_UI_WATCH=1` on the
+worker — open console tabs hot-swap the assets. UI parser/format tests:
+`cd ui && pnpm test`.
+
 ## CLI flags
 
 | flag | default | purpose |

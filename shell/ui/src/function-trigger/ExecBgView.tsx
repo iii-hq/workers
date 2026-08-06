@@ -1,7 +1,4 @@
-import {
-  FooterPill,
-  Terminal,
-} from '@/components/chat/sandbox/terminal/Terminal'
+import { FooterPill, Terminal } from '../lib/terminal'
 import { ShellExecChips, ShellExecPreviewRow } from './ExecView'
 import { formatArgv, formatShellCommand } from './format'
 import {
@@ -60,18 +57,14 @@ function BgStartedBody({
 }) {
   const resolved = formatArgv(resp.argv)
   return (
-    <div className="bg-bg px-3 py-2 font-mono text-[12.5px] leading-[1.55]">
-      <div className="flex flex-wrap items-baseline gap-2">
-        <span className="text-accent">↻</span>
-        <span className="text-ink">started</span>
-        <code className="bg-paper-2 border border-rule-2 px-1.5 py-0.5 text-[12px] text-ink break-all">
-          {resp.job_id}
-        </code>
+    <div className="shui-body">
+      <div className="shui-baseline-row">
+        <span className="t-accent">↻</span>
+        <span className="t-ink">started</span>
+        <code className="shui-inline-code">{resp.job_id}</code>
       </div>
       {resolved !== formatShellCommand(req) ? (
-        <div className="text-ink-faint mt-1 whitespace-pre-wrap break-all">
-          {`$ ${resolved}`}
-        </div>
+        <div className="shui-resolved-argv">{`$ ${resolved}`}</div>
       ) : null}
     </div>
   )

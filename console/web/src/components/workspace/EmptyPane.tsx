@@ -1,4 +1,4 @@
-import { Plus } from 'lucide-react'
+import { Plus, X } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,16 +11,23 @@ import type { ScreenOption } from './use-screen-options'
 interface EmptyPaneProps {
   screenOptions: ScreenOption[]
   onAttach: (screen: TabScreen) => void
+  /** Present when the column can be dropped (multi-column tabs only). */
+  onRemove?: () => void
 }
 
 /**
- * An empty workspace-tab column: nothing attached yet. The one affordance
- * is the attach dropdown listing every available screen (chat + pages +
- * injected pages).
+ * An empty workspace-tab column: nothing attached yet. The affordances are
+ * the attach dropdown listing every available screen (chat + pages +
+ * injected pages) and — in a split — removing the column again. Generous
+ * padding keeps both usable on narrow/mobile panes.
  */
-export function EmptyPane({ screenOptions, onAttach }: EmptyPaneProps) {
+export function EmptyPane({
+  screenOptions,
+  onAttach,
+  onRemove,
+}: EmptyPaneProps) {
   return (
-    <div className="flex-1 flex flex-col items-center justify-center gap-3">
+    <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
       <div className="font-mono text-[12px] lowercase text-ink-ghost">
         nothing attached to this panel yet
       </div>
@@ -45,6 +52,16 @@ export function EmptyPane({ screenOptions, onAttach }: EmptyPaneProps) {
           ))}
         </DropdownMenuContent>
       </DropdownMenu>
+      {onRemove ? (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="inline-flex items-center gap-1.5 h-7 px-2 rounded-sm font-mono text-[11px] lowercase text-ink-ghost hover:text-ink hover:bg-surface-hover transition-colors"
+        >
+          <X className="size-3" />
+          remove this panel
+        </button>
+      ) : null}
     </div>
   )
 }

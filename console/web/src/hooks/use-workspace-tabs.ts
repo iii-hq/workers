@@ -33,6 +33,9 @@ import {
   tabColumns,
   type WorkspaceTab,
   withActiveTabId,
+  withColumnAdded,
+  withColumnRemoved,
+  withScreenDetached,
   withWorkspaceTabs,
 } from '@/lib/workspace-tabs'
 
@@ -88,6 +91,14 @@ export interface UseWorkspaceTabsReturn {
   reorderTab: (from: number, to: number) => void
   /** Attach (or replace) the screen a tab column shows. */
   attachScreen: (id: string, column: number, screen: TabScreen) => void
+  /** Blank a column's screen (column stays, shows the attach affordance). */
+  detachScreen: (id: string, column: number) => void
+  /** Grow the tab by one empty column on that side (≤ MAX_COLUMNS). */
+  addColumn: (id: string, side: 'left' | 'right') => void
+  /** Drop one column (the last one never goes). */
+  removeColumn: (id: string, column: number) => void
+  /** Persist drag-to-resize column fractions (index-aligned). */
+  resizeColumns: (id: string, sizes: number[]) => void
 }
 
 export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
@@ -238,6 +249,48 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     [persist, tabs, activeTabId],
   )
 
+  const detachScreen = useCallback(
+    (id: string, column: number) => {
+      persist(
+        tabs.map((t) => (t.id === id ? withScreenDetached(t, column) : t)),
+        activeTabId,
+      )
+    },
+    [persist, tabs, activeTabId],
+  )
+
+  const addColumn = useCallback(
+    (id: string, side: 'left' | 'right') => {
+      persist(
+        tabs.map((t) => (t.id === id ? withColumnAdded(t, side) : t)),
+        activeTabId,
+      )
+    },
+    [persist, tabs, activeTabId],
+  )
+
+  const removeColumn = useCallback(
+    (id: string, column: number) => {
+      persist(
+        tabs.map((t) => (t.id === id ? withColumnRemoved(t, column) : t)),
+        activeTabId,
+      )
+    },
+    [persist, tabs, activeTabId],
+  )
+
+  const resizeColumns = useCallback(
+    (id: string, sizes: number[]) => {
+      persist(
+        tabs.map((t) =>
+          t.id === id && sizes.length === tabColumns(t) ? { ...t, sizes } : t,
+        ),
+        activeTabId,
+      )
+    },
+    [persist, tabs, activeTabId],
+  )
+
   return {
     tabs,
     activeTabId,
@@ -248,5 +301,9 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     renameTab,
     reorderTab,
     attachScreen,
+    detachScreen,
+    addColumn,
+    removeColumn,
+    resizeColumns,
   }
 }

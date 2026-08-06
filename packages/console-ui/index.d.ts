@@ -50,13 +50,39 @@ export interface ExtensionIii {
 
 /* ── slot contracts ─────────────────────────────────────────────────── */
 
+/**
+ * Where the workspace pane hosting the page sits. `'right'` only for the
+ * rightmost column of a multi-column tab — a single-column tab is `'left'`,
+ * so pages can treat `'left'` as the default orientation.
+ */
+export type PanelSide = 'left' | 'right'
+
+/** Props the host passes to every registered page render component. */
+export interface PageRenderProps {
+  panelSide: PanelSide
+  /**
+   * Stable id of the workspace tab whose pane hosts this render — the key
+   * for per-tab UI state (workspace tabs persist across reloads). Empty
+   * string when the page renders outside a workspace tab.
+   */
+  tabId: string
+  /**
+   * Close the pane hosting this page (a split drops the column; a
+   * single-column tab detaches back to the attach affordance). Pass it to
+   * `PageHeader`'s `onClose` — every page header carries the standard ✕.
+   * Absent when the page renders outside a closable pane.
+   */
+  onRequestClose?: () => void
+}
+
 export interface PageRegistration {
   /** kebab-case, unique per tab; convention `<worker>-<name>`. Routes at `#/ext/<id>`. */
   id: string
   /** Nav label. */
   title: string
-  /** The page body (right pane). */
-  render: React.ComponentType
+  /** The page body (right pane). Receives `PageRenderProps` — a plain
+      `() => <Page />` render stays valid and simply ignores them. */
+  render: React.ComponentType<PageRenderProps>
 }
 
 /**
@@ -243,6 +269,27 @@ export interface ErrorBoundaryProps {
 }
 export declare const ErrorBoundary: React.ComponentType<ErrorBoundaryProps>
 
+/** One side of a `FileDiff` — a whole file's text, not a patch. */
+export interface FileDiffSide {
+  /** Display name; also infers the syntax-highlight language. */
+  name: string
+  contents: string
+}
+export interface FileDiffProps {
+  /** Pass empty `contents` for a created (old) / deleted (new) file. */
+  oldFile: FileDiffSide
+  newFile: FileDiffSide
+  diffStyle?: 'unified' | 'split'
+  /** Long lines wrap by default; `'scroll'` preserves strict columns. */
+  overflow?: 'scroll' | 'wrap'
+  className?: string
+}
+/** The console's one file-diff surface — the diff is computed from the two
+    full file bodies and rendered by the console's bundled diff engine,
+    following the active theme. Like `CodeEditor`, never bundle a diff
+    renderer into a worker asset; import this instead. */
+export declare const FileDiff: React.ComponentType<FileDiffProps>
+
 /** Controlled string input (`onChange` receives the value, not the event). */
 export interface InputProps
   extends Omit<
@@ -256,6 +303,65 @@ export interface InputProps
 }
 export declare const Input: React.ComponentType<
   InputProps & React.RefAttributes<HTMLInputElement>
+>
+
+/* ── page chrome: THE layout design system for injected pages ─────────
+   Every worker page composes the same five pieces so panes stay visually
+   identical across workers (and console-native screens):
+
+     <PageShell>
+       <PageHeader icon? title description? actions? onClose={onRequestClose} />
+       <PageBody side={panelSide}>
+         <PageSidebar>…navigation…</PageSidebar>
+         <PageMain>…workspace…</PageMain>
+       </PageBody>
+     </PageShell>
+
+   PageHeader renders the standard ✕ when `onClose` is present — wire it
+   to `PageRenderProps.onRequestClose`. */
+
+export interface PageShellProps
+  extends React.HTMLAttributes<HTMLDivElement> {}
+/** The pane's root column — fills the pane, `--color-panel` background. */
+export declare const PageShell: React.ComponentType<PageShellProps>
+
+export interface PageHeaderProps {
+  /** Identity glyph, rendered at 16px in faint ink (any svg fits). */
+  icon?: React.ReactNode
+  /** The page's name — console chrome vocabulary: mono, lowercase. */
+  title?: React.ReactNode
+  /** One short descriptor; truncates before anything else gives. */
+  description?: React.ReactNode
+  /** Free-form middle content (fills the flexible gap before actions). */
+  children?: React.ReactNode
+  /** Right-side controls, rendered before the close affordance. */
+  actions?: React.ReactNode
+  /** Close the hosting pane — renders the standard ✕ when present.
+      Wire to `PageRenderProps.onRequestClose`. */
+  onClose?: () => void
+  className?: string
+}
+/** The standard pane top bar: slightly raised, hairline bottom edge. */
+export declare const PageHeader: React.ComponentType<PageHeaderProps>
+
+export interface PageBodyProps extends React.HTMLAttributes<HTMLDivElement> {
+  /** The pane's side of the tab (`PageRenderProps.panelSide`) — `right`
+      mirrors the row so the sidebar hugs the pane's outer edge. */
+  side?: 'left' | 'right'
+}
+/** The row under the header; separates children with a hairline gap. */
+export declare const PageBody: React.ComponentType<PageBodyProps>
+
+export interface PageSidebarProps extends React.HTMLAttributes<HTMLElement> {
+  /** Column width in px (fixed — navigation stays put while main flexes). */
+  width?: number
+}
+/** The navigation column: slightly gray, fixed width, own scroll. */
+export declare const PageSidebar: React.ComponentType<PageSidebarProps>
+
+/** The primary workspace column: `--color-panel`, takes what's left. */
+export declare const PageMain: React.ComponentType<
+  React.HTMLAttributes<HTMLElement>
 >
 
 export interface SelectOption<T extends string = string> {

@@ -1,5 +1,5 @@
-import { truncateMiddle } from '@/components/chat/sandbox/format'
-import { Chip } from '@/components/chat/sandbox/terminal/Terminal'
+import { truncateMiddle } from '../lib/format'
+import { Chip } from '../lib/terminal'
 import type { ShellTarget } from './parsers'
 
 /** Narrow a request `target` to the sandbox variant. Also the views'

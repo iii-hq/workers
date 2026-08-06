@@ -251,7 +251,7 @@ export function ModelPicker({
           <DropdownMenuPrimitive.Content
             sideOffset={4}
             align="start"
-            className="z-50 w-[min(480px,calc(100vw-24px))] overflow-hidden border border-rule bg-bg font-mono text-[13px] lowercase text-ink"
+            className="z-50 w-[min(480px,calc(100vw-24px))] overflow-hidden rounded-md border border-rule bg-bg font-mono text-[13px] lowercase text-ink shadow-floating"
           >
             <DropdownMenuPrimitive.RadioGroup
               value={safeValue ?? ''}

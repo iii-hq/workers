@@ -99,10 +99,37 @@ your worker.
 `Badge`, `Button`, `CodeEditor`, `CodeHighlight`, `Dialog` (+`DialogTrigger`,
 `DialogClose`, `DialogContent`, `DialogTitle`, `DialogDescription`),
 `DropdownMenu` (+`Trigger/Content/Item/Label/Separator`), `EmptyState`,
-`ErrorBoundary`, `Input`, `JsonHighlight`, `Markdown`, `MarkdownPreview`,
-`Select`, `Skeleton`, `StatusDot`, `StatusPanel`, `Tabs`
-(+`TabsList/TabsTrigger/TabsContent`), `Tooltip`
+`ErrorBoundary`, `FileDiff`, `Input`, `JsonHighlight`, `Markdown`,
+`MarkdownPreview`, `PageShell`/`PageHeader`/`PageBody`/`PageSidebar`/
+`PageMain` (the page chrome — see below), `Select`, `Skeleton`, `StatusDot`,
+`StatusPanel`, `Tabs` (+`TabsList/TabsTrigger/TabsContent`), `Tooltip`
 (+`TooltipTrigger/TooltipContent`).
+
+**The page chrome is the mandatory layout for pages.** Every registered
+page composes the same five pieces, so your pane looks exactly like the
+console's own screens (chat, traces) and every other worker's page:
+
+```tsx
+<PageShell>
+  <PageHeader
+    icon={<MyIcon />}                 // 16px glyph, faint ink
+    title="mywork"                    // mono lowercase — console chrome
+    description="what this page is"   // truncates first
+    actions={<Button …/>}             // optional right-side controls
+    onClose={onRequestClose}          // the standard ✕ (PageRenderProps)
+  />
+  <PageBody side={panelSide}>         {/* mirrors for right-side panes */}
+    <PageSidebar>…navigation…</PageSidebar>  {/* gray, fixed width */}
+    <PageMain>…workspace…</PageMain>         {/* white, flexes */}
+  </PageBody>
+</PageShell>
+```
+
+The pieces own the surface hierarchy (header on `--color-panel-raised`
+with a hairline `--color-edge` border, sidebar on `--color-sidebar`, main
+on `--color-panel`) — don't repaint those tokens yourself. No sidebar?
+Put content straight into `PageMain`. Custom body internals are fine, but
+keep `PageShell` + `PageHeader` (with `onClose` wired) on every page.
 
 **`CodeEditor` is Monaco — and it is the console's one code editor.** Every
 code/text editing surface (yours included) uses it: Monaco runs once inside
@@ -111,6 +138,13 @@ content (put it inside an `overflow-auto` pane). Never bundle
 `monaco-editor`, CodeMirror, or any other editor into a worker asset — it
 would ship megabytes toward the per-asset size cap to duplicate what the
 console already provides.
+
+**`FileDiff` is the console's one file-diff surface** — same rule as
+`CodeEditor`: never bundle a diff renderer. Pass the two full file bodies
+(`oldFile`/`newFile`, each `{ name, contents }` — empty `contents` for a
+created/deleted side); the console computes and renders the unified diff,
+themed for both modes. `diffStyle: 'split'` and `overflow: 'scroll'` are
+opt-in props.
 
 ```tsx
 import { CodeEditor } from '@iii-dev/console-ui'
@@ -273,6 +307,21 @@ returns a remover for manual teardown.
 
 A whole console page at `#/ext/<id>`, listed in the nav while registered.
 Duplicate ids: last registration wins.
+
+`render` receives `PageRenderProps` — a plain `() => <Page />` render stays
+valid and simply ignores them:
+
+- `panelSide`: `'left' | 'right'` — which side of the workspace tab the
+  pane hosting your page occupies (`'right'` only for the rightmost column
+  of a multi-column tab). Use it to mirror your layout so e.g. a sidebar
+  hugs the outer screen edge.
+- `tabId`: the hosting workspace tab's stable id (tabs persist across
+  reloads) — key per-tab UI state on it. Empty string outside a workspace
+  tab.
+- `onRequestClose`: close the pane hosting your page (a split drops the
+  column; a single-column tab detaches back to the attach affordance).
+  Wire it to `PageHeader`'s `onClose` — every page header carries the
+  standard ✕. Absent when the page renders outside a closable pane.
 
 ### `host.functionTriggers.register(renderer)`
 

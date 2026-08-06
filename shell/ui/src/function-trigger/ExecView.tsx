@@ -1,15 +1,5 @@
-import {
-  formatBytes,
-  pillForExit,
-  truncateMiddle,
-} from '@/components/chat/sandbox/format'
-import { AnsiOutput } from '@/components/chat/sandbox/terminal/AnsiOutput'
-import {
-  Chip,
-  FooterPill,
-  Terminal,
-} from '@/components/chat/sandbox/terminal/Terminal'
-import { Prompt } from '@/components/ui/Prompt'
+import { formatBytes, truncateMiddle, pillForExit } from '../lib/format'
+import { AnsiOutput, Chip, FooterPill, Prompt, Terminal } from '../lib/terminal'
 import { formatShellCommand } from './format'
 import {
   type ShellExecRequest,
@@ -62,12 +52,12 @@ export function ShellExecPreviewRow({
   const req = shellExecRequestSchema.safeParse(input)
   if (!req.success) return null
   return (
-    <div className="border-t border-rule-2 bg-paper-2 px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
-      <span className="font-mono text-[12.5px] text-ink whitespace-pre-wrap break-all">
+    <div className="shui-card shui-head preview">
+      <span className="shui-cmd">
         <Prompt symbol="$" />
-        <span className="ml-2">{formatShellCommand(req.data)}</span>
+        <span className="cmd-text">{formatShellCommand(req.data)}</span>
       </span>
-      <span className="flex flex-wrap items-center gap-1.5 ml-auto">
+      <span className="shui-chips end">
         <ShellExecChips req={req.data} bg={bg} />
       </span>
     </div>

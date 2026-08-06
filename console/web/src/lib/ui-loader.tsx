@@ -109,9 +109,9 @@ function makeHost(
             ...page,
             scope,
             path,
-            render: () => (
+            render: (renderProps) => (
               <ScopedExtension scope={scope} path={path}>
-                <Body />
+                <Body {...renderProps} />
               </ScopedExtension>
             ),
           }),

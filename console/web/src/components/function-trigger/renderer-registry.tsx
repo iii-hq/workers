@@ -30,7 +30,6 @@ import {
   ScraplingFunctionIdLabel,
   ScraplingToolView,
 } from '@/components/chat/scrapling'
-import { ShellFunctionIdLabel, ShellToolView } from '@/components/chat/shell'
 import { StateFunctionIdLabel, StateToolView } from '@/components/chat/state'
 import { WebFunctionIdLabel, WebToolView } from '@/components/chat/web'
 import { WorkerFunctionIdLabel, WorkerToolView } from '@/components/chat/worker'
@@ -44,7 +43,8 @@ import type { FunctionTriggerMessage } from '@/types/chat'
 import type { FunctionTriggerRenderer } from '@/types/injectable-ui'
 
 /**
- * The first-party families (12 since directory moved into its worker's injected UI), in the exact order of the old `??` chains.
+ * The first-party families (11 since directory and shell moved into their
+ * workers' injected UI), in the exact order of the old `??` chains.
  * Each family's `tryRender*` already gates on its own function ids, so an
  * entry returning `null` falls through to the next.
  */
@@ -99,14 +99,8 @@ export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
     tryRenderPreview: ScraplingToolView.tryRenderPreview,
     FunctionIdLabel: ScraplingFunctionIdLabel,
   },
-  {
-    id: 'first-party/shell',
-    isMatch: ShellToolView.isShellFunction,
-    tryRender: ShellToolView.tryRender,
-    tryRenderRunning: ShellToolView.tryRenderRunning,
-    tryRenderPreview: ShellToolView.tryRenderPreview,
-    FunctionIdLabel: ShellFunctionIdLabel,
-  },
+  // shell::* rendering is no longer first-party: the shell worker ships
+  // it as injected UI (shell/ui/src/function-trigger).
   {
     id: 'first-party/workflow',
     isMatch: WorkflowToolView.isWorkflowFunction,

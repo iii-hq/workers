@@ -17,13 +17,17 @@ import type { View } from '@/hooks/use-hash-route'
 /** `chat`, a routed first-party view, or `ext:<page-id>`. */
 export type TabScreen = string
 
+/** Split ceiling — the edge-add affordance hides once a tab hits it. */
+export const MAX_COLUMNS = 3
+
 export interface WorkspaceTab {
   id: string
   /** Optional custom name; the default label derives from the screens. */
   name?: string
   /**
-   * Column count (1 or 2). Absent on tabs saved before columns existed —
-   * resolve through `tabColumns`, which falls back to the screen count.
+   * Column count (1..MAX_COLUMNS). Absent on tabs saved before columns
+   * existed — resolve through `tabColumns`, which falls back to the
+   * screen count.
    */
   columns?: number
   /**
@@ -32,18 +36,119 @@ export interface WorkspaceTab {
    * affordance instead of a page.
    */
   screens: (TabScreen | null)[]
+  /**
+   * Column width fractions (drag-to-resize), index-aligned with the
+   * columns. Absent or mismatched = equal widths; normalized through
+   * `tabSizes`.
+   */
+  sizes?: number[]
 }
 
 /** Effective column count: the explicit choice, else the screen count. */
 export function tabColumns(tab: WorkspaceTab): number {
-  if (tab.columns === 2) return 2
-  if (tab.columns === 1) return 1
-  return Math.max(1, tab.screens.length)
+  const explicit = tab.columns
+  if (typeof explicit === 'number' && Number.isInteger(explicit)) {
+    return Math.min(MAX_COLUMNS, Math.max(1, explicit))
+  }
+  return Math.min(MAX_COLUMNS, Math.max(1, tab.screens.length))
+}
+
+/** Narrowest a column can be dragged/normalized to, as a fraction. */
+export const MIN_COLUMN_FRACTION = 0.12
+
+/**
+ * Normalized column fractions (summing to 1, one per column). Stored
+ * sizes are honored when they line up with the column count and are all
+ * positive finite numbers; anything else falls back to equal widths.
+ */
+export function tabSizes(tab: WorkspaceTab): number[] {
+  const columns = tabColumns(tab)
+  const stored = tab.sizes
+  if (
+    Array.isArray(stored) &&
+    stored.length === columns &&
+    stored.every((s) => typeof s === 'number' && Number.isFinite(s) && s > 0)
+  ) {
+    const total = stored.reduce((sum, s) => sum + s, 0)
+    return stored.map((s) => s / total)
+  }
+  return Array.from({ length: columns }, () => 1 / columns)
+}
+
+/**
+ * Grow the tab by one column on the chosen side (no-op at MAX_COLUMNS).
+ * The new column arrives empty at `1/(n+1)` width; existing columns keep
+ * their ratios inside the remaining space.
+ */
+export function withColumnAdded(
+  tab: WorkspaceTab,
+  side: 'left' | 'right',
+): WorkspaceTab {
+  const columns = tabColumns(tab)
+  if (columns >= MAX_COLUMNS) return tab
+  const screens: (TabScreen | null)[] = Array.from(
+    { length: columns },
+    (_, i) => tab.screens[i] ?? null,
+  )
+  const sizes = tabSizes(tab)
+  const newFraction = 1 / (columns + 1)
+  const scaled = sizes.map((s) => s * (1 - newFraction))
+  if (side === 'left') {
+    screens.unshift(null)
+    scaled.unshift(newFraction)
+  } else {
+    screens.push(null)
+    scaled.push(newFraction)
+  }
+  return { ...tab, columns: columns + 1, screens, sizes: scaled }
+}
+
+/**
+ * Blank one column's screen (the column stays, showing the attach
+ * affordance) — the single-column arm of a pane's ✕: the last column
+ * never goes, so closing its screen detaches instead.
+ */
+export function withScreenDetached(
+  tab: WorkspaceTab,
+  column: number,
+): WorkspaceTab {
+  const columns = tabColumns(tab)
+  if (column < 0 || column >= columns) return tab
+  const screens: (TabScreen | null)[] = Array.from(
+    { length: columns },
+    (_, i) => tab.screens[i] ?? null,
+  )
+  if (screens[column] === null) return tab
+  screens[column] = null
+  return { ...tab, columns, screens }
+}
+
+/** Drop one column (no-op for the last one); the rest re-normalize. */
+export function withColumnRemoved(
+  tab: WorkspaceTab,
+  column: number,
+): WorkspaceTab {
+  const columns = tabColumns(tab)
+  if (columns <= 1 || column < 0 || column >= columns) return tab
+  const screens = Array.from(
+    { length: columns },
+    (_, i) => tab.screens[i] ?? null,
+  ).filter((_, i) => i !== column)
+  const remaining = tabSizes(tab).filter((_, i) => i !== column)
+  const total = remaining.reduce((sum, s) => sum + s, 0)
+  return {
+    ...tab,
+    columns: columns - 1,
+    screens,
+    sizes: remaining.map((s) => s / total),
+  }
 }
 
 export const EXT_SCREEN_PREFIX = 'ext:'
 export const CHAT_SCREEN: TabScreen = 'chat'
 
+/** Configuration is deliberately NOT here: console settings open as an
+    overlay page, never as a workspace-tab screen. */
 const ROUTED_SCREENS: readonly View[] = [
   'traces',
   'workers',
@@ -51,7 +156,6 @@ const ROUTED_SCREENS: readonly View[] = [
   'browser',
   'memory',
   'github',
-  'configuration',
 ]
 
 export function isRoutedScreen(screen: TabScreen): screen is View {
@@ -68,11 +172,22 @@ export function screenForExtPage(pageId: string): TabScreen {
   return `${EXT_SCREEN_PREFIX}${pageId}`
 }
 
-/** The screen a routed view (+ ext page id) resolves to. */
-export function screenForView(view: View, extPageId: string | null): TabScreen {
+/**
+ * The screen a routed view (+ ext page id) resolves to; `null` when the
+ * view has no tab representation — configuration (an overlay page, not a
+ * tab screen) and a not-yet-resolved ext route (the view and the page id
+ * arrive from two hashchange listeners, so one commit can see `ext` with
+ * a null id; reacting to that transient with a fallback screen used to
+ * conjure duplicate tabs).
+ */
+export function screenForView(
+  view: View,
+  extPageId: string | null,
+): TabScreen | null {
   if (view === 'ext') {
-    return extPageId ? screenForExtPage(extPageId) : 'traces'
+    return extPageId ? screenForExtPage(extPageId) : null
   }
+  if (view === 'configuration') return null
   return view
 }
 
@@ -89,10 +204,19 @@ function isValidTab(v: unknown): v is WorkspaceTab {
     typeof tab.id === 'string' &&
     tab.id.length > 0 &&
     Array.isArray(tab.screens) &&
-    tab.screens.length <= 2 &&
+    tab.screens.length <= MAX_COLUMNS &&
     tab.screens.every((s) => s === null || isValidScreen(s)) &&
     (tab.name === undefined || typeof tab.name === 'string') &&
-    (tab.columns === undefined || tab.columns === 1 || tab.columns === 2)
+    (tab.columns === undefined ||
+      (Number.isInteger(tab.columns) &&
+        (tab.columns as number) >= 1 &&
+        (tab.columns as number) <= MAX_COLUMNS)) &&
+    (tab.sizes === undefined ||
+      (Array.isArray(tab.sizes) &&
+        tab.sizes.length <= MAX_COLUMNS &&
+        tab.sizes.every(
+          (s) => typeof s === 'number' && Number.isFinite(s) && s > 0,
+        )))
   )
 }
 
@@ -129,7 +253,22 @@ export function parseWorkspaceTabs(
   if (!workspace || typeof workspace !== 'object') return []
   const tabs = (workspace as Record<string, unknown>).tabs
   if (!Array.isArray(tabs)) return []
-  return tabs.filter(isValidTab)
+  // Migration: 'configuration' was a tab screen before it became an
+  // overlay page — blank those columns instead of dropping whole tabs.
+  const sanitized = tabs.map((t) => {
+    if (
+      !t ||
+      typeof t !== 'object' ||
+      !Array.isArray((t as WorkspaceTab).screens)
+    )
+      return t
+    const tab = t as WorkspaceTab
+    return {
+      ...tab,
+      screens: tab.screens.map((s) => (s === 'configuration' ? null : s)),
+    }
+  })
+  return sanitized.filter(isValidTab)
 }
 
 /** Parse `workspace.activeTabId`; `undefined` = no pointer recorded. */

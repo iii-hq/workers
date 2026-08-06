@@ -15,8 +15,9 @@ export interface ScreenOption {
 /**
  * Every screen a workspace tab can attach: the chat view, the available
  * first-party pages (optional-worker pages appear only while their worker
- * is present), configuration, and the worker-injected pages. Must render
- * under `ConversationsProvider`.
+ * is present), and the worker-injected pages. Configuration is absent by
+ * design — console settings open as an overlay page, not a tab screen.
+ * Must render under `ConversationsProvider`.
  */
 export function useScreenOptions(): {
   screenOptions: ScreenOption[]
@@ -37,7 +38,6 @@ export function useScreenOptions(): {
       memoryAvailable,
       githubAvailable,
     ),
-    { value: 'configuration', label: 'configuration' },
     ...extPages.map((page) => ({
       value: screenForExtPage(page.id),
       label: page.title,

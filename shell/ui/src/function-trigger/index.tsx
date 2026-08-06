@@ -1,17 +1,35 @@
-import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
-import type { FunctionTriggerMessage } from '@/types/chat'
+/**
+ * Injected function-trigger renderer for the `shell::*` family — moved
+ * out of the console SPA (formerly console/web/src/components/chat/shell/)
+ * into the worker's own injected UI, so the rendering ships and versions
+ * with the worker (the iii-directory precedent).
+ *
+ * Matches only the ids in `SHELL_FUNCTION_IDS`. Pending-approval
+ * messages return null from `tryRender` so the console's approval bar
+ * keeps handling them; the compact previews render through
+ * `tryRenderPreview`. Error outputs are normalised by
+ * `parseShellErrorDisplay` (S-code lifting + generic denial shapes) and
+ * rendered by the shared error cards.
+ */
+
+import type {
+  FunctionTriggerMessage,
+  FunctionTriggerRenderer,
+} from '@iii-dev/console-ui'
+import { ErrorDisplayView } from '../lib/errors'
 import { ShellConfigStatusView } from './ConfigStatusView'
 import { ShellExecBgPreview, ShellExecBgView } from './ExecBgView'
 import { ShellExecPreview, ShellExecView } from './ExecView'
-import { FsChmodView } from './FsChmodView'
-import { FsGrepView } from './FsGrepView'
-import { FsLsView } from './FsLsView'
-import { FsMkdirView } from './FsMkdirView'
-import { FsMvView } from './FsMvView'
-import { FsReadView } from './FsReadView'
-import { FsRmView } from './FsRmView'
-import { FsSedView } from './FsSedView'
-import { FsStatView } from './FsStatView'
+import { FsSedView, FsGrepView } from './FsSearchViews'
+import {
+  FsChmodView,
+  FsLsView,
+  FsMkdirView,
+  FsMvView,
+  FsReadView,
+  FsRmView,
+  FsStatView,
+} from './FsViews'
 import { FsWriteView } from './FsWriteView'
 import { ShellKillPreview, ShellKillView } from './KillView'
 import { ShellListView } from './ListView'
@@ -22,28 +40,22 @@ import {
 } from './parsers'
 import { ShellStatusView } from './StatusView'
 
-/* The known shell::* set lives in parsers.ts (SHELL_FUNCTION_IDS) so
-   the dispatcher and the schemas share one source of truth. Re-exported
-   here for FCM symmetry with the sandbox module. */
-export { isShellFunction, SHELL_FUNCTION_IDS } from './parsers'
-
-/* Public surface mirrors the sandbox module exactly. Both helpers
-   return `null` for unknown function ids or unparseable payloads so
-   the caller can silently fall back to the existing JSON view. */
-export function ShellFunctionIdLabel({ functionId }: { functionId: string }) {
+/** Renders outside the script's scope wrapper (the card header), so it
+    uses inline token styles instead of scoped classes. */
+function ShellFunctionIdLabel({ functionId }: { functionId: string }) {
   if (!functionId.startsWith('shell::')) {
-    return <span className="text-ink">{functionId}</span>
+    return <span style={{ color: 'var(--color-ink)' }}>{functionId}</span>
   }
   const tail = functionId.slice('shell::'.length)
   return (
     <>
-      <span className="text-ink-faint">shell::</span>
-      <span className="text-ink font-medium">{tail}</span>
+      <span style={{ color: 'var(--color-ink-faint)' }}>shell::</span>
+      <span style={{ color: 'var(--color-ink)', fontWeight: 500 }}>{tail}</span>
     </>
   )
 }
 
-function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
+function render(message: FunctionTriggerMessage): React.ReactNode | null {
   if (!isShellFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -59,7 +71,7 @@ function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
   const errorDisplay =
     !running && rawOutput != null ? parseShellErrorDisplay(rawOutput) : null
   if (errorDisplay) {
-    return <SandboxErrorView display={errorDisplay} />
+    return <ErrorDisplayView display={errorDisplay} />
   }
 
   switch (message.functionId) {
@@ -117,10 +129,14 @@ function tryRenderPreview(
   }
 }
 
-export const ShellToolView = {
-  isShellFunction,
-  tryRender,
-  /** Alias kept for FCM symmetry; running state lives inside `tryRender`. */
-  tryRenderRunning: tryRender,
-  tryRenderPreview,
+export function createShellTriggerRenderer(): FunctionTriggerRenderer {
+  return {
+    id: 'shell/page.js#shell',
+    isMatch: isShellFunction,
+    tryRender: render,
+    /** Alias kept deliberately; running state lives inside `render`. */
+    tryRenderRunning: render,
+    tryRenderPreview,
+    FunctionIdLabel: ShellFunctionIdLabel,
+  }
 }

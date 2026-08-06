@@ -35,6 +35,7 @@ import { Button } from '@/components/ui/Button'
 import { Cell } from '@/components/ui/Cell'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { PageHeader } from '@/components/ui/PageChrome'
 import { Pagination } from '@/components/ui/Pagination'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
@@ -86,9 +87,11 @@ const PAGE_SIZES = [25, 50, 100]
 export interface TracesV2Props {
   /** mount with a trace's detail already expanded (stories/deep links) */
   initialTraceId?: string
+  /** Close the hosting pane — the header's standard ✕ when present. */
+  onRequestClose?: () => void
 }
 
-export function TracesV2({ initialTraceId }: TracesV2Props) {
+export function TracesV2({ initialTraceId, onRequestClose }: TracesV2Props) {
   // The strip's system/pause/refresh controls were removed; both stay at
   // their defaults (streams live, internal spans hidden) until some other
   // surface grows a toggle.
@@ -603,6 +606,11 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
       aria-label="traces"
       className="flex-1 flex flex-col overflow-hidden"
     >
+      <PageHeader
+        icon={<GitBranch />}
+        title="traces"
+        onClose={onRequestClose}
+      />
       <TimelineStrip
         spans={allSpans}
         spanFilter={spanFilter}

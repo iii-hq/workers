@@ -1,5 +1,5 @@
-import { CircleQuestionMark, SettingsIcon } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { CircleQuestionMark, SettingsIcon, X } from 'lucide-react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 import {
   Dialog,
@@ -10,6 +10,7 @@ import {
 import { Sheet } from '@/components/ui/Sheet'
 import { Wordmark } from '@/components/ui/Wordmark'
 import { EmptyPane } from '@/components/workspace/EmptyPane'
+import { EdgeAddZone, ResizeHandle } from '@/components/workspace/pane-controls'
 import { TabStrip } from '@/components/workspace/TabStrip'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
 import {
@@ -28,9 +29,12 @@ import { cn } from '@/lib/utils'
 import {
   CHAT_SCREEN,
   extPageIdForScreen,
+  MAX_COLUMNS,
+  MIN_COLUMN_FRACTION,
   screenForView,
   type TabScreen,
   tabColumns,
+  tabSizes,
 } from '@/lib/workspace-tabs'
 import { Browser } from '@/pages/Browser'
 import { Configuration } from '@/pages/Configuration'
@@ -40,6 +44,7 @@ import { Memory } from '@/pages/Memory'
 import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
 import { Worktrees } from '@/pages/Worktrees'
+import type { PanelSide } from '@/types/injectable-ui'
 
 export function App() {
   const [theme, setTheme] = useTheme()
@@ -63,6 +68,12 @@ export function App() {
   // bounce the hash back. On mount an explicit hash wins over the stored
   // active tab; a bare `#/` defers to it.
   const hashScreen = screenForView(view, extPageId)
+  // Deep-link fallback for closing settings from a chat-only/empty tab.
+  const lastTabViewRef = useRef<View>('traces')
+  useEffect(() => {
+    if (view !== 'configuration' && view !== 'ext')
+      lastTabViewRef.current = view
+  }, [view])
   const lastHashScreenRef = useRef<TabScreen | null>(
     typeof window !== 'undefined' &&
       window.location.hash &&
@@ -73,9 +84,34 @@ export function App() {
   )
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
+  // Closing settings routes back to the ACTIVE tab's own screen (never to
+  // whichever tab happens to own the previous view — that would switch
+  // tabs under the user). Pre-marking keeps the hash-inbound effect quiet.
+  const closeSettings = useCallback(() => {
+    const primary = workspaceRef.current.activeTab.screens.find(
+      (s): s is TabScreen => s !== null && s !== CHAT_SCREEN,
+    )
+    if (primary) {
+      lastHashScreenRef.current = primary
+      const extId = extPageIdForScreen(primary)
+      if (extId) window.location.hash = hashForExtPage(extId)
+      else setView(primary as View)
+    } else {
+      lastHashScreenRef.current = lastTabViewRef.current
+      setView(lastTabViewRef.current)
+    }
+  }, [setView])
+  const toggleSettings = useCallback(() => {
+    if (view === 'configuration') closeSettings()
+    else setView('configuration')
+  }, [view, setView, closeSettings])
   useEffect(() => {
     if (lastHashScreenRef.current === hashScreen) return
     lastHashScreenRef.current = hashScreen
+    // No tab representation (settings overlay, unresolved ext route):
+    // the tab strip has nothing to react to — and reacting to the ext
+    // transient is what used to conjure duplicate tabs.
+    if (hashScreen === null) return
     const ws = workspaceRef.current
     if (ws.activeTab.screens.includes(hashScreen)) return
     const existing = ws.tabs.find((t) => t.screens.includes(hashScreen))
@@ -92,7 +128,10 @@ export function App() {
     const prev = prevActiveTabIdRef.current
     prevActiveTabIdRef.current = activeTabId
     if (prev === null || prev === activeTabId) return
-    if (activeTab.screens.includes(hashScreen)) return
+    // hashScreen null (settings overlay open / ext transient): always
+    // route to the activated tab's primary screen. The null-safe check
+    // matters — `screens.includes(null)` would match an EMPTY column.
+    if (hashScreen !== null && activeTab.screens.includes(hashScreen)) return
     const primary = activeTab.screens.find(
       (s): s is TabScreen => s !== null && s !== CHAT_SCREEN,
     )
@@ -127,15 +166,18 @@ export function App() {
       <Sheet>
         <Header
           workspace={workspace}
-          onViewChange={setView}
+          settingsOpen={view === 'configuration'}
+          onToggleSettings={toggleSettings}
           onOpenShortcuts={() => setShortcutsOpen(true)}
         />
-        <WorkspacePanes
-          workspace={workspace}
-          theme={theme}
-          onThemeChange={setTheme}
-          onExtMissing={onExtMissing}
-        />
+        <WorkspacePanes workspace={workspace} onExtMissing={onExtMissing} />
+        {view === 'configuration' ? (
+          <ConfigurationOverlay
+            theme={theme}
+            onThemeChange={setTheme}
+            onClose={closeSettings}
+          />
+        ) : null}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       </Sheet>
     </ConversationsProvider>
@@ -144,8 +186,6 @@ export function App() {
 
 interface WorkspacePanesProps {
   workspace: UseWorkspaceTabsReturn
-  theme: ReturnType<typeof useTheme>[0]
-  onThemeChange: (next: ReturnType<typeof useTheme>[0]) => void
   onExtMissing: () => void
 }
 
@@ -153,25 +193,102 @@ interface WorkspacePanesProps {
  * The active tab's columns, each a floating panel over the canvas. An
  * unattached column renders the attach affordance instead of a page.
  * Rendered under `ConversationsProvider` (the screen options need it).
+ *
+ * Columns are proportioned by the tab's stored `sizes` fractions; the
+ * 6px gap between panes is a drag handle (live-resized locally, persisted
+ * on release). The container's edge slivers grow the split — hover (or
+ * tap) one to reveal the add-panel affordance.
  */
-function WorkspacePanes({
-  workspace,
-  theme,
-  onThemeChange,
-  onExtMissing,
-}: WorkspacePanesProps) {
+function WorkspacePanes({ workspace, onExtMissing }: WorkspacePanesProps) {
   const { screenOptions } = useScreenOptions()
   const { activeTab } = workspace
   const columns = tabColumns(activeTab)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Fractions while a divider drag is live. Committing does NOT clear
+  // them: the store notifies through useSyncExternalStore, which doesn't
+  // batch with our setState — clearing here would render one frame of
+  // the OLD stored sizes (a visible blink) before the write lands. The
+  // override instead stays on until the stored sizes catch up, and is
+  // dropped in the render below exactly when doing so changes nothing.
+  // Keyed so switching tabs or changing the split drops a stale drag
+  // instead of applying it to the wrong columns.
+  const [dragSizes, setDragSizes] = useState<number[] | null>(null)
+  const dragSizesRef = useRef<number[] | null>(null)
+  const commitPendingRef = useRef(false)
+  const sizesKey = `${activeTab.id}:${columns}`
+  const prevSizesKeyRef = useRef(sizesKey)
+  if (prevSizesKeyRef.current !== sizesKey) {
+    prevSizesKeyRef.current = sizesKey
+    dragSizesRef.current = null
+    commitPendingRef.current = false
+    if (dragSizes !== null) setDragSizes(null)
+  }
+
+  const storedSizes = tabSizes(activeTab)
+  if (
+    dragSizes !== null &&
+    commitPendingRef.current &&
+    dragSizes.length === storedSizes.length &&
+    dragSizes.every((s, i) => Math.abs(s - storedSizes[i]) < 0.001)
+  ) {
+    // The store caught up with the committed drag — retire the override
+    // while it's a visual no-op (guarded render-phase state update).
+    commitPendingRef.current = false
+    dragSizesRef.current = null
+    setDragSizes(null)
+  }
+  const sizes = dragSizes ?? storedSizes
+
+  const resizePair = (index: number, delta: number) => {
+    const current = dragSizesRef.current ?? tabSizes(activeTab)
+    // Clamp so neither neighbor dips under the minimum fraction.
+    const bounded = Math.max(
+      -(current[index] - MIN_COLUMN_FRACTION),
+      Math.min(current[index + 1] - MIN_COLUMN_FRACTION, delta),
+    )
+    if (bounded === 0) return
+    const next = [...current]
+    next[index] += bounded
+    next[index + 1] -= bounded
+    commitPendingRef.current = false
+    dragSizesRef.current = next
+    setDragSizes(next)
+  }
+
+  const commitResize = () => {
+    const next = dragSizesRef.current
+    if (!next) return
+    commitPendingRef.current = true
+    workspace.resizeColumns(activeTab.id, next)
+  }
+
   return (
-    <div className="flex-1 flex min-h-0 gap-1.5 px-1.5 pb-1.5">
+    <div
+      ref={containerRef}
+      className="relative flex-1 flex min-h-0 px-1.5 pb-1.5"
+    >
       {Array.from({ length: columns }, (_, column) => {
         const screen = activeTab.screens[column] ?? null
-        return (
+        // 'right' only for the rightmost column of a multi-column tab —
+        // a full-width single column keeps the default 'left' orientation.
+        const panelSide: PanelSide =
+          columns > 1 && column === columns - 1 ? 'right' : 'left'
+        // The header ✕ on every screen: in a split the column goes; the
+        // last column detaches its screen instead (back to the attach
+        // affordance) — a tab never loses its final pane.
+        const closePane = () =>
+          columns > 1
+            ? workspace.removeColumn(activeTab.id, column)
+            : workspace.detachScreen(activeTab.id, column)
+        const pane = (
           <div
             // biome-ignore lint/suspicious/noArrayIndexKey: the column POSITION is the identity — the composite key deliberately remounts a pane when its tab or attached screen changes
             key={`${activeTab.id}:${column}:${screen ?? 'empty'}`}
-            className="flex-1 basis-0 flex flex-col min-w-0 min-h-0 rounded-sm border border-edge bg-panel overflow-hidden"
+            // ×1000: flex-grow sums below 1 only distribute that fraction
+            // of the free space — scaling keeps the ratios AND fills the row.
+            style={{ flexGrow: sizes[column] * 1000 }}
+            className="basis-0 flex flex-col min-w-0 min-h-0 rounded-sm border border-edge bg-panel overflow-hidden"
           >
             {screen === null ? (
               <EmptyPane
@@ -179,47 +296,93 @@ function WorkspacePanes({
                 onAttach={(next) =>
                   workspace.attachScreen(activeTab.id, column, next)
                 }
+                onRemove={
+                  columns > 1
+                    ? () => workspace.removeColumn(activeTab.id, column)
+                    : undefined
+                }
               />
             ) : (
               <ScreenBody
                 screen={screen}
-                theme={theme}
-                onThemeChange={onThemeChange}
+                panelSide={panelSide}
+                tabId={activeTab.id}
+                onClose={closePane}
                 onExtMissing={onExtMissing}
               />
             )}
           </div>
         )
+        if (column === 0) return pane
+        return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: handles are positional by nature
+          <Fragment key={`divider:${activeTab.id}:${column}`}>
+            <ResizeHandle
+              value={sizes[column - 1] * 100}
+              onResize={(delta) => resizePair(column - 1, delta)}
+              onCommit={commitResize}
+              containerWidth={() =>
+                containerRef.current?.getBoundingClientRect().width ?? 0
+              }
+            />
+            {pane}
+          </Fragment>
+        )
       })}
+
+      {columns < MAX_COLUMNS ? (
+        <>
+          <EdgeAddZone
+            side="left"
+            onAdd={() => workspace.addColumn(activeTab.id, 'left')}
+          />
+          <EdgeAddZone
+            side="right"
+            onAdd={() => workspace.addColumn(activeTab.id, 'right')}
+          />
+        </>
+      ) : null}
     </div>
   )
 }
 
 interface ScreenBodyProps {
   screen: TabScreen
-  theme: ReturnType<typeof useTheme>[0]
-  onThemeChange: (next: ReturnType<typeof useTheme>[0]) => void
+  /** Which side of the tab this column occupies (forwarded to ext pages). */
+  panelSide: PanelSide
+  /** Hosting workspace tab id (forwarded to ext pages for per-tab state). */
+  tabId: string
+  /** Close this pane — the standard PageHeader ✕ on screens that carry it. */
+  onClose: () => void
   onExtMissing: () => void
 }
 
-/** One workspace-tab column: the page (or chat view) the screen names. */
+/** One workspace-tab column: the page (or chat view) the screen names.
+    Configuration never appears here — it opens as an overlay page. */
 function ScreenBody({
   screen,
-  theme,
-  onThemeChange,
+  panelSide,
+  tabId,
+  onClose,
   onExtMissing,
 }: ScreenBodyProps) {
   const extId = extPageIdForScreen(screen)
   if (extId !== null) {
-    return <ExtPage pageId={extId} onMissing={onExtMissing} />
+    return (
+      <ExtPage
+        pageId={extId}
+        panelSide={panelSide}
+        tabId={tabId}
+        onRequestClose={onClose}
+        onMissing={onExtMissing}
+      />
+    )
   }
   switch (screen) {
     case CHAT_SCREEN:
       // The compact header variant — a tab column is width-constrained the
       // same way the old side dock was, especially in two-column layouts.
-      return <ChatPanel density="dock" />
-    case 'configuration':
-      return <Configuration theme={theme} onThemeChange={onThemeChange} />
+      return <ChatPanel density="dock" onRequestClose={onClose} />
     case 'workers':
       return <Workers />
     case 'worktrees':
@@ -231,20 +394,24 @@ function ScreenBody({
     case 'github':
       return <Github />
     default:
-      return <TracesV2 />
+      return <TracesV2 onRequestClose={onClose} />
   }
 }
 
 interface HeaderProps {
   workspace: UseWorkspaceTabsReturn
-  onViewChange: (next: View) => void
+  settingsOpen: boolean
+  onToggleSettings: () => void
   onOpenShortcuts: () => void
 }
 
-function Header({ workspace, onViewChange, onOpenShortcuts }: HeaderProps) {
+function Header({
+  workspace,
+  settingsOpen,
+  onToggleSettings,
+  onOpenShortcuts,
+}: HeaderProps) {
   const { extPageTitles } = useScreenOptions()
-  const onConsoleSettings =
-    workspace.activeTab.screens.includes('configuration')
   return (
     <header className="flex items-center justify-between gap-3 pl-3 pr-6 h-12 shrink-0">
       <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -255,7 +422,7 @@ function Header({ workspace, onViewChange, onOpenShortcuts }: HeaderProps) {
           extPageTitles={extPageTitles}
           onActivate={workspace.activateTab}
           onClose={workspace.closeTab}
-          onCreate={(columns) => workspace.createTab({ columns })}
+          onCreate={() => workspace.createTab({ columns: 1 })}
           onRename={workspace.renameTab}
           onReorder={workspace.reorderTab}
         />
@@ -274,13 +441,13 @@ function Header({ workspace, onViewChange, onOpenShortcuts }: HeaderProps) {
         </button>
         <button
           type="button"
-          onClick={() => onViewChange('configuration')}
-          aria-pressed={onConsoleSettings}
+          onClick={onToggleSettings}
+          aria-pressed={settingsOpen}
           aria-label="console settings"
           title="console settings"
           className={cn(
             'font-mono text-[14px] leading-none w-8 h-8 flex items-center justify-center rounded-sm border transition-colors',
-            onConsoleSettings
+            settingsOpen
               ? 'bg-ink text-bg border-transparent'
               : 'bg-transparent text-ink-faint border-transparent hover:text-ink hover:bg-surface-hover',
           )}
@@ -289,6 +456,52 @@ function Header({ workspace, onViewChange, onOpenShortcuts }: HeaderProps) {
         </button>
       </div>
     </header>
+  )
+}
+
+interface ConfigurationOverlayProps {
+  theme: ReturnType<typeof useTheme>[0]
+  onThemeChange: (next: ReturnType<typeof useTheme>[0]) => void
+  onClose: () => void
+}
+
+/**
+ * Console settings as a PAGE over the workspace — never a tab screen (the
+ * tab model rejects it; `screenForView` maps the route to null). The
+ * workspace stays mounted underneath, so closing restores the panes
+ * exactly as they were. Deep-linkable via `#/configuration`; Escape or
+ * the close affordance returns to the last tab-backed view.
+ */
+function ConfigurationOverlay({
+  theme,
+  onThemeChange,
+  onClose,
+}: ConfigurationOverlayProps) {
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
+  return (
+    <div className="fixed inset-0 z-40 flex flex-col bg-bg">
+      <div className="flex h-12 shrink-0 items-center justify-end pr-6">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="close settings"
+          title="close settings (esc)"
+          className="font-mono text-[14px] leading-none w-8 h-8 flex items-center justify-center rounded-sm border border-transparent text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors focus-visible:border-accent focus-visible:outline-none"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+      <div className="flex-1 min-h-0 flex flex-col">
+        <Configuration theme={theme} onThemeChange={onThemeChange} />
+      </div>
+    </div>
   )
 }
 

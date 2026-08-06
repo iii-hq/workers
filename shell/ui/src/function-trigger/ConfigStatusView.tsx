@@ -1,6 +1,4 @@
-import { StatusPill } from '@/components/chat/sandbox/shared'
-import { Chip, FooterPill } from '@/components/chat/sandbox/terminal/Terminal'
-import { cn } from '@/lib/utils'
+import { Chip, FooterPill, StatusPill } from '../lib/terminal'
 import { safeParseResponse, shellConfigStatusResponseSchema } from './parsers'
 
 interface ShellConfigStatusViewProps {
@@ -25,23 +23,14 @@ export function ShellConfigStatusView({
 
   if (!resp) {
     if (!running) return null
-    return (
-      <div className="border-t border-rule-2 bg-bg px-3 py-3 font-mono text-[12.5px] text-ink-faint italic">
-        checking config…
-      </div>
-    )
+    return <div className="shui-card shui-running">checking config…</div>
   }
 
   const applied = resp.last_outcome === 'applied'
   return (
-    <div className="border-t border-rule-2 bg-bg">
-      <div
-        className={cn(
-          'px-3 py-3 flex flex-col gap-2 border-l-2',
-          applied ? 'border-accent' : 'border-alert',
-        )}
-      >
-        <div className="flex flex-wrap items-center gap-1.5">
+    <div className="shui-card">
+      <div className={`shui-slab ${applied ? 'accent' : 'alert'}`}>
+        <div className="shui-row">
           <StatusPill
             label={resp.last_outcome}
             variant={applied ? 'accent' : 'alert'}
@@ -55,7 +44,7 @@ export function ShellConfigStatusView({
           )}
         </div>
         {resp.last_error != null ? (
-          <pre className="font-mono text-[12.5px] leading-[1.55] text-warn whitespace-pre-wrap break-words m-0">
+          <pre className="shui-pre err">
             <code>{resp.last_error}</code>
           </pre>
         ) : null}

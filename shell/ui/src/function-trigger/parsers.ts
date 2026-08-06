@@ -5,12 +5,11 @@ import {
   fsEntrySchema,
   fsMatchSchema,
   fsSedFileResultSchema,
-  parseSandboxErrorDisplay,
-  type SandboxErrorDisplay,
   safeParseRequest,
   safeParseResponse,
   unwrapEnvelope,
-} from '@/components/chat/sandbox/parsers'
+} from '../lib/envelope'
+import { type ErrorDisplay, parseErrorDisplay } from '../lib/error-display'
 
 /* Zod schemas mirroring the shell::* request/response shapes from
    `workers/shell/src/{functions/types,jobs,target,configuration}.rs` and
@@ -23,12 +22,8 @@ import {
    renderers only read what they need. */
 
 // Re-exports so the shell views import everything from one place.
-export type {
-  FsEntry,
-  FsMatch,
-  FsSedFileResult,
-  SandboxErrorDisplay,
-} from '@/components/chat/sandbox/parsers'
+export type { FsEntry, FsMatch, FsSedFileResult } from '../lib/envelope'
+export type { ErrorDisplay } from '../lib/error-display'
 export {
   extractFirstJsonObject,
   fsEntrySchema,
@@ -146,7 +141,7 @@ export type WriteContent = z.infer<typeof writeContentSchema>
       so junk values don't kill the whole card.
     - `cwd`/`env`/`stdin` are `Option<T>` + `serde(default)` ⇒ both null
       and absent are legal on the wire: `.nullable().optional()`.
-    - `env` is a BTreeMap, not sandbox's EnvShape union: plain record. */
+    - `env` is a BTreeMap: plain record. */
 export const shellExecRequestSchema = z.object({
   command: z.string(),
   args: z.array(z.string()).nullable().optional(),
@@ -251,8 +246,8 @@ export type ShellConfigStatusResponse = z.infer<
 
 // ---------------------------------------------------------------------------
 // Filesystem — shell::fs::* (`src/fs/mod.rs`). FsEntry/FsMatch/
-// FsSedFileResult are reused from sandbox/parsers — they already encode
-// the `file`→`path` alias and absent-`error`→null transforms.
+// FsSedFileResult live in ../lib/envelope — they already encode the
+// `file`→`path` alias and absent-`error`→null transforms.
 // ---------------------------------------------------------------------------
 
 /** ls / stat / read share one request shape. */
@@ -447,9 +442,9 @@ export type FsReadResponse = z.infer<typeof fsReadResponseSchema>
 // ---------------------------------------------------------------------------
 
 /** The SDK `ErrorBody` carrying a typed shell S-code (`IIIError::Remote`).
-    No `type` field — sandbox's `sandboxErrorWireSchema` requires one, so
-    shell errors need this dedicated schema. The regex keeps it from
-    false-positiving on arbitrary `{ code, message }` objects. */
+    No `type` field — the generic wire schema in ../lib/errors requires
+    one, so shell errors need this dedicated schema. The regex keeps it
+    from false-positiving on arbitrary `{ code, message }` objects. */
 export const shellErrorWireSchema = z.object({
   code: z.string().regex(/^S\d{3}$/),
   message: z.string(),
@@ -472,10 +467,10 @@ export const S_CODE_LABEL: Record<string, string> = {
   S300: 'vm boot failed',
 }
 
-/** Lift a flat shell error into the existing `SandboxErrorDisplay` wire
-    variant so `SandboxErrorView` renders it unchanged (S-code Badge +
-    label + message). */
-function shellWire(e: { code: string; message: string }): SandboxErrorDisplay {
+/** Lift a flat shell error into the shared `ErrorDisplay` wire variant so
+    `ErrorDisplayView` renders it unchanged (S-code Badge + label +
+    message). */
+function shellWire(e: { code: string; message: string }): ErrorDisplay {
   return {
     variant: 'wire',
     error: {
@@ -512,7 +507,7 @@ export function stripHandlerPrefix(message: string): string {
 /** Synthesize a wire display from an S-code embedded in free text —
     `"trigger_failed: IIIInvocationError: S211: no such job: job-x"` →
     `{ code: 'S211', message: 'no such job: job-x' }`. */
-function wireFromText(text: string): SandboxErrorDisplay | null {
+function wireFromText(text: string): ErrorDisplay | null {
   const match = text.match(/\b(S\d{3}):\s*([\s\S]+)/)
   if (!match) return null
   return shellWire({
@@ -560,16 +555,13 @@ function collectStringCandidates(value: unknown): string[] {
  *    envelope whose `reason` reads e.g. `"trigger_failed:
  *    IIIInvocationError: S211: no such job: job-x"` — scan every string
  *    candidate and synthesize the wire display from text.
- * 3. Delegate to `parseSandboxErrorDisplay` for denials without S-codes,
- *    generic function_error envelopes, and harness wrappers (identical
- *    across families).
+ * 3. Delegate to `parseErrorDisplay` for denials without S-codes,
+ *    generic function_error envelopes, and harness wrappers.
  *
- * Returns the existing `SandboxErrorDisplay` union, rendered by
- * `SandboxErrorView` unchanged.
+ * Returns the shared `ErrorDisplay` union, rendered by `ErrorDisplayView`
+ * unchanged.
  */
-export function parseShellErrorDisplay(
-  value: unknown,
-): SandboxErrorDisplay | null {
+export function parseShellErrorDisplay(value: unknown): ErrorDisplay | null {
   const candidates = collectErrorCandidates(value)
 
   for (const candidate of candidates) {
@@ -590,5 +582,5 @@ export function parseShellErrorDisplay(
     if (synthesized) return synthesized
   }
 
-  return parseSandboxErrorDisplay(value)
+  return parseErrorDisplay(value)
 }

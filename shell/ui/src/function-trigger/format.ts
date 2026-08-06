@@ -1,8 +1,8 @@
 /* Pure formatting helpers shared by the shell renderers. No React, no
    DOM access — deterministic transforms over the parsed shell payloads.
-   Generic byte/mode/time/quoting helpers come from sandbox/format. */
+   Generic byte/mode/time/quoting helpers come from ../lib/format. */
 
-import { formatMtime, quoteShellArg } from '@/components/chat/sandbox/format'
+import { formatMtime, quoteShellArg } from '../lib/format'
 import type { JobStatus } from './parsers'
 
 /** Render an ExecRequest command line for the terminal prompt.
@@ -25,7 +25,7 @@ export function formatArgv(argv: string[]): string {
 }
 
 /** Epoch-millis (`started_at_ms`/`finished_at_ms`) → short relative
-    time, via sandbox `formatMtime` (which takes unix seconds). */
+    time, via `formatMtime` (which takes unix seconds). */
 export function formatEpochMs(ms: number): string {
   return formatMtime(Math.floor(ms / 1000))
 }

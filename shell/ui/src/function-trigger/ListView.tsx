@@ -1,8 +1,6 @@
-import { Inbox } from 'lucide-react'
-import { formatAgeSecs, truncateMiddle } from '@/components/chat/sandbox/format'
-import { StatusPill } from '@/components/chat/sandbox/shared'
-import { EmptyState } from '@/components/ui/EmptyState'
-import { StatusDot } from '@/components/ui/StatusDot'
+import { EmptyState, StatusDot } from '@iii-dev/console-ui'
+import { formatAgeSecs, truncateMiddle } from '../lib/format'
+import { StatusPill } from '../lib/terminal'
 import { formatEpochMs, jobDurationMs, jobStatusPill } from './format'
 import { safeParseResponse, shellListResponseSchema } from './parsers'
 
@@ -31,9 +29,8 @@ export function ShellListView({ output }: ShellListViewProps) {
 
   if (jobs.length === 0) {
     return (
-      <div className="border-t border-rule-2 bg-bg p-3">
+      <div className="shui-card pad">
         <EmptyState
-          icon={Inbox}
           title="no jobs"
           description="no background jobs for this worker."
         />
@@ -42,16 +39,16 @@ export function ShellListView({ output }: ShellListViewProps) {
   }
 
   return (
-    <div className="border-t border-rule-2 bg-bg overflow-x-auto">
-      <table className="w-full font-mono text-[12px] text-ink">
+    <div className="shui-card scroll-x">
+      <table className="shui-table">
         <thead>
-          <tr className="bg-paper-2 border-b border-rule-2 text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-            <th className="text-left font-normal px-3 py-1.5">job</th>
-            <th className="text-left font-normal px-2 py-1.5">status</th>
-            <th className="text-left font-normal px-2 py-1.5">started</th>
-            <th className="text-left font-normal px-2 py-1.5">duration</th>
-            <th className="text-left font-normal px-2 py-1.5">exit</th>
-            <th className="text-left font-normal px-3 py-1.5">output</th>
+          <tr className="head-paper">
+            <th className="pad-l">job</th>
+            <th>status</th>
+            <th>started</th>
+            <th>duration</th>
+            <th>exit</th>
+            <th className="pad-r">output</th>
           </tr>
         </thead>
         <tbody>
@@ -60,38 +57,32 @@ export function ShellListView({ output }: ShellListViewProps) {
             const duration = jobDurationMs(j)
             const truncated = j.stdout_truncated || j.stderr_truncated
             return (
-              <tr key={j.id} className="border-b border-rule-2 last:border-b-0">
-                <td className="px-3 py-1.5">
-                  <code className="text-ink">{truncateMiddle(j.id, 18)}</code>
+              <tr key={j.id}>
+                <td className="pad-l">
+                  <code className="t-ink">{truncateMiddle(j.id, 18)}</code>
                 </td>
-                <td className="px-2 py-1.5">
-                  <span className="inline-flex items-center gap-1.5">
+                <td>
+                  <span className="shui-status-cell">
                     {j.status === 'running' ? (
                       <StatusDot tone="accent" pulse />
                     ) : null}
                     <StatusPill label={status.label} variant={status.tone} />
                   </span>
                 </td>
-                <td className="px-2 py-1.5 text-ink-faint tabular-nums">
-                  {formatEpochMs(j.started_at_ms)}
-                </td>
-                <td className="px-2 py-1.5 text-ink-faint tabular-nums">
+                <td className="t-faint num">{formatEpochMs(j.started_at_ms)}</td>
+                <td className="t-faint num">
                   {duration != null ? formatDurationMs(duration) : '—'}
                 </td>
-                <td className="px-2 py-1.5 tabular-nums">
+                <td className="num">
                   {j.exit_code == null ? (
-                    <span className="text-ink-faint">—</span>
+                    <span className="t-faint">—</span>
                   ) : (
-                    <span
-                      className={
-                        j.exit_code === 0 ? 'text-accent' : 'text-warn'
-                      }
-                    >
+                    <span className={j.exit_code === 0 ? 't-accent' : 't-warn'}>
                       {j.exit_code}
                     </span>
                   )}
                 </td>
-                <td className="px-3 py-1.5 text-ink-faint">
+                <td className="t-faint pad-r">
                   {truncated ? '✂ truncated' : '—'}
                 </td>
               </tr>
@@ -99,7 +90,7 @@ export function ShellListView({ output }: ShellListViewProps) {
           })}
         </tbody>
       </table>
-      <div className="px-3 py-1.5 font-mono text-[11px] text-ink-ghost border-t border-rule-2">
+      <div className="shui-table-footnote">
         summaries only — full output via shell::status
       </div>
     </div>
