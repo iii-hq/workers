@@ -10,7 +10,9 @@
 // allow once this module has any real caller.
 #![allow(dead_code)]
 
-use anyhow::{bail, Result};
+use std::path::Path;
+
+use anyhow::{bail, Context, Result};
 
 /// Stack names land in YAML as plain scalars, so restrict them to characters
 /// that can never need quoting or change the document's shape.
@@ -235,6 +237,22 @@ fn render_entry(indent: &str, name: &str, roots: &[String]) -> Vec<String> {
         out.push(format!("{indent}{indent}- {root}"));
     }
     out
+}
+
+/// Replace `path`'s contents with `text`, but only after proving the result
+/// still loads. Writes a sibling temp file and renames over the target, so a
+/// crash mid-write cannot leave a half-written config behind.
+pub fn write_verified(path: &Path, text: &str) -> Result<()> {
+    crate::config::validate_config_text(text)?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "workers-dev.yaml".to_string());
+    let tmp = path.with_file_name(format!("{name}.tmp"));
+    std::fs::write(&tmp, text).with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("replace {} with {}", path.display(), tmp.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -465,5 +483,37 @@ default_stack: tiny
             "{out:?}"
         );
         assert!(parses(&out));
+    }
+
+    #[test]
+    fn write_verified_replaces_the_file_atomically() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("workers-dev.yaml");
+        std::fs::write(&path, "color: auto\n").unwrap();
+
+        write_verified(&path, "color: auto\nstacks:\n  a:\n    - b\n").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "color: auto\nstacks:\n  a:\n    - b\n"
+        );
+        // No temp file left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp file was not renamed away");
+    }
+
+    #[test]
+    fn write_verified_refuses_text_the_loader_cannot_parse() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("workers-dev.yaml");
+        std::fs::write(&path, "color: auto\n").unwrap();
+
+        let err = write_verified(&path, "stacks:\n  a:\n  - b\n  bad\n").unwrap_err();
+        assert!(!err.to_string().is_empty());
+        // The original file is untouched.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "color: auto\n");
     }
 }

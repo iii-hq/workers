@@ -19,6 +19,13 @@ pub const DEFAULT_LOG_TAIL: usize = 100;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub repo_root: PathBuf,
+    /// The config file this run reads and writes: `--config` when given, else
+    /// `<repo_root>/workers-dev.yaml`. Set even when the file does not exist,
+    /// so the TUI's first save knows where to create it.
+    // ponytail: no reader outside tests yet — the TUI's save path lands in a
+    // later task. Drop this allow once something reads `config_path`.
+    #[allow(dead_code)]
+    pub config_path: PathBuf,
     pub engine_url: String,
     pub release: bool,
     pub poll_interval_ms: u64,
@@ -71,29 +78,31 @@ impl Config {
         color: Option<String>,
         ui_watch: bool,
     ) -> Result<Self> {
-        let file_cfg = if let Some(path) = config_path {
-            load_file_config(&path)?
-        } else {
-            // No --config: auto-load <repo_root>/workers-dev.yaml when present.
-            // The probe resolves the root without a config file (--repo / env /
-            // cwd ancestors); if that fails, fall through to defaults and let
-            // the final resolve_repo_root below report the real error. An
-            // auto-loaded file's `repo:` key is honored as-is — no re-search
-            // for another config in the new root.
-            match resolve_repo_root(repo.clone()) {
-                Ok(root) => {
-                    let path = root.join("workers-dev.yaml");
-                    if path.is_file() {
-                        load_file_config(&path)?
-                    } else {
-                        FileConfig::default()
+        let (file_cfg, explicit_path) = match &config_path {
+            Some(path) => (load_file_config(path)?, Some(path.clone())),
+            None => {
+                // No --config: auto-load <repo_root>/workers-dev.yaml when present.
+                // The probe resolves the root without a config file (--repo / env /
+                // cwd ancestors); if that fails, fall through to defaults and let
+                // the final resolve_repo_root below report the real error. An
+                // auto-loaded file's `repo:` key is honored as-is — no re-search
+                // for another config in the new root.
+                match resolve_repo_root(repo.clone()) {
+                    Ok(root) => {
+                        let path = root.join("workers-dev.yaml");
+                        if path.is_file() {
+                            (load_file_config(&path)?, None)
+                        } else {
+                            (FileConfig::default(), None)
+                        }
                     }
+                    Err(_) => (FileConfig::default(), None),
                 }
-                Err(_) => FileConfig::default(),
             }
         };
 
         let repo_root = resolve_repo_root(repo.or(file_cfg.repo))?;
+        let config_path = explicit_path.unwrap_or_else(|| repo_root.join("workers-dev.yaml"));
         let worker_specs = discover_repo_workers(&repo_root)?;
         if worker_specs.is_empty() {
             bail!("no workers discovered under {}", repo_root.display());
@@ -213,6 +222,7 @@ impl Config {
 
         Ok(Self {
             repo_root,
+            config_path,
             engine_url,
             release: release || file_cfg.release.unwrap_or(false),
             poll_interval_ms: file_cfg
@@ -240,6 +250,14 @@ fn load_file_config(path: &Path) -> Result<FileConfig> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read config file {}", path.display()))?;
     serde_yaml::from_str(&raw).with_context(|| format!("parse config file {}", path.display()))
+}
+
+/// Parse `text` exactly as `load` would, without applying it. The write path
+/// uses this to prove an edited config still loads before it replaces the
+/// user's file.
+pub fn validate_config_text(text: &str) -> Result<()> {
+    serde_yaml::from_str::<FileConfig>(text).context("parse edited config")?;
+    Ok(())
 }
 
 /// Parse the `stacks:` mapping preserving YAML order (serde_yaml::Mapping is
@@ -426,6 +444,30 @@ mod tests {
         std::fs::write(&other, "engine_url: ws://127.0.0.1:44444\n").unwrap();
         let cfg = load(&tmp, Some(other)).unwrap();
         assert_eq!(cfg.engine_url, "ws://127.0.0.1:44444");
+    }
+
+    #[test]
+    fn config_path_points_at_the_auto_loaded_file_even_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        write_repo(&tmp);
+        let cfg = load(&tmp, None).unwrap();
+        assert_eq!(cfg.config_path, tmp.path().join("workers-dev.yaml"));
+    }
+
+    #[test]
+    fn config_path_follows_an_explicit_config_flag() {
+        let tmp = TempDir::new().unwrap();
+        write_repo(&tmp);
+        let other = tmp.path().join("elsewhere.yaml");
+        std::fs::write(&other, "release: false\n").unwrap();
+        let cfg = load(&tmp, Some(other.clone())).unwrap();
+        assert_eq!(cfg.config_path, other);
+    }
+
+    #[test]
+    fn validate_config_text_accepts_and_rejects() {
+        assert!(validate_config_text("stacks:\n  a:\n    - b\n").is_ok());
+        assert!(validate_config_text("stacks:\n  a:\n  - b\n  bad\n").is_err());
     }
 
     /// Repo with enough workers to define non-trivial stacks.

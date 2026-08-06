@@ -215,9 +215,7 @@ impl Orchestrator {
         !names.iter().any(|n| n == worker) && connected.contains(worker)
     }
 
-    /// Start a configured stack by name: its roots are the requested set
-    /// (always (re)started); missing deps are pulled in, and deps already
-    /// connected to the engine are left alone.
+    /// Start a configured stack by name.
     pub async fn start_stack(&self, name: &str, wait_connected: bool) -> Result<()> {
         let roots = self
             .config
@@ -226,15 +224,28 @@ impl Orchestrator {
             .find(|(n, _)| n == name)
             .map(|(_, roots)| roots.clone())
             .with_context(|| format!("unknown stack {name}"))?;
+        self.start_roots(name, &roots, wait_connected).await
+    }
+
+    /// Start a stack given its roots directly — the path the TUI uses, since
+    /// stacks created mid-session are not in `config.stacks`. Roots are the
+    /// requested set (always (re)started); missing deps are pulled in, and
+    /// deps already connected to the engine are left alone.
+    pub async fn start_roots(
+        &self,
+        stack: &str,
+        roots: &[String],
+        wait_connected: bool,
+    ) -> Result<()> {
         // Empty roots mean every name the stack listed was filtered out of
         // the managed `workers:` set (config.rs warns and drops). Refuse
         // instead of falling through to `start_workers`' "no names" meaning
         // — "start every managed worker" — which an empty stack must never
         // trigger.
         if roots.is_empty() {
-            bail!("stack {name} has no startable workers");
+            bail!("stack {stack} has no startable workers");
         }
-        self.start_workers(&roots, wait_connected).await
+        self.start_workers(roots, wait_connected).await
     }
 
     /// Member set (roots + transitive deps) of a configured stack.
@@ -957,6 +968,7 @@ mod tests {
         let workers = crate::discover::order_worker_names(&worker_specs);
         let config = Config {
             repo_root: tmp.path().to_path_buf(),
+            config_path: tmp.path().join("workers-dev.yaml"),
             engine_url: crate::config::DEFAULT_ENGINE_URL.to_string(),
             release: false,
             poll_interval_ms: crate::config::DEFAULT_POLL_INTERVAL_MS,
@@ -982,17 +994,12 @@ mod tests {
         assert!(order.contains(&"scrapling".to_string()));
     }
 
-    /// A stack can legitimately end up with empty roots when every root it
-    /// names is filtered out of the managed `workers:` set (config.rs warns
-    /// and drops). `start_stack` must refuse rather than fall through to
-    /// `start_workers`' "no names" meaning ("start every managed worker").
-    /// No engine is reachable in this test, and `start_workers`' first move
-    /// is an engine round-trip (`connected_worker_names`) — so the "stack
-    /// ghost has no startable workers" assertion below only passes if the
-    /// guard in `start_stack` returns first; were it missing or placed
-    /// after that call, this would fail on a connection error instead.
-    #[tokio::test]
-    async fn start_stack_with_empty_roots_refuses_to_start_everything() {
+    /// Shared fixture for the empty-roots tests below: a repo with a single
+    /// `harness` worker, plus a `ghost` stack with no roots — what config.rs
+    /// produces once every named root has been filtered out of `workers:`.
+    /// Returns the `TempDir` too: it backs `repo_root`/`config_path` and must
+    /// outlive the `Orchestrator`.
+    fn test_orchestrator() -> (tempfile::TempDir, Orchestrator) {
         let tmp = tempfile::TempDir::new().unwrap();
         let write = |name: &str, body: &str| {
             let dir = tmp.path().join(name);
@@ -1010,6 +1017,7 @@ mod tests {
         let workers = crate::discover::order_worker_names(&worker_specs);
         let config = Config {
             repo_root: tmp.path().to_path_buf(),
+            config_path: tmp.path().join("workers-dev.yaml"),
             engine_url: crate::config::DEFAULT_ENGINE_URL.to_string(),
             release: false,
             poll_interval_ms: crate::config::DEFAULT_POLL_INTERVAL_MS,
@@ -1029,6 +1037,21 @@ mod tests {
             ui_watch: false,
         };
         let orch = Orchestrator::new(config, false).unwrap();
+        (tmp, orch)
+    }
+
+    /// A stack can legitimately end up with empty roots when every root it
+    /// names is filtered out of the managed `workers:` set (config.rs warns
+    /// and drops). `start_stack` must refuse rather than fall through to
+    /// `start_workers`' "no names" meaning ("start every managed worker").
+    /// No engine is reachable in this test, and `start_workers`' first move
+    /// is an engine round-trip (`connected_worker_names`) — so the "stack
+    /// ghost has no startable workers" assertion below only passes if the
+    /// guard in `start_stack` returns first; were it missing or placed
+    /// after that call, this would fail on a connection error instead.
+    #[tokio::test]
+    async fn start_stack_with_empty_roots_refuses_to_start_everything() {
+        let (_tmp, orch) = test_orchestrator();
 
         let err = orch
             .start_stack("ghost", false)
@@ -1038,6 +1061,15 @@ mod tests {
             err.to_string().contains("ghost"),
             "error should name the stack, got: {err}"
         );
+    }
+
+    /// The empty-roots guard lives in `start_roots`, so it protects the
+    /// TUI's roots-based path too — and fires before any engine contact.
+    #[tokio::test]
+    async fn start_roots_refuses_an_empty_root_list() {
+        let (_tmp, orch) = test_orchestrator();
+        let err = orch.start_roots("ghost", &[], false).await.unwrap_err();
+        assert!(err.to_string().contains("ghost"), "{err:#}");
     }
 
     /// The env var must match what `iii-console-ui`'s `ConsoleUi::new`
