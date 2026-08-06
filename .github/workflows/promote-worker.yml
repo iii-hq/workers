@@ -198,12 +198,9 @@ jobs:
         run: |
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_RUN_ID" >release-run.json
-          run_name=$(jq -r .name release-run.json)
-          [[ "$run_name" == Release ]] || {
-            echo "::error::run $RELEASE_RUN_ID belongs to '$run_name', expected 'Release'"
-            exit 1
-          }
-          jq -e '.path | startswith(".github/workflows/release.yml@")' release-run.json >/dev/null || {
+          # GitHub exposes `run-name` through the API's `name` field, so the
+          # workflow file path is the stable identity for a Release run.
+          jq -e '.path == ".github/workflows/release.yml"' release-run.json >/dev/null || {
             echo "::error::run $RELEASE_RUN_ID did not execute release.yml"
             exit 1
           }
@@ -223,8 +220,8 @@ jobs:
           else
             gh api "repos/$GITHUB_REPOSITORY/actions/runs/$EVIDENCE_RUN_ID" >evidence-run.json
             jq -e '
-              (.path | startswith(".github/workflows/release.yml@")) or
-              (.path | startswith(".github/workflows/repair-worker-release.yml@"))
+              (.path == ".github/workflows/release.yml") or
+              (.path == ".github/workflows/repair-worker-release.yml")
             ' evidence-run.json >/dev/null || {
               echo "::error::run $EVIDENCE_RUN_ID cannot produce candidate evidence"
               exit 1
@@ -288,10 +285,10 @@ jobs:
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$E2E_RUN_ID" >e2e-run.json
           jq -e '
-            .name == "Harness E2E deployed" and
+            .path == ".github/workflows/harness-e2e-deployed.yml" and
             .event == "workflow_dispatch" and
             .conclusion == "success" and
-            (.path | startswith(".github/workflows/harness-e2e-deployed.yml@"))
+            .status == "completed"
           ' e2e-run.json >/dev/null
           mkdir -p e2e-evidence
           gh run download "$E2E_RUN_ID" \
