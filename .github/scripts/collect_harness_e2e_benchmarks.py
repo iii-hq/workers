@@ -72,6 +72,24 @@ def optional_number(value: Any, label: str) -> float | None:
     return require_number(value, label)
 
 
+def semantic_result_status(
+    *,
+    passed: bool,
+    hard_gate_failures: int,
+    technical_failures: int,
+    complete: bool = True,
+) -> str:
+    if not complete:
+        return "incomplete"
+    if technical_failures:
+        return "technical_failed"
+    if hard_gate_failures:
+        return "hard_gate_failed"
+    if not passed:
+        return "quality_advisory"
+    return "passed"
+
+
 def parse_subjects(raw: str) -> list[dict[str, str]]:
     try:
         subjects = json.loads(raw)
@@ -385,7 +403,11 @@ def collect(
             if isinstance(report.get("judge"), dict):
                 resolved_judge = report["judge"]
 
-            status = "passed" if report_passed else "failed"
+            status = semantic_result_status(
+                passed=report_passed,
+                hard_gate_failures=hard_gates,
+                technical_failures=technical,
+            )
             extra = {
                 **base_extra,
                 "judge": report.get("judge") or base_extra["judge"],
@@ -545,6 +567,12 @@ def collect(
             and subject_passed == expected_count
             and technical_failures == 0
         )
+        suite_status = semantic_result_status(
+            passed=suite_passed,
+            hard_gate_failures=hard_gate_failures,
+            technical_failures=technical_failures,
+            complete=all_reports_present,
+        )
         engine_revision = (
             next(iter(engine_revisions)) if len(engine_revisions) == 1 else None
         )
@@ -573,7 +601,7 @@ def collect(
             "scenario": "suite",
             "requested_runs": config.requested_runs,
             "passed": suite_passed,
-            "status": "passed" if suite_passed else "failed",
+            "status": suite_status,
             "expected_reports": expected_count,
             "received_reports": report_count,
         }

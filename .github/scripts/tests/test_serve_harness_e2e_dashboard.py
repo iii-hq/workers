@@ -199,8 +199,34 @@ class LocalDashboardTests(unittest.TestCase):
 
         manifest = load_manifest(site / "executions.js")
         self.assertEqual(len(manifest["executions"]), 2)
-        self.assertEqual(manifest["executions"][0]["status"], "failed")
+        self.assertEqual(manifest["executions"][0]["status"], "hard_gate_failed")
         self.assertEqual(manifest["executions"][1]["status"], "passed")
+
+    @patch(
+        "serve_harness_e2e_dashboard.repository_url",
+        return_value="https://github.com/iii-hq/workers",
+    )
+    @patch(
+        "serve_harness_e2e_dashboard.git_value",
+        side_effect=fake_git_value,
+    )
+    def test_keeps_quality_only_local_result_advisory(
+        self,
+        _git_value,
+        _repository_url,
+    ) -> None:
+        quality = scenario("direct_answer", score=40, passed=False)
+        quality["aggregate"]["hard_gate_failures"] = 0
+        quality["runs"][0]["status"] = "quality_failed"
+        results = write_report(
+            self.root / "quality/results.json",
+            report(quality, passed=False),
+        )
+
+        build_local_dashboard([results], site_dir=self.root / "site")
+
+        manifest = load_manifest(self.root / "site/executions.js")
+        self.assertEqual(manifest["executions"][0]["status"], "quality_advisory")
 
 
 if __name__ == "__main__":

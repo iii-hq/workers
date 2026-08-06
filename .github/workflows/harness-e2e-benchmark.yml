@@ -81,6 +81,22 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
 
+      - name: Collect workflow job diagnostics
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/harness-e2e-run
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?filter=all&per_page=100" \
+            | jq '{
+                total_count: ([.[] | .total_count // 0] | max // 0),
+                jobs: [.[] | .jobs[]]
+              }' \
+            > target/harness-e2e-run/jobs.json
+
       - name: Resolve benchmark source
         id: benchmark
         if: steps.compact.outcome == 'success'
@@ -251,6 +267,7 @@ jobs:
             --site-dir pages-source/dev/harness-e2e \
             --snapshot target/harness-e2e-benchmark/snapshot.json \
             --detail target/harness-e2e-dashboard/execution.json \
+            --jobs target/harness-e2e-run/jobs.json \
             --run-id "$RUN_ID" \
             --attempt "$RUN_ATTEMPT" \
             --workflow-name "$WORKFLOW_NAME" \

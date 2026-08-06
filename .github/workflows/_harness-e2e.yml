@@ -232,6 +232,22 @@ jobs:
               ;;
           esac
 
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: ${{ inputs.coverage && 'clippy,llvm-tools' || 'clippy' }}
+
+      - name: Validate E2E manifests and lockfiles
+        env:
+          SUBJECTS: ${{ inputs.subjects }}
+          JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+          STACK_MODE: ${{ inputs.stack_mode }}
+        run: >-
+          python3 .github/scripts/validate_harness_e2e_manifests.py
+          --repository-root "$GITHUB_WORKSPACE"
+          --stack-mode "$STACK_MODE"
+          --subjects-json "$SUBJECTS"
+          --judge-provider "$JUDGE_PROVIDER"
+
       - name: Install published iii release
         if: inputs.stack_mode == 'source'
         id: engine
@@ -256,10 +272,6 @@ jobs:
             echo "binary=target/iii/bin/iii"
             echo "version=$version"
           } >> "$GITHUB_OUTPUT"
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: ${{ inputs.coverage && 'clippy,llvm-tools' || 'clippy' }}
 
       - name: Restore E2E Rust cache
         uses: Swatinem/rust-cache@v2
