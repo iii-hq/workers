@@ -45,6 +45,28 @@ Feature: context::assemble — the model-ready context pipeline
     And the response field "applied.pruned" is true
     And the response field "token_count" does not exceed 172000
 
+  # Prevents: the always-on trigger swallowing the allow_prune switch.
+  # This is the only scenario that fails if prune fires when explicitly
+  # disabled under budget — the other allow_prune:false coverage is over
+  # budget, so emergency reduction fires regardless and masks a broken
+  # switch (it sets applied.pruned true either way).
+  Scenario: allow_prune false is honored even though prune now runs unconditionally
+    Given the router knows model "big" with context window 200000 and max output 8000
+    And config "protect_recent_tokens" is 0
+    And config "min_free_tokens" is 1
+    And a user message "task"
+    And an assistant function call "c1" to "shell::run"
+    And a function result for call "c1" from "shell::run" of ~5000 tokens
+    And a user message "next"
+    And a user message "done"
+    When I assemble the history with model "big" and options:
+      """
+      { "allow_prune": false }
+      """
+    Then the call succeeds
+    And the response field "applied.pruned" is false
+    And response message 2 text has 20000 chars
+
   # Prevents: a single whale result consuming the window even while the
   # total request still fits — the cap is unconditional.
   Scenario: an oversized single result is capped even under budget
@@ -162,6 +184,8 @@ Feature: context::assemble — the model-ready context pipeline
     Then the call succeeds
     And the response field "applied.pruned" is true
     And response message 2 text does not exceed 1000 chars
+    And the response field "messages.2.details.context_reference.kind" is "function_result_reference"
+    And the response field "messages.2.details.context_reference.retrieval_hint" contains "function_call_id"
     And the response field "token_count" does not exceed 4000
     And call/result pairing is intact in the response messages
 
