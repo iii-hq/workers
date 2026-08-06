@@ -61,7 +61,8 @@ usable = max(0, (input_limit ?? (context_window - max_output_tokens)) - reserved
 `thinking_budget` is `thinking_budgets[thinking_level]` when the caller passes
 `options.thinking_level` and the model declares budgets, else 0 — this is how assemble leaves room
 for the reasoning tokens a thinking tier consumes. A 200k model with defaults yields ~180k usable; a
-32k model yields ~12k. Compaction/pruning trigger when running tokens cross `usable`.
+32k model yields ~12k. Compaction triggers when running tokens cross `usable`; capping and pruning
+now run on every call, before that check.
 
 ## Structural invariants
 
@@ -86,7 +87,8 @@ Whatever pruning or compaction does, the returned context must still be accepted
   history. The main "sync messages with context" entry point.
 - `context::compact` — Summarise older history into a single compaction summary and return the
   preserved tail. Transient: the caller uses the result; the session keeps its full transcript.
-- `context::prune` — Strip/truncate verbose function outputs without summarising. A cheaper first pass.
+- `context::prune` — Strip/truncate verbose function outputs without summarising. The cheap policy
+  pass, run on every call (not just when over budget).
 - `context::count-tokens` — Estimate token usage for a set of messages (+ optional invocation schema /
   system) vs a model.
 
