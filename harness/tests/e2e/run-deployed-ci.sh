@@ -311,11 +311,15 @@ printf 'workers: []\n' >"$project_dir/config.yaml"
 engine_pid=$!
 wait_for_engine
 
-workers=("harness@$worker_tag" "database@$worker_tag" "fp@$worker_tag" "web@$worker_tag")
+# The candidate channel belongs only to the workers pinned in stack_versions.
+# Auxiliary E2E workers are not released as part of this operation and may not
+# expose the candidate tag at all, so keep them on their stable channel.
+support_worker_tag=latest
+workers=("database@$support_worker_tag" "fp@$support_worker_tag" "web@$support_worker_tag")
 declare -A providers=()
 for provider in "$HARNESS_E2E_PROVIDER" "$HARNESS_E2E_JUDGE_PROVIDER"; do
   if [[ -z "${providers[$provider]:-}" ]]; then
-    workers+=("provider-$provider@$worker_tag")
+    workers+=("provider-$provider@$support_worker_tag")
     providers[$provider]=1
   fi
 done
@@ -337,14 +341,22 @@ add_with_retry() {
   return 1
 }
 
-log "Installing registry stack: ${workers[*]}"
+log "Installing stable E2E support stack: ${workers[*]}"
 add_with_retry worker-add "${workers[@]}"
 
+# Bring the exact dependencies up first and the released worker last. For a
+# Harness candidate this prevents Harness from briefly booting against the
+# stable dependency graph before its candidate dependencies replace it.
 while IFS=$'\t' read -r candidate_worker candidate_version; do
   log "Installing exact stack candidate: ${candidate_worker}@${candidate_version}"
   add_with_retry "candidate-${candidate_worker}" \
     "${candidate_worker}@${candidate_version}" --force
-done < <(jq -r 'to_entries | sort_by(.key)[] | [.key, .value] | @tsv' <<<"$stack_versions")
+done < <(jq -r --arg release_worker "$HARNESS_E2E_RELEASE_WORKER" '
+  to_entries
+  | sort_by([if .key == $release_worker then 1 else 0 end, .key])[]
+  | [.key, .value]
+  | @tsv
+' <<<"$stack_versions")
 
 wait_for_functions \
   harness::send harness::status worker::add database::query state::get \

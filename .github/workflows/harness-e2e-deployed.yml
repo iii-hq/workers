@@ -69,6 +69,10 @@ on:
         description: Release catalog SHA used by Release Control preview
         type: string
         default: ''
+      profile_digest:
+        description: Canonical scenario profile digest used by Release Control preview
+        type: string
+        default: ''
 
 permissions:
   actions: read
@@ -97,6 +101,7 @@ jobs:
       validation_profile: ${{ inputs.validation_profile }}
       scenarios_json: ${{ inputs.scenarios_json }}
       catalog_sha: ${{ inputs.catalog_sha }}
+      profile_digest: ${{ inputs.profile_digest }}
       subjects: ${{ inputs.subjects || vars.HARNESS_E2E_SUBJECTS || '[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]' }}
       judge_model: ${{ vars.HARNESS_E2E_JUDGE_MODEL || 'claude-sonnet-4-6' }}
       judge_provider: ${{ vars.HARNESS_E2E_JUDGE_PROVIDER || 'anthropic' }}

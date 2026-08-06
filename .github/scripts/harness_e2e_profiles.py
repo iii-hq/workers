@@ -124,6 +124,7 @@ def resolve_profile(
     requested: list[str],
     catalog_sha: str,
     expected_catalog_sha: str = "",
+    expected_profile_digest: str = "",
 ) -> dict[str, Any]:
     if profile not in VALID_PROFILES:
         raise ValueError(f"validation_profile must be one of {sorted(VALID_PROFILES)}")
@@ -131,7 +132,15 @@ def resolve_profile(
         raise ValueError("code-defined scenarios must be non-empty and unique")
     if available != list(catalog.ids):
         raise ValueError("release catalog scenarios do not match harness-e2e list")
-    if expected_catalog_sha and expected_catalog_sha != catalog_sha:
+    if expected_profile_digest and expected_profile_digest != catalog.profile_digest:
+        raise ValueError(
+            "Harness E2E profile changed after preview; create a new preview"
+        )
+    if (
+        not expected_profile_digest
+        and expected_catalog_sha
+        and expected_catalog_sha != catalog_sha
+    ):
         raise ValueError(
             f"Harness E2E catalog moved from {expected_catalog_sha} to {catalog_sha}; create a new preview"
         )
@@ -168,6 +177,7 @@ def main() -> int:
     parser.add_argument("--scenarios-json", default="[]")
     parser.add_argument("--catalog-sha", required=True)
     parser.add_argument("--expected-catalog-sha", default="")
+    parser.add_argument("--expected-profile-digest", default="")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     try:
@@ -178,6 +188,7 @@ def main() -> int:
             requested=parse_scenarios_json(args.scenarios_json, "requested scenarios"),
             catalog_sha=args.catalog_sha,
             expected_catalog_sha=args.expected_catalog_sha,
+            expected_profile_digest=args.expected_profile_digest,
         )
     except (FileNotFoundError, ValueError) as error:
         raise SystemExit(f"invalid Harness E2E profile: {error}") from error
