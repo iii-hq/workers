@@ -64,12 +64,25 @@ impl Config {
         ui_watch: bool,
     ) -> Result<Self> {
         let file_cfg = if let Some(path) = config_path {
-            let raw = std::fs::read_to_string(&path)
-                .with_context(|| format!("read config file {}", path.display()))?;
-            serde_yaml::from_str(&raw)
-                .with_context(|| format!("parse config file {}", path.display()))?
+            load_file_config(&path)?
         } else {
-            FileConfig::default()
+            // No --config: auto-load <repo_root>/workers-dev.yaml when present.
+            // The probe resolves the root without a config file (--repo / env /
+            // cwd ancestors); if that fails, fall through to defaults and let
+            // the final resolve_repo_root below report the real error. An
+            // auto-loaded file's `repo:` key is honored as-is — no re-search
+            // for another config in the new root.
+            match resolve_repo_root(repo.clone()) {
+                Ok(root) => {
+                    let path = root.join("workers-dev.yaml");
+                    if path.is_file() {
+                        load_file_config(&path)?
+                    } else {
+                        FileConfig::default()
+                    }
+                }
+                Err(_) => FileConfig::default(),
+            }
         };
 
         let repo_root = resolve_repo_root(repo.or(file_cfg.repo))?;
@@ -186,6 +199,12 @@ impl Config {
     }
 }
 
+fn load_file_config(path: &Path) -> Result<FileConfig> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("read config file {}", path.display()))?;
+    serde_yaml::from_str(&raw).with_context(|| format!("parse config file {}", path.display()))
+}
+
 pub fn resolve_repo_root(explicit: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(path) = explicit {
         let canonical = path
@@ -290,5 +309,69 @@ mod tests {
         let (host, port) = parse_engine_url("ws://127.0.0.1:49134/ws", None).unwrap();
         assert_eq!(host, "127.0.0.1");
         assert_eq!(port, 49134);
+    }
+
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// Minimal discoverable repo: one rust/binary worker.
+    fn write_repo(tmp: &TempDir) {
+        let dir = tmp.path().join("harness");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("iii.worker.yaml"),
+            "iii: v1\nname: harness\nlanguage: rust\ndeploy: binary\ndescription: test\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[workspace]\n").unwrap();
+    }
+
+    fn load(tmp: &TempDir, config_path: Option<PathBuf>) -> Result<Config> {
+        Config::load(
+            Some(tmp.path().to_path_buf()),
+            None,
+            None,
+            false,
+            config_path,
+            false,
+            None,
+            false,
+        )
+    }
+
+    #[test]
+    fn auto_loads_workers_dev_yaml_from_repo_root() {
+        let tmp = TempDir::new().unwrap();
+        write_repo(&tmp);
+        std::fs::write(
+            tmp.path().join("workers-dev.yaml"),
+            "engine_url: ws://127.0.0.1:55555\n",
+        )
+        .unwrap();
+        let cfg = load(&tmp, None).unwrap();
+        assert_eq!(cfg.engine_url, "ws://127.0.0.1:55555");
+    }
+
+    #[test]
+    fn absent_config_file_means_defaults() {
+        let tmp = TempDir::new().unwrap();
+        write_repo(&tmp);
+        let cfg = load(&tmp, None).unwrap();
+        assert_eq!(cfg.engine_url, DEFAULT_ENGINE_URL);
+    }
+
+    #[test]
+    fn explicit_config_beats_auto_load() {
+        let tmp = TempDir::new().unwrap();
+        write_repo(&tmp);
+        std::fs::write(
+            tmp.path().join("workers-dev.yaml"),
+            "engine_url: ws://127.0.0.1:55555\n",
+        )
+        .unwrap();
+        let other = tmp.path().join("elsewhere.yaml");
+        std::fs::write(&other, "engine_url: ws://127.0.0.1:44444\n").unwrap();
+        let cfg = load(&tmp, Some(other)).unwrap();
+        assert_eq!(cfg.engine_url, "ws://127.0.0.1:44444");
     }
 }

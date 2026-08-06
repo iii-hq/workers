@@ -42,7 +42,7 @@ struct Cli {
     #[arg(long, global = true)]
     release: bool,
 
-    /// Optional workers-dev.yaml config file
+    /// Config file (default: <repo_root>/workers-dev.yaml when present)
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
