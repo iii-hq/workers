@@ -309,6 +309,115 @@ fn emergency_preview(content: &[ContentBlock], details: &Value) -> String {
     preview
 }
 
+/// Serialized `details` larger than this on a capped result are replaced
+/// with a bounded reference. `details` never crosses the provider wire
+/// (see estimate.rs), so this bounds worker-to-worker payloads, not tokens.
+const MAX_CAPPED_DETAILS_BYTES: usize = 2_048;
+
+/// Stats from the unconditional per-result cap pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CapStats {
+    /// Estimated tokens freed (message-estimate delta).
+    pub capped_tokens: u64,
+    /// Number of results rewritten.
+    pub capped_parts: u64,
+}
+
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    while !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+/// Unconditionally rewrite any single function result whose text estimates
+/// over `max_result_tokens` to a bounded head + marker + tail view
+/// (context-manager.md § context::assemble). Applies to every result — any
+/// age, protected or not, error or not: it is a generous ceiling, like the
+/// emergency pass, not a policy prune. The rewrite targets 90% of the cap
+/// so the output re-estimates under the threshold: the pass is idempotent
+/// without a fixpoint loop, and deterministic (no call-varying content) so
+/// identical histories assemble byte-identically across calls.
+pub fn cap_results_with_sizes(
+    messages: &mut [AgentMessage],
+    sizes: &mut [u64],
+    max_result_tokens: u64,
+    estimator: &dyn Estimator,
+) -> CapStats {
+    debug_assert_eq!(messages.len(), sizes.len());
+    let mut stats = CapStats::default();
+    for idx in 0..messages.len() {
+        let AgentMessage::FunctionResult {
+            function_id,
+            content,
+            ..
+        } = &messages[idx]
+        else {
+            continue;
+        };
+        let text = text_of(content);
+        let tokens = estimator.text(&text);
+        if tokens <= max_result_tokens {
+            continue;
+        }
+        let function_id = function_id.clone();
+
+        // Chars kept: scale the text down to 90% of the cap, preserving the
+        // text's own chars-per-token ratio. u64 math: len ≤ ~16MB, cap ≤
+        // ~10^6 — the product stays far under u64::MAX.
+        let keep_chars = ((text.len() as u64) * max_result_tokens * 9 / (tokens * 10)) as usize;
+        let head_budget = keep_chars * 6 / 10;
+        let tail_budget = keep_chars - head_budget;
+        let head_end = floor_char_boundary(&text, head_budget);
+        let tail_start =
+            ceil_char_boundary(&text, text.len().saturating_sub(tail_budget)).max(head_end);
+        let marker = format!(
+            "\n[…result capped: was ~{tokens} tokens; middle omitted; re-call {function_id} for the full data]\n"
+        );
+        let capped = format!("{}{}{}", &text[..head_end], marker, &text[tail_start..]);
+
+        let AgentMessage::FunctionResult {
+            content, details, ..
+        } = &mut messages[idx]
+        else {
+            unreachable!("matched FunctionResult above");
+        };
+        *content = vec![ContentBlock::Text { text: capped }];
+        let denied = details.get("status").and_then(Value::as_str) == Some("denied");
+        if !denied
+            && serde_json::to_string(&*details)
+                .map(|s| s.len())
+                .unwrap_or(0)
+                > MAX_CAPPED_DETAILS_BYTES
+        {
+            *details = json!({
+                "context_capped": { "original_estimated_tokens": tokens }
+            });
+        }
+
+        let before = sizes[idx];
+        sizes[idx] = estimator.message(&messages[idx]);
+        stats.capped_tokens = stats
+            .capped_tokens
+            .saturating_add(before.saturating_sub(sizes[idx]));
+        stats.capped_parts += 1;
+    }
+    stats
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,5 +737,173 @@ mod tests {
         assert_eq!(text_of(messages[0].content()).len(), 4_000);
         assert!(text_of(messages[1].content()).starts_with("[function result reduced"));
         assert_eq!(text_of(messages[2].content()).len(), 20_000);
+    }
+
+    #[test]
+    fn cap_reduces_oversized_result_to_head_marker_tail() {
+        // 200_000 chars ≈ 50_000 tokens; cap at 20_000.
+        let mut messages = vec![result("engine::traces::list", 200_000, 1)];
+        let mut sizes = sizes_of(&messages);
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+        assert_eq!(stats.capped_parts, 1);
+        assert!(stats.capped_tokens > 0);
+        let text = text_of(messages[0].content());
+        // Rewritten text estimates under the cap (90% target + marker).
+        assert!(HeuristicEstimator.text(&text) <= 20_000);
+        assert!(text.contains(
+            "[…result capped: was ~50000 tokens; middle omitted; re-call engine::traces::list for the full data]"
+        ));
+        // Head and tail of the original both survive.
+        assert!(text.starts_with('x'));
+        assert!(text.ends_with('x'));
+        // Size memo matches a from-scratch recount.
+        assert_eq!(sizes, sizes_of(&messages));
+    }
+
+    #[test]
+    fn cap_skips_results_at_or_under_the_threshold() {
+        let mut messages = vec![result("shell::run", 8_000, 1)]; // ~2000 tokens
+        let mut sizes = sizes_of(&messages);
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+        assert_eq!(stats.capped_parts, 0);
+        assert_eq!(stats.capped_tokens, 0);
+        assert_eq!(text_of(messages[0].content()).len(), 8_000);
+    }
+
+    #[test]
+    fn cap_is_idempotent_and_deterministic() {
+        let mut once = vec![result("f::g", 200_000, 1)];
+        let mut sizes_once = sizes_of(&once);
+        cap_results_with_sizes(&mut once, &mut sizes_once, 20_000, &HeuristicEstimator);
+        let after_first = text_of(once[0].content());
+
+        // Second pass: under threshold now, untouched.
+        let stats = cap_results_with_sizes(&mut once, &mut sizes_once, 20_000, &HeuristicEstimator);
+        assert_eq!(stats.capped_parts, 0);
+        assert_eq!(text_of(once[0].content()), after_first);
+
+        // Same input capped independently yields byte-identical output.
+        let mut twice = vec![result("f::g", 200_000, 1)];
+        let mut sizes_twice = sizes_of(&twice);
+        cap_results_with_sizes(&mut twice, &mut sizes_twice, 20_000, &HeuristicEstimator);
+        assert_eq!(text_of(twice[0].content()), after_first);
+    }
+
+    #[test]
+    fn cap_preserves_pairing_and_message_count() {
+        let mut messages = vec![user("go", 1), result("engine::traces::list", 200_000, 2)];
+        let mut sizes = sizes_of(&messages);
+        let before = messages.len();
+        cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+        assert_eq!(messages.len(), before);
+        let AgentMessage::FunctionResult {
+            function_call_id,
+            function_id,
+            ..
+        } = &messages[1]
+        else {
+            panic!("message kind changed");
+        };
+        assert_eq!(function_call_id, "c2"); // result() builds call id "c{ts}"
+        assert_eq!(function_id, "engine::traces::list");
+    }
+
+    #[test]
+    fn cap_applies_to_error_results_and_ignores_no_protection_list() {
+        // Cap has no protected-function or is_error exemption by design.
+        let mut message: AgentMessage = serde_json::from_value(json!({
+            "role": "function_result",
+            "function_call_id": "c9",
+            "function_id": "protected::lookup",
+            "content": [{ "type": "text", "text": "e".repeat(200_000) }],
+            "is_error": true,
+            "timestamp": 9
+        }))
+        .unwrap();
+        let mut sizes = vec![HeuristicEstimator.message(&message)];
+        let stats = cap_results_with_sizes(
+            std::slice::from_mut(&mut message),
+            &mut sizes,
+            20_000,
+            &HeuristicEstimator,
+        );
+        assert_eq!(stats.capped_parts, 1);
+    }
+
+    #[test]
+    fn cap_bounds_oversized_details_but_keeps_denied_envelopes() {
+        let mut oversized: AgentMessage = serde_json::from_value(json!({
+            "role": "function_result",
+            "function_call_id": "c1",
+            "function_id": "coder::read-file",
+            "content": [{ "type": "text", "text": "y".repeat(200_000) }],
+            "details": { "blob": "z".repeat(10_000) },
+            "is_error": false,
+            "timestamp": 1
+        }))
+        .unwrap();
+        let mut sizes = vec![HeuristicEstimator.message(&oversized)];
+        cap_results_with_sizes(
+            std::slice::from_mut(&mut oversized),
+            &mut sizes,
+            20_000,
+            &HeuristicEstimator,
+        );
+        let AgentMessage::FunctionResult { details, .. } = &oversized else {
+            panic!("kind changed");
+        };
+        assert!(details["context_capped"]["original_estimated_tokens"].is_u64());
+
+        // A denied envelope's details survive even on an oversized result.
+        let mut denied: AgentMessage = serde_json::from_value(json!({
+            "role": "function_result",
+            "function_call_id": "c2",
+            "function_id": "state::get",
+            "content": [{ "type": "text", "text": "y".repeat(200_000) }],
+            "details": { "status": "denied", "blob": "z".repeat(10_000) },
+            "is_error": true,
+            "timestamp": 2
+        }))
+        .unwrap();
+        let mut sizes = vec![HeuristicEstimator.message(&denied)];
+        cap_results_with_sizes(
+            std::slice::from_mut(&mut denied),
+            &mut sizes,
+            20_000,
+            &HeuristicEstimator,
+        );
+        let AgentMessage::FunctionResult { details, .. } = &denied else {
+            panic!("kind changed");
+        };
+        assert_eq!(details["status"], "denied");
+        assert_eq!(details["blob"].as_str().unwrap().len(), 10_000);
+    }
+
+    #[test]
+    fn cap_splits_head_sixty_tail_forty_and_respects_char_boundaries() {
+        // Multibyte text: every char is 3 bytes; slicing must not panic.
+        let mut messages = vec![{
+            let text: String = "€".repeat(120_000); // 360_000 bytes ≈ 90_000 tokens
+            serde_json::from_value(json!({
+                "role": "function_result",
+                "function_call_id": "c1",
+                "function_id": "f::g",
+                "content": [{ "type": "text", "text": text }],
+                "timestamp": 1
+            }))
+            .unwrap()
+        }];
+        let mut sizes = sizes_of(&messages);
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+        assert_eq!(stats.capped_parts, 1);
+        let text = text_of(messages[0].content());
+        assert!(HeuristicEstimator.text(&text) <= 20_000);
+        let marker_start = text.find("\n[…result capped").unwrap();
+        let head = &text[..marker_start];
+        let marker_end = text.find("for the full data]\n").unwrap() + "for the full data]\n".len();
+        let tail = &text[marker_end..];
+        // 60/40 split of the kept budget, within rounding slack.
+        let ratio = head.len() as f64 / (head.len() + tail.len()) as f64;
+        assert!((0.55..=0.65).contains(&ratio), "head ratio was {ratio}");
     }
 }
