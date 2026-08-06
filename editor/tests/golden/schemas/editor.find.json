@@ -1,0 +1,95 @@
+{
+  "description": "Fuzzy file finder over the workspace, ranked the way an editor's open-file palette ranks. Candidates come from git when the root is a repository and from the folder listing when it is not.",
+  "function_id": "editor::find",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "include_untracked": {
+        "default": true,
+        "description": "Include files git does not track yet (still honouring `.gitignore`). On by default — a file the agent just created is exactly the one you are looking for. Ignored outside a repository, where the workspace listing is the source of candidates.",
+        "type": "boolean"
+      },
+      "limit": {
+        "default": null,
+        "description": "Rows to return. Defaults to the worker's `find_limit`.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "query": {
+        "description": "Fuzzy query. Matched as a subsequence against every tracked path, with basename and word-boundary hits ranked highest. Empty returns the first `limit` paths unranked.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "title": "FindInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "FindMatch": {
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "positions": {
+            "description": "Byte offsets into `path` that matched, in order — enough to highlight the match without re-running the matcher in the UI.",
+            "items": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "score": {
+            "description": "Higher is better. Comparable only within one response.",
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "positions",
+          "score"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "from_git": {
+        "description": "True when candidates came from git's listing (so `.gitignore` was honoured), false when they came from the folder walk.",
+        "type": "boolean"
+      },
+      "matches": {
+        "items": {
+          "$ref": "#/definitions/FindMatch"
+        },
+        "type": "array"
+      },
+      "scanned": {
+        "description": "Paths considered. Compare against `truncated` to know whether the whole repo was ranked.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "truncated": {
+        "description": "True when not every path in the workspace was ranked: it held more than `max_find_candidates`, or the folder walk stopped at its visit budget. Either way this ranking is over a prefix of the workspace.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "from_git",
+      "matches",
+      "scanned",
+      "truncated"
+    ],
+    "title": "FindOutput",
+    "type": "object"
+  }
+}

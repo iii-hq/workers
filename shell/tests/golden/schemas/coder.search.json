@@ -51,7 +51,7 @@
       },
       "include_globs": {
         "default": [],
-        "description": "Glob patterns (matched against the path relative to its containing root) that paths must match to be considered. Empty = include everything.",
+        "description": "Glob patterns (matched against the path relative to its containing root — or, for a walk root outside every configured root, relative to the session directory `coder::info` reports as `session_root`) that paths must match to be considered. Empty = include everything.",
         "items": {
           "type": "string"
         },

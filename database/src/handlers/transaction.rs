@@ -12,7 +12,10 @@ use serde_json::{json, Value};
 
 #[derive(Deserialize, JsonSchema)]
 pub struct TxReq {
-    pub db: String,
+    /// Logical database name. Optional — omitting it targets the sole
+    /// configured database, or `primary` when several are configured.
+    #[serde(default)]
+    pub db: Option<String>,
     pub statements: Vec<TxStmtReq>,
     #[serde(default)]
     pub isolation: Option<String>,
@@ -56,7 +59,8 @@ fn failed_index_of(e: &crate::error::DbError) -> Option<usize> {
 }
 
 pub async fn handle(state: &AppState, req: TxReq) -> Result<TxResp, String> {
-    let pool = state.pool(&req.db).await.map_err(err_to_str)?;
+    let db = state.resolve_db(req.db).await.map_err(err_to_str)?;
+    let pool = state.pool(&db).await.map_err(err_to_str)?;
 
     let isolation = match req.isolation.as_deref() {
         Some("read_committed") => Some(Isolation::ReadCommitted),
@@ -98,6 +102,9 @@ pub async fn handle(state: &AppState, req: TxReq) -> Result<TxResp, String> {
         stmts.push(TxStatement { sql: s.sql, params });
     }
 
+    // Kept for the row-changed announcement: `stmts` is moved into the driver.
+    let sql_texts: Vec<String> = stmts.iter().map(|s| s.sql.clone()).collect();
+
     let result = match &pool {
         Pool::Sqlite(p) => driver::sqlite::transaction(p, stmts, isolation).await,
         Pool::Postgres(p) => driver::postgres::transaction(p, stmts, isolation).await,
@@ -105,24 +112,36 @@ pub async fn handle(state: &AppState, req: TxReq) -> Result<TxResp, String> {
     };
 
     match result {
-        Ok(steps) => Ok(TxResp {
-            committed: true,
-            results: Some(
-                steps
-                    .into_iter()
-                    .map(|s| TxStepResp {
-                        affected_rows: s.affected_rows,
-                        rows: s
-                            .rows
-                            .into_iter()
-                            .map(|r| r.0.into_iter().map(|v| v.into_json()).collect::<Vec<_>>())
-                            .collect::<Vec<_>>(),
-                    })
-                    .collect(),
-            ),
-            failed_index: None,
-            error: None,
-        }),
+        Ok(steps) => {
+            // Committed as a unit — announce each statement that changed rows,
+            // in statement order. Nothing is announced for a batch that rolled
+            // back: those rows do not exist.
+            for (stmt, step) in sql_texts.iter().zip(steps.iter()) {
+                let returned_rows =
+                    crate::handlers::query_rows_to_objects(&step.columns, step.rows.clone());
+                state
+                    .emit_row_change(&db, stmt, step.affected_rows, Some(&returned_rows))
+                    .await;
+            }
+            Ok(TxResp {
+                committed: true,
+                results: Some(
+                    steps
+                        .into_iter()
+                        .map(|s| TxStepResp {
+                            affected_rows: s.affected_rows,
+                            rows: s
+                                .rows
+                                .into_iter()
+                                .map(|r| r.0.into_iter().map(|v| v.into_json()).collect::<Vec<_>>())
+                                .collect::<Vec<_>>(),
+                        })
+                        .collect(),
+                ),
+                failed_index: None,
+                error: None,
+            })
+        }
         Err(e) => {
             // Preserve None for non-step failures (pool acquire, BEGIN, etc.)
             // — those errors don't have a specific statement index, and
@@ -162,6 +181,7 @@ mod tests {
             handles: Arc::new(HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_helpers::observability::Logger::new(),
+            row_changes: None,
         }
     }
 

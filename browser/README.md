@@ -39,8 +39,8 @@ iii worker add browser
 ```
 
 `iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker on the next
-`iii start`. The worker drives a Chromium/Chrome already installed on the
+`~/.iii/config.yaml`, and the engine starts the worker the next time it
+boots. The worker drives a Chromium/Chrome already installed on the
 machine; point `executable` at a specific binary if auto-detection picks the
 wrong one.
 

@@ -1,10 +1,10 @@
 [workspace]
-members = ["tests/e2e"]
+members = ["tests/e2e", "tests/integration"]
 resolver = "2"
 
 [package]
 name = "harness"
-version = "1.5.4"
+version = "1.7.4"
 edition = "2021"
 publish = false
 
@@ -17,12 +17,14 @@ name = "harness"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.21.6"
+# 0.21.8 adds the reconnect reattach handshake. Older SDKs can lose this
+# worker's registrations when the engine reloads another worker.
+iii-sdk = "=0.21.8"
 # Re-exports the same `opentelemetry` the SDK uses, so we can carry the active
 # OTel context across `tokio::spawn` boundaries (shared `Context` global).
 # 0.21.5 adds the live span-start push (`LiveSpanStartProcessor`), so the
 # console renders `harness::turn step` while it runs instead of on close.
-iii-helpers = "=0.21.6"
+iii-helpers = "=0.21.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -47,7 +49,7 @@ serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 
-# The E2E runner digests every spawned binary before boot. Optimizing sha2 in
+# The integration runner digests every spawned binary before boot. Optimizing sha2 in
 # development avoids a long stall when hashing large debug worker binaries.
 [profile.dev.package.sha2]
 opt-level = 3

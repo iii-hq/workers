@@ -18,7 +18,8 @@
     "test:e2e": "playwright test",
     "test:e2e:install": "playwright install chromium",
     "storybook": "storybook dev -p 6006",
-    "build-storybook": "storybook build"
+    "build-storybook": "storybook build",
+    "build:demo": "vite build --config vite.demo.config.ts"
   },
   "dependencies": {
     "@fontsource/chivo-mono": "^5.2.8",

@@ -1,0 +1,1557 @@
+{
+  "function_id": "eval::result",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "evaluation_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "evaluation_id"
+    ],
+    "title": "EvaluationIdRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "$ref": "#/definitions/EvalResultResponseV1"
+      },
+      {
+        "type": "null"
+      }
+    ],
+    "definitions": {
+      "AggregateDeltaV1": {
+        "additionalProperties": false,
+        "properties": {
+          "median_cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "median_error_span_count": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "median_function_call_errors": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "median_function_calls": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "median_reasoning_tokens": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "median_score": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "median_span_count": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "median_total_tokens": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "median_trace_count": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "median_trace_duration_ms": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "median_wall_time_ms": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "pass_rate": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "pass_rate"
+        ],
+        "type": "object"
+      },
+      "ComparisonDimensionV1": {
+        "enum": [
+          "prompt",
+          "system_prompt"
+        ],
+        "type": "string"
+      },
+      "EvalBenchmarkV1": {
+        "additionalProperties": false,
+        "properties": {
+          "cache_read_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "error_span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "function_call_errors": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "function_calls": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reasoning_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sessions": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "trace_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "trace_duration_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "turns": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "wall_time_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "function_call_errors",
+          "function_calls",
+          "sessions",
+          "turns",
+          "wall_time_ms"
+        ],
+        "type": "object"
+      },
+      "EvalFailureV1": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "function_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "phase": {
+            "$ref": "#/definitions/EvalPhaseV1"
+          }
+        },
+        "required": [
+          "message",
+          "phase"
+        ],
+        "type": "object"
+      },
+      "EvalLimitsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "evaluation": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/EvaluationLimitsV1"
+              }
+            ],
+            "default": {}
+          },
+          "execution": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ExecutionLimitsV1"
+              }
+            ],
+            "default": {
+              "invocation_timeout_seconds": 120,
+              "max_output_tokens_per_call": 8192,
+              "max_turns": 1000,
+              "scenario_timeout_seconds": 600
+            }
+          }
+        },
+        "type": "object"
+      },
+      "EvalModelConfigV1": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Mode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_options": {
+            "additionalProperties": true,
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "system_prompt_strategy": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/SystemPromptStrategy"
+              }
+            ],
+            "default": "enrich"
+          },
+          "thinking_level": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ThinkingLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "type": "object"
+      },
+      "EvalPhaseV1": {
+        "enum": [
+          "setup",
+          "send",
+          "await",
+          "collect",
+          "evaluate",
+          "limit",
+          "cancel"
+        ],
+        "type": "string"
+      },
+      "EvalProgressV1": {
+        "additionalProperties": false,
+        "properties": {
+          "control_aggregate": {
+            "$ref": "#/definitions/VariantAggregateV1"
+          },
+          "delta": {
+            "$ref": "#/definitions/AggregateDeltaV1"
+          },
+          "effective_execution_order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "order_sensitivity": {
+            "$ref": "#/definitions/OrderSensitivityV1"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/definitions/EvalRunReportV1"
+            },
+            "type": "array"
+          },
+          "treatment_aggregate": {
+            "$ref": "#/definitions/VariantAggregateV1"
+          }
+        },
+        "required": [
+          "control_aggregate",
+          "delta",
+          "effective_execution_order",
+          "order_sensitivity",
+          "runs",
+          "treatment_aggregate"
+        ],
+        "type": "object"
+      },
+      "EvalReportV1": {
+        "additionalProperties": false,
+        "properties": {
+          "completed_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "control": {
+            "$ref": "#/definitions/VariantArtifactV1"
+          },
+          "control_aggregate": {
+            "$ref": "#/definitions/VariantAggregateV1"
+          },
+          "created_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "delta": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/AggregateDeltaV1"
+              }
+            ],
+            "description": "Treatment minus control. Negative efficiency deltas are improvements."
+          },
+          "dimension": {
+            "$ref": "#/definitions/ComparisonDimensionV1"
+          },
+          "effective_execution_order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "eligible": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "evaluation_id": {
+            "type": "string"
+          },
+          "evaluator": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/EvaluatorArtifactV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "execution_order_policy": {
+            "$ref": "#/definitions/ExecutionOrderV1"
+          },
+          "limits": {
+            "$ref": "#/definitions/EvalLimitsV1"
+          },
+          "model": {
+            "$ref": "#/definitions/EvalModelConfigV1"
+          },
+          "order_sensitivity": {
+            "$ref": "#/definitions/OrderSensitivityV1"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/definitions/EvalRunReportV1"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "shared_artifacts": {
+            "$ref": "#/definitions/SharedArtifactsV1"
+          },
+          "source_evaluation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "treatment": {
+            "$ref": "#/definitions/VariantArtifactV1"
+          },
+          "treatment_aggregate": {
+            "$ref": "#/definitions/VariantAggregateV1"
+          }
+        },
+        "required": [
+          "completed_at",
+          "control",
+          "control_aggregate",
+          "created_at",
+          "delta",
+          "dimension",
+          "effective_execution_order",
+          "evaluation_id",
+          "execution_order_policy",
+          "limits",
+          "model",
+          "order_sensitivity",
+          "runs",
+          "schema_version",
+          "shared_artifacts",
+          "treatment",
+          "treatment_aggregate"
+        ],
+        "type": "object"
+      },
+      "EvalResultResponseV1": {
+        "additionalProperties": false,
+        "properties": {
+          "progress": {
+            "$ref": "#/definitions/EvalProgressV1"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/EvalReportV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "request": {
+            "$ref": "#/definitions/NormalizedEvalRequestV1"
+          },
+          "status": {
+            "$ref": "#/definitions/EvalStatusV1"
+          }
+        },
+        "required": [
+          "progress",
+          "request",
+          "status"
+        ],
+        "type": "object"
+      },
+      "EvalRunReportV1": {
+        "additionalProperties": false,
+        "properties": {
+          "benchmark": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/EvalBenchmarkV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completed_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "evaluation": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/EvaluatorResponseV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "execution_position": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "failures": {
+            "items": {
+              "$ref": "#/definitions/EvalFailureV1"
+            },
+            "type": "array"
+          },
+          "iteration": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SessionMetricsResponseV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "output": true,
+          "pair_position": {
+            "default": 0,
+            "format": "uint8",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "passed": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "role": {
+            "$ref": "#/definitions/VariantRoleV1"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/definitions/EvalRunStatusV1"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "iteration",
+          "role",
+          "run_id",
+          "session_id",
+          "started_at",
+          "status"
+        ],
+        "type": "object"
+      },
+      "EvalRunStatusV1": {
+        "enum": [
+          "pending",
+          "running",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "EvalStatusV1": {
+        "enum": [
+          "queued",
+          "running",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "EvalVariantV1": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "system_prompt": {
+            "description": "`null` disables the system prompt for this variant. An empty string keeps the harness behavior of resolving the provider or built-in prompt.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "EvaluationLimitsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "max_error_spans": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_function_call_errors": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "EvaluatorArtifactV1": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments_sha256": {
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "arguments_sha256",
+          "function_id"
+        ],
+        "type": "object"
+      },
+      "EvaluatorResponseV1": {
+        "additionalProperties": false,
+        "properties": {
+          "details": true,
+          "passed": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "score": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "passed"
+        ],
+        "type": "object"
+      },
+      "EvaluatorSpecV1": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {
+            "default": {}
+          },
+          "function_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "function_id"
+        ],
+        "type": "object"
+      },
+      "ExecutionLimitsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "invocation_timeout_seconds": {
+            "default": 120,
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "max_output_tokens_per_call": {
+            "default": 8192,
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_total_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_turns": {
+            "default": 1000,
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "scenario_timeout_seconds": {
+            "default": 600,
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ExecutionOrderV1": {
+        "enum": [
+          "balanced_control_first",
+          "balanced_treatment_first"
+        ],
+        "type": "string"
+      },
+      "ExposeMode": {
+        "description": "How allowed functions reach the model (harness.md § Exposure modes).",
+        "enum": [
+          "agent_trigger",
+          "native"
+        ],
+        "type": "string"
+      },
+      "FunctionPolicy": {
+        "description": "The fail-closed dispatch policy (harness.md § Functions). Absent on the send => every call denied (a plain chat loop).",
+        "properties": {
+          "allow": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "deny": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "expose": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ExposeMode"
+              }
+            ],
+            "default": "agent_trigger"
+          }
+        },
+        "type": "object"
+      },
+      "Mode": {
+        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt. `ask` is also structural: the turn's dispatch policy is capped at the configured default policy, never widened.",
+        "enum": [
+          "ask",
+          "agent"
+        ],
+        "type": "string"
+      },
+      "NormalizedEvalRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "control": {
+            "$ref": "#/definitions/EvalVariantV1"
+          },
+          "dimension": {
+            "$ref": "#/definitions/ComparisonDimensionV1"
+          },
+          "evaluator": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/EvaluatorSpecV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "execution_order": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ExecutionOrderV1"
+              }
+            ],
+            "default": "balanced_control_first"
+          },
+          "functions": {
+            "$ref": "#/definitions/FunctionPolicy"
+          },
+          "limits": {
+            "$ref": "#/definitions/EvalLimitsV1"
+          },
+          "metadata": true,
+          "model": {
+            "$ref": "#/definitions/EvalModelConfigV1"
+          },
+          "output": {
+            "$ref": "#/definitions/OutputContract"
+          },
+          "runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "source_evaluation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "treatment": {
+            "$ref": "#/definitions/EvalVariantV1"
+          }
+        },
+        "required": [
+          "control",
+          "dimension",
+          "functions",
+          "limits",
+          "model",
+          "output",
+          "runs",
+          "treatment"
+        ],
+        "type": "object"
+      },
+      "OrderSensitivityV1": {
+        "additionalProperties": false,
+        "properties": {
+          "control": {
+            "$ref": "#/definitions/RoleOrderSensitivityV1"
+          },
+          "detected": {
+            "type": "boolean"
+          },
+          "treatment": {
+            "$ref": "#/definitions/RoleOrderSensitivityV1"
+          }
+        },
+        "required": [
+          "control",
+          "detected",
+          "treatment"
+        ],
+        "type": "object"
+      },
+      "OutputContract": {
+        "description": "Free text by default; `json` constrains the final answer to a JSON value, validated against `schema` when supplied.",
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "text"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "schema": true,
+              "type": {
+                "enum": [
+                  "json"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "RoleOrderSensitivityV1": {
+        "additionalProperties": false,
+        "properties": {
+          "differs": {
+            "type": "boolean"
+          },
+          "first_passed": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "first_runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "second_passed": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "second_runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "differs",
+          "first_passed",
+          "first_runs",
+          "second_passed",
+          "second_runs"
+        ],
+        "type": "object"
+      },
+      "SessionMetricsResponseV1": {
+        "additionalProperties": false,
+        "properties": {
+          "by_session": {
+            "items": {
+              "$ref": "#/definitions/SessionUsageV1"
+            },
+            "type": "array"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "root_session_id": {
+            "type": "string"
+          },
+          "totals": {
+            "$ref": "#/definitions/SessionUsageTotalsV1"
+          },
+          "traces": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SessionTraceMetricsV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Trace/span aggregates when the engine's in-memory observability exporter is available. Usage metrics remain available when it is not."
+          }
+        },
+        "required": [
+          "by_session",
+          "complete",
+          "root_session_id",
+          "totals"
+        ],
+        "type": "object"
+      },
+      "SessionTraceMetricsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "by_session": {
+            "items": {
+              "$ref": "#/definitions/SessionTraceUsageV1"
+            },
+            "type": "array"
+          },
+          "duration_ms": {
+            "description": "Elapsed window from the first observed span to the last observed span.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "error_span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "trace_count": {
+            "description": "Distinct traces across the root session and all descendants.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_session",
+          "duration_ms",
+          "error_span_count",
+          "span_count",
+          "trace_count"
+        ],
+        "type": "object"
+      },
+      "SessionTraceUsageV1": {
+        "additionalProperties": false,
+        "properties": {
+          "depth": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "duration_ms": {
+            "description": "Elapsed window from the session's first observed span to its last.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "error_span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "parent_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "trace_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "depth",
+          "duration_ms",
+          "error_span_count",
+          "session_id",
+          "span_count",
+          "trace_count"
+        ],
+        "type": "object"
+      },
+      "SessionUsageTotalsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "cache_read_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "function_call_errors": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "function_calls": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reasoning_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sessions": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "turns": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "function_call_errors",
+          "function_calls",
+          "sessions",
+          "turns"
+        ],
+        "type": "object"
+      },
+      "SessionUsageV1": {
+        "additionalProperties": false,
+        "properties": {
+          "cache_read_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "depth": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "function_call_errors": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "function_calls": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "parent_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reasoning_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "turns": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "depth",
+          "function_call_errors",
+          "function_calls",
+          "session_id",
+          "turns"
+        ],
+        "type": "object"
+      },
+      "SharedArtifactsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "function_policy_sha256": {
+            "type": "string"
+          },
+          "limits_sha256": {
+            "type": "string"
+          },
+          "model_sha256": {
+            "type": "string"
+          },
+          "output_sha256": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "function_policy_sha256",
+          "limits_sha256",
+          "model_sha256",
+          "output_sha256"
+        ],
+        "type": "object"
+      },
+      "SystemPromptStrategy": {
+        "description": "How a caller-supplied system prompt combines with the built-in identity prompt.",
+        "oneOf": [
+          {
+            "description": "Caller prompt replaces the built-in prompt verbatim.",
+            "enum": [
+              "override"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Caller prompt is appended to the built-in identity prompt.",
+            "enum": [
+              "enrich"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No system prompt is sent to the model.",
+            "enum": [
+              "disabled"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ThinkingLevel": {
+        "enum": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "type": "string"
+      },
+      "VariantAggregateV1": {
+        "additionalProperties": false,
+        "properties": {
+          "benchmarked_runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "evaluated_runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "median_cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "median_error_span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "median_function_call_errors": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "median_function_calls": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "median_input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "median_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "median_reasoning_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "median_score": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "median_span_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "median_total_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "median_trace_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "median_trace_duration_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "median_wall_time_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pass_rate": {
+            "format": "double",
+            "type": "number"
+          },
+          "passed": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "benchmarked_runs",
+          "evaluated_runs",
+          "pass_rate",
+          "passed",
+          "runs"
+        ],
+        "type": "object"
+      },
+      "VariantArtifactV1": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt_sha256": {
+            "type": "string"
+          },
+          "system_prompt_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "prompt_sha256"
+        ],
+        "type": "object"
+      },
+      "VariantRoleV1": {
+        "enum": [
+          "control",
+          "treatment"
+        ],
+        "type": "string"
+      }
+    },
+    "title": "Nullable_EvalResultResponseV1"
+  }
+}

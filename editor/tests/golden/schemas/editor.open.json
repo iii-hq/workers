@@ -1,0 +1,63 @@
+{
+  "description": "Read a text file and record it as an open buffer, with the metadata needed to write it back safely: its language id, and the mtime and content version to hand to editor::save.",
+  "function_id": "editor::open",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "path": {
+        "description": "Jail-relative when `shell`'s `fs.host_roots` are set, else absolute — the same path vocabulary as `shell::fs::read`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "title": "OpenInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "content": {
+        "description": "File contents as text. Binary files are refused rather than mangled.",
+        "type": "string"
+      },
+      "language": {
+        "description": "Monaco language id for the path, e.g. `rust`, `typescript`, `plaintext`.",
+        "type": "string"
+      },
+      "mtime": {
+        "description": "Last-modified time, Unix seconds. Pass it back as `expected_mtime` on `editor::save` to get the conflict guard.",
+        "format": "int64",
+        "type": "integer"
+      },
+      "path": {
+        "type": "string"
+      },
+      "size": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "truncated": {
+        "description": "True when the file exceeded `max_file_bytes` and `content` holds only its beginning. Saving a truncated buffer back would delete the rest of the file, so `editor::save` refuses one.",
+        "type": "boolean"
+      },
+      "version": {
+        "description": "Opaque version of the `content` above. Pass it back as `expected_version` on `editor::save` for a guard that does not depend on the filesystem's timestamp resolution: it catches a write that landed inside the same second, which `mtime` cannot. Compare it for equality only — the encoding is this worker's business and may change.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "content",
+      "language",
+      "mtime",
+      "path",
+      "size",
+      "truncated",
+      "version"
+    ],
+    "title": "OpenOutput",
+    "type": "object"
+  }
+}

@@ -1,5 +1,6 @@
 //! Boot sequence: builtin guard → build adapter → trigger table → register the
-//! `state` trigger type → register the six state::* functions.
+//! `state` trigger type → restore persisted private-namespace claims →
+//! register the state::* functions.
 
 use std::sync::Arc;
 
@@ -51,6 +52,10 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
             .trigger_request_format::<StateTriggerSpec>(),
     );
 
+    // Private namespaces are CLAIMED at runtime (`state::claim-namespace`),
+    // not configured: this starts empty and is refilled from the persisted
+    // ledger below.
+    let private = Arc::new(functions::PrivateNamespaces::default());
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(config)));
     let invoker: Arc<dyn Invoker> = Arc::new(SdkInvoker { iii: iii.clone() });
     let ctx = Arc::new(StateCtx {
@@ -58,7 +63,13 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
         triggers: triggers.clone(),
         config: cell.clone(),
         invoker,
+        private,
     });
+    // Re-arm namespaces claimed by earlier runs BEFORE the public state::*
+    // functions exist: after a restart no call can reach a persisted private
+    // scope while its reservation is still missing. An unreadable claims
+    // ledger fails the boot instead of silently serving private scopes.
+    functions::restore_persisted_claims(&iii, &ctx).await?;
     functions::register_functions(&iii, ctx.clone());
 
     // Injectable console UI: content function + console:script trigger.

@@ -34,3 +34,9 @@ rules:
   - fp::flatten
   - fp::sortBy
   - fp::reverse
+  - fp::sum
+  - fp::mean
+  - fp::min
+  - fp::max
+  - fp::groupBy
+  - fp::countBy

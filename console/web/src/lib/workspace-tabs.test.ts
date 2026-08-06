@@ -65,6 +65,20 @@ describe('parseWorkspaceTabs', () => {
     expect(tabs).toHaveLength(1)
     expect(tabs[0].screens).toEqual([null, 'traces'])
   })
+
+  it('rewrites migrated per-worker screens to their ext form', () => {
+    const tabs = parseWorkspaceTabs({
+      workspace: {
+        tabs: [
+          { id: 'mig', columns: 2, screens: ['memory', 'worktrees'] },
+          { id: 'mig2', columns: 2, screens: ['browser', 'github'] },
+        ],
+      },
+    })
+    expect(tabs).toHaveLength(2)
+    expect(tabs[0].screens).toEqual(['ext:memory', 'ext:worktree'])
+    expect(tabs[1].screens).toEqual(['ext:browser', 'ext:github'])
+  })
 })
 
 describe('tabColumns', () => {

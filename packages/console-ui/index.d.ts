@@ -479,6 +479,10 @@ export interface CodeEditorProps {
   /** Observes keys bubbling out of the editor (shortcuts like ⌘S) — keys
       the editor consumes for editing never reach it. */
   onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>
+  /** Domain identifiers to autocomplete (e.g. SQL table/column names +
+      keywords). Non-empty turns on the as-you-type suggest popup and
+      registers a completion provider for the current `language`. */
+  completions?: readonly string[]
 }
 /** The console's Monaco-backed code editor — the one editor for every code
     or long-text editing surface, themed by the console's design tokens in
@@ -519,3 +523,18 @@ export interface MarkdownPreviewProps {
 /** `Markdown` inside the standard `bg-bg` pane chrome — the preview
     counterpart to `CodeEditor` for markdown-editing UIs. */
 export declare const MarkdownPreview: React.ComponentType<MarkdownPreviewProps>
+
+export interface WorkerConfigurationDialogProps {
+  /** Which worker's configuration to edit; `null` renders the dialog closed. */
+  configurationId: string | null
+  onClose: () => void
+}
+/**
+ * The console's worker-configuration editor in a dialog — schema fetch,
+ * custom `configForms` resolution, dirty guard, save/reset and error
+ * mapping all host-owned. Lets a worker page offer "configure" without
+ * navigating to the workers tab. Prefer reading it off `host.components`
+ * at runtime rather than importing the name: a console predating this
+ * export then degrades to navigation instead of failing the module load.
+ */
+export declare const WorkerConfigurationDialog: React.ComponentType<WorkerConfigurationDialogProps>

@@ -67,9 +67,14 @@ pub async fn handle(state: &AppState, req: CommitTxReq) -> Result<CommitTxResp, 
                     "duration_ms": duration_ms,
                 })),
             );
+            // The writes are durable now — flush what the transaction staged,
+            // in statement order.
+            drop(guard);
+            state.commit_row_changes(&req.transaction_id).await;
             Ok(CommitTxResp { committed: true })
         }
         Err(e) => {
+            state.drop_row_changes(&req.transaction_id);
             // COMMIT failed — issue best-effort ROLLBACK to leave the
             // connection in a known state before the pool's recycler
             // (Postgres deadpool uses Fast recycle, which does NOT issue
@@ -163,6 +168,7 @@ mod tests {
             handles: std::sync::Arc::new(crate::handle::HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_helpers::observability::Logger::new(),
+            row_changes: None,
         };
 
         crate::handlers::execute::handle(

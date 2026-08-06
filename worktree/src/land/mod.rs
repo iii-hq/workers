@@ -460,6 +460,14 @@ async fn block(
     }
     state::clear_active_job_id(deps.state.as_ref(), &job.worktree_id).await?;
 
+    {
+        let repo = Path::new(&job.repo_path);
+        let wt = Path::new(&job.worktree_path);
+        if wt.exists() {
+            ops::worktree_unlock(repo, wt, deps.git_timeout_ms).await;
+        }
+    }
+
     tracing::info!(
         job_id = %job.job_id,
         worktree_id = %job.worktree_id,

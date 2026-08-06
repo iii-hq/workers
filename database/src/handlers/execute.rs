@@ -11,7 +11,10 @@ use serde_json::Value;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ExecuteReq {
-    pub db: String,
+    /// Logical database name. Optional — omitting it targets the sole
+    /// configured database, or `primary` when several are configured.
+    #[serde(default)]
+    pub db: Option<String>,
     #[serde(alias = "query")]
     pub sql: String,
     #[serde(default, deserialize_with = "crate::handlers::lenient_params")]
@@ -20,7 +23,7 @@ pub struct ExecuteReq {
     pub returning: Vec<String>,
 }
 
-#[derive(Serialize, JsonSchema)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct ExecuteResp {
     pub affected_rows: u64,
     pub last_insert_id: Option<String>,
@@ -28,7 +31,8 @@ pub struct ExecuteResp {
 }
 
 pub async fn handle(state: &AppState, req: ExecuteReq) -> Result<ExecuteResp, String> {
-    let pool = state.pool(&req.db).await.map_err(err_to_str)?;
+    let db = state.resolve_db(req.db).await.map_err(err_to_str)?;
+    let pool = state.pool(&db).await.map_err(err_to_str)?;
     // Reject empty SQL uniformly. See the matching guard in query.rs for why
     // this is at the handler boundary rather than per-driver: postgres' driver
     // accepts empty SQL as a no-op success, sqlite/mysql reject — guarding
@@ -41,6 +45,7 @@ pub async fn handle(state: &AppState, req: ExecuteReq) -> Result<ExecuteResp, St
             failed_index: None,
         }));
     }
+    crate::handlers::reject_tx_control_sql(&req.sql).map_err(err_to_str)?;
     let params = JsonParam::from_json_slice(&req.params).map_err(err_to_str)?;
 
     let result = match &pool {
@@ -52,6 +57,10 @@ pub async fn handle(state: &AppState, req: ExecuteReq) -> Result<ExecuteResp, St
 
     let returned_rows =
         crate::handlers::query_rows_to_objects(&result.returned_columns, result.returned_rows);
+    // The write is committed (autocommit) — announce it.
+    state
+        .emit_row_change(&db, &req.sql, result.affected_rows, Some(&returned_rows))
+        .await;
     Ok(ExecuteResp {
         affected_rows: result.affected_rows,
         last_insert_id: result.last_insert_id,
@@ -81,6 +90,7 @@ mod tests {
             handles: Arc::new(HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_helpers::observability::Logger::new(),
+            row_changes: None,
         }
     }
 
@@ -160,6 +170,23 @@ mod tests {
         assert!(properties.contains_key("sql"));
         assert!(!properties.contains_key("query"));
         assert_eq!(properties["params"]["type"], "array");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_rejects_transaction_control_sql_with_pointer() {
+        // rctest5 postmortem: agents run execute("BEGIN") + execute("COMMIT")
+        // expecting a session — but each call draws a fresh pooled
+        // connection, and the leaked BEGIN poisoned the pool for every later
+        // caller. The guard must name the real transactional surfaces.
+        let st = state();
+        for sql in ["BEGIN", "commit;", "  ROLLBACK", "/* tx */ BEGIN IMMEDIATE"] {
+            let err = handle(&st, req(json!({"db":"primary","sql": sql})))
+                .await
+                .unwrap_err();
+            assert!(err.contains("INVALID_PARAM"), "{sql}: {err}");
+            assert!(err.contains("beginTransaction"), "{sql}: {err}");
+            assert!(err.contains("executeBatch"), "{sql}: {err}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

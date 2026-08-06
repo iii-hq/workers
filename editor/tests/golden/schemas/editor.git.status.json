@@ -1,0 +1,107 @@
+{
+  "description": "Working-tree status as typed rows: branch, upstream, ahead/behind, and one entry per changed path. Fails when the root is not a repository — that is an absent overlay, not a broken workspace.",
+  "function_id": "editor::git::status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "cwd": {
+        "default": null,
+        "description": "Directory to run git in. Defaults to the workspace root. Confined by shell's jail exactly like any other `shell::exec` call.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "GitStatusInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "StatusEntry": {
+        "description": "A single changed path as git sees it.",
+        "properties": {
+          "index": {
+            "description": "Status of the staged copy: `modified`, `added`, `deleted`, `renamed`, `copied`, `untracked`, `ignored`, `conflicted`, or `unchanged`.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Path relative to the repository root.",
+            "type": "string"
+          },
+          "renamed_from": {
+            "description": "Original path for a rename or copy.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "staged": {
+            "description": "True when the staged copy differs from HEAD.",
+            "type": "boolean"
+          },
+          "worktree": {
+            "description": "Status of the working-tree copy, same vocabulary as `index`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "path",
+          "staged",
+          "worktree"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Branch header plus every changed path.",
+    "properties": {
+      "ahead": {
+        "description": "Commits on this branch the upstream does not have.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "behind": {
+        "description": "Commits on the upstream this branch does not have.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "branch": {
+        "description": "Current branch, or `None` on a detached HEAD.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "clean": {
+        "description": "True when nothing is modified, staged, or untracked.",
+        "type": "boolean"
+      },
+      "entries": {
+        "description": "One row per changed path, in git's order.",
+        "items": {
+          "$ref": "#/definitions/StatusEntry"
+        },
+        "type": "array"
+      },
+      "upstream": {
+        "description": "Configured upstream, e.g. `origin/main`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "ahead",
+      "behind",
+      "clean",
+      "entries"
+    ],
+    "title": "StatusReport",
+    "type": "object"
+  }
+}

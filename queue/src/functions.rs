@@ -120,7 +120,7 @@ fn default_dlq_limit() -> u64 {
     50
 }
 
-#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct DlqMessage {
     pub id: String,
     pub payload: Value,
@@ -128,6 +128,13 @@ pub struct DlqMessage {
     pub failed_at: u64,
     pub retries: u32,
     pub size_bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum AdapterDlqMessage {
+    Normalized(DlqMessage),
+    Job(Job),
 }
 
 pub fn register_all(
@@ -378,8 +385,12 @@ pub async fn dlq_messages(
         .into_iter()
         .skip(input.offset as usize)
         .take(input.limit as usize)
-        .filter_map(|value| serde_json::from_value::<Job>(value).ok())
-        .map(dlq_message_from_job)
+        .filter_map(
+            |value| match serde_json::from_value::<AdapterDlqMessage>(value).ok()? {
+                AdapterDlqMessage::Normalized(message) => Some(message),
+                AdapterDlqMessage::Job(job) => Some(dlq_message_from_job(job)),
+            },
+        )
         .collect();
     Ok(messages)
 }
@@ -469,6 +480,7 @@ mod tests {
             _topic: &str,
             _id: &str,
             _function_id: &str,
+            _metadata: Option<serde_json::Value>,
             _condition_function_id: Option<String>,
             _queue_config: Option<SubscriberQueueConfig>,
         ) {
@@ -779,6 +791,42 @@ mod tests {
             vec![Call::DlqMessages {
                 topic: "demo".to_string(),
                 count: 50,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn dlq_browse_preserves_normalized_messages() {
+        let (adapter, mock) = adapter();
+        *mock.dlq_messages_result.lock().unwrap() = Some(Ok(vec![json!({
+            "id": "m1",
+            "payload": {"dead": true},
+            "error": "Function tax::process exhausted retries",
+            "failed_at": 123,
+            "retries": 1,
+            "size_bytes": 13
+        })]));
+
+        let messages = dlq_messages(
+            adapter,
+            DlqMessagesInput {
+                topic: "__fn_queue::tax-returns".to_string(),
+                offset: 0,
+                limit: 50,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            messages,
+            vec![DlqMessage {
+                id: "m1".to_string(),
+                payload: json!({"dead": true}),
+                error: "Function tax::process exhausted retries".to_string(),
+                failed_at: 123,
+                retries: 1,
+                size_bytes: 13,
             }]
         );
     }

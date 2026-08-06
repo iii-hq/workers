@@ -1,0 +1,371 @@
+{
+  "description": "Convert a text-based PDF to markdown, preserving headings, lists, links and tables. Returns nothing for a scanned document — call pdf::classify first. Responses are capped; pass max_chars 0 to take the whole document, or pages to take a slice of it.",
+  "function_id": "pdf::to-markdown",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "FsScope": {
+        "description": "The filesystem jail a call runs under.\n\nThe harness stamps this onto every function it dispatches, so a `path` an agent supplies has to be checked against it. Without the check these functions would read any document on the machine and hand back its text, which is a way around the scope the session was granted. Mirrors the shape the shell worker takes.",
+        "properties": {
+          "grants": {
+            "default": [],
+            "description": "Additional directories or files explicitly granted to this session.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "root": {
+            "description": "The session's working directory.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "root"
+        ],
+        "type": "object"
+      },
+      "Profile": {
+        "description": "How faithful the markdown should be to the source characters.",
+        "oneOf": [
+          {
+            "description": "Preserve the source text as written.",
+            "enum": [
+              "fidelity"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Prefer shorter output, collapsing runs like the dot leaders in a table of contents. Not character-faithful to the source.",
+            "enum": [
+              "compact"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "Where the PDF comes from. Exactly one of the two fields must be set.",
+    "properties": {
+      "bytes_base64": {
+        "default": null,
+        "description": "Base64-encoded PDF bytes, for a document with no path. Mutually exclusive with `path`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "fs_scope": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/FsScope"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The filesystem jail this call runs under. Stamped by the harness on an agent's call; absent on an operator or console call, which is already user-initiated and not subject to the agent's scope."
+      },
+      "include_images": {
+        "default": false,
+        "description": "Include `[Image: …]` placeholders. Off by default: nothing here decodes pixels, so a placeholder adds noise without adding information.",
+        "type": "boolean"
+      },
+      "max_chars": {
+        "default": null,
+        "description": "Characters to return before truncating. Omit for the configured default; `0` returns the whole document.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "pages": {
+        "default": null,
+        "description": "1-indexed pages to convert. Omit for the whole document. A page filter is the cheap way to read a long report: take the pages you need rather than the whole thing truncated.",
+        "items": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "password": {
+        "default": null,
+        "description": "Password for an encrypted document. Never logged or echoed back.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "path": {
+        "default": null,
+        "description": "Filesystem path to the PDF. Mutually exclusive with `bytes_base64`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "per_page": {
+        "default": false,
+        "description": "Return markdown per page as well as the joined document. Useful when a caller wants to route some pages to OCR and keep the rest.",
+        "type": "boolean"
+      },
+      "profile": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Profile"
+          }
+        ],
+        "default": "fidelity",
+        "description": "Source fidelity versus token efficiency."
+      },
+      "strip_headers_footers": {
+        "default": true,
+        "description": "Strip repeated running headers and footers.",
+        "type": "boolean"
+      }
+    },
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Body": {
+        "description": "A body that may have been shortened to fit one response, and the numbers a caller needs to decide what to do about it.\n\nThe cap is what keeps a long document from flooding a model's context. A caller that genuinely wants the whole thing asks for `max_chars: 0`, which is the shape a worker-to-worker pipeline uses to move a document without it passing through anyone's context.",
+        "properties": {
+          "chars": {
+            "description": "Characters returned in `text`.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "preview": {
+            "description": "Leading characters of the content. Present only when the body was truncated, so a caller can see the shape of what it did not get without re-reading the start of `text`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "The content, shortened to the effective character cap.",
+            "type": "string"
+          },
+          "total_chars": {
+            "description": "Characters the document actually holds. Equal to `chars` when nothing was dropped.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "truncated": {
+            "description": "`true` when `text` stops short of the document. Ask again with `max_chars: 0` to take everything, or on the functions that accept one, narrow with a `pages` filter.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "chars",
+          "text",
+          "total_chars",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "DocumentType": {
+        "description": "What a document is made of.",
+        "oneOf": [
+          {
+            "description": "Real text throughout. Extract locally.",
+            "enum": [
+              "text_based"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Pictures of pages. Every page needs OCR.",
+            "enum": [
+              "scanned"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Images with little or no text layer.",
+            "enum": [
+              "image_based"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Some pages carry text, others do not. Read `pages_needing_ocr`.",
+            "enum": [
+              "mixed"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "PageOcrReason": {
+        "description": "Why one page cannot be read without OCR.",
+        "properties": {
+          "page": {
+            "description": "1-indexed page number.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "reasons": {
+            "description": "Machine-readable reasons: `scanned` (a raster page), `no_text` (nothing extractable and nothing to OCR), `vector_text` (characters drawn as outlines rather than text) or `suspected_garbled_text` (a text layer that decodes to nonsense).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "page",
+          "reasons"
+        ],
+        "type": "object"
+      },
+      "PageResult": {
+        "description": "One page of markdown, with its own OCR verdict.",
+        "properties": {
+          "markdown": {
+            "description": "Markdown for this page.",
+            "type": "string"
+          },
+          "needs_ocr": {
+            "description": "`true` when this page's text is not trustworthy and OCR would do better.",
+            "type": "boolean"
+          },
+          "ocr_reason": {
+            "description": "Machine-readable reason, when the cause is known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "page": {
+            "description": "1-indexed page number.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "markdown",
+          "needs_ocr",
+          "page"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "body": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Body"
+          }
+        ],
+        "description": "The markdown, capped per `max_chars`."
+      },
+      "document_type": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/DocumentType"
+          }
+        ],
+        "description": "The document-level verdict, so a caller that skipped `pdf::classify` still learns it got nothing because the document is a scan."
+      },
+      "elapsed_ms": {
+        "description": "Wall-clock time for the conversion.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "has_encoding_issues": {
+        "description": "`true` when font encodings decoded badly. The markdown, if any, is not to be trusted.",
+        "type": "boolean"
+      },
+      "ocr_reasons": {
+        "description": "Per-page explanation for `pages_needing_ocr`.",
+        "items": {
+          "$ref": "#/definitions/PageOcrReason"
+        },
+        "type": "array"
+      },
+      "page_count": {
+        "description": "Pages in the document.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "pages": {
+        "description": "Per-page markdown, when `per_page` was requested.",
+        "items": {
+          "$ref": "#/definitions/PageResult"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "pages_converted": {
+        "description": "Pages actually converted. Equal to `page_count` unless `pages` was set.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "pages_needing_ocr": {
+        "description": "1-indexed pages that need OCR.",
+        "items": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "type": "array"
+      },
+      "pages_with_columns": {
+        "description": "1-indexed pages laid out in multiple columns.",
+        "items": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "type": "array"
+      },
+      "pages_with_tables": {
+        "description": "1-indexed pages holding a detected table.",
+        "items": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "type": "array"
+      },
+      "source": {
+        "description": "Source label: the file name, or `<inline>` for an in-memory document.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "body",
+      "document_type",
+      "elapsed_ms",
+      "has_encoding_issues",
+      "ocr_reasons",
+      "page_count",
+      "pages_converted",
+      "pages_needing_ocr",
+      "pages_with_columns",
+      "pages_with_tables",
+      "source"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

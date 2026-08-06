@@ -132,6 +132,59 @@
             "type": "object"
           }
         ]
+      },
+      "Usage": {
+        "description": "Token / cost accounting reported by providers.",
+        "properties": {
+          "cache_read": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "input": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reasoning": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       }
     },
     "properties": {
@@ -167,6 +220,17 @@
       },
       "session_id": {
         "type": "string"
+      },
+      "usage": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Usage"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Final token/cost accounting — only for `assistant` messages. Omit for streaming content updates that do not yet have terminal usage."
       }
     },
     "required": [

@@ -1,0 +1,77 @@
+{
+  "description": "Create a file or folder in the workspace, with parents as needed. A file may be seeded with content.",
+  "function_id": "editor::create",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "EntryKind": {
+        "description": "Create a file or a folder.",
+        "enum": [
+          "file",
+          "folder"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "content": {
+        "default": null,
+        "description": "Initial contents for a file. Ignored for a folder.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "kind": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/EntryKind"
+          }
+        ],
+        "default": "file",
+        "description": "What to create. Defaults to a file."
+      },
+      "path": {
+        "description": "Root-relative path to create. Missing parent folders are created.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "title": "CreateInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "EntryKind": {
+        "description": "Create a file or a folder.",
+        "enum": [
+          "file",
+          "folder"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "created": {
+        "description": "Always true on success; the call errors rather than reporting false.",
+        "type": "boolean"
+      },
+      "kind": {
+        "$ref": "#/definitions/EntryKind"
+      },
+      "path": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "created",
+      "kind",
+      "path"
+    ],
+    "title": "CreateOutput",
+    "type": "object"
+  }
+}

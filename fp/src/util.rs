@@ -101,6 +101,49 @@ pub const REVERSE_DESC: &str =
     "Reverse an array (lodash _.reverse, immutable like lodash/fp): { value }. Mainly useful \
      as a fp::pipe step.";
 
+pub const SUM_ID: &str = "fp::sum";
+pub const SUM_DESC: &str =
+    "Total an array of numbers (lodash _.sum/_.sumBy): { value }, or { value, path: \
+     \"/amount\" } to pluck the addend from each element first. An empty array totals 0; a \
+     non-numeric element errors rather than being skipped. All-integer inputs total to an \
+     integer, so the result compares cleanly in a fp::when guard. Mainly useful as a \
+     fp::pipe step.";
+
+pub const MEAN_ID: &str = "fp::mean";
+pub const MEAN_DESC: &str =
+    "Arithmetic mean of an array of numbers (lodash _.mean/_.meanBy): { value }, or \
+     { value, path: \"/score\" }. Deviates from lodash: an EMPTY array errors instead of \
+     yielding NaN, which would thread garbage into the next step. Mainly useful as a \
+     fp::pipe step.";
+
+pub const MIN_ID: &str = "fp::min";
+pub const MIN_DESC: &str =
+    "Smallest number in an array (lodash _.min/_.minBy): { value }, or { value, path: \
+     \"/amount\" }. Deviates from lodash _.minBy: returns the NUMBER, not the element \
+     holding it, so a fp::when guard can compare it directly. An empty array errors. Mainly \
+     useful as a fp::pipe step.";
+
+pub const MAX_ID: &str = "fp::max";
+pub const MAX_DESC: &str =
+    "Largest number in an array (lodash _.max/_.maxBy): { value }, or { value, path: \
+     \"/amount\" }. Deviates from lodash _.maxBy: returns the NUMBER, not the element \
+     holding it, so a fp::when guard can compare it directly. An empty array errors. Mainly \
+     useful as a fp::pipe step.";
+
+pub const GROUP_BY_ID: &str = "fp::groupBy";
+pub const GROUP_BY_DESC: &str =
+    "Bucket array elements by a plucked key (lodash _.groupBy): { value, path: \"/writer\" } \
+     -> { \"<key>\": [element, ...] } (`\"\"` groups by the element itself). Keys must be a \
+     string, number, or boolean; a null or container key errors rather than collapsing \
+     distinct groups into one bucket. Mainly useful as a fp::pipe step.";
+
+pub const COUNT_BY_ID: &str = "fp::countBy";
+pub const COUNT_BY_DESC: &str =
+    "Count array elements per plucked key (lodash _.countBy): { value, path: \"/writer\" } \
+     -> { \"<key>\": <count> } (`\"\"` counts by the element itself). Same key rules as \
+     fp::groupBy. Pair with fp::groupBy + fp::sum for a per-key total. Mainly useful as a \
+     fp::pipe step.";
+
 pub const WHEN_ID: &str = "fp::when";
 pub const WHEN_DESC: &str =
     "Guard: test the value at a JSON pointer ({ value, path?, op, to? }; ops ==, !=, >, >=, <, \
@@ -220,6 +263,27 @@ pub struct SortByRequest {
     pub value: Value,
     /// JSON pointer plucked from each element as the sort key (e.g. `/score`).
     pub path: String,
+}
+
+/// Shared request for the keyed groupings (groupBy/countBy).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GroupByRequest {
+    /// Input value (a pipe lands the previous step's value here).
+    pub value: Value,
+    /// JSON pointer plucked from each element as the bucket key
+    /// (`""` = the element itself).
+    pub path: String,
+}
+
+/// Shared request for the numeric reductions (sum/mean/min/max).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReduceRequest {
+    /// Input value (a pipe lands the previous step's value here).
+    pub value: Value,
+    /// Optional JSON pointer plucked from each element before reducing, so
+    /// `[{amount: 3}, …]` reduces without a separate fp::map step.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -509,6 +573,236 @@ pub fn size(value: &Value) -> Result<Value, String> {
     }
 }
 
+/// The addends for a numeric reduction: the array itself, or the value at
+/// `path` plucked from each element (the lodash `…By` form). Every element
+/// must be a number — skipping a non-numeric one would report a total that
+/// silently covers fewer rows than the caller counted.
+fn addends(name: &str, value: Value, path: Option<&str>) -> Result<Vec<Value>, String> {
+    if !value.is_array() {
+        return Err(needs(name, "an array value", &value));
+    }
+    let items = match path {
+        // `map` already errors on a path that matches NO element and turns
+        // sporadic misses into nulls, which the numeric check below rejects.
+        Some(p) => map(value, p)?,
+        None => value,
+    };
+    match items {
+        Value::Array(a) => {
+            for el in &a {
+                if !el.is_number() {
+                    return Err(format!(
+                        "{name} needs every element to be a number (got {} in the array){}",
+                        kind_of(el),
+                        if path.is_none() {
+                            " — pass `path` to pluck the number out of each element"
+                        } else {
+                            ""
+                        }
+                    ));
+                }
+            }
+            Ok(a)
+        }
+        other => Err(needs(name, "an array value", &other)),
+    }
+}
+
+fn number_out(total: f64) -> Result<Value, String> {
+    if !total.is_finite() {
+        return Err("result is not a finite number".into());
+    }
+    serde_json::Number::from_f64(total)
+        .map(Value::Number)
+        .ok_or_else(|| "result is not representable as JSON".into())
+}
+
+fn all_integers(items: &[Value]) -> bool {
+    items.iter().all(|v| v.is_i64() || v.is_u64())
+}
+
+fn integer(value: &Value) -> i128 {
+    value
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| value.as_u64().map(i128::from))
+        .expect("all_integers checked by caller")
+}
+
+fn integer_total(items: &[Value]) -> Result<i128, String> {
+    items.iter().try_fold(0_i128, |total, value| {
+        total
+            .checked_add(integer(value))
+            .ok_or_else(|| "integer result is too large".to_string())
+    })
+}
+
+/// Integer inputs stay on an exact path: converting through f64 would round
+/// values above 2^53 before the reduction even starts.
+fn integer_out(value: i128) -> Result<Value, String> {
+    if let Ok(value) = i64::try_from(value) {
+        return Ok(Value::Number(serde_json::Number::from(value)));
+    }
+    if let Ok(value) = u64::try_from(value) {
+        return Ok(Value::Number(serde_json::Number::from(value)));
+    }
+    Err("integer result is not representable as JSON".into())
+}
+
+fn integer_as_f64(value: i128) -> Result<f64, String> {
+    let narrowed = value as f64;
+    if narrowed as i128 == value {
+        Ok(narrowed)
+    } else {
+        Err(format!(
+            "integer {value} is not exactly representable as a float"
+        ))
+    }
+}
+
+fn as_f64(items: &[Value]) -> Result<Vec<f64>, String> {
+    items
+        .iter()
+        .map(|value| {
+            if value.is_i64() || value.is_u64() {
+                integer_as_f64(integer(value))
+            } else {
+                value
+                    .as_f64()
+                    .ok_or_else(|| "number is not representable as a float".to_string())
+            }
+        })
+        .collect()
+}
+
+pub fn sum(value: Value, path: Option<&str>) -> Result<Value, String> {
+    let items = addends("sum", value, path)?;
+    // Deviates from the other reductions, matching lodash: an empty sum is 0,
+    // the identity — not an error.
+    if all_integers(&items) {
+        integer_out(integer_total(&items)?)
+    } else {
+        number_out(as_f64(&items)?.iter().sum())
+    }
+}
+
+pub fn mean(value: Value, path: Option<&str>) -> Result<Value, String> {
+    let items = addends("mean", value, path)?;
+    if items.is_empty() {
+        return Err("mean needs a non-empty array (an empty mean has no value)".into());
+    }
+    if all_integers(&items) {
+        let total = integer_total(&items)?;
+        let len = items.len() as i128;
+        if total % len == 0 {
+            return integer_out(total / len);
+        }
+        return number_out(integer_as_f64(total)? / len as f64);
+    }
+    let nums = as_f64(&items)?;
+    let total: f64 = nums.iter().sum();
+    number_out(total / nums.len() as f64)
+}
+
+pub fn min(value: Value, path: Option<&str>) -> Result<Value, String> {
+    reduce_extreme("min", value, path, f64::min, std::cmp::min)
+}
+
+pub fn max(value: Value, path: Option<&str>) -> Result<Value, String> {
+    reduce_extreme("max", value, path, f64::max, std::cmp::max)
+}
+
+fn reduce_extreme(
+    name: &str,
+    value: Value,
+    path: Option<&str>,
+    pick_float: fn(f64, f64) -> f64,
+    pick_integer: fn(i128, i128) -> i128,
+) -> Result<Value, String> {
+    let items = addends(name, value, path)?;
+    if items.is_empty() {
+        return Err(format!("{name} needs a non-empty array"));
+    }
+    if all_integers(&items) {
+        let folded = items
+            .iter()
+            .map(integer)
+            .reduce(pick_integer)
+            .expect("non-empty checked above");
+        return integer_out(folded);
+    }
+    let folded = as_f64(&items)?
+        .into_iter()
+        .reduce(pick_float)
+        .expect("non-empty checked above");
+    number_out(folded)
+}
+
+/// Pluck a grouping key from every element, mirroring `sort_by`'s pointer
+/// rules (`""` = the element itself; a miss names the element index).
+///
+/// Keys are JSON object keys, so they must be strings: numbers and booleans
+/// stringify, but null and containers error. lodash coerces those to `"null"`
+/// / `"[object Object]"`, which silently merges distinct groups into one
+/// bucket — the failure mode that makes a wrong aggregate look like a right
+/// one.
+fn group_keys(name: &str, value: Value, path: &str) -> Result<Vec<(String, Value)>, String> {
+    let Value::Array(items) = value else {
+        return Err(needs(name, "an array value", &value));
+    };
+    let mut keyed = Vec::with_capacity(items.len());
+    for (i, el) in items.into_iter().enumerate() {
+        let Some(raw) = el.pointer(path).cloned() else {
+            // live-tested (haiku-4.5): "." is the common wrong guess for
+            // "the element itself" — the JSON pointer for that is ""
+            let hint = if path == "." {
+                " (the JSON pointer for the element itself is \"\")"
+            } else {
+                ""
+            };
+            return Err(format!(
+                "path {path:?} matched nothing in element {i}; grouping with holes would \
+                 drop rows{hint}"
+            ));
+        };
+        let key = match raw {
+            Value::String(s) => s,
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            other => {
+                return Err(format!(
+                    "{name} needs a string, number, or boolean key at {path:?} but element {i} \
+                     has {} — group by a scalar field, not a container",
+                    kind_of(&other)
+                ))
+            }
+        };
+        keyed.push((key, el));
+    }
+    Ok(keyed)
+}
+
+pub fn group_by(value: Value, path: &str) -> Result<Value, String> {
+    let mut out: Map<String, Value> = Map::new();
+    for (key, el) in group_keys("groupBy", value, path)? {
+        match out.entry(key).or_insert_with(|| Value::Array(Vec::new())) {
+            Value::Array(bucket) => bucket.push(el),
+            _ => unreachable!("buckets are seeded as arrays"),
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+pub fn count_by(value: Value, path: &str) -> Result<Value, String> {
+    let mut out: Map<String, Value> = Map::new();
+    for (key, _) in group_keys("countBy", value, path)? {
+        let slot = out.entry(key).or_insert_with(|| json_len(0));
+        let next = slot.as_u64().unwrap_or(0) + 1;
+        *slot = Value::Number(serde_json::Number::from(next));
+    }
+    Ok(Value::Object(out))
+}
+
 // Deviates from lodash: null-only, NOT full falsey — compacting away a
 // legitimate 0, false, or "" plucked by map would silently corrupt data.
 pub fn compact(value: Value) -> Result<Value, String> {
@@ -660,6 +954,12 @@ pub(crate) fn is_transform(function_id: &str) -> bool {
             | FLATTEN_ID
             | SORT_BY_ID
             | REVERSE_ID
+            | SUM_ID
+            | MEAN_ID
+            | MIN_ID
+            | MAX_ID
+            | GROUP_BY_ID
+            | COUNT_BY_ID
             | WHEN_ID
     )
 }
@@ -690,6 +990,14 @@ pub(crate) fn apply(function_id: &str, args: &Value) -> Option<Result<Value, Str
         FLATTEN_ID => Some(parse::<ValueRequest>(args).and_then(|r| flatten(r.value))),
         SORT_BY_ID => Some(parse::<SortByRequest>(args).and_then(|r| sort_by(r.value, &r.path))),
         REVERSE_ID => Some(parse::<ValueRequest>(args).and_then(|r| reverse(r.value))),
+        SUM_ID => Some(parse::<ReduceRequest>(args).and_then(|r| sum(r.value, r.path.as_deref()))),
+        MEAN_ID => {
+            Some(parse::<ReduceRequest>(args).and_then(|r| mean(r.value, r.path.as_deref())))
+        }
+        MIN_ID => Some(parse::<ReduceRequest>(args).and_then(|r| min(r.value, r.path.as_deref()))),
+        MAX_ID => Some(parse::<ReduceRequest>(args).and_then(|r| max(r.value, r.path.as_deref()))),
+        GROUP_BY_ID => Some(parse::<GroupByRequest>(args).and_then(|r| group_by(r.value, &r.path))),
+        COUNT_BY_ID => Some(parse::<GroupByRequest>(args).and_then(|r| count_by(r.value, &r.path))),
         _ => None,
     }
 }
@@ -823,15 +1131,218 @@ mod tests {
     }
 
     #[test]
-    fn is_transform_matches_exactly_the_seventeen_ops() {
+    fn is_transform_matches_exactly_the_pure_ops() {
         for id in [
-            GET_ID, PICK_ID, OMIT_ID, TAKE_ID, DROP_ID, MAP_ID, FILTER_ID, SPLIT_ID, JOIN_ID,
-            UNIQ_ID, SIZE_ID, COMPACT_ID, NTH_ID, GET_OR_ID, FLATTEN_ID, SORT_BY_ID, REVERSE_ID,
+            GET_ID,
+            PICK_ID,
+            OMIT_ID,
+            TAKE_ID,
+            DROP_ID,
+            MAP_ID,
+            FILTER_ID,
+            SPLIT_ID,
+            JOIN_ID,
+            UNIQ_ID,
+            SIZE_ID,
+            COMPACT_ID,
+            NTH_ID,
+            GET_OR_ID,
+            FLATTEN_ID,
+            SORT_BY_ID,
+            REVERSE_ID,
+            SUM_ID,
+            MEAN_ID,
+            MIN_ID,
+            MAX_ID,
+            GROUP_BY_ID,
+            COUNT_BY_ID,
         ] {
-            assert!(is_transform(id));
+            assert!(is_transform(id), "{id} must run inline as a pipe step");
         }
         assert!(!is_transform("fp::pipe"));
         assert!(!is_transform("state::set"));
+    }
+
+    #[test]
+    fn sum_totals_plain_and_plucked_arrays() {
+        assert_eq!(sum(json!([1, 2, 3]), None).unwrap(), json!(6));
+        assert_eq!(
+            sum(json!([{"amount": 3}, {"amount": 4}]), Some("/amount")).unwrap(),
+            json!(7)
+        );
+        // lodash parity: the empty sum is the identity, not an error.
+        assert_eq!(sum(json!([]), None).unwrap(), json!(0));
+    }
+
+    /// Integer inputs must not come back as floats: a `15.0` written to state
+    /// or compared by a fp::when guard reads as a different value than the
+    /// `15` the caller counted.
+    #[test]
+    fn integer_inputs_reduce_to_integers() {
+        let total = sum(json!([5, 10]), None).unwrap();
+        assert_eq!(total, json!(15));
+        assert!(total.is_i64(), "integer total must stay an integer");
+        assert!(max(json!([1, 9, 4]), None).unwrap().is_i64());
+
+        // A fractional input keeps its precision.
+        assert_eq!(sum(json!([0.5, 0.25]), None).unwrap(), json!(0.75));
+        // …and a mean is a true average, never rounded to an int.
+        assert_eq!(mean(json!([1, 2]), None).unwrap(), json!(1.5));
+    }
+
+    #[test]
+    fn large_integer_reductions_stay_exact() {
+        let large = 9_007_199_254_740_993_u64;
+        assert_eq!(sum(json!([large, 2]), None).unwrap(), json!(large + 2));
+        assert!(mean(json!([large, 2]), None)
+            .unwrap_err()
+            .contains("not exactly representable"));
+        assert_eq!(
+            mean(json!([large, large + 2]), None).unwrap(),
+            json!(large + 1)
+        );
+        assert_eq!(min(json!([large + 2, large]), None).unwrap(), json!(large));
+        assert_eq!(
+            max(json!([large, large + 2]), None).unwrap(),
+            json!(large + 2)
+        );
+    }
+
+    #[test]
+    fn mixed_reductions_reject_integers_that_f64_would_round() {
+        assert_eq!(sum(json!([1, 0.5]), None).unwrap(), json!(1.5));
+
+        let mixed = json!([9_007_199_254_740_993_u64, -9_007_199_254_740_992.0]);
+        for result in [
+            sum(mixed.clone(), None),
+            mean(mixed.clone(), None),
+            min(mixed.clone(), None),
+            max(mixed.clone(), None),
+        ] {
+            assert!(result.unwrap_err().contains("not exactly representable"));
+        }
+    }
+
+    #[test]
+    fn mean_min_max_reduce_and_refuse_the_empty_case() {
+        assert_eq!(mean(json!([2, 4, 6]), None).unwrap(), json!(4));
+        assert_eq!(min(json!([3, 1, 2]), None).unwrap(), json!(1));
+        assert_eq!(max(json!([3, 1, 2]), None).unwrap(), json!(3));
+        assert_eq!(
+            min(json!([{"n": 8}, {"n": 2}]), Some("/n")).unwrap(),
+            json!(2)
+        );
+        // Deviates from lodash's NaN/undefined: an empty reduction has no
+        // value, and threading one downstream corrupts the next step.
+        for empty in [
+            mean(json!([]), None),
+            min(json!([]), None),
+            max(json!([]), None),
+        ] {
+            assert!(empty.unwrap_err().contains("non-empty"));
+        }
+    }
+
+    /// A skipped non-number would report a total covering fewer rows than the
+    /// caller counted — the failure mode that makes a silent aggregate worse
+    /// than no aggregate.
+    #[test]
+    fn reductions_refuse_non_numeric_elements_teachably() {
+        let err = sum(json!([1, "2"]), None).unwrap_err();
+        assert!(err.contains("every element to be a number"), "{err}");
+        assert!(err.contains("string"), "names the offending kind: {err}");
+        assert!(err.contains("`path`"), "points at the fix: {err}");
+
+        // Objects: the hint is the path form, since that is the real fix.
+        assert!(sum(json!([{"amount": 1}]), None)
+            .unwrap_err()
+            .contains("`path`"));
+        // With a path, a plucked null (a sporadic miss) still errors.
+        assert!(sum(json!([{"a": 1}, {"a": null}]), Some("/a"))
+            .unwrap_err()
+            .contains("number"));
+        // Non-arrays are refused like every other collection op.
+        assert!(sum(json!(5), None).unwrap_err().contains("array"));
+        assert!(sum(json!(5), Some("/amount"))
+            .unwrap_err()
+            .starts_with("sum needs an array"));
+    }
+
+    #[test]
+    fn group_by_and_count_by_bucket_on_a_plucked_key() {
+        let rows = json!([
+            {"writer": "a", "amount": 3},
+            {"writer": "b", "amount": 5},
+            {"writer": "a", "amount": 4},
+        ]);
+        assert_eq!(
+            count_by(rows.clone(), "/writer").unwrap(),
+            json!({ "a": 2, "b": 1 })
+        );
+        assert_eq!(
+            group_by(rows, "/writer").unwrap(),
+            json!({
+                "a": [{"writer": "a", "amount": 3}, {"writer": "a", "amount": 4}],
+                "b": [{"writer": "b", "amount": 5}],
+            })
+        );
+
+        // `""` groups by the element itself, like sortBy.
+        assert_eq!(
+            count_by(json!(["x", "y", "x"]), "").unwrap(),
+            json!({ "x": 2, "y": 1 })
+        );
+        // Non-string scalars stringify into keys.
+        assert_eq!(
+            count_by(json!([{"ok": true}, {"ok": false}, {"ok": true}]), "/ok").unwrap(),
+            json!({ "true": 2, "false": 1 })
+        );
+        assert_eq!(group_by(json!([]), "/k").unwrap(), json!({}));
+    }
+
+    /// The per-key aggregate the reductions alone could not express: bucket,
+    /// then total each bucket.
+    #[test]
+    fn group_by_buckets_feed_the_reductions() {
+        let grouped = group_by(
+            json!([
+                {"writer": "a", "amount": 3},
+                {"writer": "b", "amount": 5},
+                {"writer": "a", "amount": 4},
+            ]),
+            "/writer",
+        )
+        .unwrap();
+        let bucket = grouped.get("a").cloned().unwrap();
+        assert_eq!(sum(bucket.clone(), Some("/amount")).unwrap(), json!(7));
+        assert_eq!(size(&bucket).unwrap(), json!(2));
+    }
+
+    /// lodash coerces a null or object key to "null"/"[object Object]", which
+    /// silently merges distinct groups — a wrong aggregate that looks right.
+    #[test]
+    fn grouping_refuses_keys_that_would_collapse_buckets() {
+        for bad in [
+            json!([{"k": null}]),
+            json!([{"k": {"nested": 1}}]),
+            json!([{"k": [1]}]),
+        ] {
+            let err = group_by(bad, "/k").unwrap_err();
+            assert!(
+                err.contains("string, number, or boolean key"),
+                "unhelpful error: {err}"
+            );
+            assert!(err.contains("element 0"), "names the offender: {err}");
+        }
+        // A path matching nothing drops rows silently in lodash; here it errors.
+        let err = count_by(json!([{"k": 1}, {"other": 2}]), "/k").unwrap_err();
+        assert!(err.contains("element 1"), "{err}");
+        assert!(err.contains("would drop rows"), "{err}");
+        // The "." mis-guess gets the same hint sortBy gives.
+        assert!(group_by(json!(["a"]), ".")
+            .unwrap_err()
+            .contains("the element itself is \"\""));
+        assert!(group_by(json!(5), "/k").unwrap_err().contains("array"));
     }
 
     #[test]

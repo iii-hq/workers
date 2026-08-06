@@ -5,11 +5,13 @@
 //! Ships two assets into any running console:
 //!
 //! - `database/page.js` (`console:script`) — a function-trigger renderer for
-//!   every `database::*` call: SQL with highlighting, request chips (db,
-//!   transaction/handle ids), result-row tables, batch/transaction step
-//!   lists. Error outputs fall through to the console's built-in error card.
-//! - `database/styles.css` (`console:style`) — the stylesheet, every rule
-//!   scoped under `[data-iii-ui="database"]`; the console mounts it as a
+//!   every `database::*` call (SQL with highlighting, request chips, result
+//!   tables, batch/transaction step lists; errors fall through to the
+//!   console's built-in error card) plus the `#/ext/database` page: schema
+//!   tree, paged row grid, row inspector, SQL panel (reads via
+//!   `database::query`, writes via `database::execute`).
+//! - `database/styles.css` (`console:style`) — the stylesheet for both, every
+//!   rule scoped under `[data-iii-ui="database"]`; the console mounts it as a
 //!   `<link>` and link-swaps it on change, styles-before-scripts on boot.
 //!
 //! The registration machinery (content function `database::ui-content`, one
@@ -63,6 +65,16 @@ mod tests {
     #[test]
     fn embedded_page_is_nonempty_esm() {
         assert!(PAGE_JS.contains("export"), "built page.js looks wrong");
+    }
+
+    #[test]
+    fn embedded_page_registers_the_config_form() {
+        // The configuration form ships inside page.js; a build that lost it
+        // silently reverts the Workers tab to the generic schema editor.
+        assert!(
+            PAGE_JS.contains("configForms"),
+            "built page.js no longer registers the configuration form"
+        );
     }
 
     #[test]

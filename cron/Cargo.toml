@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-cron"
-version = "0.21.1"
+version = "0.21.4"
 edition = "2021"
 description = "Cron scheduler worker for iii - schedules functions with cron expressions (cron trigger type)"
 license = "Apache-2.0"

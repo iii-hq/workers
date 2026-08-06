@@ -23,28 +23,25 @@ pub async fn handle(
     deps: &Deps,
     event: SessionDeletedEvent,
 ) -> Result<SessionDeletedAck, HarnessError> {
-    let dropped = deps.subscriptions.take_session(&event.session_id);
-    let tracked = dropped.len() as u64;
-    if tracked > 0 {
-        for (_sub_id, trigger_id) in dropped {
-            if let Some(trigger_id) = trigger_id {
-                crate::functions::subscribe::unregister_engine_trigger(deps, &trigger_id).await;
-            }
-        }
+    // One durable sweep: every binding this session owned, unregistered
+    // engine-side and deleted from the store. Before the store existed this
+    // needed two passes — an in-memory one for bindings this process knew
+    // about, and an owner-stamp scan for everything registered before the last
+    // restart — and the second pass only ever saw what the first had lost.
+    let swept = super::teardown::cleanup_session(deps, &event.session_id).await;
+    if swept > 0 {
         tracing::info!(
             session_id = %event.session_id,
-            removed = tracked,
-            "session deleted: ephemeral subscriptions dropped"
+            removed = swept,
+            "session deleted: trigger bindings dropped"
         );
     }
+
     let cfg = deps.cfg().await;
     crate::filesystem_grants::purge(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
-    // Durable complement: bindings registered before a harness restart are no
-    // longer in the in-memory registry but still fire engine-side — sweep them
-    // by their owner stamp so deleting a chat fully tears down its wiring.
-    let swept = crate::subscriptions::reconcile::sweep_owner(deps, &event.session_id).await;
+    crate::budget::purge(deps, &event.session_id, cfg.session_timeout_ms).await?;
     Ok(SessionDeletedAck {
         ok: true,
-        removed: tracked + swept as u64,
+        removed: swept,
     })
 }

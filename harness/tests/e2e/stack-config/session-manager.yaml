@@ -1,0 +1,4 @@
+adapter:
+  name: fs
+  config:
+    data_dir: ${HARNESS_E2E_RUN_DIR}/sessions

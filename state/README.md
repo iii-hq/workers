@@ -9,7 +9,7 @@ through six functions — `state::set`, `state::get`, `state::delete`,
 registers the `state` trigger type, which fires `state:created`,
 `state:updated`, or `state:deleted` after every successful mutation so
 downstream functions can react to data changes without polling. This worker
-is the standalone migration of the engine's built-in `iii-state`.
+is the standalone migration of the engine's legacy built-in state service.
 
 ## Install
 
@@ -33,6 +33,10 @@ iii worker add state
 | `state::list_keys` | `{ scope }` | `{ keys }` — the keys stored in the scope, adapter order (additive; no builtin counterpart — added for the console state UI, whose per-item navigation `state::list`'s values-only shape cannot drive) | — |
 | `state::list_groups` | `{}` | `{ groups }` — sorted, deduplicated scope names | — |
 | `state::ui-content` | `{ path }` | `{ content, content_type }` — content function for the injected console UI (internal; see [Console UI](#console-ui)) | — |
+
+The `harness_binding` and `harness_binding_owner` scopes are reserved
+control-plane state: public functions reject direct access, omit them from
+group listings, and never emit their bookkeeping writes as state events.
 
 ## Console UI
 
@@ -128,16 +132,16 @@ worker's config block in `config.yaml` on first boot. `triggers_enabled` and
 `max_value_bytes` apply on the next write, `save_interval_ms` hot-retunes
 the save loop, and `adapter` takes effect on the next restart.
 
-### Requires removing the built-in `iii-state` worker
+### Requires removing the legacy built-in state service
 
-The built-in `iii-state` worker also owns the `state` trigger type and the
+The legacy built-in state service also owns the `state` trigger type and the
 `state::*` functions. Two owners of the same surface on one engine collide —
-whichever registers last wins — so this worker requires `iii-state` to be
+whichever registers last wins — so this worker requires it to be
 absent: omit it from the engine's `config.yaml` (a config that doesn't list
 a worker won't run it).
 
 On boot, this worker queries the engine for connected workers and refuses to
-start with a clear error if `iii-state` is still active, so a stale config
+start with a clear error if the legacy built-in is still active, so a stale config
 fails loudly instead of silently racing the built-in worker for ownership of
 `state`.
 

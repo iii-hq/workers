@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use super::{argv, expect_ok, push_opt, ValueResponse, OK};
 use crate::configuration::ConfigCell;
+use crate::events::{self, CalledEmitter};
 use crate::gh;
 
 pub const EXEC_ID: &str = "github::exec";
@@ -69,49 +70,64 @@ pub fn api_args(r: &ApiRequest) -> Vec<String> {
     a
 }
 
-pub(crate) fn register(iii: &IIIClient, cell: &ConfigCell) {
+pub(crate) fn register(iii: &IIIClient, cell: &ConfigCell, emitter: &CalledEmitter) {
     let c = cell.clone();
+    let em = emitter.clone();
     iii.register_function(
         EXEC_ID,
         RegisterFunction::new_async(move |req: ExecRequest| {
             let cell = c.clone();
+            let emitter = em.clone();
             async move {
-                let cfg = cell.read().await.clone();
-                gh::run(&cfg, &req.args, req.stdin, req.timeout_ms)
-                    .await
-                    .map_err(Error::from)
+                let args_summary = events::summarize_args(&req.args);
+                let repo = events::repo_from_args(&req.args);
+                events::run_and_emit(&emitter, EXEC_ID, args_summary, repo, async move {
+                    let cfg = cell.read().await.clone();
+                    gh::run(&cfg, &req.args, req.stdin, req.timeout_ms)
+                        .await
+                        .map_err(Error::from)
+                })
+                .await
             }
         })
         .description(EXEC_DESC),
     );
 
     let c = cell.clone();
+    let em = emitter.clone();
     iii.register_function(
         API_ID,
         RegisterFunction::new_async(move |req: ApiRequest| {
             let cell = c.clone();
+            let emitter = em.clone();
             async move {
-                let cfg = cell.read().await.clone();
-                let stdin = match &req.body {
-                    Some(v) => Some(serde_json::to_string(v).map_err(|e| {
-                        Error::Handler(format!("github::api: body does not serialize: {e}"))
-                    })?),
-                    None => None,
-                };
-                let out = gh::run(&cfg, &api_args(&req), stdin, req.timeout_ms)
-                    .await
-                    .map_err(Error::from)?;
-                let out = expect_ok(API_ID, out, OK)?;
-                if out.stdout_truncated {
-                    return Err(Error::Handler(
-                        "github::api: response exceeded max_output_bytes and was truncated; \
-                         narrow it with jq, paginate less, or raise the cap"
-                            .to_string(),
-                    ));
-                }
-                Ok::<_, Error>(ValueResponse {
-                    value: parse_api_stdout(&out.stdout),
+                let args = api_args(&req);
+                let args_summary = events::summarize_args(&args);
+                let repo = events::repo_from_args(&args);
+                events::run_and_emit(&emitter, API_ID, args_summary, repo, async move {
+                    let cfg = cell.read().await.clone();
+                    let stdin = match &req.body {
+                        Some(v) => Some(serde_json::to_string(v).map_err(|e| {
+                            Error::Handler(format!("github::api: body does not serialize: {e}"))
+                        })?),
+                        None => None,
+                    };
+                    let out = gh::run(&cfg, &args, stdin, req.timeout_ms)
+                        .await
+                        .map_err(Error::from)?;
+                    let out = expect_ok(API_ID, out, OK)?;
+                    if out.stdout_truncated {
+                        return Err(Error::Handler(
+                            "github::api: response exceeded max_output_bytes and was truncated; \
+                             narrow it with jq, paginate less, or raise the cap"
+                                .to_string(),
+                        ));
+                    }
+                    Ok::<_, Error>(ValueResponse {
+                        value: parse_api_stdout(&out.stdout),
+                    })
                 })
+                .await
             }
         })
         .description(API_DESC),

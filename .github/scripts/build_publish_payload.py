@@ -124,6 +124,23 @@ def _baseline_worker_identities(baseline_workers_json: dict[str, Any] | None) ->
     }
 
 
+# Workers the engine itself hosts (enabled via the engine config, not
+# installed from the registry). A candidate install can flip one on mid-boot
+# (e.g. harness enables `iii-stream` for console streaming), which lands it in
+# the workers-baseline diff even though its interface is not part of the
+# released worker's surface — and its schemas are not this repo's to fix.
+ENGINE_BUILTIN_WORKERS = frozenset(
+    {
+        "configuration",
+        "iii-observability",
+        "iii-state",
+        "iii-stream",
+        "iii-worker-manager",
+        "iii-worker-ops",
+    }
+)
+
+
 def _resolve_target_worker_names(
     *,
     workers: list[dict[str, Any]],
@@ -137,7 +154,9 @@ def _resolve_target_worker_names(
         new_names = {
             identity
             for worker in workers
-            if (identity := _worker_identity(worker)) and identity not in baseline
+            if (identity := _worker_identity(worker))
+            and identity not in baseline
+            and identity not in ENGINE_BUILTIN_WORKERS
         }
         if new_names:
             return new_names
@@ -329,6 +348,7 @@ def build_payload(
     binaries: dict[str, Any],
     image_tag: str,
     bundle: dict[str, Any] | None = None,
+    experimental: bool = False,
 ) -> dict[str, Any]:
     root = repo_root / worker
     meta = _read_yaml(root / "iii.worker.yaml") or {}
@@ -364,6 +384,11 @@ def build_payload(
             _normalize_registry_trigger(trigger)
             for trigger in interface.get("triggers") or []
         ],
+        # Always sent, never omitted: the registry treats a missing flag as
+        # "not experimental" and clears the badge, so leaving it out on a
+        # still-experimental release would silently promote the worker. The
+        # registry rejects a string here, hence the explicit bool.
+        "experimental": bool(experimental),
     }
 
     tags = normalize_tags(meta.get("tags"))
@@ -410,6 +435,14 @@ def main() -> int:
     parser.add_argument("--image-tag", default="")
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--out", default="payload.json")
+    # Workflow inputs arrive as strings; anything but a literal `true` is
+    # false, so a missing or malformed value publishes as stable rather than
+    # marking a worker experimental by accident.
+    parser.add_argument(
+        "--experimental",
+        default="false",
+        help="'true' marks the published worker experimental in the registry",
+    )
     args = parser.parse_args()
 
     interface = json.loads(pathlib.Path(args.interface_json).read_text(encoding="utf-8"))
@@ -431,6 +464,7 @@ def main() -> int:
         binaries=binaries,
         image_tag=args.image_tag,
         bundle=bundle,
+        experimental=args.experimental.strip().lower() == "true",
     )
     pathlib.Path(args.out).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({k: v for k, v in payload.items() if k != "readme"}, indent=2))

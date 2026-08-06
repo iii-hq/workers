@@ -13,7 +13,10 @@ use serde_json::Value;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ExecuteBatchReq {
-    pub db: String,
+    /// Logical database name. Optional — omitting it targets the sole
+    /// configured database, or `primary` when several are configured.
+    #[serde(default)]
+    pub db: Option<String>,
     /// Statements to run in order inside one transaction. Each entry is
     /// either a bare SQL string or `{ "sql": "...", "params": [...] }` —
     /// use `params` for dynamic values instead of inlining them into the SQL.

@@ -1,0 +1,796 @@
+name: Harness E2E
+
+on:
+  workflow_call:
+    inputs:
+      runs:
+        description: Number of executions per scenario
+        required: false
+        type: number
+        default: 1
+      max_parallel:
+        description: Maximum number of live model scenarios
+        required: false
+        type: number
+        default: 2
+      subjects:
+        description: JSON array of subject entries with id, model, and provider
+        required: false
+        type: string
+        default: '[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]'
+      judge_model:
+        description: Fixed judge model id
+        required: false
+        type: string
+        default: claude-sonnet-4-6
+      judge_provider:
+        description: Fixed judge provider id
+        required: false
+        type: string
+        default: anthropic
+      source_ref:
+        description: Git ref or commit to evaluate; defaults to the caller revision
+        required: false
+        type: string
+        default: ''
+      stack_mode:
+        description: Resolve runtime workers from source binaries or the registry
+        required: false
+        type: string
+        default: source
+      benchmark_lane:
+        description: Stable comparison lane written to benchmark history
+        required: false
+        type: string
+        default: ci
+      release_tag:
+        description: Release tag associated with this run
+        required: false
+        type: string
+        default: ''
+      release_worker:
+        description: Released worker associated with this run
+        required: false
+        type: string
+        default: ''
+      release_version:
+        description: Released worker version associated with this run
+        required: false
+        type: string
+        default: ''
+      release_url:
+        description: GitHub release URL associated with this run
+        required: false
+        type: string
+        default: ''
+      release_run_id:
+        description: GitHub Actions run that published the released worker
+        required: false
+        type: string
+        default: ''
+      smoke_run_id:
+        description: GitHub Actions smoke run that preceded this E2E run
+        required: false
+        type: string
+        default: ''
+      registry_tag:
+        description: Registry artifact tag associated with this run
+        required: false
+        type: string
+        default: ''
+      cli_channel:
+        description: iii installer channel used for a registry stack
+        required: false
+        type: string
+        default: latest
+      stack_versions:
+        description: JSON object of exact worker versions required in a registry E2E stack
+        required: false
+        type: string
+        default: '{}'
+      validation_profile:
+        description: Scenario profile resolved for this execution
+        required: false
+        type: string
+        default: full
+      scenarios_json:
+        description: Exact scenario ids; required for custom and checked for named profiles
+        required: false
+        type: string
+        default: '[]'
+      catalog_sha:
+        description: Release catalog SHA used by the caller preview
+        required: false
+        type: string
+        default: ''
+      profile_digest:
+        description: Canonical scenario profile digest used by the caller preview
+        required: false
+        type: string
+        default: ''
+      coverage:
+        description: Instrument the E2E stack and produce an LLVM coverage report
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      validation_profile:
+        description: Resolved scenario profile
+        value: ${{ jobs.build.outputs.validation_profile }}
+      scenarios_json:
+        description: Resolved scenario ids
+        value: ${{ jobs.build.outputs.scenarios }}
+      required_scenarios_json:
+        description: Canonical promotion gate
+        value: ${{ jobs.build.outputs.required_scenarios }}
+      profile_digest:
+        description: Digest of the canonical scenario catalog and release gate
+        value: ${{ jobs.build.outputs.profile_digest }}
+      catalog_sha:
+        description: Catalog commit used by the suite
+        value: ${{ jobs.build.outputs.catalog_sha }}
+    secrets:
+      anthropic_api_key:
+        required: false
+      openai_api_key:
+        required: false
+      zai_api_key:
+        required: false
+      deepseek_api_key:
+        required: false
+
+jobs:
+  build:
+    name: harness e2e build
+    if: inputs.stack_mode == 'registry' || github.ref == 'refs/heads/main' || inputs.source_ref != ''
+    runs-on: ubuntu-latest
+    # Instrumented cold builds are slower than regular ones.
+    timeout-minutes: ${{ inputs.coverage && 60 || 45 }}
+    outputs:
+      scenarios: ${{ steps.scenarios.outputs.json }}
+      required_scenarios: ${{ steps.scenarios.outputs.required }}
+      validation_profile: ${{ steps.scenarios.outputs.profile }}
+      profile_digest: ${{ steps.scenarios.outputs.profile_digest }}
+      catalog_sha: ${{ steps.scenarios.outputs.catalog_sha }}
+      engine_binary: ${{ steps.engine.outputs.binary }}
+      engine_revision: ${{ steps.engine.outputs.version }}
+    steps:
+      # The registry-mode stack build filled a standard runner's disk (the
+      # harness 1.7.1 release died packaging harness-e2e-stack.tar.gz with
+      # ENOSPC). Preinstalled toolchains this job never touches hold ~30GB;
+      # drop them before building.
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
+
+      # state/build.rs builds its embedded UI when the checked-out assets are
+      # stale, so the isolated E2E build needs the same Node/pnpm toolchain as
+      # the regular CI worker builds.
+      - name: Setup pnpm
+        if: inputs.stack_mode == 'source'
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node
+        if: inputs.stack_mode == 'source'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Validate subject matrix
+        env:
+          SUBJECTS: ${{ inputs.subjects }}
+          JUDGE_MODEL: ${{ inputs.judge_model }}
+          JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+          STACK_MODE: ${{ inputs.stack_mode }}
+          CLI_CHANNEL: ${{ inputs.cli_channel }}
+          REGISTRY_TAG: ${{ inputs.registry_tag }}
+          RELEASE_WORKER: ${{ inputs.release_worker }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          STACK_VERSIONS: ${{ inputs.stack_versions }}
+          COVERAGE: ${{ inputs.coverage }}
+        run: |
+          set -euo pipefail
+          jq -e '
+            type == "array" and length > 0 and
+            all(.[];
+              (.id | type == "string" and test("^[A-Za-z0-9_.-]+$")) and
+              (.model | type == "string" and length > 0) and
+              (.provider | type == "string" and test("^[A-Za-z0-9_-]+$"))
+            ) and
+            ([.[].id] | unique | length) == length
+          ' <<<"$SUBJECTS" >/dev/null
+          [[ -n "$JUDGE_MODEL" ]]
+          [[ "$JUDGE_PROVIDER" =~ ^[A-Za-z0-9_-]+$ ]]
+          case "$STACK_MODE" in
+            source) ;;
+            registry)
+              [[ "$CLI_CHANNEL" == "latest" || "$CLI_CHANNEL" == "next" ]]
+              [[ "$REGISTRY_TAG" =~ ^[A-Za-z0-9._-]+$ ]]
+              [[ "$RELEASE_WORKER" =~ ^[A-Za-z0-9_-]+$ ]]
+              [[ -n "$RELEASE_VERSION" ]]
+              jq -e --arg worker "$RELEASE_WORKER" --arg version "$RELEASE_VERSION" '
+                type == "object" and
+                all(to_entries[];
+                  (.key | test("^[a-z0-9][a-z0-9_-]*$")) and
+                  (.value | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+(-(experimental|alpha|beta))?$"))
+                ) and
+                .[$worker] == $version
+              ' <<<"$STACK_VERSIONS" >/dev/null
+              [[ "$COVERAGE" == "false" ]]
+              ;;
+            *)
+              echo "::error::stack_mode must be source or registry"
+              exit 2
+              ;;
+          esac
+
+      - name: Install published iii release
+        if: inputs.stack_mode == 'source'
+        id: engine
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          III_INSTALL_URL: https://install.iii.dev/iii/main/install.sh
+          III_INSTALL_BIN_DIR: ${{ github.workspace }}/target/iii/bin
+        run: |
+          set -euo pipefail
+          installer="$RUNNER_TEMP/install-iii.sh"
+          curl -fsSL --retry 3 --retry-all-errors \
+            "$III_INSTALL_URL" \
+            -o "$installer"
+          BIN_DIR="$III_INSTALL_BIN_DIR" sh "$installer"
+
+          for binary in iii iii-init iii-worker; do
+            test -x "$III_INSTALL_BIN_DIR/$binary"
+          done
+          version=$("$III_INSTALL_BIN_DIR/iii" --version | awk '{print $NF}')
+          test -n "$version"
+          {
+            echo "binary=target/iii/bin/iii"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: ${{ inputs.coverage && 'clippy,llvm-tools' || 'clippy' }}
+
+      - name: Restore E2E Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Instrumented builds have different fingerprints; keep them on their
+          # own key so coverage runs never poison the normal cache.
+          shared-key: ${{ inputs.coverage && 'harness-e2e-coverage' || 'harness-e2e' }}
+          save-if: ${{ inputs.coverage }}
+          workspaces: |
+            harness -> target
+            database -> target
+            state -> target
+            queue -> target
+            session-manager -> target
+            llm-router -> target
+            provider-anthropic -> target
+            provider-openai -> target
+            provider-openai-codex -> target
+            provider-claude-code -> target
+            provider-zai -> target
+            provider-deepseek -> target
+            context-manager -> target
+            iii-directory -> target
+            cron -> target
+            web -> target
+
+      - name: Test E2E crate
+        run: cargo test --locked --manifest-path harness/Cargo.toml -p harness-e2e
+
+      - name: Lint E2E crate
+        run: cargo clippy --locked --manifest-path harness/Cargo.toml -p harness-e2e --all-targets -- -D warnings
+
+      - name: Build source E2E stack
+        if: inputs.stack_mode == 'source'
+        env:
+          SUBJECTS: ${{ inputs.subjects }}
+          JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+          RUSTFLAGS: ${{ inputs.coverage && '-Cinstrument-coverage -Cllvm-args=-runtime-counter-relocation' || '' }}
+          # Scratch profile path so instrumented build scripts don't drop
+          # default.profraw files inside the crate directories.
+          LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/build-profraw/%m_%p.profraw', github.workspace) || '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/coverage/build-profraw
+          for worker in database state queue session-manager llm-router context-manager iii-directory cron web fp; do
+            cargo build --locked --release --manifest-path "$worker/Cargo.toml"
+          done
+          mapfile -t providers < <(
+            {
+              jq -r '.[].provider' <<<"$SUBJECTS"
+              printf '%s\n' "$JUDGE_PROVIDER"
+            } | sort -u
+          )
+          for provider in "${providers[@]}"; do
+            worker="provider-$provider"
+            test -f "$worker/Cargo.toml"
+            cargo build --locked --release --manifest-path "$worker/Cargo.toml"
+          done
+          cargo build --locked --release \
+            --manifest-path harness/Cargo.toml \
+            -p harness \
+            -p harness-e2e
+
+      - name: Build registry E2E runner
+        if: inputs.stack_mode == 'registry'
+        run: cargo build --locked --release --manifest-path harness/Cargo.toml -p harness-e2e
+
+      - name: Read code-defined scenarios
+        id: scenarios
+        env:
+          VALIDATION_PROFILE: ${{ inputs.validation_profile }}
+          REQUESTED_SCENARIOS: ${{ inputs.scenarios_json }}
+          EXPECTED_CATALOG_SHA: ${{ inputs.catalog_sha }}
+          EXPECTED_PROFILE_DIGEST: ${{ inputs.profile_digest }}
+          # The instrumented binary would otherwise drop default.profraw in cwd.
+          LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/build-profraw/%m_%p.profraw', github.workspace) || '' }}
+        run: |
+          set -euo pipefail
+          available=$(harness/target/release/harness-e2e list)
+          resolved=$(python3 .github/scripts/harness_e2e_profiles.py \
+            --available-json "$available" \
+            --profile "$VALIDATION_PROFILE" \
+            --scenarios-json "$REQUESTED_SCENARIOS" \
+            --catalog-sha "${{ github.sha }}" \
+            --expected-catalog-sha "$EXPECTED_CATALOG_SHA" \
+            --expected-profile-digest "$EXPECTED_PROFILE_DIGEST")
+          {
+            echo "json=$(jq -c .scenarios <<<"$resolved")"
+            echo "required=$(jq -c .required_scenarios <<<"$resolved")"
+            echo "profile=$(jq -r .validation_profile <<<"$resolved")"
+            echo "profile_digest=$(jq -r .profile_digest <<<"$resolved")"
+            echo "catalog_sha=$(jq -r .catalog_sha <<<"$resolved")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Package E2E binaries
+        if: inputs.stack_mode == 'source'
+        env:
+          SUBJECTS: ${{ inputs.subjects }}
+          JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+        run: |
+          set -euo pipefail
+          paths=(
+            target/iii/bin/iii
+            target/iii/bin/iii-init
+            target/iii/bin/iii-worker
+            database/target/release/database
+            state/target/release/state
+            queue/target/release/queue
+            session-manager/target/release/session-manager
+            llm-router/target/release/llm-router
+            context-manager/target/release/context-manager
+            iii-directory/target/release/iii-directory
+            cron/target/release/cron
+            web/target/release/web
+            fp/target/release/fp
+            harness/target/release/harness
+            harness/target/release/harness-e2e
+          )
+          mapfile -t providers < <(
+            {
+              jq -r '.[].provider' <<<"$SUBJECTS"
+              printf '%s\n' "$JUDGE_PROVIDER"
+            } | sort -u
+          )
+          for provider in "${providers[@]}"; do
+            paths+=("provider-$provider/target/release/provider-$provider")
+          done
+          for path in "${paths[@]}"; do
+            test -x "$path"
+          done
+          tar -czf target/harness-e2e-stack.tar.gz "${paths[@]}"
+
+      - name: Package registry E2E runner
+        if: inputs.stack_mode == 'registry'
+        # Registry mode builds only the runner (harness/target/release), so the
+        # repo-root target/ this writes into does not exist yet — source mode
+        # gets it from the engine install. Both harness release attempts died
+        # here (1.7.1 masked as ENOSPC, 1.7.2 as ENOENT).
+        run: |
+          mkdir -p target
+          tar -czf target/harness-e2e-stack.tar.gz -C harness/target/release harness-e2e
+
+      - name: Upload E2E binaries
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-stack
+          path: target/harness-e2e-stack.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+
+  e2e:
+    name: harness e2e / ${{ matrix.subject.id }} / ${{ matrix.scenario }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ inputs.max_parallel }}
+      matrix:
+        scenario: ${{ fromJSON(needs.build.outputs.scenarios) }}
+        subject: ${{ fromJSON(inputs.subjects) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
+
+      - name: Download E2E binaries
+        uses: actions/download-artifact@v7
+        with:
+          name: harness-e2e-stack
+          path: target
+
+      - name: Extract E2E binaries
+        run: |
+          if [[ "${{ inputs.stack_mode }}" == registry ]]; then
+            mkdir -p target/runner
+            tar -xzf target/harness-e2e-stack.tar.gz -C target/runner
+          else
+            tar -xzf target/harness-e2e-stack.tar.gz
+          fi
+
+      - uses: actions/setup-python@v6
+        if: inputs.stack_mode == 'registry'
+        with:
+          python-version: '3.x'
+
+      - name: Install registry stack helper dependency
+        if: inputs.stack_mode == 'registry'
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Prepare KVM for sandbox scenario
+        if: matrix.scenario == 'shell_coder_sandbox'
+        run: |
+          test -c /dev/kvm
+          sudo chmod 0666 /dev/kvm
+
+      - name: Prepare coverage profile directory
+        if: inputs.coverage
+        run: mkdir -p target/harness-e2e/profraw
+
+      - name: Run real-stack quality scenario
+        if: inputs.stack_mode == 'source'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
+          OPENAI_API_KEY: ${{ secrets.openai_api_key }}
+          ZAI_API_KEY: ${{ secrets.zai_api_key }}
+          DEEPSEEK_API_KEY: ${{ secrets.deepseek_api_key }}
+          III_BIN: ${{ github.workspace }}/${{ needs.build.outputs.engine_binary }}
+          HARNESS_E2E_BIN: ${{ github.workspace }}/harness/target/release/harness-e2e
+          HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
+          HARNESS_E2E_SCENARIO: ${{ matrix.scenario }}
+          HARNESS_E2E_RUNS: ${{ inputs.runs }}
+          HARNESS_E2E_MODEL: ${{ matrix.subject.model }}
+          HARNESS_E2E_PROVIDER: ${{ matrix.subject.provider }}
+          HARNESS_E2E_JUDGE_MODEL: ${{ inputs.judge_model }}
+          HARNESS_E2E_JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+          HARNESS_E2E_ENGINE_REVISION: ${{ needs.build.outputs.engine_revision }}
+          # run-ci.sh spawns every worker with cwd inside the artifacts dir, so
+          # the profile path must be absolute; %c keeps profiles flushing after
+          # the SIGTERM teardown. Inert when the stack is not instrumented.
+          LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/harness-e2e/profraw/%m_%p%c.profraw', github.workspace) || '' }}
+        run: harness/tests/e2e/run-ci.sh
+
+      - name: Run deployed-stack quality scenario
+        if: inputs.stack_mode == 'registry'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
+          OPENAI_API_KEY: ${{ secrets.openai_api_key }}
+          ZAI_API_KEY: ${{ secrets.zai_api_key }}
+          DEEPSEEK_API_KEY: ${{ secrets.deepseek_api_key }}
+          III_CLI_CHANNEL: ${{ inputs.cli_channel }}
+          III_WORKER_TAG: ${{ inputs.registry_tag }}
+          HARNESS_E2E_RELEASE_WORKER: ${{ inputs.release_worker }}
+          HARNESS_E2E_RELEASE_VERSION: ${{ inputs.release_version }}
+          HARNESS_E2E_RELEASE_TAG: ${{ inputs.release_tag }}
+          HARNESS_E2E_RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          HARNESS_E2E_SMOKE_RUN_ID: ${{ inputs.smoke_run_id }}
+          HARNESS_E2E_STACK_VERSIONS: ${{ inputs.stack_versions }}
+          HARNESS_E2E_BIN: ${{ github.workspace }}/target/runner/harness-e2e
+          HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
+          HARNESS_E2E_SCENARIO: ${{ matrix.scenario }}
+          HARNESS_E2E_RUNS: ${{ inputs.runs }}
+          HARNESS_E2E_MODEL: ${{ matrix.subject.model }}
+          HARNESS_E2E_PROVIDER: ${{ matrix.subject.provider }}
+          HARNESS_E2E_JUDGE_MODEL: ${{ inputs.judge_model }}
+          HARNESS_E2E_JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+        run: harness/tests/e2e/run-deployed-ci.sh
+
+      - name: Write benchmark context
+        if: always()
+        env:
+          SUBJECT_ID: ${{ matrix.subject.id }}
+          SCENARIO_ID: ${{ matrix.scenario }}
+          REQUESTED_RUNS: ${{ inputs.runs }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/harness-e2e/results
+          jq -n \
+            --arg subject_id "$SUBJECT_ID" \
+            --arg scenario_id "$SCENARIO_ID" \
+            --argjson requested_runs "$REQUESTED_RUNS" \
+            '{
+              schema_version: 1,
+              subject_id: $subject_id,
+              scenario_id: $scenario_id,
+              requested_runs: $requested_runs
+            }' > target/harness-e2e/results/benchmark-context.json
+
+      - name: Write E2E summary
+        if: always()
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+          SUBJECT: ${{ matrix.subject.id }}
+        run: |
+          {
+            echo "### Harness E2E · $SUBJECT · $SCENARIO"
+            echo
+            echo "CI gate: scores are advisory; empty reports, hard-gate failures, and technical failures are blocking."
+            echo
+            results=target/harness-e2e/results/results.json
+            if [[ -f "$results" ]]; then
+              jq -r '
+                .scenarios[0] |
+                "| Score median | Threshold | Pass rate | Hard-gate failures | Technical failures | Subject cost (USD) | Judge cost (USD) | Total cost (USD) | Status |",
+                "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+                "| \(.aggregate.median_score // "n/a") | \(.threshold) | \((.aggregate.pass_rate * 100) | round)% | \(.aggregate.hard_gate_failures) | \(.aggregate.technical_failures) | \(.aggregate.cost.subject_usd // "n/a") | \(.aggregate.cost.judge_usd // "n/a") | \(.aggregate.cost.total_usd // "n/a") | \(if .passed then "pass" else "fail" end) |",
+                "",
+                "| Run | Score | Subject cost (USD) | Judge cost (USD) | Total cost (USD) | Status |",
+                "| --- | ---: | ---: | ---: | ---: | --- |",
+                (.runs | to_entries[] |
+                  "| \(.key + 1) | \(.value.score // "n/a") | \(.value.cost.subject_usd // "n/a") | \(.value.cost.judge_usd // "n/a") | \(.value.cost.total_usd // "n/a") | \(.value.status) |")
+              ' "$results"
+            else
+              echo "No E2E result report was produced."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload E2E results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.scenario }}-results
+          path: target/harness-e2e/results/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload E2E diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.scenario }}-diagnostics
+          path: |
+            target/harness-e2e/logs/
+            target/harness-e2e/stack/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload coverage profiles
+        if: always() && inputs.coverage
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.scenario }}-profraw
+          path: target/harness-e2e/profraw/
+          retention-days: 1
+          if-no-files-found: ignore
+
+  summary:
+    name: harness e2e summary
+    needs: [build, e2e]
+    if: always() && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
+
+      - name: Download E2E results
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          pattern: harness-e2e-*-results
+          path: target/harness-e2e-results
+
+      - name: Write suite cost summary
+        run: |
+          {
+            echo "### Harness E2E suite cost"
+            echo
+            mapfile -d '' reports < <(
+              find target/harness-e2e-results -name results.json -print0 2>/dev/null
+            )
+            if ((${#reports[@]} == 0)); then
+              echo "No E2E result reports were produced."
+              exit 0
+            fi
+            jq -sr '
+              [
+                .[] as $report |
+                $report.scenarios[] |
+                {
+                  subject: "\($report.subject.provider)/\($report.subject.model)",
+                  cost: .aggregate.cost
+                }
+              ]
+              | sort_by(.subject)
+              | group_by(.subject)
+              | map({
+                  subject: .[0].subject,
+                  reports: length,
+                  subject_usd: (
+                    map(.cost.subject_usd)
+                    | if all(.[]; . != null) then add else null end
+                  ),
+                  judge_usd: (
+                    map(.cost.judge_usd)
+                    | if all(.[]; . != null) then add else null end
+                  ),
+                  total_usd: (
+                    map(.cost.total_usd)
+                    | if all(.[]; . != null) then add else null end
+                  )
+                })
+              | "| Subject | Reports | Subject cost (USD) | Judge cost (USD) | Total cost (USD) |",
+                "| --- | ---: | ---: | ---: | ---: |",
+                (.[] |
+                  "| \(.subject) | \(.reports) | \(.subject_usd // "n/a") | \(.judge_usd // "n/a") | \(.total_usd // "n/a") |")
+            ' "${reports[@]}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect compact benchmark metrics
+        env:
+          SUBJECTS: ${{ inputs.subjects }}
+          SCENARIOS: ${{ needs.build.outputs.scenarios }}
+          BENCHMARK_LANE: ${{ inputs.benchmark_lane }}
+          REQUESTED_RUNS: ${{ inputs.runs }}
+          SOURCE_SHA: ${{ inputs.source_ref || github.sha }}
+          SOURCE_REF: ${{ inputs.release_tag || inputs.source_ref || github.ref }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_WORKER: ${{ inputs.release_worker }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_URL: ${{ inputs.release_url }}
+          REGISTRY_TAG: ${{ inputs.registry_tag }}
+          JUDGE_MODEL: ${{ inputs.judge_model }}
+          JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+          EXECUTION_RUN_ID: ${{ github.run_id }}
+          EXECUTION_ATTEMPT: ${{ github.run_attempt }}
+          EXECUTION_EVENT: ${{ github.event_name }}
+          EXECUTION_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/collect_harness_e2e_benchmarks.py \
+            --reports-root target/harness-e2e-results \
+            --output-dir target/harness-e2e-benchmark \
+            --subjects-json "$SUBJECTS" \
+            --scenarios-json "$SCENARIOS" \
+            --lane "$BENCHMARK_LANE" \
+            --requested-runs "$REQUESTED_RUNS" \
+            --source-sha "$SOURCE_SHA" \
+            --source-ref "$SOURCE_REF" \
+            --repository "$REPOSITORY" \
+            --workflow-url "$WORKFLOW_URL" \
+            --release-tag "$RELEASE_TAG" \
+            --release-worker "$RELEASE_WORKER" \
+            --release-version "$RELEASE_VERSION" \
+            --release-url "$RELEASE_URL" \
+            --registry-tag "$REGISTRY_TAG" \
+            --judge-model "$JUDGE_MODEL" \
+            --judge-provider "$JUDGE_PROVIDER" \
+            --execution-run-id "$EXECUTION_RUN_ID" \
+            --execution-attempt "$EXECUTION_ATTEMPT" \
+            --execution-event "$EXECUTION_EVENT" \
+            --execution-actor "$EXECUTION_ACTOR"
+
+      - name: Upload compact benchmark metrics
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-benchmark
+          path: |
+            target/harness-e2e-benchmark/quality.json
+            target/harness-e2e-benchmark/efficiency.json
+            target/harness-e2e-benchmark/snapshot.json
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload dashboard execution detail
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-dashboard
+          path: target/harness-e2e-benchmark/execution.json
+          retention-days: 30
+          if-no-files-found: error
+
+  coverage:
+    name: harness e2e coverage
+    needs: [build, e2e]
+    if: always() && inputs.stack_mode == 'source' && inputs.coverage && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Sources must match the binaries built from the same ref for llvm-cov.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+
+      - name: Download E2E binaries
+        uses: actions/download-artifact@v7
+        with:
+          name: harness-e2e-stack
+          path: target
+
+      - name: Extract E2E binaries
+        run: tar -xzf target/harness-e2e-stack.tar.gz
+
+      - name: Download coverage profiles
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          pattern: harness-e2e-*-profraw
+          merge-multiple: true
+          path: target/coverage/profraw
+
+      - name: Generate coverage report
+        env:
+          SUBJECTS: ${{ inputs.subjects }}
+          JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+        run: |
+          set -euo pipefail
+          objects=(
+            database/target/release/database
+            state/target/release/state
+            queue/target/release/queue
+            session-manager/target/release/session-manager
+            llm-router/target/release/llm-router
+            context-manager/target/release/context-manager
+            iii-directory/target/release/iii-directory
+            cron/target/release/cron
+            harness/target/release/harness
+            harness/target/release/harness-e2e
+          )
+          mapfile -t providers < <(
+            {
+              jq -r '.[].provider' <<<"$SUBJECTS"
+              printf '%s\n' "$JUDGE_PROVIDER"
+            } | sort -u
+          )
+          for provider in "${providers[@]}"; do
+            objects+=("provider-$provider/target/release/provider-$provider")
+          done
+          object_args=()
+          for object in "${objects[@]}"; do
+            object_args+=(--object "$object")
+          done
+          .github/scripts/coverage_report.sh \
+            --profraw-dir target/coverage/profraw \
+            --output-dir target/coverage/e2e \
+            --title harness-e2e \
+            "${object_args[@]}"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-coverage
+          path: |
+            target/coverage/e2e/html/
+            target/coverage/e2e/summary.json
+            target/coverage/e2e/report.txt
+          retention-days: 14
+          if-no-files-found: ignore

@@ -385,7 +385,7 @@
         "description": "`message` is either a plain string (sugar for a user text message) or a full `AgentMessage`."
       },
       "Mode": {
-        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt. `ask` is also structural: the turn's dispatch policy is capped at the operator's read-only baseline, never widened.",
+        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt. `ask` is also structural: the turn's dispatch policy is capped at the configured default policy, never widened.",
         "enum": [
           "ask",
           "agent"
@@ -438,9 +438,44 @@
                 "type": "null"
               }
             ],
-            "description": "The fail-closed dispatch policy. Omitted on a NEW session → deny every call; omitted when steering an EXISTING session → inherit the prior turn's policy (a nudge must not disarm a live run). Pass `{ allow: [] }` to strip explicitly. On a NEW `ask`-mode turn the effective policy is capped at the operator's read-only baseline; a steer folded into an already-running turn keeps that turn's frozen policy until it finalises."
+            "description": "The fail-closed dispatch policy. Omitted on a NEW session → deny every call; omitted when steering an EXISTING session → inherit the prior turn's policy (a nudge must not disarm a live run). Pass `{ allow: [] }` to strip explicitly. On a NEW `ask`-mode turn the effective policy is capped at the configured default policy; a steer folded into an already-running turn keeps that turn's frozen policy until it finalises."
+          },
+          "max_cost_usd": {
+            "description": "Hard USD budget for the complete root-and-subagent session tree. Every model used by the tree must advertise catalog pricing.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "max_output_tokens": {
+            "description": "Per-generation output-token ceiling forwarded to the router.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_total_tokens": {
+            "description": "Hard input-plus-output token budget for the complete root-and-subagent session tree.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_turns": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_validation_retries": {
+            "description": "Per-turn override of the configured validation-retry budget (also the bound on `harness::hook::post-turn` deny re-prompts).",
             "format": "uint32",
             "minimum": 0.0,
             "type": [
@@ -493,7 +528,7 @@
               }
             ],
             "default": "enrich",
-            "description": "How `system_prompt` combines with the built-in prompt: `override` replaces it; `enrich` (default) appends to it."
+            "description": "How `system_prompt` combines with the built-in prompt: `override` replaces it; `enrich` (default) appends to it; `disabled` omits it."
           },
           "thinking_level": {
             "anyOf": [
@@ -545,6 +580,13 @@
             "description": "Caller prompt is appended to the built-in identity prompt.",
             "enum": [
               "enrich"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No system prompt is sent to the model.",
+            "enum": [
+              "disabled"
             ],
             "type": "string"
           }

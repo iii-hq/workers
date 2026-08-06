@@ -102,7 +102,7 @@ pub async fn handle(state: &AppState, req: TxExecuteReq) -> Result<TxExecuteResp
         }
     };
 
-    match result {
+    let response = match result {
         Ok(er) => {
             state.log.debug(
                 "db_tx_statement",
@@ -117,6 +117,18 @@ pub async fn handle(state: &AppState, req: TxExecuteReq) -> Result<TxExecuteResp
             );
             let returned_rows =
                 crate::handlers::query_rows_to_objects(&er.returned_columns, er.returned_rows);
+            // Staged, not announced: an interactive transaction's write is
+            // invisible to everyone else until COMMIT, and announcing it here
+            // would advertise rows a ROLLBACK is about to erase.
+            state
+                .stage_row_change(
+                    &req.transaction_id,
+                    &db_name,
+                    &req.sql,
+                    er.affected_rows,
+                    Some(&returned_rows),
+                )
+                .await;
             Ok(TxExecuteResp {
                 affected_rows: er.affected_rows,
                 last_insert_id: er.last_insert_id,
@@ -137,7 +149,11 @@ pub async fn handle(state: &AppState, req: TxExecuteReq) -> Result<TxExecuteResp
             );
             Err(err_to_str(e))
         }
-    }
+    };
+    // Finalizers synchronize on this guard; keep it through event staging so
+    // commit/rollback cannot overtake the statement between SQL and bookkeeping.
+    drop(g);
+    response
 }
 
 #[cfg(test)]
@@ -287,6 +303,7 @@ mod tests {
             handles: std::sync::Arc::new(crate::handle::HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_helpers::observability::Logger::new(),
+            row_changes: None,
         };
 
         crate::handlers::execute::handle(

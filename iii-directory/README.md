@@ -54,8 +54,7 @@ iii worker add iii-directory
 ```
 
 `iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker on the next
-`iii start`.
+`~/.iii/config.yaml`, and the engine starts the worker the next time it boots.
 
 ---
 
@@ -257,7 +256,7 @@ native ids directly — every one takes the same filters
 | `engine::triggers::info` | Single trigger-type detail: configuration schema, return schema. |
 | `engine::registered-triggers::list` | List trigger INSTANCES (subscriber rows). |
 | `engine::registered-triggers::info` | Single registered-trigger detail. |
-| `engine::workers::list` | List workers with an open engine WS connection. Daemon-managed providers (`iii-http`, `iii-cron`, `iii-state`) won't appear — call `worker::list` from the supervisor to see those. |
+| `engine::workers::list` | List workers with an open engine WS connection. Daemon-managed providers (`http`, `cron`, `state`) won't appear — call `worker::list` from the supervisor to see those. |
 | `engine::workers::info` | One worker's detail by `name`. |
 
 ### `directory::registry::*` (workers registry HTTP proxy)

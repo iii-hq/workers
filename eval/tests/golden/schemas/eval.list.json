@@ -1,0 +1,149 @@
+{
+  "function_id": "eval::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "limit": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "title": "EvalListRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "ComparisonDimensionV1": {
+        "enum": [
+          "prompt",
+          "system_prompt"
+        ],
+        "type": "string"
+      },
+      "EvalStatusV1": {
+        "enum": [
+          "queued",
+          "running",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "EvalSummaryV1": {
+        "additionalProperties": false,
+        "properties": {
+          "completed_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "control_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "dimension": {
+            "$ref": "#/definitions/ComparisonDimensionV1"
+          },
+          "eligible": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evaluation_id": {
+            "type": "string"
+          },
+          "failed_runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "passed_runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/EvalStatusV1"
+          },
+          "terminal_runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "total_runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "treatment_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "created_at",
+          "dimension",
+          "evaluation_id",
+          "failed_runs",
+          "model",
+          "passed_runs",
+          "status",
+          "terminal_runs",
+          "total_runs",
+          "updated_at"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "evaluations": {
+        "items": {
+          "$ref": "#/definitions/EvalSummaryV1"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "evaluations"
+    ],
+    "title": "EvalListResponseV1",
+    "type": "object"
+  }
+}

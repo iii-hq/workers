@@ -1,17 +1,16 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef } from 'react'
+import { resultEnvelope } from '@/components/function-trigger/FunctionTriggerCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
+import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import {
   assistantCopyText,
   functionTriggersByAssistant,
 } from '@/lib/function-trigger-copy'
+import { triggerFiredName } from '@/lib/sessions/entry-mapper'
 import { cn } from '@/lib/utils'
-import type {
-  FunctionTriggerMessage as FunctionTriggerMessageType,
-  Message as MessageType,
-} from '@/types/chat'
+import type { Message as MessageType } from '@/types/chat'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
-import { FunctionTriggerGroup } from './FunctionTriggerGroup'
 import { Message } from './Message'
 
 interface MessageListProps {
@@ -25,6 +24,10 @@ interface MessageListProps {
       when absent. */
   thinkingDetail?: string
   density?: 'route' | 'dock'
+  /** Rendered at the top of the transcript scroller, above the messages, so
+      it scrolls away with them instead of unmounting. When set it replaces
+      the `EmptyState` on an empty transcript (landing demo). */
+  header?: ReactNode
   onResolveApproval?: (
     sessionId: string,
     functionTriggerId: string,
@@ -42,50 +45,122 @@ interface MessageListProps {
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
   workingDir?: string | null
+  /**
+   * Render every function-call card (and group) already expanded. Off in the
+   * product, where a turn's calls collapse to one line each; on for showcase
+   * surfaces whose whole point is the result renderers.
+   */
+  defaultOpenCalls?: boolean
+  /** Registration rows by subscription id, for trigger-fired card detail. */
+  triggersById?: ReadonlyMap<string, SessionTriggerInfo>
 }
 
-type RenderItem =
-  | { kind: 'message'; key: string; message: MessageType }
-  | { kind: 'fcall-group'; key: string; messages: FunctionTriggerMessageType[] }
+/** What a trigger-fired card shows under "registration". */
+export interface TriggerRegistration {
+  /** Short header hint (trigger type, or the recovery source). */
+  summary?: string
+  detail: unknown
+}
 
 /**
- * Collapse runs of consecutive `function-trigger` messages into a single
- * `fcall-group` item. Single-call runs stay rendered as a standalone
- * `Message` so happy-agent, pending-approval, and error-on-fcall look
- * identical to today. Only runs of 2+ get the group accordion.
- *
- * The group's key is anchored to the first call's id so the React tree
- * stays stable as later calls land in the same run.
+ * Pull `subscription_id` out of a register-call output. Outputs arrive as the
+ * `{ content: [{text}], details }` result envelope (see functionResultOutput);
+ * the id lives in a JSON text block — bare objects/strings are handled too.
  */
-function groupConsecutiveFcalls(messages: MessageType[]): RenderItem[] {
-  const out: RenderItem[] = []
-  let buffer: FunctionTriggerMessageType[] = []
-
-  const flush = () => {
-    if (buffer.length === 0) return
-    if (buffer.length === 1) {
-      const only = buffer[0]
-      out.push({ kind: 'message', key: only.id, message: only })
-    } else {
-      out.push({
-        kind: 'fcall-group',
-        key: `fcall-group:${buffer[0].id}`,
-        messages: buffer,
-      })
+export function subscriptionIdOf(output: unknown): string | null {
+  const idOf = (v: unknown): string | null => {
+    if (typeof v === 'string') {
+      try {
+        return idOf(JSON.parse(v))
+      } catch {
+        return null
+      }
     }
-    buffer = []
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const id = (v as Record<string, unknown>).subscription_id
+      if (typeof id === 'string') return id
+    }
+    return null
   }
+  const envelope = resultEnvelope(output)
+  if (envelope) {
+    for (const text of envelope.texts) {
+      const id = idOf(text)
+      if (id) return id
+    }
+    return idOf(envelope.details)
+  }
+  return idOf(output)
+}
 
+/**
+ * Registration detail per message id, for trigger-fired notices AND the
+ * notification deliveries their notify-wakes produce. Two-tier per
+ * subscription: the harness's live/seen binding row when available, else
+ * recovered from the transcript — the `engine::register_trigger` call whose
+ * result carries the same subscription id (its input IS the registration).
+ * Notifications correlate by the subscription id embedded in their entry id
+ * (`e_notify_<sub>`), with a name-match fallback for older records; both are
+ * order-independent — an idle-session wake appends the notification BEFORE
+ * its fire record.
+ */
+export function resolveRegistrations(
+  messages: MessageType[],
+  triggersById?: ReadonlyMap<string, SessionTriggerInfo>,
+): Map<string, TriggerRegistration> {
+  const fromCalls = new Map<string, unknown>()
+  const notifyFireByName = new Map<string, string>()
   for (const m of messages) {
-    if (m.role === 'function-trigger') {
-      buffer.push(m)
-    } else {
-      flush()
-      out.push({ kind: 'message', key: m.id, message: m })
+    if (
+      m.role === 'function-trigger' &&
+      m.functionId === 'engine::register_trigger'
+    ) {
+      const subId = subscriptionIdOf(m.output)
+      if (subId && m.input !== undefined) fromCalls.set(subId, m.input)
+    } else if (m.role === 'system' && m.kind === 'trigger-fired' && m.trigger) {
+      const t = m.trigger
+      if (!t.target || t.target === 'notify' || t.target === 'harness::send')
+        notifyFireByName.set(triggerFiredName(t), t.subscription_id)
     }
   }
-  flush()
-
+  const regFor = (subscriptionId: string): TriggerRegistration | undefined => {
+    const row = triggersById?.get(subscriptionId)
+    // A post-reload ghost row is thin (no config) — the register call's
+    // input is the richer record then.
+    if (row && row.config !== undefined) {
+      return {
+        summary: row.triggerType,
+        detail: {
+          config: row.config,
+          conditions: row.conditions?.length ? row.conditions : undefined,
+          once: row.once,
+          label: row.label,
+          // Keep the delivery target — without it the WHEN/THEN view would
+          // misreport a call binding as "notify this session".
+          function_id:
+            row.delivery.kind === 'call' ? row.delivery.functionId : undefined,
+        },
+      }
+    }
+    const input = fromCalls.get(subscriptionId)
+    return input !== undefined
+      ? { summary: 'from register call', detail: input }
+      : undefined
+  }
+  const out = new Map<string, TriggerRegistration>()
+  for (const m of messages) {
+    if (m.role === 'system' && m.kind === 'trigger-fired' && m.trigger) {
+      const reg = regFor(m.trigger.subscription_id)
+      if (reg) out.set(m.id, reg)
+    } else if (m.role === 'user' && m.notification) {
+      // Exact: the persisted entry id is `e_notify_<subscription_id>`.
+      const fromId = /^e_notify_(sub_[A-Za-z0-9]+)/.exec(m.id)?.[1]
+      const name = /^\[notification\]\s*([^:]+):/.exec(m.content)?.[1]?.trim()
+      const subId = fromId ?? (name ? notifyFireByName.get(name) : undefined)
+      const reg = subId ? regFor(subId) : undefined
+      if (reg) out.set(m.id, reg)
+    }
+  }
   return out
 }
 
@@ -94,20 +169,26 @@ export function MessageList({
   isThinking,
   thinkingDetail,
   density = 'route',
+  header,
   onResolveApproval,
   onAlwaysAllow,
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
   workingDir,
+  defaultOpenCalls,
+  triggersById,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const lastPendingIdRef = useRef<string | null>(null)
 
-  const items = useMemo(() => groupConsecutiveFcalls(messages), [messages])
   const fcallsByAssistant = useMemo(
     () => functionTriggersByAssistant(messages),
     [messages],
+  )
+  const registrations = useMemo(
+    () => resolveRegistrations(messages, triggersById),
+    [messages, triggersById],
   )
 
   // Read optionally so isolated renders (Storybook) still work without the
@@ -166,7 +247,7 @@ export function MessageList({
     })
   }, [messages])
 
-  if (messages.length === 0) {
+  if (messages.length === 0 && !header) {
     return <EmptyState {...resolveEmptyState(ctx, density)} />
   }
 
@@ -175,21 +256,8 @@ export function MessageList({
   return (
     <div ref={containerRef} className={cn('flex-1 overflow-y-auto', listPad)}>
       <div className="mx-auto max-w-[720px] flex flex-col gap-y-8">
-        {items.map((item) => {
-          if (item.kind === 'fcall-group') {
-            return (
-              <FunctionTriggerGroup
-                key={item.key}
-                messages={item.messages}
-                onResolveApproval={onResolveApproval}
-                onAlwaysAllow={onAlwaysAllow}
-                onResolveFilesystemAccess={onResolveFilesystemAccess}
-                onManageFilesystemAccess={onManageFilesystemAccess}
-                workingDir={workingDir}
-              />
-            )
-          }
-          const m = item.message
+        {header}
+        {messages.map((m, i) => {
           // Assistant turns copy their prose plus the calls that follow them;
           // the thunk defers building that string until the copy click. Left
           // undefined when the turn has nothing to copy (no prose, no calls)
@@ -200,17 +268,36 @@ export function MessageList({
             m.role === 'assistant' && (m.content || calls?.length)
               ? () => assistantCopyText(m.content, calls ?? [])
               : undefined
-          return (
+          // A call that directly follows another call belongs to the same
+          // burst of agent activity — pull it up against its predecessor so
+          // the run reads as one tight stack instead of scattered boxes.
+          // Trigger-fired notices share the card language and ride along.
+          // (Safe as a conditional wrapper: a message's predecessor is fixed
+          // at insert time, so `tight` never flips on an existing node.)
+          const callLike = (x: MessageType | undefined) =>
+            x?.role === 'function-trigger' ||
+            (x?.role === 'system' && x.kind === 'trigger-fired')
+          const tight = callLike(m) && callLike(messages[i - 1])
+          const node = (
             <Message
-              key={item.key}
+              key={m.id}
               message={m}
               copyText={copyText}
+              defaultOpenCalls={defaultOpenCalls}
               onResolveApproval={onResolveApproval}
               onAlwaysAllow={onAlwaysAllow}
               onResolveFilesystemAccess={onResolveFilesystemAccess}
               onManageFilesystemAccess={onManageFilesystemAccess}
               workingDir={workingDir}
+              registration={registrations.get(m.id)}
             />
+          )
+          return tight ? (
+            <div key={m.id} className="-mt-[26px]">
+              {node}
+            </div>
+          ) : (
+            node
           )
         })}
         {isThinking ? (

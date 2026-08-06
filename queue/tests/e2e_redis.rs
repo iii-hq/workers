@@ -4,9 +4,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use iii_queue::adapter::QueueAdapter;
 use iii_queue::adapters::redis::RedisAdapter;
-use iii_queue::trigger::IiiInvoker;
+use iii_queue::trigger::{IiiInvoker, Invoker};
 use iii_sdk::errors::Error;
 use iii_sdk::RegisterFunction;
 use serde_json::{json, Value};
@@ -29,6 +30,33 @@ async fn wait_for_fires(fires: &AtomicUsize, expected: usize) {
         fires.load(Ordering::SeqCst) >= expected,
         "expected at least {expected} fires"
     );
+}
+
+#[derive(Default)]
+struct RecordingInvoker {
+    fires: AtomicUsize,
+    deliveries: tokio::sync::Mutex<Vec<(String, Value, Option<Value>)>>,
+}
+
+#[async_trait]
+impl Invoker for RecordingInvoker {
+    async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
+    async fn call_delivery(
+        &self,
+        function_id: &str,
+        payload: Value,
+        metadata: Option<Value>,
+    ) -> Result<Option<Value>, String> {
+        self.deliveries
+            .lock()
+            .await
+            .push((function_id.to_string(), payload, metadata));
+        self.fires.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
+    }
 }
 
 /// Boots a `RedisAdapter` directly against a live engine connection and a
@@ -75,7 +103,7 @@ async fn publish_delivers_unwrapped_payload_to_subscriber_connect_or_skip() {
 
     let topic = format!("e2e-redis-{}", Uuid::new_v4());
     adapter
-        .subscribe(&topic, "sub-1", &function_id, None, None)
+        .subscribe(&topic, "sub-1", &function_id, None, None, None)
         .await;
     // Give the subscription task a beat to actually SUBSCRIBE on the Redis
     // connection before the first publish — pub/sub has no buffering for a
@@ -103,6 +131,70 @@ async fn publish_delivers_unwrapped_payload_to_subscriber_connect_or_skip() {
     adapter.unsubscribe(&topic, "sub-1").await;
     adapter.shutdown().await;
     iii.shutdown_async().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn same_function_subscriptions_each_receive_their_metadata_connect_or_skip() {
+    let Some(container) = docker::start_redis() else {
+        return; // skip: docker not reachable
+    };
+
+    let invoker = Arc::new(RecordingInvoker::default());
+    let adapter = RedisAdapter::from_config(
+        Some(&json!({"redis_url": container.redis_url()})),
+        invoker.clone(),
+    )
+    .await
+    .expect("redis adapter should connect");
+    let topic = format!("e2e-redis-fanout-{}", Uuid::new_v4());
+
+    adapter
+        .subscribe(
+            &topic,
+            "sub-a",
+            "same-function",
+            Some(json!({"binding": "a"})),
+            None,
+            None,
+        )
+        .await;
+    adapter
+        .subscribe(
+            &topic,
+            "sub-b",
+            "same-function",
+            Some(json!({"binding": "b"})),
+            None,
+            None,
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    adapter
+        .enqueue(&topic, json!({"event": 1}), None, None)
+        .await;
+
+    wait_for_fires(&invoker.fires, 2).await;
+
+    let deliveries = invoker.deliveries.lock().await;
+    assert_eq!(
+        deliveries.len(),
+        2,
+        "exactly one delivery per binding — a duplicate subscription would add more"
+    );
+    assert!(deliveries
+        .iter()
+        .all(|(function_id, payload, _)| function_id == "same-function"
+            && payload == &json!({"event": 1})));
+    assert!(deliveries
+        .iter()
+        .any(|(_, _, metadata)| metadata == &Some(json!({"binding": "a"}))));
+    assert!(deliveries
+        .iter()
+        .any(|(_, _, metadata)| metadata == &Some(json!({"binding": "b"}))));
+    drop(deliveries);
+
+    adapter.shutdown().await;
 }
 
 /// The redis adapter is pub/sub only: every DLQ-family method must fail

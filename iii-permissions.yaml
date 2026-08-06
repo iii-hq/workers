@@ -12,6 +12,10 @@ version: 1
 rules:
   # Gate, state, auth, routing — agents must not call these directly.
   - '!approval::resolve'
+  # Read-only verdict probe. The harness calls it worker-to-worker before
+  # binding a trigger to an ordinary function; an agent probing its own
+  # approval posture is reconnaissance, not a tool.
+  - '!approval::evaluate'
   - '!hook-fanout::publish_collect'
   - '!state::set'
   - '!state::update'
@@ -83,16 +87,24 @@ rules:
   # change cannot inadvertently re-open the injection path.
   - '!storage::on-config-change'
   - '!database::on-config-change'
+  - '!editor::on-config-change'
   - '!session::on-config-change'
   # (coder::on-config-change retired: the code surface folded into the shell
   # worker, whose shell::on-config-change is already denied above.)
+  # editor's file-change observer: a harness post-trigger hook target, fired
+  # engine-side (bypassing this gate) after a shell/coder write. Calling it
+  # directly would let an agent forge an `editor::changed` event — path, cause
+  # and patch are taken from the payload — into every subscribed console tab.
+  - '!editor::on-file-change'
   # harness: deny-by-default for in-run agents (harness.md § Agent exposure).
   # send/run let a model start arbitrary turns outside any max_turns guard;
   # turn is the internal loop step; function::trigger/resolve forge call ids
   # and parked results; stop cancels turns. harness::spawn is the only
   # model-reachable way to start new turns and is left at the needs_approval
-  # default (the harness self-enforces depth/fan-out/policy subsetting). The
-  # internal config/cron hooks must never be agent-callable.
+  # default (the harness self-enforces depth/fan-out and walls spawned
+  # children out of the control plane unless the spawn passes
+  # options.orchestrator). The internal config/cron hooks must never be
+  # agent-callable.
   - '!harness::send'
   - '!harness::run'
   - '!harness::turn'
@@ -101,10 +113,17 @@ rules:
   - '!harness::stop'
   - '!harness::on-config-change'
   - '!harness::sweep-pending'
-  # Trigger-bridge target: fired only by subscriptions (engine-side, bypassing
-  # this gate). Never agent-callable directly — the model binds it via
-  # engine::register_trigger and names its id from the system prompt.
-  - '!harness::react'
+  # eval: durable orchestration internals are trigger/queue targets only.
+  # Starting, cancelling, and deleting evaluations remain approval-gated by
+  # the default. Status/result are read-only and the exact evaluator is pure.
+  - '!eval::step'
+  - '!eval::on-turn-completed'
+  - '!eval::sweep'
+  # The shaping hop for a trigger bound to an ordinary function: the engine
+  # fires it, agents never call it. Agents name their real target in
+  # engine::register_trigger's `function_id`, which is checked against the
+  # registrant's own policy at registration.
+  - '!harness::trigger-call'
   - '!context::on-config-change'
   - '!approval::on-config-change'
   # browser: console-UI plumbing, never agent-callable. pick::* and hint are
@@ -121,6 +140,14 @@ rules:
   - '!browser::screencast::stop'
   - '!browser::frame'
   - '!browser::on-config-change'
+  # computer: same split as browser. screencast::*/frame exist only to feed the
+  # console viewport; the desktop surface the agent actually uses (sessions,
+  # screenshot, observe, act, displays) stays at the needs_approval default,
+  # because every act is a real click on a real machine.
+  - '!computer::screencast::start'
+  - '!computer::screencast::stop'
+  - '!computer::frame'
+  - '!computer::on-config-change'
   # rbac-proxy: internal reload + catalog-cache hooks — invoked only by the
   # engine's trigger dispatch, never agent-callable. The handlers already
   # re-fetch/ignore the event payload; these denies are defense-in-depth.
@@ -155,6 +182,18 @@ rules:
   # github: internal hot-reload hook — invoked only by the engine's
   # configuration:updated trigger dispatch, never agent-callable.
   - '!github::on-config-change'
+  # openwiki: internal trigger targets. cron::refresh-due is the per-wiki cron
+  # target; on-turn-started/completed are harness trigger-bridge targets whose
+  # direct call could forge generation progress. The hot-reload hook follows
+  # the same pattern as the other on-config-change denies.
+  - '!openwiki::cron::refresh-due'
+  - '!openwiki::on-turn-started'
+  - '!openwiki::on-turn-completed'
+  - '!openwiki::on-config-change'
+
+  # pdf: internal target. The hot-reload hook follows the same pattern as the
+  # other on-config-change denies.
+  - '!pdf::on-config-change'
 
   # Read-only / introspection (extend below for your tools).
   - state::get
@@ -164,8 +203,17 @@ rules:
   - router::models::budget
   - router::models::supports
   - router::provider::list
-  # harness::status is read-only (current turn status for a session).
+  # harness::status is read-only (current turn status for a session), and
+  # harness::triggers::list is the matching read over a session's own trigger
+  # bindings. The teardown half (harness::triggers::unregister) is NOT listed:
+  # agents unregister through the intercepted engine::unregister_trigger,
+  # which enforces ownership; the standalone teardown stays behind the
+  # needs_approval default for the console's privileged path.
   - harness::status
+  - eval::status
+  - eval::result
+  - eval::assert::exact
+  - harness::triggers::list
   - oauth::anthropic::status
   - oauth::openai-codex::status
   - engine::functions::list
@@ -176,9 +224,15 @@ rules:
   - engine::workers::info
   - engine::registered-triggers::list
   - engine::registered-triggers::info
-  # Reactive subscriptions: agents bind events to `harness::react` and tear
-  # them down. The trigger fires `harness::react` engine-side (bypassing this
-  # gate); registering/unregistering the binding is the agent-facing surface.
+  # Subscriptions: engine::register_trigger is intercepted by the harness and
+  # produces a binding that either WAKES the registering session or CALLS a
+  # plain function — a binding never starts an agent (`harness::spawn` is
+  # refused as a target, so nothing fires engine-side past this gate
+  # anymore). Call targets are checked at registration against the
+  # registrant's own policy AND the approval gate's verdict, so a binding
+  # cannot grant an unattended call the session could not make itself.
+  # Bindings registered against the removed `harness::react` / spawn targets
+  # are purged on startup; register a wake and spawn directly instead.
   - engine::register_trigger
   - engine::unregister_trigger
   - worker::list
@@ -192,6 +246,27 @@ rules:
   - worktree::get
   - worktree::status
   - worktree::validate
+  # editor: the reading half. editor::diff is pure (two strings in, a patch
+  # out — no I/O at all); the rest read through the shell worker, so they reach
+  # nothing shell::fs::read and shell::exec could not already reach.
+  # editor::open is allowed even though it records a buffer: recording what an
+  # agent read is the point of the shared workspace, and gating the only read
+  # path would make the worker unusable.
+  # Left at the needs_approval default on purpose: editor::save, ::create,
+  # ::delete and ::move write to disk; the editor::git write surface
+  # (commit / sync / stash / undo-commit) rewrites history or talks to a
+  # remote; editor::workspace::open repoints the workspace for every surface
+  # at once; editor::buffers::close discards someone else's tab.
+  - editor::diff
+  - editor::open
+  - editor::tree
+  - editor::find
+  - editor::search
+  - editor::workspace::get
+  - editor::buffers::list
+  - editor::git::status
+  - editor::git::hunks
+  - editor::git::show
   # Read-only code surface (coder::*, now served by the shell worker).
   # Mutating ops (create/update/move/delete-file) stay approval-gated.
   - coder::info
@@ -199,7 +274,7 @@ rules:
   - coder::search
   - coder::list-folder
   - coder::tree
-  # fp: the seventeen pure value transforms are side-effect-free reshapes (no
+  # fp: the twenty-three pure value transforms are side-effect-free reshapes (no
   # I/O, no authority). fp::pipe stays at the needs_approval default ON
   # PURPOSE: its steps run with the fp worker's authority, so the pipe
   # call itself is the surface an approver reviews (the worker statically
@@ -223,6 +298,12 @@ rules:
   - fp::flatten
   - fp::sortBy
   - fp::reverse
+  - fp::sum
+  - fp::mean
+  - fp::min
+  - fp::max
+  - fp::groupBy
+  - fp::countBy
   # github: read-only GitHub queries (list/view/diff/checks/search) are safe
   # reads. Mutations (create/edit/merge/comment/review/close/rerun/cancel/
   # workflow run/release create) and the escape hatches (github::exec —
@@ -249,3 +330,14 @@ rules:
   # HTTP-trigger verification; it enforces size/timeout caps and server-side
   # SSRF protection, so it is allowed by default.
   - web::fetch
+
+  # pdf: every function is a pure read of a document the agent could already
+  # reach through the filesystem scope, and reaching it any other way returns
+  # binary noise. Nothing here writes, spends, or leaves the machine, and each
+  # response is capped by the worker's own configuration. Gating these would
+  # mean an approval prompt to read a file the agent is already allowed to open.
+  - pdf::classify
+  - pdf::to-markdown
+  - pdf::extract-text
+  - pdf::extract-items
+  - pdf::extract-regions

@@ -1,0 +1,6 @@
+adapter:
+  name: builtin
+  config:
+    store_method: file_based
+    file_path: ${HARNESS_E2E_RUN_DIR}/queue
+    save_interval_ms: 1000

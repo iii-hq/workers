@@ -124,6 +124,9 @@ interface PlacedSpan {
 interface TraceLayout {
   placed: PlacedSpan[]
   lineCount: number
+  /** each span's packed offset relative to its parent — fed back into the
+   *  next `buildLayout` so a streaming re-pack keeps bars on their lines */
+  offsets: ReadonlyMap<string, number>
 }
 
 /** A subtree's footprint: the lines it spans and its full time extent. */
@@ -170,6 +173,12 @@ function rowTop(line: number): number {
  * stack further down. Rectangles never interleave, which keeps every
  * subtree a contiguous visual block.
  *
+ * Sticky re-packs: when `prev` holds a span's offset from the previous
+ * layout and the subtree still fits there, it stays — a streaming trace
+ * re-packs on every span, and without the preference a growing sibling
+ * reshuffles lines that were already settled. Only spans whose remembered
+ * spot now collides fall back to first-fit.
+ *
  * Mutates each child's `info.offset`; returns the deepest occupied
  * offset+height (i.e. lines consumed), or `firstOffset` when empty.
  */
@@ -177,25 +186,41 @@ function packSubtrees(
   children: readonly VisualizationSpan[],
   info: ReadonlyMap<string, SubtreeInfo>,
   firstOffset: number,
+  prev?: ReadonlyMap<string, number>,
 ): number {
   const placed: SubtreeInfo[] = []
   let deepest = firstOffset
+  const collides = (rect: SubtreeInfo, offset: number): boolean => {
+    for (const other of placed) {
+      const timeOverlap =
+        rect.minStart < other.maxEnd && other.minStart < rect.maxEnd
+      const lineOverlap =
+        offset < other.offset + other.height &&
+        other.offset < offset + rect.height
+      if (timeOverlap && lineOverlap) return true
+    }
+    return false
+  }
   for (const child of children) {
     const rect = info.get(child.span_id)
     if (!rect) continue
-    let offset = firstOffset
-    let moved = true
-    while (moved) {
-      moved = false
-      for (const other of placed) {
-        const timeOverlap =
-          rect.minStart < other.maxEnd && other.minStart < rect.maxEnd
-        const lineOverlap =
-          offset < other.offset + other.height &&
-          other.offset < offset + rect.height
-        if (timeOverlap && lineOverlap) {
-          offset = other.offset + other.height
-          moved = true
+    const kept = prev?.get(child.span_id)
+    let offset: number
+    if (kept != null && kept >= firstOffset && !collides(rect, kept)) {
+      // ponytail: holes a departed subtree leaves behind persist until the
+      // remembered spot collides; re-compact from scratch if sparse layouts
+      // ever matter more than stability.
+      offset = kept
+    } else {
+      offset = firstOffset
+      while (collides(rect, offset)) {
+        for (const other of placed) {
+          const timeOverlap =
+            rect.minStart < other.maxEnd && other.minStart < rect.maxEnd
+          const lineOverlap =
+            offset < other.offset + other.height &&
+            other.offset < offset + rect.height
+          if (timeOverlap && lineOverlap) offset = other.offset + other.height
         }
       }
     }
@@ -223,6 +248,7 @@ function packSubtrees(
 function buildLayout(
   source: readonly VisualizationSpan[],
   spans: readonly TimelineSpan[],
+  prev?: ReadonlyMap<string, number>,
 ): TraceLayout {
   const byId = new Map(spans.map((s) => [s.id, s]))
   const childrenOf = new Map<string, VisualizationSpan[]>()
@@ -281,11 +307,11 @@ function buildLayout(
         if (ki.maxEnd > maxEnd) maxEnd = ki.maxEnd
       }
     }
-    const height = kids ? Math.max(1, packSubtrees(kids, info, 1)) : 1
+    const height = kids ? Math.max(1, packSubtrees(kids, info, 1, prev)) : 1
     info.set(id, { height, minStart, maxEnd, offset: 0 })
   }
 
-  let lineCount = packSubtrees(roots, info, 0)
+  let lineCount = packSubtrees(roots, info, 0, prev)
 
   // Pre-order: absolute lines, parents emitted before their children.
   const placed: PlacedSpan[] = []
@@ -326,7 +352,10 @@ function buildLayout(
       if (span) placed.push({ span, line: lineCount++, parentIndex: null })
     }
   }
-  return { placed, lineCount }
+
+  const offsets = new Map<string, number>()
+  for (const [id, i] of info) offsets.set(id, i.offset)
+  return { placed, lineCount, offsets }
 }
 
 export function TraceTimeline({
@@ -414,10 +443,14 @@ export function TraceTimeline({
   )
   const total = Math.max(detail.totalDurationMs, 1)
 
+  // A cache, never a dependency: each layout prefers the lines the previous
+  // one assigned, so a streaming re-pack moves as few bars as possible.
+  const stickyOffsets = useRef<ReadonlyMap<string, number>>(new Map())
   const layout = useMemo(
-    () => buildLayout(visibleData.spans, detail.spans),
+    () => buildLayout(visibleData.spans, detail.spans, stickyOffsets.current),
     [visibleData.spans, detail.spans],
   )
+  stickyOffsets.current = layout.offsets
 
   const innerWidth = Math.max(stage.width - PADDING_X * 2, 0)
   const pxPerMs = innerWidth > 0 ? innerWidth / total : 0
@@ -680,7 +713,7 @@ export function TraceTimeline({
                   <div
                     key={rail.id}
                     aria-hidden
-                    className="absolute w-px bg-ink/15"
+                    className="timeline-glide absolute w-px bg-ink/15"
                     style={{
                       left: rail.left,
                       top: rail.top,
@@ -692,7 +725,7 @@ export function TraceTimeline({
                   <div
                     key={stub.id}
                     aria-hidden
-                    className="absolute h-px bg-ink/15"
+                    className="timeline-glide absolute h-px bg-ink/15"
                     style={{
                       left: stub.left,
                       top: stub.top,
@@ -744,7 +777,7 @@ export function TraceTimeline({
                           onSpanClick ? () => handleClick(span) : undefined
                         }
                         className={cn(
-                          'timeline-enter absolute flex items-center gap-1 overflow-hidden rounded-[4px] px-[3px]',
+                          'timeline-enter timeline-glide absolute flex items-center gap-1 overflow-hidden rounded-[4px] px-[3px]',
                           'focus-visible:outline-1 focus-visible:outline-accent',
                           onSpanClick ? 'cursor-pointer' : 'cursor-default',
                         )}
@@ -773,7 +806,7 @@ export function TraceTimeline({
                       {spillLabel && (
                         <span
                           aria-hidden
-                          className="pointer-events-none absolute overflow-hidden font-mono text-[10px] leading-none lowercase whitespace-nowrap text-ellipsis text-ink-faint"
+                          className="timeline-glide pointer-events-none absolute overflow-hidden font-mono text-[10px] leading-none lowercase whitespace-nowrap text-ellipsis text-ink-faint"
                           style={{
                             left: spillLeft,
                             top: top + BAR_HEIGHT / 2 - 5,

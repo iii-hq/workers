@@ -689,6 +689,15 @@ impl SessionService {
         }
 
         message.set_content(req.content);
+        if let Some(new_usage) = req.usage {
+            if !message.set_usage(new_usage) {
+                return Err(SessionError::InvalidEntryKind(format!(
+                    "entry {} has role {:?}; `usage` applies only to assistant messages",
+                    req.entry_id,
+                    message.role()
+                )));
+            }
+        }
         if let Some(new_details) = req.details {
             match &mut message {
                 AgentMessage::FunctionResult { details, .. } => *details = new_details,

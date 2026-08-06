@@ -40,7 +40,10 @@ fn catalog_lists_all_functions_in_registration_order() {
             "harness::function::resolve",
             "harness::stop",
             "harness::status",
-            "harness::react",
+            "harness::session-tree",
+            "harness::metrics",
+            "harness::triggers::list",
+            "harness::triggers::unregister",
         ]
     );
 }

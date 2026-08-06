@@ -1,0 +1,274 @@
+/**
+ * Every rule is scoped under [data-iii-ui="pdf"].
+ *
+ * Injected CSS is unlayered, so one unscoped selector silently beats the
+ * console's own fully-layered styles across the whole document. Colors come
+ * from the console's design tokens, so both themes work without a media query.
+ */
+
+[data-iii-ui='pdf'] .pdf-ui {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.5rem;
+  max-width: 64rem;
+  margin: 0 auto;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__title {
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: var(--color-ink);
+  margin: 0;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__lede {
+  color: var(--color-ink-faint);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  margin: 0;
+  max-width: 46rem;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 2.25rem 1.5rem;
+  border: 1px dashed var(--color-rule);
+  border-radius: 0.5rem;
+  background: var(--color-panel);
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__drop--over {
+  border-color: var(--color-accent);
+  background: var(--color-paper-2);
+}
+
+/* Once a document is loaded the zone becomes a one-line bar: still a drop
+   target, no longer the centre of the page. */
+[data-iii-ui='pdf'] .pdf-ui__drop--compact {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 0.75rem;
+  border-style: solid;
+  border-color: var(--color-rule-2);
+}
+
+[data-iii-ui='pdf'] .pdf-ui__drop-label {
+  color: var(--color-ink-faint);
+  font-size: 0.875rem;
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__drop-file {
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__drop-hint {
+  color: var(--color-ink-ghost);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__file {
+  display: none;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__result {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__verdict {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__verdict-meaning {
+  color: var(--color-ink-faint);
+  font-size: 0.875rem;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__doc-title {
+  color: var(--color-ink);
+  font-size: 0.95rem;
+  font-weight: 500;
+  margin: 0;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--color-rule-2);
+  border-radius: 0.375rem;
+  background: var(--color-panel);
+}
+
+[data-iii-ui='pdf'] .pdf-ui__stat-label {
+  color: var(--color-ink-ghost);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 0;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__stat-value {
+  color: var(--color-ink);
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__section {
+  color: var(--color-ink);
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__ocr-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__ocr-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 0.3rem;
+  background: var(--color-panel);
+  font-size: 0.85rem;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__ocr-page {
+  color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
+  min-width: 5rem;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__ocr-why {
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='pdf'] .pdf-ui__tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__pane {
+  max-height: 34rem;
+  overflow: auto;
+  border: 1px solid var(--color-rule-2);
+  border-radius: 0.375rem;
+  padding: 1rem;
+  background: var(--color-bg);
+}
+
+[data-iii-ui='pdf'] .pdf-ui__page {
+  padding-bottom: 1rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+
+[data-iii-ui='pdf'] .pdf-ui__page:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__page-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__page-no {
+  color: var(--color-ink-ghost);
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* The shared Monaco editor grows with its content, so the pane scrolls. */
+[data-iii-ui='pdf'] .pdf-ui__editor {
+  min-height: 20rem;
+  width: 100%;
+}
+
+[data-iii-ui='pdf'] .pdf-ui__timing {
+  color: var(--color-ink-ghost);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+
+/* The chat and trace renderer for pdf::* calls. */
+
+[data-iii-ui='pdf'] .pdf-trigger {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+[data-iii-ui='pdf'] .pdf-trigger__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+[data-iii-ui='pdf'] .pdf-trigger__file {
+  color: var(--color-ink);
+  font-size: 0.85rem;
+}
+
+[data-iii-ui='pdf'] .pdf-trigger__meta {
+  color: var(--color-ink-ghost);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui='pdf'] .pdf-trigger__line {
+  color: var(--color-ink-faint);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0;
+}

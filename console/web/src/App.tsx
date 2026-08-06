@@ -36,14 +36,10 @@ import {
   tabColumns,
   tabSizes,
 } from '@/lib/workspace-tabs'
-import { Browser } from '@/pages/Browser'
 import { Configuration } from '@/pages/Configuration'
 import { ExtPage } from '@/pages/Ext'
-import { Github } from '@/pages/Github'
-import { Memory } from '@/pages/Memory'
 import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
-import { Worktrees } from '@/pages/Worktrees'
 import type { PanelSide } from '@/types/injectable-ui'
 
 export function App() {
@@ -385,14 +381,6 @@ function ScreenBody({
       return <ChatPanel density="dock" onRequestClose={onClose} />
     case 'workers':
       return <Workers />
-    case 'worktrees':
-      return <Worktrees />
-    case 'browser':
-      return <Browser />
-    case 'memory':
-      return <Memory />
-    case 'github':
-      return <Github />
     default:
       return <TracesV2 onRequestClose={onClose} />
   }

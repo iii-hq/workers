@@ -108,6 +108,12 @@ interface WaterfallChartProps {
    * only when BOTH this and `spanGroupKey` are provided.
    */
   spanFilter?: SpanFilterControls
+  /**
+   * Show expand-all / collapse-all. Pass `false` when the trace is still
+   * arriving: every change to `data.spans` re-expands the tree, so a
+   * collapse taken mid-stream is undone by the next span to land.
+   */
+  showExpandControls?: boolean
 }
 
 interface WaterfallRowProps {
@@ -338,6 +344,12 @@ function indentKeys(spanId: string, depth: number): string[] {
 interface ToolbarProps {
   expandAll: () => void
   collapseAll: () => void
+  /**
+   * Expand-all / collapse-all. Off for a trace that is still arriving: the
+   * effect below re-expands everything whenever `data.spans` changes, so a
+   * collapse taken mid-stream is undone by the next span.
+   */
+  showExpandControls: boolean
   spanGroups: readonly SpanGroup[]
   workerGroups: readonly SpanGroup[]
   internalGroups: readonly SpanGroup[]
@@ -351,6 +363,7 @@ function Toolbar(props: ToolbarProps) {
   const {
     expandAll,
     collapseAll,
+    showExpandControls,
     spanGroups,
     workerGroups,
     internalGroups,
@@ -362,32 +375,36 @@ function Toolbar(props: ToolbarProps) {
   return (
     <div className="flex items-center justify-between px-3 py-2 border-b border-rule-2">
       <div className="flex items-center gap-1.5">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={expandAll}
-              aria-label="expand all spans"
-              className="inline-flex items-center justify-center w-7 h-7 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors"
-            >
-              <ChevronsDown className="w-3.5 h-3.5" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">expand all</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={collapseAll}
-              aria-label="collapse all spans"
-              className="inline-flex items-center justify-center w-7 h-7 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors"
-            >
-              <ChevronsUp className="w-3.5 h-3.5" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">collapse all</TooltipContent>
-        </Tooltip>
+        {showExpandControls ? (
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={expandAll}
+                  aria-label="expand all spans"
+                  className="inline-flex items-center justify-center w-7 h-7 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors"
+                >
+                  <ChevronsDown className="w-3.5 h-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">expand all</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={collapseAll}
+                  aria-label="collapse all spans"
+                  className="inline-flex items-center justify-center w-7 h-7 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors"
+                >
+                  <ChevronsUp className="w-3.5 h-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">collapse all</TooltipContent>
+            </Tooltip>
+          </>
+        ) : null}
         {spanFilter &&
           (spanGroups.length > 0 ||
             workerGroups.length > 0 ||
@@ -427,6 +444,7 @@ export function WaterfallChart({
   selectedSpanId,
   spanGroupKey,
   spanFilter,
+  showExpandControls = true,
 }: WaterfallChartProps) {
   const [displayState, dispatch] = useReducer(
     displayReducer,
@@ -707,6 +725,7 @@ export function WaterfallChart({
   const toolbarProps: ToolbarProps = {
     expandAll,
     collapseAll,
+    showExpandControls,
     spanGroups,
     workerGroups,
     internalGroups,

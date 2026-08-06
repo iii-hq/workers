@@ -2,7 +2,7 @@
 
 [package]
 name = "provider-kimi"
-version = "1.0.2"
+version = "1.1.1"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
@@ -16,7 +16,7 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-llm-router = { path = "../llm-router" }
+llm-router = { path = "../llm-router", default-features = false }
 # Must match llm-router's pin so the provider and router share one IIIClient type.
 iii-sdk = "=0.21.6"
 serde = { version = "1", features = ["derive"] }

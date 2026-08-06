@@ -141,6 +141,10 @@ async fn main() -> Result<()> {
     configuration::register_config_trigger(&iii, shared.clone())
         .context("registering configuration change trigger")?;
 
+    // Injectable console UI — after the browser::* functions so the console
+    // can attribute the assets.
+    browser::ui::register(&iii);
+
     // Idle sweep: stop sessions nobody has touched for idle_stop_ms.
     let sweep_sessions = sessions.clone();
     let sweep = tokio::spawn(async move {

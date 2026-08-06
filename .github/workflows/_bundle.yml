@@ -13,6 +13,11 @@ name: Bundle Release
 on:
   workflow_call:
     inputs:
+      ref:
+        description: 'Git ref to build (the tag being released). Empty checks out the calling workflow ref, which on a manual dispatch is the branch it was started from, not the tag.'
+        required: false
+        type: string
+        default: ''
       worker:
         description: 'Worker name (folder), e.g. harness'
         required: true
@@ -52,12 +57,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: inputs.skip_create_release != true && inputs.dry_run != true
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Create GitHub Release
         if: inputs.skip_create_release != true && inputs.dry_run != true
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag_name }}
           name: ${{ inputs.worker }} ${{ inputs.tag_name }}
@@ -73,29 +80,35 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
 
       # ── Node bundle path ─────────────────────────────────────────────
       # esbuild produces `<worker>/dist/bundle/index.mjs`, a single ESM
       # file with all npm deps + JSON assets inlined. Only Node built-ins
       # and `fsevents` (macOS-only optional native dep used by chokidar)
       # are external. See `<worker>/scripts/build-bundle.mjs`.
-      - uses: pnpm/action-setup@v4
+      # The pnpm version comes from the repo-root package.json
+      # `packageManager` field (the UI pnpm workspace root).
+      - uses: pnpm/action-setup@v5
         if: inputs.language == 'node' || inputs.language == 'javascript'
-        with:
-          version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         if: inputs.language == 'node' || inputs.language == 'javascript'
         with:
           node-version: 22
           cache: 'pnpm'
           cache-dependency-path: ${{ inputs.worker }}/pnpm-lock.yaml
 
+      # Bundle workers are self-contained projects with their own lockfiles
+      # (see the note in the repo-root pnpm-workspace.yaml). Without
+      # --ignore-workspace, pnpm walks up to the root UI workspace and never
+      # installs the worker's own deps.
       - name: pnpm install
         if: inputs.language == 'node' || inputs.language == 'javascript'
         working-directory: ${{ inputs.worker }}
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-workspace
 
       - name: pnpm run build:bundle
         if: inputs.language == 'node' || inputs.language == 'javascript'
@@ -182,7 +195,7 @@ jobs:
 
       - name: Upload to GitHub Release
         if: inputs.dry_run != true
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag_name }}
           files: |

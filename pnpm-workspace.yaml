@@ -9,10 +9,19 @@ packages:
   - packages/*
   - console/web
   - console/ui
+  - browser/ui
+  - computer/ui
   - database/ui
+  - editor/ui
+  - eval/ui
+  - memory/ui
+  - pdf/ui
   - state/ui
   - iii-directory/ui
   - shell/ui
+  - worktree/ui
+  - github/ui
+  - llm-router/ui
 
 # pnpm ≥11 blocks dependency postinstall scripts by default; esbuild's
 # installs its platform binary.

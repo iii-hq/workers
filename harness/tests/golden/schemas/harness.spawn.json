@@ -385,7 +385,7 @@
         "description": "`message` is either a plain string (sugar for a user text message) or a full `AgentMessage`."
       },
       "Mode": {
-        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt. `ask` is also structural: the turn's dispatch policy is capped at the operator's read-only baseline, never widened.",
+        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt. `ask` is also structural: the turn's dispatch policy is capped at the configured default policy, never widened.",
         "enum": [
           "ask",
           "agent"
@@ -444,7 +444,7 @@
                 "type": "null"
               }
             ],
-            "description": "Intersected with the parent policy — narrow, never escalate. An `ask`-mode child is further capped at the read-only baseline."
+            "description": "Intersected with the parent policy — narrow, never escalate. An `ask`-mode child is further capped at the configured default policy."
           },
           "max_children": {
             "description": "Fan-out guard for the child's own spawns.",
@@ -455,8 +455,26 @@
               "null"
             ]
           },
+          "max_output_tokens": {
+            "description": "Inherits the parent's ceiling unless explicitly narrowed/overridden.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "max_turns": {
-            "description": "Capped at the parent's remaining turn budget.",
+            "description": "Capped at the parent's remaining turn budget. Omit unless a strict child-specific cap is required. It must cover discovery/contract calls plus every work call; very small values (for example 2-3) commonly strand the child before it can produce its deliverable.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_validation_retries": {
+            "description": "Override the child's validation-retry budget (output contract AND `harness::hook::post-turn` deny re-prompts). Default: worker config.",
             "format": "uint32",
             "minimum": 0.0,
             "type": [
@@ -473,6 +491,11 @@
                 "type": "null"
               }
             ]
+          },
+          "orchestrator": {
+            "default": false,
+            "description": "Grant this child the orchestration surface. Default false: a spawned child is a LEAF — its policy gains deny globs for `harness::spawn`, `harness::send`, `engine::register_trigger`, `engine::unregister_trigger` and `engine::registered-triggers::*`, so it performs its assignment and updates shared state without spawning, messaging sessions, or touching trigger registrations. `true` skips those denies; the child still never exceeds its parent's policy.",
+            "type": "boolean"
           },
           "output": {
             "anyOf": [
@@ -498,7 +521,7 @@
               }
             ],
             "default": "enrich",
-            "description": "How `system_prompt` combines with the built-in prompt: `override` replaces it; `enrich` (default) appends to it."
+            "description": "How `system_prompt` combines with the built-in prompt: `override` replaces it; `enrich` (default) appends to it; `disabled` omits it."
           },
           "thinking_level": {
             "anyOf": [
@@ -537,6 +560,13 @@
             "description": "Caller prompt is appended to the built-in identity prompt.",
             "enum": [
               "enrich"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No system prompt is sent to the model.",
+            "enum": [
+              "disabled"
             ],
             "type": "string"
           }
@@ -652,7 +682,7 @@
         ]
       },
       "parent_session_id": {
-        "description": "Display-only parent for the console session tree, used when there is no live parent turn (e.g. a trigger-fired spawn from `harness::react`). Writes `SessionMeta.metadata.parent_session_id` so the console nests this child; it does NOT grant policy inheritance or parent-call resolution. Ignored when the dispatcher injects a real parent link (an in-turn spawn).",
+        "description": "Display-only parent for the console session tree, used when there is no live parent turn (e.g. a console- or workflow-issued spawn). Writes `SessionMeta.metadata.parent_session_id` so the console nests this child; it does NOT grant policy inheritance or parent-call resolution. Ignored when the dispatcher injects a real parent link (an in-turn spawn).",
         "type": [
           "string",
           "null"
@@ -664,24 +694,8 @@
           "null"
         ]
       },
-      "reactive_depth": {
-        "description": "Stamped by `harness::react` (not caller-supplied): reactive-chain depth, echoed on this turn's `turn-completed` event so react can cap runaway chains at `MAX_REACTIVE_DEPTH`.",
-        "format": "uint32",
-        "minimum": 0.0,
-        "type": [
-          "integer",
-          "null"
-        ]
-      },
       "session_id": {
-        "description": "Spawn into this session, creating it if it does not exist (e.g. a fork, or a pre-chosen id to filter `turn-completed` subscriptions on); default: create fresh.",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "spawned_by_subscription_id": {
-        "description": "Stamped by `harness::react` (not caller-supplied): the subscription that spawned this turn. Its completion event is never delivered back to that same subscription (self-edge loop breaker).",
+        "description": "Spawn into this session, creating it if it does not exist (e.g. a fork, or a pre-chosen id to filter `turn-completed` subscriptions on); default: create fresh. An in-turn spawn may reuse an EXISTING id only inside its own tree (itself, or a child it spawned) — anything else is refused as a cross-run id collision. The response reports `reused: true` on reuse.",
         "type": [
           "string",
           "null"
@@ -693,7 +707,7 @@
             "$ref": "#/definitions/MessageInput"
           }
         ],
-        "description": "The child's goal — its opening user message."
+        "description": "The child's self-contained goal — its opening user message. Include every resolved required selector literally (for example `Use database db: \"primary\"`); the child cannot infer resources from the parent."
       }
     },
     "required": [
@@ -710,6 +724,11 @@
       },
       "child_turn_id": {
         "type": "string"
+      },
+      "reused": {
+        "default": false,
+        "description": "The named session already existed and was reused — its prior transcript and parent linkage were retained (only possible with an explicit `session_id`).",
+        "type": "boolean"
       }
     },
     "required": [

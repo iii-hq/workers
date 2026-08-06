@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.10.3
+
+### Fixed
+
+- **Fresh managed installs no longer crash-loop with zero functions
+  registered (MOT-4252)** — managed workers run with cwd = the engine's
+  project directory, so the default `--config ./config.yaml` resolved to the
+  engine's own worker roster (`workers: [...]`). Serde tolerates unknown
+  top-level keys, so the roster parsed as an all-defaults shell config,
+  failed the fail-closed jail validation, left the stored value null, and
+  the engine's read-time schema validation then turned every
+  `configuration::get` into a fatal SCHEMA_INVALID — boot died before any
+  function registered, forever. Boot now classifies a seed file with no
+  shell keys (and no removed/renamed shell key) as *foreign* and treats it
+  like a missing file, so the zero-config path seeds the bootable
+  permissive default. Shell-shaped files that fail to parse still refuse to
+  boot, and un-migrated configs still get the loud migration hint.
+- The boot probe of the stored value uses `configuration::get { raw: true }`
+  so a stored null (the state a broken install is stuck in) is readable
+  instead of erroring, and the bootable default is re-seeded over it —
+  installs already caught in the crash loop self-heal on upgrade.
+
+### Changed
+
+- A `--config` seed (and the built-in default) is registered as
+  `initial_value` only when no value is stored yet. Previously every boot
+  sent `initial_value`, and `configuration::register` replaces the stored
+  value when it is present — so a reboot with a seed file silently clobbered
+  runtime `configuration::set` changes. The stored value now takes
+  precedence once it exists, matching the documented contract. If a
+  deployment relied on file-wins-on-restart, apply file edits with
+  `configuration::set` (or clear the stored value) instead.
+
 ## 0.10.0
 
 ### Breaking

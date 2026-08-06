@@ -1,0 +1,217 @@
+{
+  "description": "What changed in one file: the rendered patch plus its line ranges. Compares the working tree against the index, the index against HEAD, or the working tree against HEAD — so it shows an edit made by anything, including an agent that never called this worker.",
+  "function_id": "editor::git::hunks",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Against": {
+        "description": "Which copy of the file the working tree is compared against.",
+        "oneOf": [
+          {
+            "description": "Unstaged edits: working tree vs the index.",
+            "enum": [
+              "worktree"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Staged edits: index vs HEAD.",
+            "enum": [
+              "index"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Everything since the last commit: working tree vs HEAD.",
+            "enum": [
+              "head"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Everything not yet pushed: working tree vs the branch's upstream (`@{upstream}`). Fails when the branch has no upstream configured, which is a real answer rather than an error to swallow.",
+            "enum": [
+              "upstream"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "against": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Against"
+          }
+        ],
+        "default": "worktree",
+        "description": "Which comparison to make. Defaults to `worktree`."
+      },
+      "context_lines": {
+        "default": null,
+        "description": "Unchanged lines kept around each hunk in `patch`. Defaults to 0, which keeps `hunks` exactly the lines that changed — the ranges a gutter paints. Pass 3 or so for a patch a person will read, and note that the reported ranges widen to include the context you asked for.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "cwd": {
+        "default": null,
+        "description": "Directory to run git in. Defaults to the workspace root.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "path": {
+        "description": "Repository-relative path to inspect.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "title": "GitHunksInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Against": {
+        "description": "Which copy of the file the working tree is compared against.",
+        "oneOf": [
+          {
+            "description": "Unstaged edits: working tree vs the index.",
+            "enum": [
+              "worktree"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Staged edits: index vs HEAD.",
+            "enum": [
+              "index"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Everything since the last commit: working tree vs HEAD.",
+            "enum": [
+              "head"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Everything not yet pushed: working tree vs the branch's upstream (`@{upstream}`). Fails when the branch has no upstream configured, which is a real answer rather than an error to swallow.",
+            "enum": [
+              "upstream"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Hunk": {
+        "description": "One `@@` block: the line ranges it covers on each side, plus the counts a gutter needs without re-reading the patch body.",
+        "properties": {
+          "added": {
+            "description": "Lines added within this hunk.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "new_lines": {
+            "description": "Number of \"after\" lines the hunk spans.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "new_start": {
+            "description": "First line of the hunk on the \"after\" side, 1-based.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "old_lines": {
+            "description": "Number of \"before\" lines the hunk spans.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "old_start": {
+            "description": "First line of the hunk on the \"before\" side, 1-based. `0` when the before side is empty (pure addition), matching unified-diff convention.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "removed": {
+            "description": "Lines removed within this hunk.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "added",
+          "new_lines",
+          "new_start",
+          "old_lines",
+          "old_start",
+          "removed"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "added": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "against": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Against"
+          }
+        ],
+        "description": "Echo of the comparison performed, so a cached response is self-describing."
+      },
+      "hunks": {
+        "description": "Changed ranges, in file order. Empty when the file matches.",
+        "items": {
+          "$ref": "#/definitions/Hunk"
+        },
+        "type": "array"
+      },
+      "patch": {
+        "description": "The rendered unified patch, for showing a person what changed. Empty when there is no difference, and capped by `max_diff_bytes` — a caller that only wants the ranges can ignore it.",
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "removed": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "untracked": {
+        "description": "True when git reports the path as untracked, in which case there is nothing to compare against and `hunks` is empty.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "added",
+      "against",
+      "hunks",
+      "patch",
+      "path",
+      "removed",
+      "untracked"
+    ],
+    "title": "GitHunksOutput",
+    "type": "object"
+  }
+}

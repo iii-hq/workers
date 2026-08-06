@@ -18,7 +18,9 @@ use crate::turn_loop;
 use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
 use crate::types::model::ThinkingLevel;
 use crate::types::output::OutputContract;
-use crate::types::turn::{FunctionPolicy, IdemRecord, TurnOptions, TurnRecord, TurnStatus};
+use crate::types::turn::{
+    FunctionPolicy, IdemRecord, ParentLink, TurnOptions, TurnRecord, TurnStatus,
+};
 
 /// `message` is either a plain string (sugar for a user text message) or a
 /// full `AgentMessage`.
@@ -29,19 +31,36 @@ pub enum MessageInput {
     Message(Box<AgentMessage>),
 }
 
+impl From<String> for MessageInput {
+    fn from(text: String) -> Self {
+        MessageInput::Text(text)
+    }
+}
+
 /// Per-send options frozen onto the turn record (harness.md § `harness::send`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SendOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     /// How `system_prompt` combines with the built-in prompt: `override`
-    /// replaces it; `enrich` (default) appends to it.
+    /// replaces it; `enrich` (default) appends to it; `disabled` omits it.
     #[serde(default)]
     pub system_prompt_strategy: SystemPromptStrategy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
+    /// Per-generation output-token ceiling forwarded to the router.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    /// Hard input-plus-output token budget for the complete root-and-subagent
+    /// session tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_tokens: Option<u64>,
+    /// Hard USD budget for the complete root-and-subagent session tree.
+    /// Every model used by the tree must advertise catalog pricing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
     /// Provider-native per-call options, namespaced by provider id.
@@ -54,7 +73,7 @@ pub struct SendOptions {
     /// call; omitted when steering an EXISTING session → inherit the prior
     /// turn's policy (a nudge must not disarm a live run). Pass
     /// `{ allow: [] }` to strip explicitly. On a NEW `ask`-mode turn the
-    /// effective policy is capped at the operator's read-only baseline; a
+    /// effective policy is capped at the configured default policy; a
     /// steer folded into an already-running turn keeps that turn's frozen
     /// policy until it finalises.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,6 +81,10 @@ pub struct SendOptions {
     /// Tracing passthrough.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// Per-turn override of the configured validation-retry budget (also the
+    /// bound on `harness::hook::post-turn` deny re-prompts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_validation_retries: Option<u32>,
 }
 
 /// Session create/ensure options applied when this send creates the session.
@@ -177,11 +200,16 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
 
     // Freeze the per-send options before moving the message out of `req`.
     // The provider identity prompt is fetched once here and frozen with them.
-    let identity = deps
-        .router()
-        .await
-        .system_prompt_get(provider.as_deref())
-        .await;
+    // `provider_identity_prompt: false` skips the fetch entirely — `None` is
+    // what makes `resolve_system_prompt` fall back to the embedded default.
+    let identity = if cfg.provider_identity_prompt {
+        deps.router()
+            .await
+            .system_prompt_get(provider.as_deref())
+            .await
+    } else {
+        None
+    };
     let mut options = build_options(&cfg, &req, model, provider, identity.as_deref());
     inherit_prior_functions(
         &cfg,
@@ -222,6 +250,7 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
         }
         None => session.create(title.as_deref(), metadata.as_ref()).await?,
     };
+    crate::budget::prepare_root(deps, &session_id, &mut options, prev.as_ref()).await?;
 
     // Entry id: idempotent when a dedupe key is set.
     let entry_id = req
@@ -232,29 +261,19 @@ pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, Harnes
     // Queue path: a `Running` step may be streaming — park the message as a
     // durable queue row the loop drains after the stream ends, instead of
     // appending mid-transcript.
-    let (outcome, entry) = match try_enqueue(
+    let (outcome, entry) = deliver(
         deps,
         &cfg,
         &session_id,
-        &message,
-        entry_id.as_deref(),
-        None,
-        &options,
+        options,
+        Delivery {
+            message: &message,
+            entry_id: entry_id.as_deref(),
+            origin: None,
+            lineage: &TurnLineage::default(),
+        },
     )
-    .await?
-    {
-        Some((outcome, row_entry)) => (outcome, row_entry),
-        None => {
-            // Append path (no turn / terminal / parked): persist the message,
-            // then CAS-seed the turn (or take the merge path).
-            let appended_entry = session
-                .append(&session_id, &message, entry_id.as_deref(), None, None)
-                .await?;
-            let preview = message_preview(&message);
-            let outcome = seed_or_merge(deps, &cfg, &session_id, options, preview).await?;
-            (outcome, appended_entry)
-        }
-    };
+    .await?;
 
     // Record the idempotency mapping (TTL-bound by contract).
     if let Some(key) = &req.idempotency_key {
@@ -288,7 +307,6 @@ pub async fn inject(
     origin: Option<&Value>,
 ) -> Result<StartOutcome, HarnessError> {
     let cfg = deps.cfg().await;
-    let session = deps.session().await;
 
     let options = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
         .await?
@@ -300,16 +318,20 @@ pub async fn inject(
             ))
         })?;
 
-    if let Some((outcome, _)) =
-        try_enqueue(deps, &cfg, session_id, &message, entry_id, origin, &options).await?
-    {
-        return Ok(outcome);
-    }
-    let preview = message_preview(&message);
-    session
-        .append(session_id, &message, entry_id, None, origin)
-        .await?;
-    seed_or_merge(deps, &cfg, session_id, options, preview).await
+    deliver(
+        deps,
+        &cfg,
+        session_id,
+        options,
+        Delivery {
+            message: &message,
+            entry_id,
+            origin,
+            lineage: &TurnLineage::default(),
+        },
+    )
+    .await
+    .map(|(outcome, _)| outcome)
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -398,10 +420,8 @@ async fn try_enqueue(
     deps: &Deps,
     cfg: &WorkerConfig,
     session_id: &str,
-    message: &AgentMessage,
-    entry_id: Option<&str>,
-    origin: Option<&Value>,
     options: &TurnOptions,
+    d: &Delivery<'_>,
 ) -> Result<Option<(StartOutcome, String)>, HarnessError> {
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     let prior_generation = existing.as_ref().and_then(|r| r.functions_generation);
@@ -411,15 +431,16 @@ async fn try_enqueue(
     }
 
     let id = ids::new_queued_id();
-    let entry_id = entry_id
+    let entry_id = d
+        .entry_id
         .map(str::to_string)
         .unwrap_or_else(|| ids::queued_entry_id(&id));
     let row = crate::state::QueuedMessage {
         id,
         session_id: session_id.to_string(),
-        message: message.clone(),
+        message: d.message.clone(),
         entry_id: entry_id.clone(),
-        origin: origin.cloned(),
+        origin: d.origin.cloned(),
         queued_at: AgentMessage::now_ms(),
     };
     crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms).await?;
@@ -451,7 +472,8 @@ async fn try_enqueue(
                 session_id,
                 options.clone(),
                 prior_generation,
-                message_preview(message),
+                message_preview(d.message),
+                d.lineage,
             )
             .await?;
             seeded.queued = true;
@@ -459,6 +481,54 @@ async fn try_enqueue(
         }
     };
     Ok(Some((outcome, entry_id)))
+}
+
+/// The lineage a seeded turn carries: empty for a top-level send or a
+/// notification wake, populated for a spawned child. It exists so ONE seeding
+/// path can serve every entry point — before this, the child path hand-rolled
+/// its own `TurnRecord` and `put_turn`, which skipped the CAS/merge check and
+/// clobbered a running turn whenever a spawn reused a live session id.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TurnLineage {
+    pub depth: u32,
+    pub parent: Option<ParentLink>,
+    pub display_parent_session_id: Option<String>,
+}
+
+/// One message on its way into a session: what to append, how to mark it, and
+/// the lineage the seeded turn inherits. Bundled so every seeding path takes
+/// the same shape.
+pub(crate) struct Delivery<'a> {
+    pub message: &'a AgentMessage,
+    pub entry_id: Option<&'a str>,
+    pub origin: Option<&'a Value>,
+    pub lineage: &'a TurnLineage,
+}
+
+/// The shared delivery tail of every turn-seeding path: park the message when a
+/// step is streaming, else append it and CAS-seed the turn (or merge into the
+/// running one). `start`, `inject` and the sub-agent spawn all end here, so
+/// mid-stream parking, the merge double-check and the record shape are
+/// identical for a user message, a notification wake and a child's opening
+/// task. Returns the outcome and the transcript entry id the message landed on.
+pub(crate) async fn deliver(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    session_id: &str,
+    options: TurnOptions,
+    d: Delivery<'_>,
+) -> Result<(StartOutcome, String), HarnessError> {
+    if let Some((outcome, row_entry)) = try_enqueue(deps, cfg, session_id, &options, &d).await? {
+        return Ok((outcome, row_entry));
+    }
+    let appended = deps
+        .session()
+        .await
+        .append(session_id, d.message, d.entry_id, None, d.origin)
+        .await?;
+    let preview = message_preview(d.message);
+    let outcome = seed_or_merge(deps, cfg, session_id, options, preview, d.lineage).await?;
+    Ok((outcome, appended))
 }
 
 pub(crate) fn normalize_message(input: MessageInput) -> Result<AgentMessage, HarnessError> {
@@ -512,20 +582,26 @@ fn build_options(
         ),
         mode: opts.mode,
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
+        max_output_tokens: opts.max_output_tokens,
+        max_total_tokens: opts.max_total_tokens,
+        max_cost_usd: opts.max_cost_usd,
+        budget_root_session_id: None,
         thinking_level: opts.thinking_level,
         provider_options: opts.provider_options,
         output: opts.output.unwrap_or_default(),
         functions,
         metadata: opts.metadata,
-        max_validation_retries: cfg.max_validation_retries,
+        max_validation_retries: opts
+            .max_validation_retries
+            .unwrap_or(cfg.max_validation_retries),
         max_transient_resumes: cfg.max_transient_resumes,
     }
 }
 
-/// The single chokepoint for the "ask is structurally read-only" invariant:
+/// The single chokepoint for the ask-mode policy cap:
 /// every turn-seeding path (a fresh send, an inherited steer, a spawned child)
 /// routes its resolved dispatch policy through here, so ask mode is capped at
-/// the operator's read-only baseline no matter how the policy was assembled.
+/// the configured default policy no matter how the policy was assembled.
 /// A non-ask turn passes through untouched.
 pub(crate) fn clamp_for_mode(
     cfg: &WorkerConfig,
@@ -580,6 +656,7 @@ async fn seed_or_merge(
     session_id: &str,
     mut options: TurnOptions,
     message_preview: Option<String>,
+    lineage: &TurnLineage,
 ) -> Result<StartOutcome, HarnessError> {
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     // Carry the session's last-acknowledged registry generation onto a new turn
@@ -619,6 +696,7 @@ async fn seed_or_merge(
                         options,
                         prior_generation,
                         message_preview,
+                        lineage,
                     )
                     .await
                 }
@@ -632,6 +710,7 @@ async fn seed_or_merge(
                 options,
                 prior_generation,
                 message_preview,
+                lineage,
             )
             .await
         }
@@ -649,6 +728,7 @@ pub(crate) async fn seed_new(
     options: TurnOptions,
     functions_generation: Option<u64>,
     message_preview: Option<String>,
+    lineage: &TurnLineage,
 ) -> Result<StartOutcome, HarnessError> {
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
@@ -658,17 +738,15 @@ pub(crate) async fn seed_new(
         status: TurnStatus::Running,
         step: 0,
         turn_count: 0,
-        depth: 0,
+        depth: lineage.depth,
         message_preview,
         abort: false,
         watermark_entry_id: None,
         stream_request_id: None,
         options,
         calls: Default::default(),
-        parent: None,
-        display_parent_session_id: None,
-        spawned_by_subscription_id: None,
-        reactive_depth: None,
+        parent: lineage.parent.clone(),
+        display_parent_session_id: lineage.display_parent_session_id.clone(),
         functions_generation,
         result: None,
         result_error: None,
@@ -684,7 +762,7 @@ pub(crate) async fn seed_new(
         &turn_id,
         0,
         record.message_preview.as_deref(),
-        0,
+        lineage.depth,
     )
     .await?;
     Ok(StartOutcome {
@@ -817,7 +895,7 @@ mod tests {
         let opts = build_options(&cfg, &req, "m".into(), req.provider.clone(), None);
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("operating in agent mode"));
-        assert!(prompt.contains("# The steps for every action"));
+        assert!(prompt.contains("# System rules"));
     }
 
     #[test]
@@ -854,6 +932,10 @@ mod tests {
             system_prompt: None,
             mode,
             max_turns: 16,
+            max_output_tokens: None,
+            max_total_tokens: None,
+            max_cost_usd: None,
+            budget_root_session_id: None,
             thinking_level: None,
             provider_options: None,
             output: OutputContract::Text,
@@ -873,12 +955,13 @@ mod tests {
             expose: Default::default(),
         };
 
-        // An ask-mode steer keeps the run armed but capped at the baseline.
+        // An ask-mode steer keeps the run armed and is capped at the wildcard
+        // default policy.
         let mut options = options_with(Some(Mode::Ask), None);
         inherit_prior_functions(&cfg, &mut options, Some(&broad));
         let compiled = policy::CompiledPolicy::from(options.functions.as_ref());
         assert!(compiled.allows("state::get"));
-        assert!(!compiled.allows("state::set"));
+        assert!(compiled.allows("state::set"));
 
         // Outside ask mode the prior policy is inherited whole.
         let mut options = options_with(Some(Mode::Agent), None);
@@ -897,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn build_options_clamps_functions_to_the_read_only_baseline_in_ask_mode() {
+    fn build_options_clamps_functions_to_the_default_policy_in_ask_mode() {
         let cfg = WorkerConfig::default();
         let req = SendRequest {
             session_id: None,
@@ -918,21 +1001,13 @@ mod tests {
         };
         let opts = build_options(&cfg, &req, "m".into(), req.provider.clone(), None);
         let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
-        // Baseline reads survive the clamp…
+        // The wildcard default preserves the requested policy…
         assert!(compiled.allows("state::get"));
         assert!(compiled.allows("engine::functions::list"));
-        // …every write/orchestration surface is out, wildcard request or not.
-        for denied in [
-            "state::set",
-            "harness::spawn",
-            "engine::register_trigger",
-            "shell::run",
-        ] {
-            assert!(
-                !compiled.allows(denied),
-                "{denied} must be denied in ask mode"
-            );
-        }
+        assert!(compiled.allows("state::set"));
+        assert!(compiled.allows("harness::spawn"));
+        assert!(compiled.allows("engine::register_trigger"));
+        assert!(compiled.allows("shell::run"));
     }
 
     #[test]

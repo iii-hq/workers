@@ -118,21 +118,24 @@ are added when a worker needs harness-level integration beyond unit tests.
 
 ## 6. Release wiring (one-time per worker)
 
-Before the first release, wire the worker into the CD pipeline. Forgetting a
-step can fail **silently** (e.g. tag push triggers nothing).
+Before the first release, add the worker to the release catalog. The standard
+Release workflow listens for generic `<worker>/v*` tags and validates every
+slug against this catalog, so there is no second tag-pattern list to maintain.
 
 | # | Location | Action |
 |---|---|---|
-| 1 | [`.github/workflows/create-tag.yml`](../../.github/workflows/create-tag.yml) | Add worker to `inputs.worker.options` |
-| 2 | [`.github/workflows/release.yml`](../../.github/workflows/release.yml) | Add `'<worker>/v*'` to `on.push.tags` |
-| 3 | [`.github/scripts/parse_publish_workers_input.py`](../../.github/scripts/parse_publish_workers_input.py) | Add to `ALLOWED_WORKERS` **only if** the worker ships `skills/` and you want out-of-band skills publishing via [`publish-worker-skills.yml`](../../.github/workflows/publish-worker-skills.yml) |
-| 4 | [`.github/scripts/validate_worker.py`](../../.github/scripts/validate_worker.py) | Add to `BOOTSTRAP_WORKERS` **only if** the harness stack requires this worker's skill at boot — makes `skills/SKILL.md` a hard PR gate (currently `shell`, `iii-directory`) |
+| 1 | [`.github/release-workers.yaml`](../../.github/release-workers.yaml) | Add a standard worker slug, or a special-worker route when it does not use `release.yml` |
+| 2 | [`.github/scripts/parse_publish_workers_input.py`](../../.github/scripts/parse_publish_workers_input.py) | Add to `ALLOWED_WORKERS` **only if** the worker ships `skills/` and you want out-of-band skills publishing via [`publish-worker-skills.yml`](../../.github/workflows/publish-worker-skills.yml) |
+| 3 | [`.github/scripts/validate_worker.py`](../../.github/scripts/validate_worker.py) | Add to `BOOTSTRAP_WORKERS` **only if** the harness stack requires this worker's skill at boot — makes `skills/SKILL.md` a hard PR gate (currently `shell`, `iii-directory`) |
 
-**Worked example:** `session-manager` — added to `create-tag.yml` options and
-`release.yml` tag patterns. No `BOOTSTRAP_WORKERS` entry (not harness-bootstrapped).
+Run the catalog guard locally after editing it:
 
-**Fallback:** if the tag pattern is missing, run **Release** manually via
-`workflow_dispatch` with the tag input until §6 row 2 is fixed.
+```bash
+python3 .github/scripts/release_catalog.py validate
+```
+
+**Worked example:** `session-manager` is a standard catalog entry and has no
+`BOOTSTRAP_WORKERS` entry because Harness does not require its skill at boot.
 
 **Known drift:** `email` ships `skills/SKILL.md` but is not in `ALLOWED_WORKERS`
 today — add it when enabling out-of-band skills publish for that worker.

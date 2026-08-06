@@ -1,0 +1,109 @@
+{
+  "description": "Search file contents across the workspace, grouped by file — the shell worker's recursive grep, shaped into what a results panel renders.",
+  "function_id": "editor::search",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ignore_case": {
+        "default": false,
+        "description": "Match case-insensitively.",
+        "type": "boolean"
+      },
+      "include_glob": {
+        "default": [],
+        "description": "Glob filters restricting which files are searched, e.g. `[\"**/*.rs\"]`.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "max_matches": {
+        "default": null,
+        "description": "Stop after this many matching lines. Defaults to the worker's `search_max_matches`.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "pattern": {
+        "description": "Rust regex matched against each line.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "pattern"
+    ],
+    "title": "SearchInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SearchFile": {
+        "properties": {
+          "hits": {
+            "items": {
+              "$ref": "#/definitions/SearchHit"
+            },
+            "type": "array"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hits",
+          "path"
+        ],
+        "type": "object"
+      },
+      "SearchHit": {
+        "properties": {
+          "line": {
+            "description": "1-based line number.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "text": {
+            "description": "The matching line, as shell returned it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "line",
+          "text"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "files": {
+        "description": "Matches grouped by file, in first-match order — the shape a result panel renders, rather than a flat list every caller has to group.",
+        "items": {
+          "$ref": "#/definitions/SearchFile"
+        },
+        "type": "array"
+      },
+      "total": {
+        "description": "Total matching lines across every file.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "truncated": {
+        "description": "True when the search stopped at `max_matches`.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "files",
+      "total",
+      "truncated"
+    ],
+    "title": "SearchOutput",
+    "type": "object"
+  }
+}

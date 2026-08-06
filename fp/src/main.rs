@@ -9,7 +9,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
 
-use fp::{guidance, pipe, util};
+use fp::{condition, guidance, pipe, util};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -163,6 +163,54 @@ fn register_functions(iii: &Arc<IIIClient>) {
         util::REVERSE_ID,
         util::REVERSE_DESC,
         |r: util::ValueRequest| util::reverse(r.value),
+    );
+    register_util(
+        iii,
+        util::SUM_ID,
+        util::SUM_DESC,
+        |r: util::ReduceRequest| util::sum(r.value, r.path.as_deref()),
+    );
+    register_util(
+        iii,
+        util::MEAN_ID,
+        util::MEAN_DESC,
+        |r: util::ReduceRequest| util::mean(r.value, r.path.as_deref()),
+    );
+    register_util(
+        iii,
+        util::MIN_ID,
+        util::MIN_DESC,
+        |r: util::ReduceRequest| util::min(r.value, r.path.as_deref()),
+    );
+    register_util(
+        iii,
+        util::MAX_ID,
+        util::MAX_DESC,
+        |r: util::ReduceRequest| util::max(r.value, r.path.as_deref()),
+    );
+    register_util(
+        iii,
+        util::GROUP_BY_ID,
+        util::GROUP_BY_DESC,
+        |r: util::GroupByRequest| util::group_by(r.value, &r.path),
+    );
+    register_util(
+        iii,
+        util::COUNT_BY_ID,
+        util::COUNT_BY_DESC,
+        |r: util::GroupByRequest| util::count_by(r.value, &r.path),
+    );
+
+    // condition is `when` shaped for a trigger binding: it reads the event out
+    // of the condition envelope and answers the decision contract, so one
+    // function serves every binding that wants a comparison instead of each
+    // predicate needing its own worker.
+    iii.register_function(
+        condition::CONDITION_ID,
+        RegisterFunction::new_async(|input: condition::ConditionInput| async move {
+            condition::evaluate(input).map_err(Error::Handler)
+        })
+        .description(condition::CONDITION_DESC),
     );
 
     // when returns { passed, value } instead of the UtilResponse wrapper —

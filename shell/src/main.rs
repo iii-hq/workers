@@ -147,19 +147,32 @@ async fn main() -> Result<()> {
     telemetry::init();
 
     // Seed policy: a MISSING file is the zero-config path (warn + fall through
-    // to the stored value or built-in seed). A file that EXISTS but fails to
-    // parse aborts boot: on first registration the fallback would silently
-    // replace the operator's intended policy with the permissive dev seed —
+    // to the stored value or built-in seed), and so is a FOREIGN file — one
+    // with no shell keys at all, like the engine's project roster that
+    // `./config.yaml` resolves to in a managed install (MOT-4252). A file
+    // that is shell-shaped but fails to parse (or carries removed keys)
+    // aborts boot: on first registration the fallback would silently replace
+    // the operator's intended policy with the permissive dev seed —
     // fail-open — and with 0.7.0's removed-key rejection every un-migrated
     // 0.6.x config file hits exactly this path. Mirrors the stored-value
     // story: reject loudly, never degrade to a wider policy.
-    let seed = match config::ShellConfig::from_file(&cli.config) {
-        Ok(cfg) => {
+    let seed = match config::ShellConfig::load_seed_file(&cli.config) {
+        Ok(config::SeedFile::Seed(cfg)) => {
             tracing::info!(path = %cli.config, "loaded seed config for initial registration");
-            Some(cfg)
+            Some(*cfg)
         }
-        Err(e) if !std::path::Path::new(&cli.config).exists() => {
-            tracing::warn!(path = %cli.config, error = %e, "no --config seed file; using the stored configuration value if present, else the built-in zero-config default");
+        Ok(config::SeedFile::Missing) => {
+            tracing::warn!(path = %cli.config, "no --config seed file; using the stored configuration value if present, else the built-in zero-config default");
+            None
+        }
+        Ok(config::SeedFile::Foreign { keys }) => {
+            tracing::warn!(
+                path = %cli.config,
+                keys = %keys.join(", "),
+                "--config file has no shell config keys (managed installs resolve \
+                 ./config.yaml to the engine's project roster); ignoring it — using the \
+                 stored configuration value if present, else the built-in zero-config default"
+            );
             None
         }
         Err(e) => {

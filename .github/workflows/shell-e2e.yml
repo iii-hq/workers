@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
@@ -34,7 +34,7 @@ jobs:
           workspaces: shell
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
           cache: 'npm'
@@ -49,16 +49,6 @@ jobs:
       - name: Verify engine
         run: iii --version
 
-      # The jailed suite (cases-vuln-repro-jailed.ts) hardcodes JAIL_ROOT to
-      # /private/tmp/iii-shell-jailed-root — that's the macOS layout where
-      # /private/tmp is the canonical location of /tmp. On Linux runners
-      # /private doesn't exist, so create the parents world-writable so the
-      # non-root harness can mkdir under it.
-      - name: Pre-create jail root for run-tests-jailed.sh
-        run: |
-          sudo mkdir -p /private/tmp
-          sudo chmod 1777 /private/tmp
-
       - name: Run default harness
         working-directory: shell/tests/e2e
         run: ./run-tests.sh
@@ -66,11 +56,11 @@ jobs:
       # Reuse the binary built by the default suite — saves ~40s of cargo build.
       - name: Run jailed harness (2 cases, S-C1 regression)
         working-directory: shell/tests/e2e
-        run: ./run-tests-jailed.sh --no-build
+        run: ./run-tests.sh --suite=jailed --no-build
 
       - name: Upload report on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: shell-e2e-report
           path: |

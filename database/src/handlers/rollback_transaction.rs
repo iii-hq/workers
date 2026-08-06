@@ -41,6 +41,9 @@ pub async fn handle(state: &AppState, req: RollbackTxReq) -> Result<RollbackTxRe
     let driver = taken.driver;
     let db_name = taken.db_name.clone();
     let mut guard = taken.conn_arc.lock_owned().await;
+    // We own the registry entry and have waited for any in-flight statement
+    // to finish staging. Nothing from this transaction may be announced.
+    state.drop_row_changes(&req.transaction_id);
 
     let result = match &mut *guard {
         PinnedConn::Sqlite(slot) => driver::sqlite::tx_rollback(slot).await,
@@ -87,9 +90,31 @@ mod tests {
     use super::*;
     use crate::handlers::begin_transaction::tests::state;
     use serde_json::{json, Value};
+    use std::sync::Arc;
+    use std::time::Duration;
 
     fn req(v: Value) -> RollbackTxReq {
         serde_json::from_value(v).unwrap()
+    }
+
+    fn state_with_bus() -> (AppState, Arc<crate::triggers::RowChangeBus>) {
+        let mut st = state();
+        let bus = Arc::new(crate::triggers::RowChangeBus::new(
+            Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:9")),
+            100,
+        ));
+        st.row_changes = Some(bus.clone());
+        (st, bus)
+    }
+
+    async fn wait_until_taken(state: &AppState) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !state.transactions.is_empty().await {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -121,6 +146,83 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn rollback_drops_changes_staged_by_an_in_flight_execute() {
+        let (st, bus) = state_with_bus();
+        let begin = crate::handlers::begin_transaction::handle(
+            &st,
+            serde_json::from_value(json!({ "db": "primary" })).unwrap(),
+        )
+        .await
+        .unwrap();
+        let id = begin.transaction.id;
+        let lock = st.transactions.lock(&id).await.unwrap();
+
+        let task_state = st.clone();
+        let task_id = id.clone();
+        let rollback = tokio::spawn(async move {
+            handle(
+                &task_state,
+                RollbackTxReq {
+                    transaction_id: task_id,
+                },
+            )
+            .await
+        });
+        wait_until_taken(&st).await;
+
+        st.stage_row_change(&id, "primary", "INSERT INTO t VALUES (1)", 1, None)
+            .await;
+        assert_eq!(bus.pending_count(&id), 1);
+        drop(lock);
+
+        rollback.await.unwrap().unwrap();
+        assert_eq!(bus.pending_count(&id), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rollback_losing_to_commit_does_not_clear_pending_changes() {
+        let (st, bus) = state_with_bus();
+        let begin = crate::handlers::begin_transaction::handle(
+            &st,
+            serde_json::from_value(json!({ "db": "primary" })).unwrap(),
+        )
+        .await
+        .unwrap();
+        let id = begin.transaction.id;
+        st.stage_row_change(&id, "primary", "INSERT INTO t VALUES (1)", 1, None)
+            .await;
+        let lock = st.transactions.lock(&id).await.unwrap();
+
+        let task_state = st.clone();
+        let task_id = id.clone();
+        let commit = tokio::spawn(async move {
+            crate::handlers::commit_transaction::handle(
+                &task_state,
+                crate::handlers::commit_transaction::CommitTxReq {
+                    transaction_id: task_id,
+                },
+            )
+            .await
+        });
+        wait_until_taken(&st).await;
+
+        let err = handle(
+            &st,
+            RollbackTxReq {
+                transaction_id: id.clone(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("TRANSACTION_NOT_FOUND"), "{err}");
+        assert_eq!(bus.pending_count(&id), 1);
+
+        drop(lock);
+        commit.await.unwrap().unwrap();
+        assert_eq!(bus.pending_count(&id), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn writes_inside_rolled_back_tx_are_not_visible() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let url = format!("sqlite:{}", tmp.path().display());
@@ -136,6 +238,7 @@ mod tests {
             handles: std::sync::Arc::new(crate::handle::HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_helpers::observability::Logger::new(),
+            row_changes: None,
         };
 
         crate::handlers::execute::handle(

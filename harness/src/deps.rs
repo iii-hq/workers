@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use iii_sdk::IIIClient;
 
+use crate::bindings::BindingStore;
 use crate::clients::{ContextClient, EngineClient, RouterClient, SessionClient};
 use crate::config::WorkerConfig;
 use crate::configuration::ConfigCell;
@@ -13,7 +14,6 @@ use crate::discovery::{FunctionsCell, FunctionsSnapshot};
 use crate::events::TurnEvents;
 use crate::hooks::HookRegistry;
 use crate::locks::{SessionLocks, TurnCancels};
-use crate::subscriptions::SubscriptionRegistry;
 
 #[derive(Clone)]
 pub struct Deps {
@@ -24,9 +24,6 @@ pub struct Deps {
     pub hooks: HookRegistry,
     pub locks: SessionLocks,
     pub cancels: TurnCancels,
-    pub subscriptions: Arc<SubscriptionRegistry>,
-    /// react's per-subscription fire-rate breaker (loop breaker #3).
-    pub react_gate: Arc<crate::functions::react::FireGate>,
 }
 
 impl Deps {
@@ -45,8 +42,6 @@ impl Deps {
             hooks,
             locks: SessionLocks::new(),
             cancels: TurnCancels::new(),
-            subscriptions: Arc::new(SubscriptionRegistry::new()),
-            react_gate: Arc::new(crate::functions::react::FireGate::default()),
         }
     }
 
@@ -84,5 +79,12 @@ impl Deps {
     pub async fn engine(&self) -> EngineClient {
         let cfg = self.cfg().await;
         EngineClient::new(self.iii.clone(), cfg.dispatch_timeout_ms)
+    }
+
+    /// The durable trigger-binding store. Built per call like the other
+    /// clients so a hot-reloaded timeout applies to the next read.
+    pub async fn bindings(&self) -> BindingStore {
+        let cfg = self.cfg().await;
+        BindingStore::new(self.iii.clone(), cfg.session_timeout_ms)
     }
 }

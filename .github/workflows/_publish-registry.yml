@@ -3,6 +3,11 @@ name: Publish to workers registry
 on:
   workflow_call:
     inputs:
+      ref:
+        description: 'Git ref to build (the tag being released). Empty checks out the calling workflow ref, which on a manual dispatch is the branch it was started from, not the tag.'
+        required: false
+        type: string
+        default: ''
       worker:
         description: 'Worker name (folder)'
         required: true
@@ -39,6 +44,11 @@ on:
         required: false
         type: string
         default: 'https://api.workers.iii.dev'
+      experimental:
+        description: "'true' marks the worker experimental in the registry (badge only)"
+        required: false
+        type: string
+        default: 'false'
 
 jobs:
   publish:
@@ -47,7 +57,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Install pyyaml
         run: pip install --quiet pyyaml
@@ -57,8 +69,11 @@ jobs:
       # bundle. No-op for the binary / image paths.
       - name: Install Node (bundle deploy)
         if: inputs.deploy == 'bundle'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
+          # setup-node v5 auto-caches when package.json declares packageManager.
+          # This step never cached; the repository is already over its cache budget.
+          package-manager-cache: false
           node-version: 22
 
       - name: Install iii CLI
@@ -319,11 +334,13 @@ jobs:
           REGISTRY_TAG: ${{ inputs.registry_tag }}
           IMAGE_TAG: ${{ inputs.image_tag }}
           REPO_URL: ${{ format('https://github.com/{0}', github.repository) }}
+          EXPERIMENTAL: ${{ inputs.experimental }}
         run: |
           python3 .github/scripts/build_publish_payload.py \
             --worker "$WORKER" \
             --version "$VERSION" \
             --registry-tag "$REGISTRY_TAG" \
+            --experimental "$EXPERIMENTAL" \
             --deploy "$DEPLOY" \
             --repo-url "$REPO_URL" \
             --interface-json worker-interface.json \
@@ -336,7 +353,11 @@ jobs:
         env:
           API_URL: ${{ inputs.api_url }}
           API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          WORKER: ${{ inputs.worker }}
+          VERSION: ${{ inputs.version }}
+          REGISTRY_TAG: ${{ inputs.registry_tag }}
         run: |
+          set -euo pipefail
           if [[ -z "$API_KEY" ]]; then
             echo "::error::WORKERS_REGISTRY_API_KEY secret is not set"
             exit 1
@@ -348,7 +369,21 @@ jobs:
             --data-binary @payload.json)
           echo "HTTP $http"
           cat response.json
-          if [[ "$http" != "200" ]]; then
+          if [[ "$http" == "409" ]]; then
+            resolve_http=$(curl -sS -o resolve-response.json -w '%{http_code}' \
+              -H "Content-Type: application/json" \
+              -X POST "$API_URL/resolve" \
+              --data "$(jq -cn --arg worker "$WORKER" --arg version "$REGISTRY_TAG" \
+                '{worker: $worker, version: $version}')")
+            resolved=$(jq -r '.root.version // empty' resolve-response.json)
+            if [[ "$resolve_http" == "200" && "$resolved" == "$VERSION" ]]; then
+              echo "::notice::$WORKER@$VERSION already exists and $REGISTRY_TAG still points to it; continuing idempotently"
+            else
+              echo "::error::duplicate publish is not a safe retry: $WORKER@$REGISTRY_TAG resolved ${resolved:-nothing} (HTTP $resolve_http), expected $VERSION"
+              cat resolve-response.json
+              exit 1
+            fi
+          elif [[ "$http" != "200" ]]; then
             echo "::error::publish failed with HTTP $http"
             exit 1
           fi

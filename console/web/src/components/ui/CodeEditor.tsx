@@ -25,6 +25,11 @@ export interface CodeEditorProps {
   /** Observes keys bubbling out of the editor (shortcuts like ⌘S) — keys
       Monaco consumes for editing never reach it. */
   onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>
+  /** Domain identifiers to autocomplete (e.g. SQL table/column names +
+      keywords). Non-empty turns on the as-you-type suggest popup (otherwise
+      the editor stays prose-quiet) and registers a completion provider for
+      the current `language` offering these words. Disposed on unmount. */
+  completions?: readonly string[]
 }
 
 /* The pre-Monaco fallback (and permanent degraded mode if the editor chunk
@@ -95,6 +100,7 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       id,
       'aria-label': ariaLabel,
       onKeyDown,
+      completions,
     },
     ref,
   ) => {
@@ -199,6 +205,66 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         if (active instanceof HTMLElement) active.blur()
       }
     }, [ready, readOnly, disabled, placeholder, ariaLabel])
+
+    // Autocomplete: a non-empty `completions` turns on the as-you-type suggest
+    // popup (the default stays prose-quiet) and registers a provider for the
+    // current language offering those words. The joined key keeps the effect
+    // from churning when the parent passes a fresh array of the same words.
+    // '\n' as separator: identifiers can't contain it, and unlike the
+    // invisible control character it replaced, it can't masquerade as an
+    // empty string in an editor or a grep.
+    const completionsKey = (completions ?? []).join('\n')
+    React.useEffect(() => {
+      const editor = editorRef.current
+      if (!ready || !editor) return
+      const words = completionsKey
+        ? completionsKey.split('\n').filter(Boolean)
+        : []
+      if (words.length === 0) return
+      editor.updateOptions({
+        quickSuggestions: true,
+        wordBasedSuggestions: 'off',
+      })
+      let disposable: monacoNs.IDisposable | undefined
+      let cancelled = false
+      void import('@/lib/monaco').then(({ monaco }) => {
+        if (cancelled) return
+        disposable = monaco.languages.registerCompletionItemProvider(language, {
+          triggerCharacters: [' ', '.', '('],
+          provideCompletionItems(model, position) {
+            // The provider is registered per-language (global), so only answer
+            // for this editor's own model — otherwise one editor's words would
+            // surface in every other editor of the same language.
+            if (model !== editor.getModel()) return { suggestions: [] }
+            const w = model.getWordUntilPosition(position)
+            const range = {
+              startLineNumber: position.lineNumber,
+              endLineNumber: position.lineNumber,
+              startColumn: w.startColumn,
+              endColumn: w.endColumn,
+            }
+            return {
+              suggestions: words.map((label) => ({
+                label,
+                kind: monaco.languages.CompletionItemKind.Field,
+                insertText: label,
+                range,
+              })),
+            }
+          },
+        })
+      })
+      return () => {
+        cancelled = true
+        disposable?.dispose()
+        // Restore the component's suggest baseline (prose-quiet) rather than
+        // hardcoding — both options return to how the editor was constructed.
+        editorRef.current?.updateOptions({
+          quickSuggestions: MONACO_OPTIONS.quickSuggestions,
+          wordBasedSuggestions: MONACO_OPTIONS.wordBasedSuggestions,
+        })
+      }
+    }, [ready, completionsKey, language])
 
     return (
       // biome-ignore lint/a11y/noStaticElementInteractions: shortcut relay + gap-click focus around a real editor

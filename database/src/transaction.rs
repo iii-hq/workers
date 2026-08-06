@@ -161,7 +161,15 @@ impl TxRegistry {
     /// transaction whose deadline has passed, and removes the entry. The
     /// returned `JoinHandle` is owned by `main.rs` for the lifetime of the
     /// worker process; it loops forever until the runtime is dropped.
-    pub fn spawn_timeout_watcher(&self, log: Logger) -> tokio::task::JoinHandle<()> {
+    /// `row_changes` is the `database::row-changed` buffer, when one exists.
+    /// A transaction the watcher rolls back must have its staged changes
+    /// dropped with it: those rows never existed, and leaving the buffer
+    /// behind both leaks and risks announcing them later.
+    pub fn spawn_timeout_watcher(
+        &self,
+        log: Logger,
+        row_changes: Option<std::sync::Arc<crate::triggers::RowChangeBus>>,
+    ) -> tokio::task::JoinHandle<()> {
         let me = self.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -171,12 +179,16 @@ impl TxRegistry {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
-                me.run_one_sweep(&log).await;
+                me.run_one_sweep(&log, row_changes.as_deref()).await;
             }
         })
     }
 
-    async fn run_one_sweep(&self, log: &Logger) {
+    async fn run_one_sweep(
+        &self,
+        log: &Logger,
+        row_changes: Option<&crate::triggers::RowChangeBus>,
+    ) {
         let now = Utc::now();
         // Take all expired entries in a single write-lock to keep the
         // critical section short; process them outside the lock.
@@ -201,6 +213,9 @@ impl TxRegistry {
             // its ref), so dropping the guard at the end of the scope will
             // also drop the PinnedConn → conn returns to its pool.
             let mut guard = entry.conn.lock_owned().await;
+            if let Some(bus) = row_changes {
+                bus.rollback(&id);
+            }
             let result = rollback_inline(&mut guard).await;
             let now2 = Utc::now();
             let duration_ms = (now2 - started_at).num_milliseconds().max(0);
@@ -378,7 +393,7 @@ mod tests {
         assert_eq!(reg.len().await, 1, "entry still present before sweep");
 
         let log = Logger::new();
-        reg.run_one_sweep(&log).await;
+        reg.run_one_sweep(&log, None).await;
         assert_eq!(reg.len().await, 0, "expired entry must be removed");
 
         // Subsequent lock fails with TRANSACTION_NOT_FOUND.
@@ -387,6 +402,51 @@ mod tests {
             Err(other) => panic!("expected TransactionNotFound after sweep, got {other:?}"),
             Ok(_) => panic!("expected TransactionNotFound after sweep, got Ok"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn timeout_drops_changes_staged_by_an_in_flight_execute() {
+        let reg = TxRegistry::new();
+        let mut conn = sqlite_pinned().await;
+        if let PinnedConn::Sqlite(slot) = &mut conn {
+            driver::sqlite::tx_begin(slot, None).await.unwrap();
+        }
+        let h = reg
+            .insert(
+                "primary".into(),
+                DriverKind::Sqlite,
+                conn,
+                Duration::from_millis(1),
+            )
+            .await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let lock = reg.lock(&h.id).await.unwrap();
+        let bus = Arc::new(crate::triggers::RowChangeBus::new(
+            Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:9")),
+            100,
+        ));
+
+        let sweep_reg = reg.clone();
+        let sweep_bus = bus.clone();
+        let sweep = tokio::spawn(async move {
+            sweep_reg
+                .run_one_sweep(&Logger::new(), Some(sweep_bus.as_ref()))
+                .await;
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !reg.is_empty().await {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        bus.stage(&h.id, "primary", "INSERT INTO t VALUES (1)", 1, None);
+        assert_eq!(bus.pending_count(&h.id), 1);
+        drop(lock);
+
+        sweep.await.unwrap();
+        assert_eq!(bus.pending_count(&h.id), 0);
     }
 
     /// Live entries (deadline still in the future) must not be touched.
@@ -404,7 +464,7 @@ mod tests {
             )
             .await;
         let log = Logger::new();
-        reg.run_one_sweep(&log).await;
+        reg.run_one_sweep(&log, None).await;
         assert_eq!(reg.len().await, 1, "live entry must survive sweep");
     }
 }

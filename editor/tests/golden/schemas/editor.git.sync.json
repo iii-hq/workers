@@ -1,0 +1,107 @@
+{
+  "description": "Fetch, fast-forward pull, or push. Pull is --ff-only on purpose: a merge under open buffers is how an editor ends up showing a conflicted tree it never asked for.",
+  "function_id": "editor::git::sync",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SyncAction": {
+        "description": "Which remote operation to run.",
+        "oneOf": [
+          {
+            "enum": [
+              "fetch",
+              "push"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Fast-forward only. A pull that would merge fails instead, so this can never produce a conflicted tree under open buffers.",
+            "enum": [
+              "pull"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "action": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/SyncAction"
+          }
+        ],
+        "description": "Which remote operation to run."
+      },
+      "cwd": {
+        "default": null,
+        "description": "Repository to run in. Defaults to the workspace root.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "title": "GitSyncInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SyncAction": {
+        "description": "Which remote operation to run.",
+        "oneOf": [
+          {
+            "enum": [
+              "fetch",
+              "push"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Fast-forward only. A pull that would merge fails instead, so this can never produce a conflicted tree under open buffers.",
+            "enum": [
+              "pull"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "action": {
+        "$ref": "#/definitions/SyncAction"
+      },
+      "ahead": {
+        "description": "Ahead/behind after the operation, so a caller does not need a second round trip to find out whether it changed anything.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "behind": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "ok": {
+        "type": "boolean"
+      },
+      "summary": {
+        "description": "git's output, trimmed. Both streams: git reports progress on stderr.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "action",
+      "ahead",
+      "behind",
+      "ok",
+      "summary"
+    ],
+    "title": "GitSyncOutput",
+    "type": "object"
+  }
+}

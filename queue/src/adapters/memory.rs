@@ -60,11 +60,19 @@ impl QueueAdapter for MemoryAdapter {
         topic: &str,
         id: &str,
         function_id: &str,
+        metadata: Option<Value>,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
         self.inner
-            .subscribe(topic, id, function_id, condition_function_id, queue_config)
+            .subscribe(
+                topic,
+                id,
+                function_id,
+                metadata,
+                condition_function_id,
+                queue_config,
+            )
             .await;
     }
 
@@ -209,7 +217,9 @@ mod tests {
         let invoker = Arc::new(RecordingInvoker::default());
         let adapter = MemoryAdapter::new(invoker.clone());
 
-        adapter.subscribe("demo", "sub-1", "fn-1", None, None).await;
+        adapter
+            .subscribe("demo", "sub-1", "fn-1", None, None, None)
+            .await;
         adapter
             .enqueue("demo", json!({"hello": "world"}), None, None)
             .await;

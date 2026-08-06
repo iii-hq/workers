@@ -17,6 +17,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::configuration::ConfigCell;
+use crate::events::{self, CalledEmitter};
 use crate::gh::{self, GhError, GhOutcome};
 
 /// Exit codes that mean "the gh operation succeeded" for most commands.
@@ -91,10 +92,13 @@ fn parse_stdout(id: &str, out: &GhOutcome) -> Result<Value, Error> {
 }
 
 /// Register a curated wrapper whose stdout is `--json` output: typed request
-/// → pure argv builder → bounded gh run → parsed `ValueResponse`.
+/// → pure argv builder → bounded gh run → parsed `ValueResponse`. Every call
+/// emits a fire-and-forget `github::called` event via [`events::run_and_emit`];
+/// the wrapped behavior and response are unchanged.
 fn register_json<Req>(
     iii: &IIIClient,
     cell: &ConfigCell,
+    emitter: &CalledEmitter,
     id: &'static str,
     desc: &'static str,
     ok_codes: &'static [i32],
@@ -103,18 +107,26 @@ fn register_json<Req>(
     Req: serde::de::DeserializeOwned + JsonSchema + Send + 'static,
 {
     let cell = cell.clone();
+    let emitter = emitter.clone();
     iii.register_function(
         id,
         RegisterFunction::new_async(move |req: Req| {
             let cell = cell.clone();
+            let emitter = emitter.clone();
             async move {
-                let cfg = cell.read().await.clone();
-                let out = gh::run(&cfg, &build(&req), None, None)
-                    .await
-                    .map_err(Error::from)?;
-                let out = expect_ok(id, out, ok_codes)?;
-                let value = parse_stdout(id, &out)?;
-                Ok::<_, Error>(ValueResponse { value })
+                let args = build(&req);
+                let args_summary = events::summarize_args(&args);
+                let repo = events::repo_from_args(&args);
+                events::run_and_emit(&emitter, id, args_summary, repo, async move {
+                    let cfg = cell.read().await.clone();
+                    let out = gh::run(&cfg, &args, None, None)
+                        .await
+                        .map_err(Error::from)?;
+                    let out = expect_ok(id, out, ok_codes)?;
+                    let value = parse_stdout(id, &out)?;
+                    Ok::<_, Error>(ValueResponse { value })
+                })
+                .await
             }
         })
         .description(desc),
@@ -126,6 +138,7 @@ fn register_json<Req>(
 fn register_text<Req>(
     iii: &IIIClient,
     cell: &ConfigCell,
+    emitter: &CalledEmitter,
     id: &'static str,
     desc: &'static str,
     build: fn(&Req) -> Vec<String>,
@@ -133,19 +146,27 @@ fn register_text<Req>(
     Req: serde::de::DeserializeOwned + JsonSchema + Send + 'static,
 {
     let cell = cell.clone();
+    let emitter = emitter.clone();
     iii.register_function(
         id,
         RegisterFunction::new_async(move |req: Req| {
             let cell = cell.clone();
+            let emitter = emitter.clone();
             async move {
-                let cfg = cell.read().await.clone();
-                let out = gh::run(&cfg, &build(&req), None, None)
-                    .await
-                    .map_err(Error::from)?;
-                let out = expect_ok(id, out, OK)?;
-                Ok::<_, Error>(TextResponse {
-                    output: out.stdout.trim().to_string(),
+                let args = build(&req);
+                let args_summary = events::summarize_args(&args);
+                let repo = events::repo_from_args(&args);
+                events::run_and_emit(&emitter, id, args_summary, repo, async move {
+                    let cfg = cell.read().await.clone();
+                    let out = gh::run(&cfg, &args, None, None)
+                        .await
+                        .map_err(Error::from)?;
+                    let out = expect_ok(id, out, OK)?;
+                    Ok::<_, Error>(TextResponse {
+                        output: out.stdout.trim().to_string(),
+                    })
                 })
+                .await
             }
         })
         .description(desc),
@@ -155,22 +176,30 @@ fn register_text<Req>(
 /// `github::pr::diff` is hand-registered: its response is the raw diff, with
 /// the truncation flag surfaced instead of erroring (a cut-off diff is still
 /// useful, unlike cut-off JSON).
-fn register_diff(iii: &IIIClient, cell: &ConfigCell) {
+fn register_diff(iii: &IIIClient, cell: &ConfigCell, emitter: &CalledEmitter) {
     let cell = cell.clone();
+    let emitter = emitter.clone();
     iii.register_function(
         pr::DIFF_ID,
         RegisterFunction::new_async(move |req: pr::DiffRequest| {
             let cell = cell.clone();
+            let emitter = emitter.clone();
             async move {
-                let cfg = cell.read().await.clone();
-                let out = gh::run(&cfg, &pr::diff_args(&req), None, None)
-                    .await
-                    .map_err(Error::from)?;
-                let out = expect_ok(pr::DIFF_ID, out, OK)?;
-                Ok::<_, Error>(DiffResponse {
-                    truncated: out.stdout_truncated,
-                    diff: out.stdout,
+                let args = pr::diff_args(&req);
+                let args_summary = events::summarize_args(&args);
+                let repo = events::repo_from_args(&args);
+                events::run_and_emit(&emitter, pr::DIFF_ID, args_summary, repo, async move {
+                    let cfg = cell.read().await.clone();
+                    let out = gh::run(&cfg, &args, None, None)
+                        .await
+                        .map_err(Error::from)?;
+                    let out = expect_ok(pr::DIFF_ID, out, OK)?;
+                    Ok::<_, Error>(DiffResponse {
+                        truncated: out.stdout_truncated,
+                        diff: out.stdout,
+                    })
                 })
+                .await
             }
         })
         .description(pr::DIFF_DESC),
@@ -178,24 +207,72 @@ fn register_diff(iii: &IIIClient, cell: &ConfigCell) {
 }
 
 /// Register every `github::*` function. Keep in lockstep with [`catalog`].
-pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
-    register_json(iii, cell, pr::LIST_ID, pr::LIST_DESC, OK, pr::list_args);
-    register_json(iii, cell, pr::VIEW_ID, pr::VIEW_DESC, OK, pr::view_args);
-    register_text(iii, cell, pr::CREATE_ID, pr::CREATE_DESC, pr::create_args);
-    register_text(iii, cell, pr::EDIT_ID, pr::EDIT_DESC, pr::edit_args);
-    register_text(iii, cell, pr::MERGE_ID, pr::MERGE_DESC, pr::merge_args);
+/// `emitter` is threaded into each register helper so every call fans out a
+/// `github::called` event without hand-editing the individual handlers.
+pub fn register_all(iii: &IIIClient, cell: &ConfigCell, emitter: &CalledEmitter) {
+    register_json(
+        iii,
+        cell,
+        emitter,
+        pr::LIST_ID,
+        pr::LIST_DESC,
+        OK,
+        pr::list_args,
+    );
+    register_json(
+        iii,
+        cell,
+        emitter,
+        pr::VIEW_ID,
+        pr::VIEW_DESC,
+        OK,
+        pr::view_args,
+    );
     register_text(
         iii,
         cell,
+        emitter,
+        pr::CREATE_ID,
+        pr::CREATE_DESC,
+        pr::create_args,
+    );
+    register_text(
+        iii,
+        cell,
+        emitter,
+        pr::EDIT_ID,
+        pr::EDIT_DESC,
+        pr::edit_args,
+    );
+    register_text(
+        iii,
+        cell,
+        emitter,
+        pr::MERGE_ID,
+        pr::MERGE_DESC,
+        pr::merge_args,
+    );
+    register_text(
+        iii,
+        cell,
+        emitter,
         pr::COMMENT_ID,
         pr::COMMENT_DESC,
         pr::comment_args,
     );
-    register_text(iii, cell, pr::REVIEW_ID, pr::REVIEW_DESC, pr::review_args);
-    register_diff(iii, cell);
+    register_text(
+        iii,
+        cell,
+        emitter,
+        pr::REVIEW_ID,
+        pr::REVIEW_DESC,
+        pr::review_args,
+    );
+    register_diff(iii, cell, emitter);
     register_json(
         iii,
         cell,
+        emitter,
         pr::CHECKS_ID,
         pr::CHECKS_DESC,
         CHECKS_OK,
@@ -205,6 +282,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_json(
         iii,
         cell,
+        emitter,
         issue::LIST_ID,
         issue::LIST_DESC,
         OK,
@@ -213,6 +291,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_json(
         iii,
         cell,
+        emitter,
         issue::VIEW_ID,
         issue::VIEW_DESC,
         OK,
@@ -221,6 +300,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_text(
         iii,
         cell,
+        emitter,
         issue::CREATE_ID,
         issue::CREATE_DESC,
         issue::create_args,
@@ -228,6 +308,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_text(
         iii,
         cell,
+        emitter,
         issue::EDIT_ID,
         issue::EDIT_DESC,
         issue::edit_args,
@@ -235,6 +316,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_text(
         iii,
         cell,
+        emitter,
         issue::COMMENT_ID,
         issue::COMMENT_DESC,
         issue::comment_args,
@@ -242,6 +324,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_text(
         iii,
         cell,
+        emitter,
         issue::CLOSE_ID,
         issue::CLOSE_DESC,
         issue::close_args,
@@ -250,6 +333,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_json(
         iii,
         cell,
+        emitter,
         repo::VIEW_ID,
         repo::VIEW_DESC,
         OK,
@@ -258,6 +342,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_json(
         iii,
         cell,
+        emitter,
         repo::LIST_ID,
         repo::LIST_DESC,
         OK,
@@ -267,6 +352,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_json(
         iii,
         cell,
+        emitter,
         actions::RUN_LIST_ID,
         actions::RUN_LIST_DESC,
         OK,
@@ -275,6 +361,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_json(
         iii,
         cell,
+        emitter,
         actions::RUN_VIEW_ID,
         actions::RUN_VIEW_DESC,
         OK,
@@ -283,6 +370,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_text(
         iii,
         cell,
+        emitter,
         actions::RUN_RERUN_ID,
         actions::RUN_RERUN_DESC,
         actions::run_rerun_args,
@@ -290,6 +378,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_text(
         iii,
         cell,
+        emitter,
         actions::RUN_CANCEL_ID,
         actions::RUN_CANCEL_DESC,
         actions::run_cancel_args,
@@ -297,6 +386,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_json(
         iii,
         cell,
+        emitter,
         actions::WORKFLOW_LIST_ID,
         actions::WORKFLOW_LIST_DESC,
         OK,
@@ -305,6 +395,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_text(
         iii,
         cell,
+        emitter,
         actions::WORKFLOW_RUN_ID,
         actions::WORKFLOW_RUN_DESC,
         actions::workflow_run_args,
@@ -313,6 +404,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_json(
         iii,
         cell,
+        emitter,
         release::LIST_ID,
         release::LIST_DESC,
         OK,
@@ -321,6 +413,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_json(
         iii,
         cell,
+        emitter,
         release::VIEW_ID,
         release::VIEW_DESC,
         OK,
@@ -329,6 +422,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_text(
         iii,
         cell,
+        emitter,
         release::CREATE_ID,
         release::CREATE_DESC,
         release::create_args,
@@ -337,6 +431,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_json(
         iii,
         cell,
+        emitter,
         search::REPOS_ID,
         search::REPOS_DESC,
         OK,
@@ -345,6 +440,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_json(
         iii,
         cell,
+        emitter,
         search::ISSUES_ID,
         search::ISSUES_DESC,
         OK,
@@ -353,6 +449,7 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_json(
         iii,
         cell,
+        emitter,
         search::PRS_ID,
         search::PRS_DESC,
         OK,
@@ -361,13 +458,14 @@ pub fn register_all(iii: &IIIClient, cell: &ConfigCell) {
     register_json(
         iii,
         cell,
+        emitter,
         search::CODE_ID,
         search::CODE_DESC,
         OK,
         search::code_args,
     );
 
-    passthrough::register(iii, cell);
+    passthrough::register(iii, cell, emitter);
 }
 
 // ---- argv-building helpers (pure; shared by the group modules) ----

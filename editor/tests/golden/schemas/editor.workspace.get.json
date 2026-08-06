@@ -1,0 +1,70 @@
+{
+  "description": "The active workspace: its root, the files open against it, and which folders are expanded. Shared by every surface, so this is what the agent and the console both see.",
+  "function_id": "editor::workspace::get",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Buffer": {
+        "description": "One open file. `mtime` is what the conflict guard compares against, so it is part of the shared record rather than per-surface bookkeeping — two surfaces editing one file must agree on which version they started from.",
+        "properties": {
+          "language": {
+            "description": "Monaco language id for the path.",
+            "type": "string"
+          },
+          "mtime": {
+            "description": "Last-modified time this buffer was read at, Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "path": {
+            "description": "Path relative to the workspace root.",
+            "type": "string"
+          },
+          "version": {
+            "default": "",
+            "description": "Opaque version of the content this buffer was read at — the same fact `mtime` carries, in the form that survives two writes inside one second. A surface saves against it by sending it as `expected_version`.\n\nDefaulted so a session persisted before this field existed still loads. Empty means \"unknown\": a surface holding an empty version has only the mtime to save against, which is the behaviour it had all along.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "language",
+          "mtime",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "buffers": {
+        "description": "Files currently open against this root, shared by every surface.",
+        "items": {
+          "$ref": "#/definitions/Buffer"
+        },
+        "type": "array"
+      },
+      "expanded": {
+        "description": "Folders expanded in the tree, root-relative.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "root": {
+        "description": "The active root every other path in this response is relative to.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "buffers",
+      "expanded",
+      "root"
+    ],
+    "title": "WorkspaceView",
+    "type": "object"
+  }
+}

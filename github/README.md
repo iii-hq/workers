@@ -14,8 +14,7 @@ iii worker add github
 ```
 
 `iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker on the next
-`iii start`.
+`~/.iii/config.yaml`, and the engine starts the worker the next time it boots.
 
 The worker shells out to the [GitHub CLI](https://cli.github.com) — install
 a current `gh` (the typed field sets are validated against gh 2.94) and give

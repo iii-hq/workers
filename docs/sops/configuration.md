@@ -37,7 +37,7 @@ by default in the engine.
 ### Boundaries
 
 - Not a general-purpose key/value store — every entry needs a registered JSON
-  Schema. Use `iii-state` for free-form values.
+  Schema. Use `state` for free-form values.
 - No partial updates: `set` always replaces the whole value. Build the new
   value client-side and ship it in one call.
 - Schemas are not version-checked across re-registrations — re-registering with

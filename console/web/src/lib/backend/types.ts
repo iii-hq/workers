@@ -302,13 +302,17 @@ export interface ChatBackend {
    */
   onQueuedMessage?(sessionId: string, onEvent: () => void): () => void
   /**
-   * The session's registered trigger subscriptions (notify + react bindings
-   * the agent registered via the harness's `engine::register_trigger`
-   * intercept).
+   * The session's registered trigger subscriptions — the harness's durable
+   * binding rows (`harness::triggers::list`), source-generic: raw trigger
+   * type + config, delivery = notify-this-chat or call-a-function.
    */
   listTriggers?(sessionId: string): Promise<SessionTriggerInfo[]>
-  /** Unregister one of the session's triggers by engine trigger id. */
-  unregisterTrigger?(triggerId: string): Promise<void>
+  /**
+   * Tear one subscription down via `harness::triggers::unregister` (engine
+   * trigger AND durable record; a raw engine unregister would orphan the
+   * record and strand the owner's armed wake).
+   */
+  unregisterTrigger?(subscriptionId: string, sessionId: string): Promise<void>
   /**
    * Whether a state key currently exists (`state::get` non-null). Lets the
    * triggers strip mark a `state` binding whose watched key was never

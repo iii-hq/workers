@@ -2,7 +2,7 @@
 
 Durable function queues for iii. This worker registers the
 `durable:subscriber` trigger type and the queue/DLQ service functions that
-replace the built-in `iii-queue` worker.
+replace the legacy built-in queue worker.
 
 ## Install
 
@@ -11,8 +11,7 @@ iii worker add queue
 ```
 
 `iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker on the next
-`iii start`.
+`~/.iii/config.yaml`, and the engine starts the worker the next time it boots.
 
 ## Trigger Type
 
@@ -187,13 +186,17 @@ The `durable:subscriber` trigger's `queue_config` accepts the full builtin
 
 ## Engine Compatibility
 
-Current engines route `TriggerAction::Enqueue` through this worker's
-`engine::queue::enqueue` provider and no longer load `iii-queue` by default.
-When connecting to an older engine, remove `iii-queue` from its config first;
+Current engines no longer load the legacy built-in by default. Engines with the
+`QueueEnqueuer` cut route `TriggerAction::Enqueue` through this worker's
+`engine::queue::enqueue` provider. Until that support is available, use
+`iii::durable::publish` with `durable:subscriber` triggers instead of named
+function queues.
+
+When connecting to an older engine, remove the legacy built-in from its config first;
 two owners of `durable:subscriber` cannot run together.
 
 On boot, this worker queries `engine::workers::list` and refuses to start if
-`iii-queue` is active.
+the legacy built-in is active.
 
 ## Parity Vs Builtin
 

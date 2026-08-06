@@ -38,8 +38,8 @@ iii worker add web
 ```
 
 `iii worker add` fetches the binary (`web`), writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker on the next
-`iii start`.
+`~/.iii/config.yaml`, and the engine starts the worker the next time it
+boots.
 
 ---
 

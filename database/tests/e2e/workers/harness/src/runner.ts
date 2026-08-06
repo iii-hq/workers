@@ -8,8 +8,9 @@ import { PROTOCOL_CASES } from './cases-protocol.ts'
 import { TRANSACTION_EDGE_CASES } from './cases-transaction.ts'
 import { INTERACTIVE_TX_CASES } from './cases-interactive-tx.ts'
 import { CONCURRENCY_CASES } from './cases-concurrency.ts'
-import { ROW_CHANGE_CASES } from './cases-row-change.ts'
 import { TX_CONTROL_BYPASS_CASES } from './cases-tx-control-bypass.ts'
+import { ROW_CHANGED_CASES } from './cases-row-changed.ts'
+import { NATIVE_CAPTURE_CASES } from './cases-native-capture.ts'
 
 interface CaseResult {
   driver: DriverKey
@@ -144,16 +145,17 @@ export class Runner {
           record(await this.runCase(driver, c))
         }
 
-        // Boundary, protocol, transaction-edge, interactive-tx, concurrency,
-        // row-change cases. Each test is self-contained (creates and drops
-        // its own scratch tables / replication slots) so order doesn't matter.
+        // Boundary, protocol, transaction-edge, interactive-tx, and
+        // concurrency cases. Each test is self-contained (creates and drops
+        // its own scratch tables) so order doesn't matter.
         for (const c of [
           ...BOUNDARY_CASES,
           ...PROTOCOL_CASES,
           ...TRANSACTION_EDGE_CASES,
           ...INTERACTIVE_TX_CASES,
           ...CONCURRENCY_CASES,
-          ...ROW_CHANGE_CASES,
+          ...ROW_CHANGED_CASES,
+          ...NATIVE_CAPTURE_CASES,
         ]) {
           if (!matchesDriver(driver, c)) continue
           record(await this.runCase(driver, c))

@@ -47,6 +47,24 @@ intent and activates when the harness registers the trigger type.
 | `fp::flatten` | `_.flatten` | `{ value }` — unnest one level |
 | `fp::sortBy` | `_.sortBy` | `{ value, path }` — stable ascending sort by a plucked pointer (`""` = the element itself) |
 | `fp::reverse` | `_.reverse` | `{ value }` — reversed copy (immutable, fp-style) |
+| `fp::sum` | `_.sum` / `_.sumBy` | `{ value, path? }` — total; `path` plucks the addend from each element. Empty array totals `0` |
+| `fp::mean` | `_.mean` / `_.meanBy` | `{ value, path? }` — arithmetic mean; an empty array errors |
+| `fp::min` | `_.min` / `_.minBy` | `{ value, path? }` — smallest NUMBER (not the element holding it); an empty array errors |
+| `fp::max` | `_.max` / `_.maxBy` | `{ value, path? }` — largest NUMBER (not the element holding it); an empty array errors |
+| `fp::groupBy` | `_.groupBy` | `{ value, path }` — `{ key: [elements] }` bucketed by a plucked key (`""` = the element itself) |
+| `fp::countBy` | `_.countBy` | `{ value, path }` — `{ key: count }` with the same key rules |
+
+The reductions are the worker's arithmetic: all-integer inputs fold to an
+integer (so the result compares cleanly in a `fp::when` guard), a non-numeric
+element errors instead of being skipped — a skipped row is a total that
+silently covers less than the caller counted — and `min`/`max` return the
+number rather than lodash's `…By` element so a guard can compare it directly.
+
+`groupBy`/`countBy` add the per-key axis the reductions lack: `countBy` gives
+counts in one step, and `groupBy`'s buckets each feed `fp::sum` for a per-key
+total. Group keys must be a string, number, or boolean — lodash coerces a null
+or object key to `"null"`/`"[object Object]"`, silently merging distinct groups
+into one bucket, so those error here instead.
 
 Transforms take their input at `value` and return `{ value }`. They deviate
 from lodash where silence would thread garbage through a pipe: a type

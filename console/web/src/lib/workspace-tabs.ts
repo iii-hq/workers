@@ -147,16 +147,23 @@ export function withColumnRemoved(
 export const EXT_SCREEN_PREFIX = 'ext:'
 export const CHAT_SCREEN: TabScreen = 'chat'
 
+/**
+ * First-party screens whose page migrated to injected UI, mapped to the
+ * worker's page id (mirrors MIGRATED_ROUTES in `use-hash-route.ts`).
+ * Persisted tabs saved before the migration rewrite through this map.
+ */
+const MIGRATED_SCREENS: Record<string, string> = {
+  worktrees: 'worktree',
+  memory: 'memory',
+  browser: 'browser',
+  github: 'github',
+}
+
 /** Configuration is deliberately NOT here: console settings open as an
-    overlay page, never as a workspace-tab screen. */
-const ROUTED_SCREENS: readonly View[] = [
-  'traces',
-  'workers',
-  'worktrees',
-  'browser',
-  'memory',
-  'github',
-]
+    overlay page, never as a workspace-tab screen. Per-worker pages
+    (worktrees, memory, browser, github) are injected UI — they attach as
+    `ext:<page-id>` screens, not first-party routes. */
+const ROUTED_SCREENS: readonly View[] = ['traces', 'workers']
 
 export function isRoutedScreen(screen: TabScreen): screen is View {
   return (ROUTED_SCREENS as readonly string[]).includes(screen)
@@ -255,6 +262,8 @@ export function parseWorkspaceTabs(
   if (!Array.isArray(tabs)) return []
   // Migration: 'configuration' was a tab screen before it became an
   // overlay page — blank those columns instead of dropping whole tabs.
+  // The per-worker pages were first-party screens before they moved to
+  // injected UI — rewrite them to their `ext:<page-id>` form.
   const sanitized = tabs.map((t) => {
     if (
       !t ||
@@ -265,7 +274,12 @@ export function parseWorkspaceTabs(
     const tab = t as WorkspaceTab
     return {
       ...tab,
-      screens: tab.screens.map((s) => (s === 'configuration' ? null : s)),
+      screens: tab.screens.map((s) => {
+        if (s === 'configuration') return null
+        if (typeof s === 'string' && s in MIGRATED_SCREENS)
+          return screenForExtPage(MIGRATED_SCREENS[s])
+        return s
+      }),
     }
   })
   return sanitized.filter(isValidTab)

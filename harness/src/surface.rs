@@ -6,18 +6,23 @@
 //! `harness::on-config-change`) are intentionally excluded — they are not part
 //! of the agent-facing surface.
 
-use crate::functions::react::REACT_ID;
 use crate::functions::{
     function_resolve::{FunctionResolveRequest, FunctionResolveResponse},
     function_trigger::{FunctionTriggerRequest, FunctionTriggerResponse},
-    react::{ReactEvent, ReactResult},
+    metrics::{SessionMetricsRequestV1, SessionMetricsResponseV1},
     send::{SendRequest, SendResponse},
+    session_tree::{SessionTreeRequestV1, SessionTreeResponseV1},
     spawn::{SpawnRequest, SpawnResponse},
     status::{StatusReport, StatusRequest},
     stop::{StopRequest, StopResponse},
+    triggers_list::{
+        TriggersListRequest, TriggersListResponse, TriggersUnregisterRequest,
+        TriggersUnregisterResponse, TRIGGERS_LIST_ID, TRIGGERS_UNREGISTER_ID,
+    },
 };
 use crate::functions::{
-    FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, SEND_ID, SPAWN_ID, STATUS_ID, STOP_ID, TURN_ID,
+    FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, METRICS_ID, SEND_ID, SESSION_TREE_ID, SPAWN_ID,
+    STATUS_ID, STOP_ID, TURN_ID,
 };
 use crate::turn_loop::{TurnStepPayload, TurnStepResult};
 
@@ -64,6 +69,9 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<FunctionResolveRequest, FunctionResolveResponse>(FUNCTION_RESOLVE_ID),
         spec::<StopRequest, StopResponse>(STOP_ID),
         spec::<StatusRequest, Option<StatusReport>>(STATUS_ID),
-        spec::<ReactEvent, ReactResult>(REACT_ID),
+        spec::<SessionTreeRequestV1, SessionTreeResponseV1>(SESSION_TREE_ID),
+        spec::<SessionMetricsRequestV1, SessionMetricsResponseV1>(METRICS_ID),
+        spec::<TriggersListRequest, TriggersListResponse>(TRIGGERS_LIST_ID),
+        spec::<TriggersUnregisterRequest, TriggersUnregisterResponse>(TRIGGERS_UNREGISTER_ID),
     ]
 }

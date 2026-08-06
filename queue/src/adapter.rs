@@ -78,6 +78,10 @@ pub struct FunctionQueueConfig {
     pub backoff_ms: u64,
     /// Delay between polls for adapters backed by a local store.
     pub poll_interval_ms: u64,
+    /// Re-deliver an invocation inside the same queue attempt when the engine
+    /// restarts while it is in flight. This is only safe for consumers whose
+    /// own durable checkpoints make duplicate delivery idempotent.
+    pub redeliver_on_engine_restart: bool,
     /// Declares the queue as a RabbitMQ priority queue with this many
     /// priority levels (`x-max-priority`). `None` means not a priority
     /// queue. RabbitMQ-only; other adapters ignore it. Added (rather than
@@ -102,6 +106,7 @@ impl Default for FunctionQueueConfig {
             message_group_field: None,
             backoff_ms: 1_000,
             poll_interval_ms: 100,
+            redeliver_on_engine_restart: false,
             max_priority: None,
             priority_field: None,
         }
@@ -197,6 +202,7 @@ pub trait QueueAdapter: Send + Sync + 'static {
         topic: &str,
         id: &str,
         function_id: &str,
+        metadata: Option<Value>,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     );
@@ -384,12 +390,20 @@ impl QueueAdapter for SwappableAdapter {
         topic: &str,
         id: &str,
         function_id: &str,
+        metadata: Option<Value>,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
         self.current()
             .await
-            .subscribe(topic, id, function_id, condition_function_id, queue_config)
+            .subscribe(
+                topic,
+                id,
+                function_id,
+                metadata,
+                condition_function_id,
+                queue_config,
+            )
             .await;
     }
 
@@ -549,6 +563,7 @@ mod tests {
             _topic: &str,
             _id: &str,
             _function_id: &str,
+            _metadata: Option<Value>,
             _condition_function_id: Option<String>,
             _queue_config: Option<SubscriberQueueConfig>,
         ) {
@@ -630,14 +645,17 @@ mod tests {
         let defaults: FunctionQueueConfig = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(defaults, FunctionQueueConfig::default());
         assert_eq!(defaults.timeout_ms, 1_800_000);
+        assert!(!defaults.redeliver_on_engine_restart);
         assert!(defaults.validate("turns").is_ok());
 
         let fifo: FunctionQueueConfig = serde_json::from_value(serde_json::json!({
             "type": "fifo",
-            "message_group_field": "session_id"
+            "message_group_field": "session_id",
+            "redeliver_on_engine_restart": true
         }))
         .unwrap();
         assert!(fifo.validate("harness-turn").is_ok());
+        assert!(fifo.redeliver_on_engine_restart);
 
         let invalid = FunctionQueueConfig {
             r#type: "fifo".to_string(),

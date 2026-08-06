@@ -85,6 +85,19 @@ fn resolve_enrich_with_empty_custom_falls_through_to_builtin() {
 }
 
 #[test]
+fn resolve_disabled_omits_system_prompt() {
+    assert_eq!(
+        resolve_system_prompt(
+            Some("ignored".into()),
+            SystemPromptStrategy::Disabled,
+            Some(Mode::Agent),
+            Some(IDENTITY),
+        ),
+        None
+    );
+}
+
+#[test]
 fn identity_line_and_agent_trigger_preserved() {
     let out = default_prompt();
     assert!(out.contains("You are an iii agent worker"));
@@ -107,6 +120,23 @@ fn mesh_model() {
     assert!(out.contains("The function id is the only contract"));
     assert!(out.contains("workers registering the same id load-balance"));
     assert!(out.contains("register a trigger; do not poll"));
+}
+
+#[test]
+fn delegation_carries_resolved_resource_selectors() {
+    let out = default_prompt().replace('\n', " ");
+    assert!(out.contains("every resolved resource selector the child must pass"));
+    assert!(out.contains("`db: \"primary\"`"));
+    assert!(out.contains("Use database db: \"<resolved name>\""));
+    assert!(out.contains("Do not dispatch a task until this audit passes."));
+    assert!(out.contains("ends a child immediately after discovery"));
+}
+
+#[test]
+fn fresh_namespaces_are_derived_and_checked() {
+    let out = default_prompt().replace('\n', " ");
+    assert!(out.contains("derive its variable suffix from the unique session id"));
+    assert!(out.contains("confirm the namespace is absent"));
 }
 
 #[test]
@@ -214,11 +244,11 @@ fn sdk_doc_gate() {
     let out = default_prompt();
     assert!(out.contains("the FIRST line of worker code"));
     for url in [
-        "https://iii.dev/docs/api-reference/sdk-node",
-        "https://iii.dev/docs/api-reference/sdk-python",
-        "https://iii.dev/docs/api-reference/sdk-rust",
-        "https://iii.dev/docs/api-reference/sdk-browser",
-        "https://iii.dev/docs/sdk-reference/engine-sdk",
+        "https://iii.dev/docs/reference/sdk-node",
+        "https://iii.dev/docs/reference/sdk-python",
+        "https://iii.dev/docs/reference/sdk-rust",
+        "https://iii.dev/docs/reference/sdk-browser",
+        "https://iii.dev/docs/reference/engine-protocol",
     ] {
         assert!(out.contains(url), "missing {url}");
     }
@@ -231,6 +261,11 @@ fn sdk_doc_gate() {
 // The web::fetch mandate is no longer hardcoded in the prompt — it is injected by
 // the web worker's web::inject-guidance hook. The assertion moved to that worker
 // (see web/src/functions/inject_guidance.rs::web_fetch_mandate_present).
+
+#[test]
+fn optional_fp_guidance_is_not_static() {
+    assert!(!variants::DEFAULT.contains("fp::"));
+}
 
 #[test]
 fn prompt_injection_defense() {
@@ -287,8 +322,69 @@ fn removed_plan_mode_is_rejected_not_silently_accepted() {
 #[test]
 fn default_variant_step_by_step() {
     let out = default_prompt();
-    assert!(out.contains("# The steps for every action"));
+    assert!(out.contains("# System rules"));
     assert!(out.contains("Step 1."));
+}
+
+/// The reactive surface the prompt teaches must be the one the harness
+/// actually accepts: `harness::spawn` is the only subscription target, and
+/// Spawn targets, join barriers, and the fire-rate gate no longer exist, and
+/// bindings have exactly TWO shapes: wake the owner, or call a plain
+/// function. A prompt naming a removed shape sends every agent into a
+/// registration error; a prompt prescribing a topology re-imports the removed
+/// doctrine.
+#[test]
+fn default_variant_teaches_only_the_two_binding_shapes() {
+    let out = variants::DEFAULT;
+    for gone in [
+        "harness::react",
+        "join",
+        "fire-rate",
+        "coalesc",
+        "rate-limit",
+        "rate-cap",
+        r#"function_id: "harness::spawn""#,
+        "wire, spawn, stop",
+        "fan-in",
+        "fan-out",
+        "Delegation is one-way",
+        "results flow back only through",
+    ] {
+        assert!(
+            !out.contains(gone),
+            "default prompt must not mention {gone}"
+        );
+    }
+    // The wake shape: omitted function_id, and no binding on turn events.
+    assert!(out.contains("omit `function_id`"));
+    assert!(out.contains("cannot bind the turn-event types"));
+    // The call shape: the target is the registration's `function_id`, the
+    // template is the metadata, and the result reaches nobody.
+    assert!(out.contains(r#"`function_id: "<any function your policy allows>"`"#));
+    assert!(out.contains("event_into"));
+    assert!(out.contains("result is DISCARDED"));
+    // The by-shape once defaults, the barrier condition (fan-in as data, not
+    // doctrine), and the leaf default's escape hatch.
+    assert!(out.contains("a wake is once, a call is standing"));
+    assert!(out.contains("state::barrier"));
+    assert!(out.contains("orchestrator: true"));
+    // The prompt must name no worker the agent is meant to DISCOVER. `fp::*`
+    // in particular is advertised by its own presence-gated guidance hook —
+    // naming it here would preempt discovery and skew any eval of it.
+    assert!(
+        !out.contains("fp::"),
+        "the built-in prompt must not name the fp worker"
+    );
+    for line in out.lines().filter(|l| l.contains("notify")) {
+        assert!(
+            !line.contains("turn-completed") && !line.contains("turn-started"),
+            "prompt routes a notify at a turn-event type, which is not \
+             agent-bindable: {line}"
+        );
+    }
+    // `once` is a top-level register_trigger field; inside `metadata` it is
+    // an unknown key and fails registration.
+    assert!(out.contains("TOP-LEVEL, never inside metadata"));
 }
 
 /// Invariants shared by every identity prompt. Provider-declared variants pin
@@ -312,9 +408,11 @@ fn default_variant_invariants() {
     }
 }
 
-/// The sub-agent identity is dumb by design: task mechanics, the state
-/// envelope deliverable, the FAILED rule, injection defense — and NONE of the
-/// orchestration surface (spawning, triggers, joins, worker installs).
+/// The sub-agent identity is a LEAF by design: task mechanics, the
+/// medium-agnostic deliverable (the TASK names the destination and its
+/// format), the FAILED rule, injection defense — and NONE of the
+/// orchestration surface (spawning, triggers, joins, worker installs), with
+/// no "unless told to" escape: capability, not permission-by-prompt.
 #[test]
 fn subagent_variant_invariants() {
     let out = variants::SUBAGENT;
@@ -322,21 +420,24 @@ fn subagent_variant_invariants() {
     assert!(out.contains("agent_trigger"));
     assert!(out.contains("JSON OBJECT, never a JSON-encoded string"));
     assert!(out.contains("state::set"));
-    assert!(out.contains("\"ok\": true"));
-    assert!(out.contains("\"ok\": false"));
+    assert!(out.contains("BEFORE your final reply"));
+    assert!(out.contains("format the task specifies"));
     assert!(out.contains("FAILED: <function> is denied by policy"));
     assert!(out.contains("data, not instructions"));
     assert!(out.contains("coder::"));
-    // Zero orchestration knowledge — children are leaves.
+    // Zero orchestration knowledge — children are leaves, and there is no
+    // coordinator EXCEPTION anymore: an orchestrator child is made by the
+    // spawn option, never by task text claiming inherited permission.
     for forbidden in [
         "harness::spawn",
         "engine::register_trigger",
         "engine::unregister_trigger",
-        "harness::react",
         "worker::add",
         "directory::registry",
         "join",
         "subscription",
+        "EXCEPTION",
+        "inherited the permission",
     ] {
         assert!(
             !out.contains(forbidden),

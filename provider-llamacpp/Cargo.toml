@@ -2,7 +2,7 @@
 
 [package]
 name = "provider-llamacpp"
-version = "0.2.4"
+version = "0.3.0"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
@@ -16,7 +16,7 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-llm-router = { path = "../llm-router" }
+llm-router = { path = "../llm-router", default-features = false }
 # Must match llm-router's pin (one iii-sdk per graph). 0.21.5 brings the
 # live span-start push: `provider::llamacpp::stream` renders while streaming.
 iii-sdk = "=0.21.6"

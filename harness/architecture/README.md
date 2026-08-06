@@ -14,6 +14,8 @@ prose explains how to use them.
 | Document | Audience | Read it when |
 |---|---|---|
 | [integration.md](integration.md) | Authors of consumers / siblings | You are building something on top of the harness — a chat UI, a Telegram / WhatsApp / Slack bridge, a cron or webhook worker, an event-driven agent loop, a notification sibling. This file is the handoff contract. |
+| [reactive-triggers.md](reactive-triggers.md) | Anyone wiring an event to an agent | You are registering a trigger, or you last saw this surface when `harness::react` existed. Covers what changed, the full `engine::register_trigger` payload, conditions, lifecycle, and how to migrate a react binding. |
+| [trigger-bindings.md](trigger-bindings.md) | Anyone changing the dispatch path | You are touching `functions/subscribe.rs`, `functions/trigger_deliver.rs`, `bindings/*`, or the spawn/send seam — the internal design and why the harness owns dispatch instead of the engine. |
 
 The worker [README](../README.md) is the operator how-to (install, config,
 quickstart). The spec
@@ -72,7 +74,7 @@ flowchart LR
 | **Turn** | One run of the loop for a session: one or more generate steps until the model stops, with a coarse `TurnStatus` (`running` / `awaiting_functions` / `completed` / `cancelled` / `failed`). |
 | **Step** | One durable, enqueued `harness::turn` iteration: assemble → generate → dispatch. Re-enqueued until the turn finalises. |
 | **Steering / merge** | A `harness::send` for a session that already has a running turn folds the new message into it instead of starting a second turn (the response carries `merged: true`). |
-| **Dispatch policy** | The fail-closed `options.functions.allow` / `deny` globs deciding which functions the model may call. Absent or empty `allow` → a plain chat loop. Ask-mode turns are additionally capped at the operator's read-only baseline (`default_functions`). |
+| **Dispatch policy** | The fail-closed `options.functions.allow` / `deny` globs deciding which functions the model may call. Absent or empty `allow` → a plain chat loop. Ask-mode turns are additionally capped at the configured default policy (`default_functions`). |
 | **Exposure mode** | How allowed functions reach the model: one generic `agent_trigger` schema (default) or one schema per allowed function (`native`). |
 | **Output contract** | The turn's deliverable: free `text` (default) or `json` validated against a schema; the result rides `harness::turn-completed` and `harness::run`. |
 | **Hook** | A synchronous extension point (`harness::hook::*`) a sibling binds to veto / hold / mutate in-path. Hook *logic* lives in the sibling, never the harness. |

@@ -47,6 +47,18 @@ const CONTEXT_OVERFLOW_FAILURE: FailureInfo = FailureInfo {
     retryable: false,
 };
 
+const BUDGET_EXCEEDED_FAILURE: FailureInfo = FailureInfo {
+    code: "harness.budget_exceeded",
+    phase: "budget_preflight",
+    retryable: false,
+};
+
+const BUDGET_UNAVAILABLE_FAILURE: FailureInfo = FailureInfo {
+    code: "harness.budget_unavailable",
+    phase: "budget_preflight",
+    retryable: false,
+};
+
 /// Provider adapters add framing outside the fields visible to the harness.
 /// Keep a small fixed reserve in addition to the deterministic JSON estimate.
 const PROVIDER_FRAMING_ALLOWANCE_TOKENS: u64 = 64;
@@ -105,6 +117,15 @@ pub struct TurnStepResult {
     pub skipped: bool,
 }
 
+/// Bounded in-place retry for the enqueue that follows a persisted step
+/// advance: `queue::enqueue` can be briefly unregistered while the queue
+/// worker replays its registrations against a restarted engine, and failing
+/// the turn in that window (or worse, wedging it Running with the step
+/// persisted but never enqueued) turns a recoverable restart into a dead
+/// session (iii-hq/workers#507).
+const ENQUEUE_ATTEMPTS: u32 = 5;
+const ENQUEUE_RETRY_BACKOFF_MS: u64 = 500;
+
 /// Enqueue the next durable loop step onto the dedicated `harness-turn` queue.
 pub async fn enqueue_step(
     iii: &IIIClient,
@@ -119,17 +140,40 @@ pub async fn enqueue_step(
     if let Some(preview) = message_preview {
         payload["message_preview"] = json!(preview);
     }
-    iii.trigger(TriggerRequest {
-        function_id: "harness::turn".to_string(),
-        payload,
-        action: Some(TriggerAction::Enqueue {
-            queue: TURN_QUEUE.to_string(),
-        }),
-        timeout_ms: None,
-    })
-    .await
-    .map(|_| ())
-    .map_err(|e| HarnessError::Dependency(format!("enqueue harness::turn: {e}")))
+    let mut last_error = String::new();
+    for attempt in 1..=ENQUEUE_ATTEMPTS {
+        match iii
+            .trigger(TriggerRequest {
+                function_id: "harness::turn".to_string(),
+                payload: payload.clone(),
+                action: Some(TriggerAction::Enqueue {
+                    queue: TURN_QUEUE.to_string(),
+                }),
+                timeout_ms: None,
+            })
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                last_error = e.to_string();
+                if attempt < ENQUEUE_ATTEMPTS {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        turn_id = %turn_id,
+                        step,
+                        attempt,
+                        error = %last_error,
+                        "enqueue harness::turn failed; retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(ENQUEUE_RETRY_BACKOFF_MS))
+                        .await;
+                }
+            }
+        }
+    }
+    Err(HarnessError::Dependency(format!(
+        "enqueue harness::turn: {last_error}"
+    )))
 }
 
 fn origin(turn_id: &str) -> Value {
@@ -178,6 +222,10 @@ pub async fn run_step(
         match crate::state::get_turn(&deps.iii, &payload.session_id, cfg.session_timeout_ms).await?
         {
             Some(r) => r,
+            // The turn record is the authoritative recovery snapshot. A
+            // transcript alone cannot recover budgets, parent linkage, output
+            // contracts, or dispatch policy safely, so an absent record stays
+            // a stale delivery and is acknowledged without fabricating state.
             None => return Ok(skipped(&payload.session_id)),
         };
 
@@ -212,10 +260,6 @@ pub async fn run_step(
                 &record.turn_id,
                 record.parent.as_ref(),
                 record.display_parent_session_id.as_deref(),
-                crate::events::ReactiveMeta {
-                    spawned_by: record.spawned_by_subscription_id.as_deref(),
-                    depth: record.reactive_depth,
-                },
             )
             .await;
         if let Err(reason) = deps.hooks.run_pre_turn(&record, payload.step).await {
@@ -250,7 +294,33 @@ pub async fn run_step(
             )
             .await;
         let text = json!(notice);
-        return finalize_completed(deps, &session, &mut record, Some(text)).await;
+        // The cap ends the turn but must not BYPASS the post-turn gate: with
+        // no steps left to correct anything, a validator that rejects this
+        // residue FAILS the turn — a runaway must never complete as if
+        // validated (live-caught by the validation_chain e2e: a turn that
+        // burned its steps mid-loop finalized "completed" with the goal
+        // unmet).
+        return match deps.hooks.run_post_turn(&record, record.step, &text).await {
+            Ok(()) => finalize_completed(deps, &session, &mut record, Some(text)).await,
+            Err(deny) => {
+                record.result = Some(text);
+                finalize_failed(
+                    deps,
+                    &session,
+                    &mut record,
+                    &format!(
+                        "max_turns reached with the post-turn gate unsatisfied: {}",
+                        deny.reason
+                    ),
+                    FailureInfo {
+                        code: "harness.output_contract_invalid",
+                        phase: "output_validation",
+                        retryable: false,
+                    },
+                )
+                .await
+            }
+        };
     }
 
     // Load the active path (custom entries carry the compaction record).
@@ -315,7 +385,13 @@ pub async fn run_step(
         PRE_GENERATE_HOOK_ALLOWANCE_TOKENS
     };
     let mut reassembled = false;
-    let (gen_system_prompt, gen_annotations, gen_messages) = loop {
+    let (
+        gen_system_prompt,
+        gen_annotations,
+        gen_messages,
+        generation_input_tokens,
+        generation_max_output_tokens,
+    ) = loop {
         let assembled = match assemble_context(
             deps,
             &session,
@@ -448,7 +524,18 @@ pub async fn run_step(
             final_count.tokens.saturating_add(request_overhead_tokens)
         };
         if final_request_tokens <= assembled.usable {
-            break (gen_system_prompt, gen_annotations, gen_messages);
+            let max_output_tokens = record
+                .options
+                .max_output_tokens
+                .unwrap_or(assembled.effective_max_output_tokens)
+                .min(assembled.effective_max_output_tokens);
+            break (
+                gen_system_prompt,
+                gen_annotations,
+                gen_messages,
+                final_request_tokens,
+                max_output_tokens,
+            );
         }
         if reassembled {
             let reason = format!(
@@ -483,6 +570,33 @@ pub async fn run_step(
         );
     };
 
+    // A stop that landed during context assembly is visible through the
+    // in-process signal even though its durable write is blocked by this
+    // session lock. Do not reserve budget for a call that will never start.
+    if deps.cancels.is_fired(&record.turn_id) {
+        record.abort = true;
+        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+    }
+
+    let budget_reservation = match crate::budget::reserve(
+        deps,
+        &record,
+        generation_input_tokens,
+        generation_max_output_tokens,
+    )
+    .await?
+    {
+        crate::budget::ReserveOutcome::Unlimited => None,
+        crate::budget::ReserveOutcome::Reserved(reservation) => Some(reservation),
+        crate::budget::ReserveOutcome::Rejected(rejection) => {
+            let failure = match &rejection {
+                crate::budget::BudgetRejection::Exceeded(_) => BUDGET_EXCEEDED_FAILURE,
+                crate::budget::BudgetRejection::Unavailable(_) => BUDGET_UNAVAILABLE_FAILURE,
+            };
+            return finalize_failed(deps, &session, &mut record, rejection.reason(), failure).await;
+        }
+    };
+
     let assistant_origin = origin_with(&record.turn_id, &gen_annotations);
 
     // Generate: append an empty assistant under a deterministic id, stream
@@ -490,7 +604,7 @@ pub async fn run_step(
     let assistant_id = ids::assistant_entry_id(&record.turn_id, payload.step);
     let provider = record.options.provider.clone().unwrap_or_default();
     let empty = empty_assistant(&provider, &record.options.model);
-    let _ = session
+    if let Err(error) = session
         .append(
             &record.session_id,
             &AgentMessage::Assistant(empty),
@@ -498,7 +612,13 @@ pub async fn run_step(
             None,
             Some(&assistant_origin),
         )
-        .await?;
+        .await
+    {
+        if let Some(reservation) = budget_reservation.as_ref() {
+            crate::budget::release(deps, reservation).await?;
+        }
+        return Err(error);
+    }
 
     let sink = SessionStreamSink {
         session: session.clone(),
@@ -514,17 +634,34 @@ pub async fn run_step(
         messages: gen_messages,
         tools,
         response_format,
+        // Forward a cap only when the caller set one. `generation_max_output_tokens`
+        // is the internal reservation context assembly budgets against; sending it
+        // unasked would put the model's own ceiling on every request and let a
+        // provider apply a different policy than its default. When the caller DID
+        // ask, send the reservation rather than the raw request — it is their value
+        // already clamped to the model's effective limit, so the provider is never
+        // told it may emit more than we reserved.
+        max_output_tokens: record
+            .options
+            .max_output_tokens
+            .map(|_| generation_max_output_tokens),
         thinking_level: record.options.thinking_level,
         provider_options,
     };
     record.stream_request_id = Some(params.request_id.clone());
-    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+    if let Err(error) = crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await {
+        if let Some(reservation) = budget_reservation.as_ref() {
+            crate::budget::release(deps, reservation).await?;
+        }
+        return Err(error);
+    }
 
-    // A stop that landed during context assembly (its durable write blocked on
-    // the guard held here) is only visible via the in-process signal. Bail
-    // before dispatching generation at all — otherwise the provider starts a
-    // stream that is dead on arrival.
+    // A stop may land after reservation but before dispatch. Release the
+    // unused amount before finalising the cancelled turn.
     if deps.cancels.is_fired(&record.turn_id) {
+        if let Some(reservation) = budget_reservation.as_ref() {
+            crate::budget::release(deps, reservation).await?;
+        }
         record.abort = true;
         return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
     }
@@ -549,7 +686,21 @@ pub async fn run_step(
     // was a no-op (registration race / router restart). Level-triggered, so a
     // stop fired before this subscribe is still observed.
     let abort_rx = deps.cancels.watch(&record.turn_id);
-    let mut outcome = router.chat(params, &sink, abort_rx).await?;
+    let mut outcome = match router.chat(params, &sink, abort_rx).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            // The provider may have consumed the request without returning
+            // usage. Charge the full reservation so transport failures cannot
+            // bypass a hard budget.
+            if let Some(reservation) = budget_reservation.as_ref() {
+                crate::budget::reconcile(deps, reservation, None).await?;
+            }
+            return Err(error);
+        }
+    };
+    if let Some(reservation) = budget_reservation.as_ref() {
+        crate::budget::reconcile(deps, reservation, outcome.message.usage.as_ref()).await?;
+    }
 
     // A stop mid-generation truncates tool-call blocks before their arguments
     // stream. An argument-less call can never execute (the turn is cancelled)
@@ -575,6 +726,7 @@ pub async fn run_step(
             &record.session_id,
             &assistant_id,
             &outcome.message.content,
+            outcome.message.usage.as_ref(),
             None,
             Some(&assistant_origin),
         )
@@ -1129,6 +1281,14 @@ async fn drain_queued_best_effort(deps: &Deps, session: &SessionClient, session_
 /// stale-turn guard, exactly as two racing sends already are.
 async fn reseed_after_finalize_drain(deps: &Deps, record: &TurnRecord) {
     let cfg = deps.cfg().await;
+    // Carry the finalized turn's lineage onto the reseeded one: it is the same
+    // session continuing, so its depth still counts against the spawn budget
+    // and its console nesting must not flatten.
+    let lineage = crate::functions::send::TurnLineage {
+        depth: record.depth,
+        parent: record.parent.clone(),
+        display_parent_session_id: record.display_parent_session_id.clone(),
+    };
     if let Err(e) = crate::functions::send::seed_new(
         deps,
         &cfg,
@@ -1136,6 +1296,7 @@ async fn reseed_after_finalize_drain(deps: &Deps, record: &TurnRecord) {
         record.options.clone(),
         record.functions_generation,
         None,
+        &lineage,
     )
     .await
     {
@@ -1157,9 +1318,53 @@ async fn handle_submit(
     submit: &policy::PlannedCall,
 ) -> Result<TurnStepResult, HarnessError> {
     let value = submit.arguments.clone();
-    match crate::contract::validate_json(&value, strategy.schema()) {
-        Ok(()) => finalize_completed(deps, session, record, Some(value)).await,
+    let validation = crate::contract::validate_json(&value, strategy.schema());
+    // Close the consumed call in the transcript FIRST: an assistant
+    // `function_call` with no `function_result` leaves the persisted history
+    // malformed, and the next STEERED turn's provider request then aborts
+    // mid-stream ("stream ended without a terminal frame" — reproduced on
+    // two providers, repro session steer-repro-1). Deterministic entry id →
+    // idempotent under step redelivery.
+    let (text, is_error) = match &validation {
+        Ok(()) => ("result recorded".to_string(), false),
+        Err(msg) => (msg.clone(), true),
+    };
+    let data = crate::trigger::ResultData {
+        content: vec![ContentBlock::text(text)],
+        is_error,
+        details: Value::Null,
+    };
+    let entry_id = ids::function_result_entry_id(&record.turn_id, &submit.id);
+    append_function_result(
+        session,
+        record,
+        submit,
+        &data,
+        &entry_id,
+        &origin(&record.turn_id),
+    )
+    .await?;
+    match validation {
+        Ok(()) => complete_validated(deps, session, record, value).await,
         Err(msg) => retry_or_giveup(deps, session, record, &msg, value).await,
+    }
+}
+
+/// Contract-valid result → run the `post_turn` hook chain (validators
+/// attached via `engine::register_trigger` on `harness::hook::post-turn`)
+/// before finalising; a deny re-prompts through the same retry budget as a
+/// schema failure.
+async fn complete_validated(
+    deps: &Deps,
+    session: &SessionClient,
+    record: &mut TurnRecord,
+    value: Value,
+) -> Result<TurnStepResult, HarnessError> {
+    match deps.hooks.run_post_turn(record, record.step, &value).await {
+        Ok(()) => finalize_completed(deps, session, record, Some(value)).await,
+        Err(deny) => {
+            retry_or_giveup_with(deps, session, record, &deny.reason, value, deny.prompt).await
+        }
     }
 }
 
@@ -1175,12 +1380,12 @@ async fn finalize_with_contract(
     let text = ContentBlock::join_text(&message.content);
     match strategy {
         crate::contract::OutputStrategy::Text => {
-            finalize_completed(deps, session, record, Some(json!(text))).await
+            complete_validated(deps, session, record, json!(text)).await
         }
         crate::contract::OutputStrategy::ProviderNativeJson { schema } => {
             match crate::contract::parse_json_text(&text) {
                 Ok(value) => match crate::contract::validate_json(&value, schema.as_ref()) {
-                    Ok(()) => finalize_completed(deps, session, record, Some(value)).await,
+                    Ok(()) => complete_validated(deps, session, record, value).await,
                     Err(msg) => retry_or_giveup(deps, session, record, &msg, json!(text)).await,
                 },
                 Err(msg) => retry_or_giveup(deps, session, record, &msg, json!(text)).await,
@@ -1205,19 +1410,38 @@ async fn retry_or_giveup(
     error: &str,
     fallback_result: Value,
 ) -> Result<TurnStepResult, HarnessError> {
+    retry_or_giveup_with(deps, session, record, error, fallback_result, None).await
+}
+
+/// `nudge_override`: a custom corrective prompt (a post-turn binding's
+/// `retry_prompt`) sent verbatim instead of the generic wrapper. `error`
+/// still names the real reason for logs and the giveup failure record.
+async fn retry_or_giveup_with(
+    deps: &Deps,
+    session: &SessionClient,
+    record: &mut TurnRecord,
+    error: &str,
+    fallback_result: Value,
+    nudge_override: Option<String>,
+) -> Result<TurnStepResult, HarnessError> {
     if record.validation_retries < record.options.max_validation_retries {
         let attempt = record.validation_retries + 1;
-        let nudge = AgentMessage::user_text(format!(
-            "Your previous result was not accepted: {error}. Please provide a corrected result \
-             that satisfies the required output contract."
-        ));
+        let nudge = AgentMessage::user_text(nudge_override.unwrap_or_else(|| {
+            format!(
+                "Your previous result was not accepted: {error}. Please provide a corrected \
+                 result that satisfies the required output contract."
+            )
+        }));
+        // `validation: true` marks the entry as a validation nudge so the
+        // console renders it as machine-authored (like notification/spawn
+        // origins) instead of a human-typed message.
         let _ = session
             .append(
                 &record.session_id,
                 &nudge,
                 Some(&ids::validation_nudge_entry_id(&record.turn_id, attempt)),
                 None,
-                Some(&origin(&record.turn_id)),
+                Some(&json!({ "turn_id": record.turn_id, "validation": true })),
             )
             .await?;
         record.validation_retries = attempt;
@@ -1269,8 +1493,8 @@ async fn advance(deps: &Deps, record: &mut TurnRecord) -> Result<TurnStepResult,
 /// with its `turn_complete` watcher armed and completes non-terminally; the
 /// final compose turn (wake consumed, nothing re-armed) is terminal.
 /// Consumers finalize a logical exchange only on `terminal: true`.
-fn turn_is_terminal(deps: &Deps, session_id: &str) -> bool {
-    !deps.subscriptions.session_expects_wake(session_id)
+async fn turn_is_terminal(deps: &Deps, session_id: &str) -> bool {
+    !crate::bindings::session_expects_wake(deps, session_id).await
 }
 
 async fn finalize_completed(
@@ -1298,11 +1522,7 @@ async fn finalize_completed(
             None,
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
-            crate::events::ReactiveMeta {
-                spawned_by: record.spawned_by_subscription_id.as_deref(),
-                depth: record.reactive_depth,
-            },
-            turn_is_terminal(deps, &record.session_id),
+            turn_is_terminal(deps, &record.session_id).await,
         )
         .await;
     // Sub-agent turns resolve the parent's pending call with their result.
@@ -1390,15 +1610,18 @@ async fn finalize_failed(
             Some(reason),
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
-            crate::events::ReactiveMeta {
-                spawned_by: record.spawned_by_subscription_id.as_deref(),
-                depth: record.reactive_depth,
-            },
-            turn_is_terminal(deps, &record.session_id),
+            turn_is_terminal(deps, &record.session_id).await,
         )
         .await;
     if let Some(parent) = record.parent.clone() {
-        let delivered = crate::deferred::resolve_parent(
+        // Settle any parked parent call. Fire-and-forget spawns settled `Done`
+        // at spawn time, so this usually no-ops — and that is the whole story:
+        // a child's failure reaches its parent only through the medium the
+        // child was told to write (an `error` status it managed to record) or
+        // through the parent's own deadlines (a `timer` wake, a binding
+        // `lifecycle`, a `harness::status` poll). Nothing is injected into the
+        // parent session on a child's behalf.
+        crate::deferred::resolve_parent(
             deps,
             &parent,
             "failed",
@@ -1406,17 +1629,6 @@ async fn finalize_failed(
             Some(reason),
         )
         .await;
-        // Fire-and-forget spawns settle their call `Done` at spawn time and
-        // the parent turn has usually completed by now, so the resolve above
-        // no-ops — and a dead child can never write the state keys or
-        // completion markers its spawner is watching. Wake the parent SESSION
-        // with the failure instead: spawned-child death must be loud by
-        // default, not structurally silent (observed live 2026-07-21: two
-        // spawned scanners died instantly and their coordinator waited
-        // forever on state triggers that could never fire).
-        if !delivered {
-            notify_parent_of_child_failure(deps, &parent.session_id, record, reason, failure).await;
-        }
     }
     // Second post-terminal sweep, as in `finalize_completed`: closes the
     // enqueue-after-drain window against `try_enqueue`'s recheck.
@@ -1434,61 +1646,6 @@ async fn finalize_failed(
         next_step: None,
         skipped: false,
     })
-}
-
-/// Best-effort child-failure wake-up: send a user-visible failure notice to
-/// the spawner's session, starting (or steering) a turn there so the model
-/// can respawn, reroute, or report. Idempotent per child turn.
-async fn notify_parent_of_child_failure(
-    deps: &Deps,
-    parent_session_id: &str,
-    record: &TurnRecord,
-    reason: &str,
-    failure: FailureInfo,
-) {
-    let notice = child_failure_notice(
-        &record.session_id,
-        &record.turn_id,
-        failure.code,
-        failure.retryable,
-        reason,
-    );
-    let req = crate::functions::send::SendRequest {
-        session_id: Some(parent_session_id.to_string()),
-        message: crate::functions::send::MessageInput::Text(notice),
-        model: None,
-        provider: None,
-        idempotency_key: Some(format!("child_failure_{}", record.turn_id)),
-        session: None,
-        options: None,
-    };
-    if let Err(e) = crate::functions::send::handle(deps, req).await {
-        tracing::warn!(
-            parent_session = %parent_session_id,
-            child_session = %record.session_id,
-            child_turn = %record.turn_id,
-            error = %e,
-            "child-failure notification to the parent session failed"
-        );
-    }
-}
-
-/// The wake-up text the spawner's model sees when a spawned child dies
-/// terminally without a parked parent call to deliver into.
-fn child_failure_notice(
-    child_session_id: &str,
-    child_turn_id: &str,
-    code: &str,
-    retryable: bool,
-    reason: &str,
-) -> String {
-    format!(
-        "[child-failure] Spawned child session '{child_session_id}' (turn {child_turn_id}) \
-         FAILED terminally [{code}] and will deliver no result: {reason} (retryable: \
-         {retryable}). Any state keys or completion markers that child was expected to write \
-         will never arrive — stop waiting on them. Recover now: respawn the work, reassign \
-         it, or report the failure."
-    )
 }
 
 fn llm_failure_info(error_kind: Option<ErrorKind>) -> FailureInfo {
@@ -1648,11 +1805,7 @@ async fn finalize_cancelled(
             Some(reason),
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
-            crate::events::ReactiveMeta {
-                spawned_by: record.spawned_by_subscription_id.as_deref(),
-                depth: record.reactive_depth,
-            },
-            turn_is_terminal(deps, &record.session_id),
+            turn_is_terminal(deps, &record.session_id).await,
         )
         .await;
     if let Some(parent) = record.parent.clone() {
@@ -1996,6 +2149,7 @@ async fn assemble_context(
         messages,
         usable: out.usable,
         token_count: out.token_count,
+        effective_max_output_tokens: out.effective_max_output_tokens,
     })
 }
 
@@ -2072,6 +2226,8 @@ struct Assembled {
     /// prompt + tools + request overhead). Reused as the final request
     /// count when nothing mutates the request after assembly.
     token_count: u64,
+    /// Model/output ceiling resolved by context-manager for this request.
+    effective_max_output_tokens: u64,
 }
 
 struct ContextAssemblyInputs<'a> {
@@ -2250,9 +2406,16 @@ async fn build_tools(deps: &Deps, record: &TurnRecord) -> Vec<crate::types::mode
         ExposeMode::Native => {
             let policy = CompiledPolicy::from(record.options.functions.as_ref());
             let snapshot = deps.functions().await;
-            let mut tools = Vec::new();
+            // Subscription controls are harness-intercepted virtual functions,
+            // so the engine's public registry intentionally does not list
+            // them. Publish their real schemas alongside registry functions
+            // whenever this turn's dispatch policy allows them.
+            let mut tools = crate::functions::subscribe::native_control_tools(&policy);
             for descriptor in snapshot.functions.iter() {
                 if !policy.allows(&descriptor.function_id) {
+                    continue;
+                }
+                if tools.iter().any(|tool| tool.name == descriptor.function_id) {
                     continue;
                 }
                 tools.push(crate::types::model::AgentFunction {
@@ -2296,6 +2459,7 @@ impl StreamSink for SessionStreamSink {
                 &self.session_id,
                 &self.entry_id,
                 &message.content,
+                message.usage.as_ref(),
                 None,
                 Some(&origin),
             )
@@ -2420,28 +2584,6 @@ mod tests {
             &prompt
         ));
         assert!(!super::final_request_unchanged(false, 0, &None, &prompt));
-    }
-
-    #[test]
-    fn child_failure_notice_names_the_child_and_the_consequence() {
-        // Live incident (2026-07-21, console-42ae032b): two fire-and-forget
-        // spawned scanners failed instantly; their coordinator had only
-        // success-path state triggers and waited forever. The wake-up notice
-        // must name the child, the failure code, and the key consequence —
-        // the child's completion markers will never arrive.
-        let notice = super::child_failure_notice(
-            "dcmcp-scan-a2k9",
-            "t_6d37d87e",
-            "llm.permanent",
-            false,
-            "model not found: gpt-4o-mini",
-        );
-        assert!(notice.contains("dcmcp-scan-a2k9"));
-        assert!(notice.contains("t_6d37d87e"));
-        assert!(notice.contains("[llm.permanent]"));
-        assert!(notice.contains("retryable: false"));
-        assert!(notice.contains("will never arrive"));
-        assert!(notice.contains("model not found: gpt-4o-mini"));
     }
 
     #[test]

@@ -1,0 +1,14 @@
+workers:
+  - name: iii-worker-ops
+  - name: iii-worker-manager
+    config:
+      host: 127.0.0.1
+      port: ${HARNESS_E2E_PORT}
+  - name: configuration
+    config:
+      adapter:
+        name: fs
+        config:
+          directory: ${HARNESS_E2E_RUN_DIR}/configuration
+  - name: iii-stream
+  - name: iii-observability

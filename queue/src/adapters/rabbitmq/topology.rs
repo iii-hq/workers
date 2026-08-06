@@ -1,4 +1,4 @@
-//! RabbitMQ topology setup: fanout exchanges, per-function subscriber
+//! RabbitMQ topology setup: fanout exchanges, per-subscription subscriber
 //! queues, and the retry/DLX topology for function queues.
 //!
 //! 1:1 port of `engine/src/workers/queue/adapters/rabbitmq/topology.rs` — no
@@ -70,13 +70,13 @@ impl TopologyManager {
     pub async fn setup_subscriber_queue(
         &self,
         topic: &str,
-        function_id: &str,
+        subscription_id: &str,
         max_priority: Option<u8>,
     ) -> Result<()> {
         let names = RabbitNames::new(topic);
 
-        let queue_name = names.function_queue(function_id);
-        let dlq_name = names.function_dlq(function_id);
+        let queue_name = names.subscriber_queue(subscription_id);
+        let dlq_name = names.subscriber_dlq(subscription_id);
 
         self.channel
             .queue_declare(
@@ -115,9 +115,9 @@ impl TopologyManager {
 
         tracing::debug!(
             topic = %topic,
-            function_id = %function_id,
+            subscription_id = %subscription_id,
             queue = %queue_name,
-            "RabbitMQ per-function queue setup complete"
+            "RabbitMQ per-subscription queue setup complete"
         );
         Ok(())
     }

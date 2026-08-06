@@ -75,6 +75,20 @@ pub struct TurnOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
     pub max_turns: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    /// Hard input-plus-output token budget shared by this root turn and every
+    /// in-turn sub-agent it spawns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_tokens: Option<u64>,
+    /// Hard USD budget shared by this root turn and every in-turn sub-agent it
+    /// spawns. Requires catalog pricing for every model used by the tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_usd: Option<f64>,
+    /// Root session whose durable budget ledger this turn charges. Internal
+    /// bookkeeping populated by `harness::send` and inherited by sub-agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_root_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -223,19 +237,12 @@ pub struct TurnRecord {
     pub calls: BTreeMap<String, CallCheckpoint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<ParentLink>,
-    /// Display-only parent for trigger-fired spawns (no live parent turn):
-    /// lets `turn-completed` / `turn-started` `parent_session_id` filters match
-    /// react-spawned children too. Never set alongside `parent`.
+    /// Display-only parent for parentless spawns (no live parent turn):
+    /// lets worker-registered `turn-completed` / `turn-started`
+    /// `parent_session_id` filters match those children too, and the console
+    /// nest them. Never set alongside `parent`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_parent_session_id: Option<String>,
-    /// The subscription that react-spawned this turn; its own completion event
-    /// is never delivered back to that subscription (self-edge loop breaker).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spawned_by_subscription_id: Option<String>,
-    /// Reactive-chain depth (react-spawned turns only), echoed on turn events
-    /// so `harness::react` can refuse chains past `MAX_REACTIVE_DEPTH`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reactive_depth: Option<u32>,
     /// Function-registry generation this session last acknowledged; a mismatch
     /// at generate time appends a registry-change notice so session-cached
     /// contracts get re-fetched.
@@ -312,6 +319,10 @@ mod tests {
                 system_prompt: None,
                 mode: None,
                 max_turns: 16,
+                max_output_tokens: None,
+                max_total_tokens: None,
+                max_cost_usd: None,
+                budget_root_session_id: None,
                 thinking_level: None,
                 provider_options: None,
                 output: OutputContract::Text,
@@ -323,8 +334,6 @@ mod tests {
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
-            spawned_by_subscription_id: None,
-            reactive_depth: None,
             functions_generation: None,
             result: None,
             result_error: None,
@@ -401,11 +410,9 @@ mod tests {
         let mut r = record();
         r.calls
             .insert("a".into(), cp(CallState::Pending, Some("s_child")));
-        // Populate the react-bridge fields so the round trip exercises them
+        // Populate the trigger-spawn fields so the round trip exercises them
         // with values, not just their skip-if-none defaults.
         r.display_parent_session_id = Some("s_display_parent".into());
-        r.spawned_by_subscription_id = Some("sub_1".into());
-        r.reactive_depth = Some(3);
         let back: TurnRecord = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
         assert_eq!(back, r);
     }

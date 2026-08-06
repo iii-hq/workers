@@ -17,6 +17,7 @@ workers in this monorepo. Per-worker deep docs stay inside each worker folder
 | Understand `iii.worker.yaml` fields | [`architecture/iii-worker-yaml.md`](architecture/iii-worker-yaml.md) |
 | Understand CI gates on a PR | [`architecture/testing-and-ci.md`](architecture/testing-and-ci.md) |
 | Integrate with session-manager | [`session-manager/architecture/integration.md`](https://github.com/iii-hq/workers/blob/main/session-manager/architecture/integration.md) |
+| Drive a desktop (computer use) | [`computer/architecture/integration.md`](https://github.com/iii-hq/workers/blob/main/computer/architecture/integration.md) |
 
 ## Layout
 
