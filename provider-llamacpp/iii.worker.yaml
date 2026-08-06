@@ -3,6 +3,7 @@ name: provider-llamacpp
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: provider-llamacpp
 tags: [llm, llama.cpp, local, open-source, provider]
 description: llama.cpp server (llama-server) Chat Completions provider worker; implements provider::llamacpp::stream and provider::llamacpp::refresh_models behind llm-router.

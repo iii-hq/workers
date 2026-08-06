@@ -39,10 +39,23 @@ pub struct SpawnOptions {
     /// The child's deliverable: text / json / json+schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputContract>,
+    /// Override the child's validation-retry budget (output contract AND
+    /// `harness::hook::post-turn` deny re-prompts). Default: worker config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_validation_retries: Option<u32>,
     /// Intersected with the parent policy — narrow, never escalate. An
     /// `ask`-mode child is further capped at the configured default policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
+    /// Grant this child the orchestration surface. Default false: a spawned
+    /// child is a LEAF — its policy gains deny globs for `harness::spawn`,
+    /// `harness::send`, `engine::register_trigger`, `engine::unregister_trigger`
+    /// and `engine::registered-triggers::*`, so it performs its assignment and
+    /// updates shared state without spawning, messaging sessions, or touching
+    /// trigger registrations. `true` skips those denies; the child still never
+    /// exceeds its parent's policy.
+    #[serde(default)]
+    pub orchestrator: bool,
     /// Fan-out guard for the child's own spawns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_children: Option<u32>,
@@ -67,26 +80,18 @@ pub struct SpawnRequest {
     pub provider: Option<String>,
     /// Spawn into this session, creating it if it does not exist (e.g. a fork,
     /// or a pre-chosen id to filter `turn-completed` subscriptions on); default:
-    /// create fresh.
+    /// create fresh. An in-turn spawn may reuse an EXISTING id only inside its
+    /// own tree (itself, or a child it spawned) — anything else is refused as a
+    /// cross-run id collision. The response reports `reused: true` on reuse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Display-only parent for the console session tree, used when there is no
-    /// live parent turn (e.g. a trigger-fired spawn from `harness::react`).
+    /// live parent turn (e.g. a console- or workflow-issued spawn).
     /// Writes `SessionMeta.metadata.parent_session_id` so the console nests this
     /// child; it does NOT grant policy inheritance or parent-call resolution.
     /// Ignored when the dispatcher injects a real parent link (an in-turn spawn).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
-    /// Stamped by `harness::react` (not caller-supplied): the subscription that
-    /// spawned this turn. Its completion event is never delivered back to that
-    /// same subscription (self-edge loop breaker).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spawned_by_subscription_id: Option<String>,
-    /// Stamped by `harness::react` (not caller-supplied): reactive-chain depth,
-    /// echoed on this turn's `turn-completed` event so react can cap runaway
-    /// chains at `MAX_REACTIVE_DEPTH`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reactive_depth: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<SpawnOptions>,
 }
@@ -95,6 +100,11 @@ pub struct SpawnRequest {
 pub struct SpawnResponse {
     pub child_session_id: String,
     pub child_turn_id: String,
+    /// The named session already existed and was reused — its prior transcript
+    /// and parent linkage were retained (only possible with an explicit
+    /// `session_id`).
+    #[serde(default)]
+    pub reused: bool,
 }
 
 /// Direct-call entry (a consumer starting a linked child). Dispatched from a
@@ -106,5 +116,6 @@ pub async fn handle(deps: &Deps, req: SpawnRequest) -> Result<SpawnResponse, Har
     Ok(SpawnResponse {
         child_session_id: ids.session_id,
         child_turn_id: ids.turn_id,
+        reused: ids.reused,
     })
 }

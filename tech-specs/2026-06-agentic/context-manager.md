@@ -356,7 +356,7 @@ type CountTokensResponse = {
 
 ## Dependencies
 
-- `iii-state` — compaction leases only.
+- `state` — compaction leases only.
 - `llm-router` (soft) — model limit resolution (`router::models::get`) and the summariser
   (`router::chat`). Pure token/prune calls work without it when inline `limits` are supplied.
 

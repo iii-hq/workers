@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Input } from '@/components/ui/Input'
+import { moveItem } from '@/lib/reorder'
 import { cn } from '@/lib/utils'
 import type { JsonSchema, JsonValue } from '../api'
 import { wt } from '../typography'
@@ -8,7 +9,6 @@ import { errorForField, FieldShell } from './FieldShell'
 import { pathToDomId } from './path'
 import { DeleteButton, DragHandle } from './RowChrome'
 import { isInlineLeaf, schemaDefault } from './ref-resolver'
-import { moveItem } from './reorder'
 import { useDragReorder } from './useDragReorder'
 
 interface DictionaryRow {
@@ -204,7 +204,7 @@ export function DictionaryField(props: FieldProps) {
                   inlineValue
                     ? 'space-y-1'
                     : 'border border-rule p-2 space-y-2',
-                  isOver && 'bg-rule/40',
+                  isOver && 'bg-surface-hover',
                   isDragging && 'opacity-40',
                 )}
               >

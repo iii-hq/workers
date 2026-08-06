@@ -1,11 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 import { ArrowUp, Clock, Copy, Layers, X, Zap } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
+import { useFunctionTriggerRenderers } from '@/components/function-trigger/renderer-registry'
 import { Button } from '@/components/ui/Button'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { cn } from '@/lib/utils'
 import { fetchOtelLogs } from '../api/otel-logs'
+import { spanRawRedactor } from '../lib/functionTriggerFromSpan'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import {
   formatDuration,
@@ -70,6 +72,25 @@ export function SpanPanel({
     return { parentSpan, childSpans, selfTime, childDuration }
   }, [span, traceData])
 
+  // All spans of the trace, for resolving a nested span's owning function —
+  // same ancestor-chain lookup `SpanInfoTab` uses to build the info card.
+  const spansById = useMemo(
+    () => new Map((traceData?.spans ?? []).map((s) => [s.span_id, s] as const)),
+    [traceData],
+  )
+  const renderers = useFunctionTriggerRenderers()
+  // Every tab below that reads `span.attributes`/`span.events` renders the
+  // SAME data the info tab's card is built from (functionTriggerFromSpan.ts)
+  // — the identical redactor has to cover them (tags, logs, errors), or the
+  // runtime_id the info card hides is one tab-click away. The remaining tabs
+  // (otel-logs, baggage, links) are exempt for a written reason at their own
+  // definition — see `SpanPanel.redaction-coverage.test.ts`, which fails
+  // loudly if a tab is ever added here without one or the other.
+  const redact = useMemo(
+    () => (span ? spanRawRedactor(span, spansById, renderers) : undefined),
+    [span, spansById, renderers],
+  )
+
   const { data: logsData } = useQuery({
     queryKey: ['span-otel-logs', span?.trace_id, span?.span_id],
     queryFn: () =>
@@ -92,16 +113,16 @@ export function SpanPanel({
 
   return (
     <div
-      className="h-full bg-panel overflow-hidden flex flex-col"
+      className="h-full bg-panel-raised overflow-hidden flex flex-col"
       data-span-panel
       data-span-id={span.span_id}
       data-span-name={span.name}
     >
       {/* Header strip */}
-      <div className="flex-shrink-0 bg-panel border-b border-rule">
+      <div className="flex-shrink-0 border-b border-rule-2">
         {/* Row 1: worker badge + span name + close */}
         <div className="flex items-center gap-2 px-4 pt-3 pb-1.5">
-          <span className="px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.06em] flex-shrink-0 border border-rule bg-bg text-ink-faint lowercase">
+          <span className="px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.06em] flex-shrink-0 rounded-xs bg-surface text-ink-faint lowercase">
             {worker}
           </span>
           <h2
@@ -138,9 +159,9 @@ export function SpanPanel({
             )}
           </button>
 
-          <span aria-hidden className="w-px h-3 bg-rule" />
+          <span aria-hidden className="w-px h-3 bg-rule-2" />
 
-          <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-rule">
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
             <Clock className="w-2.5 h-2.5 text-accent" />
             <span className="font-mono text-[11px] font-semibold text-accent tabular-nums">
               {formatDuration(span.duration_ms)}
@@ -148,7 +169,7 @@ export function SpanPanel({
           </span>
 
           {traceContext && traceContext.childSpans.length > 0 && (
-            <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-rule">
+            <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
               <Zap className="w-2.5 h-2.5 text-ink-faint" />
               <span className="font-mono text-[11px] text-ink-faint tabular-nums lowercase">
                 self {formatDuration(traceContext.selfTime)}
@@ -158,8 +179,8 @@ export function SpanPanel({
 
           <span
             className={cn(
-              'flex items-center gap-1 px-2 py-0.5 bg-bg border',
-              span.status === 'error' ? 'border-alert' : 'border-rule',
+              'flex items-center gap-1 px-2 py-0.5 rounded-xs',
+              span.status === 'error' ? 'bg-alert-muted' : 'bg-surface',
             )}
           >
             <StatusDot tone={tone} />
@@ -173,7 +194,7 @@ export function SpanPanel({
             </span>
           </span>
 
-          <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-rule">
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
             <Layers className="w-2.5 h-2.5 text-ink-faint" />
             <span className="font-mono text-[11px] text-ink-faint tabular-nums">
               d:{span.depth}
@@ -181,7 +202,7 @@ export function SpanPanel({
           </span>
 
           {traceContext && traceContext.childSpans.length > 0 && (
-            <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-rule">
+            <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
               <span className="font-mono text-[11px] text-ink-faint tabular-nums lowercase">
                 {traceContext.childSpans.length} child
                 {traceContext.childSpans.length !== 1 ? 'ren' : ''}
@@ -199,7 +220,7 @@ export function SpanPanel({
                 traceContext.parentSpan &&
                 onNavigateToSpan(traceContext.parentSpan)
               }
-              className="flex items-center gap-1.5 w-full px-2.5 py-1.5 bg-bg border border-rule hover:bg-panel transition-colors group text-left"
+              className="flex items-center gap-1.5 w-full px-2.5 py-1.5 rounded-sm bg-surface hover:bg-surface-hover transition-colors group text-left"
             >
               <ArrowUp className="w-3 h-3 text-ink-faint group-hover:text-accent transition-colors flex-shrink-0" />
               <span className="font-mono text-[11px] text-ink-faint flex-shrink-0 lowercase">
@@ -229,7 +250,7 @@ export function SpanPanel({
             <TabsTrigger value="tags">
               attributes
               {attrCount > 0 && (
-                <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint border border-rule bg-bg normal-case tracking-normal">
+                <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
                   {attrCount}
                 </span>
               )}
@@ -237,7 +258,7 @@ export function SpanPanel({
             <TabsTrigger value="logs">
               events
               {eventCount > 0 && (
-                <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint border border-rule bg-bg normal-case tracking-normal">
+                <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
                   {eventCount}
                 </span>
               )}
@@ -251,7 +272,7 @@ export function SpanPanel({
             <TabsTrigger value="otel-logs">
               logs
               {logCount > 0 && (
-                <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint border border-rule bg-bg normal-case tracking-normal">
+                <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
                   {logCount}
                 </span>
               )}
@@ -260,7 +281,7 @@ export function SpanPanel({
             {linkCount > 0 && (
               <TabsTrigger value="links">
                 links
-                <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint border border-rule bg-bg normal-case tracking-normal">
+                <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
                   {linkCount}
                 </span>
               </TabsTrigger>
@@ -272,13 +293,13 @@ export function SpanPanel({
               <SpanInfoTab span={span} traceData={traceData} />
             </TabsContent>
             <TabsContent value="tags" className="mt-0">
-              <SpanTagsTab span={span} />
+              <SpanTagsTab span={span} redact={redact} />
             </TabsContent>
             <TabsContent value="logs" className="mt-0">
-              <SpanLogsTab span={span} />
+              <SpanLogsTab span={span} redact={redact} />
             </TabsContent>
             <TabsContent value="errors" className="mt-0">
-              <SpanErrorsTab span={span} />
+              <SpanErrorsTab span={span} redact={redact} />
             </TabsContent>
             <TabsContent value="otel-logs" className="mt-0">
               <SpanOtelLogsTab span={span} />

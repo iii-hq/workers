@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::error::HarnessError;
-use crate::functions::send::normalize_message;
+use crate::functions::send::{self as send, normalize_message, TurnLineage};
 use crate::functions::spawn::SpawnRequest;
 use crate::ids;
 use crate::policy;
@@ -19,15 +19,15 @@ use crate::prompt;
 use crate::prompt::Mode;
 use crate::trigger::ResultData;
 use crate::types::content::ContentBlock;
-use crate::types::message::AgentMessage;
-use crate::types::turn::{
-    fs_scope_metadata, FunctionPolicy, ParentLink, TurnOptions, TurnRecord, TurnStatus,
-};
+use crate::types::turn::{fs_scope_metadata, FunctionPolicy, ParentLink, TurnOptions, TurnRecord};
 
 /// The ids of a freshly-seeded child turn.
 pub struct ChildIds {
     pub session_id: String,
     pub turn_id: String,
+    /// The named session already existed — its transcript and parent linkage
+    /// were retained (in-turn reuse is confined to the caller's own tree).
+    pub reused: bool,
 }
 
 /// Guarded spawn from a live turn (the dispatch path AND the approval-release
@@ -42,19 +42,12 @@ pub async fn spawn_from_turn(
     arguments: &Value,
 ) -> Result<ChildIds, ResultData> {
     let cfg = deps.cfg().await;
-    let mut req: SpawnRequest = serde_json::from_value(arguments.clone()).map_err(|e| {
+    let req: SpawnRequest = serde_json::from_value(arguments.clone()).map_err(|e| {
         is_error(
             "harness/invalid_request",
             format!("invalid spawn arguments: {e}"),
         )
     })?;
-    // Reactive bookkeeping is stamped ONLY by harness::react (which spawns
-    // through the direct function entry, never this dispatch path). A model
-    // could otherwise spoof these to defeat the self-edge breaker or the
-    // reactive depth cap.
-    req.spawned_by_subscription_id = None;
-    req.reactive_depth = None;
-
     // Depth budget.
     if parent.depth + 1 > cfg.max_depth {
         return Err(is_error(
@@ -87,7 +80,7 @@ pub async fn spawn_from_turn(
         turn_id: parent.turn_id.clone(),
         function_call_id: call_id.to_string(),
     };
-    seed_child(deps, &cfg, &req, Some(&parent_link), Some(parent), None)
+    seed_child(deps, &cfg, &req, Some(&parent_link), Some(parent))
         .await
         .map_err(|e| is_error(e.code(), e.to_string()))
 }
@@ -100,10 +93,17 @@ pub fn spawned_result(child: &ChildIds) -> ResultData {
         "child_session_id": child.session_id,
         "child_turn_id": child.turn_id,
     });
+    let reuse_note = if child.reused {
+        "\nreused: the named session already existed (inside your own tree) — its prior \
+         transcript is retained and this task was appended to it."
+    } else {
+        ""
+    };
     let text = format!(
-        "{ids}\nfire-and-forget: this turn will NOT receive the child's result; consume it via \
-         the triggers/state you registered. If the child FAILS terminally, a [child-failure] \
-         message is delivered to this session automatically — no failure listener needed."
+        "{ids}{reuse_note}\nfire-and-forget: this turn will NOT receive the child's result — or its \
+         failure. The child talks to the world only through the destination its task names; \
+         read that destination, poll `harness::status` on the child for its health, and put a \
+         deadline (a `timer` wake or a binding `lifecycle`) on anything you wait for."
     );
     ResultData {
         content: vec![ContentBlock::text(text)],
@@ -112,62 +112,67 @@ pub fn spawned_result(child: &ChildIds) -> ResultData {
             "child_session_id": child.session_id,
             "child_turn_id": child.turn_id,
             "fire_and_forget": true,
+            "reused": child.reused,
         }),
     }
 }
 
-/// Direct-call entry (a consumer starting a linked child). No parent linkage or
-/// subsetting — the request's policy applies as-is.
+/// Direct-call entry (a consumer starting a linked child). No parent linkage
+/// or subsetting — the request's policy applies as-is, minus the leaf deny
+/// set unless the spawn passed `options.orchestrator: true`.
 pub async fn spawn_child(
     deps: &Deps,
     req: &SpawnRequest,
     parent: Option<&ParentLink>,
 ) -> Result<ChildIds, HarnessError> {
     let cfg = deps.cfg().await;
-    seed_child(deps, &cfg, req, parent, None, None).await
+    seed_child(deps, &cfg, req, parent, None).await
 }
 
-/// Trusted spawn path for a reaction registered by a harness turn.
-///
-/// Reactive children remain fire-and-forget and therefore do not get a
-/// `ParentLink`, but they inherit the registering turn's policy, filesystem
-/// scope, model limits, and shared token/cost ledger. The durable owner id is
-/// also retained so terminal failures wake the orchestration session.
-pub async fn spawn_reactive_child(
-    deps: &Deps,
-    req: &SpawnRequest,
-    owner_session_id: &str,
-) -> Result<ChildIds, HarnessError> {
-    let cfg = deps.cfg().await;
-    let owner = crate::state::get_turn(&deps.iii, owner_session_id, cfg.session_timeout_ms)
-        .await?
-        .ok_or_else(|| {
-            HarnessError::InvalidRequest(format!(
-                "reaction owner session `{owner_session_id}` has no durable turn record"
-            ))
-        })?;
-    seed_child(deps, &cfg, req, None, Some(&owner), Some(owner_session_id)).await
-}
-
-/// Resolve a child's dispatch policy. An in-turn child inherits the PARENT'S
-/// full policy by default (same permissions as its main agent);
-/// `subset_policy` still forbids escalation and honours an explicit narrower
-/// request. Dumbness is a prompt/data-flow property, not a capability wall — a
-/// child CAN spawn/register, it just shouldn't (subagent.txt). A parentless
-/// direct/CLI/raw-trigger spawn has no owner to mirror: explicit options win,
-/// else the configured default policy. Harness-owned reactions use the
-/// registering turn as `parent_record`. Whatever was resolved, an ask-mode
-/// child is then capped at that policy.
+/// Resolve a child's dispatch policy. An in-turn child starts from the
+/// PARENT'S policy (`subset_policy` forbids escalation and honours an explicit
+/// narrower request); a parentless (direct/CLI) spawn starts from explicit
+/// options, else the read-only baseline. Then the capability wall: unless the
+/// spawn opted into `orchestrator: true`, the child's deny globs gain
+/// [`policy::CONTROL_PLANE_DENY`] — a leaf performs its assignment and updates
+/// the shared medium; it cannot spawn, message sessions, or touch trigger
+/// registrations, whatever its prompt says. Denies union through subsetting,
+/// so a leaf's own children stay leaves. Any real whitelist then keeps the
+/// contract-discovery pair ([`policy::CHILD_DISCOVERY_ALLOW`]): the sub-agent
+/// contract makes a `functions::info` round mandatory, so an allow-list of
+/// just the work functions quietly starves an obedient child. Finally an
+/// ask-mode child is clamped to the configured default policy (`*` as
+/// shipped) — the operator ceiling stays authoritative over the union.
 fn child_functions(
     cfg: &WorkerConfig,
     parent_record: Option<&TurnRecord>,
     requested: Option<&FunctionPolicy>,
     mode: Option<Mode>,
+    orchestrator: bool,
 ) -> Option<FunctionPolicy> {
-    let functions = match parent_record {
+    let mut functions = match parent_record {
         Some(p) => policy::subset_policy(p.options.functions.as_ref(), requested),
         None => requested.cloned().or_else(|| cfg.default_functions.clone()),
     };
+    if !orchestrator {
+        if let Some(p) = functions.as_mut() {
+            p.deny
+                .extend(policy::CONTROL_PLANE_DENY.iter().map(|s| s.to_string()));
+        }
+    }
+    if let Some(p) = functions.as_mut() {
+        // An EMPTY allow is deliberate dispatch-disabled — granting a
+        // browse-only catalog to a child that can call nothing helps nobody.
+        if !p.allow.is_empty() {
+            for id in policy::CHILD_DISCOVERY_ALLOW {
+                // Skip when already covered, and skip a dead entry when a
+                // deny glob claims it — deny wins at dispatch either way.
+                if !policy::glob_covered(id, &p.allow) && !policy::glob_covered(id, &p.deny) {
+                    p.allow.push(id.to_string());
+                }
+            }
+        }
+    }
     crate::functions::send::clamp_for_mode(cfg, mode, functions)
 }
 
@@ -180,7 +185,6 @@ async fn seed_child(
     req: &SpawnRequest,
     parent: Option<&ParentLink>,
     parent_record: Option<&TurnRecord>,
-    reactive_owner_session_id: Option<&str>,
 ) -> Result<ChildIds, HarnessError> {
     let session = deps.session().await;
 
@@ -190,8 +194,8 @@ async fn seed_child(
         .or_else(|| parent_record.map(|p| p.options.model.clone()))
         .ok_or_else(|| {
             HarnessError::InvalidRequest(
-                "spawn requires a model — only an in-turn spawn or a harness-owned reaction \
-                 inherits it; a direct, CLI, or raw-trigger spawn has no owner, so name `model` \
+                "spawn requires a model — only an IN-TURN spawn inherits its parent's; a \
+                 parentless spawn (console, workflow, CLI) inherits nothing, so name `model` \
                  explicitly in that spawn payload"
                     .into(),
             )
@@ -209,6 +213,7 @@ async fn seed_child(
         parent_record,
         req.options.as_ref().and_then(|o| o.functions.as_ref()),
         req.options.as_ref().and_then(|o| o.mode),
+        req.options.as_ref().is_some_and(|o| o.orchestrator),
     );
 
     let depth = parent_record.map(|p| p.depth + 1).unwrap_or(0);
@@ -226,42 +231,50 @@ async fn seed_child(
     };
 
     // Child session, with sub-agent linkage merged into SessionMeta.metadata.
-    // A live parent turn gives the full linkage (resolve + display). A direct /
-    // trigger-fired spawn has no parent turn, but a caller-supplied
-    // `parent_session_id` still writes a display-only link so the console nests
-    // the child (no policy inheritance, no parent-call resolution).
-    // `spawned_by` tells the console tree WHO created the child — a trigger
-    // reaction (`reactive_depth` is stamped only by `harness::react`) or an
-    // agent's direct `harness::spawn` — so the sidebar can differentiate them.
-    let spawned_by = if req.reactive_depth.is_some() {
-        "trigger"
-    } else {
-        "agent"
-    };
+    // A live parent turn gives the full linkage (resolve + display). A direct
+    // parentless spawn has no parent turn, but a caller-supplied
+    // `parent_session_id` still writes a display-only link so the console
+    // nests the child (no policy inheritance, no parent-call resolution).
+    // `spawned_by` is always "agent": every spawn is a direct call now —
+    // trigger delivery never creates an agent.
     let linkage = match parent {
         Some(p) => Some(json!({
             "parent_session_id": p.session_id,
             "parent_turn_id": p.turn_id,
             "function_call_id": p.function_call_id,
             "depth": depth,
-            "spawned_by": spawned_by,
+            "spawned_by": "agent",
         })),
         None => req.parent_session_id.as_ref().map(|psid| {
             json!({
                 "parent_session_id": psid,
                 "depth": depth,
-                "spawned_by": spawned_by,
+                "spawned_by": "agent",
             })
         }),
     };
+    let mut reused = false;
     let child_session_id = match &req.session_id {
         Some(id) => {
             let created = session.ensure(id, None, linkage.as_ref()).await?;
             if !created {
-                // Reuse is legitimate (a fork, or delivering a reaction into an
-                // existing chat) but silent reuse of a stale id is a classic
-                // pipeline bug: the old transcript carries over and the console
-                // keeps the session nested under whoever created it first.
+                // Reuse is legitimate for a parentless caller (a fork, or
+                // delivering a reaction into an existing chat). From a live
+                // turn it is almost always a cross-run id collision — models
+                // re-invent the same "random" ids — so it is confined to the
+                // caller's own tree and reported back either way (`reused`).
+                if let Some(p) = parent {
+                    // A session that vanished between ensure and get behaves
+                    // like a fresh create; malformed metadata stays an error.
+                    if let Some(metadata) = session.metadata_of(id).await? {
+                        validate_turn_reuse(
+                            &p.session_id,
+                            id,
+                            metadata.get("parent_session_id").and_then(Value::as_str),
+                        )?;
+                    }
+                }
+                reused = true;
                 tracing::info!(
                     child_session_id = %id,
                     "harness::spawn reused an existing session — prior transcript and parent linkage retained"
@@ -272,88 +285,60 @@ async fn seed_child(
         None => session.create(None, linkage.as_ref()).await?,
     };
 
-    // The task is the child's opening user message — machine-sent either way,
-    // so every spawn marks the entry (origin + a readable id prefix, the
-    // notify pattern) or clients would render it as something the human typed.
-    // React-fired spawns mark `{ reaction: true }` / `e_react_`; direct
-    // agent spawns mark `{ spawn: true }` / `e_spawn_`.
+    // The task is the child's opening user message — machine-sent, so every
+    // spawn marks the entry (origin + a readable id prefix, the notify
+    // pattern) or clients would render it as something the human typed.
     let task = normalize_message(req.task.clone())?;
-    let (entry_id, origin) = if req.reactive_depth.is_some() {
-        let mut origin = json!({ "reaction": true });
-        if let Some(sub) = &req.spawned_by_subscription_id {
-            origin["subscription_id"] = json!(sub);
-        }
-        (Some(ids::react_entry_id()), Some(origin))
-    } else {
-        (Some(ids::spawn_entry_id()), Some(json!({ "spawn": true })))
-    };
-    session
-        .append(
-            &child_session_id,
-            &task,
-            entry_id.as_deref(),
-            None,
-            origin.as_ref(),
-        )
-        .await?;
-
-    let turn_id = ids::new_turn_id();
-    let now = AgentMessage::now_ms();
-    let message_preview = crate::functions::send::message_preview(&task);
-    let record = TurnRecord {
-        turn_id: turn_id.clone(),
-        session_id: child_session_id.clone(),
-        status: TurnStatus::Running,
-        step: 0,
-        turn_count: 0,
-        depth,
-        message_preview,
-        abort: false,
-        watermark_entry_id: None,
-        stream_request_id: None,
-        options: TurnOptions {
-            model,
-            provider: provider.clone(),
-            system_prompt: prompt::resolve_system_prompt(
-                req.options.as_ref().and_then(|o| o.system_prompt.clone()),
-                req.options
-                    .as_ref()
-                    .map(|o| o.system_prompt_strategy)
-                    .unwrap_or_default(),
-                req.options.as_ref().and_then(|o| o.mode),
-                Some(identity),
-            ),
-            mode: req.options.as_ref().and_then(|o| o.mode),
-            max_turns,
-            max_output_tokens: req
-                .options
+    let (entry_id, origin) = (Some(ids::spawn_entry_id()), Some(json!({ "spawn": true })));
+    let options = TurnOptions {
+        model,
+        provider,
+        system_prompt: prompt::resolve_system_prompt(
+            req.options.as_ref().and_then(|o| o.system_prompt.clone()),
+            req.options
                 .as_ref()
-                .and_then(|o| o.max_output_tokens)
-                .or_else(|| parent_record.and_then(|p| p.options.max_output_tokens)),
-            // Children cannot widen or replace their root turn's execution
-            // budget; every generation charges the same durable ledger.
-            max_total_tokens: parent_record.and_then(|p| p.options.max_total_tokens),
-            max_cost_usd: parent_record.and_then(|p| p.options.max_cost_usd),
-            budget_root_session_id: parent_record
-                .and_then(|p| p.options.budget_root_session_id.clone()),
-            thinking_level: req.options.as_ref().and_then(|o| o.thinking_level),
-            provider_options: None,
-            output: req
-                .options
-                .as_ref()
-                .and_then(|o| o.output.clone())
+                .map(|o| o.system_prompt_strategy)
                 .unwrap_or_default(),
-            functions,
-            metadata: child_filesystem_scope(
-                req.options
-                    .as_ref()
-                    .and_then(|o| o.filesystem_root.as_deref()),
-                parent_record,
-            )?,
-            max_validation_retries: cfg.max_validation_retries,
-            max_transient_resumes: cfg.max_transient_resumes,
-        },
-        calls: Default::default(),
+            req.options.as_ref().and_then(|o| o.mode),
+            Some(identity),
+        ),
+        mode: req.options.as_ref().and_then(|o| o.mode),
+        max_turns,
+        max_output_tokens: req
+            .options
+            .as_ref()
+            .and_then(|o| o.max_output_tokens)
+            .or_else(|| parent_record.and_then(|p| p.options.max_output_tokens)),
+        // Children cannot widen or replace their root turn's execution
+        // budget; every generation charges the same durable ledger.
+        max_total_tokens: parent_record.and_then(|p| p.options.max_total_tokens),
+        max_cost_usd: parent_record.and_then(|p| p.options.max_cost_usd),
+        budget_root_session_id: parent_record
+            .and_then(|p| p.options.budget_root_session_id.clone()),
+        thinking_level: req.options.as_ref().and_then(|o| o.thinking_level),
+        provider_options: None,
+        output: req
+            .options
+            .as_ref()
+            .and_then(|o| o.output.clone())
+            .unwrap_or_default(),
+        functions,
+        metadata: child_filesystem_scope(
+            req.options
+                .as_ref()
+                .and_then(|o| o.filesystem_root.as_deref()),
+            parent_record,
+        )?,
+        max_validation_retries: req
+            .options
+            .as_ref()
+            .and_then(|o| o.max_validation_retries)
+            .unwrap_or(cfg.max_validation_retries),
+        max_transient_resumes: cfg.max_transient_resumes,
+    };
+
+    let lineage = TurnLineage {
+        depth,
         parent: parent.cloned(),
         // Self-parent is dropped: a reaction delivered INTO session X (e.g. a
         // reporter posting into the chat) must not carry X as its display
@@ -367,31 +352,31 @@ async fn seed_child(
                 .clone()
                 .filter(|p| p != &child_session_id),
         },
-        spawned_by_subscription_id: req.spawned_by_subscription_id.clone(),
-        reactive_depth: req.reactive_depth,
-        reactive_owner_session_id: reactive_owner_session_id.map(str::to_string),
-        functions_generation: None,
-        result: None,
-        result_error: None,
-        validation_retries: 0,
-        transient_resumes: 0,
-        created_at: now,
-        updated_at: now,
     };
-    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
-    crate::turn_loop::enqueue_step(
-        &deps.iii,
+
+    // The shared seeding tail: mid-stream parking, the CAS seed, and the merge
+    // double-check — identical for a user message, a wake, and a child's
+    // opening task. Seeding by hand here is what let a spawn into an ALREADY
+    // RUNNING session overwrite that session's turn record; the merge path
+    // steers it instead.
+    let (outcome, _) = send::deliver(
+        deps,
+        cfg,
         &child_session_id,
-        &turn_id,
-        0,
-        record.message_preview.as_deref(),
-        depth,
+        options,
+        send::Delivery {
+            message: &task,
+            entry_id: entry_id.as_deref(),
+            origin: origin.as_ref(),
+            lineage: &lineage,
+        },
     )
     .await?;
 
     Ok(ChildIds {
-        session_id: child_session_id,
-        turn_id,
+        session_id: outcome.session_id,
+        turn_id: outcome.turn_id,
+        reused,
     })
 }
 
@@ -440,6 +425,34 @@ fn child_filesystem_scope(
     Ok(Some(fs_scope_metadata(root)))
 }
 
+/// Reuse guard for an in-turn spawn that named an EXISTING session. Reuse is
+/// confined to the caller's own tree — itself (the merge path) or a child it
+/// spawned (re-task/retry). Anything else is a cross-owner collision:
+/// agent-invented ids repeat across runs (the same prompt re-invents the same
+/// "random" suffix), and silent reuse appends the new task to the old
+/// transcript and leaves the console nesting under the original parent.
+/// Parentless (direct) spawns are not guarded — forks and reaction delivery
+/// legitimately target foreign sessions, and there is no caller to check.
+fn validate_turn_reuse(
+    caller_session_id: &str,
+    target_session_id: &str,
+    existing_parent: Option<&str>,
+) -> Result<(), HarnessError> {
+    if target_session_id == caller_session_id || existing_parent == Some(caller_session_id) {
+        return Ok(());
+    }
+    let owner = match existing_parent {
+        Some(parent) => format!("belongs to parent `{parent}`"),
+        None => "is a root session with no parent linkage".to_string(),
+    };
+    Err(HarnessError::InvalidRequest(format!(
+        "spawn session_id `{target_session_id}` already exists and {owner}: an in-turn spawn \
+         may reuse only its own session (`{caller_session_id}`) or a child it spawned itself. \
+         Reuse keeps the existing transcript and parent, so a colliding id hijacks another \
+         run's session — pick a fresh id, or omit session_id and the harness will generate one"
+    )))
+}
+
 fn is_error(code: &str, message: String) -> ResultData {
     ResultData {
         content: vec![ContentBlock::text(message.clone())],
@@ -452,6 +465,7 @@ fn is_error(code: &str, message: String) -> ResultData {
 mod tests {
     use super::*;
     use crate::types::output::OutputContract;
+    use crate::types::turn::TurnStatus;
 
     fn parent_record(metadata: Option<Value>) -> TurnRecord {
         TurnRecord {
@@ -486,10 +500,8 @@ mod tests {
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
-            spawned_by_subscription_id: None,
-            reactive_depth: None,
-            reactive_owner_session_id: None,
             functions_generation: None,
+            context_snapshot: None,
             result: None,
             result_error: None,
             validation_retries: 0,
@@ -506,8 +518,6 @@ mod tests {
             provider: provider.map(str::to_string),
             session_id: None,
             parent_session_id: None,
-            spawned_by_subscription_id: None,
-            reactive_depth: None,
             options: None,
         }
     }
@@ -617,22 +627,31 @@ mod tests {
         }
     }
 
+    fn narrowed_cfg() -> WorkerConfig {
+        WorkerConfig {
+            default_functions: Some(FunctionPolicy {
+                allow: vec!["state::get".into()],
+                deny: vec![],
+                expose: Default::default(),
+            }),
+            ..WorkerConfig::default()
+        }
+    }
+
     #[test]
-    fn ask_mode_child_is_capped_at_the_default_policy() {
+    fn ask_mode_child_is_clamped_to_the_configured_default() {
+        // The shipped default is `*`, so ask no longer strips the data plane…
         let cfg = WorkerConfig::default();
         let mut parent = parent_record(None);
         parent.options.functions = Some(broad_policy());
+        let asked = child_functions(&cfg, Some(&parent), None, Some(Mode::Ask), false);
+        assert!(policy::CompiledPolicy::from(asked.as_ref()).allows("state::set"));
 
-        // Outside ask mode the child inherits the parent's FULL policy.
-        let inherited = child_functions(&cfg, Some(&parent), None, Some(Mode::Agent));
-        assert!(policy::CompiledPolicy::from(inherited.as_ref()).allows("state::set"));
-
-        // An ask-mode child is capped at the wildcard default, whatever it inherited.
-        let asked = child_functions(&cfg, Some(&parent), None, Some(Mode::Ask));
+        // …but the chokepoint still bites when the operator narrows the default.
+        let asked = child_functions(&narrowed_cfg(), Some(&parent), None, Some(Mode::Ask), false);
         let compiled = policy::CompiledPolicy::from(asked.as_ref());
         assert!(compiled.allows("state::get"));
-        assert!(compiled.allows("state::set"));
-        assert!(compiled.allows("harness::spawn"));
+        assert!(!compiled.allows("state::set"));
     }
 
     #[test]
@@ -644,7 +663,7 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         });
-        let asked = child_functions(&cfg, Some(&parent), None, Some(Mode::Ask));
+        let asked = child_functions(&cfg, Some(&parent), None, Some(Mode::Ask), false);
         let compiled = policy::CompiledPolicy::from(asked.as_ref());
         assert!(compiled.allows("state::get"));
         // In the baseline but outside the inherited policy — still denied.
@@ -652,39 +671,253 @@ mod tests {
     }
 
     #[test]
-    fn parentless_ask_child_keeps_the_default_policy() {
-        let cfg = WorkerConfig::default();
-        let f = child_functions(&cfg, None, None, Some(Mode::Ask));
+    fn parentless_ask_child_takes_the_configured_default() {
+        let f = child_functions(&narrowed_cfg(), None, None, Some(Mode::Ask), false);
         let compiled = policy::CompiledPolicy::from(f.as_ref());
         assert!(compiled.allows("state::get"));
-        assert!(compiled.allows("state::set"));
+        assert!(!compiled.allows("state::set"));
     }
 
     #[test]
     fn ask_mode_child_clamps_an_explicit_broad_request() {
-        // A wildcard request remains unrestricted under the wildcard default.
-        let cfg = WorkerConfig::default();
+        // The direct escalation vector: a spawn that explicitly asks for `*`
+        // under a narrowed operator default. Parented or not, the ask child
+        // stays capped.
+        let cfg = narrowed_cfg();
         let mut parent = parent_record(None);
         parent.options.functions = Some(broad_policy());
         for parent_rec in [Some(&parent), None] {
-            let f = child_functions(&cfg, parent_rec, Some(&broad_policy()), Some(Mode::Ask));
+            let f = child_functions(
+                &cfg,
+                parent_rec,
+                Some(&broad_policy()),
+                Some(Mode::Ask),
+                false,
+            );
             let compiled = policy::CompiledPolicy::from(f.as_ref());
             assert!(compiled.allows("state::get"));
-            assert!(compiled.allows("state::set"));
-            assert!(compiled.allows("harness::spawn"));
+            assert!(!compiled.allows("state::set"));
+            assert!(!compiled.allows("harness::spawn"));
         }
     }
 
     #[test]
     fn parentless_child_defaults_are_unclamped_outside_ask() {
         // The pre-existing parentless arms child_functions now owns: an explicit
-        // request applies as-is, and no request falls back to the baseline.
+        // request applies as-is, and no request falls back to the configured
+        // default (`*` as shipped).
         let cfg = WorkerConfig::default();
-        let explicit = child_functions(&cfg, None, Some(&broad_policy()), Some(Mode::Agent));
+        let explicit = child_functions(&cfg, None, Some(&broad_policy()), Some(Mode::Agent), false);
         assert!(policy::CompiledPolicy::from(explicit.as_ref()).allows("state::set"));
-        let defaulted = child_functions(&cfg, None, None, None);
-        let compiled = policy::CompiledPolicy::from(defaulted.as_ref());
-        assert!(compiled.allows("state::get"));
+        let defaulted = child_functions(&cfg, None, None, None, false);
+        assert!(policy::CompiledPolicy::from(defaulted.as_ref()).allows("state::set"));
+    }
+
+    #[test]
+    fn spawned_children_are_leaves_by_default() {
+        // The capability wall: a `*` parent's child loses the orchestration
+        // surface unless the spawn says `orchestrator: true`.
+        let cfg = WorkerConfig::default();
+        let mut parent = parent_record(None);
+        parent.options.functions = Some(broad_policy());
+        let leaf = child_functions(&cfg, Some(&parent), None, Some(Mode::Agent), false);
+        let compiled = policy::CompiledPolicy::from(leaf.as_ref());
+        assert!(compiled.allows("state::set"), "data-plane must survive");
+        for id in [
+            "harness::spawn",
+            "harness::send",
+            "engine::register_trigger",
+            "engine::unregister_trigger",
+            "engine::registered-triggers::list",
+        ] {
+            assert!(!compiled.allows(id), "{id} must be denied to a leaf child");
+        }
+    }
+
+    #[test]
+    fn an_orchestrator_child_keeps_the_control_plane_capped_by_the_parent() {
+        let cfg = WorkerConfig::default();
+        let mut parent = parent_record(None);
+        parent.options.functions = Some(broad_policy());
+        let orch = child_functions(&cfg, Some(&parent), None, Some(Mode::Agent), true);
+        let compiled = policy::CompiledPolicy::from(orch.as_ref());
+        assert!(compiled.allows("harness::spawn"));
+        assert!(compiled.allows("engine::register_trigger"));
+
+        // A narrow parent grants nothing extra, orchestrator or not.
+        parent.options.functions = Some(FunctionPolicy {
+            allow: vec!["state::*".into()],
+            deny: vec![],
+            expose: Default::default(),
+        });
+        let capped = child_functions(&cfg, Some(&parent), None, Some(Mode::Agent), true);
+        assert!(!policy::CompiledPolicy::from(capped.as_ref()).allows("harness::spawn"));
+    }
+
+    #[test]
+    fn a_leaf_parents_child_cannot_reclaim_the_control_plane() {
+        // Denies union through subsetting: a leaf's denies ride into its own
+        // child even when that child is spawned `orchestrator: true`.
+        let cfg = WorkerConfig::default();
+        let mut leaf_parent = parent_record(None);
+        let mut leaf_policy = broad_policy();
+        leaf_policy
+            .deny
+            .extend(policy::CONTROL_PLANE_DENY.iter().map(|s| s.to_string()));
+        leaf_parent.options.functions = Some(leaf_policy);
+        let child = child_functions(&cfg, Some(&leaf_parent), None, Some(Mode::Agent), true);
+        assert!(!policy::CompiledPolicy::from(child.as_ref()).allows("harness::spawn"));
+    }
+
+    #[test]
+    fn options_functions_still_narrow_a_leaf() {
+        let cfg = WorkerConfig::default();
+        let mut parent = parent_record(None);
+        parent.options.functions = Some(broad_policy());
+        let narrow = FunctionPolicy {
+            allow: vec!["state::set".into()],
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let child = child_functions(&cfg, Some(&parent), Some(&narrow), Some(Mode::Agent), false);
+        let compiled = policy::CompiledPolicy::from(child.as_ref());
         assert!(compiled.allows("state::set"));
+        assert!(!compiled.allows("state::get"));
+        assert!(!compiled.allows("harness::spawn"));
+    }
+
+    /// Prevents: the discovery-starved courier — an allow-list of just the
+    /// work functions makes the sub-agent contract's mandatory
+    /// `functions::list`/`::info` round impossible, so the obedient child
+    /// reports FAILED while siblings that skip discovery succeed.
+    #[test]
+    fn a_narrowed_child_always_keeps_contract_discovery() {
+        let cfg = WorkerConfig::default();
+        let mut parent = parent_record(None);
+        parent.options.functions = Some(broad_policy());
+        let narrow = FunctionPolicy {
+            allow: vec!["database::executeBatch".into()],
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let child = child_functions(&cfg, Some(&parent), Some(&narrow), Some(Mode::Agent), false);
+        let compiled = policy::CompiledPolicy::from(child.as_ref());
+        assert!(compiled.allows("database::executeBatch"));
+        assert!(compiled.allows("engine::functions::list"));
+        assert!(compiled.allows("engine::functions::info"));
+        // The union grants the metadata plane only — the leaf wall and the
+        // whitelist still hold.
+        assert!(!compiled.allows("engine::register_trigger"));
+        assert!(!compiled.allows("database::execute"));
+    }
+
+    #[test]
+    fn the_discovery_union_adds_nothing_redundant_dead_or_widening() {
+        let cfg = WorkerConfig::default();
+        let mut parent = parent_record(None);
+        parent.options.functions = Some(broad_policy());
+
+        // Already covered by a glob: no duplicate entries.
+        let covered = FunctionPolicy {
+            allow: vec!["engine::*".into(), "state::set".into()],
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let child = child_functions(
+            &cfg,
+            Some(&parent),
+            Some(&covered),
+            Some(Mode::Agent),
+            false,
+        )
+        .unwrap();
+        assert_eq!(child.allow, vec!["engine::*", "state::set"]);
+
+        // Explicitly denied: deny wins, and no dead allow entry is written.
+        let denied = FunctionPolicy {
+            allow: vec!["database::executeBatch".into()],
+            deny: vec!["engine::functions::*".into()],
+            expose: Default::default(),
+        };
+        let child =
+            child_functions(&cfg, Some(&parent), Some(&denied), Some(Mode::Agent), false).unwrap();
+        assert_eq!(child.allow, vec!["database::executeBatch"]);
+        assert!(!policy::CompiledPolicy::from(Some(&child)).allows("engine::functions::info"));
+
+        // An EMPTY allow is deliberate dispatch-disabled — it must stay that
+        // way, not become a browse-only two-entry whitelist.
+        let disabled = FunctionPolicy {
+            allow: vec![],
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let child = child_functions(&cfg, None, Some(&disabled), Some(Mode::Agent), false).unwrap();
+        assert!(child.allow.is_empty());
+        assert!(!policy::CompiledPolicy::from(Some(&child)).allows("engine::functions::list"));
+    }
+
+    #[test]
+    fn spawned_result_promises_no_failure_backchannel() {
+        // A child's death is not injected into the spawner: the result text
+        // must steer the caller to the medium + status + deadlines instead of
+        // promising a [child-failure] wake-up that no longer exists.
+        let ids = ChildIds {
+            session_id: "s_child".into(),
+            turn_id: "t_child".into(),
+            reused: false,
+        };
+        let result = spawned_result(&ids);
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(!text.contains("[child-failure]"));
+        assert!(text.contains("harness::status"));
+        assert!(text.contains("deadline"));
+    }
+
+    /// Prevents: the courier-k3m7 mis-nesting — an in-turn spawn naming an id
+    /// that an EARLIER run created must fail loudly (naming the owner and the
+    /// remedy), never silently hijack that run's session. Reuse inside the
+    /// caller's own tree stays legal for retry/re-task flows.
+    #[test]
+    fn turn_reuse_is_confined_to_the_callers_tree() {
+        assert!(validate_turn_reuse("s_parent", "s_parent", None).is_ok());
+        assert!(validate_turn_reuse("s_parent", "courier-1", Some("s_parent")).is_ok());
+
+        let err = validate_turn_reuse("s_parent", "courier-1", Some("console-old"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("courier-1"), "{err}");
+        assert!(err.contains("console-old"), "{err}");
+        assert!(err.contains("s_parent"), "{err}");
+        assert!(err.contains("omit session_id"), "{err}");
+
+        // An existing ROOT session (no linkage) is someone's chat, not a
+        // spawn target — a grandchild (linked to a different parent) is
+        // equally out of reach.
+        let err = validate_turn_reuse("s_parent", "console-x", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("root session"), "{err}");
+    }
+
+    #[test]
+    fn spawned_result_reports_reuse() {
+        let fresh = spawned_result(&ChildIds {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            reused: false,
+        });
+        assert_eq!(fresh.details["reused"], false);
+        let text = serde_json::to_string(&fresh.content).unwrap();
+        assert!(!text.contains("already existed"), "{text}");
+
+        let reused = spawned_result(&ChildIds {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            reused: true,
+        });
+        assert_eq!(reused.details["reused"], true);
+        let text = serde_json::to_string(&reused.content).unwrap();
+        assert!(text.contains("already existed"), "{text}");
+        assert!(text.contains("transcript is retained"), "{text}");
     }
 }

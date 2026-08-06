@@ -93,7 +93,7 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
           {draft.map(({ id, key, val }) => (
             <div
               key={id}
-              className="group flex items-center gap-2 bg-bg border border-rule-2 p-2 hover:border-rule transition-colors"
+              className="group flex items-center gap-2 rounded-sm bg-surface border border-rule-2 p-2 hover:border-rule transition-colors"
             >
               <input
                 type="text"
@@ -115,7 +115,7 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
               <button
                 type="button"
                 onClick={() => handleRemove(id)}
-                className="p-1 text-ink-faint hover:text-alert hover:bg-panel transition-all opacity-0 group-hover:opacity-100"
+                className="p-1 text-ink-faint hover:text-alert hover:bg-surface-hover rounded-xs transition-all opacity-0 group-hover:opacity-100"
                 title="remove"
                 aria-label="remove attribute"
               >
@@ -153,7 +153,7 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
                 key={attr}
                 type="button"
                 onClick={() => handleSuggestionClick(attr)}
-                className="flex items-center gap-1 px-1.5 py-0.5 font-mono text-[10px] text-ink-faint bg-bg border border-rule-2 hover:border-accent hover:text-accent transition-colors lowercase"
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded-xs font-mono text-[10px] text-ink-faint bg-surface border border-rule-2 hover:border-rule hover:text-ink transition-colors lowercase"
                 title={`add ${attr}`}
               >
                 <Tag className="w-2.5 h-2.5" />

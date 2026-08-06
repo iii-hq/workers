@@ -124,6 +124,23 @@ def _baseline_worker_identities(baseline_workers_json: dict[str, Any] | None) ->
     }
 
 
+# Workers the engine itself hosts (enabled via the engine config, not
+# installed from the registry). A candidate install can flip one on mid-boot
+# (e.g. harness enables `iii-stream` for console streaming), which lands it in
+# the workers-baseline diff even though its interface is not part of the
+# released worker's surface — and its schemas are not this repo's to fix.
+ENGINE_BUILTIN_WORKERS = frozenset(
+    {
+        "configuration",
+        "iii-observability",
+        "iii-state",
+        "iii-stream",
+        "iii-worker-manager",
+        "iii-worker-ops",
+    }
+)
+
+
 def _resolve_target_worker_names(
     *,
     workers: list[dict[str, Any]],
@@ -137,7 +154,9 @@ def _resolve_target_worker_names(
         new_names = {
             identity
             for worker in workers
-            if (identity := _worker_identity(worker)) and identity not in baseline
+            if (identity := _worker_identity(worker))
+            and identity not in baseline
+            and identity not in ENGINE_BUILTIN_WORKERS
         }
         if new_names:
             return new_names
@@ -355,6 +374,7 @@ def build_payload(
         "readme": readme,
         "repo": repo_url,
         "description": meta.get("description", ""),
+        "license": meta.get("license", ""),
         "dependencies": normalize_dependencies(meta.get("dependencies")),
         "config": config,
         "functions": [

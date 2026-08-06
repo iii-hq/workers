@@ -3,9 +3,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
-  GitMerge,
   Trash2,
-  Workflow,
   Zap,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
@@ -18,26 +16,10 @@ import {
 } from '@/components/ui/Dialog'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import { JsonHighlight } from '@/lib/syntax'
-import { TriggerDag } from './TriggerDag'
-import {
-  buildTriggerWorkflow,
-  joinMeta,
-  levelWatches,
-  reactModel,
-  reactTask,
-  shortSession,
-  spawnTarget,
-  stateWatch,
-  watchedSession,
-} from './trigger-graph'
-
-// Re-exported for SessionTriggers.test.ts, which predates the trigger-graph
-// extraction; the logic now lives in ./trigger-graph.
-export { buildTriggerWorkflow, levelWatches, stateWatch }
 
 interface SessionTriggersProps {
   triggers: SessionTriggerInfo[]
-  onUnregister: (triggerId: string) => Promise<void> | void
+  onUnregister: (subscriptionId: string) => Promise<void> | void
   /** Unregister every binding at once (see ChatView). */
   onClearAll?: () => Promise<void> | void
   /** Backend probe: does this state key currently exist? (`null` = unknown) */
@@ -47,44 +29,60 @@ interface SessionTriggersProps {
   ) => Promise<boolean | null>
 }
 
-function targetLabel(trigger: SessionTriggerInfo): string {
-  return trigger.functionId === 'harness::react'
-    ? 'spawns sub-agent'
+/**
+ * What a fire delivers, from the row's data alone: a wake into this chat, or
+ * a plain function call. No trigger source or target is special-cased — a
+ * source type that does not exist yet renders exactly like the known ones.
+ */
+export function deliveryLabel(trigger: SessionTriggerInfo): string {
+  return trigger.delivery.kind === 'call'
+    ? `calls ${trigger.delivery.functionId}`
     : 'notifies this chat'
 }
 
+/** The `(scope?, key)` a keyed `state` binding watches, for the presence probe. */
+export function stateWatch(
+  trigger: SessionTriggerInfo,
+): { scope?: string; key: string } | null {
+  if (trigger.triggerType !== 'state') return null
+  const config = (trigger.config ?? {}) as Record<string, unknown>
+  const key = typeof config.key === 'string' ? config.key : null
+  if (!key) return null
+  const scope = typeof config.scope === 'string' ? config.scope : undefined
+  return { scope, key }
+}
+
 /**
- * Metadata keys already surfaced as field rows (label/once/subscription) or
- * implied by the listing itself (the owner session IS this conversation).
- * What remains is the interesting part — e.g. a react binding's reaction
- * spec (model, task, join).
+ * A compact, SOURCE-GENERIC config summary: up to three scalar top-level
+ * entries. Known and unknown trigger types get the same treatment — the row
+ * never interprets a source, so future trigger types render sanely.
  */
-const SURFACED_METADATA_KEYS = new Set([
-  '__owner_session_id',
-  '__subscription_id',
-  'subscription_id',
-  'session_id',
-  'label',
-  'once',
-  '__once',
-])
+export function summarizeTriggerConfig(config: unknown): string | null {
+  if (config === null || config === undefined || typeof config !== 'object')
+    return null
+  const parts = Object.entries(config as Record<string, unknown>)
+    .filter(
+      ([, v]) =>
+        typeof v === 'string' ||
+        typeof v === 'number' ||
+        typeof v === 'boolean',
+    )
+    .slice(0, 3)
+    .map(([k, v]) => `${k}: ${String(v)}`)
+  return parts.length > 0 ? parts.join(' · ') : null
+}
 
-/** React-spec keys surfaced as dedicated dialog rows / the task section. */
-const SURFACED_REACT_KEYS = new Set(['model', 'task', 'join', 'provider'])
-
-function remainingMetadata(
-  metadata: Record<string, unknown> | undefined,
-  isReact: boolean,
-): Record<string, unknown> | null {
-  if (!metadata) return null
-  const rest = Object.fromEntries(
-    Object.entries(metadata).filter(
-      ([k]) =>
-        !SURFACED_METADATA_KEYS.has(k) &&
-        !(isReact && SURFACED_REACT_KEYS.has(k)),
-    ),
-  )
-  return Object.keys(rest).length > 0 ? rest : null
+/** The row's lifecycle ghost text, from lifecycle data alone. */
+export function lifecycleNote(trigger: SessionTriggerInfo): string | null {
+  if (trigger.fired) return 'fired · unregistered'
+  const parts: string[] = []
+  if (trigger.once) parts.push('once')
+  if ((trigger.fires ?? 0) > 0)
+    parts.push(`${trigger.fires} fire${trigger.fires === 1 ? '' : 's'}`)
+  if (trigger.maxFires !== undefined) parts.push(`max ${trigger.maxFires}`)
+  if (trigger.expiresAt !== undefined)
+    parts.push(`until ${new Date(trigger.expiresAt).toLocaleString()}`)
+  return parts.length > 0 ? parts.join(' · ') : null
 }
 
 function isEmptyConfig(config: unknown): boolean {
@@ -92,12 +90,6 @@ function isEmptyConfig(config: unknown): boolean {
   if (typeof config === 'object')
     return Object.keys(config as Record<string, unknown>).length === 0
   return false
-}
-
-function subscriptionId(trigger: SessionTriggerInfo): string | null {
-  const meta = trigger.metadata ?? {}
-  const id = meta.__subscription_id ?? meta.subscription_id
-  return typeof id === 'string' ? id : null
 }
 
 function formatJson(value: unknown): string {
@@ -154,12 +146,6 @@ interface TriggerRowProps {
   busy: boolean
   onOpen: () => void
   onUnregister: () => void
-  /** `├` / `└` prefix for join members. */
-  connector?: string
-  /** The member's join key, shown as the row's name. */
-  memberKey?: string
-  /** Annotate watched / spawn-target sessions (workflow view). */
-  showTargets?: boolean
   /** Watched state key + whether it exists yet ("on scope/key — not written yet"). */
   stateNote?: string | null
 }
@@ -169,52 +155,28 @@ function TriggerRow({
   busy,
   onOpen,
   onUnregister,
-  connector,
-  memberKey,
-  showTargets,
   stateNote,
 }: TriggerRowProps) {
-  const watched = watchedSession(trigger)
-  const target = spawnTarget(trigger)
-  const model = reactModel(trigger)
-  const task = reactTask(trigger)
-  const name = memberKey ?? trigger.label ?? null
+  const name = trigger.label ?? null
+  const summary = stateNote ?? summarizeTriggerConfig(trigger.config)
+  const lifecycle = lifecycleNote(trigger)
   return (
     <div
       className={`flex items-center gap-2 border-b border-rule-2 px-3 py-1.5 text-[12px] last:border-b-0${trigger.fired ? ' opacity-55' : ''}`}
     >
-      {connector ? (
-        <span className="shrink-0 pl-1 text-ink-ghost" aria-hidden>
-          {connector}
-        </span>
-      ) : (
-        <Zap size={12} className="shrink-0 text-ink-ghost" aria-hidden />
-      )}
+      <Zap size={12} className="shrink-0 text-ink-ghost" aria-hidden />
       <button
         type="button"
         onClick={onOpen}
         className="min-w-0 flex-1 truncate text-left hover:text-ink transition-colors"
-        title={task ?? 'show trigger detail'}
+        title="show subscription detail"
       >
         {name || trigger.triggerType}
         <span className="text-ink-ghost">
           {name ? ` · ${trigger.triggerType}` : ''}
-          {connector
-            ? '' /* the join header already says what the group does */
-            : ` · ${targetLabel(trigger)}`}
-          {!connector && model ? ` · ${model}` : ''}
-          {showTargets || connector ? (
-            <>
-              {watched ? ` · on ${shortSession(watched)}` : ''}
-              {target ? ` → ${shortSession(target)}` : ''}
-            </>
-          ) : null}
-          {stateNote ? ` · ${stateNote}` : ''}
-          {trigger.fired
-            ? ' · fired · unregistered'
-            : trigger.once
-              ? ' · once'
-              : ''}
+          {` · ${deliveryLabel(trigger)}`}
+          {summary ? ` · ${summary}` : ''}
+          {lifecycle ? ` · ${lifecycle}` : ''}
         </span>
       </button>
       <button
@@ -234,11 +196,11 @@ function TriggerRow({
 /**
  * The conversation's registered trigger subscriptions, stacked above the
  * composer next to the queued-messages strip. Collapsed by default to a
- * count header; expanding shows the rows. Joined / chained bindings render
- * as a staged workflow (fan-in groups + an "after <session> completes"
- * divider between stages); anything unconnected stays a flat row. Click a
- * row for the full detail dialog; ✕ (or the dialog button) unregisters the
- * engine trigger.
+ * count header; expanding shows one generic row per subscription — event
+ * source, delivery, config summary, lifecycle — straight from the harness's
+ * binding rows, with no source- or target-specific interpretation. Click a
+ * row for the full detail dialog; ✕ (or the dialog button) tears the
+ * subscription down.
  */
 export function SessionTriggers({
   triggers,
@@ -249,7 +211,6 @@ export function SessionTriggers({
   const [expanded, setExpanded] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
-  const [flowOpen, setFlowOpen] = useState(false)
   const [clearArming, setClearArming] = useState(false)
   const [clearing, setClearing] = useState(false)
   // Fired ghost rows the user dismissed — local per-tab view state; they
@@ -260,8 +221,6 @@ export function SessionTriggers({
     () => triggers.filter((t) => !dismissed.has(t.id)),
     [triggers, dismissed],
   )
-  // Still-registered bindings only — the flow DAG and the counts must not
-  // include fired ghosts, which are history, not pipeline structure.
   const liveTriggers = useMemo(
     () => visibleTriggers.filter((t) => !t.fired),
     [visibleTriggers],
@@ -269,16 +228,12 @@ export function SessionTriggers({
   const registeredCount = liveTriggers.length
   const firedCount = visibleTriggers.length - registeredCount
 
-  // The DAG probes presence for every state binding, not just the visible
-  // rows, so the flow view can color unwritten roots even while collapsed.
-  const probeKeys = expanded || flowOpen
-
-  // Whether each state binding's watched key exists yet — the row-level
-  // diagnosis for a reaction armed on a key nothing ever writes.
+  // Whether each keyed state binding's watched key exists yet — the
+  // row-level diagnosis for a wake armed on a key nothing ever writes.
   // ponytail: refetches on each trigger-poll tick while open; cache if it matters.
   const [keyPresence, setKeyPresence] = useState<Record<string, boolean>>({})
   useEffect(() => {
-    if (!probeKeys || !checkStateKey) return
+    if (!expanded || !checkStateKey) return
     let alive = true
     for (const trigger of visibleTriggers) {
       const watch = stateWatch(trigger)
@@ -291,7 +246,7 @@ export function SessionTriggers({
     return () => {
       alive = false
     }
-  }, [probeKeys, checkStateKey, visibleTriggers])
+  }, [expanded, checkStateKey, visibleTriggers])
 
   const stateNote = (trigger: SessionTriggerInfo): string | null => {
     const watch = stateWatch(trigger)
@@ -301,24 +256,7 @@ export function SessionTriggers({
     if (present === undefined) return `on ${label}`
     return present ? `on ${label} — written` : `on ${label} — not written yet`
   }
-  const workflow = useMemo(
-    () => buildTriggerWorkflow(visibleTriggers),
-    [visibleTriggers],
-  )
   const selected = visibleTriggers.find((t) => t.id === selectedId) ?? null
-  const selectedIsReact = selected?.functionId === 'harness::react'
-  const selectedMetadata = selected
-    ? remainingMetadata(selected.metadata, selectedIsReact)
-    : null
-  const selectedSubscription = selected ? subscriptionId(selected) : null
-  const selectedModel = selected ? reactModel(selected) : null
-  const selectedTask = selected ? reactTask(selected) : null
-  const selectedTarget = selected ? spawnTarget(selected) : null
-  const selectedJoin = selected ? joinMeta(selected) : null
-  const selectedProvider =
-    selectedIsReact && typeof selected?.metadata?.provider === 'string'
-      ? selected.metadata.provider
-      : null
 
   if (visibleTriggers.length === 0) return null
 
@@ -337,8 +275,8 @@ export function SessionTriggers({
     setSelectedId((current) => (current === id ? null : current))
   }
 
-  // A fired ghost row has no engine handle — its ✕ dismisses locally; a live
-  // row's ✕ unregisters the engine trigger.
+  // A fired ghost row has no live binding — its ✕ dismisses locally; a live
+  // row's ✕ tears the subscription down.
   const rowAction = (t: SessionTriggerInfo) =>
     t.fired ? dismiss(t.id) : void unregister(t.id)
 
@@ -347,7 +285,7 @@ export function SessionTriggers({
     try {
       await onClearAll?.()
       // Live bindings are unregistered by onClearAll; fired ghosts have no
-      // engine handle, so sweep them from view here too.
+      // live binding, so sweep them from view here too.
       setDismissed((prev) => {
         const next = new Set(prev)
         for (const t of visibleTriggers) if (t.fired) next.add(t.id)
@@ -373,7 +311,7 @@ export function SessionTriggers({
               unregister all {registeredCount} triggers?
               <span className="text-ink-ghost">
                 {' '}
-                this tears down the pipeline.
+                nothing will notify this chat afterwards.
               </span>
             </span>
             <button
@@ -406,37 +344,21 @@ export function SessionTriggers({
                 {registeredCount} trigger{registeredCount === 1 ? '' : 's'}{' '}
                 registered
                 <span className="text-ink-ghost">
-                  {workflow.hasStructure && workflow.levels.length > 1
-                    ? ` · ${workflow.levels.length} stages`
-                    : ''}
                   {firedCount > 0 ? ` · ${firedCount} fired` : ''}
                 </span>
               </span>
             </button>
-            {onClearAll || workflow.hasStructure ? (
+            {onClearAll ? (
               <div className="flex shrink-0 items-center gap-1 pr-1 font-mono text-[11px] uppercase tracking-[0.06em]">
-                {workflow.hasStructure ? (
-                  <button
-                    type="button"
-                    onClick={() => setFlowOpen(true)}
-                    className="flex items-center gap-1 px-2 py-1.5 text-ink-faint hover:text-ink transition-colors"
-                    title="view the pipeline flow"
-                  >
-                    <Workflow size={12} aria-hidden />
-                    flow
-                  </button>
-                ) : null}
-                {onClearAll ? (
-                  <button
-                    type="button"
-                    onClick={() => setClearArming(true)}
-                    className="flex items-center gap-1 px-2 py-1.5 text-ink-faint hover:text-alert transition-colors"
-                    title="unregister every trigger"
-                  >
-                    <Trash2 size={12} aria-hidden />
-                    clear all
-                  </button>
-                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setClearArming(true)}
+                  className="flex items-center gap-1 px-2 py-1.5 text-ink-faint hover:text-alert transition-colors"
+                  title="unregister every trigger"
+                >
+                  <Trash2 size={12} aria-hidden />
+                  clear all
+                </button>
               </div>
             ) : null}
             <button
@@ -455,84 +377,16 @@ export function SessionTriggers({
         )}
         {expanded ? (
           <div className="border-t border-rule-2">
-            {workflow.hasStructure
-              ? workflow.levels.map((units, levelIdx) => {
-                  const upstream = levelWatches(units)
-                  const upstreamLabel = upstream.map(shortSession).join(', ')
-                  return (
-                    <div key={units[0]?.key ?? levelIdx}>
-                      {levelIdx > 0 ? (
-                        <div className="truncate border-b border-rule-2 px-3 py-0.5 text-center text-[10px] leading-none text-ink-ghost">
-                          {upstreamLabel ? (
-                            `↓ after ${upstreamLabel} ${upstream.length === 1 ? 'completes' : 'complete'}`
-                          ) : (
-                            <span aria-hidden>↓</span>
-                          )}
-                        </div>
-                      ) : null}
-                      {units.map((unit) =>
-                        unit.join ? (
-                          <div key={unit.key}>
-                            <div className="flex items-center gap-2 border-b border-rule-2 bg-paper-2 px-3 py-1.5 text-[12px]">
-                              <GitMerge
-                                size={12}
-                                className="shrink-0 text-ink-ghost"
-                                aria-hidden
-                              />
-                              <span className="min-w-0 flex-1 truncate">
-                                join {unit.join.id}
-                                <span className="text-ink-ghost">
-                                  {' '}
-                                  · waits for {unit.join.expect.join(' + ')} ·
-                                  spawns sub-agent
-                                  {reactModel(unit.members[0])
-                                    ? ` · ${reactModel(unit.members[0])}`
-                                    : ''}
-                                </span>
-                              </span>
-                            </div>
-                            {unit.members.map((member, memberIdx) => (
-                              <TriggerRow
-                                key={member.id}
-                                trigger={member}
-                                stateNote={stateNote(member)}
-                                connector={
-                                  memberIdx === unit.members.length - 1
-                                    ? '└'
-                                    : '├'
-                                }
-                                memberKey={joinMeta(member)?.key}
-                                busy={busyId === member.id}
-                                onOpen={() => setSelectedId(member.id)}
-                                onUnregister={() => rowAction(member)}
-                              />
-                            ))}
-                          </div>
-                        ) : (
-                          <TriggerRow
-                            key={unit.key}
-                            trigger={unit.members[0]}
-                            showTargets
-                            stateNote={stateNote(unit.members[0])}
-                            busy={busyId === unit.members[0].id}
-                            onOpen={() => setSelectedId(unit.members[0].id)}
-                            onUnregister={() => rowAction(unit.members[0])}
-                          />
-                        ),
-                      )}
-                    </div>
-                  )
-                })
-              : visibleTriggers.map((trigger) => (
-                  <TriggerRow
-                    key={trigger.id}
-                    trigger={trigger}
-                    stateNote={stateNote(trigger)}
-                    busy={busyId === trigger.id}
-                    onOpen={() => setSelectedId(trigger.id)}
-                    onUnregister={() => rowAction(trigger)}
-                  />
-                ))}
+            {visibleTriggers.map((trigger) => (
+              <TriggerRow
+                key={trigger.id}
+                trigger={trigger}
+                stateNote={stateNote(trigger)}
+                busy={busyId === trigger.id}
+                onOpen={() => setSelectedId(trigger.id)}
+                onUnregister={() => rowAction(trigger)}
+              />
+            ))}
           </div>
         ) : null}
       </section>
@@ -562,97 +416,44 @@ export function SessionTriggers({
                 <dt className="lowercase text-ink-ghost">fires on</dt>
                 <dd className="text-ink">{selected.triggerType}</dd>
                 <dt className="lowercase text-ink-ghost">delivers</dt>
-                <dd className="text-ink">
-                  {targetLabel(selected)}
-                  <span className="text-ink-faint">
-                    {' '}
-                    · {selected.functionId}
-                  </span>
-                </dd>
-                {selectedModel ? (
-                  <>
-                    <dt className="lowercase text-ink-ghost">model</dt>
-                    <dd className="text-ink">
-                      {selectedModel}
-                      {selectedProvider ? (
-                        <span className="text-ink-faint">
-                          {' '}
-                          · {selectedProvider}
-                        </span>
-                      ) : null}
-                    </dd>
-                  </>
-                ) : null}
-                {selectedIsReact ? (
-                  <>
-                    <dt className="lowercase text-ink-ghost">spawns into</dt>
-                    <dd className="text-ink-faint">
-                      {selectedTarget ? (
-                        <CopyableId value={selectedTarget} />
-                      ) : (
-                        'this chat (owner session)'
-                      )}
-                    </dd>
-                  </>
-                ) : null}
-                {selectedJoin ? (
-                  <>
-                    <dt className="lowercase text-ink-ghost">join</dt>
-                    <dd className="text-ink">
-                      {selectedJoin.id}
-                      <span className="text-ink-faint">
-                        {' '}
-                        · waits for {selectedJoin.expect.join(' + ')}
-                        {selectedJoin.key
-                          ? ` · fires as ${selectedJoin.key}`
-                          : ''}
-                        {selectedJoin.rearm ? ' · re-arms after firing' : ''}
-                      </span>
-                    </dd>
-                  </>
-                ) : null}
+                <dd className="text-ink">{deliveryLabel(selected)}</dd>
                 <dt className="lowercase text-ink-ghost">lifetime</dt>
                 <dd className="text-ink">
                   {selected.fired
                     ? 'fired — already unregistered'
                     : selected.once
                       ? 'once — retires after first fire'
-                      : 'until unregistered'}
+                      : (lifecycleNote(selected) ?? 'until unregistered')}
                 </dd>
-                {selectedSubscription ? (
+                {selected.createdAt !== undefined ? (
                   <>
-                    <dt className="lowercase text-ink-ghost">subscription</dt>
+                    <dt className="lowercase text-ink-ghost">registered</dt>
                     <dd className="text-ink-faint">
-                      <CopyableId value={selectedSubscription} />
+                      {new Date(selected.createdAt).toLocaleString()}
                     </dd>
                   </>
                 ) : null}
-                <dt className="lowercase text-ink-ghost">trigger id</dt>
+                <dt className="lowercase text-ink-ghost">subscription</dt>
                 <dd className="text-ink-faint">
                   <CopyableId value={selected.id} />
                 </dd>
+                {selected.triggerId ? (
+                  <>
+                    <dt className="lowercase text-ink-ghost">trigger id</dt>
+                    <dd className="text-ink-faint">
+                      <CopyableId value={selected.triggerId} />
+                    </dd>
+                  </>
+                ) : null}
               </dl>
-              {selectedTask ? (
-                <div className="border border-rule-2">
-                  <div className="border-b border-rule-2 bg-paper-2 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-                    task
-                  </div>
-                  <div className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words px-3 py-2 text-[12px] text-ink">
-                    {selectedTask}
-                  </div>
-                </div>
-              ) : null}
               {isEmptyConfig(selected.config) ? null : (
                 <JsonSection label="config" value={selected.config} />
               )}
-              {selectedMetadata ? (
-                <JsonSection
-                  label={selectedIsReact ? 'spawn options' : 'metadata'}
-                  value={selectedMetadata}
-                />
+              {selected.conditions && selected.conditions.length > 0 ? (
+                <JsonSection label="conditions" value={selected.conditions} />
               ) : null}
               <div className="flex justify-end">
-                {/* A fired row has no engine binding left to unregister —
+                {/* A fired row has no live binding left to unregister —
                     offering it would only produce a guaranteed error. */}
                 {selected.fired ? (
                   <Button
@@ -679,69 +480,6 @@ export function SessionTriggers({
           ) : null}
         </DialogContent>
       </Dialog>
-
-      <Dialog open={flowOpen} onOpenChange={setFlowOpen}>
-        <DialogContent className="max-w-[min(92vw,64rem)]">
-          <DialogTitle className="text-[14px] lowercase">
-            <span
-              className="mr-2 inline-flex align-baseline text-ink-ghost"
-              aria-hidden
-            >
-              <Workflow size={13} />
-            </span>
-            pipeline flow
-          </DialogTitle>
-          <DialogDescription className="mt-1">
-            the reactive graph these {visibleTriggers.length} bindings form —
-            state writes and completions on the left, the sub-agents they spawn
-            flowing right. fired bindings stay in the graph as pipeline history.
-          </DialogDescription>
-          <div className="mt-4">
-            <TriggerDag triggers={visibleTriggers} keyPresence={keyPresence} />
-          </div>
-          <DagLegend />
-        </DialogContent>
-      </Dialog>
     </>
-  )
-}
-
-/** Reads the DAG's node/edge vocabulary in one compact row. */
-function DagLegend() {
-  return (
-    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 font-mono text-[10px] lowercase text-ink-ghost">
-      <span className="flex items-center gap-1.5">
-        <span className="inline-block size-2.5 border border-rule bg-bg" />
-        agent
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span className="uppercase tracking-[0.06em] text-ink-faint">
-          state
-        </span>
-        state key
-      </span>
-      <span className="flex items-center gap-1.5">
-        <GitMerge size={11} className="text-ink-faint" aria-hidden />
-        join gate
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span className="inline-block size-2.5 border border-accent bg-bg" />
-        this chat
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span className="inline-block h-px w-4 bg-rule" />
-        spawns / watches
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span
-          className="inline-block h-px w-4"
-          style={{
-            backgroundImage:
-              'repeating-linear-gradient(to right, var(--color-ink-ghost) 0 3px, transparent 3px 5px)',
-          }}
-        />
-        into a join
-      </span>
-    </div>
   )
 }

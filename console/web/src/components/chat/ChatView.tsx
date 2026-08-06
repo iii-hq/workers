@@ -4,6 +4,7 @@ import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAcces
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
 import { LiveRegion } from '@/components/ui/LiveRegion'
+import { PageHeader } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { useApprovalSettings } from '@/hooks/use-approval-settings'
 import { uid } from '@/hooks/use-conversations'
@@ -30,9 +31,16 @@ import type {
   QueuedMessagePreview,
 } from '@/lib/backend/types'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
+import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
+import {
+  expandPdfAttachments,
+  isPdfAttachment,
+  summaryLabel,
+} from '@/lib/pdf-attachments'
 import { newMessageId } from '@/lib/session-id'
+import { useExtSessionChips } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
 import {
@@ -121,6 +129,8 @@ interface ChatViewProps {
   modelOptions: ModelOption[]
   catalogLoading?: boolean
   density?: 'route' | 'dock'
+  /** Close the hosting pane — the header's standard ✕ when present. */
+  onRequestClose?: () => void
   onUpdateModel: (id: string, model: ModelId) => void
   onUpdateMode: (id: string, mode: Mode) => void
   onUpdateWorkingDir: (id: string, dir: string) => void
@@ -135,6 +145,7 @@ export function ChatView({
   modelOptions,
   catalogLoading,
   density = 'route',
+  onRequestClose,
   onUpdateModel,
   onUpdateMode,
   onUpdateWorkingDir,
@@ -266,16 +277,15 @@ export function ChatView({
     conversation.id,
   ])
 
-  // Registered trigger subscriptions (notify/react bindings owned by this
-  // session): shown above the composer, unregisterable, detail on click.
-  // Polled — bindings come and go as the agent registers them mid-turn.
+  // Registered trigger subscriptions (the harness's durable binding rows,
+  // owned by this session): shown above the composer, unregisterable, detail
+  // on click. Polled — bindings come and go as the agent registers them.
   const [sessionTriggers, setSessionTriggers] = useState<SessionTriggerInfo[]>(
     [],
   )
-  // Every full row this tab has EVER polled, by engine trigger id. When a
-  // once/join binding fires and retires, the poll drops it — this cache lets
-  // the fired ghost keep its full metadata (join grouping, spawn pin, task)
-  // so the workflow strip and flow DAG survive the pipeline completing.
+  // Every full row this tab has EVER polled, by subscription id. When a once
+  // binding fires and retires, the poll drops it — this cache lets the fired
+  // ghost keep its full config/conditions after retirement.
   const seenTriggersRef = useRef<Map<string, SessionTriggerInfo>>(new Map())
   const refreshTriggers = useCallback(() => {
     const listTriggers = backend.listTriggers
@@ -297,10 +307,12 @@ export function ChatView({
   }, [refreshTriggers, backend.listTriggers])
 
   const handleUnregisterTrigger = useCallback(
-    async (triggerId: string) => {
+    async (subscriptionId: string) => {
       try {
-        await backend.unregisterTrigger?.(triggerId)
-        setSessionTriggers((rows) => rows.filter((t) => t.id !== triggerId))
+        await backend.unregisterTrigger?.(subscriptionId, conversation.id)
+        setSessionTriggers((rows) =>
+          rows.filter((t) => t.id !== subscriptionId),
+        )
       } catch (err) {
         onAppendMessage(
           conversation.id,
@@ -320,7 +332,9 @@ export function ChatView({
     if (!unreg) return
     const ids = sessionTriggers.map((t) => t.id)
     // Fire all unregisters, tolerate partial failure, surface a single notice.
-    const results = await Promise.allSettled(ids.map((id) => unreg(id)))
+    const results = await Promise.allSettled(
+      ids.map((id) => unreg(id, conversation.id)),
+    )
     const cleared = new Set(
       ids.filter((_, i) => results[i].status === 'fulfilled'),
     )
@@ -364,6 +378,12 @@ export function ChatView({
         seenTriggersRef.current,
       ),
     [sessionTriggers, firedTriggers],
+  )
+  // Registration lookup for trigger-fired cards: a fire record carries only
+  // the subscription id — the binding's config/conditions live in these rows.
+  const triggersById = useMemo(
+    () => new Map(mergedTriggers.map((t) => [t.id, t])),
+    [mergedTriggers],
   )
 
   // The strip's rows: this tab's drafts first, then server-queued rows not
@@ -499,6 +519,29 @@ export function ChatView({
             ).blocks
           }
         }
+        // Same expansion as the live send path: a queued message's PDFs have
+        // to reach the agent as markdown too, or editing a queued message
+        // would silently drop the document it carried.
+        if (
+          backend.id === 'real' &&
+          payload.attachments.some(isPdfAttachment)
+        ) {
+          const expanded = await expandPdfAttachments(payload.attachments)
+          if (expanded.blocks.length > 0) {
+            attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
+          }
+          // Same reporting as the live send path. Staying silent here would let
+          // an edited queued message lose its document with no explanation.
+          for (const failure of expanded.failures) {
+            onAppendMessage(
+              conversationId,
+              makeSystemNotice(
+                `could not read ${failure.name} — ${failure.reason}`,
+                'warn',
+              ),
+            )
+          }
+        }
         try {
           await backend.editQueued?.(
             conversationId,
@@ -543,6 +586,29 @@ export function ChatView({
     const match = modelOptions.find((o) => o.id === effectiveModel)
     return match?.contextWindow
   }, [modelOptions, effectiveModel])
+
+  /* Injected session chips (the `chat` extension slot), rendered in the
+   * header's right cluster where the built-in context meter sits. A chip
+   * with id `context` supersedes the estimate-based ContextUsage meter —
+   * workers with real per-turn numbers own the surface. */
+  const extSessionChips = useExtSessionChips()
+  const sessionChips = useMemo(() => {
+    if (extSessionChips.length === 0) return null
+    return extSessionChips.map((chip) => {
+      const Chip = chip.render
+      return (
+        <Chip
+          key={chip.id}
+          sessionId={conversation.id}
+          modelId={effectiveModel ?? undefined}
+          contextWindow={contextWindow}
+        />
+      )
+    })
+  }, [extSessionChips, conversation.id, effectiveModel, contextWindow])
+  const hasInjectedContextChip = extSessionChips.some(
+    (chip) => chip.id === 'context',
+  )
 
   /* Shared live region: SR announcements for auto-accept, stop-reason
    * notices, and compaction markers route through this hook. Sighted
@@ -710,6 +776,11 @@ export function ChatView({
     if (!workingDirEnabled || conversation.draft) return
     const dir = conversation.workingDir
     if (!dir) return
+    // Switching to a conversation brings its working directory with it: the
+    // editor page follows the active chat, not the last folder ever opened.
+    // Best-effort with its own consecutive-root dedupe, so re-activations
+    // and already-validated dirs stay cheap.
+    void syncEditorWorkspace(dir)
     const key = `${conversation.id}:${dir}`
     if (validatedWorkingDirs.has(key)) return
     let cancelled = false
@@ -983,6 +1054,44 @@ export function ChatView({
             conversationId,
             makeSystemNotice(
               `could not attach ${failure.path} — ${failure.reason}`,
+              'warn',
+            ),
+          )
+        }
+      }
+
+      // A PDF is not text: read as bytes it reaches the model as noise, so the
+      // `pdf` worker converts it on this machine and the markdown is appended
+      // as another attachment block. Failures never block the send — an
+      // unreadable document becomes a placeholder block plus a warn notice, so
+      // the model knows it was handed something it could not read.
+      if (backend.id === 'real' && payload.attachments.some(isPdfAttachment)) {
+        const expanded = await expandPdfAttachments(payload.attachments)
+        if (expanded.blocks.length > 0) {
+          attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
+        }
+        // Relabel the chip with what the worker made of the document. The
+        // expansion runs before the model is called, so it never shows up as a
+        // function call — without this a person has no way to tell the PDF was
+        // read at all.
+        if (expanded.read.length > 0 && !willQueue) {
+          const byId = new Map(expanded.read.map((r) => [r.id, r]))
+          onPatchMessage(conversationId, userMsg.id, {
+            // `file` is dropped here as well as relabelled. It has done its job
+            // by now, and keeping it would hold the whole document in memory
+            // for as long as the conversation stays open.
+            attachments: (userMsg.attachments ?? []).map(({ file, ...a }) => {
+              void file
+              const summary = byId.get(a.id)
+              return summary ? { ...a, name: summaryLabel(a.name, summary) } : a
+            }),
+          })
+        }
+        for (const failure of expanded.failures) {
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              `could not read ${failure.name} — ${failure.reason}`,
               'warn',
             ),
           )
@@ -1473,6 +1582,9 @@ export function ChatView({
       setWorkingDirError(null)
       validatedWorkingDirs.add(`${id}:${next}`)
       onUpdateWorkingDir(id, next)
+      // The editor follows the chat: picking a folder here repoints the
+      // shared editor workspace so the editor page shows this project.
+      void syncEditorWorkspace(next)
       if (!conversation.draft && next !== prev) {
         onAppendMessage(
           id,
@@ -1530,11 +1642,52 @@ export function ChatView({
       data-chat-session-hydrated={conversation.hydrated}
       className="flex-1 flex flex-col min-w-0 min-h-0"
     >
-      <header
-        className={cn(
-          'flex items-center justify-between py-3 border-b border-rule gap-3 whitespace-nowrap',
-          headerPad,
-        )}
+      <PageHeader
+        className={headerPad}
+        onClose={onRequestClose}
+        actions={
+          <div className="flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.06em]">
+            {sessionChips}
+            {hasInjectedContextChip ? null : (
+              <ContextUsage
+                messages={conversation.messages}
+                contextWindow={contextWindow}
+              />
+            )}
+            <ExportSessionButton
+              conversation={conversation}
+              onExported={(filename) =>
+                announcer.announce(`session exported as ${filename}`)
+              }
+            />
+            <div className="flex items-center gap-2">
+              <StatusDot
+                tone={
+                  conversation.status === 'error'
+                    ? 'alert'
+                    : streamingIndicator
+                      ? 'accent'
+                      : 'ink'
+                }
+                pulse={streamingIndicator}
+              />
+              <span
+                className="text-ink-faint"
+                title={
+                  conversation.status === 'error'
+                    ? conversation.statusReason
+                    : undefined
+                }
+              >
+                {streamingIndicator
+                  ? 'working'
+                  : conversation.status === 'error'
+                    ? 'error'
+                    : 'ready'}
+              </span>
+            </div>
+          </div>
+        }
       >
         <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex items-center gap-2 min-w-0 flex-1">
           <span className="text-accent flex-shrink-0" aria-hidden>
@@ -1572,45 +1725,7 @@ export function ChatView({
             </>
           )}
         </div>
-        <div className="flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.06em] flex-shrink-0">
-          <ContextUsage
-            messages={conversation.messages}
-            contextWindow={contextWindow}
-          />
-          <ExportSessionButton
-            conversation={conversation}
-            onExported={(filename) =>
-              announcer.announce(`session exported as ${filename}`)
-            }
-          />
-          <div className="flex items-center gap-2">
-            <StatusDot
-              tone={
-                conversation.status === 'error'
-                  ? 'alert'
-                  : streamingIndicator
-                    ? 'accent'
-                    : 'ink'
-              }
-              pulse={streamingIndicator}
-            />
-            <span
-              className="text-ink-faint"
-              title={
-                conversation.status === 'error'
-                  ? conversation.statusReason
-                  : undefined
-              }
-            >
-              {streamingIndicator
-                ? 'working'
-                : conversation.status === 'error'
-                  ? 'error'
-                  : 'ready'}
-            </span>
-          </div>
-        </div>
-      </header>
+      </PageHeader>
 
       {approvalSettings.settings.mode === 'full' ? (
         <FullPermissionsBanner
@@ -1633,6 +1748,7 @@ export function ChatView({
         onResolveFilesystemAccess={handleFilesystemResolve}
         onManageFilesystemAccess={handleManageFilesystemAccess}
         workingDir={conversation.workingDir ?? null}
+        triggersById={triggersById}
       />
       <LiveRegion announcement={announcer.announcement} />
 
@@ -1694,7 +1810,7 @@ export function ChatView({
           />
           {queuedStrip.length > 0 ? (
             <section
-              className="mb-1 border border-rule bg-bg"
+              className="mb-1 rounded-md bg-surface"
               aria-label="queued messages"
             >
               {/* The message being edited is pulled out of the queue and lives

@@ -42,6 +42,11 @@ export interface ChangedEvent {
   patch: string
   truncated: boolean
   root: string
+  /** The harness session and turn the write happened in. Absent for a write
+   *  made outside a turn. This is the only part of the payload that says who
+   *  was writing; `cause` says which worker performed it. */
+  session_id?: string
+  turn_id?: string
 }
 
 type Listener<T> = (event: T) => void

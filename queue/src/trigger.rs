@@ -6,7 +6,7 @@
 //! (possibly hot-swapped) [`SwappableAdapter`]. All delivery, retry, and DLQ
 //! behavior lives in the adapter (e.g. [`crate::adapters::builtin::BuiltinAdapter`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -72,6 +72,24 @@ pub trait Invoker: Send + Sync + 'static {
         self.call(function_id, payload).await
     }
 
+    /// Dispatch one SUBSCRIPTION DELIVERY: the payload plus the trigger's
+    /// stored metadata, which the target may need to know which binding this
+    /// is (for a harness-managed binding it is the `__binding` pointer the
+    /// delivery hop resolves — without it every delivery is an unresolvable
+    /// fire, dropped on arrival; discovery run 4 lost all 18 messages to
+    /// exactly that). Condition checks and infrastructure calls stay on
+    /// [`Self::call`]. The default ignores metadata so bare test invokers
+    /// keep working; the iii-backed invoker overrides it.
+    async fn call_delivery(
+        &self,
+        function_id: &str,
+        payload: Value,
+        metadata: Option<Value>,
+    ) -> Result<Option<Value>, String> {
+        let _ = metadata;
+        self.call(function_id, payload).await
+    }
+
     /// Whether the target is currently registered with the engine.
     ///
     /// Adapters used in unit tests and embedded deployments can keep the
@@ -108,16 +126,7 @@ impl IiiInvoker {
 #[async_trait]
 impl Invoker for IiiInvoker {
     async fn call(&self, function_id: &str, payload: Value) -> Result<Option<Value>, String> {
-        self.iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS),
-            })
-            .await
-            .map(Some)
-            .map_err(|e| e.to_string())
+        self.call_delivery(function_id, payload, None).await
     }
 
     async fn call_with_timeout(
@@ -136,6 +145,26 @@ impl Invoker for IiiInvoker {
             .await
             .map(Some)
             .map_err(|e| e.to_string())
+    }
+
+    async fn call_delivery(
+        &self,
+        function_id: &str,
+        payload: Value,
+        metadata: Option<Value>,
+    ) -> Result<Option<Value>, String> {
+        let request = TriggerRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: None,
+            timeout_ms: Some(FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS),
+        };
+        match metadata {
+            Some(m) => self.iii.trigger(request.metadata(m)).await,
+            None => self.iii.trigger(request).await,
+        }
+        .map(Some)
+        .map_err(|e| e.to_string())
     }
 
     async fn function_available(&self, function_id: &str) -> Result<bool, String> {
@@ -210,7 +239,34 @@ pub struct SubscriberSpec {
 pub struct RegisteredSubscriber {
     pub trigger_id: String,
     pub function_id: String,
+    /// The trigger's stored metadata, delivered verbatim with every message.
+    /// For a harness-managed binding this carries `{"__binding": <id>}` — the
+    /// pointer the delivery hop resolves; dropping it makes every delivery an
+    /// unresolvable fire.
+    pub metadata: Option<Value>,
     pub spec: SubscriberSpec,
+}
+
+impl RegisteredSubscriber {
+    /// The durable identity the adapter keys this subscription's queue by.
+    ///
+    /// It must survive re-registration, or the replacement subscriber gets a
+    /// fresh empty queue and the old one sits bound to the exchange collecting
+    /// a copy of every publish forever (the SDK mints a new trigger id per
+    /// `register_trigger` call, so `trigger_id` itself cannot be the key).
+    /// A harness binding's `__binding` id is that identity; a plain SDK
+    /// subscriber falls back to its target function id — the pre-binding queue
+    /// naming, which also keeps existing deployments attached to their
+    /// backlogs across the upgrade. Distinct same-function subscribers without
+    /// a binding id therefore share one subscription (first registration's
+    /// config wins), exactly as they shared one function queue before.
+    fn subscription_key(&self) -> &str {
+        self.metadata
+            .as_ref()
+            .and_then(|m| m.get("__binding"))
+            .and_then(Value::as_str)
+            .unwrap_or(&self.function_id)
+    }
 }
 
 /// Merge the spec's legacy top-level `max_retries`/`backoff_ms` into its
@@ -265,13 +321,19 @@ impl QueueTriggerHandler {
     /// the newly built transport, so these `subscribe` calls attach
     /// consumers to the new adapter rather than the one being retired.
     pub async fn resubscribe_all(&self) {
+        let mut seen = HashSet::new();
         for registration in self.registrations().await {
+            let key = registration.subscription_key().to_string();
+            if !seen.insert((registration.spec.queue.clone(), key.clone())) {
+                continue; // registrations sharing a key share one subscription
+            }
             let queue_config = merged_queue_config(&registration.spec);
             self.adapter
                 .subscribe(
                     &registration.spec.queue,
-                    &registration.trigger_id,
+                    &key,
                     &registration.function_id,
+                    registration.metadata.clone(),
                     registration.spec.condition_function_id.clone(),
                     Some(queue_config),
                 )
@@ -295,16 +357,27 @@ impl QueueTriggerHandler {
             ));
         }
 
-        let queue_config = merged_queue_config(&registration.spec);
-        self.adapter
-            .subscribe(
-                &registration.spec.queue,
-                &registration.trigger_id,
-                &registration.function_id,
-                registration.spec.condition_function_id.clone(),
-                Some(queue_config),
-            )
-            .await;
+        // Registrations sharing a subscription key (e.g. a re-registered SDK
+        // subscriber whose previous trigger was never unregistered) share the
+        // one live subscription instead of stacking duplicate consumers that
+        // would each deliver every message again.
+        let key = registration.subscription_key().to_string();
+        let already_live = registrations
+            .values()
+            .any(|r| r.spec.queue == registration.spec.queue && r.subscription_key() == key);
+        if !already_live {
+            let queue_config = merged_queue_config(&registration.spec);
+            self.adapter
+                .subscribe(
+                    &registration.spec.queue,
+                    &key,
+                    &registration.function_id,
+                    registration.metadata.clone(),
+                    registration.spec.condition_function_id.clone(),
+                    Some(queue_config),
+                )
+                .await;
+        }
 
         registrations.insert(registration.trigger_id.clone(), registration);
         Ok(())
@@ -313,11 +386,26 @@ impl QueueTriggerHandler {
     /// Unregister by bare trigger id -- the queue/topic name is recovered
     /// from the stored registration, since an unregister `TriggerConfig`
     /// carries only the id.
+    ///
+    /// The registrations lock is deliberately held across `unsubscribe`:
+    /// releasing it first opens a window where a same-key register sees no
+    /// registration, calls subscribe while the adapter still holds the old
+    /// entry, no-ops on the adapter's duplicate check, and ends up
+    /// registered with no live consumer. Adapter unsubscribes are prompt
+    /// (they detach their drain rather than await it), so holding the lock
+    /// costs a broker round-trip, not an invocation.
     pub async fn unregister(&self, trigger_id: &str) {
-        let registration = self.registrations.lock().await.remove(trigger_id);
-        if let Some(registration) = registration {
+        let mut registrations = self.registrations.lock().await;
+        let Some(registration) = registrations.remove(trigger_id) else {
+            return;
+        };
+        let key = registration.subscription_key();
+        let still_shared = registrations
+            .values()
+            .any(|r| r.spec.queue == registration.spec.queue && r.subscription_key() == key);
+        if !still_shared {
             self.adapter
-                .unsubscribe(&registration.spec.queue, trigger_id)
+                .unsubscribe(&registration.spec.queue, key)
                 .await;
         }
     }
@@ -331,6 +419,7 @@ impl TriggerHandler for QueueTriggerHandler {
         self.register_subscriber(RegisteredSubscriber {
             trigger_id: config.id,
             function_id: config.function_id,
+            metadata: config.metadata,
             spec,
         })
         .await
@@ -357,6 +446,7 @@ mod tests {
             topic: String,
             id: String,
             function_id: String,
+            metadata: Option<Value>,
             condition_function_id: Option<String>,
             queue_config: Option<SubscriberQueueConfig>,
         },
@@ -393,6 +483,7 @@ mod tests {
             topic: &str,
             id: &str,
             function_id: &str,
+            metadata: Option<Value>,
             condition_function_id: Option<String>,
             queue_config: Option<SubscriberQueueConfig>,
         ) {
@@ -400,6 +491,7 @@ mod tests {
                 topic: topic.to_string(),
                 id: id.to_string(),
                 function_id: function_id.to_string(),
+                metadata,
                 condition_function_id,
                 queue_config,
             });
@@ -481,8 +573,11 @@ mod tests {
             mock.calls(),
             vec![Call::Subscribe {
                 topic: "demo".to_string(),
-                id: "t1".to_string(),
+                // No binding id in the metadata: the subscription is keyed by
+                // its stable function id, not the per-registration trigger id.
+                id: "backend".to_string(),
                 function_id: "backend".to_string(),
+                metadata: None,
                 condition_function_id: None,
                 queue_config: Some(SubscriberQueueConfig {
                     max_retries: Some(2),
@@ -490,6 +585,158 @@ mod tests {
                     ..Default::default()
                 }),
             }]
+        );
+    }
+
+    /// The discovery-run-4 regression: the harness's `__binding` pointer
+    /// arrives as trigger metadata and MUST reach the adapter — the delivery
+    /// hop cannot resolve a fire without it.
+    #[tokio::test]
+    async fn register_passes_trigger_metadata_to_the_adapter() {
+        let (handler, mock) = handler_with_mock();
+        let mut config = trigger_config("t1", "harness::trigger::deliver", json!({"queue": "q"}));
+        config.metadata = Some(json!({ "__binding": "sub_abc" }));
+        handler.register_trigger(config).await.unwrap();
+
+        let Call::Subscribe { id, metadata, .. } = &mock.calls()[0] else {
+            panic!("expected a Subscribe call");
+        };
+        assert_eq!(metadata, &Some(json!({ "__binding": "sub_abc" })));
+        // The binding id is the durable subscription identity — it, not the
+        // ephemeral trigger id, keys the adapter's queue.
+        assert_eq!(id, "sub_abc");
+
+        // And a hot-swap resubscribe carries it to the NEW adapter too.
+        let new_mock = Arc::new(MockAdapter::default());
+        let new_adapter: Arc<dyn QueueAdapter> = new_mock.clone();
+        handler.adapter.replace(new_adapter, "new-mock").await;
+        handler.resubscribe_all().await;
+        let Call::Subscribe { id, metadata, .. } = &new_mock.calls()[0] else {
+            panic!("expected a Subscribe call");
+        };
+        assert_eq!(metadata, &Some(json!({ "__binding": "sub_abc" })));
+        assert_eq!(id, "sub_abc");
+    }
+
+    /// The SDK mints a fresh trigger id per registration, so a restarted
+    /// subscriber re-registers under a new id. Its durable identity (here the
+    /// function-id fallback) must not change, or it would come back to a
+    /// fresh empty queue while the old one keeps collecting fanout copies
+    /// forever.
+    #[tokio::test]
+    async fn re_registration_under_a_new_trigger_id_keeps_the_subscription_key() {
+        let (handler, mock) = handler_with_mock();
+        handler
+            .register_trigger(trigger_config(
+                "uuid-1",
+                "backend",
+                json!({"queue": "demo"}),
+            ))
+            .await
+            .unwrap();
+        handler.unregister("uuid-1").await;
+        handler
+            .register_trigger(trigger_config(
+                "uuid-2",
+                "backend",
+                json!({"queue": "demo"}),
+            ))
+            .await
+            .unwrap();
+
+        let ids: Vec<_> = mock
+            .calls()
+            .iter()
+            .map(|call| match call {
+                Call::Subscribe { id, .. } => format!("subscribe:{id}"),
+                Call::Unsubscribe { id, .. } => format!("unsubscribe:{id}"),
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "subscribe:backend",
+                "unsubscribe:backend",
+                "subscribe:backend"
+            ],
+            "both registrations must attach to the same durable queue"
+        );
+    }
+
+    /// A hot-swap resubscribe collapses registrations sharing a subscription
+    /// key to ONE subscribe against the new adapter, mirroring
+    /// `register_subscriber`'s dedup — otherwise the swap would stack
+    /// duplicate consumers that each deliver every message again.
+    #[tokio::test]
+    async fn resubscribe_all_subscribes_shared_keys_once() {
+        let (handler, _old_mock) = handler_with_mock();
+        handler
+            .register_trigger(trigger_config(
+                "uuid-1",
+                "backend",
+                json!({"queue": "demo"}),
+            ))
+            .await
+            .unwrap();
+        handler
+            .register_trigger(trigger_config(
+                "uuid-2",
+                "backend",
+                json!({"queue": "demo"}),
+            ))
+            .await
+            .unwrap();
+
+        let new_mock = Arc::new(MockAdapter::default());
+        let new_adapter: Arc<dyn QueueAdapter> = new_mock.clone();
+        handler.adapter.replace(new_adapter, "new-mock").await;
+        handler.resubscribe_all().await;
+
+        assert_eq!(
+            new_mock.calls().len(),
+            1,
+            "shared-key registrations must resubscribe once"
+        );
+        let Call::Subscribe { id, .. } = &new_mock.calls()[0] else {
+            panic!("expected a Subscribe call");
+        };
+        assert_eq!(id, "backend");
+    }
+
+    /// Leftover duplicate registrations for the same function (e.g. persisted
+    /// triggers re-delivered across app restarts) share one subscription
+    /// instead of each delivering every message again.
+    #[tokio::test]
+    async fn same_function_registrations_share_one_live_subscription() {
+        let (handler, mock) = handler_with_mock();
+        handler
+            .register_trigger(trigger_config(
+                "uuid-1",
+                "backend",
+                json!({"queue": "demo"}),
+            ))
+            .await
+            .unwrap();
+        handler
+            .register_trigger(trigger_config(
+                "uuid-2",
+                "backend",
+                json!({"queue": "demo"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(mock.calls().len(), 1, "one shared subscription");
+
+        // The shared subscription stays live until the LAST registration goes.
+        handler.unregister("uuid-1").await;
+        assert_eq!(mock.calls().len(), 1, "still consumed by uuid-2");
+        handler.unregister("uuid-2").await;
+        assert_eq!(
+            mock.calls().last().unwrap(),
+            &Call::Unsubscribe {
+                topic: "demo".to_string(),
+                id: "backend".to_string(),
+            }
         );
     }
 
@@ -553,7 +800,7 @@ mod tests {
             mock.calls().last().unwrap(),
             &Call::Unsubscribe {
                 topic: "demo".to_string(),
-                id: "t1".to_string(),
+                id: "backend".to_string(),
             }
         );
         assert!(handler.registrations().await.is_empty());
@@ -595,8 +842,9 @@ mod tests {
         assert_eq!(new_calls.len(), 2);
         assert!(new_calls.contains(&Call::Subscribe {
             topic: "demo-1".to_string(),
-            id: "t1".to_string(),
+            id: "backend-1".to_string(),
             function_id: "backend-1".to_string(),
+            metadata: None,
             condition_function_id: None,
             queue_config: Some(SubscriberQueueConfig {
                 max_retries: Some(2),
@@ -605,8 +853,9 @@ mod tests {
         }));
         assert!(new_calls.contains(&Call::Subscribe {
             topic: "demo-2".to_string(),
-            id: "t2".to_string(),
+            id: "backend-2".to_string(),
             function_id: "backend-2".to_string(),
+            metadata: None,
             condition_function_id: None,
             queue_config: Some(SubscriberQueueConfig::default()),
         }));

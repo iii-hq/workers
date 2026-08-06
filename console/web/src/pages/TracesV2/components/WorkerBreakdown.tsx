@@ -138,7 +138,7 @@ export function WorkerBreakdown({ data }: WorkerBreakdownProps) {
                   </span>
                 )}
               </div>
-              <div className="h-1 bg-bg border border-rule overflow-hidden ml-4">
+              <div className="h-1 rounded-full bg-surface overflow-hidden ml-4">
                 <div
                   className="h-full transition-all duration-300"
                   style={{

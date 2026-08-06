@@ -10,16 +10,28 @@ packages:
   - console/web
   - console/ui
   - browser/ui
+  - sandbox-code-runner/ui
+  - computer/ui
   - database/ui
   - editor/ui
   - eval/ui
+  - harness/ui
   - memory/ui
+  - pdf/ui
   - state/ui
   - iii-directory/ui
+  - shell/ui
   - worktree/ui
   - github/ui
+  - llm-router/ui
 
 # pnpm ≥11 blocks dependency postinstall scripts by default; esbuild's
-# installs its platform binary.
+# installs its platform binary. protobufjs (via iii-sdk → @opentelemetry)
+# works without its postinstall — explicitly denied rather than left as an
+# unanswered prompt that fails `pnpm build`'s deps check.
 allowBuilds:
   esbuild: true
+  protobufjs: false
+
+minimumReleaseAgeExclude:
+  - '@pierre/trees@1.0.0-beta.6'

@@ -21,8 +21,9 @@ pub const PRE_GENERATE: &str = "harness::hook::pre-generate";
 pub const POST_GENERATE: &str = "harness::hook::post-generate";
 pub const PRE_TRIGGER: &str = "harness::hook::pre-trigger";
 pub const POST_TRIGGER: &str = "harness::hook::post-trigger";
+pub const POST_TURN: &str = "harness::hook::post-turn";
 
-/// The five hook points, in spec order.
+/// The six hook points, in spec order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookPoint {
     PreTurn,
@@ -30,6 +31,7 @@ pub enum HookPoint {
     PostGenerate,
     PreTrigger,
     PostTrigger,
+    PostTurn,
 }
 
 impl HookPoint {
@@ -40,16 +42,18 @@ impl HookPoint {
             HookPoint::PostGenerate => POST_GENERATE,
             HookPoint::PreTrigger => PRE_TRIGGER,
             HookPoint::PostTrigger => POST_TRIGGER,
+            HookPoint::PostTurn => POST_TURN,
         }
     }
 
-    pub fn all() -> [HookPoint; 5] {
+    pub fn all() -> [HookPoint; 6] {
         [
             HookPoint::PreTurn,
             HookPoint::PreGenerate,
             HookPoint::PostGenerate,
             HookPoint::PreTrigger,
             HookPoint::PostTrigger,
+            HookPoint::PostTurn,
         ]
     }
 
@@ -61,15 +65,22 @@ impl HookPoint {
             HookPoint::PostGenerate => "post_generate",
             HookPoint::PreTrigger => "pre_trigger",
             HookPoint::PostTrigger => "post_trigger",
+            HookPoint::PostTurn => "post_turn",
         }
     }
 
     /// Default `on_error` policy: fail-closed for `pre_*`, fail-open for
     /// `post_*` (harness.md § Chain, hold, and failure semantics).
+    /// `post_turn` is fail-closed despite the name: it GATES completion the
+    /// way `pre_*` hooks gate spend — an erroring validator must nudge the
+    /// bounded retry budget, never silently pass a result.
     pub fn default_fail_closed(self) -> bool {
         matches!(
             self,
-            HookPoint::PreTurn | HookPoint::PreGenerate | HookPoint::PreTrigger
+            HookPoint::PreTurn
+                | HookPoint::PreGenerate
+                | HookPoint::PreTrigger
+                | HookPoint::PostTurn
         )
     }
 }
@@ -81,13 +92,36 @@ pub struct HookTriggerConfig {
     /// pre/post_trigger only: target function_id globs to consult on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<Vec<String>>,
+    /// post_turn only: session_id globs this validator gates (omit = all).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<Vec<String>>,
+    /// post_turn only: template mode — send THIS argument object to the
+    /// bound function instead of the hook envelope, with the turn's parsed
+    /// result injected at `result_into`. Lets a plain composition function
+    /// (`fp::pipe`) validate turns without speaking the hook contract; its
+    /// receipt is read as the verdict (`valid`, or `short_circuited`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Value>,
+    /// post_turn template mode: JSON pointer where the result lands in
+    /// `payload` (default `/value`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_into: Option<String>,
+    /// post_turn only: custom corrective prompt sent VERBATIM when this
+    /// validator denies (replaces the generic "result was not accepted"
+    /// wrapper). Placeholders: `{value}` = the validator's measured value
+    /// (fp::pipe receipt `value_preview`), `{reason}` = the deny reason.
+    /// Validator ERRORS keep the generic text — a task-shaped prompt must
+    /// not mask a broken validator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_prompt: Option<String>,
     /// Chain order: ascending, ties broken by function_id (default 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<i64>,
     /// Per-invocation timeout (default 5000ms).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
-    /// Failure policy (default fail_closed for pre_*, fail_open for post_*).
+    /// Failure policy (default fail_closed for pre_* and post_turn,
+    /// fail_open for the other post_*).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_error: Option<String>,
 }
@@ -97,6 +131,10 @@ pub struct HookTriggerConfig {
 pub struct HookBinding {
     pub function_id: String,
     pub functions: Option<Vec<String>>,
+    pub sessions: Option<Vec<String>>,
+    pub payload: Option<Value>,
+    pub result_into: Option<String>,
+    pub retry_prompt: Option<String>,
     pub priority: i64,
     pub timeout_ms: u64,
     pub fail_closed: bool,
@@ -120,6 +158,10 @@ impl HookBinding {
         Ok(HookBinding {
             function_id: config.function_id,
             functions: cfg.functions,
+            sessions: cfg.sessions,
+            payload: cfg.payload,
+            result_into: cfg.result_into,
+            retry_prompt: cfg.retry_prompt,
             priority: cfg.priority.unwrap_or(0),
             timeout_ms: cfg.timeout_ms.unwrap_or(5_000),
             fail_closed,
@@ -202,6 +244,14 @@ pub struct HookRegistry {
     pub post_generate: HookSet,
     pub pre_trigger: HookSet,
     pub post_trigger: HookSet,
+    pub post_turn: HookSet,
+    /// Agent-registered post-turn validators: subscription id → (owner
+    /// session, engine unregister handle). The subscribe intercept records
+    /// here so teardown stays owner-checked.
+    /// ponytail: in-memory only — a harness restart orphans the engine-side
+    /// binding (it re-arms, but ownership is forgotten; operator cleanup).
+    /// Persist to state if that bites.
+    owned: Arc<Mutex<HashMap<String, (String, iii_sdk::trigger::Trigger)>>>,
 }
 
 impl HookRegistry {
@@ -215,13 +265,16 @@ impl HookRegistry {
             post_generate: HookSet::default(),
             pre_trigger: HookSet::default(),
             post_trigger: HookSet::default(),
+            post_turn: HookSet::default(),
+            owned: Arc::new(Mutex::new(HashMap::new())),
         };
         registry.register_type(iii, HookPoint::PreTurn, registry.pre_turn.clone());
         registry.register_type(iii, HookPoint::PreGenerate, registry.pre_generate.clone());
         registry.register_type(iii, HookPoint::PostGenerate, registry.post_generate.clone());
         registry.register_type(iii, HookPoint::PreTrigger, registry.pre_trigger.clone());
         registry.register_type(iii, HookPoint::PostTrigger, registry.post_trigger.clone());
-        tracing::info!("registered the five harness::hook::* trigger types");
+        registry.register_type(iii, HookPoint::PostTurn, registry.post_turn.clone());
+        tracing::info!("registered the six harness::hook::* trigger types");
         registry
     }
 
@@ -232,6 +285,7 @@ impl HookRegistry {
             HookPoint::PostGenerate => "Synchronous hook: after the final assistant message update. Observe only.",
             HookPoint::PreTrigger => "Synchronous hook: after the allow/deny policy passes, before the target is invoked. May deny, hold, or rewrite arguments.",
             HookPoint::PostTrigger => "Synchronous hook: after the target returns, before the result is appended. May rewrite content/details/is_error.",
+            HookPoint::PostTurn => "Synchronous hook: at finalize, after the output contract validated the result, before the turn completes. Deny re-prompts the turn (bounded by max_validation_retries). Config `sessions` globs scope it; config `payload`+`result_into` bind a plain composition function (fp::pipe) as the validator.",
         };
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
@@ -243,6 +297,32 @@ impl HookRegistry {
         );
     }
 
+    /// Record an agent-registered post-turn validator; returns the
+    /// subscription id handed back to the agent.
+    pub fn record_owned(&self, session_id: &str, handle: iii_sdk::trigger::Trigger) -> String {
+        let id = format!("posthook_{}", uuid::Uuid::new_v4().simple());
+        self.owned
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id.clone(), (session_id.to_string(), handle));
+        id
+    }
+
+    /// Owner-checked teardown for an agent-registered post-turn validator.
+    /// `None` = not one of ours (or not this caller's) — fall through to the
+    /// normal subscription path.
+    pub fn unregister_owned(&self, id: &str, session_id: &str) -> Option<bool> {
+        let mut owned = self.owned.lock().unwrap_or_else(|p| p.into_inner());
+        match owned.get(id) {
+            Some((owner, _)) if owner == session_id => {
+                let (_, handle) = owned.remove(id).expect("checked above");
+                handle.unregister();
+                Some(true)
+            }
+            _ => None,
+        }
+    }
+
     pub fn set_for(&self, point: HookPoint) -> &HookSet {
         match point {
             HookPoint::PreTurn => &self.pre_turn,
@@ -250,6 +330,7 @@ impl HookRegistry {
             HookPoint::PostGenerate => &self.post_generate,
             HookPoint::PreTrigger => &self.pre_trigger,
             HookPoint::PostTrigger => &self.post_trigger,
+            HookPoint::PostTurn => &self.post_turn,
         }
     }
 
@@ -291,6 +372,7 @@ mod tests {
             function_id: function_id.into(),
             config: body,
             metadata: None,
+            namespace: None,
         }
     }
 
@@ -356,6 +438,8 @@ mod tests {
             post_generate: HookSet::default(),
             pre_trigger: HookSet::default(),
             post_trigger: HookSet::default(),
+            post_turn: HookSet::default(),
+            owned: Arc::new(Mutex::new(HashMap::new())),
         };
         use crate::filesystem_scope::FilesystemBoundary;
         // no access watch bound: both direct scoped calls and the pipe run at

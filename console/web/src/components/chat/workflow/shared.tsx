@@ -193,7 +193,7 @@ export function ProgressBar({
   if (total === 0) return null
   const pct = (n: number) => `${(n / total) * 100}%`
   return (
-    <div className="flex h-1.5 w-full overflow-hidden bg-rule-2">
+    <div className="flex h-1.5 w-full overflow-hidden bg-surface">
       <div className="bg-accent" style={{ width: pct(done) }} />
       <div className="bg-accent/40" style={{ width: pct(running) }} />
       <div className="bg-alert" style={{ width: pct(failed) }} />

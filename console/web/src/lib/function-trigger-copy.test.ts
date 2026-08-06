@@ -64,6 +64,25 @@ describe('functionTriggerToText', () => {
       'ƒ shell::exec',
     )
   })
+
+  it('runs the input through `redact` before serializing, when given', () => {
+    const SECRET = 'rt-3f9a2c1e-7b64-4d0a-9c11-5e8ab2d4f077'
+    const call = fcall({
+      functionId: 'sandbox-code-runner::run',
+      input: { runtime_id: SECRET, code: '1+1' },
+    })
+    const redact = (v: unknown) =>
+      JSON.parse(JSON.stringify(v).replaceAll(SECRET, 'rt-3f9a…'))
+    const text = functionTriggerToText(call, redact)
+    expect(text).not.toContain(SECRET)
+    expect(text).toContain('rt-3f9a…')
+  })
+
+  it('is untouched by an absent redact function (the common case)', () => {
+    expect(functionTriggerToText(fcall())).toBe(
+      functionTriggerToText(fcall(), undefined),
+    )
+  })
 })
 
 describe('assistantCopyText', () => {
@@ -89,6 +108,57 @@ describe('assistantCopyText', () => {
 
   it('drops the leading blank line when the message has no prose', () => {
     expect(assistantCopyText('', [fcall({ input: {} })])).toBe('ƒ shell::exec')
+  })
+
+  describe('redactFor', () => {
+    const SECRET = 'rt-3f9a2c1e-7b64-4d0a-9c11-5e8ab2d4f077'
+    const MASKED = 'rt-3f9a…'
+    const mask = (v: unknown) =>
+      JSON.parse(JSON.stringify(v).replaceAll(SECRET, MASKED))
+    /** Only claims sandbox-code-runner::run — proves dispatch is per-call, not global. */
+    const redactFor = (functionId: string) =>
+      functionId === 'sandbox-code-runner::run' ? mask : undefined
+
+    it('redacts a claimed call and leaves an unclaimed one untouched', () => {
+      const text = assistantCopyText(
+        'ran it',
+        [
+          fcall({
+            id: 'c1',
+            functionId: 'sandbox-code-runner::run',
+            input: { runtime_id: SECRET, code: '1+1' },
+          }),
+          fcall({
+            id: 'c2',
+            functionId: 'shell::exec',
+            input: { command: `echo ${SECRET}` },
+          }),
+        ],
+        redactFor,
+      )
+      // The claimed call's secret never appears in the eval block…
+      expect(text).toContain(MASKED)
+      // …but the unclaimed shell call is untouched (no redactor claims it) —
+      // proves dispatch is per-functionId, not a blanket scrub.
+      expect(text).toContain(SECRET)
+    })
+
+    it('never redacts the assistant prose itself', () => {
+      const proseWithLookalike = `see ${SECRET}`
+      const text = assistantCopyText(
+        proseWithLookalike,
+        [fcall({ functionId: 'shell::exec', input: {} })],
+        () => mask,
+      )
+      expect(text.startsWith(proseWithLookalike)).toBe(true)
+    })
+
+    it('is the same as calling with no redactFor at all when every call is unclaimed', () => {
+      const calls = [fcall({ functionId: 'shell::exec' })]
+      expect(assistantCopyText('hi', calls, () => undefined)).toBe(
+        assistantCopyText('hi', calls),
+      )
+    })
   })
 })
 
@@ -145,10 +215,9 @@ describe('functionTriggersByAssistant', () => {
     const c1 = fcall({ id: 'c1' })
     const a1 = assistant({ id: 'a1' })
     const c2 = fcall({ id: 'c2' })
-    expect(functionTriggersByAssistant([user(), c1, a1, c2]).get('a1')).toEqual([
-      c1,
-      c2,
-    ])
+    expect(functionTriggersByAssistant([user(), c1, a1, c2]).get('a1')).toEqual(
+      [c1, c2],
+    )
   })
 
   it('prefers trailing attribution between two assistants', () => {

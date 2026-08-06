@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::registry::store::RegistryStore;
+use crate::types::errors::is_function_not_found;
 
 const EMBED_TIMEOUT_MS: u64 = 30_000;
 
@@ -59,7 +60,7 @@ async fn try_provider(
         .await;
     let reply = match reply {
         Ok(v) => v,
-        Err(e) if e.to_string().contains("function_not_found") => return Ok(None),
+        Err(e) if is_function_not_found(&e) => return Ok(None),
         Err(e) => return Err(e),
     };
     let model = reply

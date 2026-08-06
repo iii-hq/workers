@@ -67,10 +67,44 @@ import {
   visibleRows,
 } from '../lib/api'
 import { contentHash } from '../lib/cache-key'
+import {
+  type ChangeEntry,
+  causeLabel,
+  fromRecords,
+  groupByTurn,
+  groupLabel,
+  isOutsideWorkspace,
+  outsideFolder,
+  recordChange,
+  relativeAge,
+  seedFromStatus,
+  splitPath,
+} from '../lib/changes'
 import { type ChangedEvent, useWorkspaceEvents } from '../lib/events'
 
 /** How long a row keeps its "just changed" accent after an edit lands. */
 const FLASH_MS = 12_000
+
+/** Sidebar width bounds. The floor is where the tree stops being readable;
+ *  the ceiling keeps the pane from eating the code it exists to navigate. */
+const SIDE_MIN = 180
+const SIDE_MAX = 480
+const SIDE_DEFAULT = 200
+/** Remembered per browser: a pane width is a preference of this surface, not
+ *  a fact about the workspace, so it does not belong in the shared record. */
+const SIDE_WIDTH_KEY = 'iii.editor.sideWidth'
+
+export function clampSideWidth(width: number): number {
+  return Math.min(SIDE_MAX, Math.max(SIDE_MIN, Math.round(width)))
+}
+
+/** Single-letter change marks, the way a status column reads them. */
+const KIND_MARK: Record<string, string> = {
+  created: 'A',
+  deleted: 'D',
+  moved: 'R',
+  modified: 'M',
+}
 
 /**
  * Trailing-edge window for folding pushed events into one refresh, in ms.
@@ -150,6 +184,11 @@ export function EditorPage({ host }: { host: Host }) {
   const [rootInput, setRootInput] = useState('')
   const [rootOpen, setRootOpen] = useState(false)
   const [sideOpen, setSideOpen] = useState(true)
+  const [sideWidth, setSideWidth] = useState(() => {
+    const stored = Number(globalThis.localStorage?.getItem(SIDE_WIDTH_KEY))
+    return Number.isFinite(stored) && stored > 0 ? clampSideWidth(stored) : SIDE_DEFAULT
+  })
+  const [resizing, setResizing] = useState(false)
   const [buffers, setBuffers] = useState<Buffer[]>([])
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [treeRoot, setTreeRoot] = useState<TreeNode | null>(null)
@@ -157,8 +196,8 @@ export function EditorPage({ host }: { host: Host }) {
   const [activePath, setActivePath] = useState<string | null>(null)
   // Reading is the default: opening a file should show you the file, not put
   // a cursor in it.
-  const [view, setView] = useState<'read' | 'edit' | 'preview' | 'diff' | 'git'>('read')
-  const [mode, setMode] = useState<'files' | 'search'>('files')
+  const [view, setView] = useState<'read' | 'edit' | 'preview' | 'diff' | 'git' | 'change'>('read')
+  const [mode, setMode] = useState<'files' | 'search' | 'changes'>('files')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<string[]>([])
   const [searchResult, setSearchResult] = useState<SearchResult | null>(null)
@@ -172,6 +211,17 @@ export function EditorPage({ host }: { host: Host }) {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [lastChange, setLastChange] = useState<ChangedEvent | null>(null)
+  /** The recent-changes feed. Live only: what happened while this page was
+   *  open, plus a working-tree seed the first time the tab is looked at. */
+  const [changeLog, setChangeLog] = useState<ChangeEntry[]>([])
+  const changesSeededRef = useRef(false)
+  /** Re-rendered on a slow tick so the relative ages in the feed stay honest
+   *  without every row holding its own timer. */
+  const [changeClock, setChangeClock] = useState(() => 0)
+  /** The feed row being read as a diff. The patch travels on the event, so
+   *  this renders without a round trip and keeps showing what that write did
+   *  even after the file moves on. */
+  const [openChangeEntry, setOpenChangeEntry] = useState<ChangeEntry | null>(null)
 
   // Read inside a refresh without making it a dependency — rebuilding the
   // refresh callbacks on every keystroke would re-run the effects that bind
@@ -197,7 +247,13 @@ export function EditorPage({ host }: { host: Host }) {
     if (view === 'preview' && !markdown) setView('read')
   }, [view, dirty, markdown])
 
+  /** The root the page currently renders, readable from stable callbacks.
+   *  `syncWorkspace` runs off push events and must notice the active root
+   *  moving underneath it without re-subscribing per render. */
+  const rootRef = useRef('')
+
   const applyWorkspace = useCallback((ws: { root: string; buffers: Buffer[]; expanded: string[] }) => {
+    rootRef.current = ws.root
     setRoot(ws.root)
     setBuffers(ws.buffers)
     setExpanded(new Set(ws.expanded))
@@ -208,6 +264,7 @@ export function EditorPage({ host }: { host: Host }) {
       try {
         const result = await api.tree(opts)
         setTreeRoot(result.tree.root)
+        rootRef.current = result.root
         setRoot(result.root)
         setExpanded(new Set(result.expanded))
         setError(null)
@@ -402,6 +459,19 @@ export function EditorPage({ host }: { host: Host }) {
   const syncWorkspace = useCallback(async () => {
     try {
       const ws = await api.workspace()
+      // The active root moved underneath the page: chat picked a working
+      // directory, or another surface opened a project. Follow it live —
+      // adopt the new root's remembered session exactly the way an explicit
+      // root change does, instead of leaving a stale tree until a reload.
+      if (ws.root && ws.root !== rootRef.current) {
+        applyWorkspace(ws)
+        setRootInput(ws.root)
+        setDrafts({})
+        setActivePath(ws.buffers[ws.buffers.length - 1]?.path ?? null)
+        await loadTree()
+        void refreshGit()
+        return
+      }
       setBuffers(ws.buffers)
       for (const buffer of ws.buffers) {
         const local = draftsRef.current[buffer.path]
@@ -411,11 +481,15 @@ export function EditorPage({ host }: { host: Host }) {
     } catch {
       // Transient; the next event tries again.
     }
-  }, [api, reread])
+  }, [api, reread, applyWorkspace, loadTree, refreshGit])
 
   /** Work accumulated since the last pass: paths whose file needs re-reading,
    *  and whether the git overlay is stale. */
-  const pendingRef = useRef<{ paths: Set<string>; git: boolean }>({ paths: new Set(), git: false })
+  const pendingRef = useRef<{ paths: Set<string>; git: boolean; tree: boolean }>({
+    paths: new Set(),
+    git: false,
+    tree: false,
+  })
   /** Set by every event, cleared as a pass takes the work. */
   const wantedRef = useRef(false)
   const runningRef = useRef(false)
@@ -437,7 +511,7 @@ export function EditorPage({ host }: { host: Host }) {
       while (wantedRef.current) {
         wantedRef.current = false
         const work = pendingRef.current
-        pendingRef.current = { paths: new Set(), git: false }
+        pendingRef.current = { paths: new Set(), git: false, tree: false }
 
         await syncWorkspace()
         // One read per changed path. The event carries a patch, not the new
@@ -445,6 +519,13 @@ export function EditorPage({ host }: { host: Host }) {
         // parsing this page deliberately no longer does.
         for (const path of work.paths) await reread(path)
         if (work.git) await refreshGit()
+        // A file that was created, deleted or moved changes the *shape* of
+        // the tree, and the tree is a snapshot this page holds. Re-reading
+        // buffers and git marks leaves a brand-new file invisible until a
+        // reload: the agent's own status line reports a file the tree does
+        // not list. Structural changes reload it; a plain edit does not,
+        // because a modified file is already there.
+        if (work.tree) await loadTree()
 
         // Anything that arrived during the pass gets its own window rather than
         // an immediate re-run, so a sustained stream costs one pass per window
@@ -454,7 +535,7 @@ export function EditorPage({ host }: { host: Host }) {
     } finally {
       runningRef.current = false
     }
-  }, [refreshGit, reread, syncWorkspace])
+  }, [refreshGit, reread, syncWorkspace, loadTree])
 
   /**
    * Record what an event implies and arm the window.
@@ -466,9 +547,10 @@ export function EditorPage({ host }: { host: Host }) {
    * long a change can stay invisible.
    */
   const schedule = useCallback(
-    (path?: string, git = false) => {
+    (path?: string, git = false, tree = false) => {
       if (path !== undefined) pendingRef.current.paths.add(path)
       if (git) pendingRef.current.git = true
+      if (tree) pendingRef.current.tree = true
       wantedRef.current = true
       if (timerRef.current !== null) return
       timerRef.current = setTimeout(() => {
@@ -506,11 +588,120 @@ export function EditorPage({ host }: { host: Host }) {
   useEffect(
     () =>
       onChanged((event: ChangedEvent) => {
-        setFlashed((prev) => ({ ...prev, [event.path]: Date.now() }))
+        const now = Date.now()
+        setFlashed((prev) => ({ ...prev, [event.path]: now }))
         setLastChange(event)
-        schedule(event.path, true)
+        setChangeLog((prev) => recordChange(prev, event, now))
+        setChangeClock(now)
+        // A create, delete or move changes which files exist, so the tree
+        // has to be re-read as well as the buffers.
+        schedule(event.path, true, event.kind !== 'modified')
       }),
     [onChanged, schedule],
+  )
+
+  /**
+   * Seed the feed from the working tree the first time it is looked at.
+   *
+   * Changes made before this page existed are still changes worth seeing, and
+   * asking git for them on mount would cost a status call for a tab most
+   * sessions never open. Outside a repository there is nothing to seed and the
+   * feed is simply live-only, which is what `noRepo` already means everywhere
+   * else on this page.
+   */
+  useEffect(() => {
+    // The latch is a ref, not state, and that is the whole point: flipping a
+    // state value here would change this effect's own dependencies, run its
+    // cleanup, and cancel the fetch it had just started — so the seed would
+    // arrive and be thrown away every time, and the feed would sit empty
+    // while the worker held a full log.
+    if (mode !== 'changes' || changesSeededRef.current) return
+    changesSeededRef.current = true
+    let cancelled = false
+    void (async () => {
+      // The worker's log first: those are real changes with real provenance,
+      // recorded whether or not a page was open to hear them. The working tree
+      // fills the rest — files dirty for reasons nobody observed, like an edit
+      // made in another editor before any of this was running.
+      try {
+        const recorded = await api.changes()
+        if (!cancelled) setChangeLog((prev) => fromRecords(prev, recorded.changes))
+      } catch {
+        // Older worker without the log. The working tree still seeds it.
+      }
+      if (!cancelled && !noRepo) {
+        setChangeLog((prev) => seedFromStatus(prev, status?.entries ?? []))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [mode, noRepo, status, api])
+
+  /** Tick the ages while the feed is on screen, and only then. */
+  useEffect(() => {
+    if (mode !== 'changes') return
+    const id = setInterval(() => setChangeClock(Date.now()), 15_000)
+    return () => clearInterval(id)
+  }, [mode])
+
+  /**
+   * Open the file a feed row names, on the view that shows what changed.
+   *
+   * In a repository the git view is the honest answer — it diffs the working
+   * tree against HEAD, so it shows the agent's write whether or not this page
+   * has unsaved edits. Without a repository there is nothing to diff against,
+   * so the file itself is the answer.
+   */
+  /**
+   * Find a patch to show for a row that arrived without one.
+   *
+   * A seeded row knows a file is dirty and nothing else. Falling through to
+   * the git view for those was the wrong answer twice over: an untracked file
+   * has no HEAD to diff against, so the pane said "no changes" about a file
+   * that is entirely new. Ask git first, and when git has nothing to say
+   * because the file is new, diff it against empty — the whole file *is* the
+   * change. This is the same ladder the worker's observer walks.
+   */
+  const resolvePatch = useCallback(
+    async (entry: ChangeEntry): Promise<string> => {
+      if (entry.patch.trim() !== '') return entry.patch
+      try {
+        const hunks = await api.hunks(entry.path)
+        if (hunks.patch.trim() !== '') return hunks.patch
+      } catch {
+        // Not a repo, or a path git does not track. The file itself is next.
+      }
+      try {
+        const file = await api.open(entry.path)
+        const whole = await api.diff('', file.content, entry.path)
+        return whole.patch
+      } catch {
+        return ''
+      }
+    },
+    [api],
+  )
+
+  const openChange = useCallback(
+    async (entry: ChangeEntry) => {
+      // The patch the event carried is the diff of that write, so a change
+      // stays readable even after the file is committed, reverted or written
+      // again — which the working-tree diff cannot do.
+      setOpenChangeEntry({ ...entry, patch: entry.patch })
+      // Opening the file alongside is what makes the feed a way into the
+      // workspace rather than a dead end. A deleted file cannot be opened and
+      // its diff is the only thing left of it. The view is set *after* the
+      // open, because opening a file selects its reader — doing it first would
+      // land on the file rather than the diff.
+      if (entry.kind !== 'deleted') await openPath(entry.path)
+      setView('change')
+      if (entry.patch.trim() === '') {
+        const patch = await resolvePatch(entry)
+        setOpenChangeEntry((current) => (current && current.path === entry.path ? { ...current, patch } : current))
+      }
+    },
+    [openPath, resolvePatch],
   )
 
   useEffect(() => {
@@ -670,10 +861,49 @@ export function EditorPage({ host }: { host: Host }) {
 
   const rows = useMemo(() => (treeRoot ? visibleRows(treeRoot, expanded) : []), [treeRoot, expanded])
 
+  const changeGroups = useMemo(() => groupByTurn(changeLog), [changeLog])
+
+  /**
+   * Drag the sidebar edge.
+   *
+   * Pointer capture is the whole trick: without it a fast drag leaves the
+   * element and the resize stops following the cursor. Width comes from the
+   * pane's own left edge rather than a delta, so the handle stays under the
+   * pointer even if a frame is dropped.
+   */
+  const startResize = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    const pane = event.currentTarget.parentElement
+    if (!pane) return
+    const left = pane.getBoundingClientRect().left
+    event.currentTarget.setPointerCapture(event.pointerId)
+    event.preventDefault()
+    setResizing(true)
+
+    const onMove = (move: PointerEvent) => setSideWidth(clampSideWidth(move.clientX - left))
+    const onUp = () => {
+      setResizing(false)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }, [])
+
+  // Persist after the drag settles rather than on every frame: a write per
+  // pointermove is a write per pixel.
+  useEffect(() => {
+    if (resizing) return
+    try {
+      globalThis.localStorage?.setItem(SIDE_WIDTH_KEY, String(sideWidth))
+    } catch {
+      // Storage can be denied; a forgotten width is not worth an error.
+    }
+  }, [resizing, sideWidth])
+
   const lineCount = activeDraft ? activeDraft.draft.split('\n').length : 0
 
   return (
-    <div className="ed-root">
+    <div className="ed-root" data-resizing={resizing}>
       <header className="ed-head">
         <span className="ed-brand">editor</span>
         {rootOpen ? (
@@ -721,7 +951,21 @@ export function EditorPage({ host }: { host: Host }) {
 
       <div className="ed-body">
         {sideOpen && (
-          <aside className="ed-side">
+          <aside className="ed-side" style={{ ['--ed-side-width' as string]: `${sideWidth}px` }}>
+            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
+            <button
+              type="button"
+              className="ed-side-handle"
+              data-dragging={resizing}
+              aria-label="Resize the sidebar"
+              onPointerDown={startResize}
+              onKeyDown={(e) => {
+                // Keyboard resize: the handle is a real control, and a drag
+                // target that only responds to a pointer is not one.
+                if (e.key === 'ArrowLeft') setSideWidth((w) => clampSideWidth(w - 16))
+                if (e.key === 'ArrowRight') setSideWidth((w) => clampSideWidth(w + 16))
+              }}
+            />
             <div className="ed-seg">
               <button type="button" data-active={mode === 'files'} onClick={() => setMode('files')}>
                 files
@@ -729,21 +973,114 @@ export function EditorPage({ host }: { host: Host }) {
               <button type="button" data-active={mode === 'search'} onClick={() => setMode('search')}>
                 search
               </button>
+              <button type="button" data-active={mode === 'changes'} onClick={() => setMode('changes')}>
+                changes
+                {changeLog.length > 0 && <span className="ed-count">{changeLog.length}</span>}
+              </button>
             </div>
 
-            <Input
-              value={query}
-              onChange={setQuery}
-              placeholder={mode === 'files' ? 'find a file…' : 'search contents…'}
-              aria-label={mode === 'files' ? 'Find a file' : 'Search file contents'}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && mode === 'search') void runSearch()
-              }}
-              preserveCase
-            />
+            {/* The feed is not searched: it is short by construction, and a
+                box that filters two of three tabs is a box that lies. */}
+            {mode !== 'changes' && (
+              <Input
+                value={query}
+                onChange={setQuery}
+                placeholder={mode === 'files' ? 'find a file…' : 'search contents…'}
+                aria-label={mode === 'files' ? 'Find a file' : 'Search file contents'}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && mode === 'search') void runSearch()
+                }}
+                preserveCase
+              />
+            )}
 
             <div className="ed-scroll">
-              {mode === 'search' ? (
+              {mode === 'changes' ? (
+                changeLog.length === 0 ? (
+                  <div className="ed-hint">
+                    nothing yet — file changes appear here as they happen, whoever makes them
+                  </div>
+                ) : (
+                  <ul className="ed-list">
+                    {changeGroups.map((group) => (
+                      <li key={group.key}>
+                        {/* One turn's work reads as one thing: the header is
+                            the summary, the rows under it are the detail. */}
+                        <div className="ed-group">
+                          <span className="ed-change-by">{groupLabel(group)}</span>
+                          {/* An agent can work in a folder other than the one
+                              this page has open. Saying so is the difference
+                              between "the tree is broken" and "that happened
+                              somewhere else" — and it is why the file this row
+                              names is not in the tree. */}
+                          {group.entries[0] && isOutsideWorkspace(group.entries[0]) && (
+                            <span className="ed-group-root" title={splitPath(group.entries[0].path).dir}>
+                              in {outsideFolder(group.entries[0])}
+                            </span>
+                          )}
+                          {/* "1 file" says nothing a single row below does not
+                              already say. The count earns its place only when
+                              it summarises something. */}
+                          {group.entries.length > 1 && (
+                            <span className="ed-group-files">{group.entries.length} files</span>
+                          )}
+                          {(group.added > 0 || group.removed > 0) && (
+                            <span>
+                              <span className="ed-add">+{group.added}</span>{' '}
+                              <span className="ed-del">-{group.removed}</span>
+                            </span>
+                          )}
+                          <span className="ed-change-age">{relativeAge(group.at, changeClock)}</span>
+                        </div>
+                        <ul className="ed-list">
+                          {group.entries.map((entry) => {
+                            const split = splitPath(entry.path)
+                            return (
+                              <li key={entry.path}>
+                                <button
+                                  type="button"
+                                  className="ed-row ed-change"
+                                  data-active={entry.path === openChangeEntry?.path}
+                                  data-fresh={flashed[entry.path] !== undefined}
+                                  onClick={() => void openChange(entry)}
+                                  title={[
+                                    entry.path,
+                                    `${entry.kind} via ${entry.cause || 'unknown'}`,
+                                    entry.sessionId && `session ${entry.sessionId}`,
+                                    entry.turnId && `turn ${entry.turnId}`,
+                                  ]
+                                    .filter(Boolean)
+                                    .join('\n')}
+                                >
+                                  {/* The name identifies the row, so it is the
+                                      part that survives a narrow pane; the
+                                      folder gives way first. */}
+                                  <span className="ed-change-path">
+                                    {split.dir && <span className="ed-change-dir">{split.dir}</span>}
+                                    <span className="ed-change-name">{split.name}</span>
+                                  </span>
+                                  <span className="ed-change-meta">
+                                    <span className="ed-change-kind" data-kind={entry.kind}>
+                                      {KIND_MARK[entry.kind] ?? 'M'}
+                                    </span>
+                                    {(entry.added > 0 || entry.removed > 0) && (
+                                      <>
+                                        <span className="ed-add">+{entry.added}</span>
+                                        <span className="ed-del">-{entry.removed}</span>
+                                      </>
+                                    )}
+                                    {entry.count > 1 && <span className="ed-count">x{entry.count}</span>}
+                                  </span>
+                                </button>
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      </li>
+                    ))}
+                  </ul>
+                )
+              ) : mode === 'search' ? (
                 searchResult === null ? (
                   <div className="ed-hint">enter to search contents</div>
                 ) : searchResult.files.length === 0 ? (
@@ -827,7 +1164,19 @@ export function EditorPage({ host }: { host: Host }) {
         )}
 
         <section className="ed-main">
-          {buffers.length === 0 ? (
+          {/* A change being read as a diff owns the pane: it can outlive the
+              file (a delete leaves no buffer to open) and it is the whole
+              point of selecting the row. */}
+          {view === 'change' && openChangeEntry ? (
+            <ChangeCard
+              entry={openChangeEntry}
+              themeType={themeType}
+              onClose={() => {
+                setOpenChangeEntry(null)
+                setView('read')
+              }}
+            />
+          ) : buffers.length === 0 ? (
             <EmptyState
               title="No file open"
               description="Pick a file from the tree, or search for one. Files an agent opens appear here too."
@@ -1109,6 +1458,58 @@ function FileView({ path, contents, themeType }: { path: string; contents: strin
  * from the prefix and its position, which is what keeps pierre from re-reading
  * an unchanged hunk on each render.
  */
+/**
+ * One change, read as the diff it was.
+ *
+ * The patch travels on the event, so this renders with no round trip and keeps
+ * showing what a write did after the file has moved on — committed, reverted,
+ * or written again. That is the difference between this and the git view,
+ * which can only ever show the working tree as it is now.
+ *
+ * The header is the provenance the payload actually knows: which worker
+ * performed the write, and the harness session and turn it happened in when it
+ * happened inside one.
+ */
+function ChangeCard({
+  entry,
+  themeType,
+  onClose,
+}: {
+  entry: ChangeEntry
+  themeType: 'light' | 'dark'
+  onClose: () => void
+}) {
+  return (
+    <>
+      <div className="ed-bar">
+        <span className="ed-change-title" title={entry.path}>
+          {entry.path}
+        </span>
+        <Badge variant={entry.kind === 'deleted' ? 'warn' : 'default'}>{entry.kind}</Badge>
+        {(entry.added > 0 || entry.removed > 0) && (
+          <span>
+            <span className="ed-add">+{entry.added}</span> <span className="ed-del">−{entry.removed}</span>
+          </span>
+        )}
+        <span className="ed-change-by">{causeLabel(entry.cause)}</span>
+        {entry.sessionId && (
+          <span className="ed-change-session" title={entry.turnId ? `turn ${entry.turnId}` : entry.sessionId}>
+            session {entry.sessionId.replace(/^s_/, '').slice(0, 8)}
+          </span>
+        )}
+        <span className="ed-bar-spacer" />
+        <Button onClick={onClose}>close</Button>
+      </div>
+      {entry.truncated && (
+        <div className="ed-warn">
+          The change was larger than the preview the event carries, so only its beginning is shown.
+        </div>
+      )}
+      <PatchView patch={entry.patch} themeType={themeType} />
+    </>
+  )
+}
+
 function PatchView({ patch, themeType }: { patch: string; themeType: 'light' | 'dark' }) {
   const files = useMemo(
     () => (patch.trim() === '' ? [] : parsePatchFiles(patch, `p${contentHash(patch)}`).flatMap((p) => p.files)),

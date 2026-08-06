@@ -29,10 +29,16 @@ export const componentNames = [
   'DropdownMenuTrigger',
   'EmptyState',
   'ErrorBoundary',
+  'FileDiff',
   'Input',
   'JsonHighlight',
   'Markdown',
   'MarkdownPreview',
+  'PageBody',
+  'PageHeader',
+  'PageMain',
+  'PageShell',
+  'PageSidebar',
   'Select',
   'Skeleton',
   'StatusDot',
@@ -44,6 +50,7 @@ export const componentNames = [
   'Tooltip',
   'TooltipContent',
   'TooltipTrigger',
+  'WorkerConfigurationDialog',
 ]
 
 export default componentNames

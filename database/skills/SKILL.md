@@ -73,13 +73,53 @@ point. Placeholder syntax: `?` for SQLite and MySQL, `$1`/`$2`/… for Postgres.
   transaction.
 - `database::rollbackTransaction` — roll back and finalize an interactive
   transaction.
-- `database::listDatabases` — list every configured database with its
-  driver, credential-redacted connection URL, pool settings, and TLS mode.
-  Config details only; no health checks or live pool statistics.
+- `database::listDatabases` — every configured database with its driver,
+  credential-redacted URL, pool settings and TLS mode. Config only; use
+  `database::health` for live state.
 
 Interactive transactions auto-roll back when `timeout_ms` elapses (default
 30 s, max 5 min). Prepared handles default to a 1 h TTL (max 24 h) with no
 explicit release call — let them expire or stop using them when done.
+
+### Reading the schema
+
+One shape across all three drivers — prefer these over hand-writing
+`sqlite_master` / `information_schema` / `PRAGMA`.
+
+- `database::listTables` — tables and views, with kind and (postgres) schema.
+- `database::describeTable` — columns with type, nullability, default, primary
+  key and a structured `foreign_key` of `{ schema, table, column }`; plus
+  indexes and a planner row estimate.
+- `database::describeSchema` — the same for every table in one pass. Use this
+  rather than looping `describeTable`.
+- `database::schemaDiagram` — positioned nodes, routed foreign-key edges, hub
+  `degree` and `isolated` tables. For reasoning about a schema's shape, not
+  only for drawing it.
+
+### Reading data
+
+- `database::browseTable` — paged, sorted, filtered reads with no SQL. Filters
+  are `{ column, op, value }` and `total` honours them. Follow a foreign key
+  with an equality filter at `page_size: 1`.
+- `database::explain` — the plan as a tree with costs and warnings. `analyze`
+  **runs** the statement, so it defaults to false and is refused for anything
+  that is not a single read.
+- `database::columnStats` — planner statistics by default (approximate,
+  labelled `source: planner`); `exact: true` scans. To profile rows you already
+  hold, use the `fp` worker on a `browseTable` result instead.
+
+### Operations and reuse
+
+- `database::health` — pool occupancy, active queries, table sizes, locks,
+  cache ratio. Each section is `available`, `unsupported` or `denied`, so a
+  driver gap is never mistaken for an empty result.
+- `database::terminateQuery` — end a session, or cancel its statement with
+  `cancel_only`. Takes an id from `database::health`.
+- `database::saveQuery`, `database::listSavedQueries`,
+  `database::deleteSavedQuery` — named queries per database, kept in the
+  `state` worker.
+- `database::history` — recent queries, newest first. Best effort, not an audit
+  log; bind `database::row-changed` for that.
 
 ## Reacting to writes
 

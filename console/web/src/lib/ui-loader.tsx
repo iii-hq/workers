@@ -16,11 +16,13 @@ import {
   registerExtConfigForm,
   registerExtPage,
   registerExtRenderer,
+  registerExtSessionChip,
 } from '@/lib/ui-slots'
 import type {
   ConfigFormProps,
   ConsoleApi,
   Host,
+  SessionChipProps,
   SetupFn,
   UiAssetKind,
   UiAssetRef,
@@ -109,9 +111,9 @@ function makeHost(
             ...page,
             scope,
             path,
-            render: () => (
+            render: (renderProps) => (
               <ScopedExtension scope={scope} path={path}>
-                <Body />
+                <Body {...renderProps} />
               </ScopedExtension>
             ),
           }),
@@ -134,6 +136,23 @@ function makeHost(
             component: (props: ConfigFormProps) => (
               <ScopedExtension scope={scope} path={path}>
                 <Form {...props} />
+              </ScopedExtension>
+            ),
+          }),
+        )
+      },
+    },
+    chat: {
+      registerSessionChip(chip) {
+        const Chip = chip.render
+        return track(
+          registerExtSessionChip({
+            ...chip,
+            scope,
+            path,
+            render: (props: SessionChipProps) => (
+              <ScopedExtension scope={scope} path={path}>
+                <Chip {...props} />
               </ScopedExtension>
             ),
           }),

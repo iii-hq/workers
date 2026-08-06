@@ -1,0 +1,97 @@
+{
+  "description": "Capture the desktop as a viewable image. This is how you see the screen before acting; the coordinate space of computer::act is this image's pixels (top-left origin).",
+  "function_id": "computer::screenshot",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "ScreenshotInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ContentBlock": {
+        "description": "One block of a viewable response: an image block or a text line.",
+        "properties": {
+          "data": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "ScreenshotDetails": {
+        "properties": {
+          "height": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "mime": {
+            "description": "Detected image mime (`image/png` or `image/jpeg`).",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "width": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "height",
+          "mime",
+          "session_id",
+          "width"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "content": {
+        "items": {
+          "$ref": "#/definitions/ContentBlock"
+        },
+        "type": "array"
+      },
+      "details": {
+        "$ref": "#/definitions/ScreenshotDetails"
+      }
+    },
+    "required": [
+      "content",
+      "details"
+    ],
+    "title": "ScreenshotOutput",
+    "type": "object"
+  }
+}

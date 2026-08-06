@@ -9,28 +9,12 @@
 import { Badge } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
 
-export function Chip({
-  children,
-  className,
-}: {
-  children: ReactNode
-  className?: string
-}) {
-  return (
-    <span className={`dir-ui-chip${className ? ` ${className}` : ''}`}>
-      {children}
-    </span>
-  )
+export function Chip({ children, className }: { children: ReactNode; className?: string }) {
+  return <span className={`dir-ui-chip${className ? ` ${className}` : ''}`}>{children}</span>
 }
 
 /** Two-tone chip with a small uppercase label and a value. */
-export function KvChip({
-  label,
-  children,
-}: {
-  label: string
-  children: ReactNode
-}) {
+export function KvChip({ label, children }: { label: string; children: ReactNode }) {
   return (
     <Chip>
       <span className="k">{label}</span>
@@ -92,23 +76,66 @@ export function EmptyRow({ label }: { label: string }) {
 }
 
 /** Narrow-mode drill-out affordance (the state worker's ← pattern). */
-export function BackButton({
-  onClick,
-  label,
-}: {
-  onClick: () => void
-  label: string
-}) {
+export function BackButton({ onClick, label }: { onClick: () => void; label: string }) {
   return (
-    <button
-      type="button"
-      className="dir-ui-back"
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-    >
-      ←
+    <button type="button" className="dir-ui-back" onClick={onClick} aria-label={label} title={label}>
+      <ChevronLeftIcon className="dir-ui-back-icon" />
     </button>
+  )
+}
+
+/* ── inline icons ─────────────────────────────────────────────────────
+ * Injected UI has no icon library to import — these are hand-inlined
+ * 24×24 stroke glyphs (lucide geometry: 1.5px stroke, round caps) sized
+ * by the caller's className. All are decorative (aria-hidden); the
+ * enclosing control carries the accessible name. */
+
+function iconProps(className?: string) {
+  return {
+    className,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.5,
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round',
+  } as const
+}
+
+/** Document-with-folded-corner + "M" tick: the markdown file identity. */
+export function MarkdownFileIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)} aria-hidden="true">
+      <path d="M14 3v5h5" />
+      <path d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" />
+      <path d="M9 17v-4l2 2 2-2v4" />
+    </svg>
+  )
+}
+
+export function SearchIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)} aria-hidden="true">
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </svg>
+  )
+}
+
+export function XIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)} aria-hidden="true">
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
+  )
+}
+
+export function ChevronLeftIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)} aria-hidden="true">
+      <path d="m15 18-6-6 6-6" />
+    </svg>
   )
 }
 

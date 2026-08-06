@@ -85,10 +85,6 @@ impl RunStatus {
         )
     }
 
-    pub fn is_blocking_failure(self) -> bool {
-        self == Self::HardGateFailed || self.is_technical_failure()
-    }
-
     fn label(self) -> &'static str {
         match self {
             Self::Passed => "PASS",
@@ -301,7 +297,6 @@ impl E2eScenarioReport {
             total_usd: sum_cost(runs.iter().map(|run| run.cost.total_usd)),
         };
         let passed = run_count > 0
-            && hard_gate_failures == 0
             && technical_failures == 0
             && passed_runs >= required_passes
             && median_score.is_some_and(|score| score >= f64::from(threshold));
@@ -409,14 +404,11 @@ impl E2eReport {
         Ok((report, path))
     }
 
-    pub fn fails_ci_gate(&self, score_floor: u8) -> bool {
+    pub fn has_ci_blocking_failure(&self) -> bool {
         self.scenarios.is_empty()
             || self.scenarios.iter().any(|scenario| {
-                scenario.aggregate.technical_failures > 0
-                    || scenario
-                        .aggregate
-                        .median_score
-                        .is_none_or(|score| score < f64::from(score_floor))
+                scenario.aggregate.hard_gate_failures > 0
+                    || scenario.aggregate.technical_failures > 0
             })
     }
 }
@@ -547,12 +539,19 @@ mod tests {
     }
 
     #[test]
-    fn hard_gate_failures_cannot_be_outvoted() {
-        let mut hard_gate = run(100, true);
-        hard_gate.status = RunStatus::HardGateFailed;
-        let report = aggregate(vec![hard_gate, run(90, true), run(90, true)]);
-        assert!(!report.passed);
+    fn hard_gate_failures_count_as_scored_failed_runs() {
+        let mut outvoted = run(45, false);
+        outvoted.status = RunStatus::HardGateFailed;
+        let report = aggregate(vec![outvoted, run(90, true), run(90, true)]);
+        assert!(report.passed);
         assert_eq!(report.aggregate.hard_gate_failures, 1);
+        assert_eq!(report.aggregate.median_score, Some(90.0));
+
+        let mut decisive = run(45, false);
+        decisive.status = RunStatus::HardGateFailed;
+        let report = aggregate(vec![decisive, run(90, true)]);
+        assert!(!report.passed);
+        assert_eq!(report.aggregate.median_score, Some(67.5));
     }
 
     #[test]
@@ -630,37 +629,38 @@ mod tests {
     }
 
     #[test]
-    fn advisory_ci_gate_uses_the_score_floor_for_quality_and_hard_gate_failures() {
-        let quality = E2eReport::new(
-            model(),
-            None,
-            None,
-            None,
-            vec![aggregate(vec![run(70, false)])],
-        );
-        assert!(!quality.fails_ci_gate(50));
-
-        let below_floor = E2eReport::new(
+    fn quality_score_failure_does_not_block_ci() {
+        let report = E2eReport::new(
             model(),
             None,
             None,
             None,
             vec![aggregate(vec![run(49, false)])],
         );
-        assert!(below_floor.fails_ci_gate(50));
-
-        let mut hard_gate = run(80, true);
-        hard_gate.status = RunStatus::HardGateFailed;
-        let hard_gate = E2eReport::new(model(), None, None, None, vec![aggregate(vec![hard_gate])]);
-        assert!(!hard_gate.fails_ci_gate(50));
+        assert!(!report.passed);
+        assert!(!report.has_ci_blocking_failure());
     }
 
     #[test]
-    fn advisory_ci_gate_keeps_technical_failures_blocking() {
+    fn hard_gate_failure_blocks_ci_even_with_a_score() {
+        let mut hard_gate = run(80, true);
+        hard_gate.status = RunStatus::HardGateFailed;
+        let report = E2eReport::new(model(), None, None, None, vec![aggregate(vec![hard_gate])]);
+        assert!(report.has_ci_blocking_failure());
+    }
+
+    #[test]
+    fn technical_failure_blocks_ci() {
         let mut technical = run(80, true);
         technical.status = RunStatus::InfrastructureError;
         let report = E2eReport::new(model(), None, None, None, vec![aggregate(vec![technical])]);
-        assert!(report.fails_ci_gate(50));
+        assert!(report.has_ci_blocking_failure());
+    }
+
+    #[test]
+    fn an_empty_report_blocks_ci() {
+        let report = E2eReport::new(model(), None, None, None, vec![]);
+        assert!(report.has_ci_blocking_failure());
     }
 
     fn model() -> ModelArtifact {

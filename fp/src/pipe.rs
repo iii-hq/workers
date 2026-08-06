@@ -278,26 +278,35 @@ pub fn validate(req: &PipeRequest) -> Result<(), String> {
 }
 
 async fn approval_gate_running(iii: &IIIClient) -> Result<bool, String> {
-    let catalog = iii
+    // Presence must come from a signal RBAC cannot turn into a false
+    // "absent": `functions::list` rows are RBAC-filtered per session, so a
+    // gate hidden from THIS worker's session reads as unregistered and
+    // writes ride through. `functions::info` checks RBAC BEFORE existence —
+    // NOT_FOUND is only reachable when the session may see the id.
+    match iii
         .trigger(TriggerRequest {
-            function_id: "engine::functions::list".into(),
-            payload: json!({ "search": "approval::gate", "include_internal": true }),
+            function_id: "engine::functions::info".into(),
+            payload: json!({ "function_id": "approval::gate" }),
             action: None,
             timeout_ms: Some(10_000),
         })
         .await
-        .map_err(|e| format!("could not inspect approval-gate availability: {e}"))?;
-    approval_gate_in_catalog(&catalog)
+    {
+        Ok(_) => Ok(true),
+        Err(e) => gate_presence_from_error(&e),
+    }
 }
 
-fn approval_gate_in_catalog(catalog: &Value) -> Result<bool, String> {
-    let functions = catalog
-        .get("functions")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "engine::functions::list returned no functions array".to_string())?;
-    Ok(functions.iter().any(|function| {
-        function.get("function_id").and_then(Value::as_str) == Some("approval::gate")
-    }))
+/// NOT_FOUND is the ONLY answer that unlocks database writes. FORBIDDEN —
+/// the id RBAC-hidden, or the info call itself denied — means presence is
+/// unknowable from here: treat the gate as present (fail closed). Anything
+/// else is infrastructure trouble, surfaced rather than converted to policy.
+fn gate_presence_from_error(error: &iii_sdk::Error) -> Result<bool, String> {
+    match error {
+        iii_sdk::Error::Remote { code, .. } if code == "NOT_FOUND" => Ok(false),
+        iii_sdk::Error::Remote { code, .. } if code == "FORBIDDEN" => Ok(true),
+        e => Err(format!("could not inspect approval-gate availability: {e}")),
+    }
 }
 
 /// Set `value` at `pointer` inside `payload`, creating intermediate objects.
@@ -415,7 +424,7 @@ fn step_error(i: usize, function: &str, msg: &str, receipts: &[StepReceipt]) -> 
 /// failing step stops the pipe with a teachable error carrying the trail.
 pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, String> {
     // Gate discovery is a bus round trip that couples every pipe to
-    // engine::functions::list availability — pay it only when the gate
+    // engine::functions::info availability — pay it only when the gate
     // actually decides the verdict. Both static verdicts are computed first
     // (12 steps max, trivially cheap); agreeing verdicts are final as-is.
     match (
@@ -665,7 +674,7 @@ mod tests {
         assert!(validate_with_approval_gate(&req, true).is_err());
         assert!(validate_with_approval_gate(&req, false).is_ok());
 
-        // `run` consults engine::functions::list only when the two verdicts
+        // `run` consults engine::functions::info only when the two verdicts
         // above differ — a pipe with no database write, even a read-only
         // database::query, validates identically both ways and never pays
         // the gate-discovery round trip.
@@ -676,11 +685,20 @@ mod tests {
         assert!(validate_with_approval_gate(&query_only, true).is_ok());
         assert!(validate_with_approval_gate(&query_only, false).is_ok());
 
-        assert!(approval_gate_in_catalog(
-            &json!({ "functions": [{ "function_id": "approval::gate" }] })
-        )
-        .unwrap());
-        assert!(!approval_gate_in_catalog(&json!({ "functions": [] })).unwrap());
+        // Only a trustworthy NOT_FOUND unlocks writes; FORBIDDEN (RBAC hides
+        // the gate, or the info call itself) fails closed as "present", and
+        // infrastructure errors surface instead of deciding policy.
+        let remote = |code: &str| iii_sdk::Error::Remote {
+            code: code.into(),
+            message: String::new(),
+            stacktrace: None,
+        };
+        assert!(!gate_presence_from_error(&remote("NOT_FOUND")).unwrap());
+        assert!(gate_presence_from_error(&remote("FORBIDDEN")).unwrap());
+        // invoke-layer "target function missing" (old engine) is its own,
+        // lowercase code — it must NOT read as gate absence
+        assert!(gate_presence_from_error(&remote("function_not_found")).is_err());
+        assert!(gate_presence_from_error(&iii_sdk::Error::Timeout).is_err());
     }
 
     fn scope() -> Value {

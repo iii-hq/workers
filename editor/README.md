@@ -1,5 +1,9 @@
 # editor
 
+<p align="center">
+  <img alt="The editor page: an agent's turn on the left, the changes it made in the middle, and the diff of one of them on the right" src="https://raw.githubusercontent.com/iii-hq/workers/main/editor/assets/editor-changes.png" width="100%">
+</p>
+
 A code workspace that an agent and a person share. Open a folder, and the
 buffers you have open, the folders you have expanded, and the version each
 buffer was read at are one record on the bus — so the file an agent opens
@@ -9,6 +13,13 @@ The unit is a **folder**, not a repository. The tree, the tabs, the editor and
 the finder all work in a plain directory; git adds a branch label and change
 marks when the root happens to be a repo, and nothing else changes when it
 is not.
+
+When an agent is working, its edits land in the **changes** tab as they
+happen: one group per turn with the files it touched and the lines it moved,
+and the diff of any one of them a click away. Nothing is polled — the worker
+observes every filesystem call the agent makes and pushes an `editor::changed`
+event, so a write made by anything shows up, including tools that never call
+this worker.
 
 It opens no files itself. Reads, writes, moves, listings and `git` all go
 through the [`shell`](https://github.com/iii-hq/workers/tree/main/shell) worker,

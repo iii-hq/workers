@@ -1,0 +1,121 @@
+{
+  "description": "Drive the desktop: click, right_click, double_click, move, drag, scroll, type, press, or hotkey. Address by pixel coordinates read off the screenshot (top-left origin).",
+  "function_id": "computer::act",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "action": {
+        "description": "What to do: `click`, `right_click`, `double_click`, `move`, `drag`, `scroll`, `type`, `press`, or `hotkey`.",
+        "type": "string"
+      },
+      "button": {
+        "default": null,
+        "description": "Mouse button for `drag` (`left`, `right`, `middle`). Default `left`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "keys": {
+        "default": null,
+        "description": "Keys for `press`/`hotkey`: a single key (`[\"enter\"]`) or a chord (`[\"ctrl\", \"c\"]`).",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "scroll_x": {
+        "default": null,
+        "description": "Horizontal scroll amount for `action=scroll`. Default 0.",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "scroll_y": {
+        "default": null,
+        "description": "Vertical scroll amount for `action=scroll`; positive scrolls down. Default 3.",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "text": {
+        "default": null,
+        "description": "Text to type, for `action=type`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "to_x": {
+        "default": null,
+        "description": "Drag end x (with `to_y`), for `action=drag`.",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "to_y": {
+        "default": null,
+        "description": "Drag end y.",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "x": {
+        "default": null,
+        "description": "Target x (pixels). Required for click/right_click/double_click/move and the drag start; the scroll anchor defaults to screen center.",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "y": {
+        "default": null,
+        "description": "Target y (pixels).",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "action",
+      "session_id"
+    ],
+    "title": "ActInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "detail": {
+        "description": "What was done, for the transcript.",
+        "type": "string"
+      },
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "detail",
+      "ok"
+    ],
+    "title": "ActOutput",
+    "type": "object"
+  }
+}

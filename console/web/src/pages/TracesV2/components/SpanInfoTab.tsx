@@ -65,7 +65,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
         <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-2.5">
           timing
         </div>
-        <div className="border border-rule bg-bg">
+        <div className="rounded-md bg-surface">
           <div className="px-4 pt-4 pb-3">
             <div className="flex items-baseline justify-between mb-2">
               <span className="font-mono text-xl font-bold text-accent tabular-nums">
@@ -117,7 +117,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
         <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-2.5">
           status
         </div>
-        <div className="border border-rule bg-bg px-4 py-3">
+        <div className="rounded-md bg-surface px-4 py-3">
           <div className="flex items-center gap-2.5">
             <StatusDot tone={tone} />
             <span className="font-mono text-[13px] font-semibold text-ink lowercase">
@@ -132,7 +132,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
         <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-2.5">
           worker & operation
         </div>
-        <div className="border border-rule bg-bg divide-y divide-rule">
+        <div className="rounded-md bg-surface divide-y divide-rule-2">
           <div className="px-4 py-2.5 flex items-center justify-between">
             <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
               worker
@@ -168,7 +168,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
         <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-2.5">
           identifiers
         </div>
-        <div className="border border-rule bg-bg divide-y divide-rule">
+        <div className="rounded-md bg-surface divide-y divide-rule-2">
           {[
             { label: 'trace id', value: span.trace_id, field: 'traceId' },
             { label: 'span id', value: span.span_id, field: 'spanId' },
@@ -186,7 +186,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
               key={field}
               type="button"
               onClick={() => copyToClipboard(field, value)}
-              className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-panel transition-colors group text-left"
+              className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-surface-hover transition-colors group text-left"
             >
               <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex-shrink-0">
                 {label}
@@ -216,7 +216,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
         <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-2.5">
           hierarchy
         </div>
-        <div className="border border-rule bg-bg divide-y divide-rule">
+        <div className="rounded-md bg-surface divide-y divide-rule-2">
           <div className="px-4 py-2.5 flex items-center justify-between">
             <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
               depth

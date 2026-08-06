@@ -111,10 +111,8 @@ function ConfigurationRow({
       onClick={onSelect}
       aria-current={selected ? 'true' : undefined}
       className={cn(
-        'w-full text-left px-3 py-2 border-l-2 transition-colors focus:outline-none focus-visible:bg-rule/40',
-        selected
-          ? 'border-accent bg-rule/40'
-          : 'border-transparent hover:bg-rule/30',
+        'w-full text-left px-3 py-2 rounded-sm transition-colors focus:outline-none focus-visible:bg-surface-hover',
+        selected ? 'bg-surface-selected' : 'hover:bg-surface-hover',
       )}
     >
       <div className="flex items-baseline gap-2">

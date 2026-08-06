@@ -64,8 +64,10 @@
               <div class="section-kicker">Primary view</div>
               <h2 id="efficiency-overview-heading">Efficiency overview</h2>
               <p class="trend-description">
-                Current suite workload with deltas calculated only from unchanged,
-                successful scenarios.
+                Every figure below — value, delta, and trend — reads the
+                comparable cohort: scenarios whose contract is unchanged and
+                whose latest run passed. New, changed, and missing scenarios
+                are counted in the guardrail and excluded here.
               </p>
             </div>
             <div class="efficiency-baseline">
@@ -75,29 +77,33 @@
             </div>
           </div>
 
-          <div class="efficiency-card-grid" aria-label="Latest efficiency totals">
+          <div class="efficiency-card-grid" aria-label="Comparable cohort totals">
             <article class="efficiency-card" data-efficiency-metric="cost_usd">
-              <div class="efficiency-card-label">Suite cost</div>
+              <div class="efficiency-card-label">Cost</div>
               <strong id="efficiency-cost">—</strong>
               <span id="efficiency-cost-delta" class="efficiency-delta">—</span>
+              <small id="efficiency-cost-baseline" class="efficiency-baseline-value"></small>
               <div id="efficiency-cost-sparkline" class="efficiency-sparkline"></div>
             </article>
             <article class="efficiency-card" data-efficiency-metric="tokens">
               <div class="efficiency-card-label">Tokens</div>
               <strong id="efficiency-tokens">—</strong>
               <span id="efficiency-tokens-delta" class="efficiency-delta">—</span>
+              <small id="efficiency-tokens-baseline" class="efficiency-baseline-value"></small>
               <div id="efficiency-tokens-sparkline" class="efficiency-sparkline"></div>
             </article>
             <article class="efficiency-card" data-efficiency-metric="duration_seconds">
               <div class="efficiency-card-label">Scenario time</div>
               <strong id="efficiency-duration">—</strong>
               <span id="efficiency-duration-delta" class="efficiency-delta">—</span>
+              <small id="efficiency-duration-baseline" class="efficiency-baseline-value"></small>
               <div id="efficiency-duration-sparkline" class="efficiency-sparkline"></div>
             </article>
             <article class="efficiency-card" data-efficiency-metric="function_call_errors">
               <div class="efficiency-card-label">Function errors</div>
               <strong id="efficiency-errors">—</strong>
               <span id="efficiency-errors-delta" class="efficiency-delta">—</span>
+              <small id="efficiency-errors-baseline" class="efficiency-baseline-value"></small>
               <div id="efficiency-errors-sparkline" class="efficiency-sparkline"></div>
             </article>
           </div>

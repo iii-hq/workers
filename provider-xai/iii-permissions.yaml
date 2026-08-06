@@ -8,3 +8,4 @@ rules:
   - '!provider::xai::stream'
   - '!provider::xai::refresh_models'
   - '!provider::xai::on_router_ready'
+  - '!provider::xai::count_tokens'

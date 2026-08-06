@@ -191,6 +191,13 @@ pub struct RowChangeBus {
 }
 
 impl RowChangeBus {
+    /// The engine client this bus dispatches through. Handlers reuse it to
+    /// call sibling workers (history goes to `state::*`) without threading a
+    /// second client through `AppState`.
+    pub fn client(&self) -> &Arc<IIIClient> {
+        &self.iii
+    }
+
     pub fn new(iii: Arc<IIIClient>, dispatch_timeout_ms: u64) -> Self {
         Self {
             iii,

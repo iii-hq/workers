@@ -1,4 +1,5 @@
 name: Release LSP VS Code
+run-name: Release LSP VS Code · ${{ inputs.tag || github.ref_name }}
 
 on:
   push:
@@ -64,7 +65,7 @@ jobs:
           if [[ "$VERSION" =~ -dry-run\.[0-9]+$ ]]; then
             echo "dry_run=true" >> "$GITHUB_OUTPUT"
             echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$VERSION" =~ -([a-z]+)\.[0-9]+$ ]]; then
+          elif [[ "$VERSION" == *-* ]]; then
             echo "dry_run=false" >> "$GITHUB_OUTPUT"
             echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
           else

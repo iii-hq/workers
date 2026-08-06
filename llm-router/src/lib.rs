@@ -5,6 +5,7 @@ pub mod catalog;
 pub mod channels;
 pub mod chat;
 pub mod config;
+pub mod count_tokens;
 pub mod embed;
 pub mod manifest;
 pub mod provider_scaffold;
@@ -18,3 +19,5 @@ pub mod system_prompt;
 pub mod testkit;
 pub mod triggers;
 pub mod types;
+#[cfg(feature = "console-ui")]
+pub mod ui;

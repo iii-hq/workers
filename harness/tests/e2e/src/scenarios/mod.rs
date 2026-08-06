@@ -13,11 +13,25 @@ use crate::context::E2eContext;
 use crate::report::HardGateReport;
 
 pub mod common;
+pub mod custom_validator;
+pub mod design_tradeoff;
 pub mod direct_answer;
+pub mod mechanical_reaction;
+pub mod multi_subagent_validation;
 pub mod persistent_state;
 pub mod reactive_automation;
+pub mod receiving_operation;
+pub mod research_pipeline;
 pub mod security_review;
+pub mod security_triage;
 pub mod shell_coder_sandbox;
+pub mod subagent_validation;
+pub mod subagent_validation_failure;
+pub mod timer_wake;
+pub mod validation_chain;
+pub mod validation_loop;
+pub mod validation_scope_enforcement;
+pub mod validation_self_repair;
 
 /// Judge-backed scenarios keep a low semantic floor while exposing the full
 /// score as a quality signal. Objective contract violations remain hard gates.
@@ -29,6 +43,9 @@ pub type CleanupFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a
 pub type ScenarioEvaluator =
     for<'a> fn(&'a E2eContext, &'a ScenarioObservation, &'a str) -> EvaluationFuture<'a>;
 pub type ScenarioCleanup = for<'a> fn(&'a E2eContext, &'a str) -> CleanupFuture<'a>;
+/// Pre-send hook: provision what the prompt refers to (e.g. register a
+/// temporary validator function on the suite's own worker connection).
+pub type ScenarioSetup = for<'a> fn(&'a E2eContext, &'a str) -> CleanupFuture<'a>;
 
 #[derive(Debug, Clone)]
 pub struct CriterionSpec {
@@ -78,9 +95,12 @@ pub struct ScenarioSpec {
     pub prompt: String,
     pub filesystem_root: Option<PathBuf>,
     pub execution: ExecutionPolicy,
+    pub denied_functions: &'static [&'static str],
     pub threshold: u8,
     pub criteria: Vec<CriterionSpec>,
     pub judge_reference: Option<Value>,
+    /// Runs BEFORE the prompt is sent; a failure aborts the run.
+    pub setup: Option<ScenarioSetup>,
     pub evaluate: ScenarioEvaluator,
     pub cleanup: Option<ScenarioCleanup>,
 }
@@ -160,15 +180,57 @@ pub enum ScenarioId {
     ReactiveAutomation,
     #[value(name = "shell_coder_sandbox")]
     ShellCoderSandbox,
+    #[value(name = "design_tradeoff")]
+    DesignTradeoff,
+    #[value(name = "security_triage")]
+    SecurityTriage,
+    #[value(name = "research_pipeline")]
+    ResearchPipeline,
+    #[value(name = "mechanical_reaction")]
+    MechanicalReaction,
+    #[value(name = "timer_wake")]
+    TimerWake,
+    #[value(name = "receiving_operation")]
+    ReceivingOperation,
+    #[value(name = "validation_loop")]
+    ValidationLoop,
+    #[value(name = "subagent_validation")]
+    SubagentValidation,
+    #[value(name = "multi_subagent_validation")]
+    MultiSubagentValidation,
+    #[value(name = "subagent_validation_failure")]
+    SubagentValidationFailure,
+    #[value(name = "custom_validator")]
+    CustomValidator,
+    #[value(name = "validation_self_repair")]
+    ValidationSelfRepair,
+    #[value(name = "validation_scope_enforcement")]
+    ValidationScopeEnforcement,
+    #[value(name = "validation_chain")]
+    ValidationChain,
 }
 
 impl ScenarioId {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 19] = [
         Self::DirectAnswer,
         Self::PersistentState,
         Self::SecurityReview,
         Self::ReactiveAutomation,
         Self::ShellCoderSandbox,
+        Self::DesignTradeoff,
+        Self::SecurityTriage,
+        Self::ResearchPipeline,
+        Self::MechanicalReaction,
+        Self::TimerWake,
+        Self::ReceivingOperation,
+        Self::ValidationLoop,
+        Self::SubagentValidation,
+        Self::MultiSubagentValidation,
+        Self::SubagentValidationFailure,
+        Self::CustomValidator,
+        Self::ValidationSelfRepair,
+        Self::ValidationScopeEnforcement,
+        Self::ValidationChain,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -178,6 +240,20 @@ impl ScenarioId {
             Self::SecurityReview => security_review::ID,
             Self::ReactiveAutomation => reactive_automation::ID,
             Self::ShellCoderSandbox => shell_coder_sandbox::ID,
+            Self::DesignTradeoff => design_tradeoff::ID,
+            Self::SecurityTriage => security_triage::ID,
+            Self::ResearchPipeline => research_pipeline::ID,
+            Self::MechanicalReaction => mechanical_reaction::ID,
+            Self::TimerWake => timer_wake::ID,
+            Self::ReceivingOperation => receiving_operation::ID,
+            Self::ValidationLoop => validation_loop::ID,
+            Self::SubagentValidation => subagent_validation::ID,
+            Self::MultiSubagentValidation => multi_subagent_validation::ID,
+            Self::SubagentValidationFailure => subagent_validation_failure::ID,
+            Self::CustomValidator => custom_validator::ID,
+            Self::ValidationSelfRepair => validation_self_repair::ID,
+            Self::ValidationScopeEnforcement => validation_scope_enforcement::ID,
+            Self::ValidationChain => validation_chain::ID,
         }
     }
 
@@ -188,6 +264,20 @@ impl ScenarioId {
             Self::SecurityReview => security_review::scenario(run_id),
             Self::ReactiveAutomation => reactive_automation::scenario(run_id),
             Self::ShellCoderSandbox => shell_coder_sandbox::scenario(run_id),
+            Self::DesignTradeoff => design_tradeoff::scenario(run_id),
+            Self::SecurityTriage => security_triage::scenario(run_id),
+            Self::ResearchPipeline => research_pipeline::scenario(run_id),
+            Self::MechanicalReaction => mechanical_reaction::scenario(run_id),
+            Self::TimerWake => timer_wake::scenario(run_id),
+            Self::ReceivingOperation => receiving_operation::scenario(run_id),
+            Self::ValidationLoop => validation_loop::scenario(run_id),
+            Self::SubagentValidation => subagent_validation::scenario(run_id),
+            Self::MultiSubagentValidation => multi_subagent_validation::scenario(run_id),
+            Self::SubagentValidationFailure => subagent_validation_failure::scenario(run_id),
+            Self::CustomValidator => custom_validator::scenario(run_id),
+            Self::ValidationSelfRepair => validation_self_repair::scenario(run_id),
+            Self::ValidationScopeEnforcement => validation_scope_enforcement::scenario(run_id),
+            Self::ValidationChain => validation_chain::scenario(run_id),
         }
     }
 }
@@ -208,13 +298,13 @@ pub fn selected(requested: &[ScenarioId]) -> Vec<ScenarioId> {
 mod tests {
     use super::*;
     #[test]
-    fn registry_contains_five_unique_valid_scenarios() {
+    fn registry_contains_nineteen_unique_valid_scenarios() {
         let mut ids = HashSet::new();
         for scenario in ScenarioId::ALL {
             assert!(ids.insert(scenario.as_str()));
             scenario.spec("run").validate().unwrap();
         }
-        assert_eq!(ids.len(), 5);
+        assert_eq!(ids.len(), 19);
     }
 
     #[test]
@@ -242,7 +332,12 @@ mod tests {
 
     #[test]
     fn judge_backed_scenarios_use_the_quality_signal_floor() {
-        for scenario in [ScenarioId::DirectAnswer, ScenarioId::SecurityReview] {
+        for scenario in [
+            ScenarioId::DirectAnswer,
+            ScenarioId::SecurityReview,
+            ScenarioId::DesignTradeoff,
+            ScenarioId::SecurityTriage,
+        ] {
             let spec = scenario.spec("run");
             assert!(spec.needs_judge());
             assert_eq!(spec.threshold, JUDGE_BACKED_PASS_THRESHOLD);

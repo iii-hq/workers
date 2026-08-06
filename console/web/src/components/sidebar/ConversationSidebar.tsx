@@ -146,7 +146,7 @@ export function ConversationSidebar({
 
   if (collapsed) {
     return (
-      <aside className="w-9 shrink-0 border-r border-rule flex flex-col items-center bg-bg gap-1 py-2">
+      <aside className="w-9 shrink-0 flex flex-col items-center bg-sidebar gap-1 py-2">
         <button
           type="button"
           onClick={onToggleCollapsed}
@@ -174,11 +174,11 @@ export function ConversationSidebar({
       <aside
         style={{ width }}
         className={cn(
-          'shrink-0 border-r border-rule flex flex-col bg-bg',
+          'shrink-0 flex flex-col bg-sidebar',
           isResizing && 'select-none',
         )}
       >
-        <div className="px-3 py-3 border-b border-rule flex items-center gap-2">
+        <div className="px-3 py-3 flex items-center gap-2">
           <Button
             type="button"
             variant="primary"
@@ -221,7 +221,7 @@ export function ConversationSidebar({
           />
         </div>
 
-        <div className="flex-1 overflow-y-auto divide-y divide-rule-2">
+        <div className="flex-1 overflow-y-auto px-2 py-1 space-y-px">
           {rows.length === 0 ? (
             <div className="px-3 py-6 font-mono text-[12px] text-ink-ghost lowercase">
               {query.trim()
@@ -259,7 +259,7 @@ export function ConversationSidebar({
           onMouseDown={handleMouseDown}
           onDoubleClick={handleReset}
           className={cn(
-            'w-[3px] flex-shrink-0 cursor-col-resize bg-rule hover:bg-accent active:bg-accent',
+            'w-[3px] flex-shrink-0 cursor-col-resize bg-transparent hover:bg-accent/60 active:bg-accent',
             isResizing && 'bg-accent',
           )}
         />

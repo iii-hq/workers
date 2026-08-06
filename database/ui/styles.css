@@ -146,6 +146,8 @@
   color: var(--color-ink);
   padding: 20px 24px;
   box-sizing: border-box;
+  container-name: db-page;
+  container-type: inline-size;
 }
 [data-iii-ui="database"] .db-page *,
 [data-iii-ui="database"] .db-page *::before,
@@ -223,14 +225,44 @@
 [data-iii-ui="database"] .db-aside-head {
   position: sticky;
   top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
   background: var(--color-bg);
   padding: 8px 12px;
   border-bottom: 1px solid var(--color-rule-2);
-  font-size: 10px;
+  /* 11px + faint, not 10px ghost: a functional label, not decoration. */
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: var(--color-ink-ghost);
+  color: var(--color-ink-faint);
 }
+[data-iii-ui="database"] .db-aside-toggle,
+[data-iii-ui="database"] .db-aside-reopen {
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-aside-toggle:hover { color: var(--color-ink); }
+[data-iii-ui="database"] .db-aside-reopen:hover { color: var(--color-ink); }
+[data-iii-ui="database"] .db-aside.collapsed {
+  align-items: stretch;
+  padding: 4px 0;
+}
+[data-iii-ui="database"] .db-body.aside-collapsed { grid-template-columns: max-content minmax(0, 1fr); }
+/* Selection is dimmed, not hidden, on modes that barely use it. */
+[data-iii-ui="database"] .db-aside-note {
+  margin: 0;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-rule-2);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-aside.passive .db-tree-row.active { opacity: 0.55; }
 [data-iii-ui="database"] .db-aside-body { flex: 1; padding: 4px 0; }
 
 [data-iii-ui="database"] .db-panel {
@@ -245,23 +277,60 @@
 [data-iii-ui="database"] .db-msg {
   padding: 10px 12px;
   font-size: 12px;
-  color: var(--color-ink-ghost);
+  /* faint, not ghost: these are answers ("no tables", "· probing…"), and
+     ghost measures 2.3:1 on this paper. */
+  color: var(--color-ink-faint);
   text-transform: lowercase;
 }
-[data-iii-ui="database"] .db-msg.alert { color: var(--color-alert); text-transform: none; word-break: break-all; }
+[data-iii-ui="database"] .db-msg.alert { color: #c60021; text-transform: none; word-break: break-all; }
 [data-iii-ui="database"] .db-pulse { animation: db-page-pulse 1.6s ease-in-out infinite; }
 @keyframes db-page-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 
 [data-iii-ui="database"] .db-pad { padding: 16px; }
 [data-iii-ui="database"] .db-skel { display: flex; flex-direction: column; gap: 8px; padding: 12px; }
 
+/* ---- shared panel toolbar -------------------------------------------- */
+/* One bar grammar for every tab's top strip. The bars grew by copy-paste
+   (the erd spacer was living inside the health and changes bars); this is
+   the base they were all reaching for. Per-tab rules keep only what is
+   genuinely theirs. */
+[data-iii-ui="database"] .db-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-rule);
+  font-size: 11.5px;
+}
+[data-iii-ui="database"] .db-toolbar-spacer { flex: 1 1 0; }
+
+/* One focus vocabulary: every button gets the hairline ink outline — the
+   shared component ring is a 5%-alpha halo, invisible on paper. Grid cells
+   keep their inset accent ring (they are not buttons). */
+[data-iii-ui="database"] button:focus-visible {
+  outline: 1px solid var(--color-ink);
+  outline-offset: 2px;
+}
+
+/* The trace capability-hiding leaves: which modes this worker can't serve. */
+[data-iii-ui="database"] .db-modes-hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+}
+
 /* ---- schema tree ---- */
+[data-iii-ui="database"] .db-tree-filter {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-rule-2);
+}
 [data-iii-ui="database"] .db-tree-grouphead {
   padding: 12px 12px 4px;
-  font-size: 10px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: var(--color-ink-ghost);
+  color: var(--color-ink-faint);
 }
 [data-iii-ui="database"] .db-tree ul { list-style: none; margin: 0; padding: 0; }
 [data-iii-ui="database"] .db-tree-row {
@@ -303,10 +372,17 @@
 [data-iii-ui="database"] .db-idx-name { color: var(--color-ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [data-iii-ui="database"] .db-idx-unique { color: var(--color-accent); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; }
 [data-iii-ui="database"] .db-tree-msg { padding: 4px 12px 4px 36px; font-size: 11px; color: var(--color-ink-ghost); }
-[data-iii-ui="database"] .db-tree-msg.alert { color: var(--color-alert); }
+[data-iii-ui="database"] .db-tree-msg.alert { color: #c60021; }
 
 /* ---- result grid ---- */
 [data-iii-ui="database"] .db-grid-wrap { overflow-x: auto; }
+/* Inside the panels' own scroll panes the wrap must NOT be a second scroll
+   container: nested x-scroll drew a phantom scrollbar strip under short
+   tables, and any overflow ancestor between thead.sticky and the real
+   scroller breaks sticky headers. The bare wrap rule above stays for the
+   chat-card contexts, which have no scroll pane of their own. */
+[data-iii-ui="database"] .db-data-scroll .db-grid-wrap { overflow-x: visible; }
+[data-iii-ui="database"] .db-sql-results .db-grid-wrap { overflow-x: visible; }
 [data-iii-ui="database"] .db-grid { width: 100%; border-collapse: collapse; }
 [data-iii-ui="database"] .db-grid thead.sticky th { position: sticky; top: 0; z-index: 10; }
 [data-iii-ui="database"] .db-grid th {
@@ -316,7 +392,7 @@
 }
 [data-iii-ui="database"] .db-grid th.num { text-align: right; }
 [data-iii-ui="database"] .db-grid th .colname { color: var(--color-ink-faint); font-weight: 500; }
-[data-iii-ui="database"] .db-grid th .coltype { color: var(--color-ink-ghost); font-weight: 400; text-transform: lowercase; }
+[data-iii-ui="database"] .db-grid th .coltype { color: var(--color-ink-faint); font-weight: 400; text-transform: lowercase; }
 [data-iii-ui="database"] .db-grid th .sorter {
   appearance: none; background: transparent; border: 0; cursor: pointer;
   display: inline-flex; align-items: center; gap: 6px; font: inherit; color: inherit;
@@ -341,7 +417,9 @@
 }
 [data-iii-ui="database"] .db-cell-null { color: var(--color-ink-ghost); font-style: italic; }
 [data-iii-ui="database"] .db-cell-bool-true { color: var(--color-accent); }
-[data-iii-ui="database"] .db-cell-bool-false { color: var(--color-warn); }
+/* Booleans are data, not judgments — warn ink turned a flag column full of
+   `false` into a wall of caution. */
+[data-iii-ui="database"] .db-cell-bool-false { color: var(--color-ink-faint); }
 [data-iii-ui="database"] .db-cell-num { color: var(--color-ink); font-variant-numeric: tabular-nums; }
 [data-iii-ui="database"] .db-cell-json { color: var(--color-ink-faint); }
 [data-iii-ui="database"] .db-cell-str { color: var(--color-ink); }
@@ -361,24 +439,47 @@
 [data-iii-ui="database"] .db-grid-empty { padding: 12px; font-size: 12.5px; color: var(--color-ink-ghost); }
 
 /* ---- table data panel ---- */
-[data-iii-ui="database"] .db-data { display: flex; min-height: 0; min-width: 0; width: 100%; }
+/* flex: 1 fills the panel so the pager sits at its bottom edge instead of
+   stranding mid-air over a void when the table is short. */
+[data-iii-ui="database"] .db-data { display: flex; flex: 1; min-height: 0; min-width: 0; width: 100%; }
 [data-iii-ui="database"] .db-data-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-[data-iii-ui="database"] .db-data-bar {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
-  padding: 8px 16px; border-bottom: 1px solid var(--color-rule);
-  font-size: 11px; color: var(--color-ink-faint);
+/* Extends .db-toolbar; only the ink is its own. */
+[data-iii-ui="database"] .db-data-bar { color: var(--color-ink-faint); }
+/* Its own container: the row inspector takes 320px from this column, so the
+   page-level container query cannot see how narrow the data area really is —
+   the footer must respond to THIS width, not the page's. */
+[data-iii-ui="database"] .db-data-main {
+  container-name: db-data-main;
+  container-type: inline-size;
 }
 [data-iii-ui="database"] .db-data-bar .name { color: var(--color-ink); font-weight: 500; }
 [data-iii-ui="database"] .db-data-bar .spacer { margin-left: auto; }
-[data-iii-ui="database"] .db-data-scroll { overflow: auto; max-height: 60vh; }
-[data-iii-ui="database"] .db-data-foot { border-top: 1px solid var(--color-rule); padding: 8px 16px; }
+[data-iii-ui="database"] .db-data-scroll { overflow: auto; flex: 1; max-height: 60vh; }
+[data-iii-ui="database"] .db-data-foot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border-top: 1px solid var(--color-rule);
+  padding: 8px 16px;
+}
+[data-iii-ui="database"] .db-data-foot .db-pager { flex: 1; }
+[data-iii-ui="database"] .db-kbd-hint { font-size: 11px; color: var(--color-ink-faint); white-space: nowrap; }
 
 /* ---- pagination ---- */
 [data-iii-ui="database"] .db-pager {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
   font-size: 12px; color: var(--color-ink-faint); text-transform: lowercase;
 }
-[data-iii-ui="database"] .db-pager-group { display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
+/* Phrases wrap as units or not at all — "page 1 of 1" must never shred into
+   three lines when the inspector squeezes the column. */
+[data-iii-ui="database"] .db-pager { flex-wrap: wrap; row-gap: 4px; }
+[data-iii-ui="database"] .db-pager-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 [data-iii-ui="database"] .db-pager-cap { text-transform: uppercase; letter-spacing: 0.06em; font-size: 11px; }
 [data-iii-ui="database"] .db-pager select {
   border: 1px solid var(--color-rule); background: var(--color-bg); color: var(--color-ink);
@@ -390,6 +491,25 @@
 [data-iii-ui="database"] .db-rowdetail {
   width: 320px; flex-shrink: 0; border-left: 1px solid var(--color-rule);
   overflow-y: auto; max-height: 60vh;
+}
+/* The inspector's tab strip (NOT `.db-rowdetail-head`, which is RowDetail's
+   own standalone header further down — reusing that name let its rule win
+   the cascade and break this bar's height). Sticky, so close and the tabs
+   survive scrolling a long row; min-height pins its bottom rule to the
+   filter bar's beside it (8px padding + 32px button + 8px + 1px border = 49):
+   one continuous line across both columns. */
+[data-iii-ui="database"] .db-inspector-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 49px;
+  padding: 0 8px 0 12px;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-rule);
 }
 [data-iii-ui="database"] .db-rowdetail-head {
   position: sticky; top: 0; background: var(--color-paper-2);
@@ -426,8 +546,45 @@
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   padding: 8px 16px; border-top: 1px solid var(--color-rule-2); background: var(--color-paper-2);
 }
-[data-iii-ui="database"] .db-sql-warn { font-size: 11px; color: var(--color-warn); }
+/* Derived inks, not the raw tokens: --color-warn (#a87a00) and --color-alert
+   (#ff0026) sit near 3:1 on the actions band — below AA for 11px functional
+   text. Same families, pushed to ≥4.5:1 per theme (the console shell darkened
+   its accent token for the identical reason). */
+[data-iii-ui="database"] .db-sql-warn { font-size: 11px; color: #7a5700; }
+[data-iii-ui="database"] .db-sql-warn.ddl { color: #c60021; }
+/* :where keeps the scope prefix first without adding specificity, so source
+   order settles light vs dark. One rule per surface — the build's scope
+   checker splits grouped selectors on commas. These are every user of the
+   derived warn/alert inks page-wide. */
+[data-iii-ui="database"] .db-sql-warn:where([data-theme="dark"] *) { color: #d49b00; }
+[data-iii-ui="database"] .db-health-note.warn:where([data-theme="dark"] *) { color: #d49b00; }
+[data-iii-ui="database"] .db-health-blocked:where([data-theme="dark"] *) { color: #d49b00; }
+[data-iii-ui="database"] .db-plan-warncount:where([data-theme="dark"] *) { color: #d49b00; }
+[data-iii-ui="database"] .db-erd-req:where([data-theme="dark"] *) { color: #d49b00; }
+[data-iii-ui="database"] .db-sql-warn.ddl:where([data-theme="dark"] *) { color: #ff4d63; }
+[data-iii-ui="database"] .db-tree-msg.alert:where([data-theme="dark"] *) { color: #ff4d63; }
+[data-iii-ui="database"] .db-msg.alert:where([data-theme="dark"] *) { color: #ff4d63; }
+[data-iii-ui="database"] .db-change-op.op-delete:where([data-theme="dark"] *) { color: #ff4d63; }
 [data-iii-ui="database"] .db-sql-meta { margin-left: auto; font-size: 11px; color: var(--color-ink-faint); font-variant-numeric: tabular-nums; }
+/* Numbers describing a statement the editor has moved past. */
+[data-iii-ui="database"] .db-sql-meta.stale { opacity: 0.45; }
+/* Visually hidden, present to assistive tech (the panels' live regions). */
+[data-iii-ui="database"] .db-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+/* Keeps a panel mounted while other modes show: `contents` removes the
+   wrapper from layout when visible, `none` hides the kept panel. Every tab
+   that accumulates user work sits in one of these. */
+[data-iii-ui="database"] .db-keep { display: contents; }
+[data-iii-ui="database"] .db-keep[hidden] { display: none; }
 [data-iii-ui="database"] .db-sql-history { border-top: 1px solid var(--color-rule-2); max-height: 160px; overflow-y: auto; }
 [data-iii-ui="database"] .db-sql-history-row {
   display: flex; align-items: center; gap: 8px; padding: 4px 16px;
@@ -441,16 +598,40 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 [data-iii-ui="database"] .db-sql-history-pick:hover { color: var(--color-ink); }
-[data-iii-ui="database"] .db-sql-results { flex: 1; overflow: auto; max-height: 55vh; min-height: 0; }
-[data-iii-ui="database"] .db-sql-placeholder { padding: 16px; font-size: 12px; color: var(--color-ink-ghost); text-transform: lowercase; }
+[data-iii-ui="database"] .db-sql-history-note {
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--color-rule-2);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-sql-results { flex: 1; overflow: auto; max-height: 55vh; min-height: 0; transition: opacity 120ms ease-out; }
+/* A re-run over a previous result: the old grid dims instead of posing as
+   the answer to the statement in flight. */
+[data-iii-ui="database"] .db-sql-results.running { opacity: 0.55; }
+/* ink-faint, not ghost: "statement ran — dropped table x" is a result, and
+   ghost measures 2.3:1 here — decoration ink for content text. */
+[data-iii-ui="database"] .db-sql-placeholder { padding: 16px; font-size: 12px; color: var(--color-ink-faint); text-transform: lowercase; }
 
-@media (max-width: 720px) {
+/* This page is a panel inside the console shell, so its own width is the
+   signal — the viewport is not, and reads visibly wrong with the chat dock
+   open. */
+@container db-page (max-width: 720px) {
   [data-iii-ui="database"] .db-body { grid-template-columns: minmax(0, 1fr); }
   [data-iii-ui="database"] .db-data { flex-direction: column; }
   [data-iii-ui="database"] .db-rowdetail { width: auto; border-left: 0; border-top: 1px solid var(--color-rule); }
+  /* Stacked, the table list sits *above* the data, so its 74vh cap pushed the
+     grid below the fold — you picked a table and saw nothing happen. Scroll
+     the list instead of the page. */
+  [data-iii-ui="database"] .db-aside { max-height: 34vh; }
 }
 
-/* --- configuration form (Workers tab, `database` entry) --------------- */
+/* The pager needs the row to itself when the data column tightens — whether
+   the page is narrow or the inspector took 320px of it. */
+@container db-data-main (max-width: 760px) {
+  [data-iii-ui="database"] .db-kbd-hint { display: none; }
+}
+
+/* --- configuration form (Workers tab + shared config dialog) ---------- */
 [data-iii-ui="database"] .db-cfg {
   display: flex;
   flex-direction: column;
@@ -626,3 +807,733 @@
 }
 [data-iii-ui="database"] .db-cfg-test-ok { color: var(--color-ok); }
 [data-iii-ui="database"] .db-cfg-test-fail { color: var(--color-alert); }
+
+/* === read surface: diagram, health, plan, statistics, changes ========== */
+/* Shared idioms first. The 4px track is the repo's progress primitive; the
+   accent is never hardcoded here because it changes hue in dark. */
+
+[data-iii-ui="database"] .db-num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+[data-iii-ui="database"] .db-track {
+  display: inline-block;
+  position: relative;
+  height: 4px;
+  min-width: 40px;
+  flex: 1;
+  background: var(--color-rule-2);
+  overflow: hidden;
+}
+[data-iii-ui="database"] .db-track-fill {
+  display: block;
+  height: 100%;
+  background: var(--color-accent);
+}
+[data-iii-ui="database"] .db-kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 0;
+  font-size: 11.5px;
+}
+[data-iii-ui="database"] .db-kv dt { color: var(--color-ink-ghost); }
+[data-iii-ui="database"] .db-kv dd { margin: 0; color: var(--color-ink); }
+[data-iii-ui="database"] .db-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  padding: 3px 0;
+}
+[data-iii-ui="database"] .db-bar-label { color: var(--color-ink-ghost); min-width: 72px; }
+
+/* --- schema diagram --------------------------------------------------- */
+[data-iii-ui="database"] .db-erd { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/* Extends .db-toolbar (which wraps rather than shrinks — unwrapped, a narrow
+   panel clipped the search to "find a ta"). Controls keep their size; the
+   search alone flexes. */
+[data-iii-ui="database"] .db-erd-bar > * { flex: 0 0 auto; }
+[data-iii-ui="database"] .db-erd-stat { color: var(--color-ink-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+[data-iii-ui="database"] .db-erd-stat.quiet { color: var(--color-ink-faint); }
+[data-iii-ui="database"] .db-erd-zoom { color: var(--color-ink-faint); font-variant-numeric: tabular-nums; min-width: 40px; text-align: right; }
+[data-iii-ui="database"] .db-erd-bar > .db-erd-search { flex: 1 1 120px; min-width: 100px; max-width: 220px; }
+[data-iii-ui="database"] .db-erd-focus { color: var(--color-ink-faint); }
+[data-iii-ui="database"] .db-erd-focus strong { color: var(--color-ink); font-weight: 500; }
+[data-iii-ui="database"] .db-erd-frontier {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-rule);
+  font-size: 11px;
+}
+[data-iii-ui="database"] .db-erd-frontier-label { color: var(--color-ink-ghost); }
+/* Dashed, because these are named but not drawn. */
+[data-iii-ui="database"] .db-erd-frontier-item {
+  border: 1px dashed var(--color-rule);
+  background: transparent;
+  padding: 1px 7px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-erd-frontier-item:hover {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+[data-iii-ui="database"] .db-erd-frontier-more {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+  text-decoration: underline;
+}
+[data-iii-ui="database"] .db-erd-frontier-more:hover { color: var(--color-ink); }
+
+[data-iii-ui="database"] .db-erd-frame {
+  position: relative;
+  flex: 1;
+  min-height: 420px;
+  overflow: hidden;
+  cursor: grab;
+  background: var(--color-paper-2);
+  touch-action: none;
+}
+[data-iii-ui="database"] .db-erd-frame:active { cursor: grabbing; }
+[data-iii-ui="database"] .db-erd-canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+/* Dashed, because the boundary is derived rather than a thing in the schema —
+   the same convention the repo uses elsewhere for computed content. */
+[data-iii-ui="database"] .db-erd-group {
+  position: absolute;
+  border: 1px dashed var(--color-rule);
+  pointer-events: none;
+}
+[data-iii-ui="database"] .db-erd-group-tag {
+  position: absolute;
+  top: -7px;
+  left: 12px;
+  padding: 0 6px;
+  background: var(--color-paper-2);
+  color: var(--color-ink-ghost);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+[data-iii-ui="database"] .db-erd-edges { position: absolute; top: 0; left: 0; pointer-events: none; overflow: visible; }
+/* An edge has to read as strongly as the text it connects. At rule weight on
+   a panel background it disappears, and the schema looks unrelated even when
+   it is not — which is exactly how this first shipped. */
+[data-iii-ui="database"] .db-erd-edge polyline {
+  stroke: var(--color-ink-faint);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  transition: stroke 120ms ease-out;
+}
+[data-iii-ui="database"] .db-erd-endpoint {
+  fill: var(--color-ink-faint);
+  transition: fill 120ms ease-out;
+}
+[data-iii-ui="database"] .db-erd-edge { transition: opacity 120ms ease-out; }
+[data-iii-ui="database"] .db-erd-edge.hot polyline { stroke: var(--color-accent); stroke-width: 2; }
+[data-iii-ui="database"] .db-erd-edge.hot .db-erd-endpoint { fill: var(--color-accent); }
+[data-iii-ui="database"] .db-erd-edge.dim { opacity: 0.15; }
+
+[data-iii-ui="database"] .db-erd-node {
+  position: absolute;
+  background: var(--color-bg);
+  border: 1px solid var(--color-rule);
+  font-size: 11px;
+  transition: opacity 120ms ease-out, border-color 120ms ease-out;
+}
+/* Hub emphasis by weight, not fill — the palette stays rationed. */
+[data-iii-ui="database"] .db-erd-node.hub-2 { border-width: 1.5px; }
+[data-iii-ui="database"] .db-erd-node.hub-3 { border-width: 2px; border-color: var(--color-ink-ghost); }
+[data-iii-ui="database"] .db-erd-node.selected { border-color: var(--color-accent); }
+/* The table the neighbourhood was drawn around. Heavier than a selection,
+   because it is the thing everything else on the canvas is relative to. */
+[data-iii-ui="database"] .db-erd-node.focused {
+  border-color: var(--color-accent);
+  border-width: 2px;
+}
+[data-iii-ui="database"] .db-erd-node.moved .db-erd-node-head { border-bottom-style: dashed; }
+[data-iii-ui="database"] .db-erd-node-head { cursor: grab; touch-action: none; }
+[data-iii-ui="database"] .db-erd-node-head:active { cursor: grabbing; }
+[data-iii-ui="database"] .db-erd-node.dim { opacity: 0.25; }
+[data-iii-ui="database"] .db-erd-node-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  background: var(--color-panel);
+  border: 0;
+  border-bottom: 1px solid var(--color-rule);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: var(--color-ink);
+}
+[data-iii-ui="database"] .db-erd-node-name {
+  flex: 1;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="database"] .db-erd-node-deg {
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+  font-size: 9.5px;
+}
+[data-iii-ui="database"] .db-erd-cols { padding: 8px 0; }
+/* 24px rows, matching the worker's ROW_HEIGHT — the edge anchors are computed
+   against it, so the two must not drift. */
+[data-iii-ui="database"] .db-erd-col {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px;
+  padding: 0 10px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-erd-col.more { color: var(--color-ink-ghost); font-style: italic; }
+[data-iii-ui="database"] .db-erd-glyph { width: 11px; flex: none; color: var(--color-ink-ghost); }
+[data-iii-ui="database"] .db-erd-glyph.pk { color: var(--color-accent); }
+[data-iii-ui="database"] .db-erd-col-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-iii-ui="database"] .db-erd-col-type { color: var(--color-ink-faint); font-size: 11px; }
+[data-iii-ui="database"] .db-erd-req { color: #7a5700; font-size: 10px; flex: none; }
+/* Below 0.5 zoom the column text is unreadable anyway; dropping the bodies
+   turns 200 nodes x 12 rows into 200 headers. This class is the whole
+   performance story for a wide schema. */
+[data-iii-ui="database"] .db-erd-canvas.compact .db-erd-cols { display: none; }
+[data-iii-ui="database"] .db-erd-canvas.compact .db-erd-node { min-height: 0; }
+
+/* --- health ----------------------------------------------------------- */
+[data-iii-ui="database"] .db-health { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/* Extends .db-toolbar. */
+[data-iii-ui="database"] .db-health-driver { color: var(--color-ink); text-transform: lowercase; }
+[data-iii-ui="database"] .db-health-ver { color: var(--color-ink-ghost); }
+[data-iii-ui="database"] .db-health-asof { color: var(--color-ink-faint); font-variant-numeric: tabular-nums; }
+/* Cards describing the previous read while a new one is in flight. */
+[data-iii-ui="database"] .db-health-cards.stale { opacity: 0.55; transition: opacity 120ms ease-out; }
+/* Replication daemons: shown (honest), named, and visually demoted. */
+[data-iii-ui="database"] .db-health-query.daemon { opacity: 0.6; }
+[data-iii-ui="database"] .db-health-daemon {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--color-ink-faint);
+  border: 1px solid var(--color-rule);
+  padding: 0 4px;
+}
+[data-iii-ui="database"] .db-health-cards {
+  flex: 1;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1px;
+  background: var(--color-rule);
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="database"] .db-health-card { background: var(--color-bg); padding: 12px; }
+[data-iii-ui="database"] .db-health-card.wide { grid-column: 1 / -1; }
+[data-iii-ui="database"] .db-health-card h3 {
+  margin: 0 0 8px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: lowercase;
+  color: var(--color-ink-ghost);
+  font-weight: 500;
+}
+[data-iii-ui="database"] .db-health-note { margin: 0; font-size: 11.5px; color: var(--color-ink-faint); }
+[data-iii-ui="database"] .db-health-note.quiet { color: var(--color-ink-ghost); font-style: italic; }
+[data-iii-ui="database"] .db-health-note.warn { color: #7a5700; }
+[data-iii-ui="database"] .db-health-list { list-style: none; margin: 0; padding: 0; }
+[data-iii-ui="database"] .db-health-list > li {
+  padding: 5px 0;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="database"] .db-health-list > li:last-child { border-bottom: 0; }
+[data-iii-ui="database"] .db-health-query-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-health-id { color: var(--color-ink); font-variant-numeric: tabular-nums; }
+[data-iii-ui="database"] .db-health-state,
+[data-iii-ui="database"] .db-health-user,
+[data-iii-ui="database"] .db-health-rel { color: var(--color-ink-ghost); }
+[data-iii-ui="database"] .db-health-blocked { color: #7a5700; }
+[data-iii-ui="database"] .db-health-sql {
+  display: block;
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--color-ink-ghost);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="database"] .db-health-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+[data-iii-ui="database"] .db-health-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--color-ink-ghost);
+  padding: 3px 8px 3px 0;
+  border-bottom: 1px solid var(--color-rule);
+  text-transform: lowercase;
+}
+[data-iii-ui="database"] .db-health-table td {
+  padding: 3px 8px 3px 0;
+  border-bottom: 1px solid var(--color-rule-2);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-health-table tr:last-child td { border-bottom: 0; }
+[data-iii-ui="database"] .db-health-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+[data-iii-ui="database"] .db-health-table .share { width: 90px; }
+
+/* --- query plan ------------------------------------------------------- */
+[data-iii-ui="database"] .db-plan { display: flex; flex-direction: column; min-height: 0; }
+[data-iii-ui="database"] .db-plan-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-rule);
+  font-size: 11px;
+}
+[data-iii-ui="database"] .db-plan-format { color: var(--color-ink-ghost); text-transform: lowercase; }
+[data-iii-ui="database"] .db-plan-warncount { color: #7a5700; }
+[data-iii-ui="database"] .db-plan-tree,
+[data-iii-ui="database"] .db-plan-tree ul { list-style: none; margin: 0; padding: 0; }
+[data-iii-ui="database"] .db-plan-node {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 8px 3px 0;
+  font-size: 11px;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="database"] .db-plan-node.flag-warn { box-shadow: inset 2px 0 0 var(--color-warn); }
+[data-iii-ui="database"] .db-plan-node.flag-high { box-shadow: inset 2px 0 0 var(--color-alert); }
+[data-iii-ui="database"] .db-plan-twist {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+  transition: transform 120ms ease-out;
+}
+[data-iii-ui="database"] .db-plan-twist.leaf { cursor: default; }
+[data-iii-ui="database"] .db-plan-twist.open { transform: rotate(90deg); }
+[data-iii-ui="database"] .db-plan-class {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+  color: var(--color-ink-ghost);
+  border: 1px solid var(--color-rule);
+  padding: 0 4px;
+  white-space: nowrap;
+}
+[data-iii-ui="database"] .db-plan-label { color: var(--color-ink); white-space: nowrap; }
+[data-iii-ui="database"] .db-plan-rel { color: var(--color-ink-faint); }
+[data-iii-ui="database"] .db-plan-warn { color: var(--color-warn); display: inline-flex; }
+[data-iii-ui="database"] .db-plan-spacer { flex: 1; }
+[data-iii-ui="database"] .db-plan-metrics { display: flex; gap: 10px; white-space: nowrap; }
+[data-iii-ui="database"] .db-plan-metric { display: inline-flex; gap: 4px; align-items: baseline; }
+[data-iii-ui="database"] .db-plan-metric-k { color: var(--color-ink-ghost); font-size: 9.5px; }
+[data-iii-ui="database"] .db-track.plan { flex: none; width: 60px; }
+[data-iii-ui="database"] .db-plan-detail {
+  font-size: 10.5px;
+  color: var(--color-ink-ghost);
+  padding-bottom: 3px;
+}
+
+/* --- column statistics ------------------------------------------------ */
+[data-iii-ui="database"] .db-stats { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+[data-iii-ui="database"] .db-stats-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+[data-iii-ui="database"] .db-stats-col { font-size: 12px; color: var(--color-ink); }
+[data-iii-ui="database"] .db-stats-sub {
+  margin: 4px 0 0;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: lowercase;
+  color: var(--color-ink-ghost);
+  font-weight: 500;
+}
+[data-iii-ui="database"] .db-stats-top { list-style: none; margin: 0; padding: 0; }
+[data-iii-ui="database"] .db-stats-top li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 11px;
+}
+[data-iii-ui="database"] .db-stats-val {
+  min-width: 90px;
+  max-width: 140px;
+  color: var(--color-ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- resizable, reorderable, hideable columns ------------------------- */
+/* A sized column must not be stretched back out by the table algorithm, which
+   is what `table-layout: fixed` buys once any width is set. */
+[data-iii-ui="database"] .db-grid th { position: relative; }
+[data-iii-ui="database"] .db-grid th[style*="width"] { overflow: hidden; }
+/* Without this the auto table algorithm widens a column that carries an
+   explicit width, so a resize does not hold. */
+[data-iii-ui="database"] .db-grid { table-layout: fixed; }
+[data-iii-ui="database"] .db-col-grip {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  /* Widened hit area, invisible until hovered: a 1px target is a fight. */
+  background: transparent;
+  z-index: 2;
+  touch-action: none;
+}
+[data-iii-ui="database"] .db-col-grip::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 3px;
+  width: 1px;
+  background: transparent;
+  transition: background 120ms ease-out;
+}
+[data-iii-ui="database"] .db-col-grip:hover::after { background: var(--color-accent); }
+[data-iii-ui="database"] .db-col-hide {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  padding: 1px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+  z-index: 1;
+}
+/* :focus-within beside :hover — a keyboard user must never focus an
+   invisible control. */
+[data-iii-ui="database"] .db-grid th:hover .db-col-hide,
+[data-iii-ui="database"] .db-grid th:focus-within .db-col-hide,
+[data-iii-ui="database"] .db-col-hide:focus-visible { opacity: 1; }
+[data-iii-ui="database"] .db-col-hide:hover { color: var(--color-alert); }
+/* Where a dragged column would land. */
+[data-iii-ui="database"] .db-grid th.dropping { box-shadow: inset 2px 0 0 var(--color-accent); }
+
+/* --- grid cursor ------------------------------------------------------ */
+/* The focused cell is marked by an inset ring rather than a border, so
+   focusing one cannot change the row height and shift the grid. */
+[data-iii-ui="database"] .db-grid td.cursor {
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+  outline: none;
+}
+[data-iii-ui="database"] .db-grid td:focus { outline: none; }
+[data-iii-ui="database"] .db-grid td:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+/* Without this the focused row parks underneath the sticky header when
+   scrolled into view — the trap every grid hits once. */
+[data-iii-ui="database"] .db-grid thead.sticky ~ tbody td { scroll-margin-top: 30px; }
+
+/* --- cell inspector --------------------------------------------------- */
+[data-iii-ui="database"] .db-inspect {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  min-height: 0;
+}
+[data-iii-ui="database"] .db-inspect-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="database"] .db-inspect-path { font-size: 12px; color: var(--color-ink); }
+[data-iii-ui="database"] .db-inspect-pos {
+  font-size: 10.5px;
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="database"] .db-inspect-value {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--color-rule);
+  padding: 8px;
+  font-size: 11px;
+}
+[data-iii-ui="database"] .db-inspect-pre {
+  margin: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  white-space: pre;
+}
+[data-iii-ui="database"] .db-inspect-pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+[data-iii-ui="database"] .db-inspect-actions { display: flex; align-items: center; gap: 10px; }
+
+/* --- json tree -------------------------------------------------------- */
+[data-iii-ui="database"] .db-json { font-size: 11px; }
+[data-iii-ui="database"] .db-json-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 18px;
+}
+[data-iii-ui="database"] .db-json-row:hover { background: var(--color-paper-2); }
+[data-iii-ui="database"] .db-json-twist {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+  transition: transform 120ms ease-out;
+}
+[data-iii-ui="database"] .db-json-twist.open { transform: rotate(90deg); }
+[data-iii-ui="database"] .db-json-twist.leaf { cursor: default; }
+[data-iii-ui="database"] .db-json-key { color: var(--color-ink-faint); }
+[data-iii-ui="database"] .db-json-key::after { content: ':'; color: var(--color-ink-ghost); }
+[data-iii-ui="database"] .db-json-summary { color: var(--color-ink-ghost); }
+[data-iii-ui="database"] .db-json-more { color: var(--color-ink-ghost); font-style: italic; }
+[data-iii-ui="database"] .db-json-copy {
+  margin-left: auto;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+[data-iii-ui="database"] .db-json-row:hover .db-json-copy,
+[data-iii-ui="database"] .db-json-row:focus-within .db-json-copy,
+[data-iii-ui="database"] .db-json-copy:focus-visible { opacity: 1; }
+[data-iii-ui="database"] .db-json-copy:hover { color: var(--color-accent); }
+
+[data-iii-ui="database"] .db-rowdetail-body { padding: 0 12px 12px; }
+
+/* --- foreign key navigation ------------------------------------------- */
+[data-iii-ui="database"] .db-fk-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  max-width: 100%;
+}
+[data-iii-ui="database"] .db-fk-link:hover { color: var(--color-accent); }
+[data-iii-ui="database"] .db-fk-link:hover .db-cell-num,
+[data-iii-ui="database"] .db-fk-link:hover .db-cell-str { color: var(--color-accent); }
+/* The glyph only appears on hover: every FK cell carrying one permanently
+   would put a second mark on a large share of the grid. */
+[data-iii-ui="database"] .db-fk-glyph { opacity: 0; flex: none; transition: opacity 120ms ease-out; }
+[data-iii-ui="database"] .db-fk-link:hover .db-fk-glyph { opacity: 0.7; }
+
+[data-iii-ui="database"] .db-trail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-rule);
+  font-size: 11px;
+}
+[data-iii-ui="database"] .db-trail-seg { display: inline-flex; align-items: center; gap: 4px; }
+[data-iii-ui="database"] .db-trail-sep { color: var(--color-ink-ghost); }
+[data-iii-ui="database"] .db-trail-step {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-trail-step:hover { color: var(--color-ink); }
+[data-iii-ui="database"] .db-trail-step.current { color: var(--color-ink); cursor: default; }
+
+/* --- filter chips ----------------------------------------------------- */
+[data-iii-ui="database"] .db-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-rule);
+}
+[data-iii-ui="database"] .db-filters-count {
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="database"] .db-filters-clear {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+  text-decoration: underline;
+}
+[data-iii-ui="database"] .db-filters-clear:hover { color: var(--color-ink); }
+
+/* Segmented: each part is separately editable, so refining one part of a
+   condition never means retyping the rest. */
+[data-iii-ui="database"] .db-chip {
+  display: inline-flex;
+  align-items: stretch;
+  height: 22px;
+  border: 1px solid var(--color-rule);
+  background: var(--color-panel);
+  overflow: hidden;
+}
+/* Dashed while incomplete — the repo's convention for not-yet-real content. */
+[data-iii-ui="database"] .db-chip.draft { border-style: dashed; }
+[data-iii-ui="database"] .db-chip.off { opacity: 0.45; }
+[data-iii-ui="database"] .db-chip-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  border: 0;
+  border-right: 1px solid var(--color-rule);
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  color: var(--color-ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+[data-iii-ui="database"] .db-chip-seg:last-child { border-right: 0; }
+[data-iii-ui="database"] .db-chip-seg:hover { background: var(--color-paper-2); }
+[data-iii-ui="database"] .db-chip-seg.toggle,
+[data-iii-ui="database"] .db-chip-seg.remove {
+  padding: 0 5px;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="database"] .db-chip-seg.remove:hover { color: var(--color-alert); }
+[data-iii-ui="database"] .db-chip-seg.op { color: var(--color-ink-faint); }
+[data-iii-ui="database"] .db-chip-seg.val { padding: 0; cursor: text; }
+[data-iii-ui="database"] .db-chip-input {
+  height: 20px;
+  width: 96px;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+  padding: 0 7px;
+}
+[data-iii-ui="database"] .db-chip-input.wide { width: 150px; }
+[data-iii-ui="database"] .db-pick-label { flex: 1; }
+[data-iii-ui="database"] .db-pick-hint {
+  color: var(--color-ink-ghost);
+  font-size: 10px;
+  margin-left: 12px;
+}
+
+/* --- row changes ------------------------------------------------------ */
+[data-iii-ui="database"] .db-changes { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/* Extends .db-toolbar. */
+[data-iii-ui="database"] .db-changes-target { color: var(--color-ink); }
+/* A real disclosure button now, not a hover-only span — the capture-mode
+   caveat it carries must be reachable by keyboard and touch. */
+[data-iii-ui="database"] .db-freshness {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-freshness-at { color: var(--color-ink-ghost); font-variant-numeric: tabular-nums; }
+[data-iii-ui="database"] .db-changes-capnote {
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-rule-2);
+  font-size: 11.5px;
+  line-height: 1.5;
+  max-width: 62ch;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-changes-list { list-style: none; margin: 0; padding: 0; flex: 1; overflow: auto; }
+[data-iii-ui="database"] .db-change {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 12px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="database"] .db-change:last-child { border-bottom: 0; }
+/* The arrival rail fades rather than flashes: a row that just landed is worth
+   pointing at, one from a minute ago is not. */
+[data-iii-ui="database"] .db-change.fresh {
+  box-shadow: inset 2px 0 0 var(--color-accent);
+  animation: db-ui-change-settle 4s ease-out forwards;
+}
+@keyframes db-ui-change-settle {
+  from { background: color-mix(in srgb, var(--color-accent) 12%, transparent); }
+  to { background: transparent; }
+}
+[data-iii-ui="database"] .db-change-op {
+  min-width: 52px;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+  color: var(--color-ink-ghost);
+  border: 1px solid var(--color-rule);
+  padding: 0 4px;
+  text-align: center;
+}
+[data-iii-ui="database"] .db-change-op.op-insert { color: var(--color-ok); }
+[data-iii-ui="database"] .db-change-op.op-delete { color: #c60021; }
+/* update stays ink: accent means "selected/active" everywhere else on the
+   page, and delete borrows the derived alert ink AA-safe at badge size. */
+[data-iii-ui="database"] .db-change-op.op-update { color: var(--color-ink); }
+[data-iii-ui="database"] .db-change-rows { color: var(--color-ink-faint); font-variant-numeric: tabular-nums; }
+[data-iii-ui="database"] .db-change-at { margin-left: auto; color: var(--color-ink-ghost); font-variant-numeric: tabular-nums; }

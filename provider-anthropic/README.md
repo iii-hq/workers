@@ -92,6 +92,10 @@ Anthropic ships new models; discovery only supplies bare ids.
 
 ## Notes
 
+- **Token counting:** `provider::anthropic::count_tokens` (behind
+  `router::count_tokens`) posts the assembled prompt to the messages
+  endpoint's `count_tokens` sibling for an exact provider-metered count;
+  it never runs the model and costs nothing.
 - **Structured output:** the Messages API has no native JSON mode; every
   catalog record declares `supports_structured_output: false`, and a
   forwarded `response_format` is reported in `warnings` and ignored.
@@ -102,7 +106,7 @@ Anthropic ships new models; discovery only supplies bare ids.
   (config slice → `ANTHROPIC_API_KEY` on the router → none). Both `api_key`
   (x-api-key) and `oauth` (Bearer) shapes work; v1 performs no OAuth refresh.
 - **Identity binding:** the router issues a `registration_token` on first
-  registration, persisted in iii-state (scope `provider-anthropic`). If that
+  registration, persisted in state (scope `provider-anthropic`). If that
   state is lost the router rejects re-registration — clear the binding on
   the router side to re-pair.
 

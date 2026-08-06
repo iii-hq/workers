@@ -16,6 +16,12 @@ own default bind address and port. Point `api_url` at any running
 
 `provider::llamacpp::embed` serves batch text embeddings from the same configured server when llama-server runs with `--embeddings` and an embedding-capable model (e.g. a nomic-embed GGUF). One vector per input, order preserved; behind `router::embed`, this gives the memory worker fully local semantic recall with no cloud call.
 
+`provider::llamacpp::count_tokens` counts a prompt through the server's
+Anthropic-compatible `/v1/messages/count_tokens` route behind
+`router::count_tokens`. The count uses the tokenizer baked into whichever
+GGUF is loaded, which is the only way to be right about a model the operator
+chose. Counting is local and never runs the model.
+
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with
@@ -24,7 +30,7 @@ own default bind address and port. Point `api_url` at any running
   LLAMACPP_API_KEY`; the post-register refresh discovers the live catalog
   from the resolved server.
 - **Identity binding:** the router returns a `registration_token` on first
-  registration; it is persisted in iii-state (scope `provider-llamacpp`,
+  registration; it is persisted in state (scope `provider-llamacpp`,
   key `registration_token`) and presented on every later
   `register`/`resolve`/`reconcile`. If that state is lost the router rejects
   re-registration — the operator must clear the binding on the router side.

@@ -1,0 +1,90 @@
+{
+  "description": "Recent file changes in the workspace, newest first, one entry per path. Recorded by the observer for every change however it was made, so it answers what happened while nothing was watching. Each entry carries the patch, the line counts, the function that performed the write, and the harness session and turn it happened in.",
+  "function_id": "editor::changes",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ChangeRecord": {
+        "description": "One recorded change, as `editor::changes` returns it. Mirrors the `editor::changed` event: the log is those events, kept.",
+        "properties": {
+          "added": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "cause": {
+            "description": "Function that performed the write, e.g. `shell::fs::write`.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`created`, `modified`, `deleted`, or `moved`.",
+            "type": "string"
+          },
+          "patch": {
+            "default": "",
+            "description": "Unified patch for the change, empty when there was nothing to compare.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Path relative to the workspace root the change was recorded against.",
+            "type": "string"
+          },
+          "removed": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "root": {
+            "default": "",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "The harness session and turn the write happened in, absent when it happened outside a turn.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "truncated": {
+            "default": false,
+            "type": "boolean"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "added",
+          "cause",
+          "kind",
+          "path",
+          "removed"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Response of `editor::changes`.",
+    "properties": {
+      "changes": {
+        "description": "Newest first, one entry per path.",
+        "items": {
+          "$ref": "#/definitions/ChangeRecord"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "changes"
+    ],
+    "title": "ChangesView",
+    "type": "object"
+  }
+}

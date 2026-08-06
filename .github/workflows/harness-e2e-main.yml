@@ -43,8 +43,6 @@ jobs:
     with:
       runs: 1
       max_parallel: 2
-      quality_advisory: true
-      ci_score_floor: 50
       benchmark_lane: main
       subjects: ${{ vars.HARNESS_E2E_SUBJECTS || '[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]' }}
       judge_model: ${{ vars.HARNESS_E2E_JUDGE_MODEL || 'claude-sonnet-4-6' }}
@@ -53,3 +51,4 @@ jobs:
       anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
       openai_api_key: ${{ secrets.OPENAI_API_KEY }}
       zai_api_key: ${{ secrets.ZAI_API_KEY }}
+      deepseek_api_key: ${{ secrets.DEEPSEEK_API_KEY }}

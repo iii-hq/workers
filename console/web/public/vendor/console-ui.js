@@ -25,10 +25,16 @@ export const {
   DropdownMenuTrigger,
   EmptyState,
   ErrorBoundary,
+  FileDiff,
   Input,
   JsonHighlight,
   Markdown,
   MarkdownPreview,
+  PageBody,
+  PageHeader,
+  PageMain,
+  PageShell,
+  PageSidebar,
   Select,
   Skeleton,
   StatusDot,
@@ -40,5 +46,6 @@ export const {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
+  WorkerConfigurationDialog,
 } = api.components
 export default api

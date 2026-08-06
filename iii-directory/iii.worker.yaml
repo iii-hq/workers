@@ -3,6 +3,7 @@ name: iii-directory
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: iii-directory
 tags: [introspect, registry, skills, directory]
 description: Engine introspection (functions / triggers / workers), workers registry proxy, and filesystem-backed skill + prompt reader.

@@ -1270,6 +1270,26 @@ footer {
   vector-effect: non-scaling-stroke;
 }
 
+.efficiency-baseline-value {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.efficiency-sparkline-baseline {
+  stroke: var(--text-muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.6;
+  vector-effect: non-scaling-stroke;
+}
+
+.efficiency-sparkline-hit {
+  fill: transparent;
+}
+
 .efficiency-guardrail {
   display: flex;
   flex-wrap: wrap;

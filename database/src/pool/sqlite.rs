@@ -32,6 +32,17 @@ impl SqliteConn {
 }
 
 impl SqlitePool {
+    /// Live occupancy from r2d2's own counters.
+    pub fn stats(&self) -> crate::pool::PoolStats {
+        let st = self.inner.state();
+        crate::pool::PoolStats {
+            max: self.inner.max_size(),
+            size: Some(st.connections),
+            idle: Some(st.idle_connections),
+            waiting: None,
+        }
+    }
+
     pub fn new(url: &str, pool_cfg: &PoolConfig) -> Result<Self, DbError> {
         let path = url.strip_prefix("sqlite:").unwrap_or(url);
         let manager = if path == ":memory:" || path.starts_with(":memory:") {

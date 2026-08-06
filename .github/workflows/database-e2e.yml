@@ -1,4 +1,5 @@
 name: database E2E
+run-name: Test · database_e2e · ${{ inputs.operation_id || github.event_name }}
 
 on:
   pull_request:
@@ -6,9 +7,22 @@ on:
       - 'database/**'
       - '.github/workflows/database-e2e.yml'
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Optional full source commit SHA
+        type: string
+        default: ''
+      operation_id:
+        description: Release Control operation UUID
+        type: string
+        default: ''
+      step_id:
+        description: Release Control operation step UUID
+        type: string
+        default: ''
 
 concurrency:
-  group: database-e2e-${{ github.ref }}
+  group: database-e2e-${{ inputs.operation_id || inputs.source_sha || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -21,6 +35,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"

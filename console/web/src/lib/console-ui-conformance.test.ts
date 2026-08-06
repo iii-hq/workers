@@ -40,8 +40,16 @@ import {
 } from '@/components/ui/DropdownMenu'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { FileDiff } from '@/components/ui/FileDiff'
 import { Input } from '@/components/ui/Input'
 import { MarkdownPreview } from '@/components/ui/MarkdownPreview'
+import {
+  PageBody,
+  PageHeader,
+  PageMain,
+  PageShell,
+  PageSidebar,
+} from '@/components/ui/PageChrome'
 import { Select } from '@/components/ui/Select'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
@@ -55,6 +63,7 @@ import {
 import { components } from '@/lib/console-api'
 import { Markdown } from '@/lib/markdown'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
+import { WorkerConfigurationDialog } from '@/pages/Workers/components/WorkerConfigurationDialog'
 
 /**
  * The type-level check: assigning each real component to the package's
@@ -80,10 +89,16 @@ const conformance: {
   DropdownMenuTrigger: typeof ConsoleUi.DropdownMenuTrigger
   EmptyState: typeof ConsoleUi.EmptyState
   ErrorBoundary: typeof ConsoleUi.ErrorBoundary
+  FileDiff: typeof ConsoleUi.FileDiff
   Input: typeof ConsoleUi.Input
   JsonHighlight: typeof ConsoleUi.JsonHighlight
   Markdown: typeof ConsoleUi.Markdown
   MarkdownPreview: typeof ConsoleUi.MarkdownPreview
+  PageBody: typeof ConsoleUi.PageBody
+  PageHeader: typeof ConsoleUi.PageHeader
+  PageMain: typeof ConsoleUi.PageMain
+  PageShell: typeof ConsoleUi.PageShell
+  PageSidebar: typeof ConsoleUi.PageSidebar
   Select: typeof ConsoleUi.Select
   Skeleton: typeof ConsoleUi.Skeleton
   StatusDot: typeof ConsoleUi.StatusDot
@@ -95,6 +110,7 @@ const conformance: {
   Tooltip: typeof ConsoleUi.Tooltip
   TooltipContent: typeof ConsoleUi.TooltipContent
   TooltipTrigger: typeof ConsoleUi.TooltipTrigger
+  WorkerConfigurationDialog: typeof ConsoleUi.WorkerConfigurationDialog
 } = {
   Badge,
   Button,
@@ -114,10 +130,16 @@ const conformance: {
   DropdownMenuTrigger,
   EmptyState,
   ErrorBoundary,
+  FileDiff,
   Input,
   JsonHighlight,
   Markdown,
   MarkdownPreview,
+  PageBody,
+  PageHeader,
+  PageMain,
+  PageShell,
+  PageSidebar,
   Select,
   Skeleton,
   StatusDot,
@@ -129,6 +151,7 @@ const conformance: {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
+  WorkerConfigurationDialog,
 }
 
 describe('@iii-dev/console-ui surface', () => {

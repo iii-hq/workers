@@ -929,6 +929,73 @@
         ],
         "type": "object"
       },
+      "AssembleBreakdown": {
+        "description": "Where the returned `token_count` sits, by category — the same sums the pipeline already maintains, exposed so callers can render a context breakdown without re-counting: `token_count` equals the by_role sum plus `system_prompt_tokens`, `tools_tokens`, and the request overhead.",
+        "properties": {
+          "by_role": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ByRoleTokens"
+              }
+            ],
+            "description": "The returned messages' tokens by role."
+          },
+          "estimator": {
+            "$ref": "#/definitions/EstimatorName"
+          },
+          "system_prompt_tokens": {
+            "description": "Estimated tokens of the returned system prompt (any compaction summary section included).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "tools_tokens": {
+            "description": "Estimated tokens of the invocation schemas.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_role",
+          "estimator",
+          "system_prompt_tokens",
+          "tools_tokens"
+        ],
+        "type": "object"
+      },
+      "ByRoleTokens": {
+        "description": "Per-role token breakdown of the `messages` array.",
+        "properties": {
+          "assistant": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "custom": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "function_result": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "user": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "assistant",
+          "custom",
+          "function_result",
+          "user"
+        ],
+        "type": "object"
+      },
       "ContentBlock": {
         "description": "The atomic unit of message content. A message's `content` is an ordered array of these.",
         "oneOf": [
@@ -1070,6 +1137,14 @@
         ],
         "type": "string"
       },
+      "EstimatorName": {
+        "description": "Which estimator produced the count.",
+        "enum": [
+          "tokenizer",
+          "heuristic"
+        ],
+        "type": "string"
+      },
       "ModelResolvedWire": {
         "description": "How the model limits were resolved.",
         "enum": [
@@ -1148,6 +1223,9 @@
       "applied": {
         "$ref": "#/definitions/Applied"
       },
+      "breakdown": {
+        "$ref": "#/definitions/AssembleBreakdown"
+      },
       "effective_max_output_tokens": {
         "description": "Effective output allocation used to derive `usable`. This is the router-resolved request limit, not the model catalog ceiling.",
         "format": "uint64",
@@ -1182,6 +1260,7 @@
     },
     "required": [
       "applied",
+      "breakdown",
       "effective_max_output_tokens",
       "messages",
       "model_resolved",

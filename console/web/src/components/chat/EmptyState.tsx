@@ -105,8 +105,8 @@ function ReadyBody() {
       <h1 className={HEADING_CLASS}>welcome to iii! 👋</h1>
       <div className="flex flex-col gap-2">
         <p className={BODY_CLASS}>
-          You're in an agent-oriented workspace where you can
-          leverage the power of a full-featured agentic system:
+          You're in an agent-oriented workspace where you can leverage the power
+          of a full-featured agentic system:
         </p>
         <ul className="font-mono text-[13px] leading-[1.7] text-ink-faint flex flex-col gap-1">
           <li>· trigger functions via the function registry</li>

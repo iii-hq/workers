@@ -55,9 +55,10 @@ is optional; without it no call is held and every allowed call runs un-gated.
 - An in-run agent cannot start turns: `send` / `run` / `turn` / `stop` are denied
   to the model by policy. `harness::spawn` is the only turn-starter an agent calls
   directly, and it self-enforces depth, fan-out, and policy subsetting. The other
-  path is event-driven: an agent binds `engine::register_trigger` →
-  `harness::react` (see Reactive triggers) and the engine spawns the sub-agent
-  when the event fires.
+  path is event-driven: an agent binds `engine::register_trigger` straight to
+  `harness::spawn` (see Reactive triggers), with the spawn spec in the
+  registration `metadata`, and the engine spawns the sub-agent when the event
+  fires.
 
 ## Functions
 
@@ -75,9 +76,8 @@ Consumer-facing:
 Internal — the harness drives these; never trigger them directly:
 `harness::turn` (the durable loop step), `harness::function::trigger` /
 `harness::function::resolve` (dispatch and parked-call settle),
-`harness::sweep-pending` (cron expiry), `harness::react` (the trigger-bridge
-target — bound via `engine::register_trigger`, never triggered directly), and
-`harness::on-config-change` (hot-reload).
+`harness::sweep-pending` (cron expiry), and `harness::on-config-change`
+(hot-reload).
 
 ## Reactive triggers
 
@@ -99,38 +99,41 @@ Binding `config` filters delivery by `session_id`, or by `parent_session_id` to
 watch the children a turn `spawn`s (in-turn spawns only — a direct
 `harness::spawn` call creates no parent link, so filter those by `session_id`).
 
-An event can also START a sub-agent, not just notify a handler: bind the event to
-`harness::react` with the sub-agent spec in the registration `metadata`
-(`{ task, model?, session_id?, parent_session_id?, provider?, options?, join? }`) —
-when the event fires, the engine spawns it. An in-session registration that
-omits `model` inherits the registering turn's model (and its provider, when the
-spec pins none); raw engine-side registrations have no turn to inherit from and
-must pass one. A supplied `model` must be a live id from `router::models::list`
-(validated at registration and again at fire time).
-Omit `parent_session_id` and the child nests under the registering session's
-root automatically; pin it only to choose a different REAL session (an invented
-id shows the children as disconnected roots). A trigger-fired spawn has no
-parent policy to inherit — it gets the harness's read-only `default_functions`
-baseline unless `options.functions` grants more. Predecessor subscriptions
-carrying the same `join.id`/`expect` and a distinct `key` each form a fan-in
-barrier: the downstream spawns exactly once, fed every predecessor's result, and
-the join's subscriptions are auto-unregistered once it fires (set
-`join.rearm: true` to keep them registered so the join fires again on each next
-complete set). The downstream delivers into the registering session by default
-when `session_id` is omitted — the fan-in result lands back in that chat.
-Filter turn-completed predecessors only by session ids the upstream specs
-actually pin (or join on state keys instead); registration returns a warning
-`note` when the filtered session doesn't exist. Runaway chains are stopped by three loop breakers — self-edge
-drop, a reactive depth cap of 8, and a ~10-spawns/minute per-subscription rate
-limit — but still design filters so a reaction is not matched by its own
-subscription. Filter join predecessors by `session_id` (pre-pick the
-child session ids, unique per run — a readable slug plus a few random
-characters, e.g. `critic-a-b4k9`, never the originating session id as a
-prefix; spawn's `session_id` creates the session if missing but silently
-reuses an existing one, transcript and console nesting included), never
-`parent_session_id`. Set the last stage's `session_id` to the originating session
-to deliver the pipeline's result back into that conversation. This is the in-run
-agent's chaining path; the `registerFunction` recipe below is for workers.
+Bind an event to a sub-agent with one call — the spawn spec goes in the
+registration `metadata`; the fired event is appended to the task:
+
+```json
+engine::register_trigger {
+  "trigger_type": "harness::turn-completed",
+  "config": { "session_id": "<child>" },
+  "function_id": "harness::spawn",
+  "metadata": { "task": "Summarize the completed run.", "once": true }
+}
+```
+
+`model` defaults to the registering turn's model. A failed upstream turn
+does not fire the reaction unless `continue_on_error: true`. Reactive
+chains stop at depth 8. There is no fan-in join primitive — use the
+workflow worker to join parallel work.
+
+An in-session registration that omits `model` also inherits its provider,
+when the spec pins none; raw engine-side registrations have no turn to
+inherit from and must pass one, and any supplied `model` must be a live id
+from `router::models::list` (validated at registration and again at fire
+time). Omit `parent_session_id` and the child nests under the registering
+session's root automatically; pin it only to choose a different REAL
+session (an invented id shows the children as disconnected roots). A
+trigger-fired spawn has no parent policy to inherit — it gets the harness's
+read-only `default_functions` baseline unless `options.functions` grants
+more (narrowing only, same as a direct `harness::spawn` call). Filter
+`turn-completed` only by session ids you know exist; registration returns a
+warning `note` when the filtered session doesn't. Self-edge drop and the
+depth cap are the ONLY loop breakers — still design filters so a reaction is
+not matched by its own subscription. A cycle routed through a state write (or
+any other hop that starts a fresh turn) re-enters at depth 0 and is NOT
+throttled: every lap around the cycle spawns another paid turn indefinitely.
+Design reaction graphs acyclically. This is the in-run agent's chaining path;
+the `registerFunction` recipe below is for workers.
 
 ### How to bind
 

@@ -14,6 +14,8 @@ prose explains how to use them.
 | Document | Audience | Read it when |
 |---|---|---|
 | [integration.md](integration.md) | Authors of consumers / siblings | You are building something on top of the harness — a chat UI, a Telegram / WhatsApp / Slack bridge, a cron or webhook worker, an event-driven agent loop, a notification sibling. This file is the handoff contract. |
+| [reactive-triggers.md](reactive-triggers.md) | Anyone wiring an event to an agent | You are registering a trigger, or you last saw this surface when `harness::react` existed. Covers what changed, the full `engine::register_trigger` payload, conditions, lifecycle, and how to migrate a react binding. |
+| [trigger-bindings.md](trigger-bindings.md) | Anyone changing the dispatch path | You are touching `functions/subscribe.rs`, `functions/trigger_deliver.rs`, `bindings/*`, or the spawn/send seam — the internal design and why the harness owns dispatch instead of the engine. |
 
 The worker [README](../README.md) is the operator how-to (install, config,
 quickstart). The spec

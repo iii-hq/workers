@@ -14,9 +14,9 @@ without using the iii SDK. It exposes no callable `http::*` functions; its
 entire surface is the `http` trigger type, bound through a worker SDK trigger
 registration such as `iii.registerTrigger({ type: 'http', function_id, config })`.
 
-Install it with `iii worker add http`. The engine builtin `iii-http` must not
-run on the same engine because it also owns the `http` trigger type. Remove
-`iii-http` from the engine config before starting this worker; the standalone
+Install it with `iii worker add http`. The legacy in-engine HTTP service must not
+run on the same engine because it also owns the `http` trigger type. Remove the
+legacy built-in from the engine config before starting this worker; the standalone
 worker refuses to boot when the builtin is active.
 
 Incoming requests are matched by HTTP method and path. The invoked handler
@@ -46,7 +46,7 @@ chunked streaming response.
 - This is not a scheduler or event queue. For clock-based execution, use
   `cron`; for data-change reactions, use the relevant state, stream, queue, or
   database worker.
-- The built-in `iii-http` worker cannot run beside this standalone worker on
+- The legacy in-engine HTTP service cannot run beside this standalone worker on
   the same engine because both own the `http` trigger type.
 - Route shapes with the same method and equivalent path structure conflict:
   `/orders/:id` and `/orders/:order_id` are the same shape.

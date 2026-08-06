@@ -35,6 +35,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             max_total_tokens: SCENARIO_MAX_TOTAL_TOKENS,
             stuck_timeout_seconds: STUCK_WATCHDOG_SECONDS,
         },
+        denied_functions: &[],
         threshold: 90,
         criteria: vec![
             CriterionSpec {
@@ -45,20 +46,21 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             CriterionSpec {
                 id: "reactive_aggregates",
                 weight: 30,
-                description: "Trigger-spawned reactors maintain totals that exactly match the source rows.",
+                description: "A mechanical trigger call maintains totals that exactly match the source rows.",
             },
             CriterionSpec {
                 id: "trigger_orchestration",
                 weight: 25,
-                description: "The watch is armed before writers start and the documented fallback is proven.",
+                description: "The aggregate call and barrier wake are armed before writers start and proven by delivery records.",
             },
             CriterionSpec {
                 id: "finalization_cleanup",
                 weight: 20,
-                description: "One trigger-spawned finalizer writes a passing report and removes run triggers.",
+                description: "The barrier-woken root directly spawns one finalizer, which writes a passing report before cleanup.",
             },
         ],
         judge_reference: None,
+        setup: None,
         evaluate,
         cleanup: Some(cleanup::run),
     }

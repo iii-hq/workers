@@ -15,6 +15,11 @@ the plan's models (`glm-5.2`, `glm-5.1`, `glm-5`, `glm-5-turbo`, `glm-4.7`,
 to `https://api.z.ai/api/paas/v4/chat/completions` (pay-as-you-go) for the
 full GLM lineup.
 
+`provider::zai::count_tokens` counts a prompt behind `router::count_tokens`
+with GLM's own published vocabulary rather than a borrowed one, which matters
+most for the Chinese text these models are used for. The vocabulary is fetched
+once and cached; counting never runs the model and costs nothing.
+
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with
@@ -24,7 +29,7 @@ full GLM lineup.
   the curated catalog, gated on a configured credential (no key → empty
   slice, so the picker never shows unusable rows).
 - **Identity binding:** the router returns a `registration_token` on first
-  registration; it is persisted in iii-state (scope `provider-zai`,
+  registration; it is persisted in state (scope `provider-zai`,
   key `registration_token`) and presented on every later
   `register`/`resolve`/`reconcile`. If that state is lost the router rejects
   re-registration — the operator must clear the binding on the router side.

@@ -8,6 +8,12 @@ Implements the provider protocol from
 chat/reasoning families ∪ curated capability snapshot →
 `router::models::reconcile`).
 
+`provider::xai::count_tokens` counts a prompt behind `router::count_tokens`:
+xAI owns the vocabulary (`/tokenize-text`), this worker owns the chat
+framing. The whole request is tokenized in one call rather than one per
+message, which costs a separator token per row. xAI documents that this
+tokenizer can disagree with what billing records.
+
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with
@@ -15,7 +21,7 @@ chat/reasoning families ∪ curated capability snapshot →
   The declaration ships a static curated `models` slice (no cold-catalog
   hole) and `credential_env_var: XAI_API_KEY`.
 - **Identity binding:** the router returns a `registration_token` on first
-  registration; it is persisted in iii-state (scope `provider-xai`,
+  registration; it is persisted in state (scope `provider-xai`,
   key `registration_token`) and presented on every later
   `register`/`resolve`/`reconcile`. If that state is lost the router rejects
   re-registration — the operator must clear the binding on the router side.

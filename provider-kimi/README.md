@@ -12,6 +12,11 @@ Implements the provider protocol from
 Moonshot chat families, enriched with a curated capability snapshot →
 `router::models::reconcile`).
 
+`provider::kimi::count_tokens` counts a prompt through Moonshot's own
+estimator endpoint behind `router::count_tokens`, so the number is the
+upstream's rather than a local reconstruction of it. Counting never runs the
+model.
+
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with
@@ -21,7 +26,7 @@ Moonshot chat families, enriched with a curated capability snapshot →
   `api_url: https://api.moonshot.ai/v1/chat/completions`,
   `credential_env_var: MOONSHOT_API_KEY`.
 - **Identity binding:** the router returns a `registration_token` on first
-  registration; it is persisted in iii-state (scope `provider-kimi`,
+  registration; it is persisted in state (scope `provider-kimi`,
   key `registration_token`) and presented on every later
   `register`/`resolve`/`reconcile`. If that state is lost the router rejects
   re-registration — the operator must clear the binding on the router side.

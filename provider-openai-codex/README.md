@@ -8,8 +8,11 @@ backend.
 
 Implements the provider protocol from `tech-specs/2026-06-agentic/llm-router.md`:
 `provider::openai-codex::stream` (Responses SSE → `AssistantMessageEvent` frames
-into a router-owned channel) and `provider::openai-codex::refresh_models`
-(fetches and reconciles the authenticated Codex model catalog).
+into a router-owned channel), `provider::openai-codex::refresh_models`
+(fetches and reconciles the authenticated Codex model catalog), and
+`provider::openai-codex::count_tokens` (local prompt token estimation with
+the tiktoken tokenizers behind `router::count_tokens`; never runs the model,
+costs nothing, and needs no network).
 
 > ⚠️ **Terms-of-service caveat — local/personal dev only.** This drives a
 > personal ChatGPT subscription through the undocumented
@@ -43,7 +46,7 @@ provider id `openai`.
 - **Registration:** self-declares via `router::provider::register` with backoff,
   and re-declares on the `router::ready` trigger. It advertises dynamic model
   listing and `credential_env_var: None`; identity binds via the
-  `registration_token` persisted in iii-state (scope `provider-openai-codex`).
+  `registration_token` persisted in state (scope `provider-openai-codex`).
 - **Models:** fetches the account-scoped Codex catalog from authenticated
   `GET /backend-api/codex/models?client_version=…` at startup, on explicit
   refresh, after router readiness, and every three minutes. Picker-visible

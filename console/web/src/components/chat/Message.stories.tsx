@@ -1,5 +1,10 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import type { AssistantMessage, Attachment, UserMessage } from '@/types/chat'
+import type {
+  AssistantMessage,
+  Attachment,
+  SystemMessage,
+  UserMessage,
+} from '@/types/chat'
 import { Message } from './Message'
 
 const sampleAttachments: Attachment[] = [
@@ -64,6 +69,33 @@ const assistantThinking: AssistantMessage = {
   createdAt: Date.now(),
 }
 
+const triggerFiredCall: SystemMessage = {
+  id: 's_trig1',
+  role: 'system',
+  kind: 'trigger-fired',
+  tone: 'info',
+  content: 'orders watch · called example::check_completion',
+  trigger: {
+    subscription_id: 'sub_00000000000000000000000000000001',
+    trigger_id: '00000000-0000-4000-8000-000000000001',
+    target: 'example::check_completion',
+    label: 'orders watch',
+    once: false,
+    retired: false,
+    fired_at: 1785948999879,
+    payload: {
+      event: {
+        db: 'primary',
+        table: 'orders',
+        op: 'update',
+        affected_rows: 1,
+        at: 1785948999879,
+      },
+    },
+  },
+  createdAt: 1785948999879,
+}
+
 const meta = {
   title: 'Chat/Message',
   component: Message,
@@ -96,4 +128,9 @@ export const AssistantStreaming: Story = {
 export const AssistantThinking: Story = {
   name: 'assistant, thinking (no content yet)',
   args: { message: assistantThinking },
+}
+
+export const TriggerFiredWithPayload: Story = {
+  name: 'system, trigger fired · ƒ-call with payload',
+  args: { message: triggerFiredCall },
 }

@@ -87,15 +87,60 @@
   min-height: 0;
 }
 
+/* Width is a variable the page sets from the drag handle. 200px was a fine
+   default for a file tree and far too narrow for the changes feed, where a
+   row carries a path, a mark, two counts and an age — the folder truncated to
+   "in ch…", which is no information at all. Rather than pick a new number
+   that is wrong for a different tab, the pane is draggable. */
 [data-iii-ui='editor'] .ed-side {
-  width: 200px;
+  width: var(--ed-side-width, 200px);
   flex: none;
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 8px;
-  border-right: 1px solid var(--color-rule);
   min-height: 0;
+  position: relative;
+}
+
+/* The handle sits *on* the border rather than beside it, so the divider the
+   eye already reads as the edge is the thing you grab. Wider than it looks:
+   a 1px target is a target you miss. */
+[data-iii-ui='editor'] .ed-side-handle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  width: 7px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  z-index: 2;
+}
+
+[data-iii-ui='editor'] .ed-side-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: var(--color-rule);
+  transition: background 150ms ease-out;
+}
+
+[data-iii-ui='editor'] .ed-side-handle:hover::after,
+[data-iii-ui='editor'] .ed-side-handle:focus-visible::after,
+[data-iii-ui='editor'] .ed-side-handle[data-dragging='true']::after {
+  background: var(--color-accent);
+}
+
+/* While dragging, the pointer owns the whole page: without this a fast drag
+   selects text in the editor and the resize stutters. */
+[data-iii-ui='editor'][data-resizing='true'] {
+  cursor: col-resize;
+  user-select: none;
 }
 
 [data-iii-ui='editor'] .ed-main {
@@ -249,6 +294,154 @@
   flex: none;
   color: var(--color-ink-ghost);
   font-size: 10.5px;
+}
+
+/* ------------------------------------------------------- the changes feed */
+
+/* A feed row carries more than a name, and the name is still the thing being
+   scanned: the metadata sits to the right at a smaller size and gives up its
+   space last, so a long path truncates before the counts disappear. */
+[data-iii-ui='editor'] .ed-change {
+  height: auto;
+  min-height: 22px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+[data-iii-ui='editor'] .ed-change-meta {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+[data-iii-ui='editor'] .ed-change-by {
+  color: var(--color-ink-faint);
+}
+
+/* A run's header. Sticky so the run a file belongs to stays legible while its
+   files scroll — the summary is the point, not decoration. */
+/* One line, always. Every part of this header is short, but at sidebar widths
+   the *text inside* the parts was wrapping — "changes-demo" broke across two
+   lines and the header became a three-line block that read as noise. Each
+   part now refuses to wrap and the folder gives up its width first. */
+[data-iii-ui='editor'] .ed-group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 8px 6px 3px;
+  background: var(--color-bg);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+/* The label names the run and is never sacrificed. */
+[data-iii-ui='editor'] .ed-group > .ed-change-by {
+  flex: none;
+  color: var(--color-ink);
+}
+
+/* The age belongs at the far end: it is the least important thing here and
+   a fixed right edge makes the column of ages scannable down the feed. */
+[data-iii-ui='editor'] .ed-group > .ed-change-age {
+  margin-left: auto;
+  flex: none;
+  padding-left: 4px;
+}
+
+[data-iii-ui='editor'] .ed-group-files {
+  color: var(--color-ink-ghost);
+}
+
+/* A run that happened outside the open workspace. Accented because it is the
+   answer to "why is that file not in my tree", and the first to truncate
+   because the folder is recoverable from the row beneath it. */
+[data-iii-ui='editor'] .ed-group-root {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-accent);
+}
+
+/* The path splits so the folder can be dropped before the name is: at sidebar
+   widths a truncated name identifies nothing. */
+[data-iii-ui='editor'] .ed-change-path {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  overflow: hidden;
+}
+
+[data-iii-ui='editor'] .ed-change-dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-ink-ghost);
+  font-size: 11px;
+}
+
+[data-iii-ui='editor'] .ed-change-name {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* Fixed width so the marks, and the counts after them, line up as columns
+   down the feed rather than ragging with each filename's length. */
+[data-iii-ui='editor'] .ed-change-kind {
+  flex: none;
+  width: 8px;
+  text-align: center;
+  color: var(--color-ink-ghost);
+}
+
+/* Same idea for the counts: a right-aligned pair of fixed columns reads as a
+   table, which is what a list of "+n -n" actually is. */
+[data-iii-ui='editor'] .ed-change-meta .ed-add,
+[data-iii-ui='editor'] .ed-change-meta .ed-del {
+  flex: none;
+  min-width: 22px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui='editor'] .ed-change-kind[data-kind='created'] {
+  color: var(--color-ok);
+}
+[data-iii-ui='editor'] .ed-change-kind[data-kind='deleted'] {
+  color: var(--color-alert);
+}
+
+[data-iii-ui='editor'] .ed-change-age {
+  color: var(--color-ink-ghost);
+}
+
+/* The diff card's header: the path takes the room, provenance sits after it,
+   and the close button is pushed to the far end by the spacer. */
+[data-iii-ui='editor'] .ed-change-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+[data-iii-ui='editor'] .ed-change-session {
+  color: var(--color-ink-faint);
+  font-size: 10.5px;
+}
+
+[data-iii-ui='editor'] .ed-bar-spacer {
+  flex: 1;
 }
 
 /* ------------------------------------------------------------------ tabs */

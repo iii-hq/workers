@@ -9,6 +9,7 @@ name: scrapling
 language: python
 deploy: bundle
 manifest: pyproject.toml
+license: Apache-2.0
 tags: [scraping, browser, crawler, anti-bot, extraction, http]
 description: >-
   Scrapling as an iii worker — scrapling::* functions run HTTP / anti-bot /

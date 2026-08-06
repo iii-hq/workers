@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::bail;
 use serde_json::{json, Value};
@@ -63,6 +63,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             max_total_tokens: 1_638_400,
             stuck_timeout_seconds: 600,
         },
+        denied_functions: &[],
         threshold: PASS_THRESHOLD,
         criteria: vec![
             CriterionSpec {
@@ -100,6 +101,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             },
         ],
         judge_reference: None,
+        setup: None,
         evaluate,
         cleanup: Some(cleanup),
     }
@@ -111,7 +113,11 @@ fn evaluate<'a>(
     run_id: &'a str,
 ) -> EvaluationFuture<'a> {
     Box::pin(async move {
-        let calls = common::function_calls(&observation.transcript);
+        let invocations = common::function_invocations(&observation.transcript);
+        let calls = invocations
+            .iter()
+            .map(|invocation| invocation.call.clone())
+            .collect::<Vec<_>>();
         let installed_shell = calls.iter().any(|call| is_registry_install(call, "shell"));
         let installed_sandbox = calls
             .iter()
@@ -123,11 +129,12 @@ fn evaluate<'a>(
         let surfaces_ready = shell_surface_ready && coder_surface_ready && sandbox_surface_ready;
         let worker_setup = installed_shell && installed_sandbox && surfaces_ready;
 
+        let root = workspace_root(run_id);
         let coder_info = calls.iter().any(|call| call.function_id == "coder::info");
-        let coder_create = calls.iter().any(is_exact_create);
-        let coder_update = calls.iter().any(is_exact_update);
-        let coder_move = calls.iter().any(is_exact_move);
-        let coder_read = calls.iter().any(is_exact_read);
+        let coder_create = calls.iter().any(|call| is_exact_create(call, &root));
+        let coder_update = calls.iter().any(|call| is_exact_update(call, &root));
+        let coder_move = calls.iter().any(|call| is_exact_move(call, &root));
+        let coder_read = calls.iter().any(|call| is_exact_read(call, &root));
         let coder_ordered = calls_are_ordered(
             &calls,
             &[
@@ -138,13 +145,33 @@ fn evaluate<'a>(
                 "coder::read-file",
             ],
         );
-        let coder_results_succeeded =
-            batch_result_succeeded(&observation.transcript, "coder::create-file")
-                && batch_result_succeeded(&observation.transcript, "coder::update-file")
-                && batch_result_succeeded(&observation.transcript, "coder::move")
-                && successful_coder_read(&observation.transcript);
+        let coder_results_succeeded = correlated_call_succeeded(
+            &observation.transcript,
+            &invocations,
+            |call| call.function_id == "coder::info",
+            |_| true,
+        ) && correlated_call_succeeded(
+            &observation.transcript,
+            &invocations,
+            |call| is_exact_create(call, &root),
+            batch_result_succeeded,
+        ) && correlated_call_succeeded(
+            &observation.transcript,
+            &invocations,
+            |call| is_exact_update(call, &root),
+            batch_result_succeeded,
+        ) && correlated_call_succeeded(
+            &observation.transcript,
+            &invocations,
+            |call| is_exact_move(call, &root),
+            batch_result_succeeded,
+        ) && correlated_call_succeeded(
+            &observation.transcript,
+            &invocations,
+            |call| is_exact_read(call, &root),
+            successful_coder_read,
+        );
 
-        let root = workspace_root(run_id);
         let draft_path = root.join(DRAFT_NAME);
         let final_path = root.join(FINAL_NAME);
         let final_read = std::fs::read_to_string(&final_path);
@@ -162,8 +189,13 @@ fn evaluate<'a>(
             && final_matches
             && draft_removed;
 
-        let host_exec = calls.iter().any(is_exact_host_exec);
-        let host_output = successful_output(&observation.transcript, "shell::exec", HOST_STDOUT);
+        let host_exec = calls.iter().any(|call| is_exact_host_exec(call, &root));
+        let host_output = correlated_call_succeeded(
+            &observation.transcript,
+            &invocations,
+            |call| is_exact_host_exec(call, &root),
+            |result| successful_output_result(result, HOST_STDOUT),
+        );
         let host_execution = host_exec && host_output;
 
         let expected_sandbox_name = sandbox_name(run_id);
@@ -300,13 +332,15 @@ fn is_registry_install(call: &common::ObservedFunctionCall, worker: &str) -> boo
             == Some(worker)
 }
 
-fn is_exact_create(call: &common::ObservedFunctionCall) -> bool {
+fn is_exact_create(call: &common::ObservedFunctionCall, root: &Path) -> bool {
     call.function_id == "coder::create-file"
-        && call
-            .arguments
-            .pointer("/files/0/path")
-            .and_then(Value::as_str)
-            == Some(DRAFT_NAME)
+        && workspace_path_matches(
+            call.arguments
+                .pointer("/files/0/path")
+                .and_then(Value::as_str),
+            root,
+            DRAFT_NAME,
+        )
         && call
             .arguments
             .pointer("/files/0/content")
@@ -319,13 +353,15 @@ fn is_exact_create(call: &common::ObservedFunctionCall) -> bool {
             .is_some_and(|files| files.len() == 1)
 }
 
-fn is_exact_update(call: &common::ObservedFunctionCall) -> bool {
+fn is_exact_update(call: &common::ObservedFunctionCall, root: &Path) -> bool {
     call.function_id == "coder::update-file"
-        && call
-            .arguments
-            .pointer("/files/0/path")
-            .and_then(Value::as_str)
-            == Some(DRAFT_NAME)
+        && workspace_path_matches(
+            call.arguments
+                .pointer("/files/0/path")
+                .and_then(Value::as_str),
+            root,
+            DRAFT_NAME,
+        )
         && call
             .arguments
             .pointer("/files/0/ops")
@@ -338,18 +374,22 @@ fn is_exact_update(call: &common::ObservedFunctionCall) -> bool {
             .is_some_and(|files| files.len() == 1)
 }
 
-fn is_exact_move(call: &common::ObservedFunctionCall) -> bool {
+fn is_exact_move(call: &common::ObservedFunctionCall, root: &Path) -> bool {
     call.function_id == "coder::move"
-        && call
-            .arguments
-            .pointer("/files/0/from")
-            .and_then(Value::as_str)
-            == Some(DRAFT_NAME)
-        && call
-            .arguments
-            .pointer("/files/0/to")
-            .and_then(Value::as_str)
-            == Some(FINAL_NAME)
+        && workspace_path_matches(
+            call.arguments
+                .pointer("/files/0/from")
+                .and_then(Value::as_str),
+            root,
+            DRAFT_NAME,
+        )
+        && workspace_path_matches(
+            call.arguments
+                .pointer("/files/0/to")
+                .and_then(Value::as_str),
+            root,
+            FINAL_NAME,
+        )
         && call
             .arguments
             .get("files")
@@ -357,13 +397,17 @@ fn is_exact_move(call: &common::ObservedFunctionCall) -> bool {
             .is_some_and(|files| files.len() == 1)
 }
 
-fn is_exact_read(call: &common::ObservedFunctionCall) -> bool {
+fn is_exact_read(call: &common::ObservedFunctionCall, root: &Path) -> bool {
     call.function_id == "coder::read-file"
-        && call.arguments.get("path").and_then(Value::as_str) == Some(FINAL_NAME)
+        && workspace_path_matches(
+            call.arguments.get("path").and_then(Value::as_str),
+            root,
+            FINAL_NAME,
+        )
         && call.arguments.get("paths").is_none()
 }
 
-fn is_exact_host_exec(call: &common::ObservedFunctionCall) -> bool {
+fn is_exact_host_exec(call: &common::ObservedFunctionCall, root: &Path) -> bool {
     let host_target = call.arguments.get("target").is_none()
         || call
             .arguments
@@ -379,8 +423,45 @@ fn is_exact_host_exec(call: &common::ObservedFunctionCall) -> bool {
         .arguments
         .get("args")
         .and_then(Value::as_array)
-        .is_some_and(|args| args.iter().any(|arg| arg.as_str() == Some(FINAL_NAME)));
+        .is_some_and(|args| {
+            args.iter()
+                .any(|arg| workspace_path_matches(arg.as_str(), root, FINAL_NAME))
+        });
     call.function_id == "shell::exec" && host_target && python && final_arg
+}
+
+fn workspace_path_matches(value: Option<&str>, root: &Path, expected: &str) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    let path = Path::new(value);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+
+    let Some(resolved) = normalize_workspace_path(&resolved) else {
+        return false;
+    };
+    let Some(expected) = normalize_workspace_path(&root.join(expected)) else {
+        return false;
+    };
+    resolved == expected
+}
+
+fn normalize_workspace_path(path: &Path) -> Option<PathBuf> {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => return None,
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    Some(normalized)
 }
 
 fn calls_are_ordered(calls: &[common::ObservedFunctionCall], required: &[&str]) -> bool {
@@ -395,6 +476,20 @@ fn calls_are_ordered(calls: &[common::ObservedFunctionCall], required: &[&str]) 
         next += offset + 1;
     }
     true
+}
+
+fn correlated_call_succeeded(
+    transcript: &Value,
+    invocations: &[common::ObservedFunctionInvocation],
+    call_matches: impl Fn(&common::ObservedFunctionCall) -> bool,
+    result_matches: impl Fn(&Value) -> bool,
+) -> bool {
+    invocations
+        .iter()
+        .filter(|invocation| call_matches(&invocation.call))
+        .any(|invocation| {
+            common::function_result(transcript, invocation).is_some_and(&result_matches)
+        })
 }
 
 fn function_results<'a>(transcript: &'a Value, function_id: &'a str) -> Vec<&'a Value> {
@@ -412,51 +507,45 @@ fn function_results<'a>(transcript: &'a Value, function_id: &'a str) -> Vec<&'a 
         .collect()
 }
 
-fn batch_result_succeeded(transcript: &Value, function_id: &str) -> bool {
-    function_results(transcript, function_id)
-        .into_iter()
-        .any(|message| {
-            message
-                .pointer("/details/results")
-                .and_then(Value::as_array)
-                .is_some_and(|results| {
-                    !results.is_empty()
-                        && results.iter().all(|result| {
-                            result.get("success").and_then(Value::as_bool) == Some(true)
-                        })
-                })
+fn batch_result_succeeded(message: &Value) -> bool {
+    message
+        .pointer("/details/results")
+        .and_then(Value::as_array)
+        .is_some_and(|results| {
+            !results.is_empty()
+                && results
+                    .iter()
+                    .all(|result| result.get("success").and_then(Value::as_bool) == Some(true))
         })
 }
 
-fn successful_coder_read(transcript: &Value) -> bool {
-    function_results(transcript, "coder::read-file")
-        .into_iter()
-        .any(|message| {
-            message.pointer("/details/content").and_then(Value::as_str) == Some(FINAL_SCRIPT)
-        })
+fn successful_coder_read(message: &Value) -> bool {
+    message.pointer("/details/content").and_then(Value::as_str) == Some(FINAL_SCRIPT)
 }
 
 fn successful_output(transcript: &Value, function_id: &str, expected: &str) -> bool {
     function_results(transcript, function_id)
         .into_iter()
-        .any(|message| {
-            message
-                .pointer("/details/exit_code")
-                .and_then(Value::as_i64)
-                == Some(0)
-                && message
-                    .pointer("/details/stdout")
-                    .and_then(Value::as_str)
-                    .is_some_and(|stdout| stdout.trim() == expected)
-                && message
-                    .pointer("/details/stderr")
-                    .and_then(Value::as_str)
-                    .is_some_and(|stderr| stderr.trim().is_empty())
-                && message
-                    .pointer("/details/timed_out")
-                    .and_then(Value::as_bool)
-                    != Some(true)
-        })
+        .any(|message| successful_output_result(message, expected))
+}
+
+fn successful_output_result(message: &Value, expected: &str) -> bool {
+    message
+        .pointer("/details/exit_code")
+        .and_then(Value::as_i64)
+        == Some(0)
+        && message
+            .pointer("/details/stdout")
+            .and_then(Value::as_str)
+            .is_some_and(|stdout| stdout.trim() == expected)
+        && message
+            .pointer("/details/stderr")
+            .and_then(Value::as_str)
+            .is_some_and(|stderr| stderr.trim().is_empty())
+        && message
+            .pointer("/details/timed_out")
+            .and_then(Value::as_bool)
+            != Some(true)
 }
 
 #[derive(Debug, Default)]
@@ -739,6 +828,145 @@ mod tests {
     }
 
     #[test]
+    fn workspace_paths_accept_relative_and_absolute_equivalents() {
+        let root = Path::new("/tmp/e2e-shell-coder/workspace");
+
+        assert!(workspace_path_matches(Some(DRAFT_NAME), root, DRAFT_NAME));
+        assert!(workspace_path_matches(
+            Some("./draft_check.py"),
+            root,
+            DRAFT_NAME
+        ));
+        assert!(workspace_path_matches(
+            root.join(DRAFT_NAME).to_str(),
+            root,
+            DRAFT_NAME
+        ));
+        assert!(workspace_path_matches(
+            root.join(FINAL_NAME).to_str(),
+            root,
+            FINAL_NAME
+        ));
+    }
+
+    #[test]
+    fn workspace_paths_reject_other_targets_and_parent_traversal() {
+        let root = Path::new("/tmp/e2e-shell-coder/workspace");
+
+        assert!(!workspace_path_matches(
+            Some("other/draft_check.py"),
+            root,
+            DRAFT_NAME
+        ));
+        assert!(!workspace_path_matches(
+            Some("checks/../checks/check.py"),
+            root,
+            FINAL_NAME
+        ));
+        assert!(!workspace_path_matches(
+            Some("../workspace/draft_check.py"),
+            root,
+            DRAFT_NAME
+        ));
+        assert!(!workspace_path_matches(
+            Some("/tmp/e2e-shell-coder/outside/draft_check.py"),
+            root,
+            DRAFT_NAME
+        ));
+        assert!(!workspace_path_matches(None, root, DRAFT_NAME));
+    }
+
+    #[test]
+    fn exact_operations_accept_absolute_workspace_paths() {
+        let root = Path::new("/tmp/e2e-shell-coder/workspace");
+        let draft = root.join(DRAFT_NAME).to_string_lossy().into_owned();
+        let final_path = root.join(FINAL_NAME).to_string_lossy().into_owned();
+        let create = observed_call(
+            "coder::create-file",
+            json!({ "files": [{ "path": draft.clone(), "content": DRAFT_SCRIPT }] }),
+        );
+        let update = observed_call(
+            "coder::update-file",
+            json!({ "files": [{ "path": draft.clone(), "ops": [{ "op": "update_lines" }] }] }),
+        );
+        let move_call = observed_call(
+            "coder::move",
+            json!({ "files": [{ "from": draft, "to": final_path.clone() }] }),
+        );
+        let read = observed_call("coder::read-file", json!({ "path": final_path.clone() }));
+        let host = observed_call(
+            "shell::exec",
+            json!({ "command": "python3", "args": [final_path] }),
+        );
+
+        assert!(is_exact_create(&create, root));
+        assert!(is_exact_update(&update, root));
+        assert!(is_exact_move(&move_call, root));
+        assert!(is_exact_read(&read, root));
+        assert!(is_exact_host_exec(&host, root));
+    }
+
+    #[test]
+    fn exact_call_requires_its_own_successful_result() {
+        let root = Path::new("/tmp/e2e-shell-coder/workspace");
+        let transcript = json!({
+            "messages": [
+                invocation(
+                    "call-create",
+                    "coder::create-file",
+                    json!({ "files": [{
+                        "path": root.join(DRAFT_NAME).to_string_lossy(),
+                        "content": DRAFT_SCRIPT
+                    }] }),
+                ),
+                correlated_result(
+                    "call-other",
+                    "coder::create-file",
+                    false,
+                    json!({ "results": [{ "success": true }] }),
+                )
+            ]
+        });
+        let invocations = common::function_invocations(&transcript);
+
+        assert!(invocations
+            .iter()
+            .any(|invocation| is_exact_create(&invocation.call, root)));
+        assert!(!correlated_call_succeeded(
+            &transcript,
+            &invocations,
+            |call| is_exact_create(call, root),
+            batch_result_succeeded,
+        ));
+
+        let transcript = json!({
+            "messages": [
+                invocation(
+                    "call-create",
+                    "coder::create-file",
+                    json!({ "files": [{
+                        "path": root.join(DRAFT_NAME).to_string_lossy(),
+                        "content": DRAFT_SCRIPT
+                    }] }),
+                ),
+                correlated_result(
+                    "call-create",
+                    "coder::create-file",
+                    false,
+                    json!({ "results": [{ "success": true }] }),
+                )
+            ]
+        });
+        let invocations = common::function_invocations(&transcript);
+        assert!(correlated_call_succeeded(
+            &transcript,
+            &invocations,
+            |call| is_exact_create(call, root),
+            batch_result_succeeded,
+        ));
+    }
+
+    #[test]
     fn recognizes_successful_sandbox_lifecycle() {
         let name = "e2e-shell-coder-1234567890ab";
         let id = "sandbox-1";
@@ -819,6 +1047,48 @@ mod tests {
                 "role": "function_result",
                 "function_id": function_id,
                 "is_error": false,
+                "details": details,
+                "content": []
+            }
+        })
+    }
+
+    fn observed_call(function_id: &str, arguments: Value) -> common::ObservedFunctionCall {
+        common::ObservedFunctionCall {
+            function_id: function_id.into(),
+            arguments,
+        }
+    }
+
+    fn invocation(call_id: &str, function_id: &str, payload: Value) -> Value {
+        json!({
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "function_call",
+                    "id": call_id,
+                    "function_id": "agent_trigger",
+                    "arguments": {
+                        "function": function_id,
+                        "payload": payload
+                    }
+                }]
+            }
+        })
+    }
+
+    fn correlated_result(
+        call_id: &str,
+        function_id: &str,
+        is_error: bool,
+        details: Value,
+    ) -> Value {
+        json!({
+            "message": {
+                "role": "function_result",
+                "function_call_id": call_id,
+                "function_id": function_id,
+                "is_error": is_error,
                 "details": details,
                 "content": []
             }

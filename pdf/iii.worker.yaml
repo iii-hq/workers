@@ -1,0 +1,11 @@
+iii: v1
+name: pdf
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: pdf
+tags: [pdf, document, markdown, text-extraction, ocr-routing, tables]
+description: Read PDFs locally — classify text-based vs scanned, convert to markdown, extract positioned text and tables, and report which pages still need OCR.
+dependencies:
+  configuration: "^0.21.6"

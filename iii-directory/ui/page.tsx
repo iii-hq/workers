@@ -25,7 +25,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'directory',
     title: 'directory',
-    render: () => <DirectoryPage host={host} />,
+    render: (props) => <DirectoryPage host={host} {...props} />,
   })
 
   host.functionTriggers.register(createDirectoryTriggerRenderer())

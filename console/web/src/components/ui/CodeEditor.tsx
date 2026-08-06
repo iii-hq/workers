@@ -210,12 +210,15 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
     // popup (the default stays prose-quiet) and registers a provider for the
     // current language offering those words. The joined key keeps the effect
     // from churning when the parent passes a fresh array of the same words.
-    const completionsKey = (completions ?? []).join('')
+    // '\n' as separator: identifiers can't contain it, and unlike the
+    // invisible control character it replaced, it can't masquerade as an
+    // empty string in an editor or a grep.
+    const completionsKey = (completions ?? []).join('\n')
     React.useEffect(() => {
       const editor = editorRef.current
       if (!ready || !editor) return
       const words = completionsKey
-        ? completionsKey.split('').filter(Boolean)
+        ? completionsKey.split('\n').filter(Boolean)
         : []
       if (words.length === 0) return
       editor.updateOptions({

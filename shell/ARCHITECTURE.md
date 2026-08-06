@@ -25,6 +25,23 @@ iii -c ./config.yaml
 
 `iii worker add shell` does not currently pull `iii-sandbox` along — run `iii worker add iii-sandbox` separately before using `shell::exec { target: sandbox }` or any `shell::fs::*` sandbox-target path. Plain host-targeted `shell::exec` works without it.
 
+## Injected console UI (`ui/`, `src/ui.rs`)
+
+The worker ships UI into any running console (SOP:
+`workers/docs/sops/injectable-console-ui.md`): the shell explorer page
+(`#/ext/shell` — files/git/search sidebar beside the console's shared Monaco
+editor and `FileDiff`) and the `shell::*` function-trigger renderers (moved
+out of the console SPA; the console's `first-party/shell` family is gone).
+The explorer acts through the worker's own functions: `coder::tree/read-file/
+create-file/search` and `shell::exec` (git, argv form, `cwd`-scoped).
+
+Building the worker therefore needs Node + pnpm on PATH: `build.rs` runs
+`pnpm install && pnpm build` in `ui/` when `ui/dist/` is missing or stale and
+`include_str!`s the outputs (`SKIP_UI_BUILD=1` uses existing `ui/dist/`
+as-is). Dev loop: `cd ui && pnpm watch` plus `III_SHELL_UI_WATCH=1` on the
+worker — open console tabs hot-swap the assets. UI parser/format tests:
+`cd ui && pnpm test`.
+
 ## CLI flags
 
 | flag | default | purpose |
@@ -156,7 +173,7 @@ let bytes = reader.read_all().await?;
 
 ## Tests
 
-- `tests/e2e/` — TypeScript harness. The default suite (`run-tests.sh`) covers happy paths, safety guardrails, jobs lifecycle, fs across host and sandbox targets, adversarial protocol-break suites for streaming/exec/jobs/encoding/concurrency, plus vulnerability-regression cases under `cases-vuln-repro.ts`. The jailed suite (`run-tests-jailed.sh`, against `config-jailed.yaml`) covers the symlink-parent jail-escape regression. Case count drifts as cases are added/removed — treat `run-tests.sh`'s own summary line (or `reports/report.json`'s `total`) as ground truth rather than a number in this doc.
+- `tests/e2e/` — TypeScript harness. The default suite (`run-tests.sh`) covers happy paths, safety guardrails, jobs lifecycle, fs across host and sandbox targets, adversarial protocol-break suites for streaming/exec/jobs/encoding/concurrency, plus vulnerability-regression cases under `cases-vuln-repro.ts`. The jailed mode (`run-tests.sh --suite=jailed`, against `config-jailed.yaml`) covers the symlink-parent jail-escape regression. Case count drifts as cases are added/removed — treat `run-tests.sh`'s own summary line (or `reports/report.json`'s `total`) as ground truth rather than a number in this doc.
 - `tests/*.rs` — Rust integration tests (`jobs_lifecycle`, `host_fs_branches`, `sandbox_dispatch`, `function_handlers`) covering the host backend branches, sandbox forwarder, and every typed-registration handler. Run with `cargo test`.
 - Line coverage measured with `cargo tarpaulin` sits around 65%; `jobs.rs` is at 100% and the sandbox dispatch path is fully exercised.
 

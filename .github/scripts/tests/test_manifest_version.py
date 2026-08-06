@@ -5,6 +5,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+import _lib
+
 SCRIPT = Path(__file__).resolve().parents[1] / "manifest_version.py"
 
 
@@ -67,6 +71,80 @@ class TestBumpSubcommand:
     def test_bump_rejects_unknown_kind(self, cargo_manifest):
         r = run_script("bump", str(cargo_manifest), "--kind", "weird")
         assert r.returncode != 0
+
+    def test_applies_unnumbered_prerelease_suffix(self, cargo_manifest):
+        r = run_script("bump", str(cargo_manifest), "--kind", "minor", "--suffix", "alpha")
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == "0.2.0-alpha"
+
+    def test_exact_target_is_authoritative(self, cargo_manifest):
+        r = run_script(
+            "bump",
+            str(cargo_manifest),
+            "--kind",
+            "major",
+            "--suffix",
+            "beta",
+            "--target",
+            "0.3.0-alpha",
+        )
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == "0.3.0-alpha"
+
+    def test_allows_forward_maturity_jump(self, cargo_manifest):
+        cargo_manifest.write_text(
+            '[package]\nname = "smoke"\nversion = "0.1.0-experimental"\n'
+        )
+        r = run_script("bump", str(cargo_manifest), "--kind", "none", "--suffix", "beta")
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == "0.1.0-beta"
+
+    @pytest.mark.parametrize("target", ["0.0.9", "0.1.0-preview", "0.1.0-alpha.1"])
+    def test_rejects_backwards_or_unsupported_exact_target(self, cargo_manifest, target):
+        r = run_script("bump", str(cargo_manifest), "--kind", "none", "--target", target)
+        assert r.returncode != 0
+
+    def test_allows_manifest_version_as_is(self, cargo_manifest):
+        r = run_script("bump", str(cargo_manifest), "--kind", "none", "--target", "0.1.0")
+        assert r.returncode == 0, r.stderr
+
+    def test_allows_first_prerelease_from_unreleased_stable_manifest(self, cargo_manifest):
+        r = run_script("bump", str(cargo_manifest), "--kind", "none", "--suffix", "alpha")
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == "0.1.0-alpha"
+
+
+class TestMaturitySubcommand:
+    @pytest.mark.parametrize(
+        ("version", "expected"),
+        [
+            ("1.2.3-experimental", "experimental"),
+            ("1.2.3-alpha", "alpha"),
+            ("1.2.3-beta", "beta"),
+            ("1.2.3", "stable"),
+        ],
+    )
+    def test_classifies_supported_versions(self, version, expected):
+        r = run_script("maturity", version)
+        assert r.returncode == 0
+        assert r.stdout.strip() == expected
+
+
+class TestReleaseHistory:
+    def test_allows_forward_maturity_and_skips(self):
+        _lib.validate_release_history("1.2.3-beta", ["1.2.3-experimental"])
+
+    @pytest.mark.parametrize("target", ["1.2.3-experimental", "1.2.3-alpha"])
+    def test_rejects_maturity_regression(self, target):
+        with pytest.raises(ValueError, match="cannot follow"):
+            _lib.validate_release_history(target, ["1.2.3-beta"])
+
+    def test_rejects_older_core(self):
+        with pytest.raises(ValueError, match="behind existing"):
+            _lib.validate_release_history("1.2.3", ["1.3.0-experimental"])
+
+    def test_allows_idempotent_existing_target_for_workflow_check(self):
+        _lib.validate_release_history("1.2.3-alpha", ["1.2.3-alpha"])
 
 
 class TestVerifySubcommand:

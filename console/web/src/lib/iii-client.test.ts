@@ -5,8 +5,8 @@
  * a second session's send died silently while another session streamed).
  */
 
-import { describe, expect, it } from 'vitest'
 import type { ISdk, RemoteFunctionHandler } from 'iii-browser-sdk'
+import { describe, expect, it } from 'vitest'
 import { wrapSdk } from './iii-client'
 
 function fakeSdk() {

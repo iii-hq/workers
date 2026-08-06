@@ -44,12 +44,34 @@ const HOOK_TIMEOUT_MS: u64 = 3_000;
 const HOOK_ON_ERROR: &str = "fail_open";
 
 /// The subset of the harness hook payload this worker reads.
+///
+/// `session_id` and `turn_id` come from the hook envelope, which is the only
+/// place the identity of the writer exists: the call itself says a file was
+/// written, not who was writing. Carrying them onto the event is what lets a
+/// surface say *this* agent session made *this* change, rather than reporting
+/// an anonymous edit. Both stay optional — a hook fired outside a turn (or by
+/// an operator reproducing one) has no session, and that is not an error.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct HookInput {
     #[serde(default)]
     pub metadata: Option<Value>,
     #[serde(default)]
     pub call: Option<HookCall>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    /// Outcome of the call this hook is reporting on. A write that failed did
+    /// not change anything, and the hook fires either way.
+    #[serde(default)]
+    pub result: Option<HookResult>,
+}
+
+/// The part of the hook's result payload that says whether the call worked.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct HookResult {
+    #[serde(default)]
+    pub is_error: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -125,6 +147,21 @@ pub fn session_root(metadata: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Collapse the platform's aliases for the same directory.
+///
+/// On macOS `/tmp` is a symlink to `/private/tmp`, and `/var` to `/private/var`.
+/// Two workers writing the same file by different names produced two rows for
+/// one file — the feed's dedupe is by path, and these are the same path spelled
+/// two ways. Resolving to the real location makes them one entry again.
+pub fn canonical(path: &str) -> String {
+    for alias in ["/tmp/", "/var/"] {
+        if let Some(rest) = path.strip_prefix(alias) {
+            return format!("/private{alias}{rest}");
+        }
+    }
+    path.to_string()
+}
+
 /// Make `path` relative to `root`, leaving anything outside it alone.
 pub fn relative(path: &str, root: &str) -> String {
     if root == "." || root.is_empty() {
@@ -157,23 +194,23 @@ pub fn bind(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>, emitter: Cha
             let bus = bus.clone();
             let emitter = emitter.clone();
             async move {
-                // Nobody watching means nothing to compute.
-                if !emitter.has_subscribers() {
-                    tracing::debug!("observer: no subscribers, skipping");
-                }
-                if emitter.has_subscribers() {
-                    let snapshot = cfg.read().await.clone();
-                    // Named span under the caller's trace: this fires inside an
-                    // agent turn, and an observed edit that dangled as its own
-                    // root would be unreadable in the traces view — the whole
-                    // point is seeing the write and the event as one chain.
-                    iii_helpers::observability::run_in_span(
-                        "editor::observe file change",
-                        None,
-                        || report(&bus, &snapshot, &emitter, input),
-                    )
-                    .await;
-                }
+                // Recording no longer waits for a subscriber. Skipping when
+                // nobody was watching meant the feed could only ever show what
+                // happened while a page was open, so the question it exists to
+                // answer — what did the agent do while I was elsewhere — was
+                // exactly the one it could not answer. The work is bounded and
+                // fail-open, and the whole hook is `fail_open` besides.
+                let snapshot = cfg.read().await.clone();
+                // Named span under the caller's trace: this fires inside an
+                // agent turn, and an observed edit that dangled as its own
+                // root would be unreadable in the traces view — the whole
+                // point is seeing the write and the event as one chain.
+                iii_helpers::observability::run_in_span(
+                    "editor::observe file change",
+                    None,
+                    || report(&bus, &snapshot, &emitter, input),
+                )
+                .await;
                 Ok::<HookOutput, Error>(HookOutput::default())
             }
         })
@@ -193,6 +230,7 @@ pub fn bind(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>, emitter: Cha
             "on_error": HOOK_ON_ERROR,
         }),
         metadata: None,
+        namespace: iii.namespace(),
     }) {
         Ok(_) => tracing::info!(function_id = HOOK_FN_ID, "file-change observer bound"),
         Err(e) => tracing::warn!(
@@ -205,6 +243,16 @@ pub fn bind(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>, emitter: Cha
 
 /// Build and emit the event for one observed call.
 async fn report(bus: &Bus, cfg: &WorkerConfig, emitter: &ChangedEmitter, input: HookInput) {
+    let session_id = input.session_id.clone();
+    let turn_id = input.turn_id.clone();
+    // A failed write is not a change. The hook runs after every call whether
+    // it worked or not, so without this a `shell::fs::write` refused by the
+    // filesystem jail was reported as an edit — and the file it named appeared
+    // in the feed as something that had happened.
+    if input.result.as_ref().is_some_and(|r| r.is_error) {
+        tracing::debug!("observer: the call failed, nothing changed");
+        return;
+    }
     let Some(call) = input.call else {
         tracing::debug!("observer: hook fired with no call payload");
         return;
@@ -226,7 +274,10 @@ async fn report(bus: &Bus, cfg: &WorkerConfig, emitter: &ChangedEmitter, input: 
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_else(|| ".".to_string()),
     };
-    let rel = relative(&touch.path, &root);
+    // Canonicalize both sides before comparing them: a write addressed as
+    // /tmp/x and a root of /private/tmp are the same place, and comparing the
+    // spellings would call the file "outside the workspace".
+    let rel = relative(&canonical(&touch.path), &canonical(&root));
     // `bus.read` resolves through shell, whose jail/working_dir is its own, NOT
     // this root. Handing it the root-relative path made every read outside
     // shell's cwd fail into an empty patch — silently, because the fallback
@@ -283,23 +334,91 @@ async fn report(bus: &Bus, cfg: &WorkerConfig, emitter: &ChangedEmitter, input: 
         }
     };
 
-    emitter
-        .emit(ChangedEvent {
-            path: rel,
-            cause: call.function_id,
-            kind: touch.kind.to_string(),
-            added,
-            removed,
-            patch,
-            truncated: false,
-            root,
-        })
-        .await;
+    let event = ChangedEvent {
+        path: rel,
+        cause: call.function_id,
+        kind: touch.kind.to_string(),
+        added,
+        removed,
+        patch,
+        truncated: false,
+        root,
+        session_id,
+        turn_id,
+    };
+
+    // Record before pushing. A surface that opens later reads the log, and a
+    // surface that is already open gets the push; recording first means the
+    // two never disagree about what happened. Best-effort, like the emit: a
+    // state write that fails must not fail the agent's write, which has
+    // already happened.
+    record(bus, &event).await;
+    emitter.emit(event).await;
+}
+
+/// Append one change to the durable log, newest first.
+///
+/// Read-modify-write against `state` is not serialized here on purpose: the
+/// hook runs inside one turn at a time per session, and a lost entry in a
+/// recent-activity feed is a far smaller cost than holding a lock across a
+/// bus round trip on the write path of every agent edit.
+async fn record(bus: &Bus, event: &ChangedEvent) {
+    let existing = bus
+        .state_get(workspace::CHANGES_KEY)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_value::<Vec<Value>>(v).ok())
+        .unwrap_or_default();
+    let Ok(entry) = serde_json::to_value(event) else {
+        return;
+    };
+    let next = workspace::record_change(&existing, entry, |e| {
+        e.get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    });
+    if let Err(e) = bus
+        .state_set(workspace::CHANGES_KEY, Value::Array(next))
+        .await
+    {
+        tracing::debug!(error = %e, "observer: could not record the change");
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_collapses_the_macos_symlinked_roots() {
+        assert_eq!(canonical("/tmp/demo/a.md"), "/private/tmp/demo/a.md");
+        assert_eq!(canonical("/var/folders/x"), "/private/var/folders/x");
+        // Already real, or nothing to do with those roots: untouched.
+        assert_eq!(
+            canonical("/private/tmp/demo/a.md"),
+            "/private/tmp/demo/a.md"
+        );
+        assert_eq!(canonical("/Users/me/repo/a.rs"), "/Users/me/repo/a.rs");
+        assert_eq!(canonical("src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn one_file_addressed_two_ways_is_one_path() {
+        // The bug this exists for: /tmp/x and /private/tmp/x are the same
+        // file, and the feed keys on the path, so two spellings made two rows.
+        assert_eq!(
+            relative(
+                &canonical("/tmp/demo/a.md"),
+                &canonical("/private/tmp/demo")
+            ),
+            relative(
+                &canonical("/private/tmp/demo/a.md"),
+                &canonical("/tmp/demo")
+            ),
+        );
+    }
 
     fn call(id: &str, args: Value) -> HookCall {
         HookCall {

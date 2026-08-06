@@ -54,6 +54,14 @@ pub struct ChatOutcome {
     pub error: Option<String>,
 }
 
+/// Ceiling for `count_tokens`, independent of the generation-sized router
+/// timeout. Counting is a tokenizer pass, not a model call, and it runs on the
+/// path that finalizes a turn: inheriting a timeout measured in minutes would
+/// let one slow counting endpoint hold `turn-completed` open for as long as a
+/// whole generation. A count that has not answered by now is not worth the
+/// wait — the caller keeps its estimate.
+const COUNT_TOKENS_TIMEOUT_MS: u64 = 10_000;
+
 #[derive(Clone)]
 pub struct RouterClient {
     iii: Arc<IIIClient>,
@@ -453,6 +461,48 @@ impl RouterClient {
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .map(String::from)
+    }
+
+    /// Exact token count for a request shape via the resolved provider's
+    /// tokenizer (`None` when the router is absent, the provider has no
+    /// counter, or the call fails — the caller falls back to its estimate).
+    /// Returns `(tokens, estimator)`. Counting never runs the model and
+    /// never enters the session context.
+    pub async fn count_tokens(
+        &self,
+        model: &str,
+        provider: Option<&str>,
+        system_prompt: Option<&str>,
+        tools: Option<&[AgentFunction]>,
+        messages: &[Value],
+    ) -> Option<(u64, String)> {
+        let mut payload = json!({ "model": model, "messages": messages });
+        if let Some(p) = provider {
+            payload["provider"] = json!(p);
+        }
+        if let Some(sp) = system_prompt {
+            payload["system_prompt"] = json!(sp);
+        }
+        if let Some(t) = tools {
+            payload["tools"] = serde_json::to_value(t).ok()?;
+        }
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "router::count_tokens".into(),
+                payload,
+                action: None,
+                timeout_ms: Some(self.timeout_ms.min(COUNT_TOKENS_TIMEOUT_MS)),
+            })
+            .await
+            .ok()?;
+        let tokens = resp.get("tokens").and_then(Value::as_u64)?;
+        let estimator = resp
+            .get("estimator")
+            .and_then(Value::as_str)
+            .unwrap_or("provider")
+            .to_string();
+        Some((tokens, estimator))
     }
 
     /// Look up one model's capabilities (`None` when unregistered or router

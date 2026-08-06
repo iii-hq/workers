@@ -31,8 +31,16 @@ import {
 } from '@/components/ui/DropdownMenu'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { FileDiff } from '@/components/ui/FileDiff'
 import { Input } from '@/components/ui/Input'
 import { MarkdownPreview } from '@/components/ui/MarkdownPreview'
+import {
+  PageBody,
+  PageHeader,
+  PageMain,
+  PageShell,
+  PageSidebar,
+} from '@/components/ui/PageChrome'
 import { Select } from '@/components/ui/Select'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
@@ -47,6 +55,7 @@ import { useTheme } from '@/hooks/use-theme'
 import type { IiiClient } from '@/lib/iii-client'
 import { Markdown } from '@/lib/markdown'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
+import { WorkerConfigurationDialog } from '@/pages/Workers/components/WorkerConfigurationDialog'
 import type { ConsoleApi, ExtensionIii } from '@/types/injectable-ui'
 
 /**
@@ -72,7 +81,13 @@ export const components: ConsoleApi['components'] = {
   DropdownMenuSeparator,
   EmptyState,
   ErrorBoundary,
+  FileDiff,
   Input,
+  PageShell,
+  PageHeader,
+  PageBody,
+  PageSidebar,
+  PageMain,
   Select,
   Skeleton,
   StatusDot,
@@ -89,6 +104,10 @@ export const components: ConsoleApi['components'] = {
   JsonHighlight,
   Markdown,
   MarkdownPreview,
+  // The one page-level composite in the kit: worker pages offer "configure"
+  // in place instead of navigating to the workers tab and stranding the
+  // operator there when the editor closes.
+  WorkerConfigurationDialog,
 }
 
 /** Token names mirroring `index.css`'s `@theme` block (documentation aid). */

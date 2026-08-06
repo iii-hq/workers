@@ -4,14 +4,20 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
+use iii_queue::adapter::QueueAdapter;
+use iii_queue::adapters::builtin::BuiltinAdapter;
 use iii_queue::config::{AdapterEntry, QueueConfig};
 use iii_queue::functions::{DLQ_MESSAGES_FN_ID, PUBLISH_FN_ID, REDRIVE_FN_ID};
+use iii_queue::store::FileStore;
+use iii_queue::trigger::Invoker;
 use iii_queue::TRIGGER_TYPE;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use serial_test::serial;
+use tokio::sync::Notify;
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -181,60 +187,59 @@ async fn delivery_dlq_and_redrive_connect_or_skip() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+struct RestartInvoker {
+    started: Notify,
+    resume: AtomicBool,
+    fires: AtomicUsize,
+}
+
+#[async_trait]
+impl Invoker for RestartInvoker {
+    async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+        if self.resume.load(Ordering::SeqCst) {
+            self.fires.fetch_add(1, Ordering::SeqCst);
+            return Ok(None);
+        }
+        self.started.notify_one();
+        std::future::pending().await
+    }
+}
+
 #[tokio::test]
 #[serial]
-async fn file_based_pending_message_survives_worker_restart_connect_or_skip() {
-    let Some(iii) = engine::connect_fresh().await else {
-        return;
-    };
-
+async fn file_based_pending_message_survives_binding_restart() {
     let dir = temp_store_dir();
-    let boot = iii_queue::boot::start(iii.clone(), file_config(&dir))
-        .await
-        .expect("queue worker should boot");
-
-    // Engine-parity restart scenario: the message must be enqueued onto a
-    // SUBSCRIBED topic (fan-out routes it to the subscriber's internal
-    // queue, which is what the file store persists). A publish with no
-    // subscriber buffers on the bare topic and is never drained by a later
-    // subscribe — same as the engine builtin. `concurrency: 0` pauses
-    // consumption (engine semantics) so the message is still pending when
-    // the worker shuts down.
     let queue_name = format!("e2e-restart-{}", Uuid::new_v4());
     let function_id = format!("queue.restart.{queue_name}");
-    register_subscriber_with_config(
-        &iii,
-        &function_id,
-        &queue_name,
-        Some(json!({"concurrency": 0})),
-    );
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    trigger(
-        &iii,
-        PUBLISH_FN_ID,
-        json!({"queue": queue_name, "data": {"survives": true}}),
-    )
-    .await;
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    boot.shutdown().await;
-    iii.shutdown_async().await;
+    let subscription_id = "stable-binding";
+    let invoker = Arc::new(RestartInvoker {
+        started: Notify::new(),
+        resume: AtomicBool::new(false),
+        fires: AtomicUsize::new(0),
+    });
 
-    let Some(iii) = engine::connect_fresh().await else {
-        return;
-    };
-    let boot = iii_queue::boot::start(iii.clone(), file_config(&dir))
+    let store = Arc::new(FileStore::open(&dir, 5).await.unwrap());
+    let adapter = BuiltinAdapter::new(store, invoker.clone());
+    adapter
+        .subscribe(&queue_name, subscription_id, &function_id, None, None, None)
+        .await;
+    adapter
+        .enqueue(&queue_name, json!({"survives": true}), None, None)
+        .await;
+    tokio::time::timeout(Duration::from_secs(3), invoker.started.notified())
         .await
-        .expect("queue worker should reboot");
+        .expect("subscriber should start the blocked delivery");
+    adapter.shutdown().await;
+    drop(adapter);
 
-    let fires = Arc::new(AtomicUsize::new(0));
-    let fail = Arc::new(AtomicBool::new(false));
-    // Same function id as before the restart: the persisted job lives in
-    // the internal queue `{topic}::{function_id}`.
-    register_counting_function(&iii, &function_id, fires.clone(), fail);
-    register_subscriber(&iii, &function_id, &queue_name);
-    wait_for_fires(&fires, 1).await;
+    invoker.resume.store(true, Ordering::SeqCst);
+    let store = Arc::new(FileStore::open(&dir, 5).await.unwrap());
+    let adapter = BuiltinAdapter::new(store, invoker.clone());
+    adapter
+        .subscribe(&queue_name, subscription_id, &function_id, None, None, None)
+        .await;
+    wait_for_fires(&invoker.fires, 1).await;
 
-    boot.shutdown().await;
-    iii.shutdown_async().await;
+    adapter.shutdown().await;
     let _ = std::fs::remove_dir_all(dir);
 }

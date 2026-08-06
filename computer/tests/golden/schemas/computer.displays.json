@@ -1,0 +1,68 @@
+{
+  "description": "List the local displays (index, name, primary, size). Pass the chosen index as `monitor` to computer::sessions::start to drive that display; omit it to use the display under the cursor. Native host only.",
+  "function_id": "computer::displays",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DisplaysInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "DisplayInfo": {
+        "description": "One display available to the native host (from `computer::displays`).",
+        "properties": {
+          "builtin": {
+            "type": "boolean"
+          },
+          "height": {
+            "description": "Logical height in points.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "index": {
+            "description": "Index to pass as `monitor` to `computer::sessions::start`.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "primary": {
+            "type": "boolean"
+          },
+          "width": {
+            "description": "Logical width in points.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "builtin",
+          "height",
+          "index",
+          "name",
+          "primary",
+          "width"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "displays": {
+        "items": {
+          "$ref": "#/definitions/DisplayInfo"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "displays"
+    ],
+    "title": "DisplaysOutput",
+    "type": "object"
+  }
+}

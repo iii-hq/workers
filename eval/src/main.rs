@@ -111,6 +111,7 @@ fn bind_triggers(iii: &Arc<iii_sdk::IIIClient>) -> Vec<Trigger> {
             function_id: function_id.into(),
             config,
             metadata: None,
+            namespace: iii.namespace(),
         }) {
             Ok(handle) => handles.push(handle),
             Err(error) => tracing::warn!(

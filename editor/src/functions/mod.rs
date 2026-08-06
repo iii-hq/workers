@@ -28,7 +28,7 @@ use crate::config::WorkerConfig;
 use crate::configuration::ConfigCell;
 use crate::diff::DiffResult;
 use crate::git::{parse_hunk_headers, parse_status, StatusReport};
-use crate::workspace::{session_key, Buffer, Session, ACTIVE_ROOT_KEY};
+use crate::workspace::{normalize_root, session_key, Buffer, Session, ACTIVE_ROOT_KEY};
 use crate::{diff, fuzzy, lang, tree};
 
 use types::*;
@@ -39,6 +39,11 @@ pub const DESC_WORKSPACE_OPEN: &str =
 pub const DESC_WORKSPACE_GET: &str =
     "The active workspace: its root, the files open against it, and which folders are \
      expanded. Shared by every surface, so this is what the agent and the console both see.";
+pub const DESC_CHANGES: &str =
+    "Recent file changes in the workspace, newest first, one entry per path. Recorded by \
+     the observer for every change however it was made, so it answers what happened while \
+     nothing was watching. Each entry carries the patch, the line counts, the function that \
+     performed the write, and the harness session and turn it happened in.";
 pub const DESC_TREE: &str =
     "List a folder in the workspace, with the expansion state the workspace remembers. \
      The walk, the noise-folder excludes and the jail are the shell worker's.";
@@ -102,6 +107,7 @@ pub fn register_all(iii: &Arc<IIIClient>, cfg: &ConfigCell, bus: &Arc<Bus>) {
     register_workspace_open(iii, bus);
     register_workspace_get(iii, bus);
     register_tree(iii, bus);
+    register_changes(iii, bus);
     register_open(iii, cfg, bus);
     register_save(iii, cfg, bus);
     register_buffers_list(iii, bus);
@@ -128,6 +134,7 @@ pub fn function_ids() -> Vec<&'static str> {
         "editor::workspace::open",
         "editor::workspace::get",
         "editor::tree",
+        "editor::changes",
         "editor::open",
         "editor::save",
         "editor::buffers::list",
@@ -153,16 +160,28 @@ pub type GitStatusOutput = StatusReport;
 
 // ---------------------------------------------------------------- workspace
 
-/// The active root, or `.` — shell's own working directory — when nothing has
-/// been opened yet. Defaulting rather than erroring means every function works
-/// on a fresh install without a setup step.
+/// The worker's own working directory, as the absolute fallback root.
+/// Defaulting rather than erroring means every function works on a fresh
+/// install without a setup step; it must be absolute because the shell fs
+/// jail rejects relative paths, so "." can never serve as a root.
+fn process_cwd() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_string))
+        .unwrap_or_else(|| "/".to_string())
+}
+
 async fn active_root(bus: &Bus) -> String {
-    bus.state_get(ACTIVE_ROOT_KEY)
+    let stored = bus
+        .state_get(ACTIVE_ROOT_KEY)
         .await
         .ok()
         .flatten()
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_else(|| ".".to_string())
+        .and_then(|v| v.as_str().map(str::to_string));
+    // Normalize on read as well as on write: a rig that persisted the old
+    // "." default (or any relative root) heals on the next call instead of
+    // failing every open with the jail's "path must be absolute".
+    normalize_root(stored.as_deref().unwrap_or(""), &process_cwd())
 }
 
 /// A corrupt or absent session reads as an empty one. Losing the tab list is a
@@ -197,13 +216,17 @@ fn register_workspace_open(iii: &Arc<IIIClient>, bus: &Arc<Bus>) {
         RegisterFunction::new_async(move |req: WorkspaceOpenInput| {
             let bus = bus.clone();
             async move {
+                // Absolutize before anything else: the shell fs jail rejects
+                // relative paths, and the session key must be stable per
+                // project regardless of how the caller spelled the root.
+                let root = normalize_root(&req.root, &process_cwd());
                 // Prove the folder is reachable before recording it, so a typo
                 // fails here rather than as a confusing error on every later call.
-                bus.tree(&req.root, 1).await?;
-                bus.state_set(ACTIVE_ROOT_KEY, serde_json::json!(req.root))
+                bus.tree(&root, 1).await?;
+                bus.state_set(ACTIVE_ROOT_KEY, serde_json::json!(root))
                     .await?;
-                let session = load_session(&bus, &req.root).await;
-                Ok::<_, Error>(view(req.root, session))
+                let session = load_session(&bus, &root).await;
+                Ok::<_, Error>(view(root, session))
             }
         })
         .description(DESC_WORKSPACE_OPEN),
@@ -223,6 +246,30 @@ fn register_workspace_get(iii: &Arc<IIIClient>, bus: &Arc<Bus>) {
             }
         })
         .description(DESC_WORKSPACE_GET),
+    );
+}
+
+/// The recorded change log. Reading is separate from subscribing on purpose:
+/// a surface that opens after the work happened has nothing to subscribe to,
+/// and this is the only way it can learn what it missed.
+fn register_changes(iii: &Arc<IIIClient>, bus: &Arc<Bus>) {
+    let bus = bus.clone();
+    iii.register_function(
+        "editor::changes",
+        RegisterFunction::new_async(move |_req: EmptyInput| {
+            let bus = bus.clone();
+            async move {
+                let changes = bus
+                    .state_get(crate::workspace::CHANGES_KEY)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|v| serde_json::from_value::<Vec<ChangeRecord>>(v).ok())
+                    .unwrap_or_default();
+                Ok::<_, Error>(ChangesView { changes })
+            }
+        })
+        .description(DESC_CHANGES),
     );
 }
 
@@ -346,8 +393,10 @@ fn register_move(iii: &Arc<IIIClient>, bus: &Arc<Bus>) {
 }
 
 /// Join a root-relative path onto the root, leaving absolute paths alone.
+/// The root is always absolute (normalize_root guards both ends), so the
+/// result is always a path the shell fs jail accepts.
 fn joined(root: &str, rel: &str) -> String {
-    if rel.starts_with('/') || root == "." {
+    if rel.starts_with('/') {
         rel.to_string()
     } else {
         format!("{root}/{rel}")
@@ -821,8 +870,11 @@ mod tests {
     }
 
     #[test]
-    fn joined_uses_shell_cwd_when_no_root_is_set() {
-        assert_eq!(joined(".", "src/main.rs"), "src/main.rs");
+    fn joined_always_produces_an_absolute_path() {
+        // The old "." default passed bare relative paths through to the
+        // shell, whose fs jail rejects them. Roots are absolute now.
+        assert_eq!(joined("/repo", "src/main.rs"), "/repo/src/main.rs");
+        assert!(joined("/repo", "src/main.rs").starts_with('/'));
     }
 
     #[test]

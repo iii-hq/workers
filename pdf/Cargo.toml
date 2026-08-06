@@ -1,0 +1,47 @@
+[workspace]
+
+[package]
+name = "pdf"
+version = "0.1.0"
+edition = "2021"
+description = "PDF worker for iii — local classification, markdown conversion, positioned text and table extraction, and per-page OCR routing (pdf::* functions)"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+publish = false
+
+[lib]
+name = "pdf"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pdf"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.22.0-alpha.3"
+# Worker-side injectable console UI (content function + console:script/style
+# triggers + hot-reload watcher) — direct link, never published.
+iii-console-ui = { path = "../crates/console-ui" }
+# The parser. Pure Rust, no C libraries, no subprocess, no network.
+pdf-inspector = "=0.1.7"
+# The CJK CMap payload the parser resolves at runtime; embedded from OUT_DIR so
+# a cross-compiled binary keeps them (see src/cmaps.rs).
+include_dir = "0.7"
+base64 = "0.22"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+schemars = "0.8"
+
+[build-dependencies]
+# `cargo metadata` parsing in build.rs, to locate the parser's CMap payload.
+serde_json = "1"
+
+[dev-dependencies]
+base64 = "0.22"
+tempfile = "3"

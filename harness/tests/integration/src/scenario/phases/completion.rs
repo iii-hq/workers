@@ -97,10 +97,17 @@ impl ScenarioRunner<'_> {
                 .await
                 .map(|observation| Some(observation.event.turn_id))
         };
+        // Evidence binds to the LATEST terminal turn whenever the run has
+        // more completions than the send's own turn: harness-seeded follow-on
+        // turns (expected > 1), and equally a PARKED send turn whose woken
+        // successor is the single terminal one — there Send's turn id is the
+        // first completion, never the terminal it must bind to.
+        //
+        // A TREE run is the exception: the latest completion there may belong
+        // to a spawned child, and the evidence must stay bound to the root.
+        let rebind = (expected > 1 || self.fixture.expected_turn_statuses.len() > 1) && !tree_run;
         match latest_turn_id {
-            // Evidence binds to the LATEST terminal turn: with harness-seeded
-            // follow-on turns, Send's own turn id is the first, not the last.
-            Ok(Some(turn_id)) if expected > 1 && !tree_run => active.turn_id = Some(turn_id),
+            Ok(Some(turn_id)) if rebind => active.turn_id = Some(turn_id),
             Ok(turn_id) => {
                 if active.turn_id.is_none() {
                     active.turn_id = turn_id;

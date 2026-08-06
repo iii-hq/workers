@@ -262,6 +262,7 @@ mod tests {
             _topic: &str,
             _id: &str,
             _function_id: &str,
+            _metadata: Option<serde_json::Value>,
             _condition_function_id: Option<String>,
             _queue_config: Option<crate::subscriber_config::SubscriberQueueConfig>,
         ) {
@@ -330,6 +331,7 @@ mod tests {
             .register_subscriber(RegisteredSubscriber {
                 trigger_id: "t1".to_string(),
                 function_id: "backend".to_string(),
+                metadata: None,
                 spec: SubscriberSpec {
                     queue: "demo".to_string(),
                     max_retries: None,
@@ -373,6 +375,7 @@ mod tests {
             .register_subscriber(RegisteredSubscriber {
                 trigger_id: "t1".to_string(),
                 function_id: "backend".to_string(),
+                metadata: None,
                 spec: SubscriberSpec {
                     queue: "demo".to_string(),
                     max_retries: None,

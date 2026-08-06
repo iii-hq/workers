@@ -68,12 +68,18 @@ impl EngineClient {
         // stale when the engine restarts while this worker is idle and would
         // falsely interrupt the first slow call made afterwards.
         let baseline = engine_epoch_ms(&self.iii).await;
-        let call = self.iii.trigger(TriggerRequest {
+        let request = TriggerRequest {
             function_id: function_id.to_string(),
             payload,
             action: None,
             timeout_ms: Some(self.timeout_ms),
-        });
+        };
+        let request: iii_sdk::protocol::TriggerRequestWithMetadata =
+            match crate::trigger::route_namespace(&self.iii, function_id) {
+                Some(namespace) => request.namespace(namespace),
+                None => request.into(),
+            };
+        let call = self.iii.trigger(request);
         let result = match baseline {
             Some(baseline) => {
                 tokio::select! {

@@ -7,6 +7,7 @@
 //! P1 covers the glob policy + target + normalisation. The `pre_trigger` /
 //! `post_trigger` hook chain and `pending` deferral layer on in later phases.
 
+use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 use crate::clients::EngineClient;
@@ -19,6 +20,35 @@ pub struct ResultData {
     pub content: Vec<ContentBlock>,
     pub is_error: bool,
     pub details: Value,
+}
+
+/// Route worker-to-worker calls through this worker's namespace while keeping
+/// engine builtins in `default`.
+pub(crate) fn route_namespace(iii: &IIIClient, function_id: &str) -> Option<String> {
+    (!is_engine_builtin(function_id))
+        .then(|| iii.namespace())
+        .flatten()
+}
+
+fn is_engine_builtin(function_id: &str) -> bool {
+    matches!(
+        function_id.split("::").next(),
+        Some(
+            "state"
+                | "stream"
+                | "queue"
+                | "pubsub"
+                | "configuration"
+                | "cron"
+                | "http"
+                | "engine"
+                | "sandbox"
+                | "log"
+                | "secret"
+                | "kv"
+                | "iii"
+        )
+    )
 }
 
 /// The outcome of triggering one call.
@@ -112,6 +142,8 @@ fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
                 .to_string();
             if !keep(&id) {
                 *item = json!({ "function_id": id, "error": "not available" });
+            } else {
+                overlay_control_contract(item, &id);
             }
         }
     } else if let Some(id) = value
@@ -119,8 +151,28 @@ fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
         .or_else(|| value.get("id"))
         .and_then(Value::as_str)
     {
-        if !keep(id) {
+        let id = id.to_string();
+        if !keep(&id) {
             *value = Value::Null;
+        } else {
+            overlay_control_contract(value, &id);
+        }
+    }
+}
+
+/// `engine::register_trigger` / `engine::unregister_trigger` are intercepted
+/// in-turn, so the engine's own registration (raw: `function_id` required, no
+/// `once`/`lifecycle`/`conditions`) is NOT the contract an agent calls.
+/// Discovery must describe the intercept, or an agent that reads
+/// `functions::info` "learns" its tool schema is wrong.
+fn overlay_control_contract(item: &mut Value, id: &str) {
+    let Some((description, schema)) = crate::functions::subscribe::control_contract(id) else {
+        return;
+    };
+    if let Some(map) = item.as_object_mut() {
+        map.insert("description".into(), Value::String(description.into()));
+        if map.contains_key("request_schema") {
+            map.insert("request_schema".into(), schema);
         }
     }
 }
@@ -224,6 +276,16 @@ fn post_filter_discovery(value: &mut Value, policy: &CompiledPolicy) {
                 .map(keep)
                 .unwrap_or(false)
         });
+        for item in arr.iter_mut() {
+            let id = item
+                .get("function_id")
+                .or_else(|| item.get("id"))
+                .or_else(|| item.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            overlay_control_contract(item, &id);
+        }
     }
 }
 
@@ -238,6 +300,58 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         }))
+    }
+
+    #[test]
+    fn namespace_routing_keeps_builtins_in_default() {
+        for function_id in [
+            "state::get",
+            "engine::functions::list",
+            "queue::push",
+            "configuration::get",
+        ] {
+            assert!(is_engine_builtin(function_id), "{function_id}");
+        }
+        for function_id in ["router::chat", "session::get", "approval::evaluate"] {
+            assert!(!is_engine_builtin(function_id), "{function_id}");
+        }
+    }
+
+    #[test]
+    fn discovery_reports_the_intercepted_registration_contract() {
+        // The raw engine row for register_trigger would claim `function_id`
+        // is required and know nothing of once/lifecycle/conditions — the
+        // overlay swaps in the intercept's contract.
+        let policy = pol(&["*"]);
+        let mut info = serde_json::json!({
+            "function_id": "engine::register_trigger",
+            "description": "Register a trigger that fires `function_id` directly",
+            "request_schema": { "required": ["function_id", "trigger_type"] }
+        });
+        post_filter_info(&mut info, &policy);
+        assert!(info["description"]
+            .as_str()
+            .unwrap()
+            .contains("omit function_id"));
+        let schema = serde_json::to_string(&info["request_schema"]).unwrap();
+        assert!(
+            schema.contains("lifecycle"),
+            "intercept schema expected: {schema}"
+        );
+
+        let mut list = serde_json::json!({ "functions": [
+            { "function_id": "engine::register_trigger", "description": "raw" },
+            { "function_id": "state::get", "description": "Get a value from state" }
+        ]});
+        post_filter_discovery(&mut list, &policy);
+        assert!(list["functions"][0]["description"]
+            .as_str()
+            .unwrap()
+            .contains("omit function_id"));
+        assert_eq!(
+            list["functions"][1]["description"],
+            "Get a value from state"
+        );
     }
 
     #[test]

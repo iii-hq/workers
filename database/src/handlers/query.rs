@@ -21,6 +21,20 @@ pub struct QueryReq {
     pub params: Vec<Value>,
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
+    /// Whether this run belongs in `database::history`.
+    ///
+    /// Internal only — never deserialized, so a statement arriving over the
+    /// wire always records. The catalog reads behind `describeSchema`,
+    /// `browseTable`, `columnStats`, `explain` and `schemaDiagram` all run
+    /// through this same path, and recording them would bury the statements a
+    /// person actually typed under `PRAGMA table_info(...)` and spawn a
+    /// `state::update` per internal read.
+    #[serde(skip, default = "records_history")]
+    pub record_history: bool,
+}
+
+fn records_history() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -55,6 +69,7 @@ pub async fn handle(state: &AppState, req: QueryReq) -> Result<QueryResp, String
     crate::handlers::reject_tx_control_sql(&req.sql).map_err(err_to_str)?;
     let params = JsonParam::from_json_slice(&req.params).map_err(err_to_str)?;
 
+    let started = std::time::Instant::now();
     let result = match &pool {
         Pool::Sqlite(p) => driver::sqlite::query(p, &req.sql, &params, req.timeout_ms).await,
         Pool::Postgres(p) => driver::postgres::query(p, &req.sql, &params, req.timeout_ms).await,
@@ -63,6 +78,18 @@ pub async fn handle(state: &AppState, req: QueryReq) -> Result<QueryResp, String
     .map_err(err_to_str)?;
 
     let row_count = result.rows.len();
+    // Fire and forget — a history line must never fail the query.
+    if req.record_history {
+        if let Some(iii) = state.client() {
+            crate::handlers::saved::record(
+                iii.clone(),
+                db,
+                &req.sql,
+                started.elapsed().as_millis() as u64,
+                row_count,
+            );
+        }
+    }
     let rows = rows_to_objects(&result.columns, result.rows);
     Ok(QueryResp {
         rows,
@@ -94,7 +121,7 @@ pub(crate) fn rows_to_objects(
         .collect()
 }
 
-pub(crate) fn err_to_str(e: DbError) -> String {
+pub fn err_to_str(e: DbError) -> String {
     serde_json::to_string(&e).unwrap_or_else(|_| {
         format!(
             "{{\"code\":\"DRIVER_ERROR\",\"message\":{:?}}}",

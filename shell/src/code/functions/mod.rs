@@ -41,7 +41,10 @@ const INFO_ID: &str = "coder::info";
 const INFO_DESC: &str = "Report the coder access contract: the effective mode (jailed = \
      paths confined to the allowed roots; unjailed = deny-only, absolute \
      paths anywhere on the host, roots anchor relative paths only), \
-     canonical allowed roots (primary first), per-file size caps, \
+     canonical allowed roots (primary first), the session_root that \
+     relative paths actually anchor against when the session is scoped \
+     (it overrides primary_root and may sit outside every allowed root), \
+     per-file size caps, \
      response budgets (max_output_bytes, batch_read_budget_bytes, \
      search_response_budget_bytes), listing/search limits, the \
      non-accessible glob patterns, and the default_exclude_globs noise \
@@ -272,12 +275,12 @@ pub fn register_all(iii: &IIIClient, cells: CodeCells) {
 fn register_info(iii: &IIIClient, cells: CodeCells) {
     iii.register_function(
         INFO_ID,
-        RegisterFunction::new_async(move |_req: info::InfoInput| {
+        RegisterFunction::new_async(move |req: info::InfoInput| {
             let cells = cells.clone();
             async move {
                 let resolver = cells.resolver.read().await.clone();
                 let cfg = cells.config.read().await.clone();
-                info::handle(resolver, cfg).await.map_err(Error::from)
+                info::handle(resolver, cfg, req).await.map_err(Error::from)
             }
         })
         .description(INFO_DESC),

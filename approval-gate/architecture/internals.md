@@ -164,6 +164,6 @@ Verified against the engine source (`~/workspaces/personal/motia/iii`):
   prior-art permission-matrix cases plus the fail-closed rows.
 - **Integration** (`cargo test --test integration`): spawns a real engine
   (`III_ENGINE_BIN` or `iii` on PATH; self-skips otherwise) with
-  `configuration` + `iii-state` real and the unbuilt siblings faked
+  `configuration` + `state` real and the unbuilt siblings faked
   in-process. Verifies the no-tombstone invariant, exactly-once event
   delivery through real engine fan-out, and reactive configuration reload.
