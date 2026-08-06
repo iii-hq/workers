@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import type { FunctionTriggerRenderer } from '@/types/injectable-ui'
 import {
   functionTriggerFromSpan,
   spanFunctionId,
+  spanRawRedactor,
 } from './functionTriggerFromSpan'
 import type { VisualizationSpan } from './traceTransform'
 
@@ -236,5 +238,77 @@ describe('functionTriggerFromSpan', () => {
     expect(call?.functionId).toBe('worker::list')
     expect(call?.input).toBeUndefined()
     expect(call?.identityInherited).toBeUndefined()
+  })
+})
+
+/**
+ * `spanRawRedactor` — the redactor `SpanTagsTab`/`SpanLogsTab` apply to a
+ * span's attributes/events (console-UI review finding #1: those two sibling
+ * tabs rendered the identical payload the info tab's card already redacts).
+ * Resolved the same way this file's `functionTriggerFromSpan` resolves the
+ * info card's function id, so a claimed redactor there is guaranteed to be
+ * found here too.
+ */
+describe('spanRawRedactor', () => {
+  function renderer(
+    overrides: Partial<FunctionTriggerRenderer>,
+  ): FunctionTriggerRenderer {
+    return {
+      id: 'test/renderer',
+      isMatch: () => false,
+      tryRender: () => null,
+      ...overrides,
+    }
+  }
+
+  it('resolves the redactor of the renderer claiming the span’s own explicit function id', () => {
+    const span = vis({
+      attributes: { 'faas.invoked_name': 'sandbox-code-runner::run' },
+    })
+    const renderers = [
+      renderer({
+        isMatch: (id) => id === 'sandbox-code-runner::run',
+        redactRaw: () => 'redacted',
+      }),
+    ]
+    expect(spanRawRedactor(span, undefined, renderers)?.({})).toBe('redacted')
+  })
+
+  it('resolves through the ancestor chain, same as spanFunctionId', () => {
+    const trigger = vis({
+      span_id: 'trigger',
+      attributes: { function_id: 'sandbox-code-runner::run' },
+    })
+    const inner = vis({
+      span_id: 'inner',
+      parent_span_id: 'trigger',
+      name: 'HTTP POST',
+    })
+    const renderers = [
+      renderer({
+        isMatch: (id) => id === 'sandbox-code-runner::run',
+        redactRaw: () => 'redacted',
+      }),
+    ]
+    expect(spanRawRedactor(inner, byId(trigger, inner), renderers)?.({})).toBe(
+      'redacted',
+    )
+  })
+
+  it('is undefined when the span resolves no function id at all', () => {
+    const span = vis({ attributes: {} }) // no faas.invoked_name, no baggage
+    const renderers = [renderer({ isMatch: () => true, redactRaw: () => 'x' })]
+    expect(spanRawRedactor(span, undefined, renderers)).toBeUndefined()
+  })
+
+  it('is undefined when a function id resolves but no renderer claims it', () => {
+    const span = vis({ attributes: { 'faas.invoked_name': 'shell::exec' } })
+    const renderers = [
+      renderer({
+        isMatch: (id) => id === 'sandbox-code-runner::run',
+        redactRaw: () => 'x',
+      }),
+    ]
+    expect(spanRawRedactor(span, undefined, renderers)).toBeUndefined()
   })
 })

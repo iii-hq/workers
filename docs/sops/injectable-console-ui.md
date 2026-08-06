@@ -262,6 +262,7 @@ interface FunctionTriggerRenderer {
   tryRenderRunning?(message: FunctionTriggerMessage): React.ReactNode | null
   tryRenderPreview?(message: FunctionTriggerMessage): React.ReactNode | null
   FunctionIdLabel?: React.ComponentType<{ functionId: string }>
+  redactRaw?(value: unknown): unknown
 }
 ```
 
@@ -273,6 +274,35 @@ so you can override built-in rendering for your worker's functions. Return
 function ids) and let errors and everything else keep the default cards.
 Renderer callbacks are fenced: a throwing `isMatch` counts as no-match, a
 throwing `tryRender` degrades to an error chip, never a broken feed.
+
+#### `redactRaw` — your card is not the only exit
+
+Whatever your card draws, the settled card **always** mounts a `raw json` tab
+that renders `message.input` / `message.output` verbatim, with a copy button
+per pane. If your rendering redacts a secret (a capability id, a token, a
+path), the raw tab and its clipboard hand it over anyway — one click away.
+
+`redactRaw` is how the WORKER declares what is secret and the CONSOLE applies
+it: for a message your `isMatch` claims, the card runs the request and the
+response through it **before rendering the raw panes and before building the
+text the copy button copies** (the first claiming renderer that declares it
+wins). The console stays ignorant of what your secrets look like — no worker
+pattern belongs in shared console code.
+
+- It gets an arbitrary JSON-ish value (object, array, string, number,
+  boolean, `null`, `undefined`) and returns the redacted copy. Deep-walk it:
+  ids hide in nested arrays, in log lines, in error messages, and in object
+  KEYS. `sandbox-code-runner/ui/src/lib/shared.tsx` (`redactRuntimeIdsDeep`)
+  is the reference implementation — a shape-preserving walk with cycle
+  protection.
+- Pure and total: never mutate the input, never do I/O, never throw.
+- It runs during the host card's render, so it is fenced — and fails
+  **closed**: a throw renders `[redaction failed — value withheld]` in place
+  of the value, in the pane and on the clipboard. Degrading to the raw value
+  would surrender exactly what the method exists to protect.
+- It covers the card's raw panes only. A session export dumps the transcript
+  verbatim by design; do not treat `redactRaw` as an access control — the
+  payload still crosses the wire and lands in the trace store.
 
 ### `host.configForms.register(configurationId, component)`
 

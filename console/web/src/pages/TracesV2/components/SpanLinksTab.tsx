@@ -3,6 +3,16 @@ import { useMemo } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
 import type { VisualizationSpan } from '../lib/traceTransform'
 
+/**
+ * No `redact` prop, deliberately: this tab renders `link.trace_id`/
+ * `link.span_id` (truncated OTel identifiers, not secrets) and an
+ * attribute COUNT badge — never a link attribute's actual value. There is
+ * no code path here that could print a payload-derived string, so there is
+ * nothing for a redactor to intercept. If a future change starts rendering
+ * `link.attributes` values, add `redact` then — see
+ * `SpanPanel.redaction-coverage.test.ts`, which enforces that every tab has
+ * either a `redact` wiring or a written reason like this one.
+ */
 interface SpanLinksTabProps {
   span: VisualizationSpan
   onNavigateToTrace?: (traceId: string) => void

@@ -4,6 +4,19 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import type { VisualizationSpan } from '../lib/traceTransform'
 import { useCopyToClipboard } from '../lib/traceUtils'
 
+/**
+ * No `redact` prop, deliberately: sandbox-code-runner never touches the OTel
+ * baggage API (`grep -ri baggage sandbox-code-runner/src` — zero hits in the
+ * crate). Baggage is CALLER-set routing/identity context copied onto every
+ * span in its scope (iii-helpers'
+ * `BaggageSpanProcessor` — turn identity, trace tags, `iii.function.id`),
+ * propagated top-down from the engine/harness; a worker's own internal
+ * capability (sandbox-code-runner's `runtime_id`) never flows the
+ * other way into it. If a future worker ever starts stamping baggage,
+ * revisit this — see `SpanPanel.redaction-coverage.test.ts`, which enforces
+ * that every tab has either a `redact` wiring or a written reason like
+ * this one.
+ */
 interface SpanBaggageTabProps {
   span: VisualizationSpan
 }

@@ -286,6 +286,7 @@ interface FunctionTriggerRenderer {
   tryRenderRunning?(message: FunctionTriggerMessage): React.ReactNode | null
   tryRenderPreview?(message: FunctionTriggerMessage): React.ReactNode | null
   FunctionIdLabel?: React.ComponentType<{ functionId: string }>
+  redactRaw?(value: unknown): unknown
 }
 ```
 
@@ -295,6 +296,42 @@ so you can override built-in rendering for your worker's functions. Return
 errors and everything else keep the default cards. Renderer callbacks are
 fenced: a throwing `isMatch` counts as no-match, a throwing `tryRender`
 degrades to an error chip, never a broken feed.
+
+#### `redactRaw` — your card is not the only exit
+
+However your card renders a call, the settled card also mounts a **`raw
+json` tab** showing `input` and `output` verbatim, each with a copy button.
+So hiding a secret inside your own rendering does not contain it: it is one
+click away in the raw tab and on the clipboard.
+
+`redactRaw` lets you declare what is secret and have the console apply it.
+For a message your `isMatch` claims, the console passes the request and the
+response through it **before the raw panes render and before the copy button
+builds its text** (first claiming renderer that declares it wins). Keep the
+knowledge of what a secret looks like in your worker — the console never
+learns your patterns.
+
+```ts
+redactRaw: (value) => deepReplace(value, SECRET_PATTERN, mask)
+```
+
+Rules:
+
+- Deep-walk the value. Secrets hide in nested arrays, in captured log lines,
+  in error messages, and in object **keys**, not just in the obvious field.
+  Preserve shape (objects, arrays, strings, numbers, booleans, `null`,
+  `undefined`) — the value is not always an object: `FunctionTriggerCard`
+  calls `redactRaw(undefined)` on every running/pending card (no `output`
+  yet) and hands it a bare top-level string for a double-encoded payload.
+  Guard against cycles so a self-referential value cannot hang the console.
+- Pure and total: never mutate the argument, never do I/O, never throw. It
+  runs inside the card's render.
+- It is fenced and **fails closed**: if it throws, the pane and the clipboard
+  get `[redaction failed — value withheld]`, not the raw value. A bug in your
+  redactor costs the raw view, never the secret.
+- It is display hygiene for the chat surface, not access control: the payload
+  still travelled over the wire and still sits in the trace store, and a full
+  session export is verbatim by design.
 
 ### `host.configForms.register(configurationId, component)`
 

@@ -1,8 +1,9 @@
 import { Check, Copy, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { CopyMessageButton } from '@/components/chat/CopyMessageButton'
 import {
   firstNonNull,
+  rawRedactor,
   useFunctionTriggerRenderers,
 } from '@/components/function-trigger/renderer-registry'
 import { AlwaysAllowButton } from '@/components/permissions/AlwaysAllowButton'
@@ -238,14 +239,33 @@ export function FunctionTriggerCard({
 }: FunctionTriggerCardProps) {
   const pending = !!message.pendingApproval
   const running = !!message.running
+  // Registry-dispatched custom panes: injected renderers first, then the
+  // first-party families, then the JSON fallback below. First non-null
+  // wins; null falls through.
+  const renderers = useFunctionTriggerRenderers()
+  // The raw request/response as this card is allowed to show them. An
+  // injected renderer that claims this function id may declare `redactRaw`
+  // (a runtime id is a capability, so sandbox-code-runner does) — apply it
+  // ONCE here, then use `rawInput`/`rawOutput` everywhere below: every pane
+  // derives both its body and its copy text from the value it is handed, so
+  // redacting at the source covers the clipboard too. Card LOGIC keeps
+  // reading `message.*` — redaction is a display concern, not a semantic one.
+  // Memoized because `redactRaw` deep-walks the payload and this runs for
+  // every card of a claimed function id, collapsed ones included.
+  const { rawInput, rawOutput } = useMemo(() => {
+    const redact = rawRedactor(renderers, message.functionId)
+    return redact
+      ? { rawInput: redact(message.input), rawOutput: redact(message.output) }
+      : { rawInput: message.input, rawOutput: message.output }
+  }, [renderers, message.functionId, message.input, message.output])
   // Raw in-flight arguments tail (`_streaming`, injected by the harness
   // while a call's arguments are still forming) — rendered as a live pane.
   const streamingTail =
     running &&
-    message.input &&
-    typeof message.input === 'object' &&
-    typeof (message.input as { _streaming?: unknown })._streaming === 'string'
-      ? (message.input as { _streaming: string })._streaming
+    rawInput &&
+    typeof rawInput === 'object' &&
+    typeof (rawInput as { _streaming?: unknown })._streaming === 'string'
+      ? (rawInput as { _streaming: string })._streaming
       : undefined
   const filesystemAccess = pending ? message.filesystemAccess : undefined
   const [open, setOpen] = useState(!!defaultOpen || pending)
@@ -255,10 +275,6 @@ export function FunctionTriggerCard({
   >(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
-  // Registry-dispatched custom panes: injected renderers first, then the
-  // first-party families, then the JSON fallback below. First non-null
-  // wins; null falls through.
-  const renderers = useFunctionTriggerRenderers()
   const customPreview = firstNonNull(
     renderers,
     (r) => r.tryRenderPreview?.(message) ?? null,
@@ -313,7 +329,11 @@ export function FunctionTriggerCard({
   const ran =
     !isDeniedOutput(message.output) &&
     (message.output !== undefined || typeof message.durationMs === 'number')
-  const preview = argsPreview(message.input)
+  // `rawInput`, not `message.input`: the collapsed header digests the request
+  // args inline, so it is a display exit like the raw pane and the clipboard —
+  // a claimed card's `redactRaw` has to cover it or a secret shows up in the
+  // one line that renders without anyone expanding the card.
+  const preview = argsPreview(rawInput)
 
   return (
     <div
@@ -426,7 +446,7 @@ export function FunctionTriggerCard({
           {pending && customPreview ? (
             <div className="border-b border-rule-2">{customPreview}</div>
           ) : showRequestPaneAbove ? (
-            <ValuePane label="request" value={message.input} />
+            <ValuePane label="request" value={rawInput} />
           ) : null}
           {running && !pending ? (
             streamingTail !== undefined ? (
@@ -434,7 +454,7 @@ export function FunctionTriggerCard({
             ) : hasCustomTerminal ? (
               <div className="border-t border-rule-2">{customTerminal}</div>
             ) : (
-              <ValuePane label="response" value={message.output} bordered />
+              <ValuePane label="response" value={rawOutput} bordered />
             )
           ) : null}
           {!pending && !running ? (
@@ -450,14 +470,14 @@ export function FunctionTriggerCard({
                 </TabsList>
                 <TabsContent value="terminal">{customTerminal}</TabsContent>
                 <TabsContent value="json">
-                  <ValuePane label="request" value={message.input} />
-                  <ValuePane label="response" value={message.output} bordered />
+                  <ValuePane label="request" value={rawInput} />
+                  <ValuePane label="response" value={rawOutput} bordered />
                 </TabsContent>
               </Tabs>
             ) : (
               <>
-                <ValuePane label="request" value={message.input} />
-                <ValuePane label="response" value={message.output} bordered />
+                <ValuePane label="request" value={rawInput} />
+                <ValuePane label="response" value={rawOutput} bordered />
               </>
             )
           ) : null}
@@ -651,12 +671,18 @@ function StreamingArgsPane({ text }: { text: string }) {
   )
 }
 
-function ValuePane({ label, value, bordered }: ValuePaneProps) {
-  const empty = isEmptyValue(value)
-  const primitive = !empty && isPrimitive(value)
-  const single = !empty && !primitive ? singlePrimitiveField(value) : null
-  const envelope =
-    !empty && !primitive && !single ? resultEnvelope(value) : null
+/**
+ * The non-envelope rendering of a value: its body text, the header hints, and
+ * whether the body is highlighted JSON. One derivation, shared by the pane's
+ * body and by its copy button (`paneCopyText`) — the two can never disagree.
+ */
+function plainPane(value: unknown): {
+  body: string
+  hints: string[]
+  json: boolean
+} {
+  const primitive = isPrimitive(value)
+  const single = primitive ? null : singlePrimitiveField(value)
   // A string payload that is itself JSON (double-encoded): render the parsed
   // structure instead of an escaped one-liner, and say so in the header.
   const embedded =
@@ -665,6 +691,40 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
       : single && typeof single.value === 'string'
         ? parseEmbeddedJson(single.value)
         : undefined
+  const body =
+    embedded !== undefined
+      ? formatJson(embedded)
+      : primitive
+        ? formatPrimitive(value)
+        : single
+          ? formatPrimitive(single.value)
+          : formatJson(value)
+  return {
+    body,
+    hints: [
+      ...(single ? [single.key] : []),
+      ...(embedded !== undefined ? ['json string'] : []),
+    ],
+    json: embedded !== undefined || !(primitive || single),
+  }
+}
+
+/**
+ * The EXACT text a pane's copy button puts on the clipboard for `value`.
+ * Both `ValuePane` branches route through this, so the value a pane is handed
+ * bounds everything that can leave it — redact the value (see `rawRedactor`)
+ * and the clipboard is redacted with it. A pane that renders `· empty` shows
+ * no copy button, so its return value is then unused.
+ */
+export function paneCopyText(value: unknown): string {
+  // The envelope pane drops text blocks that merely re-serialize `details`,
+  // so its copy is the whole value rather than the deduplicated rendering.
+  return resultEnvelope(value) ? formatJson(value) : plainPane(value).body
+}
+
+function ValuePane({ label, value, bordered }: ValuePaneProps) {
+  const empty = isEmptyValue(value)
+  const envelope = empty ? null : resultEnvelope(value)
 
   if (empty) {
     return (
@@ -705,7 +765,7 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
     return (
       <PaneShell
         label={label}
-        copyText={formatJson(value)}
+        copyText={paneCopyText(value)}
         lineCount={lineCount}
         bordered={bordered}
       >
@@ -730,35 +790,22 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
     )
   }
 
-  const body =
-    embedded !== undefined
-      ? formatJson(embedded)
-      : primitive
-        ? formatPrimitive(value)
-        : single
-          ? formatPrimitive(single.value)
-          : formatJson(value)
-  const hints = [
-    ...(single ? [single.key] : []),
-    ...(embedded !== undefined ? ['json string'] : []),
-  ]
+  const { body, hints, json } = plainPane(value)
 
   return (
     <PaneShell
       label={label}
       hints={hints}
-      copyText={body}
+      copyText={paneCopyText(value)}
       lineCount={countLines(body)}
       bordered={bordered}
     >
-      {embedded !== undefined ? (
+      {json ? (
         <JsonHighlight code={body} />
-      ) : primitive || single ? (
+      ) : (
         <pre className={TEXT_PRE_CLS}>
           <code>{body}</code>
         </pre>
-      ) : (
-        <JsonHighlight code={body} />
       )}
     </PaneShell>
   )
