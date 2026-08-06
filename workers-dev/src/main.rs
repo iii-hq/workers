@@ -1,6 +1,7 @@
 mod color;
 mod commands;
 mod config;
+mod config_write;
 mod discover;
 mod git;
 mod graph;

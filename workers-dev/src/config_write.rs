@@ -1,0 +1,371 @@
+//! Editing `workers-dev.yaml` in place.
+//!
+//! The file is hand-written as often as it is tool-written, so writes are
+//! line surgery on the original text rather than a serde round-trip: comments,
+//! key order, and blank lines all survive because they are never re-serialized.
+//! Anything the scanner cannot own confidently (inline `stacks: {…}`, a
+//! duplicated key) is refused rather than rewritten.
+//!
+// ponytail: nothing outside #[cfg(test)] calls this module yet — a later
+// task wires it into commands/tui. Drop this allow once that lands.
+#![allow(dead_code)]
+
+use anyhow::{bail, Result};
+
+/// Stack names land in YAML as plain scalars, so restrict them to characters
+/// that can never need quoting or change the document's shape.
+pub fn valid_stack_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Insert or replace `name`'s entry under `stacks:`, leaving every other byte
+/// of the file alone.
+pub fn upsert_stack(text: &str, name: &str, roots: &[String]) -> Result<String> {
+    if !valid_stack_name(name) {
+        bail!("invalid stack name {name:?} (use letters, digits, - and _)");
+    }
+    let lines: Vec<&str> = text.split('\n').collect();
+    let Some(head) = top_level_key(&lines, "stacks")? else {
+        let mut out = ensure_trailing_newline(text);
+        out.push_str("stacks:\n");
+        for line in render_entry("  ", name, roots) {
+            out.push_str(&line);
+            out.push('\n');
+        }
+        return Ok(out);
+    };
+    ensure_block_style(&lines, head)?;
+    let block = block_range(&lines, head);
+    let entry = render_entry(&block_indent(&lines, block), name, roots);
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    match entry_range(&lines, block, name) {
+        Some((start, end)) => out.splice(start..end, entry),
+        None => out.splice(block.1..block.1, entry),
+    };
+    Ok(out.join("\n"))
+}
+
+/// Drop `name`'s entry. Removing the last entry drops the `stacks:` key too,
+/// rather than leaving a dangling header.
+pub fn remove_stack(text: &str, name: &str) -> Result<String> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let missing = || format!("stack {name} is not defined in this file");
+    let Some(head) = top_level_key(&lines, "stacks")? else {
+        bail!(missing());
+    };
+    ensure_block_style(&lines, head)?;
+    let block = block_range(&lines, head);
+    let Some((start, end)) = entry_range(&lines, block, name) else {
+        bail!(missing());
+    };
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    out.drain(start..end);
+
+    let after: Vec<&str> = out.iter().map(String::as_str).collect();
+    let rest = block_range(&after, head);
+    let has_entry = (rest.0..rest.1).any(|i| entry_key(strip_cr(after[i])).is_some());
+    if !has_entry {
+        out.drain(head..rest.1.max(head + 1));
+    }
+    Ok(out.join("\n"))
+}
+
+/// Point `default_stack:` at `name`, replacing the existing key or appending it.
+pub fn set_default_stack(text: &str, name: &str) -> Result<String> {
+    if !valid_stack_name(name) {
+        bail!("invalid stack name {name:?} (use letters, digits, - and _)");
+    }
+    let lines: Vec<&str> = text.split('\n').collect();
+    let Some(i) = top_level_key(&lines, "default_stack")? else {
+        return Ok(format!(
+            "{}default_stack: {name}\n",
+            ensure_trailing_newline(text)
+        ));
+    };
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    let cr = if lines[i].ends_with('\r') { "\r" } else { "" };
+    out[i] = format!("default_stack: {name}{cr}");
+    Ok(out.join("\n"))
+}
+
+fn strip_cr(line: &str) -> &str {
+    line.strip_suffix('\r').unwrap_or(line)
+}
+
+fn ensure_trailing_newline(text: &str) -> String {
+    if text.is_empty() || text.ends_with('\n') {
+        text.to_string()
+    } else {
+        format!("{text}\n")
+    }
+}
+
+/// Line index of a top-level `key:`. Errors when the key appears twice —
+/// which one wins is a question for a human, not for line surgery.
+fn top_level_key(lines: &[&str], key: &str) -> Result<Option<usize>> {
+    let mut found = None;
+    for (i, line) in lines.iter().enumerate() {
+        let line = strip_cr(line);
+        let Some(rest) = line.strip_prefix(key) else {
+            continue;
+        };
+        if !rest.starts_with(':') {
+            continue;
+        }
+        if found.is_some() {
+            bail!("`{key}:` appears more than once in this file — fix it by hand");
+        }
+        found = Some(i);
+    }
+    Ok(found)
+}
+
+/// Refuse a `stacks: {…}` written inline; only block style is ours to edit.
+fn ensure_block_style(lines: &[&str], head: usize) -> Result<()> {
+    let after = strip_cr(lines[head])
+        .split_once(':')
+        .map(|(_, rest)| rest.trim())
+        .unwrap_or("");
+    if !after.is_empty() {
+        bail!("`stacks:` is written inline in this file — edit it by hand");
+    }
+    Ok(())
+}
+
+/// Half-open line range of the indented block under `head`. Blank lines inside
+/// the block don't end it; trailing blanks are left outside.
+fn block_range(lines: &[&str], head: usize) -> (usize, usize) {
+    let start = head + 1;
+    let mut end = start;
+    for (i, line) in lines.iter().enumerate().skip(start) {
+        let line = strip_cr(line);
+        if line.trim().is_empty() {
+            continue;
+        }
+        if line.starts_with(' ') || line.starts_with('\t') {
+            end = i + 1;
+        } else {
+            break;
+        }
+    }
+    (start, end)
+}
+
+/// `("  ", "console")` for a `  console:` line; None for list items and blanks.
+fn entry_key(line: &str) -> Option<(String, String)> {
+    let indent: String = line.chars().take_while(|c| *c == ' ').collect();
+    if indent.is_empty() || indent.len() == line.len() {
+        return None;
+    }
+    let rest = &line[indent.len()..];
+    let key = rest.split(':').next()?;
+    if key.is_empty() || key.len() == rest.len() || !valid_stack_name(key) {
+        return None;
+    }
+    Some((indent, key.to_string()))
+}
+
+/// Indentation the block's entries already use, or two spaces for a new block.
+fn block_indent(lines: &[&str], block: (usize, usize)) -> String {
+    (block.0..block.1)
+        .find_map(|i| entry_key(strip_cr(lines[i])).map(|(indent, _)| indent))
+        .unwrap_or_else(|| "  ".to_string())
+}
+
+/// Half-open line range of `name`'s entry: its key line through the line
+/// before the next entry at the same indentation (or the end of the block).
+fn entry_range(lines: &[&str], block: (usize, usize), name: &str) -> Option<(usize, usize)> {
+    let mut start: Option<(String, usize)> = None;
+    for i in block.0..block.1 {
+        let Some((indent, key)) = entry_key(strip_cr(lines[i])) else {
+            continue;
+        };
+        match &start {
+            None if key == name => start = Some((indent, i)),
+            None => {}
+            Some((open_indent, open)) if indent.len() <= open_indent.len() => {
+                return Some((*open, leading_comment_run(lines, indent.len(), i, open + 1)));
+            }
+            Some(_) => {}
+        }
+    }
+    start.map(|(_, open)| (open, block.1))
+}
+
+/// Back `at` up over a run of comment lines indented exactly `indent_len`,
+/// stopping no earlier than `floor`. A comment immediately above a key reads
+/// as that key's own leading comment, not trailing content of the entry
+/// before it, so it must stay out of that entry's replace/remove range.
+fn leading_comment_run(lines: &[&str], indent_len: usize, at: usize, floor: usize) -> usize {
+    let mut at = at;
+    while at > floor {
+        let line = strip_cr(lines[at - 1]);
+        let spaces = line.chars().take_while(|c| *c == ' ').count();
+        if spaces != indent_len || !line[spaces..].starts_with('#') {
+            break;
+        }
+        at -= 1;
+    }
+    at
+}
+
+fn render_entry(indent: &str, name: &str, roots: &[String]) -> Vec<String> {
+    let mut out = vec![format!("{indent}{name}:")];
+    for root in roots {
+        out.push(format!("{indent}{indent}- {root}"));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn roots(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Every text this module produces must still parse as YAML.
+    fn parses(text: &str) -> bool {
+        serde_yaml::from_str::<serde_yaml::Value>(text).is_ok()
+    }
+
+    #[test]
+    fn creates_stacks_block_in_an_empty_file() {
+        let out = upsert_stack("", "console", &roots(&["console", "session-manager"])).unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  console:\n    - console\n    - session-manager\n"
+        );
+        assert!(parses(&out));
+    }
+
+    /// A file with other keys keeps them, and the block is appended.
+    #[test]
+    fn appends_block_to_a_file_without_stacks() {
+        let src = "# my dev config\nengine_url: ws://127.0.0.1:49134\nrelease: false\n";
+        let out = upsert_stack(src, "tiny", &roots(&["session-manager"])).unwrap();
+        assert!(out.starts_with(src), "existing content must be untouched");
+        assert!(out.ends_with("stacks:\n  tiny:\n    - session-manager\n"));
+        assert!(parses(&out));
+    }
+
+    /// The whole point: comments around the edited entry survive.
+    #[test]
+    fn replaces_an_entry_and_preserves_comments() {
+        let src = "\
+stacks:
+  # the console loop
+  console:
+    - console
+  # everything else
+  tiny:
+    - session-manager
+default_stack: tiny
+";
+        let out = upsert_stack(src, "console", &roots(&["console", "state"])).unwrap();
+        assert!(out.contains("# the console loop"));
+        assert!(out.contains("# everything else"));
+        assert!(out.contains("  console:\n    - console\n    - state\n"));
+        assert!(out.contains("  tiny:\n    - session-manager\n"));
+        assert!(out.contains("default_stack: tiny"));
+        assert!(parses(&out));
+    }
+
+    #[test]
+    fn inserts_a_new_entry_at_the_end_of_the_block() {
+        let src = "stacks:\n  tiny:\n    - session-manager\ncolor: auto\n";
+        let out = upsert_stack(src, "console", &roots(&["console"])).unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  tiny:\n    - session-manager\n  console:\n    - console\ncolor: auto\n"
+        );
+        assert!(parses(&out));
+    }
+
+    #[test]
+    fn upsert_is_idempotent() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n";
+        let once = upsert_stack(src, "console", &roots(&["console"])).unwrap();
+        let twice = upsert_stack(&once, "console", &roots(&["console"])).unwrap();
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn removes_one_entry_and_keeps_the_others() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  console:\n    - console\n";
+        let out = remove_stack(src, "tiny").unwrap();
+        assert_eq!(out, "stacks:\n  console:\n    - console\n");
+        assert!(parses(&out));
+    }
+
+    /// Removing the last entry drops the now-empty `stacks:` key.
+    #[test]
+    fn removing_the_last_entry_drops_the_stacks_key() {
+        let src = "engine_url: ws://x:1\nstacks:\n  tiny:\n    - session-manager\n";
+        let out = remove_stack(src, "tiny").unwrap();
+        assert_eq!(out, "engine_url: ws://x:1\n");
+        assert!(parses(&out));
+    }
+
+    #[test]
+    fn remove_reports_an_unknown_stack() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n";
+        let err = remove_stack(src, "nope").unwrap_err();
+        assert!(
+            err.to_string().contains("not defined in this file"),
+            "{err:#}"
+        );
+        let err = remove_stack("release: false\n", "tiny").unwrap_err();
+        assert!(
+            err.to_string().contains("not defined in this file"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn sets_default_in_place_or_appends_it() {
+        let replaced = set_default_stack("default_stack: tiny\ncolor: auto\n", "console").unwrap();
+        assert_eq!(replaced, "default_stack: console\ncolor: auto\n");
+        let appended = set_default_stack("color: auto\n", "console").unwrap();
+        assert_eq!(appended, "color: auto\ndefault_stack: console\n");
+        assert!(parses(&replaced) && parses(&appended));
+    }
+
+    /// Inline/flow style is not ours to edit — refuse instead of mangling it.
+    #[test]
+    fn refuses_inline_stacks_mapping() {
+        let src = "stacks: {tiny: [session-manager]}\n";
+        let err = upsert_stack(src, "console", &roots(&["console"])).unwrap_err();
+        assert!(err.to_string().contains("inline"), "{err:#}");
+    }
+
+    #[test]
+    fn refuses_a_duplicated_stacks_key() {
+        let src = "stacks:\n  a:\n    - x\nstacks:\n  b:\n    - y\n";
+        let err = upsert_stack(src, "c", &roots(&["z"])).unwrap_err();
+        assert!(err.to_string().contains("more than once"), "{err:#}");
+    }
+
+    #[test]
+    fn refuses_names_that_would_need_quoting() {
+        let err = upsert_stack("", "my stack", &roots(&["x"])).unwrap_err();
+        assert!(err.to_string().contains("invalid stack name"), "{err:#}");
+        assert!(valid_stack_name("console-dev_2"));
+        assert!(!valid_stack_name(""));
+        assert!(!valid_stack_name("a:b"));
+    }
+
+    /// CRLF files stay CRLF on the lines we don't touch.
+    #[test]
+    fn preserves_crlf_line_endings() {
+        let src = "color: auto\r\nstacks:\r\n  tiny:\r\n    - session-manager\r\n";
+        let out = upsert_stack(src, "console", &roots(&["console"])).unwrap();
+        assert!(out.starts_with("color: auto\r\n"));
+        assert!(out.contains("  tiny:\r\n"));
+        assert!(out.contains("  console:\n    - console\n"));
+    }
+}
