@@ -364,10 +364,10 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                     &orchestrator.config.stacks,
                                 ) {
                                     // Only commit to the new stack — label,
-                                    // grouping, and the start — once its
-                                    // members actually resolve; an error
-                                    // leaves current_stack/shared_members/the
-                                    // spawned action all untouched.
+                                    // grouping, Busy, and the start — once
+                                    // its members actually resolve; an error
+                                    // leaves current_stack/shared_members/mode/
+                                    // the spawned action all untouched.
                                     match orchestrator.stack_members(&name) {
                                         Ok(members) => {
                                             current_stack = name.clone();
@@ -389,6 +389,7 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                                 .and_then(|n| row_of_worker(&rows, &state.views, n))
                                                 .or_else(|| first_worker_row(&rows));
                                             table_state.select(target);
+                                            mode = UiMode::Busy(format!("starting stack {name}…"));
                                             spawn_start_stack(&actions, name);
                                         }
                                         Err(err) => {
@@ -738,9 +739,11 @@ fn move_stack_selection(stacks: &[(String, Vec<String>)], current: usize, down: 
     }
 }
 
-/// Stack-picker keys. Enter on a startable stack switches modes to Busy and
-/// returns the chosen name — the main loop makes it current (regroup) and
-/// starts it. Esc/q cancels back to the dashboard.
+/// Stack-picker keys. Enter on a startable stack just returns the chosen
+/// name — `mode` is left alone here. The caller only commits (current_stack,
+/// Busy, spawns the start) once `stack_members` actually resolves, so a
+/// lookup error can't strand the Busy dialog up with nothing in flight.
+/// Esc/q cancels back to the dashboard.
 fn handle_stack_picker_key(
     key: KeyEvent,
     mode: &mut UiMode,
@@ -757,11 +760,10 @@ fn handle_stack_picker_key(
             *selected = move_stack_selection(stacks, *selected, true);
         }
         KeyCode::Enter => {
-            let (name, roots) = &stacks[*selected];
-            if !roots.is_empty() {
-                let name = name.clone();
-                *mode = UiMode::Busy(format!("starting stack {name}…"));
-                return Some(name);
+            if let Some((name, roots)) = stacks.get(*selected) {
+                if !roots.is_empty() {
+                    return Some(name.clone());
+                }
             }
         }
         KeyCode::Esc | KeyCode::Char('q') => *mode = UiMode::Dashboard,
@@ -1811,10 +1813,14 @@ mod tests {
     fn stack_picker_enter_switches_and_esc_cancels() {
         let stacks = stacks();
 
+        // Enter on a startable stack returns its name but leaves `mode`
+        // untouched — the caller only sets Busy once `stack_members`
+        // resolves, so a failed lookup can't strand a Busy dialog with
+        // nothing in flight.
         let mut mode = UiMode::StackPicker { selected: 2 };
         let chosen = handle_stack_picker_key(KeyEvent::from(KeyCode::Enter), &mut mode, &stacks);
         assert_eq!(chosen.as_deref(), Some("console"));
-        assert!(matches!(mode, UiMode::Busy(_)));
+        assert!(matches!(mode, UiMode::StackPicker { selected: 2 }));
 
         // Enter on an unstartable (empty) stack does nothing.
         let mut mode = UiMode::StackPicker { selected: 1 };

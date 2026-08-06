@@ -226,6 +226,14 @@ impl Orchestrator {
             .find(|(n, _)| n == name)
             .map(|(_, roots)| roots.clone())
             .with_context(|| format!("unknown stack {name}"))?;
+        // Empty roots mean every name the stack listed was filtered out of
+        // the managed `workers:` set (config.rs warns and drops). Refuse
+        // instead of falling through to `start_workers`' "no names" meaning
+        // — "start every managed worker" — which an empty stack must never
+        // trigger.
+        if roots.is_empty() {
+            bail!("stack {name} has no startable workers");
+        }
         self.start_workers(&roots, wait_connected).await
     }
 
@@ -972,6 +980,64 @@ mod tests {
             .closure_with_deps(&["harness".to_string()])
             .unwrap();
         assert!(order.contains(&"scrapling".to_string()));
+    }
+
+    /// A stack can legitimately end up with empty roots when every root it
+    /// names is filtered out of the managed `workers:` set (config.rs warns
+    /// and drops). `start_stack` must refuse rather than fall through to
+    /// `start_workers`' "no names" meaning ("start every managed worker").
+    /// No engine is reachable in this test, and `start_workers`' first move
+    /// is an engine round-trip (`connected_worker_names`) — so the "stack
+    /// ghost has no startable workers" assertion below only passes if the
+    /// guard in `start_stack` returns first; were it missing or placed
+    /// after that call, this would fail on a connection error instead.
+    #[tokio::test]
+    async fn start_stack_with_empty_roots_refuses_to_start_everything() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let write = |name: &str, body: &str| {
+            let dir = tmp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("iii.worker.yaml"), body).unwrap();
+            dir
+        };
+        let harness_dir = write(
+            "harness",
+            "iii: v1\nname: harness\nlanguage: rust\ndeploy: binary\n",
+        );
+        std::fs::write(harness_dir.join("Cargo.toml"), "[workspace]\n").unwrap();
+
+        let worker_specs = crate::discover::discover_repo_workers(tmp.path()).unwrap();
+        let workers = crate::discover::order_worker_names(&worker_specs);
+        let config = Config {
+            repo_root: tmp.path().to_path_buf(),
+            engine_url: crate::config::DEFAULT_ENGINE_URL.to_string(),
+            release: false,
+            poll_interval_ms: crate::config::DEFAULT_POLL_INTERVAL_MS,
+            connect_timeout_ms: crate::config::DEFAULT_CONNECT_TIMEOUT_MS,
+            workers,
+            // "ghost" mirrors what config.rs produces once every root of a
+            // configured stack has been dropped: the stack survives with an
+            // empty roots list rather than being removed outright.
+            stacks: vec![
+                ("harness".to_string(), vec!["harness".to_string()]),
+                ("ghost".to_string(), Vec::new()),
+            ],
+            default_stack: "harness".to_string(),
+            worker_specs,
+            stop_on_exit: false,
+            color_mode: Default::default(),
+            ui_watch: false,
+        };
+        let orch = Orchestrator::new(config, false).unwrap();
+
+        let err = orch
+            .start_stack("ghost", false)
+            .await
+            .expect_err("a stack with no startable workers must refuse to start");
+        assert!(
+            err.to_string().contains("ghost"),
+            "error should name the stack, got: {err}"
+        );
     }
 
     /// The env var must match what `iii-console-ui`'s `ConsoleUi::new`
