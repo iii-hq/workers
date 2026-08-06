@@ -31,7 +31,6 @@ pub struct Config {
     /// Name of the stack `up` / bare `start` / Ctrl+u start; always present
     /// in `stacks` with non-empty roots.
     pub default_stack: String,
-    pub harness_stack: Vec<String>,
     pub worker_specs: Vec<WorkerSpec>,
     pub stop_on_exit: bool,
     pub color_mode: ColorMode,
@@ -191,12 +190,11 @@ impl Config {
                 ok
             });
         }
-        let harness_stack = stacks
+        let default_is_empty = stacks
             .iter()
             .find(|(n, _)| *n == default_stack)
-            .map(|(_, r)| r.clone())
-            .expect("default stack validated above");
-        if harness_stack.is_empty() {
+            .is_none_or(|(_, roots)| roots.is_empty());
+        if default_is_empty {
             bail!("default stack {default_stack:?} has no startable workers after validation");
         }
 
@@ -226,7 +224,6 @@ impl Config {
             workers,
             stacks,
             default_stack,
-            harness_stack,
             worker_specs,
             stop_on_exit: stop_on_exit || file_cfg.stop_on_exit.unwrap_or(false),
             color_mode,
@@ -467,8 +464,6 @@ mod tests {
         // Built-in harness roots = HARNESS_STACK const filtered to discovered.
         assert_eq!(cfg.stacks[0].1, vec!["session-manager", "harness"]);
         assert_eq!(cfg.stacks[1].1, vec!["console", "session-manager"]);
-        // Bridge until Task 4: harness_stack carries the DEFAULT stack's roots.
-        assert_eq!(cfg.harness_stack, vec!["console", "session-manager"]);
     }
 
     #[test]

@@ -24,8 +24,9 @@ pub async fn run_start(orchestrator: &Orchestrator, workers: Vec<String>, all: b
             orchestrator.start_all_managed(true).await?;
             println!("started all managed workers");
         } else {
-            orchestrator.start_harness_stack(true).await?;
-            println!("started harness stack");
+            let stack = orchestrator.config.default_stack.clone();
+            orchestrator.start_stack(&stack, true).await?;
+            println!("started stack {stack}");
         }
     } else {
         orchestrator.start_workers(&workers, true).await?;
@@ -90,6 +91,7 @@ pub async fn run_logs(
 
 pub async fn run_up(orchestrator: Arc<Orchestrator>) -> Result<()> {
     orchestrator.ensure_engine().await?;
-    orchestrator.start_harness_stack(false).await?;
+    let stack = orchestrator.config.default_stack.clone();
+    orchestrator.start_stack(&stack, false).await?;
     crate::tui::run(orchestrator).await
 }

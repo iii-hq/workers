@@ -573,8 +573,9 @@ fn handle_dashboard_key(
             *mode = UiMode::Busy("starting engine…".to_string());
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            spawn_start_harness_stack(actions);
-            *mode = UiMode::Busy("starting harness stack…".to_string());
+            let name = actions.orchestrator.config.default_stack.clone();
+            spawn_start_stack(actions, name.clone());
+            *mode = UiMode::Busy(format!("starting stack {name}…"));
         }
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             // Via start_all_managed (like CLI `start --all`), which pre-filters
@@ -668,10 +669,10 @@ fn spawn_start(actions: &Actions, names: Vec<String>) {
     });
 }
 
-fn spawn_start_harness_stack(actions: &Actions) {
+fn spawn_start_stack(actions: &Actions, name: String) {
     let orchestrator = actions.orchestrator.clone();
     spawn_action(actions, async move {
-        orchestrator.start_harness_stack(false).await
+        orchestrator.start_stack(&name, false).await
     });
 }
 

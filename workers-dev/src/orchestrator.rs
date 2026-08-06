@@ -215,9 +215,18 @@ impl Orchestrator {
         !names.iter().any(|n| n == worker) && connected.contains(worker)
     }
 
-    pub async fn start_harness_stack(&self, wait_connected: bool) -> Result<()> {
-        self.start_workers(&self.config.harness_stack, wait_connected)
-            .await
+    /// Start a configured stack by name: its roots are the requested set
+    /// (always (re)started); missing deps are pulled in, and deps already
+    /// connected to the engine are left alone.
+    pub async fn start_stack(&self, name: &str, wait_connected: bool) -> Result<()> {
+        let roots = self
+            .config
+            .stacks
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, roots)| roots.clone())
+            .with_context(|| format!("unknown stack {name}"))?;
+        self.start_workers(&roots, wait_connected).await
     }
 
     /// Member set (roots + transitive deps) of a configured stack.
@@ -947,7 +956,6 @@ mod tests {
             workers,
             stacks: vec![("harness".to_string(), vec!["harness".to_string()])],
             default_stack: "harness".to_string(),
-            harness_stack: vec!["harness".to_string()],
             worker_specs,
             stop_on_exit: false,
             color_mode: Default::default(),
