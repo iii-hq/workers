@@ -13,6 +13,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::core::estimate::{ByRole, EstimatorKind};
+
 /// Message role discriminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -285,6 +287,43 @@ pub struct AgentFunction {
 pub enum ExecutionMode {
     Parallel,
     Sequential,
+}
+
+/// Per-role token breakdown of the `messages` array.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ByRoleTokens {
+    pub user: u64,
+    pub assistant: u64,
+    pub function_result: u64,
+    pub custom: u64,
+}
+
+impl From<ByRole> for ByRoleTokens {
+    fn from(by_role: ByRole) -> Self {
+        ByRoleTokens {
+            user: by_role.user,
+            assistant: by_role.assistant,
+            function_result: by_role.function_result,
+            custom: by_role.custom,
+        }
+    }
+}
+
+/// Which estimator produced the count.
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EstimatorName {
+    Tokenizer,
+    Heuristic,
+}
+
+impl From<EstimatorKind> for EstimatorName {
+    fn from(kind: EstimatorKind) -> Self {
+        match kind {
+            EstimatorKind::Tokenizer => EstimatorName::Tokenizer,
+            EstimatorKind::Heuristic => EstimatorName::Heuristic,
+        }
+    }
 }
 
 #[cfg(test)]
