@@ -924,6 +924,8 @@ mod tests {
             poll_interval_ms: crate::config::DEFAULT_POLL_INTERVAL_MS,
             connect_timeout_ms: crate::config::DEFAULT_CONNECT_TIMEOUT_MS,
             workers,
+            stacks: vec![("harness".to_string(), vec!["harness".to_string()])],
+            default_stack: "harness".to_string(),
             harness_stack: vec!["harness".to_string()],
             worker_specs,
             stop_on_exit: false,

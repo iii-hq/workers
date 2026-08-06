@@ -26,6 +26,17 @@ pub struct Config {
     pub poll_interval_ms: u64,
     pub connect_timeout_ms: u64,
     pub workers: Vec<String>,
+    /// Ordered named stacks: `(name, roots)`. Index 0 is always the built-in
+    /// `harness` stack (roots overridable via `stacks.harness:`), then file
+    /// stacks in YAML order. Roots are filtered to managed workers.
+    // Not read outside tests until Task 3 (stack-grouped view) wires it up.
+    #[allow(dead_code)]
+    pub stacks: Vec<(String, Vec<String>)>,
+    /// Name of the stack `up` / bare `start` / Ctrl+u start; always present
+    /// in `stacks` with non-empty roots.
+    // Not read outside tests until Task 4 (`start_stack`) wires it up.
+    #[allow(dead_code)]
+    pub default_stack: String,
     pub harness_stack: Vec<String>,
     pub worker_specs: Vec<WorkerSpec>,
     pub stop_on_exit: bool,
@@ -45,7 +56,11 @@ struct FileConfig {
     poll_interval_ms: Option<u64>,
     connect_timeout_ms: Option<u64>,
     workers: Option<Vec<String>>,
-    harness_stack: Option<Vec<String>>,
+    /// Removed key. Kept in the struct only so its presence can be rejected
+    /// with a rename hint — serde would otherwise silently ignore it.
+    harness_stack: Option<serde_yaml::Value>,
+    stacks: Option<serde_yaml::Mapping>,
+    default_stack: Option<String>,
     stop_on_exit: Option<bool>,
     color: Option<String>,
     ui_watch: Option<bool>,
@@ -91,18 +106,47 @@ impl Config {
             bail!("no workers discovered under {}", repo_root.display());
         }
 
-        // Resolve the stack roots before deriving worker order: an overridden
-        // `harness_stack:` changes the roots, and the dashboard's stack group
-        // (roots + transitive deps) must be regrouped before the display order
-        // is captured below. Filtered against the managed `workers` list further
-        // down — a root outside it would make `up`/`Ctrl+u` bail at start.
-        let stack_roots = match file_cfg.harness_stack {
-            Some(roots) => {
-                assign_groups(&mut worker_specs, &roots);
-                roots
+        // Resolve stacks before deriving worker order: the default stack's
+        // roots drive grouping, and the dashboard's stack group (roots +
+        // transitive deps) must be regrouped before the display order is
+        // captured below. Root names are validated against the managed
+        // `workers` list further down.
+        if file_cfg.harness_stack.is_some() {
+            bail!(
+                "config key `harness_stack:` was replaced by `stacks:` + `default_stack:` — \
+                 rename to stacks: {{harness: [...]}}"
+            );
+        }
+        let mut stacks: Vec<(String, Vec<String>)> =
+            vec![("harness".to_string(), harness_stack_names(&worker_specs))];
+        if let Some(mapping) = file_cfg.stacks {
+            for (name, roots) in parse_stacks(mapping)? {
+                match stacks.iter_mut().find(|(n, _)| *n == name) {
+                    // `stacks.harness:` overrides the builtin roots in place,
+                    // keeping harness at index 0.
+                    Some(entry) => entry.1 = roots,
+                    None => stacks.push((name, roots)),
+                }
             }
-            None => harness_stack_names(&worker_specs),
+        }
+        let default_stack = file_cfg
+            .default_stack
+            .unwrap_or_else(|| "harness".to_string());
+        let Some(default_roots) = stacks
+            .iter()
+            .find(|(n, _)| *n == default_stack)
+            .map(|(_, r)| r.clone())
+        else {
+            bail!(
+                "default_stack {default_stack:?} is not a defined stack (have: {})",
+                stacks
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         };
+        assign_groups(&mut worker_specs, &default_roots);
 
         let raw_engine_url = engine_url
             .or(file_cfg.engine_url)
@@ -146,21 +190,28 @@ impl Config {
 
         // Keep only stack roots that survived into the managed `workers` set:
         // the WorkerGraph is built over `workers`, so a root outside it makes
-        // `workers-dev up` / `Ctrl+u` bail with "unknown worker" before the TUI
-        // even opens. Drop with a warning, mirroring the `workers:` handling.
+        // stack starts bail with "unknown worker". Drop with a warning,
+        // mirroring the `workers:` handling.
         let managed: std::collections::HashSet<&str> = workers.iter().map(String::as_str).collect();
-        let harness_stack: Vec<String> = stack_roots
-            .into_iter()
-            .filter(|w| {
+        for (stack_name, roots) in &mut stacks {
+            roots.retain(|w| {
                 let ok = managed.contains(w.as_str());
                 if !ok {
                     eprintln!(
-                        "warning: skipping harness_stack worker {w}: not in the managed workers list"
+                        "warning: skipping stack {stack_name} worker {w}: not in the managed workers list"
                     );
                 }
                 ok
-            })
-            .collect();
+            });
+        }
+        let harness_stack = stacks
+            .iter()
+            .find(|(n, _)| *n == default_stack)
+            .map(|(_, r)| r.clone())
+            .expect("default stack validated above");
+        if harness_stack.is_empty() {
+            bail!("default stack {default_stack:?} has no startable workers after validation");
+        }
 
         let color_mode = color
             .or(file_cfg.color)
@@ -186,6 +237,8 @@ impl Config {
                 .connect_timeout_ms
                 .unwrap_or(DEFAULT_CONNECT_TIMEOUT_MS),
             workers,
+            stacks,
+            default_stack,
             harness_stack,
             worker_specs,
             stop_on_exit: stop_on_exit || file_cfg.stop_on_exit.unwrap_or(false),
@@ -203,6 +256,22 @@ fn load_file_config(path: &Path) -> Result<FileConfig> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read config file {}", path.display()))?;
     serde_yaml::from_str(&raw).with_context(|| format!("parse config file {}", path.display()))
+}
+
+/// Parse the `stacks:` mapping preserving YAML order (serde_yaml::Mapping is
+/// insertion-ordered). Every value must be a list of worker-name strings.
+fn parse_stacks(mapping: serde_yaml::Mapping) -> Result<Vec<(String, Vec<String>)>> {
+    let mut stacks = Vec::new();
+    for (key, value) in mapping {
+        let name = key
+            .as_str()
+            .with_context(|| format!("stacks: key {key:?} is not a string"))?
+            .to_string();
+        let roots: Vec<String> = serde_yaml::from_value(value)
+            .with_context(|| format!("stacks.{name}: expected a list of worker names"))?;
+        stacks.push((name, roots));
+    }
+    Ok(stacks)
 }
 
 pub fn resolve_repo_root(explicit: Option<PathBuf>) -> Result<PathBuf> {
@@ -373,5 +442,114 @@ mod tests {
         std::fs::write(&other, "engine_url: ws://127.0.0.1:44444\n").unwrap();
         let cfg = load(&tmp, Some(other)).unwrap();
         assert_eq!(cfg.engine_url, "ws://127.0.0.1:44444");
+    }
+
+    /// Repo with enough workers to define non-trivial stacks.
+    fn write_repo_multi(tmp: &TempDir) {
+        for name in ["harness", "session-manager", "console"] {
+            let dir = tmp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("iii.worker.yaml"),
+                format!(
+                    "iii: v1\nname: {name}\nlanguage: rust\ndeploy: binary\ndescription: test\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(dir.join("Cargo.toml"), "[workspace]\n").unwrap();
+        }
+    }
+
+    fn load_with_yaml(tmp: &TempDir, yaml: &str) -> Result<Config> {
+        std::fs::write(tmp.path().join("workers-dev.yaml"), yaml).unwrap();
+        load(tmp, None)
+    }
+
+    #[test]
+    fn stacks_parse_with_builtin_harness_first() {
+        let tmp = TempDir::new().unwrap();
+        write_repo_multi(&tmp);
+        let cfg = load_with_yaml(
+            &tmp,
+            "stacks:\n  console: [console, session-manager]\ndefault_stack: console\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.default_stack, "console");
+        let names: Vec<&str> = cfg.stacks.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["harness", "console"]);
+        // Built-in harness roots = HARNESS_STACK const filtered to discovered.
+        assert_eq!(cfg.stacks[0].1, vec!["session-manager", "harness"]);
+        assert_eq!(cfg.stacks[1].1, vec!["console", "session-manager"]);
+        // Bridge until Task 4: harness_stack carries the DEFAULT stack's roots.
+        assert_eq!(cfg.harness_stack, vec!["console", "session-manager"]);
+    }
+
+    #[test]
+    fn stacks_keep_yaml_definition_order() {
+        let tmp = TempDir::new().unwrap();
+        write_repo_multi(&tmp);
+        let cfg = load_with_yaml(
+            &tmp,
+            "stacks:\n  zebra: [console]\n  alpha: [session-manager]\n",
+        )
+        .unwrap();
+        let names: Vec<&str> = cfg.stacks.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["harness", "zebra", "alpha"]);
+        assert_eq!(cfg.default_stack, "harness");
+    }
+
+    #[test]
+    fn stacks_harness_entry_overrides_builtin_roots() {
+        let tmp = TempDir::new().unwrap();
+        write_repo_multi(&tmp);
+        let cfg = load_with_yaml(&tmp, "stacks:\n  harness: [console]\n").unwrap();
+        assert_eq!(cfg.stacks.len(), 1);
+        assert_eq!(cfg.stacks[0].0, "harness");
+        assert_eq!(cfg.stacks[0].1, vec!["console"]);
+    }
+
+    #[test]
+    fn unknown_default_stack_fails() {
+        let tmp = TempDir::new().unwrap();
+        write_repo_multi(&tmp);
+        let err = load_with_yaml(&tmp, "default_stack: nope\n").unwrap_err();
+        assert!(err.to_string().contains("not a defined stack"), "{err:#}");
+    }
+
+    #[test]
+    fn removed_harness_stack_key_fails_with_rename_hint() {
+        let tmp = TempDir::new().unwrap();
+        write_repo_multi(&tmp);
+        let err = load_with_yaml(&tmp, "harness_stack:\n  - harness\n").unwrap_err();
+        assert!(err.to_string().contains("replaced by `stacks:`"), "{err:#}");
+    }
+
+    #[test]
+    fn unknown_stack_roots_warn_and_drop() {
+        let tmp = TempDir::new().unwrap();
+        write_repo_multi(&tmp);
+        let cfg = load_with_yaml(&tmp, "stacks:\n  console: [console, bogus]\n").unwrap();
+        let console = cfg.stacks.iter().find(|(n, _)| n == "console").unwrap();
+        assert_eq!(console.1, vec!["console"]);
+    }
+
+    #[test]
+    fn empty_default_stack_after_filtering_fails() {
+        let tmp = TempDir::new().unwrap();
+        write_repo_multi(&tmp);
+        let err =
+            load_with_yaml(&tmp, "stacks:\n  ghost: [bogus]\ndefault_stack: ghost\n").unwrap_err();
+        assert!(err.to_string().contains("no startable workers"), "{err:#}");
+    }
+
+    #[test]
+    fn non_list_stack_value_fails() {
+        let tmp = TempDir::new().unwrap();
+        write_repo_multi(&tmp);
+        let err = load_with_yaml(&tmp, "stacks:\n  console: 5\n").unwrap_err();
+        assert!(
+            err.to_string().contains("expected a list of worker names"),
+            "{err:#}"
+        );
     }
 }
