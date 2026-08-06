@@ -14,6 +14,7 @@ packages:
   - database/ui
   - editor/ui
   - eval/ui
+  - harness/ui
   - memory/ui
   - pdf/ui
   - state/ui

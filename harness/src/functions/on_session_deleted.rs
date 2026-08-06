@@ -40,6 +40,7 @@ pub async fn handle(
     let cfg = deps.cfg().await;
     crate::filesystem_grants::purge(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
     crate::budget::purge(deps, &event.session_id, cfg.session_timeout_ms).await?;
+    crate::context_snapshot::delete(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
     Ok(SessionDeletedAck {
         ok: true,
         removed: swept,

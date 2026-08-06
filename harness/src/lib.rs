@@ -13,6 +13,7 @@ pub mod clients;
 pub mod conditions;
 pub mod config;
 pub mod configuration;
+pub mod context_snapshot;
 pub mod contract;
 pub mod deferred;
 pub mod deps;

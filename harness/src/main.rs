@@ -34,6 +34,10 @@ use harness::events::TurnEvents;
 use harness::hooks::HookRegistry;
 use harness::{config, discovery, functions, manifest, queue};
 
+/// Asset names + embedded bytes for the injected console UI; the registration
+/// contract itself lives in the shared `iii-console-ui` crate.
+mod ui;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "harness",
@@ -133,6 +137,12 @@ async fn main() -> Result<()> {
     discovery::register_functions_trigger(&iii, functions_cell.clone(), cfg.dispatch_timeout_ms);
 
     functions::register_all(&iii, &deps);
+
+    // Injectable console UI: content function + console:script/style triggers.
+    // Ordering doesn't matter for the console side (the engine parks the
+    // registration until a console owns the type), but the content function
+    // must exist before the trigger names it.
+    ui::register(&iii);
 
     // The one-shot deadline provider, registered with the ENGINE so `timer`
     // shows up in engine::triggers::list and live registrations replay to it
