@@ -521,9 +521,12 @@ async function realListTriggers(
   return listSessionTriggers(client, sessionId)
 }
 
-async function realUnregisterTrigger(triggerId: string): Promise<void> {
+async function realUnregisterTrigger(
+  subscriptionId: string,
+  sessionId: string,
+): Promise<void> {
   const client = await getIiiClient()
-  await unregisterTrigger(client, triggerId)
+  await unregisterTrigger(client, subscriptionId, sessionId)
 }
 
 /** `state::get` non-null → the key exists; errors → null (unknown). */

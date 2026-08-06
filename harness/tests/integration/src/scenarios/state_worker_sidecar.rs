@@ -1,19 +1,19 @@
-//! INT-006 — a reaction bound to a `state` key fires through the standalone
+//! INT-006 — a wake bound to a `state` key fires through the standalone
 //! state worker, carrying the registration-metadata sidecar.
 //!
 //! This is the cross-worker seam every rctest run turned on (MOT-4209): the
-//! state worker's fan-out must invoke `harness::react` WITH the binding's
-//! metadata, or the reaction silently no-ops. This run's stack includes the
-//! real `state` worker (see `stack/config.rs`); the engine builtin is
-//! disabled, so the standalone worker owns the `state` trigger type exactly
-//! as in production.
+//! state worker's fan-out must invoke the harness delivery hop WITH the
+//! binding's `__binding` metadata, or the fire resolves nothing and silently
+//! no-ops. This run's stack includes the real `state` worker (see
+//! `stack/config.rs`); the engine builtin is disabled, so the standalone
+//! worker owns the `state` trigger type exactly as in production.
 //!
-//! Determinism comes from the probe hook: the main turn only REGISTERS the
-//! state-key reaction and completes. The PROBE then writes the key (after the
-//! first terminal turn), so the reaction fires while the session is idle — its
-//! turn is the only one active and the scripted, strict-ordinal router matches
-//! it cleanly. The reaction's recorder call is the proof the sidecar arrived;
-//! drop it and no second turn is ever seeded and the run times out.
+//! Shape note: the binding is a STANDING wake bounded by `max_fires: 1`
+//! rather than a `once` wake. A once-wake would PARK turn 1 (no terminal
+//! turn), and the probe only fires after a terminal turn exists — standing
+//! keeps turn 1 terminal, the probe writes the key while the session is
+//! idle, and the lifecycle bound still retires the binding after its single
+//! delivery.
 
 use serde_json::{json, Value};
 
@@ -24,12 +24,12 @@ use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
 const REGISTER: &str = "engine::register_trigger";
-const SCOPE: &str = "integration-006";
+const SCOPE: &str = "e2e-006";
 const KEY: &str = "go";
 
 pub(super) fn scenario() -> ScenarioFixture {
     const ID: &str = "INT-006";
-    const MESSAGE: &str = "Arm a state-key reaction.";
+    const MESSAGE: &str = "Arm a state-key wake.";
 
     let model = Model::scripted("fixture-model");
     let record = ControlledFunction::new("{{run_id}}::record", "Record one value.")
@@ -41,22 +41,19 @@ pub(super) fn scenario() -> ScenarioFixture {
         }))
         .returns_text("recorded");
 
-    // No `options`: the reaction inherits the registering turn's policy
-    // (MOT-4212), which allows the recorder.
+    // A wake (no `function_id`): the fire notifies THIS session. Standing +
+    // max_fires keeps turn 1 terminal for the probe boundary (see module doc).
     let register_args = json!({
         "trigger_type": "state",
         "config": { "scope": SCOPE, "key": KEY },
-        "function_id": "harness::react",
-        "metadata": {
-            "task": "The state key changed. Call the recorder exactly once with \
-                     value \"from-state-reaction\", then stop."
-        }
+        "once": false,
+        "lifecycle": { "max_fires": 1 }
     });
 
     Scenario::new(
         ID,
         "state-worker-sidecar",
-        "A state-key reaction fires through the standalone state worker with its metadata sidecar.",
+        "A state-key wake fires through the standalone state worker with its metadata sidecar.",
         ScenarioDriver::Direct,
         model.clone(),
     )
@@ -66,14 +63,11 @@ pub(super) fn scenario() -> ScenarioFixture {
             .allow_id(REGISTER)
             .allow_function(&record),
     )
-    // The state-fired reaction runs in a fresh, untracked child. Its recorder
-    // call proves the child ran; only the registering session's terminal turn
-    // and traces are tracked directly.
-    .await_target_calls(1)
-    .expect_traces(1)
-    // The probe trips the key AFTER the main turn completes, so the reaction
+    // Main turn (1) + the state-fired wake turn (2).
+    .terminal_turn_statuses(["completed", "completed"])
+    // The probe trips the key AFTER the main turn completes, so the wake
     // turn runs alone. `state::set` on the standalone worker fans out to the
-    // react binding — the seam under test.
+    // delivery hop — the metadata-sidecar seam under test.
     .probe_after(
         1,
         "state::set",
@@ -115,8 +109,9 @@ pub(super) fn scenario() -> ScenarioFixture {
             )
             .respond(Response::text("armed", 10, 2)),
     )
-    // The reaction turn — seeded by the state worker's fire, running alone.
-    // Reaction turns run the sub-agent prompt, so match it by presence.
+    // The woken turn — seeded by the state worker's fire, running alone in
+    // the SAME session. Binding retirement (max_fires spent) races the turn
+    // start, so match the prompt loosely.
     .generation(
         Generation::new(3)
             .expect(
@@ -129,7 +124,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .respond(Response::function_call(
                 "call-record",
                 &record,
-                json!({ "value": "from-state-reaction" }),
+                json!({ "value": "from-state-wake" }),
                 8,
                 4,
             )),
@@ -140,49 +135,60 @@ pub(super) fn scenario() -> ScenarioFixture {
                 Request::new()
                     .turn_request_step(1)
                     .system_prompt_regex(".")
-                    .messages_subset([
-                        json!({ "role": "user" }),
-                        json!({ "role": "assistant", "content": [
-                            { "type": "function_call", "id": "call-record" }
-                        ] }),
-                        json!({ "role": "function_result", "function_call_id": "call-record",
-                                "is_error": false }),
-                    ])
+                    .messages_subset([json!({ "role": "user" })])
                     .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
-            .respond(Response::text("state reaction recorded", 12, 3)),
+            .respond(Response::text("state wake recorded", 12, 3)),
     )
     .verify(|run| {
-        // The recorder is reachable only if the state worker delivered the
-        // metadata sidecar so harness::react could resolve and spawn the task.
-        run.expect_assistant_texts(["armed"])?;
-        run.expect_target_calls(1)?;
-        anyhow::ensure!(
-            run.target_calls[0] == json!({ "value": "from-state-reaction" }),
-            "recorder payload {:?} != from-state-reaction",
-            run.target_calls[0]
-        );
+        // The second terminal turn exists ONLY if the state worker delivered
+        // the metadata sidecar so the delivery hop could resolve its binding.
+        run.expect_assistant_texts(["armed", "state wake recorded"])?;
+        run.expect_function_calls("record", 1)?;
+        run.expect_call_payload("record", json!({ "value": "from-state-wake" }))?;
 
-        for item in &run.transcript {
-            let msg = item.get("message").cloned().unwrap_or(Value::Null);
-            if msg.get("role").and_then(Value::as_str) == Some("function_result") {
+        // The wake is a notification carrying the state event.
+        let notification = run
+            .transcript
+            .iter()
+            .filter_map(|item| {
+                let msg = item.get("message")?;
+                if msg.get("role").and_then(Value::as_str) != Some("user") {
+                    return None;
+                }
                 let text: String = msg
                     .get("content")
-                    .and_then(Value::as_array)
-                    .map(|blocks| {
-                        blocks
-                            .iter()
-                            .filter_map(|b| b.get("text").and_then(Value::as_str))
-                            .collect::<Vec<_>>()
-                            .concat()
-                    })
-                    .unwrap_or_default();
-                anyhow::ensure!(
-                    !text.contains("not permitted"),
-                    "a dispatch was denied: {text}"
-                );
-            }
-        }
+                    .and_then(Value::as_array)?
+                    .iter()
+                    .filter_map(|b| b.get("text").and_then(Value::as_str))
+                    .collect();
+                text.contains("[notification]").then_some(text)
+            })
+            .next();
+        let notification = notification
+            .ok_or_else(|| anyhow::anyhow!("no [notification] wake in the transcript"))?;
+        anyhow::ensure!(
+            notification.contains(SCOPE) && notification.contains(KEY),
+            "the wake must carry the state event's watch: {notification}"
+        );
+
+        // The lifecycle bound retired the binding on its single delivery.
+        let retired = run.transcript.iter().any(|item| {
+            item.get("custom")
+                .and_then(|c| c.get("custom_type"))
+                .and_then(Value::as_str)
+                == Some("trigger_fired")
+                && item
+                    .get("custom")
+                    .and_then(|c| c.get("data"))
+                    .and_then(|d| d.get("retired"))
+                    .and_then(Value::as_bool)
+                    == Some(true)
+        });
+        anyhow::ensure!(
+            retired,
+            "the max_fires bound must retire the binding on delivery"
+        );
         run.expect_no_duplicate_messages()
     })
     .build()
@@ -193,12 +199,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixture_is_valid_and_awaits_the_untracked_reaction() {
+    fn fixture_is_valid_and_awaits_the_wake_turn() {
         let fixture = scenario();
         fixture.validate().unwrap();
-        assert_eq!(fixture.expected_terminal_turns, 1);
-        assert_eq!(fixture.await_target_calls, Some(1));
-        assert_eq!(fixture.expected_traces(), 1);
+        assert_eq!(fixture.expected_terminal_turns, 2);
         assert_eq!(fixture.probe_actions.len(), 1);
         assert_eq!(fixture.probe_actions[0].after_turns, 1);
     }

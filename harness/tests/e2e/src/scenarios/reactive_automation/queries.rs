@@ -26,15 +26,23 @@ pub(super) async fn collect(
         .iter()
         .map(|session| session.session_id.clone())
         .collect();
+    let expected_writer_sessions: BTreeSet<_> = names.writer_sessions.iter().cloned().collect();
+    let writer_calls: Vec<_> = calls
+        .iter()
+        .filter(|call| {
+            call.function_id == "harness::spawn"
+                && call
+                    .arguments
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|session| expected_writer_sessions.contains(session))
+        })
+        .collect();
 
     let writer_spawns = WriterSpawnEvidence {
-        call_count: calls
+        call_count: writer_calls.len(),
+        session_ids: writer_calls
             .iter()
-            .filter(|call| call.function_id == "harness::spawn")
-            .count(),
-        session_ids: calls
-            .iter()
-            .filter(|call| call.function_id == "harness::spawn")
             .filter_map(|call| {
                 call.arguments
                     .get("session_id")
@@ -42,7 +50,10 @@ pub(super) async fn collect(
                     .map(str::to_string)
             })
             .collect(),
-        max_parallel_calls: max_parallel_calls(&observation.transcript, "harness::spawn"),
+        max_parallel_calls: max_parallel_writer_calls(
+            &observation.transcript,
+            &expected_writer_sessions,
+        ),
         max_concurrent_sessions: max_concurrent_sessions(
             &writer_activity_windows(context, &names.writer_sessions).await?,
         ),
@@ -50,23 +61,24 @@ pub(super) async fn collect(
     };
 
     let watch = WatchEvidence {
-        first_writer_spawn: calls
-            .iter()
-            .position(|call| call.function_id == "harness::spawn"),
+        first_writer_spawn: calls.iter().position(|call| {
+            call.function_id == "harness::spawn"
+                && call
+                    .arguments
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|session| expected_writer_sessions.contains(session))
+        }),
         trigger_catalog: calls
             .iter()
             .position(|call| call.function_id == "engine::triggers::list"),
-        row_change_probe: calls.iter().position(|call| {
-            call.function_id == "engine::register_trigger"
-                && call.arguments.get("trigger_type").and_then(Value::as_str)
-                    == Some("database::row-changed")
-        }),
-        state_reaction: calls.iter().position(|call| {
-            call.function_id == "engine::register_trigger"
-                && call.arguments.get("trigger_type").and_then(Value::as_str) == Some("state")
-                && call.arguments.get("function_id").and_then(Value::as_str)
-                    == Some("harness::react")
-        }),
+        row_change_probe: calls.iter().position(|call| is_probe_wake(call, names)),
+        aggregate_reaction: calls
+            .iter()
+            .position(|call| is_aggregate_reaction(call, names)),
+        completion_wake: calls
+            .iter()
+            .position(|call| is_completion_wake(call, names)),
     };
 
     let existing_tables = existing_tables(context, names).await?;
@@ -136,18 +148,57 @@ pub(super) async fn collect(
     } else {
         Vec::new()
     };
-    let reactor_session = reports
-        .first()
-        .filter(|_| reports.len() == 1)
-        .and_then(|report| report.reactor_session_id.as_deref())
-        .unwrap_or_default();
-    let reactor_spawned_by_trigger = reactor_session.starts_with(&names.run_label)
-        && writer_spawns.sessions_in_tree.contains(reactor_session)
-        && spawned_by_trigger(context, reactor_session).await?;
-    let finalizer_spawned_by_trigger = writer_spawns
-        .sessions_in_tree
-        .contains(&names.finalizer_session)
-        && spawned_by_trigger(context, &names.finalizer_session).await?;
+    let records = common::trigger_fired_records(&observation.transcript);
+    let aggregate_label = format!("{}-aggregate", names.run_label);
+    let completion_label = format!("{}-writers-complete", names.run_label);
+    let report_label = format!("{}-report-ready", names.run_label);
+    let aggregate_deliveries = records
+        .iter()
+        .filter(|record| {
+            record.get("label").and_then(Value::as_str) == Some(aggregate_label.as_str())
+                && record.get("target").and_then(Value::as_str) == Some("database::execute")
+        })
+        .count();
+    let completion_wake_delivered = records.iter().any(|record| {
+        record.get("label").and_then(Value::as_str) == Some(completion_label.as_str())
+            && record.get("target").and_then(Value::as_str) == Some("harness::send")
+            && record.get("retired").and_then(Value::as_bool) == Some(true)
+    });
+    let report_wake_delivered = records.iter().any(|record| {
+        record.get("label").and_then(Value::as_str) == Some(report_label.as_str())
+            && record.get("target").and_then(Value::as_str) == Some("harness::send")
+            && record.get("retired").and_then(Value::as_bool) == Some(true)
+    });
+
+    let finalizer_spawns: Vec<_> = calls
+        .iter()
+        .enumerate()
+        .filter(|(_, call)| {
+            call.function_id == "harness::spawn"
+                && call.arguments.get("session_id").and_then(Value::as_str)
+                    == Some(names.finalizer_session.as_str())
+        })
+        .collect();
+    let report_wake = calls.iter().position(|call| is_report_wake(call, names));
+    let report_wake_before_finalizer = report_wake
+        .zip(finalizer_spawns.first().map(|(position, _)| *position))
+        .is_some_and(|(wake, finalizer)| wake < finalizer);
+    let finalizer_in_tree = observation.metrics.by_session.iter().any(|session| {
+        session.session_id == names.finalizer_session
+            && session.parent_session_id.as_deref()
+                == Some(observation.metrics.root_session_id.as_str())
+            && session.depth == 1
+    });
+    let finalizer_wrote_report = if finalizer_in_tree {
+        common::function_calls(&context.transcript(&names.finalizer_session).await?)
+            .iter()
+            .any(|call| writes_relation(call, &names.report))
+    } else {
+        false
+    };
+    let root_wrote_report = calls
+        .iter()
+        .any(|call| writes_relation(call, &names.report));
 
     Ok(Evidence {
         existing_tables,
@@ -158,8 +209,14 @@ pub(super) async fn collect(
         direct_totals,
         stored_totals,
         reports,
-        reactor_spawned_by_trigger,
-        finalizer_spawned_by_trigger,
+        aggregate_deliveries,
+        completion_wake_delivered,
+        report_wake_before_finalizer,
+        report_wake_delivered,
+        finalizer_spawn_count: finalizer_spawns.len(),
+        finalizer_in_tree,
+        finalizer_wrote_report,
+        root_wrote_report,
         active_run_triggers: active_run_trigger_count(context, names).await?,
     })
 }
@@ -193,19 +250,6 @@ pub(super) async fn drop_table(context: &E2eContext, table: &str) -> anyhow::Res
         )
         .await?;
     Ok(())
-}
-
-async fn spawned_by_trigger(context: &E2eContext, session_id: &str) -> anyhow::Result<bool> {
-    if session_id.is_empty() {
-        return Ok(false);
-    }
-    let session = context
-        .trigger_value("session::get", json!({ "session_id": session_id }))
-        .await?;
-    Ok(session
-        .pointer("/meta/metadata/spawned_by")
-        .and_then(Value::as_str)
-        == Some("trigger"))
 }
 
 async fn query_rows(context: &E2eContext, sql: &str) -> anyhow::Result<Vec<Value>> {
@@ -258,6 +302,166 @@ fn number_field(value: &Value, field: &str) -> Option<f64> {
         .and_then(|value| value.as_f64().or_else(|| value.as_str()?.parse().ok()))
 }
 
+fn is_probe_wake(call: &common::ObservedFunctionCall, names: &ScenarioNames) -> bool {
+    call.function_id == "engine::register_trigger"
+        && call.arguments.get("label").and_then(Value::as_str)
+            == Some(format!("{}-probe", names.run_label).as_str())
+        && is_database_watch(&call.arguments, &names.orders)
+        && common::requested_once(&call.arguments)
+        && common::is_wake_registration(&call.arguments)
+}
+
+fn is_aggregate_reaction(call: &common::ObservedFunctionCall, names: &ScenarioNames) -> bool {
+    if call.function_id != "engine::register_trigger"
+        || call.arguments.get("label").and_then(Value::as_str)
+            != Some(format!("{}-aggregate", names.run_label).as_str())
+        || !is_database_watch(&call.arguments, &names.orders)
+        || call
+            .arguments
+            .pointer("/lifecycle/max_fires")
+            .and_then(Value::as_u64)
+            != Some(15)
+    {
+        return false;
+    }
+
+    let (function_id, payload) = binding_target(&call.arguments);
+    let sql = payload
+        .and_then(|payload| {
+            payload
+                .get("sql")
+                .or_else(|| payload.get("query"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    function_id == Some("database::execute")
+        && payload
+            .and_then(|payload| payload.get("db"))
+            .and_then(Value::as_str)
+            == Some(DATABASE)
+        && sql.contains("insert")
+        && sql.contains(&names.orders.to_ascii_lowercase())
+        && sql.contains(&names.totals.to_ascii_lowercase())
+        && sql.contains("group by")
+        && !sql.contains("delete")
+}
+
+fn is_completion_wake(call: &common::ObservedFunctionCall, names: &ScenarioNames) -> bool {
+    call.function_id == "engine::register_trigger"
+        && call.arguments.get("label").and_then(Value::as_str)
+            == Some(format!("{}-writers-complete", names.run_label).as_str())
+        && call.arguments.get("trigger_type").and_then(Value::as_str) == Some("state")
+        && call
+            .arguments
+            .pointer("/config/scope")
+            .and_then(Value::as_str)
+            == Some(names.run_label.as_str())
+        && call
+            .arguments
+            .pointer("/config/key")
+            .and_then(Value::as_str)
+            == Some("writer_done")
+        && common::requested_once(&call.arguments)
+        && common::is_wake_registration(&call.arguments)
+        && call
+            .arguments
+            .get("conditions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(barrier_covers_writers)
+}
+
+fn is_report_wake(call: &common::ObservedFunctionCall, names: &ScenarioNames) -> bool {
+    call.function_id == "engine::register_trigger"
+        && call.arguments.get("label").and_then(Value::as_str)
+            == Some(format!("{}-report-ready", names.run_label).as_str())
+        && is_database_watch(&call.arguments, &names.report)
+        && common::requested_once(&call.arguments)
+        && common::is_wake_registration(&call.arguments)
+}
+
+fn is_database_watch(arguments: &Value, table: &str) -> bool {
+    arguments.get("trigger_type").and_then(Value::as_str) == Some("database::row-changed")
+        && arguments.pointer("/config/db").and_then(Value::as_str) == Some(DATABASE)
+        && arguments.pointer("/config/table").and_then(Value::as_str) == Some(table)
+}
+
+fn binding_target(arguments: &Value) -> (Option<&str>, Option<&Value>) {
+    if let Some(target) = arguments.get("target").filter(|target| !target.is_null()) {
+        (
+            target.get("function_id").and_then(Value::as_str),
+            target.get("payload"),
+        )
+    } else {
+        (
+            arguments.get("function_id").and_then(Value::as_str),
+            arguments.pointer("/metadata/payload"),
+        )
+    }
+}
+
+fn barrier_covers_writers(condition: &Value) -> bool {
+    let expected = BTreeSet::from(["writer-1", "writer-2", "writer-3"]);
+    condition.get("function_id").and_then(Value::as_str) == Some("state::barrier")
+        && condition
+            .pointer("/config/expect")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>()
+            == expected
+        && condition
+            .pointer("/config/key_from")
+            .and_then(Value::as_str)
+            == Some("/new_value/writer")
+}
+
+fn writes_relation(call: &common::ObservedFunctionCall, relation: &str) -> bool {
+    matches!(
+        call.function_id.as_str(),
+        "database::execute" | "database::executeBatch" | "database::transaction"
+    ) && sql_statements(&call.arguments)
+        .into_iter()
+        .any(|sql| mutates_relation(sql, relation))
+}
+
+fn sql_statements(arguments: &Value) -> Vec<&str> {
+    arguments
+        .get("sql")
+        .and_then(Value::as_str)
+        .into_iter()
+        .chain(
+            arguments
+                .get("statements")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|statement| {
+                    statement
+                        .as_str()
+                        .or_else(|| statement.get("sql").and_then(Value::as_str))
+                }),
+        )
+        .collect()
+}
+
+fn mutates_relation(sql: &str, relation: &str) -> bool {
+    let sql = sql.to_ascii_lowercase();
+    let relation = relation.to_ascii_lowercase();
+    let into =
+        sql.contains(&format!("into {relation}")) || sql.contains(&format!("into \"{relation}\""));
+    let update = sql.contains(&format!("update {relation}"))
+        || sql.contains(&format!("update \"{relation}\""));
+    let from =
+        sql.contains(&format!("from {relation}")) || sql.contains(&format!("from \"{relation}\""));
+    ((sql.contains("insert") || sql.contains("replace")) && into)
+        || update
+        || (sql.contains("delete") && from)
+}
+
 async fn active_run_trigger_count(
     context: &E2eContext,
     names: &ScenarioNames,
@@ -280,7 +484,7 @@ async fn active_run_trigger_count(
         .count())
 }
 
-fn max_parallel_calls(transcript: &Value, function_id: &str) -> usize {
+fn max_parallel_writer_calls(transcript: &Value, expected_sessions: &BTreeSet<String>) -> usize {
     transcript
         .get("messages")
         .and_then(Value::as_array)
@@ -298,19 +502,29 @@ fn max_parallel_calls(transcript: &Value, function_id: &str) -> usize {
                     if block.get("type").and_then(Value::as_str) != Some("function_call") {
                         return false;
                     }
-                    match block.get("function_id").and_then(Value::as_str) {
-                        Some(id) if id == function_id => true,
-                        Some("agent_trigger") => {
-                            block.pointer("/arguments/function").and_then(Value::as_str)
-                                == Some(function_id)
-                        }
-                        _ => false,
-                    }
+                    spawn_session(block).is_some_and(|session| expected_sessions.contains(session))
                 })
                 .count()
         })
         .max()
         .unwrap_or(0)
+}
+
+fn spawn_session(block: &Value) -> Option<&str> {
+    match block.get("function_id").and_then(Value::as_str) {
+        Some("harness::spawn") => block
+            .pointer("/arguments/session_id")
+            .and_then(Value::as_str),
+        Some("agent_trigger")
+            if block.pointer("/arguments/function").and_then(Value::as_str)
+                == Some("harness::spawn") =>
+        {
+            block
+                .pointer("/arguments/payload/session_id")
+                .and_then(Value::as_str)
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -390,21 +604,31 @@ mod tests {
     }
 
     #[test]
-    fn parallel_call_detection_supports_native_and_wrapped_calls() {
+    fn parallel_call_detection_ignores_non_writer_spawns() {
+        let expected = BTreeSet::from([
+            "writer-1".to_string(),
+            "writer-2".to_string(),
+            "writer-3".to_string(),
+        ]);
         let transcript = json!({
             "messages": [{
                 "message": {
                     "role": "assistant",
                     "content": [
-                        {"type": "function_call", "function_id": "harness::spawn", "arguments": {}},
+                        {"type": "function_call", "function_id": "harness::spawn",
+                         "arguments": {"session_id": "writer-1"}},
                         {"type": "function_call", "function_id": "agent_trigger",
-                         "arguments": {"function": "harness::spawn", "payload": {}}},
-                        {"type": "function_call", "function_id": "harness::spawn", "arguments": {}}
+                         "arguments": {"function": "harness::spawn",
+                                       "payload": {"session_id": "writer-2"}}},
+                        {"type": "function_call", "function_id": "harness::spawn",
+                         "arguments": {"session_id": "writer-3"}},
+                        {"type": "function_call", "function_id": "harness::spawn",
+                         "arguments": {"session_id": "finalizer"}}
                     ]
                 }
             }]
         });
-        assert_eq!(max_parallel_calls(&transcript, "harness::spawn"), 3);
+        assert_eq!(max_parallel_writer_calls(&transcript, &expected), 3);
     }
 
     #[test]

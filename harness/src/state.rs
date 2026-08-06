@@ -1,12 +1,13 @@
 //! Durable loop bookkeeping in iii state (harness.md § State).
 //!
-//! Three scopes: `harness_turn/<session_id>` holds the [`TurnRecord`] (loop
+//! Four scopes: `harness_turn/<session_id>` holds the [`TurnRecord`] (loop
 //! progress, per-send options, per-call checkpoints),
-//! `harness_idem/<idempotency_key>` holds the webhook-dedupe row, and
+//! `harness_idem/<idempotency_key>` holds the webhook-dedupe row,
 //! `harness_queue/<session_id>:<id>` holds one [`QueuedMessage`] per message
-//! that arrived while a step was streaming (drained by the loop). `state::get`
-//! returns the stored value directly (null when absent); `state::delete`
-//! returns the prior value.
+//! that arrived while a step was streaming (drained by the loop), and
+//! `harness_binding/<binding_id>` holds one [`crate::bindings::Binding`].
+//! Binding scopes use the state worker's hidden harness API; ordinary
+//! bookkeeping keeps the public `state::*` compatibility surface.
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
@@ -22,6 +23,26 @@ use crate::types::turn::{IdemRecord, TurnRecord};
 pub const TURN_SCOPE: &str = "harness_turn";
 pub const IDEM_SCOPE: &str = "harness_idem";
 pub const QUEUE_SCOPE: &str = "harness_queue";
+/// One durable trigger binding per key (`bindings::Binding`). The engine-side
+/// trigger metadata holds only this key; everything the fire needs is here.
+pub const BINDING_SCOPE: &str = "harness_binding";
+/// Per-owner binding ids. Updated with CAS so capacity reservation and binding
+/// insertion are one logical operation across concurrent harness workers.
+pub const BINDING_OWNER_SCOPE: &str = "harness_binding_owner";
+
+const STATE_GET_ID: &str = "state::get";
+const STATE_SET_ID: &str = "state::set";
+const STATE_DELETE_ID: &str = "state::delete";
+const STATE_LIST_ID: &str = "state::list";
+const PRIVATE_STATE_GET_ID: &str = "harness::state::get";
+const PRIVATE_STATE_LIST_ID: &str = "harness::state::list";
+const STATE_CAS_ID: &str = "harness::state::compare-and-set";
+/// The state worker owns no harness knowledge: this worker CLAIMS its private
+/// namespace at runtime and the accessors above are registered in response.
+pub(crate) const CLAIM_NAMESPACE_ID: &str = "state::claim-namespace";
+/// Our namespace is our worker name — the only one the state worker will let
+/// us claim (it authorizes on the engine-stamped caller identity).
+const NAMESPACE_PREFIX: &str = "harness";
 
 /// Every `state::*` call below is loop bookkeeping that fires several times
 /// per turn step — tagged `iii.tag.hidden` so trace UIs stack the spans into
@@ -34,17 +55,30 @@ pub(crate) async fn state_get(
     key: &str,
     timeout_ms: u64,
 ) -> Result<Value, HarnessError> {
-    run_hidden(
-        HIDDEN_FAMILY,
-        iii.trigger(TriggerRequest {
-            function_id: "state::get".into(),
-            payload: json!({ "scope": scope, "key": key }),
-            action: None,
-            timeout_ms: Some(timeout_ms),
-        }),
-    )
-    .await
-    .map_err(|e| HarnessError::State(format!("state::get {scope}/{key}: {e}")))
+    let private = is_binding_scope(scope);
+    let function_id = if private {
+        PRIVATE_STATE_GET_ID
+    } else {
+        STATE_GET_ID
+    };
+    let call = || async {
+        run_hidden(
+            HIDDEN_FAMILY,
+            iii.trigger(TriggerRequest {
+                function_id: function_id.into(),
+                payload: json!({ "scope": scope, "key": key }),
+                action: None,
+                timeout_ms: Some(timeout_ms),
+            }),
+        )
+        .await
+        .map_err(|e| HarnessError::State(format!("{function_id} {scope}/{key}: {e}")))
+    };
+    if private {
+        with_private_namespace(iii, timeout_ms, call).await
+    } else {
+        call().await
+    }
 }
 
 pub(crate) async fn state_set(
@@ -57,7 +91,7 @@ pub(crate) async fn state_set(
     run_hidden(
         HIDDEN_FAMILY,
         iii.trigger(TriggerRequest {
-            function_id: "state::set".into(),
+            function_id: STATE_SET_ID.into(),
             payload: json!({ "scope": scope, "key": key, "value": value }),
             action: None,
             timeout_ms: Some(timeout_ms),
@@ -65,7 +99,7 @@ pub(crate) async fn state_set(
     )
     .await
     .map(|_| ())
-    .map_err(|e| HarnessError::State(format!("state::set {scope}/{key}: {e}")))
+    .map_err(|e| HarnessError::State(format!("{STATE_SET_ID} {scope}/{key}: {e}")))
 }
 
 pub(crate) async fn state_delete(
@@ -77,7 +111,7 @@ pub(crate) async fn state_delete(
     run_hidden(
         HIDDEN_FAMILY,
         iii.trigger(TriggerRequest {
-            function_id: "state::delete".into(),
+            function_id: STATE_DELETE_ID.into(),
             payload: json!({ "scope": scope, "key": key }),
             action: None,
             timeout_ms: Some(timeout_ms),
@@ -85,7 +119,7 @@ pub(crate) async fn state_delete(
     )
     .await
     .map(|_| ())
-    .map_err(|e| HarnessError::State(format!("state::delete {scope}/{key}: {e}")))
+    .map_err(|e| HarnessError::State(format!("{STATE_DELETE_ID} {scope}/{key}: {e}")))
 }
 
 /// Read the turn record for a session (`None` when absent or null).
@@ -129,18 +163,197 @@ pub async fn list_turns(iii: &IIIClient, timeout_ms: u64) -> Result<Vec<TurnReco
     Ok(parse_list(&state_list(iii, TURN_SCOPE, timeout_ms).await?))
 }
 
+/// Read one trigger binding (`None` when absent or null).
+pub async fn get_binding(
+    iii: &IIIClient,
+    id: &str,
+    timeout_ms: u64,
+) -> Result<Option<crate::bindings::Binding>, HarnessError> {
+    let v = state_get(iii, BINDING_SCOPE, id, timeout_ms).await?;
+    if v.is_null() {
+        return Ok(None);
+    }
+    serde_json::from_value(v)
+        .map(Some)
+        .map_err(|e| HarnessError::State(format!("binding parse: {e}")))
+}
+
+/// Swap a binding record only if it still holds `expected`. `Ok(None)` means
+/// the swap happened; `Ok(Some(current))` means someone else moved it first
+/// and `current` is what is there now.
+///
+/// The claim path needs this: `get` then `put` cannot tell "nobody else fired"
+/// from "two fires read the same count and both wrote", which loses a delivery
+/// and lets a bounded lifecycle over-spend.
+pub async fn cas_binding(
+    iii: &IIIClient,
+    expected: Option<&crate::bindings::Binding>,
+    next: &crate::bindings::Binding,
+    timeout_ms: u64,
+) -> Result<Option<Value>, HarnessError> {
+    let expected_value = match expected {
+        Some(b) => Some(
+            serde_json::to_value(b)
+                .map_err(|e| HarnessError::State(format!("binding serialize: {e}")))?,
+        ),
+        None => None,
+    };
+    let value = serde_json::to_value(next)
+        .map_err(|e| HarnessError::State(format!("binding serialize: {e}")))?;
+    cas_value(
+        iii,
+        BINDING_SCOPE,
+        &next.id,
+        expected_value,
+        value,
+        timeout_ms,
+    )
+    .await
+}
+
+/// Delete a binding only while it still equals the caller's snapshot.
+pub async fn cas_delete_binding(
+    iii: &IIIClient,
+    expected: &crate::bindings::Binding,
+    timeout_ms: u64,
+) -> Result<bool, HarnessError> {
+    let expected_value = serde_json::to_value(expected)
+        .map_err(|e| HarnessError::State(format!("binding serialize: {e}")))?;
+    Ok(cas_value(
+        iii,
+        BINDING_SCOPE,
+        &expected.id,
+        Some(expected_value),
+        Value::Null,
+        timeout_ms,
+    )
+    .await?
+    .is_none())
+}
+
+pub(crate) async fn cas_value(
+    iii: &IIIClient,
+    scope: &str,
+    key: &str,
+    expected: Option<Value>,
+    value: Value,
+    timeout_ms: u64,
+) -> Result<Option<Value>, HarnessError> {
+    let mut payload = json!({ "scope": scope, "key": key, "value": value });
+    if let Some(expected) = expected {
+        payload["expected"] = expected;
+    }
+    let resp = with_private_namespace(iii, timeout_ms, || async {
+        run_hidden(
+            HIDDEN_FAMILY,
+            iii.trigger(TriggerRequest {
+                function_id: STATE_CAS_ID.into(),
+                payload: payload.clone(),
+                action: None,
+                timeout_ms: Some(timeout_ms),
+            }),
+        )
+        .await
+        .map_err(|e| HarnessError::State(format!("{STATE_CAS_ID} {scope}/{key}: {e}")))
+    })
+    .await?;
+    if resp.get("swapped").and_then(Value::as_bool) == Some(true) {
+        Ok(None)
+    } else {
+        Ok(Some(resp.get("current").cloned().unwrap_or(Value::Null)))
+    }
+}
+
+/// Every live binding — the owner-gone sweep and the per-owner cap read this.
+pub async fn list_bindings(
+    iii: &IIIClient,
+    timeout_ms: u64,
+) -> Result<Vec<crate::bindings::Binding>, HarnessError> {
+    Ok(parse_list(
+        &state_list(iii, BINDING_SCOPE, timeout_ms).await?,
+    ))
+}
+
 async fn state_list(iii: &IIIClient, scope: &str, timeout_ms: u64) -> Result<Value, HarnessError> {
+    let private = is_binding_scope(scope);
+    let function_id = if private {
+        PRIVATE_STATE_LIST_ID
+    } else {
+        STATE_LIST_ID
+    };
+    let call = || async {
+        run_hidden(
+            HIDDEN_FAMILY,
+            iii.trigger(TriggerRequest {
+                function_id: function_id.into(),
+                payload: json!({ "scope": scope }),
+                action: None,
+                timeout_ms: Some(timeout_ms),
+            }),
+        )
+        .await
+        .map_err(|e| HarnessError::State(format!("{function_id} {scope}: {e}")))
+    };
+    if private {
+        with_private_namespace(iii, timeout_ms, call).await
+    } else {
+        call().await
+    }
+}
+
+/// Ask the state worker to reserve our binding scopes and register
+/// `harness::state::*`. Idempotent: re-claiming an owned namespace is a
+/// no-op, so this is safe to call on every miss.
+async fn claim_private_namespace(iii: &IIIClient, timeout_ms: u64) -> Result<(), HarnessError> {
     run_hidden(
         HIDDEN_FAMILY,
         iii.trigger(TriggerRequest {
-            function_id: "state::list".into(),
-            payload: json!({ "scope": scope }),
+            function_id: CLAIM_NAMESPACE_ID.into(),
+            payload: json!({
+                "functions_prefix": NAMESPACE_PREFIX,
+                "scopes": [BINDING_SCOPE, BINDING_OWNER_SCOPE],
+            }),
             action: None,
             timeout_ms: Some(timeout_ms),
         }),
     )
     .await
-    .map_err(|e| HarnessError::State(format!("state::list {scope}: {e}")))
+    .map(|_| ())
+    .map_err(|e| HarnessError::State(format!("{CLAIM_NAMESPACE_ID}: {e}")))
+}
+
+/// The state worker only registers `harness::state::*` once we have claimed
+/// our namespace, and a state restart with a volatile adapter forgets the
+/// claim. So a MISSING accessor is not fatal: claim (idempotent) and retry
+/// once. This single path also covers first boot and a state worker that came
+/// up after us — no boot ordering, no configuration.
+async fn with_private_namespace<F, Fut>(
+    iii: &IIIClient,
+    timeout_ms: u64,
+    call: F,
+) -> Result<Value, HarnessError>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<Value, HarnessError>>,
+{
+    match call().await {
+        Err(error) if is_unregistered_accessor(&error) => {
+            claim_private_namespace(iii, timeout_ms).await?;
+            call().await
+        }
+        outcome => outcome,
+    }
+}
+
+/// Whether an error says the accessor itself is not registered (as opposed to
+/// the state worker being down, which a claim cannot fix).
+fn is_unregistered_accessor(error: &HarnessError) -> bool {
+    let message = error.to_string();
+    message.contains("function_not_found") || message.contains("not found")
+}
+
+fn is_binding_scope(scope: &str) -> bool {
+    matches!(scope, BINDING_SCOPE | BINDING_OWNER_SCOPE)
 }
 
 /// Tolerate the two `state::list` shapes seen across engines: a bare array of
@@ -286,5 +499,43 @@ mod tests {
         sort_queued(&mut rows);
         let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, vec!["q_c", "q_a", "q_b"]);
+    }
+    /// A missing accessor is recoverable (claim + retry); a state worker that
+    /// is down, timing out, or erroring is NOT — re-claiming cannot fix it,
+    /// and retrying would double every failing call.
+    #[test]
+    fn only_a_missing_accessor_triggers_a_reclaim() {
+        let missing = HarnessError::State(
+            "harness::state::get harness_binding/b1: function_not_found: Function \
+             harness::state::get not found"
+                .into(),
+        );
+        assert!(is_unregistered_accessor(&missing));
+
+        for fatal in [
+            "harness::state::get harness_binding/b1: TIMEOUT: invocation timed out",
+            "harness::state::compare-and-set harness_binding/b1: handler error: CAS_ERROR: disk full",
+            "harness::state::list harness_binding: connection closed",
+        ] {
+            assert!(
+                !is_unregistered_accessor(&HarnessError::State(fatal.into())),
+                "must not re-claim on: {fatal}"
+            );
+        }
+    }
+
+    /// The claim names exactly the scopes the accessors are allowed to serve —
+    /// the state worker hard-scopes them, so a drift here would break reads.
+    #[test]
+    fn the_claim_covers_every_private_scope() {
+        for scope in [BINDING_SCOPE, BINDING_OWNER_SCOPE] {
+            assert!(
+                is_binding_scope(scope),
+                "{scope} must route to the accessors"
+            );
+        }
+        assert!(!is_binding_scope(TURN_SCOPE));
+        assert!(!is_binding_scope(QUEUE_SCOPE));
+        assert!(!is_binding_scope(IDEM_SCOPE));
     }
 }

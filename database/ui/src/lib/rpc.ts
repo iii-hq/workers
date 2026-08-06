@@ -18,6 +18,7 @@ import { z } from 'zod'
 
 export const DB = {
   listDatabases: 'database::listDatabases',
+  execute: 'database::execute',
   listTables: 'database::listTables',
   describeTable: 'database::describeTable',
   describeSchema: 'database::describeSchema',
@@ -365,9 +366,25 @@ export async function browseTable(
   )
 }
 
-/** Ad-hoc SQL from the editor. Still goes through `database::query`. */
+/** Ad-hoc read SQL from the editor. Goes through `database::query`. */
 export async function runSql(host: Host, db: string, sql: string): Promise<QueryResponse> {
   return call(host, DB.query, { db, sql }, queryResponseSchema)
+}
+
+const executeResponseSchema = z.object({
+  affected_rows: z.number(),
+  // The worker sends the id as a string: SQLite/MySQL rowids exceed what a
+  // JS number holds exactly.
+  last_insert_id: z.string().nullish(),
+  returned_rows: z.array(z.record(z.string(), z.unknown())).nullish(),
+})
+export type ExecuteResponse = z.infer<typeof executeResponseSchema>
+
+/** Ad-hoc write SQL from the editor. Goes through `database::execute` — the
+    same surface agents use, so policy and `database::row-changed` both see
+    it. */
+export async function execSql(host: Host, db: string, sql: string): Promise<ExecuteResponse> {
+  return call(host, DB.execute, { db, sql }, executeResponseSchema)
 }
 
 export const planNodeSchema: z.ZodType<PlanNode> = z.lazy(() =>

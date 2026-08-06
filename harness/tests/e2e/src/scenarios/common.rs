@@ -11,6 +11,12 @@ pub struct ObservedFunctionCall {
     pub arguments: Value,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObservedFunctionInvocation {
+    pub call_id: Option<String>,
+    pub call: ObservedFunctionCall,
+}
+
 pub fn final_response(transcript: &Value) -> String {
     transcript
         .get("messages")
@@ -35,6 +41,13 @@ pub fn final_response(transcript: &Value) -> String {
 }
 
 pub fn function_calls(transcript: &Value) -> Vec<ObservedFunctionCall> {
+    function_invocations(transcript)
+        .into_iter()
+        .map(|invocation| invocation.call)
+        .collect()
+}
+
+pub fn function_invocations(transcript: &Value) -> Vec<ObservedFunctionInvocation> {
     transcript
         .get("messages")
         .and_then(Value::as_array)
@@ -50,26 +63,53 @@ pub fn function_calls(transcript: &Value) -> Vec<ObservedFunctionCall> {
                 .flatten()
         })
         .filter(|block| block.get("type").and_then(Value::as_str) == Some("function_call"))
-        .filter_map(normalize_call)
+        .filter_map(normalize_invocation)
         .collect()
 }
 
-fn normalize_call(block: &Value) -> Option<ObservedFunctionCall> {
+fn normalize_invocation(block: &Value) -> Option<ObservedFunctionInvocation> {
+    let call_id = block.get("id").and_then(Value::as_str).map(str::to_owned);
     let function_id = block.get("function_id")?.as_str()?;
     let arguments = block.get("arguments").cloned().unwrap_or_else(|| json!({}));
     if function_id == "agent_trigger" {
-        return Some(ObservedFunctionCall {
-            function_id: arguments.get("function")?.as_str()?.to_string(),
-            arguments: arguments
-                .get("payload")
-                .cloned()
-                .unwrap_or_else(|| json!({})),
+        return Some(ObservedFunctionInvocation {
+            call_id,
+            call: ObservedFunctionCall {
+                function_id: arguments.get("function")?.as_str()?.to_string(),
+                arguments: arguments
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+            },
         });
     }
-    Some(ObservedFunctionCall {
-        function_id: function_id.to_string(),
-        arguments,
+    Some(ObservedFunctionInvocation {
+        call_id,
+        call: ObservedFunctionCall {
+            function_id: function_id.to_string(),
+            arguments,
+        },
     })
+}
+
+pub fn function_result<'a>(
+    transcript: &'a Value,
+    invocation: &ObservedFunctionInvocation,
+) -> Option<&'a Value> {
+    let call_id = invocation.call_id.as_deref()?;
+    transcript
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("message"))
+        .find(|message| {
+            message.get("role").and_then(Value::as_str) == Some("function_result")
+                && message.get("function_call_id").and_then(Value::as_str) == Some(call_id)
+                && message.get("function_id").and_then(Value::as_str)
+                    == Some(invocation.call.function_id.as_str())
+                && message.get("is_error").and_then(Value::as_bool) == Some(false)
+        })
 }
 
 pub fn gate(id: &str, passed: bool, reason: impl Into<String>) -> HardGateReport {
@@ -98,6 +138,84 @@ pub fn state_value(response: Value) -> Value {
         }
         response => response,
     }
+}
+
+pub fn requested_once(arguments: &Value) -> bool {
+    arguments.get("once").and_then(Value::as_bool) == Some(true)
+        || arguments
+            .pointer("/lifecycle/once")
+            .and_then(Value::as_bool)
+            == Some(true)
+}
+
+pub fn is_wake_registration(arguments: &Value) -> bool {
+    arguments.get("function_id").is_none_or(Value::is_null)
+        && arguments.get("target").is_none_or(|target| {
+            target.is_null()
+                || target.get("function_id").and_then(Value::as_str) == Some("harness::send")
+        })
+}
+
+/// Whether ANY text block in the transcript contains `needle` — for spotting
+/// error results and machine messages regardless of which entry carried them.
+pub fn transcript_contains(transcript: &Value, needle: &str) -> bool {
+    fn walk(value: &Value, needle: &str) -> bool {
+        match value {
+            Value::String(text) => text.contains(needle),
+            Value::Array(items) => items.iter().any(|item| walk(item, needle)),
+            Value::Object(map) => map.values().any(|item| walk(item, needle)),
+            _ => false,
+        }
+    }
+    walk(transcript, needle)
+}
+
+/// Validation nudges the harness appended to this transcript — the
+/// re-prompts a `harness::hook::post-turn` validator (or the output
+/// contract) produced. Recognized by the durable entry id
+/// (`e_<turn>_nudge_<n>`) or the `validation` origin flag.
+pub fn validation_nudges(transcript: &Value) -> usize {
+    transcript
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .get("entry_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.contains("_nudge_"))
+                || entry
+                    .pointer("/origin/validation")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        })
+        .count()
+}
+
+pub fn trigger_fired_records(transcript: &Value) -> Vec<&Value> {
+    transcript
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("custom"))
+        .filter(|custom| custom.get("custom_type").and_then(Value::as_str) == Some("trigger_fired"))
+        .filter_map(|custom| custom.get("data"))
+        .collect()
+}
+
+pub async fn active_binding_count(context: &E2eContext, session_id: &str) -> anyhow::Result<usize> {
+    Ok(context
+        .trigger_value(
+            "harness::triggers::list",
+            json!({ "session_id": session_id }),
+        )
+        .await?
+        .get("subscriptions")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(usize::MAX))
 }
 
 pub fn evaluate_text_response<'a>(
@@ -151,6 +269,7 @@ mod tests {
                     "content": [
                         {
                             "type": "function_call",
+                            "id": "call-state",
                             "function_id": "agent_trigger",
                             "arguments": {
                                 "function": "state::set",
@@ -159,6 +278,7 @@ mod tests {
                         },
                         {
                             "type": "function_call",
+                            "id": "call-native",
                             "function_id": "native::call",
                             "arguments": { "value": 2 }
                         }
@@ -170,6 +290,45 @@ mod tests {
         assert_eq!(calls[0].function_id, "state::set");
         assert_eq!(calls[0].arguments["key"], "k");
         assert_eq!(calls[1].function_id, "native::call");
+    }
+
+    #[test]
+    fn correlates_a_function_result_with_its_call_id() {
+        let transcript = json!({
+            "messages": [
+                {"message": {"role": "assistant", "content": [{
+                    "type": "function_call",
+                    "id": "call-match",
+                    "function_id": "agent_trigger",
+                    "arguments": {
+                        "function": "state::set",
+                        "payload": { "scope": "s", "key": "k", "value": 1 }
+                    }
+                }]}},
+                {"message": {
+                    "role": "function_result",
+                    "function_call_id": "call-other",
+                    "function_id": "state::set",
+                    "is_error": false,
+                    "details": { "ok": false }
+                }},
+                {"message": {
+                    "role": "function_result",
+                    "function_call_id": "call-match",
+                    "function_id": "state::set",
+                    "is_error": false,
+                    "details": { "ok": true }
+                }}
+            ]
+        });
+        let invocations = function_invocations(&transcript);
+        let result = function_result(&transcript, &invocations[0]).expect("matching result");
+
+        assert_eq!(invocations[0].call_id.as_deref(), Some("call-match"));
+        assert_eq!(
+            result.pointer("/details/ok").and_then(Value::as_bool),
+            Some(true)
+        );
     }
 
     #[test]

@@ -57,13 +57,13 @@ impl RetryHandler {
         topic: &str,
         job: &mut Job,
         error: &str,
-        function_id: Option<&str>,
+        subscription_id: Option<&str>,
     ) -> Result<()> {
         job.increment_attempts();
 
         if job.is_exhausted() {
             self.publisher
-                .publish_to_dlq(topic, job, error, function_id)
+                .publish_to_dlq(topic, job, error, subscription_id)
                 .await?;
 
             tracing::warn!(
@@ -73,7 +73,7 @@ impl RetryHandler {
                 "Job exhausted retries, moved to DLQ"
             );
         } else {
-            self.publisher.requeue(topic, job, function_id).await?;
+            self.publisher.requeue(topic, job, subscription_id).await?;
 
             tracing::debug!(
                 job_id = %job.id,

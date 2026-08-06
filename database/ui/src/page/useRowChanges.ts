@@ -38,6 +38,9 @@ export interface RowChange extends RowChangedEvent {
   /** Local receipt time. Ordering and the recency fade both use this, because
    *  `at` comes from the database clock and may skew against the browser's. */
   seen: number
+  /** Monotonic arrival number — the collision-free list key (`seen` repeats
+   *  for two events landing in the same millisecond). */
+  seq: number
 }
 
 export interface RowChangeFeed {
@@ -51,6 +54,9 @@ export interface RowChangeFeed {
 }
 
 const MAX_KEPT = 60
+
+/** Shared across feeds on purpose: any two changes anywhere differ. */
+let feedSeq = 0
 
 export function useRowChanges(host: Host, db: string | undefined, table: string | null | undefined): RowChangeFeed {
   const [changes, setChanges] = useState<RowChange[]>([])
@@ -84,6 +90,7 @@ export function useRowChanges(host: Host, db: string | undefined, table: string 
         returning: event?.returning,
         at: Number.isFinite(at) ? at : Date.now(),
         seen: Date.now(),
+        seq: feedSeq++,
       }
       setChanges((prev) => [change, ...prev].slice(0, MAX_KEPT))
       setPending((n) => n + 1)

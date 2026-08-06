@@ -11,8 +11,9 @@
  * collapse rule and the ordering are the parts that are easy to get wrong, and
  * they should be testable without an engine or a browser.
  *
- * Nothing here is persisted. The feed is what happened while you were looking;
- * the durable record of a change is the file and its git history.
+ * The worker keeps its own bounded log of the same events, so a page that was
+ * not open while an agent worked can still read what it did; this model folds
+ * that log and the live stream into one feed.
  */
 
 import type { ChangedEvent } from './events'
@@ -39,6 +40,10 @@ export interface ChangeEntry {
   /** The harness session the write happened in, when it happened inside one. */
   sessionId?: string
   turnId?: string
+  /** The workspace root the change was recorded against. An agent can be
+   *  working in a different folder than the editor is pointed at, and a row
+   *  whose root differs is the reason the file it names is not in the tree. */
+  root?: string
 }
 
 /** Newest first, one row per path, bounded. */
@@ -65,8 +70,53 @@ export function recordChange(log: ChangeEntry[], event: ChangedEvent, now: numbe
     count: (previous?.count ?? 0) + 1,
     sessionId: event.session_id,
     turnId: event.turn_id,
+    root: event.root,
   }
   return [next, ...log.filter((entry) => entry.path !== event.path)].slice(0, MAX_ENTRIES)
+}
+
+/**
+ * Rows from the worker's recorded log.
+ *
+ * These are real changes with real provenance — they simply happened before
+ * this page subscribed. They have no client clock, because the time they
+ * carry is the worker's, not this page's; `earlier` is the honest age.
+ * Anything already in the feed wins: a live entry has a timestamp this page
+ * actually observed.
+ */
+export function fromRecords(
+  log: ChangeEntry[],
+  records: {
+    path: string
+    cause: string
+    kind: string
+    added: number
+    removed: number
+    patch: string
+    truncated: boolean
+    session_id?: string
+    turn_id?: string
+    root?: string
+  }[],
+): ChangeEntry[] {
+  const known = new Set(log.map((entry) => entry.path))
+  const restored = records
+    .filter((record) => !known.has(record.path))
+    .map<ChangeEntry>((record) => ({
+      path: record.path,
+      cause: record.cause,
+      kind: record.kind,
+      added: record.added,
+      removed: record.removed,
+      patch: record.patch,
+      truncated: record.truncated,
+      at: null,
+      count: 1,
+      sessionId: record.session_id,
+      turnId: record.turn_id,
+      root: record.root,
+    }))
+  return [...log, ...restored].slice(0, MAX_ENTRIES)
 }
 
 /**
@@ -139,6 +189,9 @@ export interface ChangeGroup {
   removed: number
   /** Newest change in the run, for the group's age. */
   at: number | null
+  /** Root the run was recorded against, so a run that happened somewhere
+   *  other than the open workspace can say so. */
+  root?: string
 }
 
 /**
@@ -175,6 +228,7 @@ export function groupByTurn(log: ChangeEntry[]): ChangeGroup[] {
       added: entry.added,
       removed: entry.removed,
       at: entry.at,
+      root: entry.root,
     })
   }
   return groups
@@ -184,6 +238,26 @@ export function groupByTurn(log: ChangeEntry[]): ChangeGroup[] {
 export function groupLabel(group: ChangeGroup): string {
   if (group.sessionId) return `agent ${group.sessionId.replace(/^s_/, '').slice(0, 6)}`
   return causeLabel(group.entries[0]?.cause ?? '')
+}
+
+/**
+ * Whether a row names a file outside the open workspace.
+ *
+ * The observer makes a path relative to the workspace root and leaves it alone
+ * when it does not sit under one, so an absolute path *is* the signal: the
+ * agent was working somewhere the editor is not pointed at. The event's `root`
+ * cannot be used for this — it reports the root the observer resolved, which
+ * is the open workspace even when the file has nothing to do with it.
+ */
+export function isOutsideWorkspace(entry: ChangeEntry): boolean {
+  return entry.path.startsWith('/')
+}
+
+/** The folder an outside change happened in, named for a header. */
+export function outsideFolder(entry: ChangeEntry): string {
+  const { dir } = splitPath(entry.path)
+  const trimmed = dir.replace(/\/$/, '')
+  return splitPath(trimmed).name || trimmed || '/'
 }
 
 /** `dir/` and `name` split, so a narrow row can keep the name and drop the path. */

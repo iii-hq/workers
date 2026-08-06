@@ -1,0 +1,179 @@
+name: Harness E2E deployed
+run-name: Harness E2E · ${{ inputs.release_worker }}@${{ inputs.release_version }} · ${{ inputs.operation_id || 'manual' }} · ${{ inputs.validation_profile }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      cli_channel:
+        description: iii installer channel
+        required: true
+        type: choice
+        options: [latest, next]
+        default: latest
+      registry_tag:
+        description: Registry tag for the baseline Harness stack
+        required: true
+        type: choice
+        options: [latest, next]
+        default: latest
+      release_worker:
+        description: Worker published by the release
+        required: true
+        type: string
+      release_version:
+        description: Exact version that must be resolved from the registry
+        required: true
+        type: string
+      release_tag:
+        description: Git tag associated with the release
+        type: string
+        default: ''
+      release_run_id:
+        description: GitHub Actions run id of the publishing release
+        type: string
+        default: ''
+      smoke_run_id:
+        description: GitHub Actions run id of the preceding smoke CI
+        type: string
+        default: ''
+      subjects:
+        description: Optional JSON subject matrix
+        type: string
+        default: ''
+      runs:
+        description: Number of executions per scenario
+        type: number
+        default: 1
+      operation_id:
+        description: Release Control operation UUID
+        type: string
+        default: ''
+      step_id:
+        description: Release Control operation step UUID
+        type: string
+        default: ''
+      stack_versions:
+        description: JSON object of worker slugs to exact candidate versions required in iii.lock
+        type: string
+        default: '{}'
+      validation_profile:
+        description: Scenario profile for this deployed execution
+        type: choice
+        options: [release, custom, full]
+        default: release
+      scenarios_json:
+        description: Exact JSON scenario array; required for custom and checked for named profiles
+        type: string
+        default: '[]'
+      catalog_sha:
+        description: Release catalog SHA used by Release Control preview
+        type: string
+        default: ''
+      profile_digest:
+        description: Canonical scenario profile digest used by Release Control preview
+        type: string
+        default: ''
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: harness-e2e-deployed-${{ inputs.release_worker }}-${{ inputs.release_version }}-${{ inputs.cli_channel }}-${{ inputs.registry_tag }}
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    uses: ./.github/workflows/_harness-e2e.yml
+    with:
+      stack_mode: registry
+      runs: ${{ fromJSON(format('{0}', inputs.runs || 1)) }}
+      max_parallel: 2
+      benchmark_lane: deployed
+      cli_channel: ${{ inputs.cli_channel }}
+      registry_tag: ${{ inputs.registry_tag }}
+      release_tag: ${{ inputs.release_tag }}
+      release_worker: ${{ inputs.release_worker }}
+      release_version: ${{ inputs.release_version }}
+      release_run_id: ${{ inputs.release_run_id }}
+      smoke_run_id: ${{ inputs.smoke_run_id }}
+      stack_versions: ${{ inputs.stack_versions }}
+      validation_profile: ${{ inputs.validation_profile }}
+      scenarios_json: ${{ inputs.scenarios_json }}
+      catalog_sha: ${{ inputs.catalog_sha }}
+      profile_digest: ${{ inputs.profile_digest }}
+      subjects: ${{ inputs.subjects || vars.HARNESS_E2E_SUBJECTS || '[{"id":"anthropic-sonnet","model":"claude-sonnet-4-6","provider":"anthropic"}]' }}
+      judge_model: ${{ vars.HARNESS_E2E_JUDGE_MODEL || 'claude-sonnet-4-6' }}
+      judge_provider: ${{ vars.HARNESS_E2E_JUDGE_PROVIDER || 'anthropic' }}
+    secrets:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      zai_api_key: ${{ secrets.ZAI_API_KEY }}
+      deepseek_api_key: ${{ secrets.DEEPSEEK_API_KEY }}
+
+  evidence:
+    name: Record deployed E2E evidence
+    needs: [e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Download deployed E2E benchmark
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: harness-e2e-benchmark
+          path: harness-e2e-benchmark
+
+      - name: Build E2E evidence
+        env:
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag || format('{0}/v{1}', inputs.release_worker, inputs.release_version) }}
+          OPERATION_ID: ${{ inputs.operation_id || format('github:{0}', github.run_id) }}
+          STEP_ID: ${{ inputs.step_id || 'harness-e2e' }}
+          SUITE_RESULT: ${{ needs.e2e.result }}
+          STACK_VERSIONS: ${{ inputs.stack_versions }}
+          VALIDATION_PROFILE: ${{ needs.e2e.outputs.validation_profile || inputs.validation_profile }}
+          SCENARIOS_JSON: ${{ needs.e2e.outputs.scenarios_json || inputs.scenarios_json }}
+          REQUIRED_SCENARIOS_JSON: ${{ needs.e2e.outputs.required_scenarios_json || '[]' }}
+          PROFILE_DIGEST: ${{ needs.e2e.outputs.profile_digest }}
+          CATALOG_SHA: ${{ needs.e2e.outputs.catalog_sha || github.sha }}
+        run: |
+          python3 .github/scripts/harness_e2e_evidence.py build \
+            --repository "${{ github.repository }}" \
+            --release-run-id "$RELEASE_RUN_ID" \
+            --e2e-run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --operation-id "$OPERATION_ID" \
+            --step-id "$STEP_ID" \
+            --release-tag "$RELEASE_TAG" \
+            --release-worker "${{ inputs.release_worker }}" \
+            --release-version "${{ inputs.release_version }}" \
+            --registry-tag "${{ inputs.registry_tag }}" \
+            --cli-channel "${{ inputs.cli_channel }}" \
+            --stack-versions "$STACK_VERSIONS" \
+            --validation-profile "$VALIDATION_PROFILE" \
+            --scenarios-json "$SCENARIOS_JSON" \
+            --required-scenarios-json "$REQUIRED_SCENARIOS_JSON" \
+            --profile-digest "$PROFILE_DIGEST" \
+            --catalog-sha "$CATALOG_SHA" \
+            --suite-sha "${{ github.sha }}" \
+            --runs "${{ inputs.runs || 1 }}" \
+            --benchmark-snapshot harness-e2e-benchmark/snapshot.json \
+            --suite-result "$SUITE_RESULT" \
+            --output harness-e2e-evidence.json
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-evidence-${{ inputs.release_worker }}-${{ inputs.release_version }}
+          path: harness-e2e-evidence.json
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Require deployed E2E gate
+        run: jq -e '.e2e_ready == true' harness-e2e-evidence.json >/dev/null

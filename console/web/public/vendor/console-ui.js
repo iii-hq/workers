@@ -40,5 +40,6 @@ export const {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
+  WorkerConfigurationDialog,
 } = api.components
 export default api

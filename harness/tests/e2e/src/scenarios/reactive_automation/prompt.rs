@@ -2,7 +2,7 @@ use super::names::ScenarioNames;
 
 pub(super) fn build(names: &ScenarioNames, watchdog_seconds: u64) -> String {
     format!(
-        r#"Validate trigger-based orchestration using the existing run id `{run_label}`.
+        r#"Validate parent-owned reactive orchestration using the existing run id `{run_label}`.
 
 If database capability is not currently available, discover and install the database worker from
 the registry before proceeding, then confirm its functions are registered.
@@ -18,66 +18,90 @@ Use database `primary`, SQL-safe namespace `{namespace}`, and these exact resour
 
 Namespace every other resource and session with `{run_label}`.
 
-Required execution:
+Architecture rules:
 
-1. Before spawning writers, list the available trigger types and probe
-   `database::row-changed` against `{orders}`. Allow at most 30 seconds for the probe, remove its
-   test row afterward, and record the result.
+- A trigger binding never starts an agent. It either wakes its owner when `function_id` is omitted,
+  or calls one plain function without a model turn.
+- Spawn writers and the finalizer directly with `harness::spawn`.
+- Do not target any `harness::*` function from a binding, and do not poll.
+- The Harness already applies a {watchdog_seconds}-second stuck-execution watchdog. Do not add a
+  timer or cron.
 
-2. Before spawning writers, register a namespaced `state` trigger targeting `harness::react`.
-   Use it as the notification path if the database trigger is unsupported or does not fire.
+Phase 1 — bounded database-trigger probe:
 
-3. Spawn the three writer sessions in parallel. Each writer must insert exactly five unique
-   orders, one at a time and about two seconds apart; use its matching name (`writer-1`,
-   `writer-2`, or `writer-3`), a numeric amount, and a non-null `created_at`; emit the state
-   signal immediately after each insert when using the fallback; then mark itself `done` in
-   `{writers}`.
+1. List the available trigger types and create the four tables. Use these columns:
+   - `{orders}`: `id TEXT PRIMARY KEY, writer TEXT, amount REAL, created_at TEXT`
+   - `{writers}`: `writer TEXT PRIMARY KEY, status TEXT`
+   - `{totals}`: `writer TEXT PRIMARY KEY, order_count INTEGER, amount_sum REAL`
+   - `{report}`: `run_id, watch_mechanism, fallback_reason, events_received, rows_written,
+     elapsed_ms, totals_match, no_notification_loss, no_double_counting,
+     reaction_function_id, reaction_event, mechanical_reaction, no_inline_waiting,
+     finalizer_session_id`
 
-4. Each notification must wake a trigger-spawned reactor session namespaced with `{run_label}`.
-   Reactors must recompute and upsert `{totals}` from `{orders}` so replaying an event cannot
-   double-count. Use per-writer upserts; do not delete all totals before reinserting them, because
-   overlapping notifications would expose a transient empty or partial aggregate table.
+2. Register a one-shot wake-only `database::row-changed` binding on `{orders}`, label it
+   `{run_label}-probe`, insert one probe row, and END YOUR TURN. Do nothing else until that database
+   wake arrives. The scenario watchdog is the bounded failure path if the trigger is broken.
 
-5. Before spawning writers, arm a namespaced completion reaction covering all three exact writer
-   sessions. It must evaluate finalization only after every writer has marked itself `done`; do
-   not rely only on an order-insert notification, because the final insert happens before that
-   writer's status update. Once all writers are done and totals cover 15 orders, a
-   trigger-spawned finalizer in `{finalizer}` must write exactly one row to `{report}` with:
+Phase 2 — arm reactions before fan-out:
 
-   `run_id`, `watch_mechanism`, `fallback_reason`, `events_received`, `rows_written`,
-   `elapsed_ms`, `totals_match`, `no_notification_loss`, `no_double_counting`,
-   `reactor_session_id`, `spawning_event`, `trigger_spawned_reactor`,
-   `no_inline_waiting`, and `finalizer_session_id`.
+3. When the probe wake arrives, delete the probe row. Register a standing call binding, label
+   `{run_label}-aggregate`, on INSERT events for `{orders}`. Its target must be
+   `database::execute` with `db: "primary"` and this idempotent aggregate SQL:
 
-   Use `{run_label}` as `run_id` and `{finalizer}` as `finalizer_session_id`. Report the actual
-   watch mechanism, a non-empty fallback reason when fallback is used, 15 events and rows,
-   positive elapsed milliseconds, and one trigger-spawned reactor session and spawning event.
-   Record a numeric start time before the writers run so the finalizer can compute `elapsed_ms`;
-   if exact clock arithmetic is unavailable, use a conservative positive elapsed estimate rather
-   than zero. Before signaling completion, query the single report row and verify
-   `events_received = 15`, `rows_written = 15`, and `elapsed_ms > 0`; correct the row if any of
-   those checks fails. Also verify that `totals_match`, `no_notification_loss`,
-   `no_double_counting`, `trigger_spawned_reactor`, and `no_inline_waiting` are all true. The
-   finalizer must recompute and upsert the complete 15-order totals before this comparison so it
-   does not record a transient reactor result.
+   `INSERT OR REPLACE INTO {totals} (writer, order_count, amount_sum)
+    SELECT writer, COUNT(*), SUM(amount) FROM {orders}
+    WHERE writer IN ('writer-1','writer-2','writer-3') GROUP BY writer`
 
-6. After the trigger-spawned finalizer writes the report, wake the existing root session
-   explicitly. Set the wake reaction's `metadata.session_id` to the current root session id;
-   setting only `parent_session_id` spawns a new unnamed child and does not wake the root. Set
-   that reaction's `metadata.options.functions.allow` to `["*"]`; a narrower policy can prevent
-   the resumed root from listing and unregistering triggers. In the resumed root turn, unregister
-   every trigger and subscription created for this run, then list the registered triggers and
-   verify that none contains `{run_label}` or `{namespace}`. Do not give the final response before
-   the root has resumed and this cleanup check has passed.
+   Use a call-binding `lifecycle.max_fires` of 15. The event may be injected into an unused payload
+   field; `database::execute` ignores unknown fields. This reaction is deterministic and must not
+   wake any model session.
 
-This is a deliberately large execution. The harness already applies a {watchdog_seconds}-second
-stuck-execution watchdog, so do not register a cron or deadline watchdog for this run. Do not
-write the report from the root as a substitute for the trigger-spawned finalizer: wait for
-`{finalizer}` to run and write it.
+4. Register one wake-only `state` binding for scope `{run_label}`, key `writer_done`, label
+   `{run_label}-writers-complete`, `once: true`, with:
 
-Success requires exact equality between `{totals}` and a direct `GROUP BY` over `{orders}`, no
-lost or duplicated orders, trigger provenance for reactor and finalizer sessions, no inline
-sleeping or polling in place of triggers, and no remaining run triggers.
+   `conditions: [{{ function_id: "state::barrier", config: {{
+     id: "{run_label}-writers", expect: ["writer-1","writer-2","writer-3"],
+     key_from: "/new_value/writer", carry: "/new_value"
+   }} }}]`
+
+5. Spawn `{writer_1}`, `{writer_2}`, and `{writer_3}` together in ONE assistant message. Give each
+   only `database::execute` and `state::set`. Writer N must:
+   - insert five separate rows into `{orders}` with ids `writer-N-1` through `writer-N-5`,
+     writer `writer-N`, amounts `N*10+1` through `N*10+5`, and `CURRENT_TIMESTAMP`;
+   - after all five inserts, insert or replace `(writer-N, 'done')` in `{writers}`;
+   - only after that database status write succeeds, call `state::set` with scope `{run_label}`,
+     key `writer_done`, and value `{{"writer":"writer-N"}}`;
+   - stop without reads, sleeps, retries over time, trigger registration, or further delegation.
+
+6. After the three spawn calls, END YOUR TURN. Do not query status, orders, totals, sessions, or
+   children. Your next activity must come from the barrier wake.
+
+Phase 3 — barrier wake and direct finalization:
+
+7. When `{run_label}-writers-complete` wakes this root session, first register a one-shot wake-only
+   `database::row-changed` binding on INSERT into `{report}`, label `{run_label}-report-ready`.
+   Then directly spawn exactly one finalizer in `{finalizer}` with only `database::query` and
+   `database::execute`. The finalizer must:
+   - recompute `{totals}` with the same idempotent SQL above;
+   - verify exactly 15 unique orders, three done writers, and exact equality between `{totals}` and
+     a direct `GROUP BY` over `{orders}`;
+   - write exactly one row to `{report}` itself—never ask the root to write it—with
+     `run_id = '{run_label}'`, `watch_mechanism = 'database::row-changed'`,
+     a non-empty `fallback_reason` saying no fallback was needed because the probe fired,
+     `events_received = 15`, `rows_written = 15`, positive `elapsed_ms`, all integrity booleans
+     true, `reaction_function_id = 'database::execute'`,
+     `reaction_event = 'database::row-changed insert'`, `mechanical_reaction = true`,
+     `no_inline_waiting = true`, and `finalizer_session_id = '{finalizer}'`;
+   - stop immediately after the report insert.
+
+8. END YOUR TURN immediately after spawning the finalizer. Do not poll for its result.
+
+Phase 4 — report wake and cleanup:
+
+9. Only after `{run_label}-report-ready` wakes this root session, query the four tables and verify
+   the report. Unregister any still-active run binding, then list registered triggers and verify
+   none contains `{run_label}` or `{namespace}`. Report PASS or FAIL with the three writer totals,
+   order count, reaction delivery, finalizer session, and cleanup evidence.
 
 Report progress briefly and keep the final response factual."#,
         run_label = names.run_label,
@@ -98,11 +122,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn root_wake_preserves_cleanup_access_without_a_competing_watchdog() {
+    fn prompt_uses_parent_owned_bindings_without_removed_reactions() {
         let prompt = build(&ScenarioNames::new("abcd-rest"), 600);
 
-        assert!(prompt.contains("reaction's `metadata.options.functions.allow` to `[\"*\"]`"));
-        assert!(prompt.contains("harness already applies a 600-second\nstuck-execution watchdog"));
-        assert!(prompt.contains("do not register a cron or deadline watchdog for this run"));
+        assert!(prompt.contains("A trigger binding never starts an agent"));
+        assert!(prompt.contains("target must be\n   `database::execute`"));
+        assert!(prompt.contains("function_id: \"state::barrier\""));
+        assert!(prompt.contains("directly spawn exactly one finalizer"));
+        assert!(!prompt.contains("harness::react"));
+        assert!(!prompt.contains("trigger-spawned"));
     }
 }

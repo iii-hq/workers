@@ -16,7 +16,7 @@ use crate::locks::CronLock;
 
 /// `metadata` is the binding's registration metadata, delivered as the
 /// fire-time sidecar (engine `fire_triggers` parity). Handlers like
-/// `harness::react` / `harness::notify_agent` resolve which reaction or
+/// `harness::spawn` / `harness::notify_agent` resolve which reaction or
 /// subscription fired from it and silently no-op without it — a plain call
 /// here kills every cron-triggered harness reaction and wake-up.
 #[async_trait]

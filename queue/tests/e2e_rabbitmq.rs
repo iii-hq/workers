@@ -48,25 +48,25 @@ where
 fn exchange_name(topic: &str) -> String {
     format!("iii.{topic}.exchange")
 }
-fn function_queue_name(topic: &str, function_id: &str) -> String {
-    format!("iii.{topic}.{function_id}.queue")
+fn subscriber_queue_name(topic: &str, subscription_id: &str) -> String {
+    format!("iii.{topic}.{subscription_id}.queue")
 }
-fn function_dlq_name(topic: &str, function_id: &str) -> String {
-    format!("iii.{topic}.{function_id}.dlq")
+fn subscriber_dlq_name(topic: &str, subscription_id: &str) -> String {
+    format!("iii.{topic}.{subscription_id}.dlq")
 }
 
 /// Declares the exact same topology `RabbitMQAdapter::subscribe` would
-/// declare for `(topic, function_id)` -- fanout exchange, per-function DLQ,
-/// per-function priority queue (`x-max-priority`), and the binding -- via a
-/// raw `lapin` channel, so messages can be published into the queue BEFORE
-/// any adapter-owned consumer exists. All declarations use identical
+/// declare for `(topic, subscription_id)` -- fanout exchange, per-subscription
+/// DLQ, per-subscription priority queue (`x-max-priority`), and the binding --
+/// via a raw `lapin` channel, so messages can be published into the queue
+/// BEFORE any adapter-owned consumer exists. All declarations use identical
 /// arguments to what `topology::TopologyManager` declares, so the later,
-/// real `subscribe()` call's redeclare is a idempotent no-op (AMQP rejects a
+/// real `subscribe()` call's redeclare is an idempotent no-op (AMQP rejects a
 /// redeclare with mismatched arguments).
 async fn predeclare_priority_subscriber_queue(
     channel: &Channel,
     topic: &str,
-    function_id: &str,
+    subscription_id: &str,
     max_priority: i32,
 ) {
     channel
@@ -84,7 +84,7 @@ async fn predeclare_priority_subscriber_queue(
 
     channel
         .queue_declare(
-            &function_dlq_name(topic, function_id),
+            &subscriber_dlq_name(topic, subscription_id),
             QueueDeclareOptions {
                 durable: true,
                 ..Default::default()
@@ -98,7 +98,7 @@ async fn predeclare_priority_subscriber_queue(
     args.insert("x-max-priority".into(), AMQPValue::LongInt(max_priority));
     channel
         .queue_declare(
-            &function_queue_name(topic, function_id),
+            &subscriber_queue_name(topic, subscription_id),
             QueueDeclareOptions {
                 durable: true,
                 ..Default::default()
@@ -110,7 +110,7 @@ async fn predeclare_priority_subscriber_queue(
 
     channel
         .queue_bind(
-            &function_queue_name(topic, function_id),
+            &subscriber_queue_name(topic, subscription_id),
             &exchange_name(topic),
             "",
             QueueBindOptions::default(),
@@ -129,6 +129,30 @@ struct NoopInvoker;
 impl Invoker for NoopInvoker {
     async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
         panic!("NoopInvoker::call should never be invoked in this test")
+    }
+}
+
+/// Records every delivery's payload — for adapter-direct tests that need a
+/// broker but no live engine.
+#[derive(Default)]
+struct RecordingInvoker {
+    deliveries: Mutex<Vec<Value>>,
+}
+
+#[async_trait]
+impl Invoker for RecordingInvoker {
+    async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
+    async fn call_delivery(
+        &self,
+        _function_id: &str,
+        payload: Value,
+        _metadata: Option<Value>,
+    ) -> Result<Option<Value>, String> {
+        self.deliveries.lock().await.push(payload);
+        Ok(None)
     }
 }
 
@@ -168,7 +192,7 @@ async fn basic_delivery_connect_or_skip() {
 
     let topic = format!("e2e-rmq-basic-{}", Uuid::new_v4());
     adapter
-        .subscribe(&topic, "sub-1", &function_id, None, None)
+        .subscribe(&topic, "sub-1", &function_id, None, None, None)
         .await;
     // Give the consumer task a beat to actually attach before the first
     // publish.
@@ -396,7 +420,7 @@ async fn priority_ordering_connect_or_skip() {
         .create_channel()
         .await
         .expect("raw amqp channel");
-    predeclare_priority_subscriber_queue(&raw_channel, &topic, &function_id, 10).await;
+    predeclare_priority_subscriber_queue(&raw_channel, &topic, sub_id, 10).await;
 
     for p in [1u64, 9, 5] {
         adapter
@@ -412,6 +436,7 @@ async fn priority_ordering_connect_or_skip() {
             &topic,
             sub_id,
             &function_id,
+            None,
             None,
             Some(SubscriberQueueConfig {
                 max_priority: Some(10),
@@ -440,6 +465,78 @@ async fn priority_ordering_connect_or_skip() {
     adapter.shutdown().await;
     let _ = raw_connection.close(200, "test done").await;
     iii.shutdown_async().await;
+}
+
+/// Unsubscribe detaches the consumer but keeps the durable queue bound to
+/// the fanout exchange: messages published while detached buffer on the
+/// broker, and a same-id resubscribe drains them. This is the contract that
+/// makes routine subscriber disconnects lossless — deleting the queue on
+/// unsubscribe destroyed exactly this backlog.
+#[tokio::test]
+#[serial]
+async fn unsubscribe_keeps_backlog_for_same_id_resubscribe_connect_or_skip() {
+    let Some(container) = docker::start_rabbitmq().await else {
+        return; // skip: docker not reachable
+    };
+
+    let invoker = Arc::new(RecordingInvoker::default());
+    let adapter = RabbitMQAdapter::from_config(
+        Some(&json!({"amqp_url": container.amqp_url()})),
+        invoker.clone(),
+    )
+    .await
+    .expect("rabbitmq adapter should connect");
+
+    let topic = format!("e2e-rmq-rearm-{}", Uuid::new_v4());
+    let sub_id = "sub-rearm-1";
+    adapter
+        .subscribe(&topic, sub_id, "rearm-fn", None, None, None)
+        .await;
+    // Give the consumer task a beat to attach before the first publish --
+    // same as basic_delivery.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    adapter.enqueue(&topic, json!({"n": 1}), None, None).await;
+    wait_until(
+        || {
+            let invoker = invoker.clone();
+            async move { invoker.deliveries.lock().await.len() == 1 }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    adapter.unsubscribe(&topic, sub_id).await;
+    // Published while detached: both enqueues are broker-confirmed
+    // (`Publisher::publish` awaits the confirm), so they are already in the
+    // still-bound queue when we assert nothing got delivered.
+    adapter.enqueue(&topic, json!({"n": 2}), None, None).await;
+    adapter.enqueue(&topic, json!({"n": 3}), None, None).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        invoker.deliveries.lock().await.len(),
+        1,
+        "nothing may be delivered while detached"
+    );
+
+    adapter
+        .subscribe(&topic, sub_id, "rearm-fn", None, None, None)
+        .await;
+    wait_until(
+        || {
+            let invoker = invoker.clone();
+            async move { invoker.deliveries.lock().await.len() == 3 }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+    let deliveries = invoker.deliveries.lock().await.clone();
+    assert!(
+        deliveries.contains(&json!({"n": 2})) && deliveries.contains(&json!({"n": 3})),
+        "the detached-period backlog must drain on resubscribe, got: {deliveries:?}"
+    );
+
+    adapter.unsubscribe(&topic, sub_id).await;
+    adapter.shutdown().await;
 }
 
 /// (d) Fifo mode: 10 messages published in order are delivered in the same
@@ -488,6 +585,7 @@ async fn fifo_mode_preserves_order_connect_or_skip() {
             &topic,
             "sub-fifo-1",
             &function_id,
+            None,
             None,
             Some(SubscriberQueueConfig {
                 queue_mode: Some("fifo".to_string()),

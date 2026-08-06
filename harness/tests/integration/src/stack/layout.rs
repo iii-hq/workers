@@ -68,6 +68,12 @@ impl RunLayout {
         self.root.join("queue")
     }
 
+    /// SQLite file for the database worker — absolute, or the worker's
+    /// default relative URL would resolve against its own cwd.
+    pub fn database_path(&self) -> PathBuf {
+        self.root.join("database.db")
+    }
+
     pub fn skills_dir(&self) -> PathBuf {
         self.root.join("skills")
     }

@@ -298,8 +298,9 @@ export type WorkersRegisterResponse = z.infer<
  *  - engine `RegisterTriggerInput` (iii-sdk `protocol.rs`): `{ trigger_type,
  *    function_id, config, metadata? }`.
  *  - harness `SubscribeArgs` (`harness/src/functions/subscribe.rs`):
- *    `{ trigger_type, config?, label?, once?, function_id?, metadata? }` —
- *    `function_id` omitted means "notify this session".
+ *    `{ trigger_type, config?, label?, once?, function_id?, metadata?,
+ *    target? }` — `function_id` omitted means "notify this session", while
+ *    `target` is its explicit long form.
  * Only `trigger_type` is guaranteed; everything else is optional so the view
  * always renders. `config`/`metadata` are opaque JSON parsed per-provider.
  */
@@ -310,6 +311,22 @@ export const registerTriggerRequestSchema = z.object({
   metadata: z.unknown().optional(),
   label: z.string().optional(),
   once: z.boolean().optional(),
+  /** Gating predicates: each fire runs these before delivery. */
+  conditions: z
+    .array(
+      z.object({
+        function_id: z.string().optional(),
+        config: z.unknown().optional(),
+      }),
+    )
+    .optional(),
+  target: z
+    .object({
+      function_id: z.string(),
+      payload: z.unknown().optional(),
+      event_into: z.string().optional(),
+    })
+    .optional(),
 })
 export type RegisterTriggerRequest = z.infer<
   typeof registerTriggerRequestSchema
@@ -322,54 +339,6 @@ export const stateTriggerConfigSchema = z.object({
   condition_function_id: z.string().optional(),
 })
 export type StateTriggerConfig = z.infer<typeof stateTriggerConfigSchema>
-
-/**
- * `metadata` shape for `function_id: "harness::react"` — the reactive bridge.
- * Wire source: `harness/src/functions/react.rs` (`ReactSpec` / `JoinSpec`).
- * `options` is free-form (mirrors `harness::spawn` SpawnOptions); the common
- * `options.functions.allow: string[]` is surfaced by the view.
- */
-export const joinSpecSchema = z.object({
-  id: z.string(),
-  expect: z.array(z.string()),
-  key: z.string(),
-  rearm: z.boolean().optional(),
-})
-export type JoinSpec = z.infer<typeof joinSpecSchema>
-
-/** Call-mode reaction target (`harness/src/functions/react.rs` `CallSpec`):
- * the event dispatches a plain function call instead of spawning a
- * sub-agent. `event_into` is the JSON pointer where the event lands in the
- * payload (default `/event`). */
-export const callSpecSchema = z.object({
-  function_id: z.string(),
-  payload: z.unknown().optional(),
-  event_into: z.string().optional(),
-})
-export type CallSpec = z.infer<typeof callSpecSchema>
-
-/** `model`/`task` are optional on the wire: call-mode reactions carry `call`
- * instead, and agent-mode registrations may omit `model` (inherited from the
- * registering turn). The VIEW decides the mode: `call` present → call mode;
- * `task` present → spawn mode; neither → not a react spec at all. */
-export const reactSpecSchema = z.object({
-  model: z.string().optional(),
-  task: z.string().optional(),
-  call: callSpecSchema.optional(),
-  session_id: z.string().optional(),
-  provider: z.string().optional(),
-  options: z.unknown().optional(),
-  parent_session_id: z.string().optional(),
-  join: joinSpecSchema.optional(),
-})
-export type ReactSpec = z.infer<typeof reactSpecSchema>
-
-/** `options.functions.allow` — the only bit of the free-form `options` the
- * view reads. Non-strict so unknown option keys pass through. */
-export const reactOptionsSchema = z.object({
-  functions: z.object({ allow: z.array(z.string()).optional() }).optional(),
-})
-export type ReactOptions = z.infer<typeof reactOptionsSchema>
 
 /**
  * The known filter fields across trigger `config` shapes — state

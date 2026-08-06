@@ -28,10 +28,8 @@ workers:
     config:
       providers:
         local:
-          # Path is relative to the engine's CWD. run-tests.sh `cd`s into
-          # tests/e2e/ before launching the engine, so this resolves to
-          # tests/e2e/data/storage. The script wipes this directory at
-          # the start of every run so rustfs starts with a clean tree.
+          # Path is relative to the engine's CWD. run-tests.sh uses an isolated
+          # temporary project, so every run gets a clean rustfs data tree.
           data_dir: ./data/storage
 
       buckets:

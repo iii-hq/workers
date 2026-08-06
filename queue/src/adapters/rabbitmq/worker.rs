@@ -22,7 +22,10 @@ use std::sync::Arc;
 use futures::StreamExt;
 use lapin::{message::Delivery, options::*, Channel};
 use serde_json::Value;
-use tokio::sync::Semaphore;
+use tokio::{
+    sync::{oneshot, Semaphore},
+    task::JoinSet,
+};
 
 use crate::trigger::Invoker;
 
@@ -85,13 +88,17 @@ impl Worker {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn run(
         self: Arc<Self>,
         topic: String,
+        subscription_id: String,
         function_id: String,
+        metadata: Option<Value>,
         condition_function_id: Option<String>,
         consumer_tag: String,
         queue_name: String,
+        mut cancelled: oneshot::Receiver<()>,
     ) {
         // Apply per-consumer prefetch (QoS) so the broker keeps a backlog in the
         // queue instead of shipping everything to this consumer at once. Without
@@ -128,35 +135,53 @@ impl Worker {
             }
         };
 
-        while let Some(delivery_result) = consumer.next().await {
+        let mut tasks = JoinSet::new();
+        let explicitly_cancelled = loop {
+            while tasks.try_join_next().is_some() {}
+            let delivery_result = tokio::select! {
+                biased;
+                _ = &mut cancelled => break true,
+                delivery = consumer.next() => match delivery {
+                    Some(delivery) => delivery,
+                    None => break false,
+                },
+            };
+
             match delivery_result {
                 Ok(delivery) => {
-                    let worker = Arc::clone(&self);
-                    let topic_clone = topic.clone();
-                    let function_id_clone = function_id.clone();
-                    let condition_function_id_clone = condition_function_id.clone();
-
                     match self.queue_mode {
                         QueueMode::Fifo => {
-                            if let Err(e) = worker
+                            // Processed inline and to completion: cancellation
+                            // is honored at the next loop head, never
+                            // mid-invocation — an aborted invocation's side
+                            // effects would apply again on redelivery.
+                            if let Err(e) = self
                                 .process_delivery(
                                     delivery,
-                                    &topic_clone,
-                                    &function_id_clone,
-                                    condition_function_id_clone.as_deref(),
+                                    &topic,
+                                    &subscription_id,
+                                    &function_id,
+                                    metadata.as_ref(),
+                                    condition_function_id.as_deref(),
                                 )
                                 .await
                             {
                                 tracing::error!(
-                                    topic = %topic_clone,
+                                    topic = %topic,
                                     error = ?e,
                                     "Failed to process delivery"
                                 );
                             }
                         }
                         QueueMode::Standard => {
+                            let worker = Arc::clone(&self);
+                            let topic_clone = topic.clone();
+                            let subscription_id_clone = subscription_id.clone();
+                            let function_id_clone = function_id.clone();
+                            let metadata_clone = metadata.clone();
+                            let condition_function_id_clone = condition_function_id.clone();
                             let semaphore = self.semaphore.as_ref().map(Arc::clone);
-                            tokio::spawn(async move {
+                            tasks.spawn(async move {
                                 let _permit = if let Some(ref sem) = semaphore {
                                     Some(sem.acquire().await.unwrap())
                                 } else {
@@ -167,7 +192,9 @@ impl Worker {
                                     .process_delivery(
                                         delivery,
                                         &topic_clone,
+                                        &subscription_id_clone,
                                         &function_id_clone,
+                                        metadata_clone.as_ref(),
                                         condition_function_id_clone.as_deref(),
                                     )
                                     .await
@@ -190,22 +217,34 @@ impl Worker {
                     );
                 }
             }
-        }
+        };
 
-        tracing::warn!(topic = %topic, "Consumer stream ended");
+        // Drain: every in-flight delivery completes its invocation and acks,
+        // nacks, or republishes. Aborting here would kill invocations whose
+        // side effects may already have applied server-side, so the broker's
+        // redelivery would execute them a second time.
+        while tasks.join_next().await.is_some() {}
+
+        if explicitly_cancelled {
+            tracing::debug!(topic = %topic, "Consumer cancelled");
+        } else {
+            tracing::warn!(topic = %topic, "Consumer stream ended");
+        }
     }
 
     async fn process_delivery(
         &self,
         delivery: Delivery,
         topic: &str,
+        subscription_id: &str,
         function_id: &str,
+        metadata: Option<&Value>,
         condition_function_id: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut job = JobParser::parse_from_delivery(&delivery)?;
 
         match self
-            .process_job(&job, function_id, condition_function_id)
+            .process_job(&job, function_id, metadata, condition_function_id)
             .await
         {
             Ok(_) => {
@@ -229,7 +268,7 @@ impl Worker {
                     .map_err(|e| format!("Failed to nack message: {}", e))?;
 
                 self.retry_handler
-                    .handle_failure(topic, &mut job, &format!("{:?}", e), Some(function_id))
+                    .handle_failure(topic, &mut job, &format!("{:?}", e), Some(subscription_id))
                     .await
                     .map_err(|e| format!("Failed to handle failure: {}", e))?;
             }
@@ -242,6 +281,7 @@ impl Worker {
         &self,
         job: &Job,
         function_id: &str,
+        metadata: Option<&Value>,
         condition_function_id: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let invoker = Arc::clone(&self.invoker);
@@ -272,7 +312,10 @@ impl Worker {
             }
         }
 
-        match invoker.call(function_id, data).await {
+        match invoker
+            .call_delivery(function_id, data, metadata.cloned())
+            .await
+        {
             Ok(_) => {
                 tracing::debug!(job_id = %job.id, "Job processed successfully");
                 Ok(())
