@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { ConfigFormProps, Host, JsonValue } from '@iii-dev/console-ui'
+import { errText } from '../lib/errors'
 
 type JsonObject = { [key: string]: JsonValue }
 
@@ -111,7 +112,7 @@ export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
           : resp.message ?? 'connection failed',
       }
     } catch (e) {
-      result = { status: 'done', ok: false, text: e instanceof Error ? e.message : String(e) }
+      result = { status: 'done', ok: false, text: errText(e) }
     }
     if (testTokens.current[name] !== token) return // superseded by an edit
     setTestResults((r) => ({ ...r, [name]: result }))

@@ -19,6 +19,7 @@ e2e_bin=${HARNESS_E2E_BIN:-"$harness_root/target/release/harness-e2e"}
 install_url=${III_INSTALL_URL:-https://install.iii.dev/iii/main/install.sh}
 cli_channel=${III_CLI_CHANNEL:-latest}
 worker_tag=${III_WORKER_TAG:-latest}
+stack_versions=${HARNESS_E2E_STACK_VERSIONS:-'{}'}
 runs=${HARNESS_E2E_RUNS:-1}
 engine_port=49134
 wait_seconds=180
@@ -38,6 +39,21 @@ case "$cli_channel" in
 esac
 [[ "$worker_tag" =~ ^[A-Za-z0-9._-]+$ ]] || {
   echo "III_WORKER_TAG must be a valid Registry tag" >&2
+  exit 2
+}
+stack_versions=$(jq -c \
+  --arg worker "$HARNESS_E2E_RELEASE_WORKER" \
+  --arg version "$HARNESS_E2E_RELEASE_VERSION" '
+    if length == 0 then {($worker): $version} else . end
+  ' <<<"$stack_versions")
+jq -e --arg worker "$HARNESS_E2E_RELEASE_WORKER" --arg version "$HARNESS_E2E_RELEASE_VERSION" '
+  type == "object" and length > 0 and
+  all(to_entries[];
+    (.key | test("^[a-z0-9][a-z0-9_-]*$")) and
+    (.value | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+(-(experimental|alpha|beta))?$"))
+  ) and .[$worker] == $version
+' <<<"$stack_versions" >/dev/null || {
+  echo "HARNESS_E2E_STACK_VERSIONS must contain the release worker and strict exact versions" >&2
   exit 2
 }
 [[ -x "$e2e_bin" ]] || {
@@ -95,6 +111,7 @@ write_deployment_result() {
     --arg release_tag "${HARNESS_E2E_RELEASE_TAG:-}" \
     --arg release_run_id "${HARNESS_E2E_RELEASE_RUN_ID:-}" \
     --arg smoke_run_id "${HARNESS_E2E_SMOKE_RUN_ID:-}" \
+    --argjson stack_versions "$stack_versions" \
     --argjson elapsed_ms "$(((SECONDS - started_at_seconds) * 1000))" \
     '{
       status: $status,
@@ -109,6 +126,7 @@ write_deployment_result() {
       release_tag: $release_tag,
       release_run_id: $release_run_id,
       smoke_run_id: $smoke_run_id,
+      stack_versions: $stack_versions,
       elapsed_ms: $elapsed_ms
     }' >"$artifact_dir/deployment.json"
 }
@@ -174,7 +192,7 @@ collect_worker_logs() {
   local name
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
-    timeout 20 "$iii_bin" worker logs "$name" --port "$engine_port" \
+    (cd "$project_dir" && timeout 20 "$iii_bin" worker logs "$name") \
       >"$log_dir/worker-$name.log" 2>&1 || true
   done < <(python3 - "$project_dir/config.yaml" <<'PY'
 import sys
@@ -293,11 +311,15 @@ printf 'workers: []\n' >"$project_dir/config.yaml"
 engine_pid=$!
 wait_for_engine
 
-workers=("harness@$worker_tag" "database@$worker_tag" "fp@$worker_tag" "web@$worker_tag")
+# The candidate channel belongs only to the workers pinned in stack_versions.
+# Auxiliary E2E workers are not released as part of this operation and may not
+# expose the candidate tag at all, so keep them on their stable channel.
+support_worker_tag=latest
+workers=("database@$support_worker_tag" "fp@$support_worker_tag" "web@$support_worker_tag")
 declare -A providers=()
 for provider in "$HARNESS_E2E_PROVIDER" "$HARNESS_E2E_JUDGE_PROVIDER"; do
   if [[ -z "${providers[$provider]:-}" ]]; then
-    workers+=("provider-$provider@$worker_tag")
+    workers+=("provider-$provider@$support_worker_tag")
     providers[$provider]=1
   fi
 done
@@ -319,12 +341,23 @@ add_with_retry() {
   return 1
 }
 
-log "Installing registry stack: ${workers[*]}"
+log "Installing stable E2E support stack: ${workers[*]}"
 add_with_retry worker-add "${workers[@]}"
 
-log "Installing exact release candidate: ${HARNESS_E2E_RELEASE_WORKER}@${HARNESS_E2E_RELEASE_VERSION}"
-add_with_retry candidate-override \
-  "${HARNESS_E2E_RELEASE_WORKER}@${HARNESS_E2E_RELEASE_VERSION}" --force
+# Install the released worker first, then apply its exact candidate dependency
+# overrides. Resolving Harness necessarily selects the stable versions allowed
+# by its semver ranges; installing Harness last would overwrite the exact
+# dependency pins that Release Control supplied.
+while IFS=$'\t' read -r candidate_worker candidate_version; do
+  log "Installing exact stack candidate: ${candidate_worker}@${candidate_version}"
+  add_with_retry "candidate-${candidate_worker}" \
+    "${candidate_worker}@${candidate_version}" --force
+done < <(jq -r --arg release_worker "$HARNESS_E2E_RELEASE_WORKER" '
+  to_entries
+  | sort_by([if .key == $release_worker then 0 else 1 end, .key])[]
+  | [.key, .value]
+  | @tsv
+' <<<"$stack_versions")
 
 wait_for_functions \
   harness::send harness::status worker::add database::query state::get \
@@ -344,6 +377,7 @@ verify_args=(
   --required database
   --worker "$HARNESS_E2E_RELEASE_WORKER"
   --version "$HARNESS_E2E_RELEASE_VERSION"
+  --expected-versions-json "$stack_versions"
   --output "$stack_dir/lock-verification.json"
 )
 for worker in "${workers[@]}"; do

@@ -220,7 +220,7 @@ zero.
 | Pull-request CI | Relevant pull-request changes | 0 | Deterministic integration only |
 | Harness E2E Main | Relevant push to `main` | 1 per subject/scenario | Score advisory; empty reports, hard-gate and technical failures blocking |
 | Harness E2E Daily | Daily at 06:00 UTC, or manual dispatch on `main` | 3 per subject/scenario | Score is advisory; empty reports, hard-gate and technical failures are blocking; history is always published |
-| Harness E2E deployed | Successful post-release smoke for Harness or a mandatory dependency | 1 per subject/scenario | Score advisory; empty reports, hard-gate and technical failures blocking |
+| Harness E2E deployed | Successful post-release smoke or Release Control dispatch | 1 per selected subject/scenario | Score advisory; empty reports, hard-gate and technical failures blocking; promotion requires the release gate |
 
 The reusable workflow supports source and registry stack modes. Source runs
 install the latest stable `iii` release with its companion binaries, then build
@@ -239,6 +239,15 @@ run. Deployed E2E jobs install `harness`, its mandatory dependencies, the
 scenario database worker, and the configured providers through `iii worker add`;
 they do not build runtime workers from the checkout. The expected release
 worker and version are checked against `iii.lock` before any model call.
+
+Release Control may choose one of three deployed-E2E profiles declared in
+`.github/release-workers.yaml`: `release` runs the promotable operational gate,
+`custom` runs an explicit non-empty scenario set, and `full` runs every
+code-defined scenario. A custom set remains promotable only when it contains
+every release-gate scenario. The workflow compares the previewed catalog SHA
+with its checkout, verifies scenario IDs against `harness-e2e list`, and records
+the selected, required and completed sets plus the canonical profile digest in
+schema-v3 evidence. Main and daily lanes continue to run their complete matrix.
 
 The scheduled benchmark runs even when `main` has not changed. This preserves
 one comparable observation per day and exposes model or infrastructure drift.

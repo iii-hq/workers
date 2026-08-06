@@ -12,6 +12,140 @@ SemverKey = tuple[tuple[int, ...], int, str]
 BumpKind = Literal["patch", "minor", "major"]
 ManifestKind = Literal["cargo", "node", "python"]
 
+RELEASE_VERSION_RE = re.compile(
+    r"^(?P<major>0|[1-9][0-9]*)\."
+    r"(?P<minor>0|[1-9][0-9]*)\."
+    r"(?P<patch>0|[1-9][0-9]*)"
+    r"(?:-(?P<maturity>experimental|alpha|beta))?$"
+)
+RELEASE_MATURITIES = ("experimental", "alpha", "beta", "stable")
+RELEASE_SUFFIXES = ("none", "experimental", "alpha", "beta")
+_MATURITY_RANK = {name: idx for idx, name in enumerate(RELEASE_MATURITIES)}
+
+
+@dataclass(frozen=True)
+class ReleaseVersion:
+    """The deliberately small version grammar supported by worker releases."""
+
+    major: int
+    minor: int
+    patch: int
+    maturity: str
+
+    @property
+    def core(self) -> tuple[int, int, int]:
+        return (self.major, self.minor, self.patch)
+
+    @property
+    def core_text(self) -> str:
+        return f"{self.major}.{self.minor}.{self.patch}"
+
+
+def parse_release_version(version: str) -> ReleaseVersion:
+    """Parse a worker release version and reject unsupported SemVer shapes.
+
+    Release Control intentionally exposes only the product maturity ladder.
+    Build metadata, arbitrary prerelease labels and numbered prereleases are
+    excluded so the workflow and UI share one unambiguous contract.
+    """
+    match = RELEASE_VERSION_RE.fullmatch(version.strip())
+    if not match:
+        raise ValueError(
+            "version must be MAJOR.MINOR.PATCH with an optional "
+            "-experimental, -alpha, or -beta suffix"
+        )
+    return ReleaseVersion(
+        major=int(match.group("major")),
+        minor=int(match.group("minor")),
+        patch=int(match.group("patch")),
+        maturity=match.group("maturity") or "stable",
+    )
+
+
+def release_maturity(version: str) -> str:
+    return parse_release_version(version).maturity
+
+
+def validate_release_transition(current: str, target: str) -> None:
+    """Require monotonic cores and forward-only maturity at the same core.
+
+    Equality is allowed: `bump=none` is the supported way to tag a version
+    that a merged change already wrote into its manifest. Tag availability is
+    checked separately by create-tag.yml.
+    """
+    before = parse_release_version(current)
+    after = parse_release_version(target)
+    if after.core < before.core:
+        raise ValueError(f"version core cannot move backwards: {current} -> {target}")
+    if after.core == before.core and target != current and before.maturity != "stable":
+        if _MATURITY_RANK[after.maturity] <= _MATURITY_RANK[before.maturity]:
+            raise ValueError(f"maturity cannot repeat or move backwards: {current} -> {target}")
+
+
+def list_tagged_versions(worker: str) -> list[str]:
+    """Return versions from `<worker>/v<version>` tags in the local checkout."""
+    prefix = f"{worker}/v"
+    try:
+        output = subprocess.check_output(
+            ["git", "tag", "--list", f"{prefix}*"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return []
+    return [line[len(prefix):] for line in output.splitlines() if line.startswith(prefix)]
+
+
+def validate_release_history(target: str, existing: list[str]) -> None:
+    """Reject a target behind an already tagged core or maturity.
+
+    Legacy tags outside the v2 grammar do not participate in the maturity
+    ladder. Exact equality is left to the workflow's idempotency check.
+    """
+    wanted = parse_release_version(target)
+    parsed: list[ReleaseVersion] = []
+    for version in existing:
+        try:
+            parsed.append(parse_release_version(version))
+        except ValueError:
+            continue
+    if not parsed:
+        return
+    highest_core = max(version.core for version in parsed)
+    if wanted.core < highest_core:
+        raise ValueError(
+            f"version core {wanted.core_text} is behind existing "
+            f"{'.'.join(str(part) for part in highest_core)}"
+        )
+    for version in parsed:
+        if version.core != wanted.core:
+            continue
+        same_version = version.maturity == wanted.maturity
+        if not same_version and _MATURITY_RANK[version.maturity] >= _MATURITY_RANK[wanted.maturity]:
+            raise ValueError(
+                f"maturity {wanted.maturity} cannot follow {version.maturity} "
+                f"for {wanted.core_text}"
+            )
+
+
+def resolve_release_version(current: str, kind: str, suffix: str, target: str = "") -> str:
+    """Resolve exact intent or a human-friendly bump/suffix combination."""
+    parsed = parse_release_version(current)
+    if target:
+        resolved = target.strip()
+    else:
+        if suffix not in RELEASE_SUFFIXES:
+            raise ValueError(f"unknown release suffix: {suffix!r}")
+        if kind == "none":
+            core = parsed.core_text
+        elif kind in ("patch", "minor", "major"):
+            core = bump(current, kind)
+        else:
+            raise ValueError(f"unknown bump kind: {kind!r}")
+        resolved = core if suffix == "none" else f"{core}-{suffix}"
+    validate_release_transition(current, resolved)
+    return resolved
+
 
 def parse_semver(v: str) -> SemverKey:
     """Returns a tuple suitable for lexicographic compare.

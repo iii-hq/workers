@@ -47,6 +47,7 @@ import { useTheme } from '@/hooks/use-theme'
 import type { IiiClient } from '@/lib/iii-client'
 import { Markdown } from '@/lib/markdown'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
+import { WorkerConfigurationDialog } from '@/pages/Workers/components/WorkerConfigurationDialog'
 import type { ConsoleApi, ExtensionIii } from '@/types/injectable-ui'
 
 /**
@@ -89,6 +90,10 @@ export const components: ConsoleApi['components'] = {
   JsonHighlight,
   Markdown,
   MarkdownPreview,
+  // The one page-level composite in the kit: worker pages offer "configure"
+  // in place instead of navigating to the workers tab and stranding the
+  // operator there when the editor closes.
+  WorkerConfigurationDialog,
 }
 
 /** Token names mirroring `index.css`'s `@theme` block (documentation aid). */
