@@ -222,6 +222,8 @@ mod tests {
         assert!(members.contains("state"));
         assert!(members.contains("iii-directory"));
         assert!(!members.contains("telegram-bot"));
+        // A root that is not a discovered worker never becomes a member.
+        assert!(!stack_members(&specs, &["ghost".to_string()]).contains("ghost"));
         // `configuration` isn't a repo worker — dropped from the spec's deps.
         assert_eq!(
             specs.iter().find(|s| s.name == "harness").unwrap().deps,
