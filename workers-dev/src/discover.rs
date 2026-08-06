@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 /// Harness-stack *roots*: what `workers-dev up` / `Ctrl+u` start by name.
-/// The dashboard's "harness stack" group is these plus everything they
-/// transitively depend on — see `assign_groups`.
+/// The dashboard's stack group is these plus everything they transitively
+/// depend on, computed at view time — see `stack_members`.
 pub const HARNESS_STACK: &[&str] = &[
     "session-manager",
     "llm-router",
@@ -20,17 +20,8 @@ pub const HARNESS_STACK: &[&str] = &[
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum WorkerGroup {
-    HarnessStack,
+    Stack,
     Other,
-}
-
-impl WorkerGroup {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::HarnessStack => "harness stack",
-            Self::Other => "other",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +34,6 @@ pub enum SpawnKind {
 pub struct WorkerSpec {
     pub name: String,
     pub dir: PathBuf,
-    pub group: WorkerGroup,
     pub spawn: SpawnKind,
     /// Direct dependencies declared in iii.worker.yaml, filtered to workers
     /// that actually exist in this repo, sorted.
@@ -108,7 +98,6 @@ pub fn discover_repo_workers(repo_root: &Path) -> Result<Vec<WorkerSpec>> {
         specs.push(WorkerSpec {
             name,
             dir,
-            group: WorkerGroup::Other, // assigned below once all names are known
             spawn,
             deps,
             ui_dir,
@@ -123,45 +112,33 @@ pub fn discover_repo_workers(repo_root: &Path) -> Result<Vec<WorkerSpec>> {
         spec.deps.sort_unstable();
     }
 
-    let default_roots: Vec<String> = HARNESS_STACK
-        .iter()
-        .filter(|n| names.contains(**n))
-        .map(|n| n.to_string())
-        .collect();
-    assign_groups(&mut specs, &default_roots);
+    // Alphabetical, deterministic discovery order. Stack grouping and display
+    // order are computed at view time from the current stack (assign_view_groups).
+    specs.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(specs)
 }
 
-/// Group workers by deriving the harness stack from the dependency graph:
-/// the stack is `roots` plus everything they transitively depend on, so a
-/// newly declared dependency joins the stack group automatically instead of
-/// waiting for someone to extend a hardcoded list. Re-sorts specs into
-/// display order (stack first, alphabetical within a group).
-pub fn assign_groups(specs: &mut [WorkerSpec], roots: &[String]) {
+/// A stack's member set: `roots` plus everything they transitively depend
+/// on, restricted to discovered workers. Pure — callers regroup views with
+/// it at view time (see status::assign_view_groups), so a newly declared
+/// dependency joins the stack automatically instead of waiting for someone
+/// to extend a hardcoded list.
+pub fn stack_members(specs: &[WorkerSpec], roots: &[String]) -> HashSet<String> {
     let deps_by_name: HashMap<&str, &[String]> = specs
         .iter()
         .map(|s| (s.name.as_str(), s.deps.as_slice()))
         .collect();
-    let mut stack: HashSet<&str> = HashSet::new();
+    let mut members: HashSet<&str> = HashSet::new();
     let mut queue: VecDeque<&str> = roots.iter().map(String::as_str).collect();
     while let Some(name) = queue.pop_front() {
-        if !stack.insert(name) {
+        if !deps_by_name.contains_key(name) || !members.insert(name) {
             continue;
         }
         if let Some(deps) = deps_by_name.get(name) {
             queue.extend(deps.iter().map(String::as_str));
         }
     }
-    let stack: HashSet<String> = stack.into_iter().map(str::to_string).collect();
-
-    for spec in specs.iter_mut() {
-        spec.group = if stack.contains(&spec.name) {
-            WorkerGroup::HarnessStack
-        } else {
-            WorkerGroup::Other
-        };
-    }
-    specs.sort_by(|a, b| a.group.cmp(&b.group).then_with(|| a.name.cmp(&b.name)));
+    members.into_iter().map(str::to_string).collect()
 }
 
 fn classify_spawn(dir: &Path, yaml: &WorkerYaml) -> SpawnKind {
@@ -228,11 +205,11 @@ mod tests {
         fs::write(dir.join("Cargo.toml"), "[workspace]\n").unwrap();
     }
 
-    /// The stack group is derived from the graph: roots plus transitive deps.
-    /// A dependency two hops from `harness` lands in the stack group without
-    /// appearing in any hardcoded list; unmanaged dep names are dropped.
+    /// The member set is derived from the graph: roots plus transitive deps.
+    /// A dependency two hops from `harness` is a member without appearing in
+    /// any hardcoded list; unmanaged dep names are dropped.
     #[test]
-    fn harness_stack_group_follows_dependencies() {
+    fn stack_members_follows_dependencies() {
         let tmp = TempDir::new().unwrap();
         write_worker_with_deps(&tmp, "harness", &["state", "configuration"]);
         write_worker_with_deps(&tmp, "state", &["iii-directory"]);
@@ -240,11 +217,11 @@ mod tests {
         write_worker_with_deps(&tmp, "telegram-bot", &[]);
 
         let specs = discover_repo_workers(tmp.path()).unwrap();
-        let group = |n: &str| specs.iter().find(|s| s.name == n).unwrap().group;
-        assert_eq!(group("harness"), WorkerGroup::HarnessStack);
-        assert_eq!(group("state"), WorkerGroup::HarnessStack);
-        assert_eq!(group("iii-directory"), WorkerGroup::HarnessStack);
-        assert_eq!(group("telegram-bot"), WorkerGroup::Other);
+        let members = stack_members(&specs, &["harness".to_string()]);
+        assert!(members.contains("harness"));
+        assert!(members.contains("state"));
+        assert!(members.contains("iii-directory"));
+        assert!(!members.contains("telegram-bot"));
         // `configuration` isn't a repo worker — dropped from the spec's deps.
         assert_eq!(
             specs.iter().find(|s| s.name == "harness").unwrap().deps,
@@ -272,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn discovers_and_groups_workers() {
+    fn discovers_and_classifies_workers() {
         let tmp = TempDir::new().unwrap();
         write_worker(&tmp, "harness", "rust", "binary", true);
         write_worker(&tmp, "telegram-bot", "rust", "binary", true);
@@ -280,18 +257,11 @@ mod tests {
 
         let specs = discover_repo_workers(tmp.path()).unwrap();
         assert_eq!(specs.len(), 3);
-        assert_eq!(specs[0].name, "harness");
-        assert_eq!(specs[0].group, WorkerGroup::HarnessStack);
-        assert!(matches!(specs[0].spawn, SpawnKind::CargoRun));
+        // Alphabetical discovery order; display grouping happens at view time.
+        assert_eq!(specs[0].name, "claude-code");
+        assert_eq!(specs[1].name, "harness");
         assert_eq!(specs[2].name, "telegram-bot");
-        assert_eq!(specs[2].group, WorkerGroup::Other);
-        assert!(matches!(
-            specs
-                .iter()
-                .find(|s| s.name == "claude-code")
-                .unwrap()
-                .spawn,
-            SpawnKind::Unsupported { .. }
-        ));
+        assert!(matches!(specs[1].spawn, SpawnKind::CargoRun));
+        assert!(matches!(specs[0].spawn, SpawnKind::Unsupported { .. }));
     }
 }

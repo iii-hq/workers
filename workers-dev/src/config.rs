@@ -4,9 +4,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use crate::color::ColorMode;
-use crate::discover::{
-    assign_groups, discover_repo_workers, harness_stack_names, order_worker_names, WorkerSpec,
-};
+use crate::discover::{discover_repo_workers, harness_stack_names, order_worker_names, WorkerSpec};
 
 pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 pub const DEFAULT_POLL_INTERVAL_MS: u64 = 2000;
@@ -29,13 +27,9 @@ pub struct Config {
     /// Ordered named stacks: `(name, roots)`. Index 0 is always the built-in
     /// `harness` stack (roots overridable via `stacks.harness:`), then file
     /// stacks in YAML order. Roots are filtered to managed workers.
-    // Not read outside tests until Task 3 (stack-grouped view) wires it up.
-    #[allow(dead_code)]
     pub stacks: Vec<(String, Vec<String>)>,
     /// Name of the stack `up` / bare `start` / Ctrl+u start; always present
     /// in `stacks` with non-empty roots.
-    // Not read outside tests until Task 4 (`start_stack`) wires it up.
-    #[allow(dead_code)]
     pub default_stack: String,
     pub harness_stack: Vec<String>,
     pub worker_specs: Vec<WorkerSpec>,
@@ -101,15 +95,13 @@ impl Config {
         };
 
         let repo_root = resolve_repo_root(repo.or(file_cfg.repo))?;
-        let mut worker_specs = discover_repo_workers(&repo_root)?;
+        let worker_specs = discover_repo_workers(&repo_root)?;
         if worker_specs.is_empty() {
             bail!("no workers discovered under {}", repo_root.display());
         }
 
         // Resolve stacks before deriving worker order: the default stack's
-        // roots drive grouping, and the dashboard's stack group (roots +
-        // transitive deps) must be regrouped before the display order is
-        // captured below. Root names are validated against the managed
+        // roots drive grouping. Root names are validated against the managed
         // `workers` list further down.
         if file_cfg.harness_stack.is_some() {
             bail!(
@@ -132,11 +124,7 @@ impl Config {
         let default_stack = file_cfg
             .default_stack
             .unwrap_or_else(|| "harness".to_string());
-        let Some(default_roots) = stacks
-            .iter()
-            .find(|(n, _)| *n == default_stack)
-            .map(|(_, r)| r.clone())
-        else {
+        if !stacks.iter().any(|(n, _)| *n == default_stack) {
             bail!(
                 "default_stack {default_stack:?} is not a defined stack (have: {})",
                 stacks
@@ -145,8 +133,7 @@ impl Config {
                     .collect::<Vec<_>>()
                     .join(", ")
             );
-        };
-        assign_groups(&mut worker_specs, &default_roots);
+        }
 
         let raw_engine_url = engine_url
             .or(file_cfg.engine_url)

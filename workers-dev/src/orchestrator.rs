@@ -9,7 +9,7 @@ use tokio::process::Command;
 use tokio::time;
 
 use crate::config::Config;
-use crate::discover::SpawnKind;
+use crate::discover::{SpawnKind, WorkerGroup};
 use crate::graph::WorkerGraph;
 use crate::logs;
 use crate::runtime::{ProcState, SharedRuntimes, WorkerRuntime};
@@ -218,6 +218,21 @@ impl Orchestrator {
     pub async fn start_harness_stack(&self, wait_connected: bool) -> Result<()> {
         self.start_workers(&self.config.harness_stack, wait_connected)
             .await
+    }
+
+    /// Member set (roots + transitive deps) of a configured stack.
+    pub fn stack_members(&self, name: &str) -> Result<HashSet<String>> {
+        let roots = self
+            .config
+            .stacks
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, roots)| roots.clone())
+            .with_context(|| format!("unknown stack {name}"))?;
+        Ok(crate::discover::stack_members(
+            &self.config.worker_specs,
+            &roots,
+        ))
     }
 
     pub async fn start_all_managed(&self, wait_connected: bool) -> Result<()> {
@@ -606,14 +621,19 @@ impl Orchestrator {
     }
 
     pub async fn worker_views(&self) -> Result<Vec<WorkerView>> {
-        Ok(self.dashboard_snapshot().await.0)
+        let members = self.stack_members(&self.config.default_stack)?;
+        Ok(self.dashboard_snapshot(&members).await.0)
     }
 
     /// Like `worker_views`, but also reports an engine-query error (if any) so
     /// the dashboard can show "engine unreachable" instead of silently blanking
     /// every engine status. Never fails: on engine error the views still render
-    /// (all disconnected) alongside the error string.
-    pub async fn dashboard_snapshot(&self) -> (Vec<WorkerView>, Option<String>) {
+    /// (all disconnected) alongside the error string. Views come back grouped
+    /// and ordered for `members` (the current stack's member set).
+    pub async fn dashboard_snapshot(
+        &self,
+        members: &HashSet<String>,
+    ) -> (Vec<WorkerView>, Option<String>) {
         let (engine, engine_error) = match self.engine_workers().await {
             Ok(list) => (list, None),
             Err(err) => (Vec::new(), Some(format!("{err:#}"))),
@@ -630,6 +650,7 @@ impl Orchestrator {
             let spec = self.config.worker_spec(worker).expect("spec");
             views.push(build_view(spec, rt, engine_by_name.get(worker)));
         }
+        status::assign_view_groups(&mut views, members);
         (views, engine_error)
     }
 
@@ -704,7 +725,7 @@ fn build_view(
 
     WorkerView {
         name: spec.name.clone(),
-        group: spec.group,
+        group: WorkerGroup::Other, // reassigned by assign_view_groups
         spawnable: matches!(spec.spawn, SpawnKind::CargoRun),
         display_status: display.to_string(),
         process_status: process,

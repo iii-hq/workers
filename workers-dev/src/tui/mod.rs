@@ -134,7 +134,7 @@ struct DashboardState {
 }
 
 enum DisplayRowKind {
-    Header(WorkerGroup),
+    Header(WorkerGroup, usize),
     Worker(usize),
 }
 
@@ -146,6 +146,7 @@ struct DisplayRow {
 struct UiCtx<'a> {
     engine_url: &'a str,
     repo_branch: Option<&'a str>,
+    current_stack: &'a str,
     views: &'a [WorkerView],
     engine_error: Option<&'a str>,
     display_rows: &'a [DisplayRow],
@@ -178,7 +179,8 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
 
         // Poll the engine on a background task so a slow or unreachable engine
         // query can't freeze keyboard input.
-        let (initial_views, initial_err) = orchestrator.dashboard_snapshot().await;
+        let default_members = orchestrator.stack_members(&orchestrator.config.default_stack)?;
+        let (initial_views, initial_err) = orchestrator.dashboard_snapshot(&default_members).await;
         let initial_branch = crate::git::current_branch(&orchestrator.config.repo_root);
         set_terminal_title(initial_branch.as_deref());
         let (state_tx, mut state_rx) = tokio::sync::watch::channel(DashboardState {
@@ -189,10 +191,11 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
         let poll_interval = Duration::from_millis(orchestrator.config.poll_interval_ms);
         let poller = {
             let orchestrator = orchestrator.clone();
+            let members = default_members.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(poll_interval).await;
-                    let (views, engine_error) = orchestrator.dashboard_snapshot().await;
+                    let (views, engine_error) = orchestrator.dashboard_snapshot(&members).await;
                     if state_tx
                         .send(DashboardState {
                             views,
@@ -263,6 +266,7 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                 let ctx = UiCtx {
                     engine_url: &orchestrator.config.engine_url,
                     repo_branch: state.repo_branch.as_deref(),
+                    current_stack: &orchestrator.config.default_stack,
                     views: &state.views,
                     engine_error: state.engine_error.as_deref(),
                     display_rows: &display_rows,
@@ -708,20 +712,26 @@ fn spawn_toggle_ui_watch(actions: &Actions, worker: String) {
 }
 
 /// Build the table rows, applying the name filter (case-insensitive). A group
-/// header is emitted only when that group has at least one matching worker.
+/// header (with its post-filter worker count) is emitted only when that group
+/// has at least one matching worker.
 fn build_display_rows(views: &[WorkerView], filter: &str) -> Vec<DisplayRow> {
     let needle = filter.to_lowercase();
+    let matches: Vec<usize> = views
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| needle.is_empty() || v.name.to_lowercase().contains(&needle))
+        .map(|(idx, _)| idx)
+        .collect();
     let mut rows = Vec::new();
     let mut last_group = None;
-    for (idx, view) in views.iter().enumerate() {
-        if !needle.is_empty() && !view.name.to_lowercase().contains(&needle) {
-            continue;
-        }
-        if last_group != Some(view.group) {
+    for idx in matches.iter().copied() {
+        let group = views[idx].group;
+        if last_group != Some(group) {
+            let count = matches.iter().filter(|&&i| views[i].group == group).count();
             rows.push(DisplayRow {
-                kind: DisplayRowKind::Header(view.group),
+                kind: DisplayRowKind::Header(group, count),
             });
-            last_group = Some(view.group);
+            last_group = Some(group);
         }
         rows.push(DisplayRow {
             kind: DisplayRowKind::Worker(idx),
@@ -776,7 +786,7 @@ fn selected_worker(
 ) -> Option<String> {
     match display_rows.get(row?)?.kind {
         DisplayRowKind::Worker(idx) => views.get(idx).map(|v| v.name.clone()),
-        DisplayRowKind::Header(_) => None,
+        DisplayRowKind::Header(..) => None,
     }
 }
 
@@ -1119,10 +1129,11 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
         .display_rows
         .iter()
         .map(|row| match row.kind {
-            DisplayRowKind::Header(group) => {
-                Row::new(vec![Cell::from(format!("── {} ──", group.label()))
-                    .style(styled_if(color, group_header_style(group)))])
-            }
+            DisplayRowKind::Header(group, count) => Row::new(vec![Cell::from(format!(
+                "── {} ({count}) ──",
+                crate::status::group_label(group, ctx.current_stack)
+            ))
+            .style(styled_if(color, group_header_style(group)))]),
             DisplayRowKind::Worker(idx) => {
                 let v = &ctx.views[idx];
                 let icon = status_icon(&v.display_status, ctx.spinner_frame);
@@ -1270,7 +1281,7 @@ fn draw_log_pane(f: &mut Frame, area: Rect, ctx: &UiCtx) {
         let msg = if ctx.selected_name.is_none() {
             "(select a worker to view logs)"
         } else {
-            "(no output yet — press s to start this worker, or Ctrl+u to start the harness stack)"
+            "(no output yet — press s to start this worker, or Ctrl+u to start the stack)"
         };
         vec![Line::from(Span::styled(
             msg,
@@ -1432,7 +1443,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
         ("+ -", "resize the log pane"),
         ("/", "filter workers by name"),
         ("e", "start the iii engine"),
-        ("Ctrl+u", "start the harness stack"),
+        ("Ctrl+u", "start the default stack"),
         ("Ctrl+a", "start all managed workers"),
         ("?", "toggle this help"),
         ("q", "quit (workers keep running)"),

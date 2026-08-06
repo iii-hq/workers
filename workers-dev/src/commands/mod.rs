@@ -8,11 +8,13 @@ use crate::orchestrator::Orchestrator;
 use crate::status;
 
 pub async fn run_status(orchestrator: &Orchestrator) -> Result<()> {
-    let (views, engine_error) = orchestrator.dashboard_snapshot().await;
+    let default_stack = &orchestrator.config.default_stack;
+    let members = orchestrator.stack_members(default_stack)?;
+    let (views, engine_error) = orchestrator.dashboard_snapshot(&members).await;
     if let Some(err) = engine_error {
         eprintln!("warning: engine unreachable: {err}");
     }
-    status::print_status_table(&views);
+    status::print_status_table(&views, default_stack);
     Ok(())
 }
 
