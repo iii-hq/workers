@@ -3,6 +3,7 @@ name: telegram-bot
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: telegram-bot
 tags: [telegram, bot, messaging, chat, webhook]
 description: Telegram bridge to the harness stack — polling or webhook ingress, live message edits, approvals, and configurable verbosity.

@@ -3,6 +3,7 @@ name: http
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: http
 tags: [http, rest, api, endpoint]
 description: Expose functions as HTTP endpoints — registers the `http` trigger type and serves matched routes.

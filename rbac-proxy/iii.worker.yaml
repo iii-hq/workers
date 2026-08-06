@@ -3,6 +3,7 @@ name: rbac-proxy
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: rbac-proxy
 tags: [rbac, authorization, security, proxy, middleware]
 description: "RBAC boundary proxy for the iii worker protocol — auth, gating, namespacing, middleware, and engine:: result filtering on its own port."

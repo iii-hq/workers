@@ -1,5 +1,9 @@
 import { type ReactNode, useEffect, useMemo, useRef } from 'react'
 import { resultEnvelope } from '@/components/function-trigger/FunctionTriggerCard'
+import {
+  rawRedactor,
+  useFunctionTriggerRenderers,
+} from '@/components/function-trigger/renderer-registry'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
@@ -190,6 +194,13 @@ export function MessageList({
     () => resolveRegistrations(messages, triggersById),
     [messages, triggersById],
   )
+  // Same registry `FunctionTriggerCard` uses for its own raw pane: an
+  // assistant-turn copy serializes each call's arguments the same way the
+  // call's own card does, so a worker's `redactRaw` (e.g.
+  // sandbox-code-runner's runtime_id) has to cover this exit too — see
+  // function-trigger-copy.ts.
+  const renderers = useFunctionTriggerRenderers()
+  const redactFor = (functionId: string) => rawRedactor(renderers, functionId)
 
   // Read optionally so isolated renders (Storybook) still work without the
   // ConversationsProvider; the empty state falls back to `ready` there.
@@ -266,7 +277,7 @@ export function MessageList({
             m.role === 'assistant' ? fcallsByAssistant.get(m.id) : undefined
           const copyText =
             m.role === 'assistant' && (m.content || calls?.length)
-              ? () => assistantCopyText(m.content, calls ?? [])
+              ? () => assistantCopyText(m.content, calls ?? [], redactFor)
               : undefined
           // A call that directly follows another call belongs to the same
           // burst of agent activity — pull it up against its predecessor so

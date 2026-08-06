@@ -3,6 +3,7 @@ name: openwiki
 language: javascript
 deploy: bundle
 manifest: package.json
+license: Apache-2.0
 tags: [wiki, documentation, docs, markdown, knowledge-base, repo]
 description: Source-grounded markdown wiki for any git repository — openwiki::* functions generate, search, and incrementally refresh categorized pages with pinned-commit line citations, and the engine serves a browser UI + JSON API under /openwiki.
 

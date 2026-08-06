@@ -24,6 +24,14 @@ def build_binary_payload(tmp_path: Path, manifest: str, **kwargs) -> dict[str, o
     )
 
 
+def test_manifest_license_is_published(tmp_path: Path) -> None:
+    payload = build_binary_payload(
+        tmp_path,
+        "name: smoke\nlicense: Apache-2.0\n",
+    )
+    assert payload["license"] == "Apache-2.0"
+
+
 def test_manifest_tags_are_normalized_validated_and_optional(tmp_path: Path) -> None:
     payload = build_binary_payload(
         tmp_path,

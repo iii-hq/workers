@@ -3,6 +3,7 @@ name: cron
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: cron
 tags: [cron, schedule, timer, job]
 description: Schedule functions with cron expressions - registers the `cron` trigger type.

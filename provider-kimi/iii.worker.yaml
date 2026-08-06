@@ -3,6 +3,7 @@ name: provider-kimi
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: provider-kimi
 tags: [llm, kimi, moonshot, chat-completions, provider]
 description: Moonshot (Kimi) Chat Completions provider worker; implements provider::kimi::stream and provider::kimi::refresh_models behind llm-router.

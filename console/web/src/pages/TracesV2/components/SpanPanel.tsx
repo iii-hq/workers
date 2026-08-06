@@ -1,11 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 import { ArrowUp, Clock, Copy, Layers, X, Zap } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
+import { useFunctionTriggerRenderers } from '@/components/function-trigger/renderer-registry'
 import { Button } from '@/components/ui/Button'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { cn } from '@/lib/utils'
 import { fetchOtelLogs } from '../api/otel-logs'
+import { spanRawRedactor } from '../lib/functionTriggerFromSpan'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import {
   formatDuration,
@@ -69,6 +71,25 @@ export function SpanPanel({
     const selfTime = Math.max(0, span.duration_ms - childDuration)
     return { parentSpan, childSpans, selfTime, childDuration }
   }, [span, traceData])
+
+  // All spans of the trace, for resolving a nested span's owning function —
+  // same ancestor-chain lookup `SpanInfoTab` uses to build the info card.
+  const spansById = useMemo(
+    () => new Map((traceData?.spans ?? []).map((s) => [s.span_id, s] as const)),
+    [traceData],
+  )
+  const renderers = useFunctionTriggerRenderers()
+  // Every tab below that reads `span.attributes`/`span.events` renders the
+  // SAME data the info tab's card is built from (functionTriggerFromSpan.ts)
+  // — the identical redactor has to cover them (tags, logs, errors), or the
+  // runtime_id the info card hides is one tab-click away. The remaining tabs
+  // (otel-logs, baggage, links) are exempt for a written reason at their own
+  // definition — see `SpanPanel.redaction-coverage.test.ts`, which fails
+  // loudly if a tab is ever added here without one or the other.
+  const redact = useMemo(
+    () => (span ? spanRawRedactor(span, spansById, renderers) : undefined),
+    [span, spansById, renderers],
+  )
 
   const { data: logsData } = useQuery({
     queryKey: ['span-otel-logs', span?.trace_id, span?.span_id],
@@ -272,13 +293,13 @@ export function SpanPanel({
               <SpanInfoTab span={span} traceData={traceData} />
             </TabsContent>
             <TabsContent value="tags" className="mt-0">
-              <SpanTagsTab span={span} />
+              <SpanTagsTab span={span} redact={redact} />
             </TabsContent>
             <TabsContent value="logs" className="mt-0">
-              <SpanLogsTab span={span} />
+              <SpanLogsTab span={span} redact={redact} />
             </TabsContent>
             <TabsContent value="errors" className="mt-0">
-              <SpanErrorsTab span={span} />
+              <SpanErrorsTab span={span} redact={redact} />
             </TabsContent>
             <TabsContent value="otel-logs" className="mt-0">
               <SpanOtelLogsTab span={span} />

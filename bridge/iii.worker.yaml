@@ -3,6 +3,7 @@ name: bridge
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: bridge
 tags: [bridge, remote, websocket, federation, engine]
 description: Bridge two iii engines — expose local functions on a remote engine and invoke/forward remote functions locally.

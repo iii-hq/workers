@@ -1,15 +1,23 @@
 import { Clock } from 'lucide-react'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { formatPossibleJson } from '../lib/formatPossibleJson'
+import { redactAttributeEntries } from '../lib/redactAttributes'
 import type { VisualizationSpan } from '../lib/traceTransform'
 import { toMs } from '../lib/traceTransform'
 import { formatRelative, formatTimestamp } from '../lib/traceUtils'
 
 interface SpanLogsTabProps {
   span: VisualizationSpan
+  /**
+   * The span's function-trigger redactor (`spanRawRedactor` in
+   * functionTriggerFromSpan.ts). Event attributes — `iii.payload.json`
+   * chief among them — pretty-print into a `<pre>` below; that is the same
+   * payload the info tab's card redacts, one tab-click away otherwise.
+   */
+  redact?: (value: unknown) => unknown
 }
 
-export function SpanLogsTab({ span }: SpanLogsTabProps) {
+export function SpanLogsTab({ span, redact }: SpanLogsTabProps) {
   const sortedEvents = [...(span.events || [])].sort(
     (a, b) => a.timestamp_unix_nano - b.timestamp_unix_nano,
   )
@@ -35,9 +43,7 @@ export function SpanLogsTab({ span }: SpanLogsTabProps) {
         const offsetMs = eventMs - firstEventMs
         const isException =
           event.name === 'exception' || event.name?.startsWith('exception')
-        const attrEntries = event.attributes
-          ? Object.entries(event.attributes)
-          : []
+        const attrEntries = redactAttributeEntries(event.attributes, redact)
 
         return (
           <div

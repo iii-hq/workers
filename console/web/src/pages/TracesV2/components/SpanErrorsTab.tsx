@@ -1,14 +1,23 @@
 import { AlertCircle, CheckCircle2, Copy } from 'lucide-react'
 import { useMemo } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { redactValue } from '../lib/redactAttributes'
 import type { VisualizationSpan } from '../lib/traceTransform'
 import { useCopyToClipboard } from '../lib/traceUtils'
 
 interface SpanErrorsTabProps {
   span: VisualizationSpan
+  /**
+   * The span's function-trigger redactor (`spanRawRedactor` in
+   * functionTriggerFromSpan.ts). `exception.message`/`exception.stacktrace`
+   * read off the SAME `exception` event `functionTriggerFromSpan.ts`'s
+   * `exceptionOutput()` reads to build the info tab's redacted error output
+   * — one tab-click away here otherwise, same as the tags/logs tabs.
+   */
+  redact?: (value: unknown) => unknown
 }
 
-export function SpanErrorsTab({ span }: SpanErrorsTabProps) {
+export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
   const { copiedKey, copy } = useCopyToClipboard()
   const exceptionEvent = span.events?.find(
     (e) => e.name === 'exception' || e.name?.startsWith('exception'),
@@ -26,9 +35,18 @@ export function SpanErrorsTab({ span }: SpanErrorsTabProps) {
   const exceptionStacktrace = (span.attributes?.['exception.stacktrace'] ??
     eventAttrs['exception.stacktrace']) as string | undefined
 
-  const displayMessage = errorMessage || exceptionMessage
-  const displayType = errorType || exceptionType
-  const displayStack = errorStack || exceptionStacktrace
+  // Redacted ONCE here — both the render below and the stack-trace copy
+  // button read from these, so they cannot disagree about what is safe.
+  const displayMessage = redactValue(
+    errorMessage || exceptionMessage,
+    redact,
+  ) as string | undefined
+  const displayType = redactValue(errorType || exceptionType, redact) as
+    | string
+    | undefined
+  const displayStack = redactValue(errorStack || exceptionStacktrace, redact) as
+    | string
+    | undefined
 
   // Stack-trace lines are static for a given span and may legitimately
   // repeat (e.g., recursive frames). Stamp each line with a position-

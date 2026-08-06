@@ -3,6 +3,7 @@ name: slack
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: slack
 tags: [slack, messaging, chat, bot, approvals]
 description: Slack as an iii worker — exposes the Slack Web API as slack::* functions, plus a harness bridge (inbound events → harness::send, native streaming, approvals). Configurable from the console.
