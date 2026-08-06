@@ -347,10 +347,13 @@ fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
 /// over `max_result_tokens` to a bounded head + marker + tail view
 /// (context-manager.md § context::assemble). Applies to every result — any
 /// age, protected or not, error or not: it is a generous ceiling, like the
-/// emergency pass, not a policy prune. The rewrite targets 90% of the cap
-/// so the output re-estimates under the threshold: the pass is idempotent
-/// without a fixpoint loop, and deterministic (no call-varying content) so
-/// identical histories assemble byte-identically across calls.
+/// emergency pass, not a policy prune. The rewrite reserves the marker's
+/// own bytes out of a 90%-of-cap budget *before* splitting head/tail, so
+/// head + marker + tail together target 90% of the cap — not 90% plus the
+/// marker on top — and the output re-estimates under the threshold even
+/// for small caps or long `function_id`s: the pass is idempotent without a
+/// fixpoint loop, and deterministic (no call-varying content) so identical
+/// histories assemble byte-identically across calls.
 pub fn cap_results_with_sizes(
     messages: &mut [AgentMessage],
     sizes: &mut [u64],
@@ -375,18 +378,29 @@ pub fn cap_results_with_sizes(
         }
         let function_id = function_id.clone();
 
+        // Build the marker first: it depends only on `tokens` and
+        // `function_id`, both already known, and its own byte cost has to
+        // be reserved out of the kept budget below — otherwise a small cap
+        // or long function_id can leave the rewritten result still over
+        // the threshold (the marker's fixed cost can exceed the 10% margin
+        // once the cap itself is small).
+        let marker = format!(
+            "\n[…result capped: was ~{tokens} tokens; middle omitted; re-call {function_id} for the full data]\n"
+        );
+
         // Chars kept: scale the text down to 90% of the cap, preserving the
-        // text's own chars-per-token ratio. u64 math: len ≤ ~16MB, cap ≤
-        // ~10^6 — the product stays far under u64::MAX.
-        let keep_chars = ((text.len() as u64) * max_result_tokens * 9 / (tokens * 10)) as usize;
+        // text's own chars-per-token ratio, then reserve the marker's own
+        // bytes out of that budget (saturating: a marker longer than the
+        // whole budget floors to zero kept chars rather than underflowing).
+        // u64 math: len ≤ ~16MB, cap ≤ ~10^6 — the product stays far under
+        // u64::MAX.
+        let target_chars = (text.len() as u64) * max_result_tokens * 9 / (tokens * 10);
+        let keep_chars = (target_chars as usize).saturating_sub(marker.len());
         let head_budget = keep_chars * 6 / 10;
         let tail_budget = keep_chars - head_budget;
         let head_end = floor_char_boundary(&text, head_budget);
         let tail_start =
             ceil_char_boundary(&text, text.len().saturating_sub(tail_budget)).max(head_end);
-        let marker = format!(
-            "\n[…result capped: was ~{tokens} tokens; middle omitted; re-call {function_id} for the full data]\n"
-        );
         let capped = format!("{}{}{}", &text[..head_end], marker, &text[tail_start..]);
 
         let AgentMessage::FunctionResult {
@@ -905,5 +919,40 @@ mod tests {
         // 60/40 split of the kept budget, within rounding slack.
         let ratio = head.len() as f64 / (head.len() + tail.len()) as f64;
         assert!((0.55..=0.65).contains(&ratio), "head ratio was {ratio}");
+    }
+
+    #[test]
+    fn cap_holds_the_threshold_at_a_small_cap() {
+        // Regression: the marker's own byte cost must come out of the kept
+        // budget, or a small cap leaves the rewritten result still over
+        // the threshold (the marker's fixed cost can exceed the 10% margin
+        // once the cap itself is small).
+        let mut messages = vec![result("f::g", 200_000, 1)];
+        let mut sizes = sizes_of(&messages);
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 200, &HeuristicEstimator);
+        assert_eq!(stats.capped_parts, 1);
+        let text = text_of(messages[0].content());
+        assert!(HeuristicEstimator.text(&text) <= 200);
+    }
+
+    #[test]
+    fn cap_holds_the_threshold_with_a_long_function_id_and_is_idempotent() {
+        // A longer function_id makes the marker's fixed cost bigger still;
+        // the budget reservation has to account for it regardless.
+        let mut messages = vec![result(
+            "engine::observability::traces::list-with-a-very-long-descriptive-name",
+            200_000,
+            1,
+        )];
+        let mut sizes = sizes_of(&messages);
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 300, &HeuristicEstimator);
+        assert_eq!(stats.capped_parts, 1);
+        let text = text_of(messages[0].content());
+        assert!(HeuristicEstimator.text(&text) <= 300);
+
+        // Idempotent in the same regime that used to break it: a second
+        // pass finds the result already at or under the cap.
+        let second = cap_results_with_sizes(&mut messages, &mut sizes, 300, &HeuristicEstimator);
+        assert_eq!(second.capped_parts, 0);
     }
 }
