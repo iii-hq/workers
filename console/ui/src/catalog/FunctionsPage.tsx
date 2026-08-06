@@ -91,12 +91,14 @@ export function FunctionsPage({ host }: { host: Host }) {
 
   const groups = useMemo(() => {
     const needle = search.trim().toLowerCase()
+    // Ids and workers only. Description text matches surprised more than
+    // they helped: searching `config` surfaced harness::triggers::list
+    // because its description mentions config, which reads as broken.
     const matched = (functions.data ?? []).filter((fn) => {
       if (!needle) return true
       return (
         fn.function_id.toLowerCase().includes(needle) ||
-        fn.worker_name.toLowerCase().includes(needle) ||
-        (fn.description ?? '').toLowerCase().includes(needle)
+        fn.worker_name.toLowerCase().includes(needle)
       )
     })
     const byGroup = new Map<string, FunctionSummary[]>()
@@ -126,7 +128,7 @@ export function FunctionsPage({ host }: { host: Host }) {
           }
           search={search}
           onSearch={setSearch}
-          searchPlaceholder="search functions, workers, descriptions…"
+          searchPlaceholder="search function ids or workers…"
           onRefresh={functions.reload}
           loading={functions.loading}
           below={

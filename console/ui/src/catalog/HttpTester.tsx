@@ -40,12 +40,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * loaded from.
  */
 async function readEndpoint(host: Host): Promise<HttpEndpoint> {
-  const entry = await host.iii.trigger('configuration::get', { id: 'iii-http' })
-  const value = isRecord(entry) ? entry.value : null
-  if (!isRecord(value)) throw new Error('iii-http has no configuration value')
+  // `http` is the current worker; `iii-http` is its deprecated predecessor.
+  // Whichever entry exists with a port wins, current name first.
+  let value: Record<string, unknown> | null = null
+  for (const id of ['http', 'iii-http']) {
+    try {
+      const entry = await host.iii.trigger('configuration::get', { id })
+      const candidate = isRecord(entry) && isRecord(entry.value) ? entry.value : null
+      if (candidate && typeof candidate.port === 'number') {
+        value = candidate
+        break
+      }
+    } catch {
+      // Entry absent under this id; try the next.
+    }
+  }
+  if (!value) throw new Error('no http worker configuration with a port found')
   const port = value.port
   if (typeof port !== 'number')
-    throw new Error('iii-http config carries no port')
+    throw new Error('http config carries no port')
   const bound = typeof value.host === 'string' ? value.host : '127.0.0.1'
   const reachable =
     bound === '0.0.0.0' || bound === '127.0.0.1' || bound === 'localhost'
@@ -163,9 +176,7 @@ export function HttpTester({
   }
 
   if (endpoint.error) {
-    return (
-      <ErrorNote call="configuration::get iii-http" message={endpoint.error} />
-    )
+    return <ErrorNote call="configuration::get http" message={endpoint.error} />
   }
   if (!endpoint.data) return <Note>reading the http worker's address…</Note>
 

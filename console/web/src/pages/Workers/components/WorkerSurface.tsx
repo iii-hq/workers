@@ -1,20 +1,22 @@
 /**
- * What one worker brought to the bus: the functions it registered, the
- * trigger types it publishes, and the live bindings pointing into it.
+ * What one worker brought to the bus: the functions it registered and the
+ * trigger types it publishes.
  *
  * Rendered inline under an expanded row on the Workers table, so "what can
  * this worker actually do" is answered where the operator already is instead
- * of on another page. One `engine::workers::info` call carries all three
- * lists, and it only runs when a row is actually opened.
+ * of on another page. One `engine::workers::info` call carries both lists,
+ * and it only runs when a row is actually opened.
  *
- * Deeper reads stay on the dedicated pages: a function's schemas, invoke
- * panel and call history live on `#/ext/functions`, a binding's fire path on
- * `#/ext/triggers`. This is the index, not the manual.
+ * Registered triggers deliberately do NOT appear here. They are live
+ * bindings of a type to a function, they belong to the triggers view, and
+ * showing them per worker invited the question of whose they are — the
+ * registering worker's or the target's. Deeper reads stay on the dedicated
+ * pages: schemas, invoke and call history on `#/ext/functions`, registered
+ * triggers and their fire paths on `#/ext/triggers`.
  */
 
 import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, ChevronRight } from 'lucide-react'
-import { Badge } from '@/components/ui/Badge'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { fetchEngineWorkerInfo } from '../api/workers'
 
@@ -53,10 +55,9 @@ export function WorkerSurface({ name }: WorkerSurfaceProps) {
   }
 
   const { functions, trigger_types: triggerTypes } = query.data
-  const bindings = query.data.registered_triggers
 
   return (
-    <div className="grid gap-x-8 gap-y-6 py-3 md:grid-cols-2 xl:grid-cols-3">
+    <div className="grid gap-x-8 gap-y-6 py-3 md:grid-cols-2">
       <Section title="functions" count={functions.length}>
         {functions.length === 0 ? (
           <Empty>this worker registered no functions.</Empty>
@@ -88,31 +89,6 @@ export function WorkerSurface({ name }: WorkerSurfaceProps) {
               {type.description ? (
                 <p className="font-mono text-[11.5px] leading-relaxed text-ink-faint">
                   {type.description}
-                </p>
-              ) : null}
-            </div>
-          ))
-        )}
-      </Section>
-
-      <Section title="bindings" count={bindings.length}>
-        {bindings.length === 0 ? (
-          <Empty>nothing is bound to this worker's functions.</Empty>
-        ) : (
-          bindings.map((binding) => (
-            // Stacked, not side by side: a trigger type and a function id are
-            // both long, and sharing a line squeezes both into mid-word breaks
-            // in a column this narrow.
-            <div key={binding.id} className="space-y-1">
-              <div>
-                <Badge>{binding.trigger_type}</Badge>
-              </div>
-              <div className="font-mono text-[12px] text-ink break-words">
-                {binding.function_id}
-              </div>
-              {binding.config_summary && binding.config_summary !== '{}' ? (
-                <p className="font-mono text-[11.5px] text-ink-faint break-words">
-                  {binding.config_summary}
                 </p>
               ) : null}
             </div>

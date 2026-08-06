@@ -159,7 +159,8 @@ export function InvokePanel({
         </Button>
         <CopyButton
           value={asCliCommand(functionId, safeJson(body))}
-          label="copy as cli"
+          label="copy iii command"
+          title="copies this exact call as an `iii trigger …` line to run from the terminal"
         />
         {invalid ? (
           <span className="console-catalog-invalid">{invalid}</span>

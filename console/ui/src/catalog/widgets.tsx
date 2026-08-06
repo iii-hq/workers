@@ -187,15 +187,18 @@ export function LiveDot() {
 export function CopyButton({
   value,
   label = 'copy',
+  title,
 }: {
   value: string
   label?: string
+  title?: string
 }) {
   const [copied, setCopied] = useState(false)
   return (
     <Button
       variant="pill"
       size="sm"
+      title={title}
       onClick={() => {
         void navigator.clipboard.writeText(value)
         setCopied(true)
