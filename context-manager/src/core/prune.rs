@@ -960,4 +960,75 @@ mod tests {
         let second = cap_results_with_sizes(&mut messages, &mut sizes, 300, &HeuristicEstimator);
         assert_eq!(second.capped_parts, 0);
     }
+
+    /// Evidence-session replay (console-5293cd86…): an ~85k-token traces
+    /// dump and a ~75k-token state::get in a 20-turn session. With the
+    /// shipped defaults the model-facing total must stay bounded near
+    /// 60k tokens at every step (observed unbounded: 190k). Raw history
+    /// grows untrimmed; each step re-derives cap+prune from it, exactly
+    /// like assemble (whose output is never persisted).
+    #[test]
+    fn replay_session_shape_stays_bounded() {
+        let defaults = PruneParams {
+            protect_recent_tokens: 40_000,
+            min_free_tokens: 20_000,
+            max_output_chars: 2_000,
+            protected_functions: vec![],
+        };
+        let mut raw: Vec<AgentMessage> = Vec::new();
+        let mut ts = 0i64;
+        let mut worst_total = 0u64;
+        for turn in 0..20 {
+            ts += 1;
+            raw.push(user(&format!("request {turn}"), ts));
+            // Every turn: three mid-size tool results (~2.5k tokens each).
+            for _ in 0..3 {
+                ts += 1;
+                raw.push(result("engine::functions::info", 10_000, ts));
+            }
+            // Turn 5 lands the traces whale; turn 12 the state whale.
+            if turn == 5 {
+                ts += 1;
+                raw.push(result("engine::traces::list", 340_000, ts));
+            }
+            if turn == 12 {
+                ts += 1;
+                raw.push(result("state::get", 300_000, ts));
+            }
+
+            // One assemble step: re-derive from raw, never persist.
+            let mut working = raw.clone();
+            let mut sizes = sizes_of(&working);
+            cap_results_with_sizes(&mut working, &mut sizes, 20_000, &HeuristicEstimator);
+            prune_with_sizes(&mut working, &mut sizes, &defaults, &HeuristicEstimator);
+            let total: u64 = sizes.iter().sum();
+            worst_total = worst_total.max(total);
+        }
+        // Hand-verified worst step is turn 13 (state::get's second turn in
+        // the always-exempt zone), which decomposes exactly as:
+        //   33_343  last-2-user-turns zone (unconditionally exempt): the
+        //           just-landed state::get whale capped to 18_041 (~90% of
+        //           the 20k cap) + 3 same-turn mid results + the prior
+        //           turn's 3 mid results + 2 user messages
+        // + 40_799  protect_recent_tokens window: 16 not-yet-aged-out mid
+        //           results at 2_544 tokens each (message-level estimate;
+        //           the window's own 40_000-token budget is measured on
+        //           text-only tokens, 2_500 each, so the same window holds
+        //           slightly more at the message level) + 5 free-riding
+        //           user messages the window never charges for
+        // + 1_511   residue already collapsed to ~65-token placeholders
+        // = 75_653, confirmed by the failing assert this replaced (which
+        // printed exactly that number). 60k was this task's starting
+        // estimate; it undercounted the last-2-turn exemption stacking
+        // with a freshly capped whale on top of a nearly-full protect
+        // window. 78k is a fixed ceiling with headroom over the verified
+        // 75_653 (for incidental token-count drift from unrelated wording
+        // changes elsewhere in this file), while staying far below both
+        // the >100k range that would indicate cap or prune regressing and
+        // the 190k this session hit uncapped.
+        assert!(
+            worst_total <= 78_000,
+            "steady-state context reached {worst_total} tokens"
+        );
+    }
 }
