@@ -18,7 +18,7 @@ in tests.
 | [src/main.rs](../src/main.rs) | Boot: CLI (`--config` seed, `--url`, `--manifest`), engine connect, **register the config schema (+ optional seed) with the `configuration` worker and fetch the authoritative value** (boot-fatal on failure), build adapters from it, `register_all`, then bind the `configuration` hot-reload trigger; Ctrl+C → `shutdown_async`. |
 | [src/lib.rs](../src/lib.rs) | Module tree only. |
 | [src/types.rs](../src/types.rs) | Wire contracts shared with the agentic family: `Role`, `ContentBlock` (5 variants), `AgentMessage` (4 roles), `ModelInput`, `ModelLimits`, `Model`, `ThinkingLevel`, `AgentFunction`. Serde renames keep the JSON byte-compatible with the TypeScript spec and session-manager's Rust copy. |
-| [src/config.rs](../src/config.rs) | `WorkerConfig` (10 budget/prune/lease knobs incl. `lease_dir`, `~/`-expanded via `resolved_lease_dir`), each with a serde default; `deny_unknown_fields` so a typo'd key fails loudly. Also the JSON-Schema source (`json_schema`/`to_json`/`from_json`, derived `JsonSchema`) and the env-expanding seed parser (`from_file`/`from_yaml`); `boot_signature` names the one structural field (`lease_dir`). |
+| [src/config.rs](../src/config.rs) | `WorkerConfig` (11 budget/prune/cap/lease knobs incl. `lease_dir`, `~/`-expanded via `resolved_lease_dir`), each with a serde default; `deny_unknown_fields` so a typo'd key fails loudly. Also the JSON-Schema source (`json_schema`/`to_json`/`from_json`, derived `JsonSchema`) and the env-expanding seed parser (`from_file`/`from_yaml`); `boot_signature` names the one structural field (`lease_dir`). |
 | [src/configuration.rs](../src/configuration.rs) | The `configuration` worker client: `register_config` (schema + seed), `fetch_config` (authoritative, env-expanded), the `ConfigCell` snapshot + `apply_config`, the `FsLeaseStore` rebuild-and-swap on a `lease_dir` change, and the `context::on-config-change` trigger handler. |
 | [src/error.rs](../src/error.rs) | `ContextError` → `code: message` on the bus (`context/invalid_request`, `context/model_unresolved`, `context/state`). The two spec strings are kept verbatim. |
 | [src/ports.rs](../src/ports.rs) | The four seams: `ModelResolver`, `Summarizer`, `LeaseStore`, `Clock`, plus the `Deps` struct every handler receives. |
@@ -27,7 +27,7 @@ in tests.
 | [src/functions/&lt;verb&gt;.rs](../src/functions) | One file per function: request/response structs (serde + `JsonSchema`, doc comments become schema descriptions) and a `pub async fn handle(deps, req)`. BDD calls these `handle` fns directly, so engine-free tests exercise the exact production path. |
 | [src/core/budget.rs](../src/core/budget.rs) | `ResolvedModel`, the `usable` math, `default_reserved`, `preserve_recent_budget`, `fallback_model`. |
 | [src/core/estimate.rs](../src/core/estimate.rs) | `Estimator` trait + `HeuristicEstimator` (`chars/4`), `estimator_for_model`, per-role tallies. |
-| [src/core/prune.rs](../src/core/prune.rs) | The prune algorithm (newest-first scan, protected window, `min_free_tokens` guard, in-place placeholder rewrite). |
+| [src/core/prune.rs](../src/core/prune.rs) | The prune algorithm (newest-first scan, protected window, `min_free_tokens` guard, in-place placeholder rewrite) and the unconditional per-result cap pass (`cap_results_with_sizes`: head + marker + tail rewrite). |
 | [src/core/selection.rs](../src/core/selection.rs) | Turn partitioning and token-aware verbatim-tail selection with the safe-cut invariant. |
 | [src/core/summary.rs](../src/core/summary.rs) | Summariser prompt construction (template, previous-summary anchoring), `strip_media`, and the `# Conversation summary` system-prompt rendering. |
 | [src/core/lease.rs](../src/core/lease.rs) | Compaction lease acquire/release protocol + the default sha256 lease key. |
@@ -78,23 +78,31 @@ flowchart TD
   B --> C["build model-facing view: drop role:custom, record view_to_orig"]
   C --> D["render system prompt: base + optional previous_summary"]
   D --> E[count tokens]
-  E --> F{over usable AND allow_prune?}
-  F -->|yes| G[prune verbose function outputs] --> H[recount]
+  E --> F{max_result_tokens > 0?}
+  F -->|yes| G[cap oversized single results] --> H[recount]
   F -->|no| H
-  H --> I{still over AND allow_compaction?}
-  I -->|yes| J["try_compact under lease: select tail, summarise head"]
-  I -->|no| K[assemble response]
-  J -->|summary produced| L["replace system prompt with summary, drop head, recount"] --> K
-  J -->|busy / failed / empty| K
+  H --> I{allow_prune?}
+  I -->|yes| J[prune aged function outputs] --> K[recount]
+  I -->|no| K
+  K --> L{still over AND allow_compaction?}
+  L -->|yes| M["try_compact under lease: select tail, summarise head"]
+  L -->|no| N[assemble response]
+  M -->|summary produced| O["replace system prompt with summary, drop head, recount"] --> N
+  M -->|busy / failed / empty| N
 ```
 
 Load-bearing details:
 
-1. **Order is fixed: count → prune → compact.** Prune is cheap (no LLM) and
-   often enough, so it runs first; compaction is the expensive fallback. Each
-   step re-counts, and each is gated on *still being over budget*, so a context
-   that already fits passes through byte-identical with `applied` all-false and
-   no summariser cost (`assemble.feature` "under budget passes through
+1. **Order is fixed: cap → prune → compact.** Cap and prune are both
+   unconditional: they run on every call, no longer gated on being over
+   `usable`, so even a within-budget request can have a single oversized
+   result capped or an aged output pruned. Compaction alone stays
+   budget-gated — it's the only step that checks *still being over budget*
+   first, because it's the expensive one (an LLM call). Each step re-counts.
+   A request with nothing large enough to cap, nothing aged enough to prune,
+   and nothing to compact passes through byte-identical —
+   `applied.capped_parts`/`pruned_tokens` at 0, `compacted: false` — with no
+   summariser cost (`assemble.feature` "under budget passes through
    untouched").
 2. **The model-facing view excludes `role: "custom"`.** Custom messages have
    no provider wire mapping, so they are filtered out of `working` *before*
@@ -110,11 +118,14 @@ Load-bearing details:
    `token_count > usable` is the visible signal that the context didn't fit.
    `assemble` only throws for `messages is required` or `could not resolve
    model limits` (fallback disabled).
-4. **`applied` is the audit trail.** `{ pruned, pruned_tokens, compacted,
-   summary?, tail_start_index?, tokens_before? }` reports exactly what ran.
-   `summary`/`tail_start_index`/`tokens_before` appear only when
-   `compacted` — `tail_start_index` is `Some(Some(i))` for a real cut and
-   `Some(None)` for "everything summarised", serialised as a number or `null`.
+4. **`applied` is the audit trail.** `{ pruned, pruned_tokens, capped_parts,
+   capped_tokens, compacted, summary?, tail_start_index?, tokens_before? }`
+   reports exactly what ran. `capped_parts`/`capped_tokens` are always
+   present (0 when the cap pass found nothing to rewrite), same as
+   `pruned`/`pruned_tokens`. `summary`/`tail_start_index`/`tokens_before`
+   appear only when `compacted` — `tail_start_index` is `Some(Some(i))` for a
+   real cut and `Some(None)` for "everything summarised", serialised as a
+   number or `null`.
 5. **The compaction lease key defaults to a hash of the *request* messages** —
    the same derivation `context::compact` uses — so a caller hitting both
    functions with the same history contends on the same claim.
@@ -204,6 +215,21 @@ tiny placeholders, which are under `max_output_chars`, so nothing is verbose
 (`prune.feature` "pruning twice is idempotent"). On the assemble path the same
 `core::prune::prune` runs with config-derived params plus the call's
 `protected_functions`.
+
+The same file also holds the **cap pass** (`cap_results_with_sizes`) — a
+different kind of pass. Prune is policy: age window, `protected_functions`,
+`min_free_tokens` hysteresis. Cap is an unconditional ceiling with no
+exemptions beyond a `details` payload carrying `"status": "denied"` (which
+keeps its `details` even though its `content` is still capped). Any single
+result estimating over `max_result_tokens` (config default `20_000`; `0`
+disables the pass) is rewritten to a head + marker + tail view — `[…result
+capped: was ~N tokens; middle omitted; re-call {function_id} for the full
+data]` — reserving the marker's own bytes out of a 90%-of-cap-budget target
+*before* splitting head/tail, so the rewrite is idempotent without a fixpoint
+loop even at a small cap or a long `function_id`. On the assemble path it
+runs **before** prune (`functions/assemble.rs` Step 0), so a result that is
+both oversized and aged only pays the cheaper placeholder rewrite once it is
+already capped.
 
 ## 7. Compaction — tail selection
 
@@ -411,6 +437,7 @@ tail_turns: 2                  # user+assistant pairs kept verbatim by compactio
 protect_recent_tokens: 40000   # newest function-output tokens never pruned
 min_free_tokens: 20000         # skip pruning when it would free less
 max_output_chars: 2000         # outputs at/under this are not "verbose"; also the summariser truncation cap
+max_result_tokens: 20000       # per-result ceiling for assemble's unconditional cap pass; 0 disables
 lease_ttl_secs: 300            # compaction mutual-exclusion lease TTL
 allow_fallback_limits: true    # conservative 8192/1024 when limits can't resolve
 summarizer_timeout_ms: 320000  # outer budget for one router::chat summariser call
@@ -433,8 +460,9 @@ Boot and reload rules (`main.rs` / `configuration.rs`):
 - A `--config` file is only a SEED for the first registration; an unparseable
   seed WARNS and is skipped (the authoritative value comes from the worker).
 - Every config field is per-call-overridable where the spec allows
-  (`reserved_tokens`, `tail_turns`, the prune thresholds, `lease_key`,
-  `preserve_recent_tokens`); request options take precedence over config.
+  (`reserved_tokens`, `tail_turns`, `max_result_tokens`, the prune thresholds,
+  `lease_key`, `preserve_recent_tokens`); request options take precedence over
+  config.
 - `llm-router` is soft: the worker serves `count-tokens` and `prune` without it;
   only compaction and router-based model resolution degrade.
 
@@ -466,10 +494,10 @@ is one composition of them; the BDD world is another.
   — i.e. the spec's degraded mode (limits fall back, prune/count work, compact
   overflows after a real filesystem lease acquire/release cycle).
 - Unit tests live next to what they pin: budget math in `budget.rs`, the
-  heuristic in `estimate.rs`, prune eligibility in `prune.rs`, the safe-cut
-  matrix in `selection.rs`, prompt construction in `summary.rs`, lease key
-  stability and TTL in `lease.rs`, frame folding in `adapters/router.rs`,
-  config defaults in `config.rs`.
+  heuristic in `estimate.rs`, prune eligibility and the cap pass in
+  `prune.rs`, the safe-cut matrix in `selection.rs`, prompt construction in
+  `summary.rs`, lease key stability and TTL in `lease.rs`, frame folding in
+  `adapters/router.rs`, config defaults in `config.rs`.
 - Convention: every scenario carries a `# Prevents:` comment naming the
   regression it catches.
 

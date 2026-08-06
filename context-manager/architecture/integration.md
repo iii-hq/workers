@@ -28,7 +28,7 @@ produces, and storing the transcript itself.
 Integration is always some subset of four moves:
 
 1. **Fit a context** with `context::assemble` before a model call — the main
-   entry point. It prunes and/or compacts as needed.
+   entry point. It caps, prunes, and/or compacts as needed.
 2. **Persist the round trip** when `applied.compacted` is true (store the
    summary + boundary, pass them back next time) so summarisation stays cheap
    and convergent.
@@ -115,8 +115,10 @@ All four are registered with JSON Schemas (`iii worker info context-manager` /
 
 ### `context::assemble` — build the model-ready context
 
-The main entry point. Pipeline: count → (if over budget) prune function
-outputs → (if still over) compact the head → return the budgeted list.
+The main entry point. Pipeline: cap oversized single results (always) → prune
+aged function outputs (always) → (if over budget) compact the head → (if
+still over) emergency-reduce → return the budgeted list, or a structured
+overflow if nothing fits.
 
 ```typescript
 {
@@ -128,6 +130,7 @@ outputs → (if still over) compact the head → return the budgeted list.
     tail_turns?: number;           // user+assistant pairs kept verbatim (default 2)
     allow_compaction?: boolean;    // default true
     allow_prune?: boolean;         // default true
+    max_result_tokens?: number;    // per-call cap override (default 20000); 0 disables the cap pass
     protected_functions?: string[];   // function_ids whose outputs are never pruned
     thinking_level?: ThinkingLevel;   // reserve the model's thinking budget for this tier
     lease_key?: string;            // compaction mutual-exclusion key (e.g. a session id)
@@ -142,6 +145,7 @@ outputs → (if still over) compact the head → return the budgeted list.
   model_resolved: "inline" | "router" | "fallback";
   applied: {
     pruned: boolean; pruned_tokens: number;
+    capped_parts: number; capped_tokens: number;
     compacted: boolean;
     summary?: string;              // present iff compacted — PERSIST THIS (§5)
     tail_start_index?: number | null;  // index into REQUEST messages where the tail begins
@@ -281,7 +285,10 @@ provider-legal. Build on these:
 - **Prune replaces, never removes.** A pruned output's content becomes a single
   `[output of {function_id} pruned: was ~N tokens; re-call it if still
   needed]` text block; the message, its `function_call_id`, and the message
-  ordering all survive. Message counts are stable across a prune.
+  ordering all survive. Message counts are stable across a prune. The
+  unconditional cap pass replaces the same way, with its own marker:
+  `[…result capped: was ~N tokens; middle omitted; re-call {function_id} for
+  the full data]`.
 - **`custom` messages never reach the model.** `assemble` excludes
   `role: "custom"` from the returned `messages` and from `token_count`. A huge
   custom entry can't trigger a phantom overflow, and customs never leak to a
