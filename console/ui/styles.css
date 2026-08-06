@@ -864,15 +864,3 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* --- worker detail sections ------------------------------------------ */
-
-[data-iii-ui="console"] .console-catalog-worker-section {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 16px;
-}
-[data-iii-ui="console"] .console-catalog-worker-section code {
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}

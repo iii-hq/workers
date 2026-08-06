@@ -1,4 +1,5 @@
-import { Settings, Square } from 'lucide-react'
+import { ChevronRight, Settings, Square } from 'lucide-react'
+import { useState } from 'react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -11,6 +12,7 @@ import {
 } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
 import type { WorkerManagementKind, WorkerRow } from '../types'
+import { WorkerSurface } from './WorkerSurface'
 
 interface WorkersTableProps {
   rows: WorkerRow[]
@@ -74,6 +76,24 @@ export function WorkersTable({
   }
 
   return (
+    <WorkersTableBody
+      {...{ rows, stoppingName, onStop, onConfigure, className }}
+    />
+  )
+}
+
+function WorkersTableBody({
+  rows,
+  stoppingName,
+  onStop,
+  onConfigure,
+  className,
+}: Omit<WorkersTableProps, 'isLoading'>) {
+  // Only connected workers have a surface to show: `engine::workers::info`
+  // answers for the live bus, not for a stopped supervisor entry.
+  const [expanded, setExpanded] = useState<string | null>(null)
+
+  return (
     <div
       className={cn(
         '-mx-4 -my-2 overflow-x-auto whitespace-nowrap sm:-mx-6 lg:-mx-8',
@@ -116,6 +136,10 @@ export function WorkersTable({
                 key={row.id}
                 row={row}
                 stopping={stoppingName === row.name}
+                expanded={expanded === row.name}
+                onToggle={() =>
+                  setExpanded((prev) => (prev === row.name ? null : row.name))
+                }
                 onStop={onStop}
                 onConfigure={onConfigure}
               />
@@ -130,6 +154,8 @@ export function WorkersTable({
 interface WorkerTableRowProps {
   row: WorkerRow
   stopping: boolean
+  expanded: boolean
+  onToggle: () => void
   onStop?: (name: string) => void
   onConfigure?: (configurationId: string) => void
 }
@@ -137,9 +163,12 @@ interface WorkerTableRowProps {
 function WorkerTableRow({
   row,
   stopping,
+  expanded,
+  onToggle,
   onStop,
   onConfigure,
 }: WorkerTableRowProps) {
+  const expandable = row.status === 'connected'
   const configureButton = row.configurationId ? (
     <Button
       variant="icon"
@@ -168,55 +197,87 @@ function WorkerTableRow({
     </Button>
   )
 
+  const nameCell = (
+    <div className="flex items-center gap-2">
+      <StatusDot
+        tone={statusTone(row.status)}
+        pulse={row.status === 'connected'}
+      />
+      <span className="font-mono text-[13px] text-ink lowercase">
+        {row.name}
+      </span>
+    </div>
+  )
+
   return (
-    <tr className="border-b border-rule-2">
-      <td className="py-2.5 pr-4">
-        <div className="flex items-center gap-2">
-          <StatusDot
-            tone={statusTone(row.status)}
-            pulse={row.status === 'connected'}
-          />
-          <span className="font-mono text-[13px] text-ink lowercase">
-            {row.name}
-          </span>
-        </div>
-      </td>
-      <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint lowercase">
-        {formatCell(row.runtime)}
-      </td>
-      <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint tabular-nums">
-        {formatCell(row.ipAddress)}
-      </td>
-      <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint tabular-nums">
-        {formatCell(row.version)}
-      </td>
-      <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint tabular-nums">
-        {formatCell(row.pid)}
-      </td>
-      <td className="py-2.5 pr-4">
-        <Badge variant={MANAGEMENT_VARIANT[row.managementKind]}>
-          {MANAGEMENT_LABEL[row.managementKind]}
-        </Badge>
-      </td>
-      <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint lowercase">
-        {formatCell(row.tag)}
-      </td>
-      <td className="py-2.5 text-right">
-        <div className="flex items-center justify-end gap-2">
-          {configureButton}
-          {row.stopEnabled || !row.stopDisabledReason ? (
-            stopButton
+    <>
+      <tr className="border-b border-rule-2">
+        <td className="py-2.5 pr-4">
+          {expandable ? (
+            <button
+              type="button"
+              onClick={onToggle}
+              aria-expanded={expanded}
+              aria-label={`${expanded ? 'hide' : 'show'} ${row.name} functions and triggers`}
+              className="flex items-center gap-1.5 text-left hover:text-ink"
+            >
+              <ChevronRight
+                className={cn(
+                  'h-3 w-3 shrink-0 text-ink-faint transition-transform',
+                  expanded && 'rotate-90',
+                )}
+                aria-hidden
+              />
+              {nameCell}
+            </button>
           ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="inline-block">{stopButton}</span>
-              </TooltipTrigger>
-              <TooltipContent>{row.stopDisabledReason}</TooltipContent>
-            </Tooltip>
+            <div className="pl-[18px]">{nameCell}</div>
           )}
-        </div>
-      </td>
-    </tr>
+        </td>
+        <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint lowercase">
+          {formatCell(row.runtime)}
+        </td>
+        <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint tabular-nums">
+          {formatCell(row.ipAddress)}
+        </td>
+        <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint tabular-nums">
+          {formatCell(row.version)}
+        </td>
+        <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint tabular-nums">
+          {formatCell(row.pid)}
+        </td>
+        <td className="py-2.5 pr-4">
+          <Badge variant={MANAGEMENT_VARIANT[row.managementKind]}>
+            {MANAGEMENT_LABEL[row.managementKind]}
+          </Badge>
+        </td>
+        <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint lowercase">
+          {formatCell(row.tag)}
+        </td>
+        <td className="py-2.5 text-right">
+          <div className="flex items-center justify-end gap-2">
+            {configureButton}
+            {row.stopEnabled || !row.stopDisabledReason ? (
+              stopButton
+            ) : (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-block">{stopButton}</span>
+                </TooltipTrigger>
+                <TooltipContent>{row.stopDisabledReason}</TooltipContent>
+              </Tooltip>
+            )}
+          </div>
+        </td>
+      </tr>
+      {expanded ? (
+        <tr className="border-b border-rule-2 bg-paper-2/40">
+          <td colSpan={8} className="px-6 pb-2">
+            <WorkerSurface name={row.name} />
+          </td>
+        </tr>
+      ) : null}
+    </>
   )
 }
 

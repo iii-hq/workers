@@ -84,10 +84,10 @@ mod tests {
     }
 
     /// The pages are useless if their ids drift from the routes the nav and
-    /// deep links use (`#/ext/functions`, `#/ext/triggers`, `#/ext/fleet`).
+    /// deep links use (`#/ext/functions`, `#/ext/triggers`).
     #[test]
     fn embedded_catalog_page_registers_every_page() {
-        for id in ["functions", "triggers", "fleet"] {
+        for id in ["functions", "triggers"] {
             assert!(
                 CATALOG_PAGE_JS.contains(id),
                 "built catalog-page.js is missing the `{id}` page"
