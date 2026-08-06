@@ -155,6 +155,12 @@ async function recordedQuery(ctx: CaseContext, mock: MockState, sql: string): Pr
   await ctx.call('database::query', { db: ctx.driver, sql })
   const deadline = Date.now() + WRITE_TIMEOUT_MS
   while (mock.setAttempts.length === before) {
+    // Name the regression rather than waiting out the timeout: the pre-fix
+    // worker appended through state::update, which is both uncapped and
+    // exempt from the state worker's size guard.
+    if (mock.updates > 0) {
+      throw new Error('history wrote via state::update (uncapped append) instead of state::set')
+    }
     if (Date.now() > deadline) {
       throw new Error(`history write for ${JSON.stringify(sql)} never reached state::set`)
     }
