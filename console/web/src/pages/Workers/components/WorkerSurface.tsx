@@ -56,14 +56,14 @@ export function WorkerSurface({ name }: WorkerSurfaceProps) {
   const bindings = query.data.registered_triggers
 
   return (
-    <div className="grid gap-6 py-3 lg:grid-cols-3">
+    <div className="grid gap-x-8 gap-y-6 py-3 md:grid-cols-2 xl:grid-cols-3">
       <Section title="functions" count={functions.length}>
         {functions.length === 0 ? (
           <Empty>this worker registered no functions.</Empty>
         ) : (
           functions.map((fn) => (
             <div key={fn.function_id} className="space-y-0.5">
-              <div className="font-mono text-[12.5px] text-ink break-all">
+              <div className="font-mono text-[12.5px] text-ink break-words">
                 {fn.function_id}
               </div>
               {fn.description ? (
@@ -82,7 +82,7 @@ export function WorkerSurface({ name }: WorkerSurfaceProps) {
         ) : (
           triggerTypes.map((type) => (
             <div key={type.id} className="space-y-0.5">
-              <div className="font-mono text-[12.5px] text-ink break-all">
+              <div className="font-mono text-[12.5px] text-ink break-words">
                 {type.id}
               </div>
               {type.description ? (
@@ -100,15 +100,18 @@ export function WorkerSurface({ name }: WorkerSurfaceProps) {
           <Empty>nothing is bound to this worker's functions.</Empty>
         ) : (
           bindings.map((binding) => (
-            <div key={binding.id} className="space-y-0.5">
-              <div className="flex items-center gap-2">
+            // Stacked, not side by side: a trigger type and a function id are
+            // both long, and sharing a line squeezes both into mid-word breaks
+            // in a column this narrow.
+            <div key={binding.id} className="space-y-1">
+              <div>
                 <Badge>{binding.trigger_type}</Badge>
-                <span className="font-mono text-[12px] text-ink break-all">
-                  {binding.function_id}
-                </span>
+              </div>
+              <div className="font-mono text-[12px] text-ink break-words">
+                {binding.function_id}
               </div>
               {binding.config_summary && binding.config_summary !== '{}' ? (
-                <p className="font-mono text-[11.5px] text-ink-faint break-all">
+                <p className="font-mono text-[11.5px] text-ink-faint break-words">
                   {binding.config_summary}
                 </p>
               ) : null}

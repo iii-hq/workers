@@ -272,7 +272,9 @@ function WorkerTableRow({
       </tr>
       {expanded ? (
         <tr className="border-b border-rule-2 bg-paper-2/40">
-          <td colSpan={8} className="px-6 pb-2">
+          {/* The table wrapper is `whitespace-nowrap` so the columns never
+              wrap mid-row; the surface below is prose, so it opts back out. */}
+          <td colSpan={8} className="whitespace-normal px-6 pb-2">
             <WorkerSurface name={row.name} />
           </td>
         </tr>
