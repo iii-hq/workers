@@ -89,6 +89,11 @@ enum UiMode {
         dependents: Vec<String>,
     },
     Busy(String),
+    /// Stack picker (Ctrl+u with several stacks defined). `selected` indexes
+    /// into config.stacks; rows with no startable roots are skipped.
+    StackPicker {
+        selected: usize,
+    },
 }
 
 enum ModeKind {
@@ -98,6 +103,7 @@ enum ModeKind {
     Deps,
     Confirm,
     Busy,
+    StackPicker,
 }
 
 fn mode_kind(mode: &UiMode) -> ModeKind {
@@ -108,6 +114,7 @@ fn mode_kind(mode: &UiMode) -> ModeKind {
         UiMode::Deps { .. } => ModeKind::Deps,
         UiMode::ConfirmRestart { .. } => ModeKind::Confirm,
         UiMode::Busy(_) => ModeKind::Busy,
+        UiMode::StackPicker { .. } => ModeKind::StackPicker,
     }
 }
 
@@ -147,6 +154,8 @@ struct UiCtx<'a> {
     engine_url: &'a str,
     repo_branch: Option<&'a str>,
     current_stack: &'a str,
+    default_stack: &'a str,
+    stacks: &'a [(String, Vec<String>)],
     views: &'a [WorkerView],
     engine_error: Option<&'a str>,
     display_rows: &'a [DisplayRow],
@@ -179,8 +188,13 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
 
         // Poll the engine on a background task so a slow or unreachable engine
         // query can't freeze keyboard input.
-        let default_members = orchestrator.stack_members(&orchestrator.config.default_stack)?;
-        let (initial_views, initial_err) = orchestrator.dashboard_snapshot(&default_members).await;
+        let mut current_stack = orchestrator.config.default_stack.clone();
+        let initial_members = orchestrator.stack_members(&current_stack)?;
+        let (initial_views, initial_err) = orchestrator.dashboard_snapshot(&initial_members).await;
+        // The poller reads the current stack's member set each tick, so a
+        // switch regroups from the next poll onward (the switch itself also
+        // regroups the local snapshot immediately).
+        let shared_members = Arc::new(std::sync::RwLock::new(initial_members));
         let initial_branch = crate::git::current_branch(&orchestrator.config.repo_root);
         set_terminal_title(initial_branch.as_deref());
         let (state_tx, mut state_rx) = tokio::sync::watch::channel(DashboardState {
@@ -191,10 +205,11 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
         let poll_interval = Duration::from_millis(orchestrator.config.poll_interval_ms);
         let poller = {
             let orchestrator = orchestrator.clone();
-            let members = default_members.clone();
+            let shared_members = shared_members.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(poll_interval).await;
+                    let members = shared_members.read().expect("members lock").clone();
                     let (views, engine_error) = orchestrator.dashboard_snapshot(&members).await;
                     if state_tx
                         .send(DashboardState {
@@ -266,7 +281,9 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                 let ctx = UiCtx {
                     engine_url: &orchestrator.config.engine_url,
                     repo_branch: state.repo_branch.as_deref(),
-                    current_stack: &orchestrator.config.default_stack,
+                    current_stack: &current_stack,
+                    default_stack: &orchestrator.config.default_stack,
+                    stacks: &orchestrator.config.stacks,
                     views: &state.views,
                     engine_error: state.engine_error.as_deref(),
                     display_rows: &display_rows,
@@ -333,6 +350,43 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                     mode = UiMode::Dashboard;
                                 }
                             }
+                            ModeKind::StackPicker => {
+                                // Selection may regroup the list; keep the
+                                // highlight on the same worker by name.
+                                let keep_name = selected_worker(
+                                    &display_rows,
+                                    &state.views,
+                                    table_state.selected(),
+                                );
+                                if let Some(name) = handle_stack_picker_key(
+                                    key,
+                                    &mut mode,
+                                    &orchestrator.config.stacks,
+                                ) {
+                                    current_stack = name.clone();
+                                    match orchestrator.stack_members(&name) {
+                                        Ok(members) => {
+                                            crate::status::assign_view_groups(
+                                                &mut state.views,
+                                                &members,
+                                            );
+                                            *shared_members.write().expect("members lock") =
+                                                members;
+                                            let rows = build_display_rows(&state.views, &filter);
+                                            let target = keep_name
+                                                .as_deref()
+                                                .and_then(|n| row_of_worker(&rows, &state.views, n))
+                                                .or_else(|| first_worker_row(&rows));
+                                            table_state.select(target);
+                                        }
+                                        Err(err) => {
+                                            error_banner =
+                                                Some((format!("{err:#}"), Instant::now()));
+                                        }
+                                    }
+                                    spawn_start_stack(&actions, name);
+                                }
+                            }
                             ModeKind::Dashboard => {
                                 let two_col = terminal
                                     .size()
@@ -350,6 +404,7 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                     &mut log_scroll,
                                     &mut log_height,
                                     &mut table_width,
+                                    &current_stack,
                                     two_col,
                                 );
                             }
@@ -413,6 +468,7 @@ fn handle_dashboard_key(
     log_scroll: &mut usize,
     log_height: &mut u16,
     table_width: &mut u16,
+    current_stack: &str,
     two_col: bool,
 ) -> bool {
     let selected = table_state.selected();
@@ -573,9 +629,19 @@ fn handle_dashboard_key(
             *mode = UiMode::Busy("starting engine…".to_string());
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            let name = actions.orchestrator.config.default_stack.clone();
-            spawn_start_stack(actions, name.clone());
-            *mode = UiMode::Busy(format!("starting stack {name}…"));
+            let stacks = &actions.orchestrator.config.stacks;
+            if stacks.len() <= 1 {
+                // Only the built-in stack: no choice to make, start it —
+                // exactly today's Ctrl+u.
+                spawn_start_stack(actions, current_stack.to_string());
+                *mode = UiMode::Busy(format!("starting stack {current_stack}…"));
+            } else {
+                let selected = stacks
+                    .iter()
+                    .position(|(n, _)| n == current_stack)
+                    .unwrap_or(0);
+                *mode = UiMode::StackPicker { selected };
+            }
         }
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             // Via start_all_managed (like CLI `start --all`), which pre-filters
@@ -626,6 +692,61 @@ fn handle_confirm_key(key: KeyEvent, mode: &mut UiMode, actions: &Actions) {
         KeyCode::Char('n') | KeyCode::Esc => *mode = UiMode::Dashboard,
         _ => {}
     }
+}
+
+/// Move the picker selection, skipping stacks with no startable roots.
+/// Returns the index unchanged when there is no selectable stack in that
+/// direction.
+fn move_stack_selection(stacks: &[(String, Vec<String>)], current: usize, down: bool) -> usize {
+    let mut i = current;
+    loop {
+        if down {
+            if i + 1 >= stacks.len() {
+                return current;
+            }
+            i += 1;
+        } else {
+            if i == 0 {
+                return current;
+            }
+            i -= 1;
+        }
+        if !stacks[i].1.is_empty() {
+            return i;
+        }
+    }
+}
+
+/// Stack-picker keys. Enter on a startable stack switches modes to Busy and
+/// returns the chosen name — the main loop makes it current (regroup) and
+/// starts it. Esc/q cancels back to the dashboard.
+fn handle_stack_picker_key(
+    key: KeyEvent,
+    mode: &mut UiMode,
+    stacks: &[(String, Vec<String>)],
+) -> Option<String> {
+    let UiMode::StackPicker { selected } = mode else {
+        return None;
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            *selected = move_stack_selection(stacks, *selected, false);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            *selected = move_stack_selection(stacks, *selected, true);
+        }
+        KeyCode::Enter => {
+            let (name, roots) = &stacks[*selected];
+            if !roots.is_empty() {
+                let name = name.clone();
+                *mode = UiMode::Busy(format!("starting stack {name}…"));
+                return Some(name);
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('q') => *mode = UiMode::Dashboard,
+        _ => {}
+    }
+    None
 }
 
 fn not_startable_msg() -> UiMode {
@@ -745,6 +866,13 @@ fn first_worker_row(display_rows: &[DisplayRow]) -> Option<usize> {
     display_rows
         .iter()
         .position(|row| matches!(row.kind, DisplayRowKind::Worker(_)))
+}
+
+/// Row index of the named worker in the display rows, if visible.
+fn row_of_worker(display_rows: &[DisplayRow], views: &[WorkerView], name: &str) -> Option<usize> {
+    display_rows
+        .iter()
+        .position(|r| matches!(r.kind, DisplayRowKind::Worker(idx) if views[idx].name == name))
 }
 
 /// Snap the selection back onto a visible worker row when the current one
@@ -873,6 +1001,9 @@ fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) {
     }
     if matches!(ctx.mode, UiMode::Help) {
         draw_help_overlay(f, area, ctx.color_enabled);
+    }
+    if let UiMode::StackPicker { selected } = ctx.mode {
+        draw_stack_picker_overlay(f, body, *selected, ctx);
     }
 }
 
@@ -1218,6 +1349,36 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
     .block(Block::default().borders(Borders::ALL).title(title))
     .row_highlight_style(styled_if(color, selection_row_style()));
     f.render_stateful_widget(table, area, table_state);
+
+    // A header row is built as a single Cell sized to the Worker column
+    // (Constraint::Length(24)) — ratatui's Table has no colspan, so that
+    // clips any label past 24 chars. Long stack names are now
+    // user-controlled, so repaint each visible header row spanning the
+    // table's full inner width. Assumes every row (header + body) is its
+    // default 1-line height, true everywhere in this file.
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    let rows_h = inner.height.saturating_sub(1) as usize; // minus the column-header line
+    let offset = table_state.offset();
+    for (i, row) in ctx.display_rows.iter().enumerate().skip(offset) {
+        let y = i - offset;
+        if y >= rows_h {
+            break;
+        }
+        if let DisplayRowKind::Header(group, count) = row.kind {
+            let label = format!(
+                "── {} ({count}) ──",
+                crate::status::group_label(group, ctx.current_stack)
+            );
+            let line = Line::from(Span::styled(
+                label,
+                styled_if(color, group_header_style(group)),
+            ));
+            f.render_widget(
+                Paragraph::new(line),
+                Rect::new(inner.x, inner.y + 1 + y as u16, inner.width, 1),
+            );
+        }
+    }
 }
 
 /// Process-column text + style. Carries the management/crash detail that used
@@ -1430,6 +1591,68 @@ fn draw_confirm_overlay(f: &mut Frame, area: Rect, name: &str, dependents: &[Str
     );
 }
 
+/// Stack picker: one row per configured stack (`*` marks the default, the
+/// current stack is bold, empty ones are dimmed and unselectable). Enter
+/// switches the session's current stack AND starts it.
+fn draw_stack_picker_overlay(f: &mut Frame, area: Rect, selected: usize, ctx: &UiCtx) {
+    let color = ctx.color_enabled;
+    let mut lines = vec![Line::from("")];
+    for (i, (name, roots)) in ctx.stacks.iter().enumerate() {
+        let cursor = if i == selected { "▸" } else { " " };
+        let marker = if name == ctx.default_stack { "*" } else { " " };
+        let n = roots.len();
+        let s = if n == 1 { "" } else { "s" };
+        let suffix = if roots.is_empty() {
+            "  (nothing startable)".to_string()
+        } else {
+            format!("  {n} root{s}")
+        };
+        let style = if roots.is_empty() {
+            styled_if(color, hint_style())
+        } else if i == selected {
+            styled_if(color, Style::default().fg(Color::Cyan)).add_modifier(Modifier::BOLD)
+        } else if name == ctx.current_stack {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(
+            format!("  {cursor} {marker} {name:<18}{suffix}"),
+            style,
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!(
+            "   * default: {}   current: {}",
+            ctx.default_stack, ctx.current_stack
+        ),
+        styled_if(color, hint_style()),
+    )));
+    let pinned = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "   Enter ",
+                styled_if(color, Style::default().fg(Color::Cyan)),
+            ),
+            Span::raw("switch + start      "),
+            Span::styled("Esc ", styled_if(color, Style::default().fg(Color::Cyan))),
+            Span::raw("cancel"),
+        ]),
+        Line::from(""),
+    ];
+    draw_dialog(
+        f,
+        area,
+        " start stack ".to_string(),
+        lines,
+        pinned,
+        58,
+        color,
+    );
+}
+
 fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
     let keys = [
         ("↑ ↓  k j", "select worker"),
@@ -1444,7 +1667,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
         ("+ -", "resize the log pane"),
         ("/", "filter workers by name"),
         ("e", "start the iii engine"),
-        ("Ctrl+u", "start the default stack"),
+        ("Ctrl+u", "start stack (picker when several)"),
         ("Ctrl+a", "start all managed workers"),
         ("?", "toggle this help"),
         ("q", "quit (workers keep running)"),
@@ -1539,5 +1762,107 @@ fn status_icon(status: &str, spinner_frame: usize) -> &'static str {
         "disconnected" => "◐",
         "crashed" => "✗",
         _ => "○",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stacks() -> Vec<(String, Vec<String>)> {
+        vec![
+            ("harness".to_string(), vec!["harness".to_string()]),
+            ("ghost".to_string(), Vec::new()),
+            ("console".to_string(), vec!["console".to_string()]),
+        ]
+    }
+
+    #[test]
+    fn stack_picker_selection_skips_empty_stacks_and_clamps() {
+        let stacks = stacks();
+        assert_eq!(move_stack_selection(&stacks, 0, true), 2); // skips ghost
+        assert_eq!(move_stack_selection(&stacks, 2, false), 0); // skips ghost
+        assert_eq!(move_stack_selection(&stacks, 2, true), 2); // clamp end
+        assert_eq!(move_stack_selection(&stacks, 0, false), 0); // clamp start
+    }
+
+    #[test]
+    fn stack_picker_enter_switches_and_esc_cancels() {
+        let stacks = stacks();
+
+        let mut mode = UiMode::StackPicker { selected: 2 };
+        let chosen = handle_stack_picker_key(KeyEvent::from(KeyCode::Enter), &mut mode, &stacks);
+        assert_eq!(chosen.as_deref(), Some("console"));
+        assert!(matches!(mode, UiMode::Busy(_)));
+
+        // Enter on an unstartable (empty) stack does nothing.
+        let mut mode = UiMode::StackPicker { selected: 1 };
+        let chosen = handle_stack_picker_key(KeyEvent::from(KeyCode::Enter), &mut mode, &stacks);
+        assert!(chosen.is_none());
+        assert!(matches!(mode, UiMode::StackPicker { selected: 1 }));
+
+        let mut mode = UiMode::StackPicker { selected: 0 };
+        let chosen = handle_stack_picker_key(KeyEvent::from(KeyCode::Esc), &mut mode, &stacks);
+        assert!(chosen.is_none());
+        assert!(matches!(mode, UiMode::Dashboard));
+    }
+
+    /// Regression test for a prior review finding: a group-header row used to
+    /// be a single Cell sized to the Worker column (`Constraint::Length(24)`).
+    /// Ratatui's `Table` has no colspan, so that clipped any label past 24
+    /// chars — a real risk now that stack names are user-chosen. `draw_table`
+    /// repaints visible header rows spanning the table's full width; this
+    /// pins that the full label survives, not a 24-char prefix.
+    #[test]
+    fn group_header_row_spans_full_width_not_clipped() {
+        let stack_name = "a-very-long-worktree-stack-name";
+        let count = 999;
+        let label = format!(
+            "── {} ({count}) ──",
+            crate::status::group_label(WorkerGroup::Stack, stack_name)
+        );
+        assert!(
+            label.chars().count() > 24,
+            "test label must exceed the Worker column width to exercise the bug"
+        );
+
+        let display_rows = vec![DisplayRow {
+            kind: DisplayRowKind::Header(WorkerGroup::Stack, count),
+        }];
+        let ctx = UiCtx {
+            engine_url: "",
+            repo_branch: None,
+            current_stack: stack_name,
+            default_stack: stack_name,
+            stacks: &[],
+            views: &[],
+            engine_error: None,
+            display_rows: &display_rows,
+            mode: &UiMode::Dashboard,
+            filter: "",
+            selected_name: None,
+            log_lines: &[],
+            log_scroll: 0,
+            follow: true,
+            log_height: LOG_HEIGHT_DEFAULT,
+            table_width: TABLE_PANE_WIDTH,
+            spinner_frame: 0,
+            color_enabled: false,
+            error: None,
+        };
+
+        // TestBackend renders to an in-memory buffer — no real terminal
+        // needed. 60x4 gives exactly: top border, column header, one data
+        // row (our stack header), bottom border.
+        let backend = ratatui::backend::TestBackend::new(60, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut table_state = TableState::default();
+        terminal
+            .draw(|f| draw_table(f, f.area(), &mut table_state, &ctx))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let row: String = (1..59).map(|x| buf[(x, 2)].symbol()).collect();
+        assert_eq!(row.trim_end(), label, "header row was clipped: {row:?}");
     }
 }
