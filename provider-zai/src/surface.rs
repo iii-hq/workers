@@ -25,6 +25,10 @@ pub const REFRESH_MODELS_ID: &str = "provider::zai::refresh_models";
 pub const REFRESH_MODELS_DESC: &str = "Reconcile the curated Z.AI catalog slice through the \
      router (Z.AI has no models-listing endpoint); returns the model count written.";
 
+pub const COUNT_TOKENS_ID: &str = "provider::zai::count_tokens";
+pub const COUNT_TOKENS_DESC: &str =
+    "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with GLM's own published vocabulary; never runs the model and costs nothing.";
+
 pub const ON_ROUTER_READY_ID: &str = "provider::zai::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
     "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
@@ -65,5 +69,9 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<ProviderAbortRequest, ProviderAbortResponse>(ABORT_ID, ABORT_DESC),
         spec::<RefreshModelsRequest, RefreshModelsResponse>(REFRESH_MODELS_ID, REFRESH_MODELS_DESC),
         spec::<RouterReadyEvent, ProviderReadyAck>(ON_ROUTER_READY_ID, ON_ROUTER_READY_DESC),
+        spec::<crate::count_tokens::CountTokensRequest, crate::count_tokens::CountTokensResponse>(
+            COUNT_TOKENS_ID,
+            COUNT_TOKENS_DESC,
+        ),
     ]
 }

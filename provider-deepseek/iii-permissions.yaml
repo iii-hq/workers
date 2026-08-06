@@ -8,3 +8,4 @@ rules:
   - '!provider::deepseek::stream'
   - '!provider::deepseek::refresh_models'
   - '!provider::deepseek::on_router_ready'
+  - '!provider::deepseek::count_tokens'

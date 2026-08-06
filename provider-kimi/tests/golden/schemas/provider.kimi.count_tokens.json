@@ -1,0 +1,529 @@
+{
+  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages} through Moonshot's own estimator endpoint; never runs the model and costs nothing.",
+  "function_id": "provider::kimi::count_tokens",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AgentFunction": {
+        "description": "Function invocation schema — what a provider sees as a `tools` array entry (README § Function invocation schema; adapter boundary). These describe iii functions exposed to the model, not provider-native tools.",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "execution_mode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "parameters": true
+        },
+        "required": [
+          "description",
+          "name",
+          "parameters"
+        ],
+        "type": "object"
+      },
+      "AgentMessage": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/AssistantMessage"
+          },
+          {
+            "$ref": "#/definitions/FunctionResultMessage"
+          },
+          {
+            "$ref": "#/definitions/CustomMessage"
+          },
+          {
+            "$ref": "#/definitions/UserMessage"
+          }
+        ],
+        "description": "The canonical transcript message union. Untagged: the single-variant role tags disambiguate deserialization."
+      },
+      "AssistantMessage": {
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/definitions/ContentBlock"
+            },
+            "type": "array"
+          },
+          "error_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ErrorKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "native_stop_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/definitions/AssistantRoleTag"
+          },
+          "stop_reason": {
+            "$ref": "#/definitions/StopReason"
+          },
+          "timestamp": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Usage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "content",
+          "model",
+          "provider",
+          "role",
+          "stop_reason",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "AssistantRoleTag": {
+        "enum": [
+          "assistant"
+        ],
+        "type": "string"
+      },
+      "ContentBlock": {
+        "description": "Content blocks — the atomic units of message content (README § Content blocks).",
+        "oneOf": [
+          {
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "text"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "mime": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "image"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "data",
+              "mime",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "signature": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "thinking"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Opaque redacted thinking payload — replayed verbatim on the Anthropic wire.",
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "redacted_thinking"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "data",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "arguments": true,
+              "function_id": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "function_call"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "arguments",
+              "function_id",
+              "id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "content": {
+                "items": {
+                  "$ref": "#/definitions/ContentBlock"
+                },
+                "type": "array"
+              },
+              "function_call_id": {
+                "type": "string"
+              },
+              "is_error": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "function_result"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "content",
+              "function_call_id",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "CustomMessage": {
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/definitions/ContentBlock"
+            },
+            "type": "array"
+          },
+          "custom_type": {
+            "type": "string"
+          },
+          "details": true,
+          "display": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "$ref": "#/definitions/CustomRoleTag"
+          },
+          "timestamp": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "content",
+          "custom_type",
+          "role",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "CustomRoleTag": {
+        "enum": [
+          "custom"
+        ],
+        "type": "string"
+      },
+      "ErrorKind": {
+        "enum": [
+          "auth_expired",
+          "rate_limited",
+          "context_overflow",
+          "transient",
+          "permanent"
+        ],
+        "type": "string"
+      },
+      "FunctionResultMessage": {
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/definitions/ContentBlock"
+            },
+            "type": "array"
+          },
+          "details": true,
+          "function_call_id": {
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          },
+          "is_error": {
+            "type": "boolean"
+          },
+          "role": {
+            "$ref": "#/definitions/FunctionResultRoleTag"
+          },
+          "timestamp": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "content",
+          "details",
+          "function_call_id",
+          "function_id",
+          "is_error",
+          "role",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "FunctionResultRoleTag": {
+        "enum": [
+          "function_result"
+        ],
+        "type": "string"
+      },
+      "StopReason": {
+        "enum": [
+          "end",
+          "length",
+          "function_call",
+          "aborted",
+          "error"
+        ],
+        "type": "string"
+      },
+      "Usage": {
+        "properties": {
+          "cache_read": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "input": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reasoning": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "UserMessage": {
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/definitions/ContentBlock"
+            },
+            "type": "array"
+          },
+          "role": {
+            "$ref": "#/definitions/UserRoleTag"
+          },
+          "timestamp": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "content",
+          "role",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "UserRoleTag": {
+        "description": "Single-variant role tags: exact-match on deserialize, correct wire string on serialize, and they let `AgentMessage` be an untagged union.",
+        "enum": [
+          "user"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "messages": {
+        "description": "Wire agent messages, the same shape `provider::kimi::stream` accepts. Must be non-empty.",
+        "items": {
+          "$ref": "#/definitions/AgentMessage"
+        },
+        "type": "array"
+      },
+      "model": {
+        "description": "Model id the prompt targets (required by the upstream estimator).",
+        "type": "string"
+      },
+      "system_prompt": {
+        "default": null,
+        "description": "System prompt counted as the leading wire message when present.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "tools": {
+        "default": null,
+        "description": "Function invocation schemas; mapped to the wire `tools` array.",
+        "items": {
+          "$ref": "#/definitions/AgentFunction"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "messages",
+      "model"
+    ],
+    "title": "CountTokensRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "estimator": {
+        "description": "Always `metered`: the count came from the upstream itself.",
+        "type": "string"
+      },
+      "model": {
+        "type": "string"
+      },
+      "tokens": {
+        "description": "Prompt tokens the upstream estimator counted for the assembled request.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "estimator",
+      "model",
+      "tokens"
+    ],
+    "title": "CountTokensResponse",
+    "type": "object"
+  }
+}

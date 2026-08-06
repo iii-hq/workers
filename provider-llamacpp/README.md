@@ -16,6 +16,12 @@ own default bind address and port. Point `api_url` at any running
 
 `provider::llamacpp::embed` serves batch text embeddings from the same configured server when llama-server runs with `--embeddings` and an embedding-capable model (e.g. a nomic-embed GGUF). One vector per input, order preserved; behind `router::embed`, this gives the memory worker fully local semantic recall with no cloud call.
 
+`provider::llamacpp::count_tokens` counts a prompt through the server's
+Anthropic-compatible `/v1/messages/count_tokens` route behind
+`router::count_tokens`. The count uses the tokenizer baked into whichever
+GGUF is loaded, which is the only way to be right about a model the operator
+chose. Counting is local and never runs the model.
+
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with

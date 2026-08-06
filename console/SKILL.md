@@ -364,6 +364,25 @@ interface ConfigFormProps {
 The form is render-level only: dirty tracking, validation, save/reset stay
 host-owned. You draw the fields and call `onChange`.
 
+### `host.chat.registerSessionChip({ id, render })`
+
+A small per-session status chip in the chat header's right cluster,
+rendered for every open session. Your component receives:
+
+```ts
+interface SessionChipProps {
+  sessionId: string
+  modelId?: string        // resolved model id, when known
+  contextWindow?: number  // model context window (tokens), from the catalog
+}
+```
+
+Duplicate ids: last registration wins. The id `context` is special: while a
+`context` chip is registered, the console hides its built-in estimate-based
+context meter — a worker with real per-turn numbers owns the surface. Chips
+fetch their own data over `host.iii`; the host passes identity only.
+Feature-detect on older consoles: `host.chat?.registerSessionChip`.
+
 ### The rest of `host`
 
 | Surface | What it is |

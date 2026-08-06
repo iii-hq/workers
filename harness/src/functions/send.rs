@@ -748,6 +748,7 @@ pub(crate) async fn seed_new(
         parent: lineage.parent.clone(),
         display_parent_session_id: lineage.display_parent_session_id.clone(),
         functions_generation,
+        context_snapshot: None,
         result: None,
         result_error: None,
         validation_retries: 0,

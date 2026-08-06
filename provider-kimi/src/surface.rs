@@ -26,6 +26,10 @@ pub const REFRESH_MODELS_ID: &str = "provider::kimi::refresh_models";
 pub const REFRESH_MODELS_DESC: &str = "Refresh the Kimi catalog slice from GET /v1/models and \
      reconcile it through the router; returns the model count written.";
 
+pub const COUNT_TOKENS_ID: &str = "provider::kimi::count_tokens";
+pub const COUNT_TOKENS_DESC: &str =
+    "Count prompt tokens for {model, system_prompt?, tools?, messages} through Moonshot's own estimator endpoint; never runs the model and costs nothing.";
+
 pub const ON_ROUTER_READY_ID: &str = "provider::kimi::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
     "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
@@ -66,5 +70,9 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<ProviderAbortRequest, ProviderAbortResponse>(ABORT_ID, ABORT_DESC),
         spec::<RefreshModelsRequest, RefreshModelsResponse>(REFRESH_MODELS_ID, REFRESH_MODELS_DESC),
         spec::<RouterReadyEvent, ProviderReadyAck>(ON_ROUTER_READY_ID, ON_ROUTER_READY_DESC),
+        spec::<crate::count_tokens::CountTokensRequest, crate::count_tokens::CountTokensResponse>(
+            COUNT_TOKENS_ID,
+            COUNT_TOKENS_DESC,
+        ),
     ]
 }

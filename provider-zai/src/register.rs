@@ -169,6 +169,15 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             .metadata(json!({ "internal": true })),
     );
 
+    iii.register_function(
+        surface::COUNT_TOKENS_ID,
+        RegisterFunction::new_async(|req: crate::count_tokens::CountTokensRequest| async move {
+            crate::count_tokens::handle(req).await
+        })
+        .description(surface::COUNT_TOKENS_DESC)
+        .metadata(json!({ "internal": true })),
+    );
+
     // Re-declare when the router restarts: bind to the router::ready trigger type.
     {
         let iii_ready = iii.clone();

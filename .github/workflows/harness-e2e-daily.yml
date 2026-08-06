@@ -1,4 +1,5 @@
 name: Harness E2E Daily
+run-name: Test · harness_source · ${{ inputs.operation_id || github.event_name }}
 
 on:
   schedule:
@@ -22,13 +23,21 @@ on:
         description: Optional judge provider id
         required: false
         type: string
+      operation_id:
+        description: Release Control operation UUID
+        required: false
+        type: string
+      step_id:
+        description: Release Control operation step UUID
+        required: false
+        type: string
 
 permissions:
   actions: read
   contents: read
 
 concurrency:
-  group: harness-e2e-daily-benchmark
+  group: harness-e2e-daily-${{ inputs.operation_id || 'benchmark' }}
   cancel-in-progress: false
 
 jobs:

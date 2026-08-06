@@ -43,6 +43,12 @@ pub const EMBED_DESC: &str =
      or discovers the first embed-capable one from the live registry; one vector per input, \
      order preserved.";
 
+pub const COUNT_TOKENS_ID: &str = "router::count_tokens";
+pub const COUNT_TOKENS_DESC: &str =
+    "Count prompt tokens for {model, provider?, system_prompt?, tools?, messages} through the \
+     resolved provider's provider::<id>::count_tokens surface; never runs the model and costs \
+     nothing.";
+
 pub const MODELS_LIST_ID: &str = "router::models::list";
 pub const MODELS_LIST_DESC: &str =
     "List catalog models, optionally filtered by provider and/or a capability flag.";
@@ -131,6 +137,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<crate::embed::RouterEmbedRequest, crate::embed::RouterEmbedResponse>(
             EMBED_ID, EMBED_DESC,
         ),
+        spec::<
+            crate::count_tokens::RouterCountTokensRequest,
+            crate::count_tokens::RouterCountTokensResponse,
+        >(COUNT_TOKENS_ID, COUNT_TOKENS_DESC),
         spec::<ModelsListRequest, ModelsListResponse>(MODELS_LIST_ID, MODELS_LIST_DESC),
         spec::<ModelGetRequest, Option<ModelGetResponse>>(MODELS_GET_ID, MODELS_GET_DESC),
         spec::<ModelBudgetRequest, Option<ModelBudgetResponse>>(

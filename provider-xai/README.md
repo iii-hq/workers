@@ -8,6 +8,12 @@ Implements the provider protocol from
 chat/reasoning families ∪ curated capability snapshot →
 `router::models::reconcile`).
 
+`provider::xai::count_tokens` counts a prompt behind `router::count_tokens`:
+xAI owns the vocabulary (`/tokenize-text`), this worker owns the chat
+framing. The whole request is tokenized in one call rather than one per
+message, which costs a separator token per row. xAI documents that this
+tokenizer can disagree with what billing records.
+
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with
