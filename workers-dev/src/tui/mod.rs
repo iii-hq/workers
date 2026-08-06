@@ -363,9 +363,20 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                     &mut mode,
                                     &orchestrator.config.stacks,
                                 ) {
-                                    current_stack = name.clone();
+                                    // Only commit to the new stack — label,
+                                    // grouping, and the start — once its
+                                    // members actually resolve; an error
+                                    // leaves current_stack/shared_members/the
+                                    // spawned action all untouched.
                                     match orchestrator.stack_members(&name) {
                                         Ok(members) => {
+                                            current_stack = name.clone();
+                                            // Mutates (re-sorts) state.views;
+                                            // the outer `display_rows` from
+                                            // the top of this loop iteration
+                                            // indexes the pre-sort order and
+                                            // must not be read again below —
+                                            // nothing does today.
                                             crate::status::assign_view_groups(
                                                 &mut state.views,
                                                 &members,
@@ -378,13 +389,13 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                                 .and_then(|n| row_of_worker(&rows, &state.views, n))
                                                 .or_else(|| first_worker_row(&rows));
                                             table_state.select(target);
+                                            spawn_start_stack(&actions, name);
                                         }
                                         Err(err) => {
                                             error_banner =
                                                 Some((format!("{err:#}"), Instant::now()));
                                         }
                                     }
-                                    spawn_start_stack(&actions, name);
                                 }
                             }
                             ModeKind::Dashboard => {
@@ -433,6 +444,16 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                     set_terminal_title(fresh.repo_branch.as_deref());
                 }
                 state = fresh;
+                // The poller reads `shared_members` before its (possibly
+                // slow) `dashboard_snapshot` await, so a stack switch mid-await
+                // lands here grouped by the stale set. Re-group against the
+                // authoritative current set so a switch never flashes the old
+                // stack's grouping/header for a frame. Read-and-drop within
+                // this statement only — never held across an `.await`.
+                crate::status::assign_view_groups(
+                    &mut state.views,
+                    &shared_members.read().expect("members lock"),
+                );
                 needs_redraw = true;
             }
         }
@@ -1261,11 +1282,13 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
         .display_rows
         .iter()
         .map(|row| match row.kind {
-            DisplayRowKind::Header(group, count) => Row::new(vec![Cell::from(format!(
-                "── {} ({count}) ──",
-                crate::status::group_label(group, ctx.current_stack)
-            ))
-            .style(styled_if(color, group_header_style(group)))]),
+            // No cells: a header row's real content is painted full-width,
+            // below, after the table renders (Table has no colspan — a Cell
+            // here would be clipped to the Worker column's width). `widths`
+            // is non-empty so `column_count` (cell-count driven) never
+            // affects layout; the `.header(...)` row alone still gives the
+            // table 6 columns.
+            DisplayRowKind::Header(..) => Row::new(Vec::<Cell>::new()),
             DisplayRowKind::Worker(idx) => {
                 let v = &ctx.views[idx];
                 let icon = status_icon(&v.display_status, ctx.spinner_frame);
@@ -1350,12 +1373,10 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
     .row_highlight_style(styled_if(color, selection_row_style()));
     f.render_stateful_widget(table, area, table_state);
 
-    // A header row is built as a single Cell sized to the Worker column
-    // (Constraint::Length(24)) — ratatui's Table has no colspan, so that
-    // clips any label past 24 chars. Long stack names are now
-    // user-controlled, so repaint each visible header row spanning the
-    // table's full inner width. Assumes every row (header + body) is its
-    // default 1-line height, true everywhere in this file.
+    // Header rows render no cells of their own (see the match arm above) —
+    // paint their content here, spanning the table's full inner width
+    // instead of being confined to one column. Assumes every row (header +
+    // body) is its default 1-line height, true everywhere in this file.
     let inner = Block::default().borders(Borders::ALL).inner(area);
     let rows_h = inner.height.saturating_sub(1) as usize; // minus the column-header line
     let offset = table_state.offset();
@@ -1812,7 +1833,8 @@ mod tests {
     /// Ratatui's `Table` has no colspan, so that clipped any label past 24
     /// chars — a real risk now that stack names are user-chosen. `draw_table`
     /// repaints visible header rows spanning the table's full width; this
-    /// pins that the full label survives, not a 24-char prefix.
+    /// pins that the full label survives (not a 24-char prefix) AND keeps
+    /// `group_header_style`'s color.
     #[test]
     fn group_header_row_spans_full_width_not_clipped() {
         let stack_name = "a-very-long-worktree-stack-name";
@@ -1847,7 +1869,7 @@ mod tests {
             log_height: LOG_HEIGHT_DEFAULT,
             table_width: TABLE_PANE_WIDTH,
             spinner_frame: 0,
-            color_enabled: false,
+            color_enabled: true,
             error: None,
         };
 
@@ -1864,5 +1886,110 @@ mod tests {
         let buf = terminal.backend().buffer();
         let row: String = (1..59).map(|x| buf[(x, 2)].symbol()).collect();
         assert_eq!(row.trim_end(), label, "header row was clipped: {row:?}");
+        // group_header_style(Stack) = Style::default().fg(Cyan); with color
+        // enabled the painted label must carry it, not just the raw text.
+        assert_eq!(
+            buf[(1, 2)].fg,
+            Color::Cyan,
+            "header row lost its group_header_style color"
+        );
+    }
+
+    /// Companion to the above: the header-paint loop positions each visible
+    /// header by its own offset-relative row, not just "the top of the
+    /// window" — this pins that after the table has scrolled (offset > 0), a
+    /// header that isn't display row 0 still lands on the correct screen
+    /// line. Also `TestBackend`, still no real terminal.
+    #[test]
+    fn group_header_row_paints_correctly_after_scrolling() {
+        fn view(name: &str) -> WorkerView {
+            WorkerView {
+                name: name.to_string(),
+                group: WorkerGroup::Other,
+                spawnable: true,
+                display_status: "stopped".to_string(),
+                process_status: "stopped".to_string(),
+                engine_status: "—".to_string(),
+                local_pid: None,
+                uptime: "—".to_string(),
+                exit_code: None,
+                ui_watch: None,
+            }
+        }
+
+        let stack_name = "s";
+        let views = vec![view("a1"), view("a2"), view("b1"), view("b2")];
+        // Two groups, two headers: [H(Stack,2), W(a1), W(a2), H(Other,2), W(b1), W(b2)].
+        let display_rows = vec![
+            DisplayRow {
+                kind: DisplayRowKind::Header(WorkerGroup::Stack, 2),
+            },
+            DisplayRow {
+                kind: DisplayRowKind::Worker(0),
+            },
+            DisplayRow {
+                kind: DisplayRowKind::Worker(1),
+            },
+            DisplayRow {
+                kind: DisplayRowKind::Header(WorkerGroup::Other, 2),
+            },
+            DisplayRow {
+                kind: DisplayRowKind::Worker(2),
+            },
+            DisplayRow {
+                kind: DisplayRowKind::Worker(3),
+            },
+        ];
+        let label_other = format!(
+            "── {} (2) ──",
+            crate::status::group_label(WorkerGroup::Other, stack_name)
+        );
+        let ctx = UiCtx {
+            engine_url: "",
+            repo_branch: None,
+            current_stack: stack_name,
+            default_stack: stack_name,
+            stacks: &[],
+            views: &views,
+            engine_error: None,
+            display_rows: &display_rows,
+            mode: &UiMode::Dashboard,
+            filter: "",
+            selected_name: None,
+            log_lines: &[],
+            log_scroll: 0,
+            follow: true,
+            log_height: LOG_HEIGHT_DEFAULT,
+            table_width: TABLE_PANE_WIDTH,
+            spinner_frame: 0,
+            color_enabled: false,
+            error: None,
+        };
+
+        // height=6: border + column header + 3 data rows + border. Selecting
+        // the last row (display index 4, "b1") forces a scroll so display
+        // rows 2..=4 are visible — landing the second header (display index
+        // 3) on screen row 3, not row 2 (the "first data row" position the
+        // un-scrolled test above pins).
+        let backend = ratatui::backend::TestBackend::new(40, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut table_state = TableState::default();
+        table_state.select(Some(4));
+        terminal
+            .draw(|f| draw_table(f, f.area(), &mut table_state, &ctx))
+            .unwrap();
+        assert_eq!(
+            table_state.offset(),
+            2,
+            "test setup must actually scroll (offset > 0) to be meaningful"
+        );
+
+        let buf = terminal.backend().buffer();
+        let row: String = (1..39).map(|x| buf[(x, 3)].symbol()).collect();
+        assert_eq!(
+            row.trim_end(),
+            label_other,
+            "scrolled header row painted at the wrong screen line: {row:?}"
+        );
     }
 }
