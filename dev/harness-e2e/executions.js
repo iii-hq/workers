@@ -3,6 +3,61 @@ window.HARNESS_EXECUTIONS = {
     {
       "actor": "ytallo",
       "attempt": 1,
+      "availability": "unavailable",
+      "completed_at": "2026-08-06T07:17:38Z",
+      "conclusion": "failure",
+      "detail_path": null,
+      "event": "schedule",
+      "execution": {
+        "actor": "ytallo",
+        "attempt": 1,
+        "completed_at": "2026-08-06T07:17:38Z",
+        "conclusion": "failure",
+        "event": "schedule",
+        "head_branch": "main",
+        "head_sha": "5b0ffa97a1416b40a189fe43771732597711ddea",
+        "id": "31078732959-1",
+        "repository": "iii-hq/workers",
+        "run_id": "31078732959",
+        "started_at": "2026-08-06T06:51:36Z",
+        "workflow_name": "Harness E2E Daily",
+        "workflow_url": "https://github.com/iii-hq/workers/actions/runs/31078732959"
+      },
+      "generated_at": "",
+      "id": "31078732959-1",
+      "lane": "daily",
+      "release": {},
+      "requested_runs": null,
+      "run_id": "31078732959",
+      "source": {
+        "ref": "main",
+        "repository": "iii-hq/workers",
+        "sha": "5b0ffa97a1416b40a189fe43771732597711ddea"
+      },
+      "started_at": "2026-08-06T06:51:36Z",
+      "status": "incomplete",
+      "subjects": [],
+      "totals": {
+        "average_score": null,
+        "expected_reports": 0,
+        "hard_gate_failures": 0,
+        "missing_reports": 0,
+        "passed_scenarios": 0,
+        "received_reports": 0,
+        "report_coverage": 0,
+        "retries": 0,
+        "scenario_pass_rate": 0,
+        "technical_failures": 0,
+        "total_cost_usd": null,
+        "wall_time_seconds": null
+      },
+      "workflow_duration_seconds": 1562.0,
+      "workflow_name": "Harness E2E Daily",
+      "workflow_url": "https://github.com/iii-hq/workers/actions/runs/31078732959"
+    },
+    {
+      "actor": "ytallo",
+      "attempt": 1,
       "availability": "full",
       "completed_at": "2026-08-05T08:03:58Z",
       "conclusion": "failure",
@@ -834,7 +889,7 @@ window.HARNESS_EXECUTIONS = {
       "workflow_url": "https://github.com/iii-hq/workers/actions/runs/30982733353"
     }
   ],
-  "last_update": "2026-08-05T08:03:58Z",
+  "last_update": "2026-08-06T07:17:38Z",
   "mode": "published",
   "repo_url": "https://github.com/iii-hq/workers",
   "retention": {
