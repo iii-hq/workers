@@ -127,6 +127,7 @@ workers:          # optional override; default = all discovered
   - session-manager
   - llm-router
   - harness
+  - console
 stacks:           # optional named stacks; values are stack ROOTS —
   console:        # the group shown/started is roots + transitive deps.
     - console
