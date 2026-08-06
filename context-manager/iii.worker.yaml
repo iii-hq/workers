@@ -3,6 +3,7 @@ name: context-manager
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: context-manager
 tags: [context, tokens, compaction, pruning, llm]
 description: Turns a raw conversation history plus a target model into a model-ready context — token counting, function-result pruning, and history compaction.

@@ -3,6 +3,7 @@ name: provider-xai
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: provider-xai
 tags: [llm, xai, grok, chat-completions, provider]
 description: xAI Chat Completions provider worker; implements provider::xai::stream and provider::xai::refresh_models behind llm-router.

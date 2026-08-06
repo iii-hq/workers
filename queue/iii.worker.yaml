@@ -3,6 +3,7 @@ name: queue
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: queue
 tags: [queue, async, jobs, retry, rabbitmq, redis]
 description: Durable function queues - registers the `durable:subscriber` trigger type and the queue/DLQ service functions.

@@ -3,6 +3,7 @@ name: memory-consolidate
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: memory-consolidate
 tags: [memory, deduplication, cleanup, schedule, maintenance]
 description: Scheduled hygiene for the memory worker — deterministic dedup of near-duplicate memories, applied supersede-only through the public memory functions, pinned untouchable, with catch-up-on-boot scheduling. Install, stop, or remove it without touching stored memory.
