@@ -56,7 +56,7 @@ export async function makeIii() {
   // global is exactly that probing, and an opaque `{}` here cost a live
   // session six blind runs (console-a2795be8).
   const HINT =
-    "[iii: lazy iii-sdk client — connects on first use. e.g. await iii.trigger({ function_id: 'worker::fn', payload: {} }); registerFunction(id, handler, opts?); docs: https://iii.dev/docs/reference/sdk-node]";
+    "[iii: lazy iii-sdk client — connects on first use. e.g. await iii.trigger({ function_id: 'worker::fn', payload: {} }); registerFunction(id, handler, opts?); docs <https://iii.dev/docs/reference/sdk-node>]";
 
   const lookup = (prop) => {
     const c = resolve();
