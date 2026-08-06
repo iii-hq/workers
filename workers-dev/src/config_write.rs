@@ -6,8 +6,8 @@
 //! Anything the scanner cannot own confidently (inline `stacks: {…}`, a
 //! duplicated key) is refused rather than rewritten.
 //!
-// ponytail: nothing outside #[cfg(test)] calls this module yet — a later
-// task wires it into commands/tui. Drop this allow once that lands.
+// ponytail: nothing outside #[cfg(test)] calls this module yet. Drop this
+// allow once this module has any real caller.
 #![allow(dead_code)]
 
 use anyhow::{bail, Result};
@@ -124,25 +124,28 @@ fn top_level_key(lines: &[&str], key: &str) -> Result<Option<usize>> {
 }
 
 /// Refuse a `stacks: {…}` written inline; only block style is ours to edit.
+/// A trailing comment after the colon (`stacks: # my dev stacks`) is valid
+/// block style, not inline content.
 fn ensure_block_style(lines: &[&str], head: usize) -> Result<()> {
     let after = strip_cr(lines[head])
         .split_once(':')
         .map(|(_, rest)| rest.trim())
         .unwrap_or("");
-    if !after.is_empty() {
+    if !after.is_empty() && !after.starts_with('#') {
         bail!("`stacks:` is written inline in this file — edit it by hand");
     }
     Ok(())
 }
 
-/// Half-open line range of the indented block under `head`. Blank lines inside
-/// the block don't end it; trailing blanks are left outside.
+/// Half-open line range of the indented block under `head`. Blank lines and
+/// comment lines (YAML allows comments at any column) don't end it; trailing
+/// blanks are left outside.
 fn block_range(lines: &[&str], head: usize) -> (usize, usize) {
     let start = head + 1;
     let mut end = start;
     for (i, line) in lines.iter().enumerate().skip(start) {
         let line = strip_cr(line);
-        if line.trim().is_empty() {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
             continue;
         }
         if line.starts_with(' ') || line.starts_with('\t') {
@@ -187,7 +190,7 @@ fn entry_range(lines: &[&str], block: (usize, usize), name: &str) -> Option<(usi
             None if key == name => start = Some((indent, i)),
             None => {}
             Some((open_indent, open)) if indent.len() <= open_indent.len() => {
-                return Some((*open, leading_comment_run(lines, indent.len(), i, open + 1)));
+                return Some((*open, leading_gap_run(lines, indent.len(), i, open + 1)));
             }
             Some(_) => {}
         }
@@ -195,14 +198,19 @@ fn entry_range(lines: &[&str], block: (usize, usize), name: &str) -> Option<(usi
     start.map(|(_, open)| (open, block.1))
 }
 
-/// Back `at` up over a run of comment lines indented exactly `indent_len`,
-/// stopping no earlier than `floor`. A comment immediately above a key reads
-/// as that key's own leading comment, not trailing content of the entry
-/// before it, so it must stay out of that entry's replace/remove range.
-fn leading_comment_run(lines: &[&str], indent_len: usize, at: usize, floor: usize) -> usize {
+/// Back `at` up over a run of blank lines and comment lines indented exactly
+/// `indent_len`, stopping no earlier than `floor`. A blank or comment line
+/// immediately above a key reads as part of that key's own entry, not
+/// trailing content of the entry before it, so both must stay out of that
+/// entry's replace/remove range.
+fn leading_gap_run(lines: &[&str], indent_len: usize, at: usize, floor: usize) -> usize {
     let mut at = at;
     while at > floor {
         let line = strip_cr(lines[at - 1]);
+        if line.trim().is_empty() {
+            at -= 1;
+            continue;
+        }
         let spaces = line.chars().take_while(|c| *c == ' ').count();
         if spaces != indent_len || !line[spaces..].starts_with('#') {
             break;
@@ -367,5 +375,49 @@ default_stack: tiny
         assert!(out.starts_with("color: auto\r\n"));
         assert!(out.contains("  tiny:\r\n"));
         assert!(out.contains("  console:\n    - console\n"));
+    }
+
+    /// YAML comments are legal at any column. A column-0 comment between two
+    /// entries must not truncate block detection, or an entry past it goes
+    /// invisible: upsert would then append a duplicate key instead of
+    /// replacing the existing one, and remove would report it missing.
+    #[test]
+    fn sees_past_a_column_zero_comment_inside_the_block() {
+        let src = "stacks:\n  console:\n    - console\n# a stray column-0 comment\n  tiny:\n    - session-manager\n";
+
+        let out = upsert_stack(src, "tiny", &roots(&["y"])).unwrap();
+        assert_eq!(out.matches("tiny:").count(), 1, "{out:?}");
+        assert!(out.contains("# a stray column-0 comment"));
+        assert!(parses(&out));
+
+        let out = remove_stack(src, "tiny").unwrap();
+        assert!(!out.contains("tiny"), "{out:?}");
+        assert!(out.contains("# a stray column-0 comment"));
+        assert!(parses(&out));
+    }
+
+    /// A blank line separating two entries is layout, not part of either
+    /// entry's content, on both the replace and the remove path.
+    #[test]
+    fn preserves_a_blank_line_between_entries() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n\n  console:\n    - console\n";
+
+        let out = upsert_stack(src, "tiny", &roots(&["x"])).unwrap();
+        assert!(out.contains("- x\n\n  console:"), "{out:?}");
+        assert!(parses(&out));
+
+        let out = remove_stack(src, "tiny").unwrap();
+        assert!(out.contains("stacks:\n\n  console:"), "{out:?}");
+        assert!(parses(&out));
+    }
+
+    /// A trailing comment after `stacks:` is still block style, not inline.
+    #[test]
+    fn accepts_a_trailing_comment_on_the_stacks_header() {
+        let src = "stacks: # my dev stacks\n";
+        let out = upsert_stack(src, "console", &roots(&["x"])).unwrap();
+        assert!(out.starts_with("stacks: # my dev stacks\n"));
+        assert!(out.contains("  console:\n    - x\n"));
+        assert!(parses(&out));
     }
 }
