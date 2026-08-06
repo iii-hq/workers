@@ -66,14 +66,14 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Start the harness stack and open the TUI dashboard
+    /// Start the default stack and open the TUI dashboard
     Up,
-    /// Start workers (default: harness stack; use --all for every worker)
+    /// Start workers (default: the default stack; use --all for every worker)
     Start {
-        /// Worker name(s) to start; default = the harness stack
+        /// Worker name(s) to start; default = the default stack
         #[arg(value_name = "WORKER")]
         workers: Vec<String>,
-        /// Start every discovered worker instead of the harness stack
+        /// Start every discovered worker instead of the default stack
         #[arg(long)]
         all: bool,
     },
