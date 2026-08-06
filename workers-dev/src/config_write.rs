@@ -137,6 +137,17 @@ fn ensure_block_style(lines: &[&str], head: usize) -> Result<()> {
     Ok(())
 }
 
+/// True for a blank line or a comment line at any column — YAML comments
+/// aren't bound to the surrounding block's indentation, so one test serves
+/// both "does this end the block" and "does this belong to whatever line
+/// follows it" (`block_range` and `leading_gap_run`). Keeping both callers
+/// on this one function is deliberate: they drifted apart once already
+/// (`block_range` went column-agnostic before `leading_gap_run` did, which
+/// is exactly how a comment ended up silently deleted).
+fn is_blank_or_comment(line: &str) -> bool {
+    line.trim().is_empty() || line.trim_start().starts_with('#')
+}
+
 /// Half-open line range of the indented block under `head`. Blank lines and
 /// comment lines (YAML allows comments at any column) don't end it; trailing
 /// blanks are left outside.
@@ -145,7 +156,7 @@ fn block_range(lines: &[&str], head: usize) -> (usize, usize) {
     let mut end = start;
     for (i, line) in lines.iter().enumerate().skip(start) {
         let line = strip_cr(line);
-        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+        if is_blank_or_comment(line) {
             continue;
         }
         if line.starts_with(' ') || line.starts_with('\t') {
@@ -190,7 +201,7 @@ fn entry_range(lines: &[&str], block: (usize, usize), name: &str) -> Option<(usi
             None if key == name => start = Some((indent, i)),
             None => {}
             Some((open_indent, open)) if indent.len() <= open_indent.len() => {
-                return Some((*open, leading_gap_run(lines, indent.len(), i, open + 1)));
+                return Some((*open, leading_gap_run(lines, i, open + 1)));
             }
             Some(_) => {}
         }
@@ -198,23 +209,21 @@ fn entry_range(lines: &[&str], block: (usize, usize), name: &str) -> Option<(usi
     start.map(|(_, open)| (open, block.1))
 }
 
-/// Back `at` up over a run of blank lines and comment lines indented exactly
-/// `indent_len`, stopping no earlier than `floor`. A blank or comment line
-/// immediately above a key reads as part of that key's own entry, not
-/// trailing content of the entry before it, so both must stay out of that
-/// entry's replace/remove range.
-fn leading_gap_run(lines: &[&str], indent_len: usize, at: usize, floor: usize) -> usize {
+/// Back `at` up over a run of blank lines and comment lines — at any column,
+/// same rule as `block_range` — stopping no earlier than `floor` (never the
+/// entry's own key line: callers pass `floor = open + 1`). A blank or
+/// comment line immediately above a key reads as part of that key's own
+/// entry, not trailing content of the entry before it, so both must stay
+/// out of that entry's replace/remove range.
+///
+/// Deliberate, not an oversight: this can only ever push a comment onto the
+/// *following* entry, never delete one. A comment that trails the entry
+/// being replaced/removed (e.g. a note on `tiny`'s last line, right before
+/// `console:`) ends up orphaned onto `console` instead — visible and still
+/// valid YAML, unlike silently deleting the user's writing.
+fn leading_gap_run(lines: &[&str], at: usize, floor: usize) -> usize {
     let mut at = at;
-    while at > floor {
-        let line = strip_cr(lines[at - 1]);
-        if line.trim().is_empty() {
-            at -= 1;
-            continue;
-        }
-        let spaces = line.chars().take_while(|c| *c == ' ').count();
-        if spaces != indent_len || !line[spaces..].starts_with('#') {
-            break;
-        }
+    while at > floor && is_blank_or_comment(strip_cr(lines[at - 1])) {
         at -= 1;
     }
     at
@@ -418,6 +427,43 @@ default_stack: tiny
         let out = upsert_stack(src, "console", &roots(&["x"])).unwrap();
         assert!(out.starts_with("stacks: # my dev stacks\n"));
         assert!(out.contains("  console:\n    - x\n"));
+        assert!(parses(&out));
+    }
+
+    /// Sibling of `sees_past_a_column_zero_comment_inside_the_block`: that one
+    /// edits the entry AFTER the mismatched-indent comment, this one edits
+    /// the entry BEFORE it. Both directions must leave the comment intact —
+    /// it must never fall inside the range being replaced or removed just
+    /// because its column doesn't match the entry that follows it.
+    #[test]
+    fn preserves_a_column_zero_comment_when_editing_the_entry_before_it() {
+        let src = "stacks:\n  console:\n    - console\n# a stray column-0 comment\n  tiny:\n    - session-manager\n";
+
+        let out = upsert_stack(src, "console", &roots(&["console", "state"])).unwrap();
+        assert!(out.contains("# a stray column-0 comment"), "{out:?}");
+        assert!(parses(&out));
+
+        let out = remove_stack(src, "console").unwrap();
+        assert!(out.contains("# a stray column-0 comment"), "{out:?}");
+        assert!(parses(&out));
+    }
+
+    /// A run mixing blank lines and an oddly-indented comment between two
+    /// entries must survive as a unit, in order, on both operations.
+    #[test]
+    fn preserves_mixed_blanks_and_comments_between_entries() {
+        let src =
+            "stacks:\n  tiny:\n    - session-manager\n\n# stray note\n  console:\n    - console\n";
+
+        let out = upsert_stack(src, "tiny", &roots(&["x"])).unwrap();
+        assert!(out.contains("- x\n\n# stray note\n  console:"), "{out:?}");
+        assert!(parses(&out));
+
+        let out = remove_stack(src, "tiny").unwrap();
+        assert!(
+            out.contains("stacks:\n\n# stray note\n  console:"),
+            "{out:?}"
+        );
         assert!(parses(&out));
     }
 }
