@@ -417,3 +417,86 @@ export function useResource<T>(work: () => Promise<T>): Resource<T> {
   const reload = useCallback(() => setNonce((n) => n + 1), [])
   return { data, error, loading, reload }
 }
+
+/* ---------------- live span feed ---------------- */
+
+/** One executed call, as the all-spans stream delivers it. */
+export interface SpanEvent {
+  functionId: string
+  worker: string
+  durationMs: number
+  ok: boolean
+  atMs: number
+}
+
+/**
+ * The engine pushes every non-internal span onto the
+ * `iii:devtools:all-spans` stream each coalesce window — the same feed the
+ * traces masthead rides. Frame envelope: `{event:{event:{data:{spans}}}}`
+ * for the event variant, one level shallower for create/update
+ * (`console/web/src/lib/traces-stream.ts` is the reference reader).
+ */
+function spansFromFrame(frame: unknown): SpanEvent[] {
+  if (!isRecord(frame)) return []
+  const outer = isRecord(frame.event) ? frame.event : null
+  if (!outer) return []
+  const inner = isRecord(outer.event) ? outer.event : outer
+  const data = isRecord(inner.data) ? inner.data : null
+  const spans = data && Array.isArray(data.spans) ? data.spans : []
+  const out: SpanEvent[] = []
+  for (const span of spans) {
+    if (!isRecord(span)) continue
+    const name = str(span.name) ?? ''
+    // Execution spans are `execute <function_id>`; caller-side `call …`
+    // spans would double-count the same invocation.
+    if (!name.startsWith('execute ')) continue
+    const start = Number(span.start_time_unix_nano)
+    // In-flight spans stream with a null end; Number(null) is 0, which would
+    // read as a negative duration. Only a real end after the start counts.
+    const end = Number(span.end_time_unix_nano)
+    if (!Number.isFinite(start) || start <= 0) continue
+    out.push({
+      functionId: name.slice('execute '.length),
+      worker: str(span.service_name) ?? 'unknown',
+      durationMs: Number.isFinite(end) && end > start ? (end - start) / 1e6 : 0,
+      ok: str(span.status) !== 'error',
+      atMs: start / 1e6,
+    })
+  }
+  return out
+}
+
+/**
+ * Live feed of executed calls for this component's lifetime. Batches arrive
+ * as the engine coalesces them (sub-second under load); the binding is a
+ * per-tab stream subscription GC'd with the tab.
+ */
+export function useSpanFeed(host: Host, onSpans: (spans: SpanEvent[]) => void) {
+  const handlerRef = useRef(onSpans)
+  handlerRef.current = onSpans
+  const handlerId = useMemo(() => {
+    hubSeq += 1
+    return `iii::console-catalog::spans-${hubSeq}`
+  }, [])
+
+  useEffect(() => {
+    const offHandler = host.iii.on(handlerId, (frame: unknown) => {
+      const spans = spansFromFrame(frame)
+      if (spans.length > 0) handlerRef.current(spans)
+    })
+    let offTrigger: (() => void) | undefined
+    try {
+      offTrigger = host.iii.registerTrigger({
+        type: 'stream',
+        function_id: `${handlerId}::${host.iii.browserId}`,
+        config: { stream_name: 'iii:devtools:all-spans', group_id: 'all' },
+      })
+    } catch {
+      // No stream worker on this engine: pages degrade to manual refresh.
+    }
+    return () => {
+      offTrigger?.()
+      offHandler()
+    }
+  }, [host, handlerId])
+}

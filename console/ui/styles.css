@@ -864,3 +864,104 @@
   font-variant-numeric: tabular-nums;
 }
 
+
+/* --- the now-strip + live row meta ----------------------------------- */
+
+[data-iii-ui="console"] .console-catalog-nowstrip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  overflow: hidden;
+}
+[data-iii-ui="console"] .console-catalog-nowstrip-label {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--color-ok);
+}
+[data-iii-ui="console"] .console-catalog-nowstrip[data-empty="true"] .quiet {
+  font-size: 11.5px;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="console"] .console-catalog-nowstrip-track {
+  display: flex;
+  gap: 6px;
+  overflow: hidden;
+  mask-image: linear-gradient(to right, black 85%, transparent);
+}
+[data-iii-ui="console"] .console-catalog-nowentry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  border: 1px solid var(--color-rule);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 10px 2px 7px;
+  cursor: pointer;
+  /* New entries land at the head of the strip: slide in, ease-out, brief. */
+  animation: console-catalog-nowentry-in 220ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+[data-iii-ui="console"] .console-catalog-nowentry:hover {
+  border-color: var(--color-ring);
+}
+[data-iii-ui="console"] .console-catalog-nowentry .fn {
+  max-width: 30ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="console"] .console-catalog-nowentry .dur {
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+}
+@keyframes console-catalog-nowentry-in {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="console"] .console-catalog-nowentry {
+    animation: none;
+  }
+  [data-iii-ui="console"] .console-catalog-row.flash {
+    animation: none;
+  }
+}
+
+[data-iii-ui="console"] .console-catalog-row .primary-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+[data-iii-ui="console"] .console-catalog-lastcall {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+[data-iii-ui="console"] .console-catalog-lastcall[data-ok="false"] {
+  color: var(--color-alert);
+}
+
+/* --- plumbing section: present, quiet, out of the way ----------------- */
+
+[data-iii-ui="console"] .console-catalog-plumbing {
+  margin-top: 20px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--color-rule);
+  opacity: 0.75;
+}

@@ -4,12 +4,12 @@
  *
  * Two lists make one view. `engine::triggers::list` is the catalogue of
  * TYPES (what can fire); `engine::registered-triggers::list` is the set of
- * live BINDINGS (what will fire, and into which function). A type with no
- * bindings still lists — knowing a type exists is half of what the page is
+ * live REGISTERED TRIGGERS (what will fire, and into which function). A type
+ * with none still lists — knowing a type exists is half of what the page is
  * for — and a binding whose type is not in the catalogue lists under its own
  * heading rather than disappearing.
  *
- * A binding is named by its family, not by its raw config (`trigger-kinds`):
+ * A registered trigger is named by its family, not by its raw config (`trigger-kinds`):
  * `GET /users/:id`, `every 5 min`, the queue topic. The detail pane then
  * offers that family's REAL fire path where one exists — an actual request
  * for http, a real publish for a queue subscriber — and falls back to calling
@@ -42,6 +42,7 @@ import {
 } from './engine'
 import { HttpTester } from './HttpTester'
 import { InvokePanel } from './InvokePanel'
+import { LastCallMeta, NowStrip, useLiveActivity } from './live'
 import { QueuePublish } from './QueuePublish'
 import { pretty } from './schema'
 import {
@@ -50,6 +51,7 @@ import {
   type Family,
   familyOf,
   httpBinding,
+  isPlumbing,
   queueTopic,
   summarize,
 } from './trigger-kinds'
@@ -110,33 +112,65 @@ export function TriggersPage({ host }: { host: Host }) {
     return (id: string) => byId.get(id)?.description ?? undefined
   }, [catalog.data])
 
-  const allGroups = useMemo<TypeGroup[]>(() => {
-    if (!catalog.data) return []
+  const activity = useLiveActivity(host)
+
+  const partitioned = useMemo(() => {
+    if (!catalog.data)
+      return { groups: [] as TypeGroup[], plumbing: [] as RegisteredTrigger[] }
+    // Plumbing (per-tab delivery handlers, injected-UI assets, config
+    // hot-reload hooks) is real but never what this page is opened FOR —
+    // it folds into one collapsed section at the bottom instead of putting
+    // `configuration` above everything alphabetically.
+    const plumbing: RegisteredTrigger[] = []
     const byType = new Map<string, RegisteredTrigger[]>()
     for (const binding of catalog.data.bindings) {
+      if (isPlumbing(binding)) {
+        plumbing.push(binding)
+        continue
+      }
       const bucket = byType.get(binding.trigger_type)
       if (bucket) bucket.push(binding)
       else byType.set(binding.trigger_type, [binding])
     }
 
     const known = new Map(catalog.data.types.map((t) => [t.id, t]))
-    // A binding whose type the catalogue does not carry still needs a home:
-    // synthesize a heading for it rather than dropping the row.
+    // A registration whose type the catalogue does not carry still needs a
+    // home: synthesize a heading for it rather than dropping the row.
     for (const type of byType.keys()) {
       if (!known.has(type)) {
         known.set(type, { id: type, worker_name: 'unknown', description: null })
       }
     }
 
-    return [...known.values()]
-      .map((type) => ({
-        type,
-        bindings: (byType.get(type.id) ?? []).sort((a, b) =>
-          summarize(a).localeCompare(summarize(b)),
-        ),
-      }))
-      .sort((a, b) => a.type.id.localeCompare(b.type.id))
+    // Types whose only registrations are plumbing carry no operator-facing
+    // rows; drop the heading too unless the type itself is worth knowing.
+    for (const id of [...known.keys()]) {
+      if (id.startsWith('console:')) known.delete(id)
+    }
+
+    const groups = [...known.values()].map((type) => ({
+      type,
+      bindings: (byType.get(type.id) ?? []).sort((a, b) =>
+        summarize(a).localeCompare(summarize(b)),
+      ),
+    }))
+    plumbing.sort((a, b) => a.function_id.localeCompare(b.function_id))
+    return { groups, plumbing }
   }, [catalog.data])
+  const allGroups = partitioned.groups
+
+  // Groups that just fired float to the top: during a harness turn the page
+  // reads as what the agent is doing, not an alphabetical index.
+  const lastFiredOf = useMemo(() => {
+    return (group: TypeGroup): number => {
+      let latest = 0
+      for (const binding of group.bindings) {
+        const span = activity.lastCall.get(binding.function_id)
+        if (span && span.atMs > latest) latest = span.atMs
+      }
+      return latest
+    }
+  }, [activity.lastCall])
 
   const familyCounts = useMemo(() => {
     const counts = new Map<Family, number>()
@@ -152,25 +186,33 @@ export function TriggersPage({ host }: { host: Host }) {
 
   const groups = useMemo(() => {
     const needle = search.trim().toLowerCase()
-    return allGroups.filter((group) => {
-      if (family && familyOf(group.type.id).family !== family) return false
-      if (!needle) return true
-      if (
-        group.type.id.toLowerCase().includes(needle) ||
-        group.type.worker_name.toLowerCase().includes(needle) ||
-        (group.type.description ?? '').toLowerCase().includes(needle)
-      ) {
-        return true
-      }
-      return group.bindings.some(
-        (b) =>
-          b.function_id.toLowerCase().includes(needle) ||
-          b.worker_name.toLowerCase().includes(needle) ||
-          summarize(b).toLowerCase().includes(needle) ||
-          (b.config_summary ?? '').toLowerCase().includes(needle),
-      )
-    })
-  }, [allGroups, family, search])
+    return allGroups
+      .filter((group) => {
+        if (family && familyOf(group.type.id).family !== family) return false
+        if (!needle) return true
+        if (
+          group.type.id.toLowerCase().includes(needle) ||
+          group.type.worker_name.toLowerCase().includes(needle) ||
+          (group.type.description ?? '').toLowerCase().includes(needle)
+        ) {
+          return true
+        }
+        return group.bindings.some(
+          (b) =>
+            b.function_id.toLowerCase().includes(needle) ||
+            b.worker_name.toLowerCase().includes(needle) ||
+            summarize(b).toLowerCase().includes(needle) ||
+            (b.config_summary ?? '').toLowerCase().includes(needle),
+        )
+      })
+      .sort((a, b) => {
+        const fired = lastFiredOf(b) - lastFiredOf(a)
+        if (fired !== 0) return fired
+        const count = b.bindings.length - a.bindings.length
+        if (count !== 0) return count
+        return a.type.id.localeCompare(b.type.id)
+      })
+  }, [allGroups, family, search, lastFiredOf])
 
   const boundCount = groups.reduce((n, g) => n + g.bindings.length, 0)
 
@@ -188,18 +230,29 @@ export function TriggersPage({ host }: { host: Host }) {
       head={
         <CatalogHead
           title="triggers"
-          count={`${groups.length} types · ${boundCount} bound`}
+          count={`${groups.length} types · ${boundCount} registered`}
           search={search}
           onSearch={setSearch}
           searchPlaceholder="search types, functions, paths, topics, schedules…"
           onRefresh={catalog.reload}
           loading={catalog.loading}
           below={
-            <FilterChips
-              counts={familyCounts}
-              selected={family}
-              onSelect={setFamily}
-            />
+            <>
+              <FilterChips
+                counts={familyCounts}
+                selected={family}
+                onSelect={setFamily}
+              />
+              <NowStrip
+                activity={activity}
+                onSelect={(functionId) => {
+                  const hit = allGroups
+                    .flatMap((g) => g.bindings)
+                    .find((b) => b.function_id === functionId)
+                  if (hit) setSelected({ kind: 'binding', binding: hit })
+                }}
+              />
+            </>
           }
         >
           <Button
@@ -237,7 +290,7 @@ export function TriggersPage({ host }: { host: Host }) {
                   label={group.type.id}
                   meta={
                     group.bindings.length === 0
-                      ? `${group.type.worker_name} · unbound`
+                      ? `${group.type.worker_name} · none registered`
                       : `${group.type.worker_name} · ${group.bindings.length}`
                   }
                   tone={spec.tone}
@@ -266,6 +319,11 @@ export function TriggersPage({ host }: { host: Host }) {
                       <CatalogRow
                         key={binding.id}
                         primary={summarize(binding)}
+                        meta={
+                          <LastCallMeta
+                            span={activity.lastCall.get(binding.function_id)}
+                          />
+                        }
                         secondary={
                           binding.function_id
                             ? `${binding.function_id}${
@@ -279,6 +337,7 @@ export function TriggersPage({ host }: { host: Host }) {
                           selected?.kind === 'binding' &&
                           selected.binding.id === binding.id
                         }
+                        flash={activity.pulsing.has(binding.function_id)}
                         onClick={() =>
                           setSelected((prev) =>
                             prev?.kind === 'binding' &&
@@ -295,6 +354,39 @@ export function TriggersPage({ host }: { host: Host }) {
             )
           })
         )
+      }
+      footer={
+        partitioned.plumbing.length > 0 && !search.trim() && !family ? (
+          <div className="console-catalog-section console-catalog-plumbing">
+            <GroupHeader
+              label="plumbing"
+              meta={`${partitioned.plumbing.length} console + config internals`}
+              open={groupState.isOpen('__plumbing')}
+              onToggle={() => groupState.toggle('__plumbing')}
+            />
+            {groupState.isOpen('__plumbing')
+              ? partitioned.plumbing.map((binding) => (
+                  <CatalogRow
+                    key={binding.id}
+                    primary={summarize(binding)}
+                    secondary={`${binding.trigger_type} → ${binding.function_id}`}
+                    selected={
+                      selected?.kind === 'binding' &&
+                      selected.binding.id === binding.id
+                    }
+                    onClick={() =>
+                      setSelected((prev) =>
+                        prev?.kind === 'binding' &&
+                        prev.binding.id === binding.id
+                          ? null
+                          : { kind: 'binding', binding },
+                      )
+                    }
+                  />
+                ))
+              : null}
+          </div>
+        ) : null
       }
       detail={
         selected === null ? null : selected.kind === 'type' ? (
@@ -337,7 +429,7 @@ function TypeDetailPane({
             <>
               <Chip k="worker" v={detail.data.worker_name} />
               {detail.data.instance_count !== undefined ? (
-                <Chip k="bound" v={String(detail.data.instance_count)} />
+                <Chip k="registered" v={String(detail.data.instance_count)} />
               ) : null}
               {detail.data.description ? (
                 <span className="console-catalog-desc">
@@ -416,10 +508,17 @@ function BindingDetailPane({
   const topic = queueTopic(binding)
   const chips = configChips(binding)
 
+  // A title must read as a name. summarize() avoids raw JSON already, but if
+  // a config defeats it the type id is the honest fallback.
+  const title = (() => {
+    const s = summarize(binding)
+    return s.startsWith('{') ? binding.trigger_type : s
+  })()
+
   return (
     <>
       <DetailHead
-        title={summarize(binding)}
+        title={title}
         subtitle={
           <>
             <Chip k={spec.label} v={binding.trigger_type} tone={spec.tone} />

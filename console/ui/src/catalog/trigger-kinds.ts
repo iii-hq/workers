@@ -1,9 +1,9 @@
 /**
- * What a binding IS, read from its trigger type and config.
+ * What a registered trigger IS, read from its type and config.
  *
- * A trigger row is only useful if it says the thing the operator recognizes:
- * an http binding is `GET /users/:id`, a cron binding is its schedule, a
- * queue subscriber is its topic. This module owns that reading, one entry per
+ * A row is only useful if it says the thing the operator recognizes: an
+ * http registration is `GET /users/:id`, a cron registration is its
+ * schedule, a queue subscriber is its topic. This module owns that reading, one entry per
  * family, so the page and the detail pane agree and an unknown type still
  * gets a sane line instead of a blank.
  *
@@ -115,7 +115,7 @@ export function cronExpression(trigger: RegisteredTrigger): string | undefined {
 }
 
 /**
- * The one line that names a binding in the list: what it listens to, in the
+ * The one line that names a registered trigger in the list: what it listens to, in the
  * words of its family. Falls back to the compact config, then the type id,
  * so a row is never blank.
  */
@@ -151,9 +151,37 @@ export function summarize(trigger: RegisteredTrigger): string {
     return trigger.trigger_type.replace('harness::hook::', 'hook: ')
   }
 
+  // Session-scoped delivery (a console tab or sub-agent listening): say that,
+  // not the raw config JSON.
+  const sessionId = text(trigger.config, 'session_id')
+  if (sessionId) {
+    return `session ${sessionId.length > 18 ? `…${sessionId.slice(-12)}` : sessionId}`
+  }
+
   const summary = trigger.config_summary
-  if (summary && summary !== '{}') return summary
+  // Raw JSON is a last resort for the row, never for a title: a `{"…"}`
+  // one-liner reads as a bug, not a name.
+  if (summary && summary !== '{}' && !summary.startsWith('{')) return summary
   return trigger.trigger_type
+}
+
+/**
+ * Console and engine plumbing: per-tab delivery handlers (`iii::` prefix),
+ * injected-UI assets, configuration hot-reload hooks, UI content functions.
+ * All real, none of them what an operator opens this page to see — they fold
+ * into one collapsed group at the bottom instead of burying the rest.
+ */
+export function isPlumbing(trigger: RegisteredTrigger): boolean {
+  if (trigger.function_id.startsWith('iii::')) return true
+  if (trigger.trigger_type.startsWith('console:')) return true
+  if (trigger.function_id.endsWith('::ui-content')) return true
+  if (
+    trigger.trigger_type === 'configuration' &&
+    /on[-_]config[-_]change/.test(trigger.function_id)
+  ) {
+    return true
+  }
+  return false
 }
 
 /**

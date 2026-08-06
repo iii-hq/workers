@@ -38,6 +38,7 @@ import {
   useResource,
 } from './engine'
 import { InvokePanel } from './InvokePanel'
+import { LastCallMeta, NowStrip, useLiveActivity } from './live'
 import { SchemaTable } from './SchemaTable'
 import { compareGroups, namespaceOf, pretty } from './schema'
 import {
@@ -69,6 +70,7 @@ export function FunctionsPage({ host }: { host: Host }) {
   )
   const functions = useResource(load)
   useLiveSignals(host, ['engine::functions-available'], functions.reload)
+  const activity = useLiveActivity(host)
 
   // Ids that appeared on the last tick, so an arrival is visible instead of
   // silently changing the row count. The first load is not "new".
@@ -127,6 +129,12 @@ export function FunctionsPage({ host }: { host: Host }) {
           searchPlaceholder="search functions, workers, descriptions…"
           onRefresh={functions.reload}
           loading={functions.loading}
+          below={
+            <NowStrip
+              activity={activity}
+              onSelect={(functionId) => setSelected(functionId)}
+            />
+          }
         >
           <LiveDot />
           <Button
@@ -171,8 +179,16 @@ export function FunctionsPage({ host }: { host: Host }) {
                       key={fn.function_id}
                       primary={fn.function_id}
                       secondary={fn.description ?? undefined}
+                      meta={
+                        <LastCallMeta
+                          span={activity.lastCall.get(fn.function_id)}
+                        />
+                      }
                       selected={selected === fn.function_id}
-                      flash={arrived.has(fn.function_id)}
+                      flash={
+                        arrived.has(fn.function_id) ||
+                        activity.pulsing.has(fn.function_id)
+                      }
                       onClick={() =>
                         setSelected((prev) =>
                           prev === fn.function_id ? null : fn.function_id,

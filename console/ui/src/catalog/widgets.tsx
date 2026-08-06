@@ -36,17 +36,23 @@ export function useGroupToggle(defaultOpen: (id: string) => boolean) {
 export function CatalogShell({
   head,
   list,
+  footer,
   detail,
 }: {
   head: ReactNode
   list: ReactNode
+  /** Rendered after the list inside the same scroll pane (plumbing section). */
+  footer?: ReactNode
   detail: ReactNode | null
 }) {
   return (
     <div className="console-catalog">
       {head}
       <div className="console-catalog-body">
-        <div className="console-catalog-list">{list}</div>
+        <div className="console-catalog-list">
+          {list}
+          {footer}
+        </div>
         {detail ? <div className="console-catalog-detail">{detail}</div> : null}
       </div>
     </div>
@@ -241,15 +247,18 @@ export function GroupHeader({
 export function CatalogRow({
   primary,
   secondary,
+  meta,
   selected,
   onClick,
   flash,
 }: {
   primary: ReactNode
   secondary?: ReactNode
+  /** Right-aligned live annotation on the primary line (last call, ago). */
+  meta?: ReactNode
   selected: boolean
   onClick: () => void
-  /** Highlight once: this row arrived on the last live tick. */
+  /** Highlight once: this row's function just ran (or the row just arrived). */
   flash?: boolean
 }) {
   return (
@@ -259,7 +268,10 @@ export function CatalogRow({
       data-selected={selected}
       onClick={onClick}
     >
-      <span className="primary">{primary}</span>
+      <span className="primary-line">
+        <span className="primary">{primary}</span>
+        {meta}
+      </span>
       {secondary ? <span className="secondary">{secondary}</span> : null}
     </button>
   )
