@@ -11,6 +11,7 @@ import { CONCURRENCY_CASES } from './cases-concurrency.ts'
 import { TX_CONTROL_BYPASS_CASES } from './cases-tx-control-bypass.ts'
 import { ROW_CHANGED_CASES } from './cases-row-changed.ts'
 import { NATIVE_CAPTURE_CASES } from './cases-native-capture.ts'
+import { HISTORY_CASES } from './cases-history.ts'
 
 interface CaseResult {
   driver: DriverKey
@@ -156,6 +157,7 @@ export class Runner {
           ...CONCURRENCY_CASES,
           ...ROW_CHANGED_CASES,
           ...NATIVE_CAPTURE_CASES,
+          ...HISTORY_CASES,
         ]) {
           if (!matchesDriver(driver, c)) continue
           record(await this.runCase(driver, c))
