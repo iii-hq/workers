@@ -52,7 +52,13 @@ const SIDE_TABS: { id: SideTab; label: string; Icon: typeof FolderTree }[] = [
   { id: 'search', label: 'search', Icon: Search },
 ]
 
-export function ShellExplorerPage({ host, panelSide, tabId, onRequestClose }: { host: Host } & PageRenderProps) {
+export function ShellExplorerPage({
+  host,
+  panelSide,
+  tabId,
+  onRequestClose,
+  workingDir,
+}: { host: Host } & PageRenderProps) {
   const theme = host.useTheme()
   const [info, setInfo] = useState<CoderInfo | null>(null)
   const [infoError, setInfoError] = useState<string | null>(null)
@@ -90,21 +96,27 @@ export function ShellExplorerPage({ host, panelSide, tabId, onRequestClose }: { 
     }
   }, [host, tabId])
 
-  // Root resolution waits for BOTH: a persisted root only counts while
-  // it is still an allowed base path.
+  // Root resolution waits for BOTH: a persisted root only counts while it
+  // still lives inside an allowed base path (chat-synced roots may be
+  // subfolders, not just the base paths themselves). Without one, the
+  // chat's working dir wins over the primary root, so a fresh split opens
+  // where the conversation is.
   useEffect(() => {
     if (!info || restored === 'loading' || root !== null) return
-    const persisted = restored?.root && info.base_paths.includes(restored.root) ? restored.root : null
-    setRoot(persisted ?? info.primary_root)
+    const withinBase = (p: string) =>
+      info.base_paths.includes(p) || info.base_paths.some((base) => p.startsWith(`${base}/`))
+    const persisted = restored?.root && withinBase(restored.root) ? restored.root : null
+    const next = persisted ?? workingDir ?? info.primary_root
+    setRoot(next)
     if (persisted) {
       setTabs(restoreTabs(restored?.open, restored?.active))
       setExpanded(restored?.expanded ?? [])
-    } else if (restored && !restored.root) {
+    } else if (restored && !restored.root && next === info.primary_root) {
       // Legacy/first save without a root: restore against the primary.
       setTabs(restoreTabs(restored.open, restored.active))
       setExpanded(restored.expanded)
     }
-  }, [info, restored, root])
+  }, [info, restored, root, workingDir])
 
   // ── data loads (gated on the resolved root) ──
   const gitSeqRef = useRef(0)
@@ -215,6 +227,18 @@ export function ShellExplorerPage({ host, panelSide, tabId, onRequestClose }: { 
     setRoot(nextRoot)
   }, [])
 
+  // ── follow the chat's working directory ──
+  // Picking another folder in chat re-roots the explorer (the split-screen
+  // sync). Only CHANGES sync: the boot-resolved root wins on mount, and a
+  // manual root pick sticks until the chat's folder moves again.
+  const lastWorkingDirRef = useRef(workingDir ?? null)
+  useEffect(() => {
+    const next = workingDir ?? null
+    if (next === lastWorkingDirRef.current) return
+    lastWorkingDirRef.current = next
+    if (next !== null && root !== null && next !== root) changeRoot(next)
+  }, [workingDir, root, changeRoot])
+
   const onSaved = useCallback(() => {
     refreshGit()
   }, [refreshGit])
@@ -223,6 +247,14 @@ export function ShellExplorerPage({ host, panelSide, tabId, onRequestClose }: { 
     if (git?.kind !== 'ready') return []
     return git.changes.map((c) => ({ path: c.path, status: c.status }))
   }, [git])
+
+  // Chat-synced roots can be subfolders of a base path — surface the
+  // current root as an option so the select never holds a value its
+  // options don't contain (and the user can always pop back to a base).
+  const rootOptions = useMemo(() => {
+    if (!info || !root) return []
+    return info.base_paths.includes(root) ? info.base_paths : [root, ...info.base_paths]
+  }, [info, root])
 
   const header = (
     <PageHeader
@@ -294,7 +326,7 @@ export function ShellExplorerPage({ host, panelSide, tabId, onRequestClose }: { 
                 </button>
               </div>
 
-              {info.base_paths.length > 1 ? (
+              {rootOptions.length > 1 ? (
                 <select
                   className="shui-root-select"
                   value={root}
@@ -302,7 +334,7 @@ export function ShellExplorerPage({ host, panelSide, tabId, onRequestClose }: { 
                   aria-label="browsed root"
                   title={root}
                 >
-                  {info.base_paths.map((p) => (
+                  {rootOptions.map((p) => (
                     <option key={p} value={p}>
                       {lastSegments(p)}
                     </option>

@@ -6,32 +6,33 @@
  * console mounts around every injected render — page, function-trigger
  * message, and config form alike. Styling uses the console's design tokens,
  * so light/dark theming is free.
+ *
+ * The page follows the console redesign's surface + typography roles:
+ *
+ *   navigation  --color-sidebar         the scope / key columns
+ *   workspace   --color-panel           the value being edited
+ *   raised      --color-panel-raised    headers, status bar, controls
+ *   states      --color-surface-*       hover / selected washes
+ *   edges       --color-edge            hairline separation
+ *
+ *   sans (--font-sans)  interface text: banners, empty states, hints
+ *   mono (--font-mono)  technical values: scopes, keys, counts, the
+ *                       editor, and the status bar
  */
 
-[data-iii-ui="state"] .state-ui {
-  max-width: 860px;
-  margin: 0 auto;
-  padding: 24px;
-  font-family: var(--font-mono, ui-monospace, monospace);
+/* ── the page (#/ext/state-manager): application shell ──────────────── */
+
+[data-iii-ui="state"] .state-ui-shell {
+  min-height: 360px;
   color: var(--color-ink);
+  font-family: var(--font-sans, system-ui, sans-serif);
 }
-[data-iii-ui="state"] .state-ui-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-  min-height: 32px;
-}
-[data-iii-ui="state"] .state-ui-title {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
-  color: var(--color-ink-faint);
-  font-weight: 600;
-}
+
 [data-iii-ui="state"] .state-ui-live {
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
   color: var(--color-ink-ghost);
+  white-space: nowrap;
 }
 [data-iii-ui="state"] .state-ui-live .dot {
   color: var(--color-ok);
@@ -41,93 +42,499 @@
   0%, 100% { opacity: 1 }
   50% { opacity: 0.35 }
 }
-[data-iii-ui="state"] .state-ui-crumb {
-  font-size: 13px;
-  color: var(--color-ink);
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="state"] .state-ui-live .dot { animation: none; }
+}
+
+/* ── browser: columns + workspace ───────────────────────────────────── */
+
+[data-iii-ui="state"] .state-ui-browser {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+}
+/* Right-column pane: mirror so navigation hugs the pane's outer edge. */
+[data-iii-ui="state"] .state-ui-browser.right {
+  flex-direction: row-reverse;
+}
+
+/* ── navigation columns (scopes | keys) ─────────────────────────────── */
+
+[data-iii-ui="state"] .state-ui-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex-shrink: 0;
+  background: var(--color-sidebar);
+  border-right: 1px solid var(--color-edge);
+}
+[data-iii-ui="state"] .state-ui-col.scopes { width: 208px; }
+[data-iii-ui="state"] .state-ui-col.keys { width: 248px; }
+[data-iii-ui="state"] .state-ui-browser.right .state-ui-col {
+  border-right: 0;
+  border-left: 1px solid var(--color-edge);
+}
+/* Narrow is CONTAINER width (< 800px, the browser's own ResizeObserver),
+   not the viewport: one pane at a time — the JSX renders exactly one of
+   scopes, keys, or the opened value. */
+[data-iii-ui="state"] .state-ui-browser.narrow .state-ui-col {
+  width: 100%;
+  border-right: 0;
+  border-left: 0;
+}
+
+[data-iii-ui="state"] .state-ui-col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 10px 6px 14px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="state"] .state-ui-col-head .label {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="state"] .state-ui-col-head .scope-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-ink);
 }
-[data-iii-ui="state"] .state-ui-crumb .sep { color: var(--color-ink-ghost); }
-[data-iii-ui="state"] .state-ui-list {
-  border: 1px solid var(--color-rule);
-  background: var(--color-bg);
+[data-iii-ui="state"] .state-ui-col-head .spacer { flex: 1; }
+[data-iii-ui="state"] .state-ui-col-head .count {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="state"] .state-ui-row {
+
+[data-iii-ui="state"] .state-ui-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+}
+[data-iii-ui="state"] .state-ui-iconbtn:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="state"] .state-ui-iconbtn:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="state"] .state-ui-iconbtn-icon {
+  width: 13px;
+  height: 13px;
+}
+
+[data-iii-ui="state"] .state-ui-col-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 6px 12px;
+}
+
+/* entry rows — the whole row is the button */
+[data-iii-ui="state"] .state-ui-nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+[data-iii-ui="state"] .state-ui-nav-row {
+  position: relative;
   display: flex;
   width: 100%;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  font-size: 13px;
+  padding: 7px 10px 7px 14px;
   text-align: left;
   background: transparent;
   border: 0;
-  border-bottom: 1px solid var(--color-rule-2);
-  color: var(--color-ink);
+  border-radius: 6px;
   cursor: pointer;
-  font-family: inherit;
 }
-[data-iii-ui="state"] .state-ui-row:last-child { border-bottom: 0; }
-[data-iii-ui="state"] .state-ui-row:hover { background: var(--color-paper-2); }
-[data-iii-ui="state"] .state-ui-row .arrow { color: var(--color-ink-ghost); }
-[data-iii-ui="state"] .state-ui-row.flash {
+[data-iii-ui="state"] .state-ui-nav-row:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="state"] .state-ui-nav-row:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+/* Selection = wash + accent indicator + stronger name, not color alone. */
+[data-iii-ui="state"] .state-ui-nav-row.active {
+  background: var(--color-surface-selected);
+}
+[data-iii-ui="state"] .state-ui-nav-row.active::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--color-accent);
+}
+[data-iii-ui="state"] .state-ui-nav-row .name {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--color-ink);
+  word-break: break-all;
+}
+[data-iii-ui="state"] .state-ui-nav-row.active .name {
+  font-weight: 600;
+}
+/* Live-arrived rows flash with an accent wash that fades out. */
+[data-iii-ui="state"] .state-ui-nav-row.flash {
   animation: state-ui-flash 1.4s ease-out;
 }
 @keyframes state-ui-flash {
   from { background: color-mix(in srgb, var(--color-accent) 16%, transparent) }
   to { background: transparent }
 }
-[data-iii-ui="state"] .state-ui-note {
-  padding: 16px 12px;
+/* Touch-sized targets in the drill-in flow. */
+[data-iii-ui="state"] .state-ui-browser.narrow .state-ui-nav-row {
+  min-height: 44px;
+  align-items: center;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+/* column hint / empty / loading / error */
+[data-iii-ui="state"] .state-ui-col-hint {
+  padding: 16px 14px;
   font-size: 12.5px;
+  line-height: 1.5;
   color: var(--color-ink-faint);
 }
-[data-iii-ui="state"] .state-ui-error {
-  border: 1px solid var(--color-alert);
-  color: var(--color-alert);
-  padding: 10px 12px;
+[data-iii-ui="state"] .state-ui-col-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 20px 14px;
   font-size: 12.5px;
-}
-[data-iii-ui="state"] .state-ui-editor {
-  width: 100%;
-  min-height: 320px;
-  border: 1px solid var(--color-rule);
-  background: var(--color-bg);
+  line-height: 1.5;
   color: var(--color-ink);
-  font-family: inherit;
-  font-size: 12.5px;
-  line-height: 1.55;
+}
+[data-iii-ui="state"] .state-ui-col-empty p { margin: 0; }
+[data-iii-ui="state"] .state-ui-col-empty .dim { color: var(--color-ink-faint); }
+[data-iii-ui="state"] .state-ui-col-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 10px;
+}
+[data-iii-ui="state"] .state-ui-col-skel .bar,
+[data-iii-ui="state"] .state-ui-doc-loading .bar {
+  display: block;
+  height: 10px;
+  border-radius: 4px;
+  background: var(--color-surface);
+  animation: state-ui-pulse 1.6s ease-in-out infinite;
+}
+@keyframes state-ui-pulse {
+  0%, 100% { opacity: 1 }
+  50% { opacity: 0.4 }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="state"] .state-ui-col-skel .bar,
+  [data-iii-ui="state"] .state-ui-doc-loading .bar,
+  [data-iii-ui="state"] .state-ui-nav-row.flash {
+    animation: none;
+  }
+}
+[data-iii-ui="state"] .bar.w30 { width: 30%; }
+[data-iii-ui="state"] .bar.w40 { width: 40%; }
+[data-iii-ui="state"] .bar.w60 { width: 60%; }
+[data-iii-ui="state"] .bar.w70 { width: 70%; }
+[data-iii-ui="state"] .bar.w75 { width: 75%; }
+[data-iii-ui="state"] .bar.w80 { width: 80%; }
+[data-iii-ui="state"] .bar.w90 { width: 90%; }
+
+[data-iii-ui="state"] .state-ui-error-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px;
   padding: 12px;
-  resize: vertical;
-  box-sizing: border-box;
+  border: 1px solid color-mix(in oklab, var(--color-alert) 35%, transparent);
+  border-radius: 6px;
+  background: var(--color-alert-muted);
+  font-size: 12.5px;
+  color: var(--color-ink);
 }
-[data-iii-ui="state"] .state-ui-editor:focus {
-  outline: 1px solid var(--color-accent);
-  outline-offset: -1px;
+[data-iii-ui="state"] .state-ui-error-panel p {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  word-break: break-word;
 }
-[data-iii-ui="state"] .state-ui-editor-foot {
+[data-iii-ui="state"] .state-ui-error-panel .detail {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="state"] .state-ui-error-panel.grow {
+  align-self: flex-start;
+  margin: 16px;
+  max-width: 560px;
+}
+
+/* ── value workspace ────────────────────────────────────────────────── */
+
+[data-iii-ui="state"] .state-ui-doc {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-panel);
+}
+[data-iii-ui="state"] .state-ui-doc-inner {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* workspace header — stable across loading/error/loaded states */
+[data-iii-ui="state"] .state-ui-doc-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-top: 12px;
-  font-size: 12px;
   flex-wrap: wrap;
+  gap: 8px 12px;
+  min-height: 52px;
+  padding: 8px 16px;
+  flex-shrink: 0;
+  background: var(--color-panel-raised);
+  border-bottom: 1px solid var(--color-edge);
 }
-[data-iii-ui="state"] .state-ui-saved { color: var(--color-ok); }
-[data-iii-ui="state"] .state-ui-invalid { color: var(--color-alert); }
-[data-iii-ui="state"] .state-ui-dirty { color: var(--color-ink-faint); }
-[data-iii-ui="state"] .state-ui-server { color: var(--color-warn); }
-[data-iii-ui="state"] .state-ui-linklike {
-  background: transparent;
+[data-iii-ui="state"] .state-ui-doc-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 140px;
+}
+[data-iii-ui="state"] .state-ui-doc-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+/* The text needs its own box — ellipsis doesn't reach into a flex row. */
+[data-iii-ui="state"] .state-ui-doc-name .txt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="state"] .state-ui-doc-crumb {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  color: var(--color-ink-ghost);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="state"] .state-ui-dirty-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  flex-shrink: 0;
+}
+[data-iii-ui="state"] .state-ui-save-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+[data-iii-ui="state"] .state-ui-save-note {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  white-space: nowrap;
+}
+
+/* status banners sit directly under the header, near what they describe */
+[data-iii-ui="state"] .state-ui-banner {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 8px 16px;
+  flex-shrink: 0;
+  font-size: 12.5px;
+  color: var(--color-ink);
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="state"] .state-ui-banner.warn { background: var(--color-warn-muted); }
+[data-iii-ui="state"] .state-ui-banner.alert { background: var(--color-alert-muted); }
+[data-iii-ui="state"] .state-ui-banner .detail {
+  display: block;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: var(--color-ink-faint);
+  word-break: break-word;
+}
+[data-iii-ui="state"] .state-ui-linkish {
   border: 0;
+  background: transparent;
   padding: 0;
-  font-family: inherit;
-  font-size: inherit;
+  font: inherit;
+  font-size: 12.5px;
   color: var(--color-accent);
-  cursor: pointer;
   text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+[data-iii-ui="state"] .state-ui-linkish:hover { color: var(--color-accent-hover); }
+[data-iii-ui="state"] .state-ui-linkish.quiet { color: var(--color-ink-faint); }
+[data-iii-ui="state"] .state-ui-linkish:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* back affordance (drill-in flow) */
+[data-iii-ui="state"] .state-ui-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="state"] .state-ui-back:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="state"] .state-ui-back:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="state"] .state-ui-back-icon {
+  width: 16px;
+  height: 16px;
+}
+
+/* the editor pane — Monaco grows with content, the pane scrolls */
+[data-iii-ui="state"] .state-ui-doc-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+[data-iii-ui="state"] .state-ui-code {
+  min-height: 100%;
+}
+
+/* value loading lines */
+[data-iii-ui="state"] .state-ui-doc-loading {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 28px 32px;
+}
+
+/* status bar */
+[data-iii-ui="state"] .state-ui-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 26px;
+  padding: 4px 16px;
+  flex-shrink: 0;
+  background: var(--color-panel-raised);
+  border-top: 1px solid var(--color-edge);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="state"] .state-ui-statusbar .spacer { flex: 1; }
+[data-iii-ui="state"] .state-ui-statusbar .status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="state"] .state-ui-statusbar .status.alert { color: var(--color-alert); }
+[data-iii-ui="state"] .state-ui-statusbar .status.ok { color: var(--color-ok); }
+
+/* workspace empty state — teaches the next action, not the absence */
+[data-iii-ui="state"] .state-ui-hero {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 48px 24px;
+  text-align: center;
+}
+[data-iii-ui="state"] .state-ui-hero-icon {
+  width: 28px;
+  height: 28px;
+  color: var(--color-ink-ghost);
+  margin-bottom: 8px;
+}
+[data-iii-ui="state"] .state-ui-hero-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+[data-iii-ui="state"] .state-ui-hero-body {
+  margin: 0;
+  max-width: 460px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="state"] .state-ui-hero-hint {
+  margin: 8px 0 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="state"] .state-ui-hero-hint kbd {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-edge);
+  border-radius: 4px;
+  padding: 1px 5px;
 }
 
 /* --- function-trigger message (chat / traces card) ------------------- */
@@ -226,3 +633,9 @@
   color: var(--color-ink);
 }
 [data-iii-ui="state"] .state-ui-checkrow input { accent-color: var(--color-accent); }
+[data-iii-ui="state"] .state-ui-error {
+  border: 1px solid var(--color-alert);
+  color: var(--color-alert);
+  padding: 10px 12px;
+  font-size: 12.5px;
+}

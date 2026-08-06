@@ -2,19 +2,22 @@ import { useEffect, useState } from 'react'
 import { Button, CodeEditor, EmptyState, Input } from '@iii-dev/console-ui'
 import { Plus, X } from './icons'
 import type { MemoryRule } from './memory-data'
+import { useDirtyDelta } from './widgets'
 
 /**
  * The bank's markdown rules — injected whole into the system prompt of
  * every session using this bank. Each rule is a plain `.md` file on disk;
  * editing here and editing the file are equivalent. Saving empty content
  * removes a rule. Editing uses the console's shared Monaco `CodeEditor`
- * (never a bundled editor).
+ * (never a bundled editor); ⌘S in an editor saves that rule. Dirty
+ * editors report into the page-level guard so navigating away asks first.
  */
 
 interface RulesPanelProps {
   rules: MemoryRule[]
   onSet: (name: string, content: string) => Promise<boolean>
   busy: boolean
+  reportDirty: (delta: number) => void
 }
 
 function RuleEditor({
@@ -22,11 +25,13 @@ function RuleEditor({
   initial,
   onSet,
   busy,
+  reportDirty,
 }: {
   name: string
   initial: string
   onSet: (name: string, content: string) => Promise<boolean>
   busy: boolean
+  reportDirty: (delta: number) => void
 }) {
   const [content, setContent] = useState(initial)
   // Re-seed the editor when a live refresh changes the rule on disk and
@@ -41,28 +46,28 @@ function RuleEditor({
   }, [initial, touched, content])
 
   const dirty = content !== initial
+  useDirtyDelta(dirty, reportDirty)
+
+  const save = () => {
+    if (!dirty || busy) return
+    // Emptied content means delete — that path gets the explicit
+    // confirm, never a silent removal via save.
+    if (content.trim() === '') {
+      setConfirmDelete(true)
+      return
+    }
+    void onSet(name, content)
+  }
+
   return (
-    <div className="mem-rule">
-      <div className="mem-rule-head">
-        <span className="mem-rule-name">{name}.md</span>
-        <div className="mem-rule-actions">
+    <div className="mem-ui-rule">
+      <div className="mem-ui-rule-head">
+        <span className="mem-ui-rule-name">{name}.md</span>
+        <div className="mem-ui-rule-actions">
           {dirty ? (
             <>
-              <span className="mem-unsaved">unsaved</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={busy}
-                onClick={() => {
-                  // Emptied content means delete — that path gets the
-                  // explicit confirm, never a silent removal via save.
-                  if (content.trim() === '') {
-                    setConfirmDelete(true)
-                    return
-                  }
-                  void onSet(name, content)
-                }}
-              >
+              <span className="mem-ui-unsaved">unsaved</span>
+              <Button variant="ghost" size="sm" disabled={busy} onClick={save}>
                 save
               </Button>
             </>
@@ -73,7 +78,7 @@ function RuleEditor({
                 variant="ghost"
                 size="sm"
                 disabled={busy}
-                className="mem-danger"
+                className="mem-ui-danger"
                 onClick={() => {
                   void onSet(name, '')
                   setConfirmDelete(false)
@@ -102,7 +107,7 @@ function RuleEditor({
           )}
         </div>
       </div>
-      <div className="mem-rule-editor">
+      <div className="mem-ui-rule-editor">
         <CodeEditor
           value={content}
           onChange={(next) => {
@@ -111,8 +116,16 @@ function RuleEditor({
           }}
           language="markdown"
           aria-label={`rule ${name}`}
-          className="mem-editor"
+          className="mem-ui-editor"
           placeholder="empty the content and save to remove this rule (asks to confirm)"
+          onKeyDown={(e) => {
+            // Observes keys bubbling out of Monaco — editing keys never
+            // reach here; ⌘S saves this rule in place.
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+              e.preventDefault()
+              save()
+            }
+          }}
         />
       </div>
     </div>
@@ -132,14 +145,19 @@ function slugifyRuleName(raw: string): string {
     .replace(/[-_]+$/, '')
 }
 
-export function RulesPanel({ rules, onSet, busy }: RulesPanelProps) {
+export function RulesPanel({
+  rules,
+  onSet,
+  busy,
+  reportDirty,
+}: RulesPanelProps) {
   const [newName, setNewName] = useState('')
   const validName = /^[a-z0-9][a-z0-9_-]{0,63}$/.test(newName)
   const suggestion = validName ? '' : slugifyRuleName(newName)
 
   return (
-    <div className="mem-stack">
-      <p className="mem-hint">
+    <div className="mem-ui-stack">
+      <p className="mem-ui-hint">
         every chat on this bank starts with these — word for word, every turn.
         put what must always hold here: voice, conventions, constants. correct
         the agent in chat ("stop using em-dashes") and the correction lands in
@@ -159,11 +177,12 @@ export function RulesPanel({ rules, onSet, busy }: RulesPanelProps) {
             initial={rule.content}
             onSet={onSet}
             busy={busy}
+            reportDirty={reportDirty}
           />
         ))
       )}
       <form
-        className="mem-stack tight"
+        className="mem-ui-stack tight"
         onSubmit={(e) => {
           e.preventDefault()
           if (busy) return
@@ -174,27 +193,27 @@ export function RulesPanel({ rules, onSet, busy }: RulesPanelProps) {
           })
         }}
       >
-        <div className="mem-row">
+        <div className="mem-ui-row">
           <Input
             value={newName}
             onChange={setNewName}
             placeholder="name the rule first (e.g. style) — content goes in the editor after"
             aria-label="new rule name"
-            className="mem-flex1"
+            className="mem-ui-flex1"
           />
           <Button
             type="submit"
             variant="ghost"
             size="sm"
             disabled={busy || (!validName && !suggestion)}
-            className="mem-gap1"
+            className="mem-ui-gap1"
           >
             <Plus size={14} aria-hidden />
             add rule
           </Button>
         </div>
         {newName && !validName ? (
-          <p className="mem-subhint">
+          <p className="mem-ui-subhint">
             {suggestion
               ? `names are lowercase-with-dashes (it becomes ${suggestion}.md) — adding will create "${suggestion}"; paste the content into its editor after`
               : 'names are lowercase letters, numbers, and dashes — like style or coding-rules'}
