@@ -30,7 +30,7 @@ serde_json = "1"
 # Must stay on the same schemars major as iii-sdk so the derived
 # request/response schemas match what the SDK emits at registration.
 schemars = "0.8"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal", "fs"] }
 async-trait = "0.1"
 thiserror = "2"
 futures = "0.3"
@@ -40,6 +40,17 @@ regex = "1"
 clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+# Local tokenizers for provider_scaffold::tiktoken_count (o200k/cl100k
+# vocabularies embedded in the binary — counting never touches the network).
+tiktoken-rs = "0.11"
+# A model's own vocabulary for provider_scaffold::vocabulary_count, for the
+# families that publish no metering endpoint. default-features off keeps the
+# graph pure Rust: the defaults pull onig (C) and esaxx (C++), which would
+# need a cross C toolchain on every release target.
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
+# Fetching a vocabulary once on a cold cache. Same TLS backend as the
+# provider crates, so the graph resolves one reqwest.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

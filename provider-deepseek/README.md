@@ -5,7 +5,10 @@ Implements the provider protocol from
 `tech-specs/2026-06-agentic/llm-router.md`: `provider::deepseek::stream`
 (SSE chunks → `AssistantMessageEvent` frames into a router-owned channel) and
 `provider::deepseek::refresh_models` (upstream `GET /models`, enriched with
-local metadata → `router::models::reconcile`).
+local metadata → `router::models::reconcile`), plus
+`provider::deepseek::count_tokens` (prompt token counting behind
+`router::count_tokens`, with DeepSeek's own published vocabulary rather than
+a borrowed one; never runs the model and costs nothing).
 
 Default upstream: `https://api.deepseek.com/chat/completions` — DeepSeek's
 OpenAI-compatible surface is rooted at the bare host, with no `/v1` segment.

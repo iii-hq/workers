@@ -43,6 +43,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "provider::zai::abort",
             "provider::zai::refresh_models",
             "provider::zai::on_router_ready",
+            "provider::zai::count_tokens",
         ]
     );
 }

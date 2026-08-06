@@ -8,3 +8,4 @@ rules:
   - '!provider::anthropic::stream'
   - '!provider::anthropic::refresh_models'
   - '!provider::anthropic::on_router_ready'
+  - '!provider::anthropic::count_tokens'

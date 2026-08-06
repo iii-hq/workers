@@ -8,3 +8,4 @@ rules:
   - '!provider::zai::stream'
   - '!provider::zai::refresh_models'
   - '!provider::zai::on_router_ready'
+  - '!provider::zai::count_tokens'
