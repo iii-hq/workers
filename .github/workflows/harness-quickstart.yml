@@ -1,4 +1,5 @@
 name: Harness quickstart
+run-name: Test · harness_quickstart · ${{ inputs.operation_id || github.event_name }}
 
 on:
   schedule:
@@ -33,6 +34,18 @@ on:
         description: Dispatch deployed E2E after quickstart
         type: boolean
         default: false
+      source_sha:
+        description: Optional full source commit SHA
+        type: string
+        default: ''
+      operation_id:
+        description: Release Control operation UUID
+        type: string
+        default: ''
+      step_id:
+        description: Release Control operation step UUID
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       cli_channel:
@@ -65,12 +78,24 @@ on:
         description: Dispatch the deployed E2E workflow after a successful smoke
         type: boolean
         default: false
+      source_sha:
+        description: Optional full source commit SHA
+        type: string
+        default: ''
+      operation_id:
+        description: Release Control operation UUID
+        type: string
+        default: ''
+      step_id:
+        description: Release Control operation step UUID
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: harness-quickstart-${{ inputs.cli_channel || github.event_name }}-${{ inputs.registry_tag || github.event_name }}-${{ inputs.release_version || 'rolling' }}
+  group: harness-quickstart-${{ inputs.operation_id || inputs.release_version || github.event_name }}-${{ inputs.cli_channel || github.event_name }}-${{ inputs.registry_tag || github.event_name }}
   cancel-in-progress: ${{ inputs.release_version == '' }}
 
 jobs:
@@ -89,6 +114,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Run quickstart validator
         id: quickstart
