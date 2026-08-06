@@ -53,7 +53,8 @@ async fn main() -> anyhow::Result<()> {
     }).await?;
 
     // -> { system_prompt, messages, token_count, usable, model_resolved,
-    //      applied: { pruned, pruned_tokens, compacted, summary?, tail_start_index? } }
+    //      applied: { pruned, pruned_tokens, capped_parts, capped_tokens,
+    //                 compacted, summary?, tail_start_index? } }
     println!("{result:#?}");
     Ok(())
 }
@@ -75,6 +76,11 @@ oversized function results in its model-facing copy with bounded references to t
 full result retained in the session transcript. Requests that still cannot fit fail
 with `context/overflow`; callers must not issue a provider request in that case.
 
+Before pruning or compaction runs, assemble unconditionally caps any single function
+result over `max_result_tokens` (default 20000; 0 disables the pass) to a bounded
+`[…result capped: was ~N tokens; middle omitted; re-call {function_id} for the full
+data]` head+tail view — see Configuration below.
+
 The other three functions: `context::count-tokens` (estimate messages + tools +
 system prompt vs a model), `context::prune` (replace verbose function outputs
 with `[output of {function_id} pruned: was ~N tokens; re-call it if still
@@ -90,6 +96,7 @@ tail_turns: 2                  # user+assistant pairs kept verbatim by compactio
 protect_recent_tokens: 40000   # newest function-output tokens never pruned
 min_free_tokens: 20000         # skip pruning when it would free less
 max_output_chars: 2000         # outputs at or under this size are never pruned
+max_result_tokens: 20000       # per-result ceiling for assemble's unconditional cap pass; 0 disables
 lease_ttl_secs: 300            # compaction mutual-exclusion lease TTL
 allow_fallback_limits: true    # conservative 8192/1024 when limits can't resolve
 summarizer_timeout_ms: 320000  # outer budget for one router::chat summariser call
