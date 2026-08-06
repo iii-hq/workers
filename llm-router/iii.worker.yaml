@@ -3,6 +3,7 @@ name: llm-router
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: llm-router
 tags: [llm, router, models, providers]
 description: One front door + provider protocol in front of every LLM provider.

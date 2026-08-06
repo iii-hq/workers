@@ -3,6 +3,7 @@ name: browser
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: browser
 tags: [browser, chromium, automation, web, cdp]
 description: Interactive Chromium sessions on the iii bus. Navigate, act, read the page console, pick elements.

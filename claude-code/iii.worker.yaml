@@ -3,6 +3,7 @@ name: claude-code
 language: javascript
 deploy: bundle
 manifest: package.json
+license: Apache-2.0
 tags: [coding-agent, claude, anthropic, cli, headless]
 description: Claude Code as an iii worker — claude::* functions run headless Claude Code turns, mirror raw messages onto claude::events, and stream AgentEvent frames onto agent::events.
 

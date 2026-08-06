@@ -3,6 +3,7 @@ name: mcp
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: mcp
 tags: [mcp, model-context-protocol, bridge, http, agents]
 description: MCP 2025-06-18 Streamable HTTP bridge for the iii engine.

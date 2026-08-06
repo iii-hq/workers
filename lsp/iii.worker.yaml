@@ -3,6 +3,7 @@ name: lsp
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: lsp
 description: III Language Server — autocompletion and hover for III engine functions and triggers
 # Opt out of the interface boot smoke. lsp is a stdio language server:

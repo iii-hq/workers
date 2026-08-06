@@ -3,6 +3,7 @@ name: eval
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: eval
 tags: [evaluation, benchmark, prompt, system-prompt, ab-test]
 description: Compare prompt or system-prompt variants on the same model using durable harness runs and correctness-first reports.

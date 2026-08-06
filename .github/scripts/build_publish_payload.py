@@ -374,6 +374,7 @@ def build_payload(
         "readme": readme,
         "repo": repo_url,
         "description": meta.get("description", ""),
+        "license": meta.get("license", ""),
         "dependencies": normalize_dependencies(meta.get("dependencies")),
         "config": config,
         "functions": [

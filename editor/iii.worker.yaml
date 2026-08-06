@@ -3,6 +3,7 @@ name: editor
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: editor
 tags: [editor, diff, git, code, review]
 description: A shared code workspace — open buffers, a file tree, unified diffs, fuzzy find and conflict-safe saves that an agent and a person see the same view of, plus a console editor page.

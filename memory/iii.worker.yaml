@@ -3,6 +3,7 @@ name: memory
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: memory
 tags: [memory, rag, bm25, recall, agent, context]
 description: Durable cross-session agent memory — named banks of always-injected markdown rules and auto-extracted memories, hybrid BM25 + entity recall, pinning, and supersede-never-delete history. Plain files on disk; every operation is a traced function.
