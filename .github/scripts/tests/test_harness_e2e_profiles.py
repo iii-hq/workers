@@ -57,7 +57,7 @@ def test_custom_superset_is_promotable():
     assert resolved["promotion_eligible"] is True
 
 
-def test_rejects_unknown_scenario_and_stale_catalog():
+def test_rejects_unknown_scenario_and_changed_profile():
     catalog = load_profile_catalog()
     with pytest.raises(ValueError, match="unknown Harness E2E scenarios"):
         resolve_profile(
@@ -67,7 +67,7 @@ def test_rejects_unknown_scenario_and_stale_catalog():
             requested=["missing"],
             catalog_sha="a" * 40,
         )
-    with pytest.raises(ValueError, match="catalog moved"):
+    with pytest.raises(ValueError, match="profile changed"):
         resolve_profile(
             catalog,
             available=list(catalog.ids),
@@ -75,7 +75,23 @@ def test_rejects_unknown_scenario_and_stale_catalog():
             requested=[],
             catalog_sha="a" * 40,
             expected_catalog_sha="b" * 40,
+            expected_profile_digest="0" * 64,
         )
+
+
+def test_allows_release_bump_commits_when_profile_digest_is_unchanged():
+    catalog = load_profile_catalog()
+    resolved = resolve_profile(
+        catalog,
+        available=list(catalog.ids),
+        profile="release",
+        requested=[],
+        catalog_sha="b" * 40,
+        expected_catalog_sha="a" * 40,
+        expected_profile_digest=catalog.profile_digest,
+    )
+    assert resolved["catalog_sha"] == "b" * 40
+    assert resolved["profile_digest"] == catalog.profile_digest
 
 
 def test_catalog_rejects_duplicate_scenarios(tmp_path: Path):

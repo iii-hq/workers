@@ -103,6 +103,11 @@ on:
         required: false
         type: string
         default: ''
+      profile_digest:
+        description: Canonical scenario profile digest used by the caller preview
+        required: false
+        type: string
+        default: ''
       coverage:
         description: Instrument the E2E stack and produce an LLVM coverage report
         required: false
@@ -328,6 +333,7 @@ jobs:
           VALIDATION_PROFILE: ${{ inputs.validation_profile }}
           REQUESTED_SCENARIOS: ${{ inputs.scenarios_json }}
           EXPECTED_CATALOG_SHA: ${{ inputs.catalog_sha }}
+          EXPECTED_PROFILE_DIGEST: ${{ inputs.profile_digest }}
           # The instrumented binary would otherwise drop default.profraw in cwd.
           LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/build-profraw/%m_%p.profraw', github.workspace) || '' }}
         run: |
@@ -338,7 +344,8 @@ jobs:
             --profile "$VALIDATION_PROFILE" \
             --scenarios-json "$REQUESTED_SCENARIOS" \
             --catalog-sha "${{ github.sha }}" \
-            --expected-catalog-sha "$EXPECTED_CATALOG_SHA")
+            --expected-catalog-sha "$EXPECTED_CATALOG_SHA" \
+            --expected-profile-digest "$EXPECTED_PROFILE_DIGEST")
           {
             echo "json=$(jq -c .scenarios <<<"$resolved")"
             echo "required=$(jq -c .required_scenarios <<<"$resolved")"
