@@ -488,3 +488,44 @@
   flex-direction: column;
   gap: 4px;
 }
+
+/* ── the prompts library (prompts tab) ──────────────────────────────── */
+
+[data-iii-ui="iii-directory"] .dir-ui-prompt-side-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-prompt-side-head > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+[data-iii-ui="iii-directory"] .dir-ui-prompt-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="iii-directory"] .dir-ui-prompt-spacer {
+  flex: 1;
+}
+[data-iii-ui="iii-directory"] .dir-ui-prompt-kind {
+  min-width: 96px;
+  padding: 4px 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--color-ink);
+  background: var(--color-bg);
+  border: 1px solid var(--color-rule);
+  border-radius: 3px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-prompt-kind:disabled {
+  opacity: 0.6;
+}
+[data-iii-ui="iii-directory"] .dir-ui-prompt-desc {
+  padding: 8px 12px 0;
+}
+[data-iii-ui="iii-directory"] .dir-ui-prompt-body {
+  min-height: 320px;
+  padding: 8px 12px 12px;
+}

@@ -61,6 +61,20 @@ fn default_auto_download() -> bool {
     true
 }
 
+/// Default root for user-authored prompts (the prompt library).
+pub const DEFAULT_PROMPTS_FOLDER: &str = "~/.iii/prompts";
+
+/// Default root for project-local prompt overrides.
+pub const DEFAULT_LOCAL_PROMPTS_FOLDER: &str = "./.iii/prompts";
+
+fn default_prompts_folder() -> String {
+    DEFAULT_PROMPTS_FOLDER.to_string()
+}
+
+fn default_local_prompts_folder() -> String {
+    DEFAULT_LOCAL_PROMPTS_FOLDER.to_string()
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct SkillsConfig {
     /// Folder that backs every read (`directory::skills::list`,
@@ -113,6 +127,20 @@ pub struct SkillsConfig {
     /// folder.
     #[serde(default = "default_auto_download")]
     pub auto_download: bool,
+
+    /// Folder for user-authored prompts (the prompt library): flat
+    /// `<name>.md` files with `description` (and optional `kind`)
+    /// frontmatter. `directory::prompts::save` writes here; entries
+    /// appear in `directory::prompts::list` with `source: user`.
+    /// Supports the same three resolution forms as `skills_folder`.
+    #[serde(default = "default_prompts_folder")]
+    pub prompts_folder: String,
+
+    /// Folder for project-local prompt overrides. An entry here shadows
+    /// a same-named entry in `prompts_folder`. Supports the same three
+    /// resolution forms as `skills_folder`.
+    #[serde(default = "default_local_prompts_folder")]
+    pub local_prompts_folder: String,
 }
 
 impl Default for SkillsConfig {
@@ -125,6 +153,8 @@ impl Default for SkillsConfig {
             registry_cache_ttl_ms: default_registry_cache_ttl_ms(),
             filter_unregistered: default_filter_unregistered(),
             auto_download: default_auto_download(),
+            prompts_folder: default_prompts_folder(),
+            local_prompts_folder: default_local_prompts_folder(),
         }
     }
 }
@@ -176,6 +206,16 @@ impl SkillsConfig {
     /// Absolute path to the configured local skills folder.
     pub fn local_skills_folder(&self) -> PathBuf {
         resolve_path(&self.local_skills_folder)
+    }
+
+    /// Absolute path to the configured user prompt library folder.
+    pub fn resolved_prompts_folder(&self) -> PathBuf {
+        resolve_path(&self.prompts_folder)
+    }
+
+    /// Absolute path to the configured project-local prompt folder.
+    pub fn resolved_local_prompts_folder(&self) -> PathBuf {
+        resolve_path(&self.local_prompts_folder)
     }
 
     /// Registry base URL with any trailing slash trimmed so callers can

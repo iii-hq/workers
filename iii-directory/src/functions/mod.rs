@@ -57,15 +57,15 @@ pub fn register_all(
         cfg.load().registry_cache_ttl_ms,
     ));
     skills::register_with_cache(iii, cfg, &cache);
-    prompts::register(iii, cfg);
     let subs = Subscribers::from(trigger_types);
+    prompts::register(iii, cfg, &subs.prompts);
     download::register(iii, cfg, &subs);
     update::register(iii, cfg, &subs, &cache);
     registry::register(iii, cfg);
     engine_fn::register(iii);
     tracing::info!(
         "iii-directory registered 3 directory::skills::* reads (list + get + index), \
-         2 directory::prompts::* reads (list + get), 2 updates (skills + prompts), \
+         4 directory::prompts::* (list + get + save + delete), 2 updates (skills + prompts), \
          3 downloads, 2 directory::registry::workers::*, \
          and 1 directory::engine::functions::info"
     );
@@ -79,15 +79,15 @@ pub fn register_all_with_cache(
     registry_cache: registry::RegistryCache,
 ) {
     skills::register_with_cache(iii, cfg, cache);
-    prompts::register(iii, cfg);
     let subs = Subscribers::from(trigger_types);
+    prompts::register(iii, cfg, &subs.prompts);
     download::register(iii, cfg, &subs);
     update::register(iii, cfg, &subs, cache);
     registry::register_with_cache(iii, cfg, registry_cache);
     engine_fn::register(iii);
     tracing::info!(
         "iii-directory registered 3 directory::skills::* reads (list + get + index), \
-         2 directory::prompts::* reads (list + get), 2 updates (skills + prompts), \
+         4 directory::prompts::* (list + get + save + delete), 2 updates (skills + prompts), \
          3 downloads, 2 directory::registry::workers::*, \
          and 1 directory::engine::functions::info"
     );

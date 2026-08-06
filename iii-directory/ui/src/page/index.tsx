@@ -13,18 +13,13 @@ import {
 } from '@iii-dev/console-ui'
 import { formatBytes, formatRelativeTime } from '../lib/format'
 import { type BrowserAdapter, CollectionBrowser } from './browser'
+import { PromptsLibrary } from './prompts-library'
 
 interface SkillRow {
   id: string
   title: string
   description: string
   bytes: number
-  modified_at: string
-}
-
-interface PromptRow {
-  name: string
-  description: string
   modified_at: string
 }
 
@@ -61,45 +56,14 @@ const skillsAdapter: BrowserAdapter = {
   },
 }
 
-const promptsAdapter: BrowserAdapter = {
-  noun: 'prompt',
-  onChangeType: 'directory::prompts::on-change',
-  async list(host) {
-    const out = await host.iii.trigger<{ prompts: PromptRow[] }>(
-      'directory::prompts::list',
-    )
-    return (out.prompts ?? []).map((p) => ({
-      key: p.name,
-      title: '',
-      description: p.description,
-      fine: formatRelativeTime(p.modified_at),
-    }))
-  },
-  async load(host, name) {
-    const out = await host.iii.trigger<{ body: string; raw?: string | null }>(
-      'directory::prompts::get',
-      { name, raw: true },
-    )
-    return out.raw ?? out.body
-  },
-  async save(host, name, content) {
-    // The effective name after the write follows a frontmatter rename.
-    const out = await host.iii.trigger<{ name: string }>(
-      'directory::prompts::update',
-      { name, content },
-    )
-    return out.name ?? name
-  },
-}
-
 export function DirectoryPage({ host }: { host: Host }) {
   return (
     <div className="dir-ui-page">
       <div className="dir-ui-page-head">
         <span className="dir-ui-page-title">directory</span>
         <span className="dir-ui-page-sub">
-          filesystem-backed skills &amp; prompts — edit the markdown, save
-          writes through directory::*::update
+          filesystem-backed skills &amp; prompts — edit skill markdown in place;
+          the prompt library adds create, fork, and delete
         </span>
       </div>
       <Tabs defaultValue="skills">
@@ -111,7 +75,7 @@ export function DirectoryPage({ host }: { host: Host }) {
           <CollectionBrowser host={host} adapter={skillsAdapter} />
         </TabsContent>
         <TabsContent value="prompts">
-          <CollectionBrowser host={host} adapter={promptsAdapter} />
+          <PromptsLibrary host={host} />
         </TabsContent>
       </Tabs>
     </div>
