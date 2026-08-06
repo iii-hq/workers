@@ -96,9 +96,10 @@ Load-bearing details:
 1. **Order is fixed: cap → prune → compact.** Cap and prune are both
    unconditional: they run on every call, no longer gated on being over
    `usable`, so even a within-budget request can have a single oversized
-   result capped or an aged output pruned. Compaction alone stays
-   budget-gated — it's the only step that checks *still being over budget*
-   first, because it's the expensive one (an LLM call). Each step re-counts.
+   result capped or an aged output pruned. Compaction and emergency
+   reduction are both gated on *still being over budget*; compaction is
+   additionally gated on `allow_compaction` and is the expensive one of the
+   two (an LLM call). Each step re-counts.
    A request with nothing large enough to cap, nothing aged enough to prune,
    and nothing to compact passes through byte-identical —
    `applied.capped_parts`/`pruned_tokens` at 0, `compacted: false` — with no
@@ -227,9 +228,11 @@ capped: was ~N tokens; middle omitted; re-call {function_id} for the full
 data]` — reserving the marker's own bytes out of a 90%-of-cap-budget target
 *before* splitting head/tail, so the rewrite is idempotent without a fixpoint
 loop even at a small cap or a long `function_id`. On the assemble path it
-runs **before** prune (`functions/assemble.rs` Step 0), so a result that is
-both oversized and aged only pays the cheaper placeholder rewrite once it is
-already capped.
+runs **before** prune (`functions/assemble.rs` Step 0): a result that is both
+oversized and aged is capped first and can still be pruned afterward if it's
+still verbose and old enough — the ordering doesn't skip prune's pass, it
+just means prune's own rewrite runs against the already-shrunk capped text
+instead of the original.
 
 ## 7. Compaction — tail selection
 
