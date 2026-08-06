@@ -39,7 +39,7 @@ Feature: engine round trip — the production surface over a live bus
       """
     Then the call succeeds
     And the response field "pruned_parts" is 1
-    And response message 2 text is "[output pruned: was ~2000 tokens]"
+    And response message 2 text is "[output of shell::run pruned: was ~2000 tokens; re-call it if still needed]"
 
   # Prevents: assemble requiring llm-router for the inline-limits path
   # — the standalone mode must work on a bare engine.

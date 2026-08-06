@@ -59,10 +59,10 @@ Feature: context::assemble — the model-ready context pipeline
     When I assemble the history with model "small"
     Then the call succeeds
     And the response field "applied.pruned" is true
-    And the response field "applied.pruned_tokens" is 4992
+    And the response field "applied.pruned_tokens" is 4982
     And the response field "applied.compacted" is false
     And the response field "token_count" does not exceed 4000
-    And response message 2 text is "[output pruned: was ~5000 tokens]"
+    And response message 2 text is "[output of shell::run pruned: was ~5000 tokens; re-call it if still needed]"
     And the response messages have as many messages as the request
     And call/result pairing is intact in the response messages
     And the summariser was never invoked
@@ -216,7 +216,7 @@ Feature: context::assemble — the model-ready context pipeline
     When I assemble the history with model "small"
     Then the call succeeds
     And the response field "applied.pruned" is true
-    And the response field "applied.pruned_tokens" is 2992
+    And the response field "applied.pruned_tokens" is 2982
     And the response field "applied.compacted" is true
     And the response field "applied.tail_start_index" is 5
     And the response field "token_count" does not exceed 4000

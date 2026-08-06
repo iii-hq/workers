@@ -180,7 +180,8 @@ Pure and router-free; safe for cost-sensitive callers with no `llm-router`.
 ### `context::prune` — placeholder verbose function outputs
 
 The cheap pass alone: rewrite verbose `function_result` outputs to
-`[output pruned: was ~N tokens]`. No LLM, no state, no removal.
+`[output of {function_id} pruned: was ~N tokens; re-call it if still
+needed]`. No LLM, no state, no removal.
 
 ```typescript
 {
@@ -278,9 +279,9 @@ provider-legal. Build on these:
   result block whose call sits earlier). Orphaned results — which providers
   reject — cannot appear.
 - **Prune replaces, never removes.** A pruned output's content becomes a single
-  `[output pruned: was ~N tokens]` text block; the message, its
-  `function_call_id`, and the message ordering all survive. Message counts are
-  stable across a prune.
+  `[output of {function_id} pruned: was ~N tokens; re-call it if still
+  needed]` text block; the message, its `function_call_id`, and the message
+  ordering all survive. Message counts are stable across a prune.
 - **`custom` messages never reach the model.** `assemble` excludes
   `role: "custom"` from the returned `messages` and from `token_count`. A huge
   custom entry can't trigger a phantom overflow, and customs never leak to a

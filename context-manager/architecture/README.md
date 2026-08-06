@@ -76,7 +76,7 @@ flowchart LR
 | **Model-ready context** | The output of `context::assemble`: a `system_prompt` string plus an ordered `AgentMessage[]` that fits the model's `usable` budget, ready to hand to `router::chat`. |
 | **`usable` budget** | The token ceiling one call may fill: `max(0, (input_limit ?? context_window - max_output_tokens) - reserved - thinking_budget)`. Model-adaptive, not a flat constant. |
 | **`reserved`** | Headroom held back from the input budget for response framing; defaults to `min(20000, 10% of context_window)`, overridable per call. |
-| **Prune** | The cheap first pass: replace verbose `function_result` outputs with `[output pruned: was ~N tokens]` placeholders. No LLM, no removal — content is rewritten in place. |
+| **Prune** | The cheap first pass: replace verbose `function_result` outputs with `[output of {function_id} pruned: was ~N tokens; re-call it if still needed]` placeholders. No LLM, no removal — content is rewritten in place. |
 | **Compaction** | The expensive pass: summarise the **head** of the history into one Markdown summary via the summariser LLM, keeping a recent **tail** verbatim. |
 | **Head / tail** | Compaction splits the history at a boundary: everything before it (the head) is summarised; everything from it on (the tail) is kept verbatim. |
 | **Safe cut** | A boundary the tail may start at without orphaning a `function_result` from its `function_call`: a user or assistant message, never a result (see structural invariants). |

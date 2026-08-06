@@ -175,9 +175,10 @@ tail is "the last little bit kept raw", not a second copy of the window.
 ## 6. Pruning
 
 [core/prune.rs](../src/core/prune.rs). One pass, newest-to-oldest, that
-rewrites verbose `function_result` outputs to `[output pruned: was ~N tokens]`
-and **never removes anything** — the message, its `function_call_id`, and the
-ordering all survive (the structural invariant providers depend on).
+rewrites verbose `function_result` outputs to `[output of {function_id}
+pruned: was ~N tokens; re-call it if still needed]` and **never removes
+anything** — the message, its `function_call_id`, and the ordering all
+survive (the structural invariant providers depend on).
 
 Eligibility, applied while scanning from the newest message backward:
 

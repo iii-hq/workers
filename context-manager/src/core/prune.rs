@@ -56,9 +56,11 @@ pub struct PruneStats {
     pub scanned_parts: u64,
 }
 
-/// The spec's placeholder shape: `[output pruned: was ~N tokens]`.
-pub fn placeholder(tokens: u64) -> String {
-    format!("[output pruned: was ~{tokens} tokens]")
+/// The placeholder written over a pruned output. Names the source
+/// function and the recovery path (re-call it) — the transcript keeps
+/// the full result, but the model-facing view does not.
+pub fn placeholder(function_id: &str, tokens: u64) -> String {
+    format!("[output of {function_id} pruned: was ~{tokens} tokens; re-call it if still needed]")
 }
 
 fn text_of(blocks: &[ContentBlock]) -> String {
@@ -104,8 +106,8 @@ fn prune_impl(
     let mut scanned: u64 = 0;
     let mut window_tokens: u64 = 0;
     let mut user_turns = 0usize;
-    // (message index, estimated tokens of its text content)
-    let mut queue: Vec<(usize, u64)> = Vec::new();
+    // (message index, estimated tokens of its text content, function_id)
+    let mut queue: Vec<(usize, u64, String)> = Vec::new();
 
     for idx in (0..messages.len()).rev() {
         let message = &messages[idx];
@@ -138,7 +140,7 @@ fn prune_impl(
         if text.len() <= params.max_output_chars {
             continue;
         }
-        queue.push((idx, tokens));
+        queue.push((idx, tokens, function_id.clone()));
     }
 
     // Net tokens freed: each pruned output is replaced by a placeholder
@@ -146,7 +148,9 @@ fn prune_impl(
     // size minus that placeholder. Gauge `min_free_tokens` on the net.
     let pruned_tokens: u64 = queue
         .iter()
-        .map(|(_, tokens)| tokens.saturating_sub(estimator.text(&placeholder(*tokens))))
+        .map(|(_, tokens, function_id)| {
+            tokens.saturating_sub(estimator.text(&placeholder(function_id, *tokens)))
+        })
         .sum();
     if pruned_tokens < params.min_free_tokens {
         return PruneStats {
@@ -156,9 +160,9 @@ fn prune_impl(
         };
     }
 
-    for (idx, tokens) in &queue {
+    for (idx, tokens, function_id) in &queue {
         messages[*idx].set_content(vec![ContentBlock::Text {
-            text: placeholder(*tokens),
+            text: placeholder(function_id, *tokens),
         }]);
         if let Some(sizes) = sizes.as_deref_mut() {
             // Re-estimate the rewritten message — not freed-token
@@ -481,13 +485,14 @@ mod tests {
         let stats = prune(&mut messages, &params(), &HeuristicEstimator);
         assert_eq!(stats.pruned_parts, 1);
         // Net of the placeholder written back: 2000 minus the tokens of
-        // "[output pruned: was ~2000 tokens]" (33 chars / 4 = 8).
-        assert_eq!(stats.pruned_tokens, 1_992);
+        // "[output of shell::run pruned: was ~2000 tokens; re-call it if
+        // still needed]" (75 chars / 4 = 18).
+        assert_eq!(stats.pruned_tokens, 1_982);
         // Oldest output replaced...
         assert_eq!(
             messages[1].content(),
             &[ContentBlock::Text {
-                text: placeholder(2_000)
+                text: placeholder("shell::run", 2_000)
             }]
         );
         // ...the one inside the last two user turns untouched.
@@ -562,7 +567,7 @@ mod tests {
         let stats = prune(&mut messages, &p, &HeuristicEstimator);
         assert_eq!(stats.pruned_parts, 1);
         assert_eq!(text_of(messages[2].content()).len(), 4_000); // newer kept
-        assert!(text_of(messages[1].content()).starts_with("[output pruned"));
+        assert!(text_of(messages[1].content()).starts_with("[output of f pruned"));
     }
 
     #[test]

@@ -77,9 +77,9 @@ with `context/overflow`; callers must not issue a provider request in that case.
 
 The other three functions: `context::count-tokens` (estimate messages + tools +
 system prompt vs a model), `context::prune` (replace verbose function outputs
-with `[output pruned: was ~N tokens]` placeholders, no LLM involved), and
-`context::compact` (summarise the head, keep a recent tail verbatim — returns
-`ok | busy | empty | overflow`).
+with `[output of {function_id} pruned: was ~N tokens; re-call it if still
+needed]` placeholders, no LLM involved), and `context::compact` (summarise the
+head, keep a recent tail verbatim — returns `ok | busy | empty | overflow`).
 
 ## Configuration
 
