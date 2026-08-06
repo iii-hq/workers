@@ -9,26 +9,29 @@
 //!
 //! Recording is deliberately cheap and deliberately lossy: it is fire and
 //! forget, never awaited on the query path, and a `state` failure never fails
-//! the user's query. History is a convenience, not an audit log — for an
-//! audit trail, bind the `database::row-changed` trigger instead.
+//! the user's query. Every write re-stores the capped tail of the list
+//! (`history_max_entries` / `history_max_bytes`) — an unbounded value grows
+//! until the `state` worker can no longer serve it over its engine
+//! connection, which takes `state::*` down for everyone. History is a
+//! convenience, not an audit log — for an audit trail, bind the
+//! `database::row-changed` trigger instead.
 
 use super::query::err_to_str;
+use crate::config::WorkerConfig;
 use crate::error::DbError;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, LazyLock, Mutex};
+use tokio::sync::RwLock;
 
 /// Scope every key lives under in the `state` worker.
 pub(super) const SCOPE: &str = "database";
-/// Entries returned by `history` unless the caller asks for fewer.
+/// Entries returned by `history` unless the caller asks otherwise.
 const HISTORY_LIMIT: usize = 50;
-/// Stored entries are trimmed back to `HISTORY_LIMIT` once they exceed this.
-/// Trimming on read rather than on write keeps the hot path a single atomic
-/// append instead of a read-modify-write.
-const HISTORY_HIGH_WATER: usize = 200;
 /// SQL longer than this is truncated before it is stored.
 const MAX_SQL_CHARS: usize = 4_000;
 
@@ -242,24 +245,14 @@ pub async fn history(
     db: &str,
     req: HistoryReq,
 ) -> Result<HistoryResp, String> {
-    let key = history_key(db);
-    let raw = state_get(iii, &key).await?;
+    let raw = state_get(iii, &history_key(db)).await?;
     let all: Vec<HistoryEntry> = raw
         .iter()
         .filter_map(|v| serde_json::from_value(v.clone()).ok())
         .collect();
 
-    // Self-healing trim: the write path only appends, so the stored list is
-    // capped here once it drifts past the high-water mark.
-    if all.len() > HISTORY_HIGH_WATER {
-        let tail: Vec<&HistoryEntry> = all.iter().rev().take(HISTORY_LIMIT).rev().collect();
-        let _ = state_set(iii, &key, serde_json::to_value(&tail).unwrap_or(json!([]))).await;
-    }
-
-    let limit = req
-        .limit
-        .unwrap_or(HISTORY_LIMIT)
-        .clamp(1, HISTORY_HIGH_WATER);
+    // The stored list is capped on write, so `take` self-bounds.
+    let limit = req.limit.unwrap_or(HISTORY_LIMIT).max(1);
     let entries: Vec<HistoryEntry> = all.into_iter().rev().take(limit).collect();
     Ok(HistoryResp {
         count: entries.len(),
@@ -267,18 +260,46 @@ pub async fn history(
     })
 }
 
-/// The `state::update` op list for appending one entry.
-///
-/// Split out only so a test can assert the discriminator, which is the one
-/// detail of this file that cannot be caught at runtime.
-fn append_ops(entry: Value) -> Vec<Value> {
-    vec![json!({ "type": "append", "value": entry })]
+/// Databases whose stored history could not be read. Their next write skips
+/// the read and replaces the value wholesale: merely serving an oversized
+/// value can reset the `state` worker's connection, so recovery must never
+/// depend on reading the value it is recovering from.
+static RESET_PENDING: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn reset_pending(db: &str) -> bool {
+    RESET_PENDING.lock().is_ok_and(|s| s.contains(db))
+}
+
+fn mark_reset_pending(db: &str) {
+    if let Ok(mut s) = RESET_PENDING.lock() {
+        s.insert(db.to_string());
+    }
+}
+
+fn clear_reset_pending(db: &str) {
+    if let Ok(mut s) = RESET_PENDING.lock() {
+        s.remove(db);
+    }
 }
 
 /// Record one run. Fire and forget: never awaited on the query path, and a
 /// failure is logged rather than surfaced, because losing a history line must
 /// never fail the query the user actually asked for.
-pub fn record(iii: Arc<IIIClient>, db: String, sql: &str, duration_ms: u64, row_count: usize) {
+///
+/// Each write stores the capped tail of the list: read, append, trim to the
+/// configured caps, replace. Last-writer-wins — two concurrent records can
+/// drop a line, which the lossy-by-design charter above allows. A stored
+/// value that cannot be read (missing worker, or a pre-cap oversized blob) is
+/// replaced instead of retried, losing old lines but unwedging `state`.
+pub fn record(
+    iii: Arc<IIIClient>,
+    config: Arc<RwLock<WorkerConfig>>,
+    db: String,
+    sql: &str,
+    duration_ms: u64,
+    row_count: usize,
+) {
     let entry = HistoryEntry {
         sql: truncate(sql),
         verb: leading_verb(sql),
@@ -287,15 +308,60 @@ pub fn record(iii: Arc<IIIClient>, db: String, sql: &str, duration_ms: u64, row_
         at: now(),
     };
     tokio::spawn(async move {
-        let payload = json!({
-            "scope": SCOPE,
-            "key": history_key(&db),
-            "ops": append_ops(serde_json::to_value(&entry).unwrap_or(json!({}))),
-        });
-        if let Err(e) = call(&iii, "state::update", payload).await {
-            tracing::warn!(error = %e, "history not recorded");
+        let (max_entries, max_bytes) = {
+            let cfg = config.read().await;
+            (cfg.history_max_entries, cfg.history_max_bytes)
+        };
+        if max_entries == 0 || max_bytes == 0 {
+            return;
+        }
+        let key = history_key(&db);
+        let mut items = if reset_pending(&db) {
+            Vec::new()
+        } else {
+            match state_get(&iii, &key).await {
+                Ok(items) => items,
+                Err(e) => {
+                    mark_reset_pending(&db);
+                    tracing::warn!(error = %e, "history unreadable; next write resets it");
+                    Vec::new()
+                }
+            }
+        };
+        items.push(serde_json::to_value(&entry).unwrap_or(json!({})));
+        trim_to_caps(&mut items, max_entries, max_bytes);
+        match state_set(&iii, &key, Value::Array(items)).await {
+            Ok(()) => clear_reset_pending(&db),
+            Err(e) => tracing::warn!(error = %e, "history not recorded"),
         }
     });
+}
+
+/// Drop oldest entries until the list fits both caps.
+///
+/// Byte size is the compact `serde_json` encoding, computed without
+/// re-serializing the list per drop: `[]` is 2 bytes, `n` entries cost the
+/// 2 brackets plus their summed lengths plus `n − 1` commas.
+fn trim_to_caps(entries: &mut Vec<Value>, max_entries: usize, max_bytes: usize) {
+    let lens: Vec<usize> = entries
+        .iter()
+        .map(|v| serde_json::to_vec(v).map_or(usize::MAX, |b| b.len()))
+        .collect();
+    let mut kept = 0usize;
+    let mut bytes = 0usize;
+    for len in lens.iter().rev() {
+        let with_next = bytes
+            .saturating_add(*len)
+            .saturating_add(2) // brackets
+            .saturating_add(kept); // commas once this entry joins
+        if kept == max_entries || with_next > max_bytes {
+            break;
+        }
+        bytes += len;
+        kept += 1;
+    }
+    let surplus = entries.len() - kept;
+    entries.drain(..surplus);
 }
 
 fn now() -> String {
@@ -351,18 +417,88 @@ mod tests {
     }
 
     #[test]
-    fn append_op_uses_the_type_discriminator() {
-        // Locked deliberately: `record` is fire-and-forget, so a wrong op
-        // shape fails where nobody is looking. This is the only cheap place
-        // to notice.
-        let ops = append_ops(json!({"sql": "select 1"}));
-        assert_eq!(ops[0]["type"], "append");
-        assert!(ops[0].get("op").is_none());
-    }
-
-    #[test]
     fn keys_are_scoped_per_database() {
         assert_eq!(saved_key("primary"), "saved:primary");
         assert_eq!(history_key("analytics"), "history:analytics");
+    }
+
+    fn entry(sql: &str) -> Value {
+        serde_json::to_value(HistoryEntry {
+            sql: sql.into(),
+            verb: leading_verb(sql),
+            duration_ms: Some(12),
+            row_count: Some(3),
+            at: "2026-08-06T00:00:00+00:00".into(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn trim_keeps_newest_within_entry_cap() {
+        let mut items: Vec<Value> = (0..5).map(|i| entry(&format!("select {i}"))).collect();
+        trim_to_caps(&mut items, 3, usize::MAX);
+        let sqls: Vec<&str> = items.iter().map(|v| v["sql"].as_str().unwrap()).collect();
+        assert_eq!(sqls, ["select 2", "select 3", "select 4"]);
+    }
+
+    #[test]
+    fn trim_enforces_byte_cap_dropping_oldest() {
+        let mut items: Vec<Value> = (0..10).map(|i| entry(&format!("select {i}"))).collect();
+        // One byte short of fitting all ten forces at least one drop.
+        let cap = serde_json::to_vec(&Value::Array(items.clone()))
+            .unwrap()
+            .len()
+            - 1;
+        trim_to_caps(&mut items, usize::MAX, cap);
+        assert!(!items.is_empty() && items.len() < 10);
+        assert_eq!(items.last().unwrap()["sql"], "select 9");
+        assert!(serde_json::to_vec(&Value::Array(items)).unwrap().len() <= cap);
+    }
+
+    #[test]
+    fn trim_byte_accounting_matches_serde_exactly() {
+        // The trim never re-serializes the whole list, so its arithmetic must
+        // match serde's compact encoding to the byte — including multi-byte
+        // and escaped content.
+        let items = vec![
+            entry("select 'plain'"),
+            entry("select 'héllo … ↹'"),
+            entry("select \"quoted\\backslash\"\n\t"),
+        ];
+        let summed: usize = items
+            .iter()
+            .map(|v| serde_json::to_vec(v).unwrap().len())
+            .sum();
+        let actual = serde_json::to_vec(&Value::Array(items.clone()))
+            .unwrap()
+            .len();
+        assert_eq!(2 + summed + (items.len() - 1), actual);
+        assert_eq!(serde_json::to_vec(&Value::Array(vec![])).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn oversized_single_entry_yields_empty_history() {
+        let mut items = vec![entry(&"x".repeat(1_000))];
+        trim_to_caps(&mut items, 10, 64);
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn trim_noop_when_within_caps() {
+        let mut items: Vec<Value> = (0..3).map(|i| entry(&format!("select {i}"))).collect();
+        let before = items.clone();
+        trim_to_caps(&mut items, 200, 262_144);
+        assert_eq!(items, before);
+    }
+
+    #[test]
+    fn reset_flag_marks_and_clears_per_database() {
+        // Unique names: the flag set is a process-wide static shared by tests.
+        assert!(!reset_pending("reset-flag-test-a"));
+        mark_reset_pending("reset-flag-test-a");
+        assert!(reset_pending("reset-flag-test-a"));
+        assert!(!reset_pending("reset-flag-test-b"));
+        clear_reset_pending("reset-flag-test-a");
+        assert!(!reset_pending("reset-flag-test-a"));
     }
 }
