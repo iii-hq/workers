@@ -39,6 +39,7 @@ import {
   summaryLabel,
 } from '@/lib/pdf-attachments'
 import { newMessageId } from '@/lib/session-id'
+import { useExtSessionChips } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
 import {
@@ -581,6 +582,29 @@ export function ChatView({
     const match = modelOptions.find((o) => o.id === effectiveModel)
     return match?.contextWindow
   }, [modelOptions, effectiveModel])
+
+  /* Injected session chips (the `chat` extension slot), rendered in the
+   * header's right cluster where the built-in context meter sits. A chip
+   * with id `context` supersedes the estimate-based ContextUsage meter —
+   * workers with real per-turn numbers own the surface. */
+  const extSessionChips = useExtSessionChips()
+  const sessionChips = useMemo(() => {
+    if (extSessionChips.length === 0) return null
+    return extSessionChips.map((chip) => {
+      const Chip = chip.render
+      return (
+        <Chip
+          key={chip.id}
+          sessionId={conversation.id}
+          modelId={effectiveModel ?? undefined}
+          contextWindow={contextWindow}
+        />
+      )
+    })
+  }, [extSessionChips, conversation.id, effectiveModel, contextWindow])
+  const hasInjectedContextChip = extSessionChips.some(
+    (chip) => chip.id === 'context',
+  )
 
   /* Shared live region: SR announcements for auto-accept, stop-reason
    * notices, and compaction markers route through this hook. Sighted
@@ -1657,10 +1681,13 @@ export function ChatView({
           )}
         </div>
         <div className="flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.06em] flex-shrink-0">
-          <ContextUsage
-            messages={conversation.messages}
-            contextWindow={contextWindow}
-          />
+          {sessionChips}
+          {hasInjectedContextChip ? null : (
+            <ContextUsage
+              messages={conversation.messages}
+              contextWindow={contextWindow}
+            />
+          )}
           <ExportSessionButton
             conversation={conversation}
             onExported={(filename) =>
