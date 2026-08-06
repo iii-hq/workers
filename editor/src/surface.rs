@@ -11,10 +11,10 @@ use serde::Serialize;
 use crate::diff::DiffResult;
 use crate::functions::types::*;
 use crate::functions::{
-    GitStatusOutput, DESC_BUFFERS_CLOSE, DESC_BUFFERS_LIST, DESC_CREATE, DESC_DELETE, DESC_DIFF,
-    DESC_FIND, DESC_GIT_COMMIT, DESC_GIT_HUNKS, DESC_GIT_SHOW, DESC_GIT_STASH, DESC_GIT_STATUS,
-    DESC_GIT_SYNC, DESC_GIT_UNDO_COMMIT, DESC_MOVE, DESC_OPEN, DESC_SAVE, DESC_SEARCH, DESC_TREE,
-    DESC_WORKSPACE_GET, DESC_WORKSPACE_OPEN,
+    GitStatusOutput, DESC_BUFFERS_CLOSE, DESC_BUFFERS_LIST, DESC_CHANGES, DESC_CREATE, DESC_DELETE,
+    DESC_DIFF, DESC_FIND, DESC_GIT_COMMIT, DESC_GIT_HUNKS, DESC_GIT_SHOW, DESC_GIT_STASH,
+    DESC_GIT_STATUS, DESC_GIT_SYNC, DESC_GIT_UNDO_COMMIT, DESC_MOVE, DESC_OPEN, DESC_SAVE,
+    DESC_SEARCH, DESC_TREE, DESC_WORKSPACE_GET, DESC_WORKSPACE_OPEN,
 };
 
 #[derive(Debug, Serialize)]
@@ -51,6 +51,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<WorkspaceOpenInput, WorkspaceView>("editor::workspace::open", DESC_WORKSPACE_OPEN),
         spec::<EmptyInput, WorkspaceView>("editor::workspace::get", DESC_WORKSPACE_GET),
         spec::<TreeInput, TreeOutput>("editor::tree", DESC_TREE),
+        spec::<EmptyInput, ChangesView>("editor::changes", DESC_CHANGES),
         spec::<OpenInput, OpenOutput>("editor::open", DESC_OPEN),
         spec::<SaveInput, SaveOutput>("editor::save", DESC_SAVE),
         spec::<EmptyInput, BuffersOutput>("editor::buffers::list", DESC_BUFFERS_LIST),

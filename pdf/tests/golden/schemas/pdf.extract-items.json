@@ -1,0 +1,265 @@
+{
+  "description": "Extract positioned text items: the box, font, size and styling of every run of characters on a page. Coordinates are PDF points with a bottom-left origin. Use this for layout-aware reading; use pdf::to-markdown to just read the document.",
+  "function_id": "pdf::extract-items",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "FsScope": {
+        "description": "The filesystem jail a call runs under.\n\nThe harness stamps this onto every function it dispatches, so a `path` an agent supplies has to be checked against it. Without the check these functions would read any document on the machine and hand back its text, which is a way around the scope the session was granted. Mirrors the shape the shell worker takes.",
+        "properties": {
+          "grants": {
+            "default": [],
+            "description": "Additional directories or files explicitly granted to this session.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "root": {
+            "description": "The session's working directory.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "root"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Where the PDF comes from. Exactly one of the two fields must be set.",
+    "properties": {
+      "bytes_base64": {
+        "default": null,
+        "description": "Base64-encoded PDF bytes, for a document with no path. Mutually exclusive with `path`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "fs_scope": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/FsScope"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The filesystem jail this call runs under. Stamped by the harness on an agent's call; absent on an operator or console call, which is already user-initiated and not subject to the agent's scope."
+      },
+      "max_items": {
+        "default": null,
+        "description": "Items to return before truncating. Omit for the configured default; `0` returns every item, which on a dense document is a very large response.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "pages": {
+        "default": null,
+        "description": "1-indexed pages to read. Omit for the whole document.",
+        "items": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "path": {
+        "default": null,
+        "description": "Filesystem path to the PDF. Mutually exclusive with `bytes_base64`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Item": {
+        "description": "One positioned run of characters.",
+        "properties": {
+          "bold": {
+            "type": "boolean"
+          },
+          "font": {
+            "description": "Font name as the document names it.",
+            "type": "string"
+          },
+          "font_size": {
+            "description": "Font size in points.",
+            "format": "float",
+            "type": "number"
+          },
+          "height": {
+            "description": "Height in PDF points, approximated from the font size.",
+            "format": "float",
+            "type": "number"
+          },
+          "italic": {
+            "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/definitions/ItemKind"
+          },
+          "link": {
+            "description": "Link target, for a `link` item.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mcid": {
+            "description": "Marked-content id tying this item to the document's tagged structure tree, when the document has one.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "page": {
+            "description": "1-indexed page number.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "strikeout": {
+            "description": "Recovered from vector lines through the text, not from a flag.",
+            "type": "boolean"
+          },
+          "text": {
+            "description": "The characters.",
+            "type": "string"
+          },
+          "underline": {
+            "description": "Recovered from vector lines near the baseline, not from a flag.",
+            "type": "boolean"
+          },
+          "width": {
+            "description": "Width in PDF points.",
+            "format": "float",
+            "type": "number"
+          },
+          "x": {
+            "description": "Left edge, PDF points from the left of the page.",
+            "format": "float",
+            "type": "number"
+          },
+          "y": {
+            "description": "Baseline, PDF points from the **bottom** of the page.",
+            "format": "float",
+            "type": "number"
+          }
+        },
+        "required": [
+          "bold",
+          "font",
+          "font_size",
+          "height",
+          "italic",
+          "kind",
+          "page",
+          "strikeout",
+          "text",
+          "underline",
+          "width",
+          "x",
+          "y"
+        ],
+        "type": "object"
+      },
+      "ItemKind": {
+        "description": "What one item is.",
+        "oneOf": [
+          {
+            "description": "Ordinary text.",
+            "enum": [
+              "text"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An image placeholder. The box is real; no pixels are decoded.",
+            "enum": [
+              "image"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Text carrying a hyperlink; the target is in `link`.",
+            "enum": [
+              "link"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A filled-in form field value.",
+            "enum": [
+              "form_field"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "coordinate_origin": {
+        "description": "Origin convention for `x` and `y`, always `pdf-points, bottom-left`. Stated on every response because a caller that assumed the other convention reads the wrong end of the page with no error. Note `pdf::extract-regions` takes boxes with a top-left origin instead.",
+        "type": "string"
+      },
+      "count": {
+        "description": "Items returned.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "elapsed_ms": {
+        "description": "Wall-clock time for the extraction.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "items": {
+        "description": "The items, in document order, capped per `max_items`.",
+        "items": {
+          "$ref": "#/definitions/Item"
+        },
+        "type": "array"
+      },
+      "source": {
+        "description": "Source label: the file name, or `<inline>` for an in-memory document.",
+        "type": "string"
+      },
+      "total_count": {
+        "description": "Items the document holds for the requested pages. Equal to `count` when nothing was dropped.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "truncated": {
+        "description": "`true` when `items` stops short. Narrow `pages`, or pass `max_items: 0`.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "coordinate_origin",
+      "count",
+      "elapsed_ms",
+      "items",
+      "source",
+      "total_count",
+      "truncated"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

@@ -59,12 +59,6 @@ interface FunctionTriggerCardProps {
   onManageFilesystemAccess?: () => void
   /** Conversation's session workspace — shown as "always allowed" context. */
   workingDir?: string | null
-  /**
-   * When true, render without the outer `border border-rule bg-bg` chrome
-   * so the parent (typically a `FunctionTriggerGroup`) can frame the stack.
-   * The internal layout — header, body, pending bar — stays identical.
-   */
-  embedded?: boolean
 }
 
 /**
@@ -210,6 +204,28 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   return <span className="text-ink">{functionId}</span>
 }
 
+/**
+ * One-line `key: value` digest of the request args for the collapsed header —
+ * what separates three settled calls to the same function without expanding
+ * them. Long strings truncate, nested values collapse to `[N]` / `{…}`.
+ */
+function argsPreview(input: unknown): string | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const entries = Object.entries(input as Record<string, unknown>).filter(
+    ([k]) => k !== '_streaming',
+  )
+  if (entries.length === 0) return null
+  const fmt = (v: unknown): string => {
+    if (typeof v === 'string')
+      return JSON.stringify(v.length > 40 ? `${v.slice(0, 40)}…` : v)
+    if (v === null || typeof v === 'number' || typeof v === 'boolean')
+      return String(v)
+    if (Array.isArray(v)) return `[${v.length}]`
+    return '{…}'
+  }
+  return entries.map(([k, v]) => `${k}: ${fmt(v)}`).join(', ')
+}
+
 export function FunctionTriggerCard({
   message,
   defaultOpen,
@@ -219,7 +235,6 @@ export function FunctionTriggerCard({
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
   workingDir,
-  embedded,
 }: FunctionTriggerCardProps) {
   const pending = !!message.pendingApproval
   const running = !!message.running
@@ -287,6 +302,9 @@ export function FunctionTriggerCard({
   }, [pending])
 
   const errored = !pending && !running && isErrorOutput(message.output)
+  // A gate denial is an error envelope, but the function never ran —
+  // "failed" would misreport a rejection as a failed execution.
+  const denied = errored && isDeniedOutput(message.output)
   // "triggered" is an execution claim, so a settled card only makes it when
   // the call actually ran. Denials are recognized by the gate's envelope in
   // the error details (see isDeniedOutput) — a plain run error keeps the
@@ -295,13 +313,11 @@ export function FunctionTriggerCard({
   const ran =
     !isDeniedOutput(message.output) &&
     (message.output !== undefined || typeof message.durationMs === 'number')
+  const preview = argsPreview(message.input)
 
   return (
     <div
-      className={cn(
-        'function-trigger-surface',
-        !embedded && 'border border-rule bg-bg',
-      )}
+      className="function-trigger-surface border border-rule bg-bg"
       data-message-id={message.id}
       data-message-role="function-call"
       data-function-id={message.functionId}
@@ -352,6 +368,8 @@ export function FunctionTriggerCard({
                 </>
               ) : message.identityInherited ? null : running ? (
                 <>triggering </>
+              ) : errored && !denied ? (
+                <>failed </>
               ) : ran ? (
                 <>triggered </>
               ) : null}
@@ -361,6 +379,9 @@ export function FunctionTriggerCard({
               ) : (
                 <FunctionIdLabel functionId={message.functionId} />
               )}
+              {!pending && !running && preview ? (
+                <span className="text-ink-ghost"> ({preview})</span>
+              ) : null}
               {!pending &&
               !running &&
               typeof message.durationMs === 'number' ? (

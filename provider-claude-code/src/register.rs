@@ -218,7 +218,7 @@ mod tests {
         assert_eq!(prompt, include_str!("../prompts/identity.txt"));
         assert!(prompt.starts_with("You are an iii agent worker."));
         assert!(prompt.contains("agent_trigger"));
-        assert!(prompt.contains("IMPORTANT: NEVER invent function ids"));
+        assert!(prompt.contains("Never use a function id from memory."));
     }
 
     /// OAuth-only: no credential env var (contrast provider-anthropic, which

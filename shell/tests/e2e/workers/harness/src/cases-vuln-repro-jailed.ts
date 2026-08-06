@@ -12,19 +12,20 @@ import {
   rmSync,
   symlinkSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { expect, type CaseContext, type TestCase } from './cases.ts';
 import { fsWriteStream } from './cases-fs-host.ts';
 
-const JAIL_ROOT = '/private/tmp/iii-shell-jailed-root';
+const JAIL_ROOT = process.env.JAIL_ROOT ?? '/private/tmp/iii-shell-jailed-root';
+const OUTSIDE_ROOT = dirname(JAIL_ROOT);
 
 export const VULN_REPRO_JAILED_CASES: TestCase[] = [
   {
     name: 'vuln_repro_c1_symlink_parent_write_rejected_by_canonicalize_with_fallback',
     async run(ctx: CaseContext) {
       const escapeId = randomUUID();
-      const externalDir = `/private/tmp/iii-shell-vuln-c1-escape-${escapeId}`;
+      const externalDir = join(OUTSIDE_ROOT, `iii-shell-vuln-c1-escape-${escapeId}`);
       const escapeName = 'planted.txt';
       const externalTarget = join(externalDir, escapeName);
 
@@ -89,7 +90,7 @@ export const VULN_REPRO_JAILED_CASES: TestCase[] = [
     name: 'vuln_repro_c1b_symlink_parent_with_parents_true_rejected',
     async run(ctx: CaseContext) {
       const escapeId = randomUUID();
-      const externalDir = `/private/tmp/iii-shell-vuln-c1b-escape-${escapeId}`;
+      const externalDir = join(OUTSIDE_ROOT, `iii-shell-vuln-c1b-escape-${escapeId}`);
       const escapeName = 'planted.txt';
       const externalTarget = join(externalDir, escapeName);
 

@@ -26,14 +26,51 @@ const INTERVALS = [
   { value: '60', label: 'every 60s' },
 ]
 
-export function HealthPanel({ host, db }: { host: Host; db: string }) {
+function intervalKey(db: string): string {
+  return `iii-console:database:health-interval:${db}`
+}
+
+export function HealthPanel({
+  host,
+  db,
+  refreshToken,
+}: {
+  host: Host
+  db: string
+  /** Bumped by the page's refresh — the header button must reach this tab
+      too, not silently no-op on it. */
+  refreshToken?: number
+}) {
   const [nonce, setNonce] = useState(0)
-  const [every, setEvery] = useState('0')
+  // The cadence you picked survives leaving the tab (the panel itself
+  // remounts by design — it is a fresh-read view).
+  const [every, setEveryState] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem(intervalKey(db))
+      return stored && INTERVALS.some((i) => i.value === stored) ? stored : '0'
+    } catch {
+      return '0'
+    }
+  })
+  const setEvery = (next: string) => {
+    setEveryState(next)
+    try {
+      window.localStorage.setItem(intervalKey(db), next)
+    } catch {
+      // the cadence is a convenience, not state
+    }
+  }
   const fetcher = useCallback(() => {
     void nonce
+    void refreshToken
     return health(host, db)
-  }, [host, db, nonce])
+  }, [host, db, nonce, refreshToken])
   const read = useDatabaseRead(true, fetcher)
+  // When the report was read, so a stale card never poses as current.
+  const [asOf, setAsOf] = useState<Date | null>(null)
+  useEffect(() => {
+    if (read.data) setAsOf(new Date())
+  }, [read.data])
 
   const refresh = useCallback(() => setNonce((n) => n + 1), [])
 
@@ -64,10 +101,15 @@ export function HealthPanel({ host, db }: { host: Host; db: string }) {
 
   return (
     <div className="db-health">
-      <div className="db-health-bar">
+      <div className="db-health-bar db-toolbar">
         <span className="db-health-driver">{h.driver}</span>
         <span className="db-health-ver">worker {h.worker_version}</span>
-        <div className="db-erd-spacer" />
+        {asOf ? (
+          <span className="db-health-asof">
+            as of {asOf.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </span>
+        ) : null}
+        <div className="db-toolbar-spacer" />
         <Select value={every} onChange={setEvery} options={INTERVALS} aria-label="refresh interval" />
         <Button variant="ghost" size="sm" onClick={refresh} disabled={read.loading}>
           <RefreshCw size={13} aria-hidden />
@@ -75,7 +117,7 @@ export function HealthPanel({ host, db }: { host: Host; db: string }) {
         </Button>
       </div>
 
-      <div className="db-health-cards">
+      <div className={`db-health-cards${read.loading ? ' stale' : ''}`}>
         <Card title="pool">
           <dl className="db-kv">
             <Stat label="max" value={pool.max} />
@@ -95,23 +137,32 @@ export function HealthPanel({ host, db }: { host: Host; db: string }) {
           <ProbeBody
             probe={h.active_queries as Probe<HealthQuery[]>}
             empty="no queries are running."
-            render={(rows: HealthQuery[]) => (
-              <ul className="db-health-list">
-                {rows.map((q) => (
-                  <li key={q.id} className="db-health-query">
-                    <div className="db-health-query-head">
-                      <span className="db-health-id">{q.id}</span>
-                      {q.state ? <span className="db-health-state">{q.state}</span> : null}
-                      {q.duration_ms != null ? <span className="db-num">{formatMs(q.duration_ms)}</span> : null}
-                      {q.user ? <span className="db-health-user">{q.user}</span> : null}
-                    </div>
-                    <code className="db-health-sql" title={q.sql}>
-                      {q.sql}
-                    </code>
-                  </li>
-                ))}
-              </ul>
-            )}
+            render={(rows: HealthQuery[]) => {
+              // MySQL's processlist includes replication daemons that sit
+              // "running" for the server's whole uptime. Billing them as
+              // active queries reads as an alarm — show them (honest), but
+              // name them and sort them after the real work.
+              const daemons = rows.filter(isReplication)
+              const real = rows.filter((q) => !isReplication(q))
+              return (
+                <ul className="db-health-list">
+                  {[...real, ...daemons].map((q) => (
+                    <li key={q.id} className={`db-health-query${isReplication(q) ? ' daemon' : ''}`}>
+                      <div className="db-health-query-head">
+                        <span className="db-health-id">{q.id}</span>
+                        {isReplication(q) ? <span className="db-health-daemon">replication</span> : null}
+                        {q.state ? <span className="db-health-state">{q.state}</span> : null}
+                        {q.duration_ms != null ? <span className="db-num">{formatMs(q.duration_ms)}</span> : null}
+                        {q.user ? <span className="db-health-user">{q.user}</span> : null}
+                      </div>
+                      <code className="db-health-sql" title={q.sql}>
+                        {q.sql}
+                      </code>
+                    </li>
+                  ))}
+                </ul>
+              )
+            }}
           />
         </Card>
 
@@ -207,6 +258,11 @@ type HealthQuery = {
   duration_ms?: number | null
   user?: string | null
 }
+
+/** A replication/binlog daemon connection, not a query anyone ran. */
+function isReplication(q: HealthQuery): boolean {
+  return /binlog|replic/i.test(q.state ?? '') || /binlog dump/i.test(q.sql ?? '')
+}
 type HealthLock = { blocked_id: string; blocked_sql: string; blocking_id: string; relation?: string | null }
 type HealthCache = { hit_ratio: number; blocks_hit: number; blocks_read: number }
 type HealthTableSize = {
@@ -291,5 +347,12 @@ function formatCount(n: number | null | undefined): string {
 
 function formatMs(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`
-  return `${(ms / 1000).toFixed(1)}s`
+  const s = ms / 1000
+  // Roll up: "13233.0s" is a number you have to do arithmetic on; "3h 40m"
+  // is a fact.
+  if (s < 120) return `${s.toFixed(1)}s`
+  const m = Math.floor(s / 60)
+  if (m < 120) return `${m}m ${Math.round(s % 60)}s`
+  const h = Math.floor(m / 60)
+  return `${h}h ${m % 60}m`
 }

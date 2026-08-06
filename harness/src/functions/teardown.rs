@@ -32,18 +32,9 @@ pub async fn handle(
 }
 
 pub(crate) async fn cleanup_session(deps: &Deps, session_id: &str) -> u64 {
-    let dropped = deps.subscriptions.take_session(session_id);
-    let tracked = dropped.len() as u64;
-    for (_subscription_id, trigger_id) in dropped {
-        if let Some(trigger_id) = trigger_id {
-            super::subscribe::unregister_engine_trigger(deps, &trigger_id).await;
-        }
-    }
-
-    // Durable complement: after a harness restart the in-memory registry no
-    // longer knows the binding, but the engine still carries its owner stamp.
-    let swept = crate::subscriptions::reconcile::sweep_owner(deps, session_id).await;
-    let removed = tracked.saturating_add(swept as u64);
+    // The binding store is the single authority: one durable sweep tears the
+    // session's bindings down engine-side and deletes their records.
+    let removed = crate::bindings::gc::sweep_owner(deps, session_id).await as u64;
     if removed > 0 {
         tracing::info!(
             session_id,

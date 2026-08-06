@@ -41,6 +41,38 @@
         ],
         "description": "The canonical transcript message union. Untagged: the single-variant role tags disambiguate deserialization (assistant/function_result/custom are tried before user so their required fields gate the match)."
       },
+      "ArmedWake": {
+        "description": "One armed wake as `harness::status` reports it — enough for a console or a poller to say \"parked on state operation_meta/status since T, deadline T2\" instead of showing a session that just looks quietly done.",
+        "properties": {
+          "config": true,
+          "created_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "expires_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "subscription_id": {
+            "type": "string"
+          },
+          "trigger_type": {
+            "description": "The registered trigger's type/config, read from the canonicalised registration request. Absent on records that predate it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "created_at",
+          "subscription_id"
+        ],
+        "type": "object"
+      },
       "AssistantMessage": {
         "properties": {
           "content": {
@@ -410,6 +442,13 @@
       },
       "StatusReport": {
         "properties": {
+          "armed_wakes": {
+            "description": "WHAT the session is parked on, when `expects_wake`: each armed wake's watch and deadline, so \"parked 12m on state operation_meta/status — never written\" is readable from the outside instead of the session just looking quietly done.",
+            "items": {
+              "$ref": "#/definitions/ArmedWake"
+            },
+            "type": "array"
+          },
           "children": {
             "items": {
               "$ref": "#/definitions/ChildRef"

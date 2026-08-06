@@ -1,60 +1,12 @@
 # Release SOP: docs/sops/release.md
 name: Release
+run-name: Release · ${{ inputs.tag || github.ref_name }}
 
 on:
   push:
     tags:
-      - 'acp/v*'
-      - 'approval-gate/v*'
-      - 'bridge/v*'
-      - 'browser/v*'
-      - 'claude-code/v*'
-      - 'codex/v*'
-      - 'computer/v*'
-      - 'devin/v*'
-      - 'console/v*'
-      - 'grok/v*'
-      - 'context-manager/v*'
-      - 'cron/v*'
-      - 'database/v*'
-      - 'editor/v*'
-      - 'email/v*'
-      - 'eval/v*'
-      - 'harness/v*'
-      - 'hermes/v*'
-      - 'http/v*'
-      - 'iii-directory/v*'
-      - 'lsp/v*'
-      - 'image-resize/v*'
-      - 'llm-router/v*'
-      - 'fp/v*'
-      - 'github/v*'
-      - 'mcp/v*'
-      - 'memory/v*'
-      - 'memory-consolidate/v*'
-      - 'opencode/v*'
-      - 'openwiki/v*'
-      - 'pi/v*'
-      - 'provider-anthropic/v*'
-      - 'provider-claude-code/v*'
-      - 'provider-kimi/v*'
-      - 'provider-llamacpp/v*'
-      - 'provider-openai/v*'
-      - 'provider-openai-codex/v*'
-      - 'provider-xai/v*'
-      - 'provider-zai/v*'
-      - 'pubsub/v*'
-      - 'queue/v*'
-      - 'rbac-proxy/v*'
-      - 'session-manager/v*'
-      - 'slack/v*'
-      - 'telegram-bot/v*'
-      - 'shell/v*'
-      - 'state/v*'
-      - 'storage/v*'
-      - 'scrapling/v*'
-      - 'web/v*'
-      - 'worktree/v*'
+      - '**/v*'
+      - '!lsp-vscode/v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -63,6 +15,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: write
   packages: write
 
@@ -90,13 +43,30 @@ jobs:
       dry_run: ${{ steps.meta.outputs.dry_run }}
       targets: ${{ steps.meta.outputs.targets }}
       experimental: ${{ steps.meta.outputs.experimental }}
+      tag_sha: ${{ steps.meta.outputs.tag_sha }}
+      release_contract: ${{ steps.meta.outputs.release_contract }}
+      operation_id: ${{ steps.meta.outputs.operation_id }}
+      step_id: ${{ steps.meta.outputs.step_id }}
+      source_sha: ${{ steps.meta.outputs.source_sha }}
+      maturity: ${{ steps.meta.outputs.maturity }}
       web_bundle: ${{ steps.web.outputs.needed }}
       interface_smoke: ${{ steps.smoke.outputs.interface_smoke }}
-      harness_smoke: ${{ steps.harness_smoke.outputs.enabled }}
+      staged: ${{ steps.release_state.outputs.staged }}
+      promotable: ${{ steps.release_state.outputs.promotable }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      # Contract-v2 tags execute their own pinned tooling. This checkout is a
+      # compatibility fallback for older tags created before that tooling and
+      # the release catalog existed.
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          path: release-tooling
           fetch-depth: 0
           fetch-tags: true
 
@@ -116,7 +86,16 @@ jobs:
         run: |
           set -euo pipefail
           pip install --quiet pyyaml
-          python3 .github/scripts/parse_release_tag.py "$RAW_TAG"
+          if [[ -f .github/release-workers.yaml ]]; then
+            python3 .github/scripts/parse_release_tag.py "$RAW_TAG"
+          else
+            echo "::warning::using main release tooling for legacy tag $RAW_TAG"
+            (
+              cd release-tooling
+              python3 .github/scripts/parse_release_tag.py "$RAW_TAG" \
+                --source-dir "$GITHUB_WORKSPACE"
+            )
+          fi
 
       # Workers like `console` ship a Vite SPA embedded into the binary via
       # `rust-embed`. Their `build.rs` invokes `pnpm install + pnpm build`
@@ -146,35 +125,32 @@ jobs:
           WORKER: ${{ steps.meta.outputs.worker }}
         run: |
           set -euo pipefail
-          pip install --quiet pyyaml
           val=$(WORKER="$WORKER" python3 -c 'import os, sys, pathlib; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_iii_worker_yaml(pathlib.Path(os.environ["WORKER"])); print("false" if m.raw.get("interface_smoke") is False else "true")')
           echo "interface_smoke=$val" >> "$GITHUB_OUTPUT"
           if [[ "$val" == "false" ]]; then
             echo "::notice::$WORKER opts out of interface collection; registry publish will be skipped"
           fi
 
-      # The published Harness quickstart also covers every worker declared as
-      # a mandatory Harness dependency. Keep this derived from the manifest so
-      # the post-deploy smoke follows dependency changes automatically.
-      - name: Detect Harness quickstart smoke target
-        id: harness_smoke
+      - name: Classify staged release
+        id: release_state
         env:
-          WORKER: ${{ steps.meta.outputs.worker }}
+          REGISTRY_TAG: ${{ steps.meta.outputs.registry_tag }}
+          INTERFACE_SMOKE: ${{ steps.smoke.outputs.interface_smoke }}
+          IS_PRERELEASE: ${{ steps.meta.outputs.is_prerelease }}
+          DRY_RUN: ${{ steps.meta.outputs.dry_run }}
         run: |
           set -euo pipefail
-          enabled=$(WORKER="$WORKER" python3 - <<'PY'
-          import os
-          from pathlib import Path
-          import yaml
-
-          worker = os.environ["WORKER"]
-          manifest = yaml.safe_load(Path("harness/iii.worker.yaml").read_text())
-          dependencies = manifest.get("dependencies", {}) or {}
-          print("true" if worker == "harness" or worker in dependencies else "false")
-          PY
-          )
-          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
-          echo "::notice::Harness quickstart smoke target=$enabled worker=$WORKER"
+          staged=false
+          promotable=false
+          if [[ "$REGISTRY_TAG" == next && "$INTERFACE_SMOKE" == true && "$DRY_RUN" != true ]]; then
+            staged=true
+            if [[ "$IS_PRERELEASE" != true ]]; then
+              promotable=true
+            fi
+          fi
+          echo "staged=$staged" >>"$GITHUB_OUTPUT"
+          echo "promotable=$promotable" >>"$GITHUB_OUTPUT"
+          echo "::notice::staged=$staged promotable=$promotable"
 
   # ──────────────────────────────────────────────────────────────
   # Create the GitHub Release shell (skipped on dry runs).
@@ -195,7 +171,8 @@ jobs:
           tag_name: ${{ needs.setup.outputs.tag }}
           name: ${{ needs.setup.outputs.worker }} ${{ needs.setup.outputs.version }}
           draft: false
-          prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
+          prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' || needs.setup.outputs.staged == 'true' }}
+          make_latest: false
           generate_release_notes: true
 
   # ──────────────────────────────────────────────────────────────
@@ -211,7 +188,7 @@ jobs:
       bin_name: ${{ needs.setup.outputs.bin }}
       manifest_path: ${{ needs.setup.outputs.worker }}/${{ needs.setup.outputs.manifest }}
       tag_name: ${{ needs.setup.outputs.tag }}
-      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
+      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' || needs.setup.outputs.staged == 'true' }}
       skip_create_release: true
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
       targets: ${{ needs.setup.outputs.targets }}
@@ -230,8 +207,27 @@ jobs:
       ref: ${{ inputs.tag || github.ref }}
       worker: ${{ needs.setup.outputs.worker }}
       version: ${{ needs.setup.outputs.version }}
-      registry_tag: ${{ needs.setup.outputs.registry_tag }}
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+    secrets: inherit
+
+  container-alias:
+    name: Move container channel alias
+    needs: [setup, container-build, publish]
+    if: >-
+      ${{
+        always() &&
+        needs.setup.result == 'success' &&
+        needs.setup.outputs.deploy == 'image' &&
+        needs.setup.outputs.dry_run != 'true' &&
+        needs.container-build.result == 'success' &&
+        needs.publish.result == 'success'
+      }}
+    uses: ./.github/workflows/_container-alias.yml
+    with:
+      worker: ${{ needs.setup.outputs.worker }}
+      version: ${{ needs.setup.outputs.version }}
+      channel: ${{ needs.setup.outputs.registry_tag }}
+      expected_digest: ${{ needs.container-build.outputs.image_digest }}
     secrets: inherit
 
   # ──────────────────────────────────────────────────────────────
@@ -249,7 +245,7 @@ jobs:
       version: ${{ needs.setup.outputs.version }}
       language: ${{ needs.setup.outputs.language }}
       tag_name: ${{ needs.setup.outputs.tag }}
-      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
+      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' || needs.setup.outputs.staged == 'true' }}
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
     secrets: inherit
 
@@ -273,51 +269,136 @@ jobs:
       experimental: ${{ needs.setup.outputs.experimental }}
     secrets: inherit
 
-  # Run the published Harness quickstart immediately after the registry
-  # deployment of Harness or one of its mandatory dependencies. The validator
-  # supports the stable release channels only.
-  quickstart:
-    name: Harness quickstart
+  candidate-smoke:
+    name: Validate published candidate
     needs: [setup, publish]
-    if: >-
-      ${{
-        !failure() &&
-        !cancelled() &&
-        needs.setup.outputs.harness_smoke == 'true' &&
-        needs.setup.outputs.dry_run != 'true' &&
-        needs.publish.result == 'success' &&
-        (needs.setup.outputs.registry_tag == 'latest' || needs.setup.outputs.registry_tag == 'next')
-      }}
-    uses: ./.github/workflows/harness-quickstart.yml
+    if: ${{ !failure() && !cancelled() && needs.setup.outputs.staged == 'true' && needs.publish.result == 'success' }}
+    uses: ./.github/workflows/_candidate-smoke.yml
     with:
-      channel: ${{ needs.setup.outputs.registry_tag }}
-    secrets: inherit
+      ref: ${{ inputs.tag || github.ref }}
+      worker: ${{ needs.setup.outputs.worker }}
+      version: ${{ needs.setup.outputs.version }}
+
+  candidate-ready:
+    name: Record candidate evidence
+    needs: [setup, container-build, publish, container-alias, candidate-smoke]
+    if: ${{ always() && needs.setup.result == 'success' && needs.setup.outputs.staged == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Build candidate evidence
+        env:
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          EVIDENCE_RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          TAG_SHA: ${{ needs.setup.outputs.tag_sha }}
+          SOURCE_SHA: ${{ needs.setup.outputs.source_sha }}
+          RELEASE_TAG: ${{ needs.setup.outputs.tag }}
+          WORKER: ${{ needs.setup.outputs.worker }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          MATURITY: ${{ needs.setup.outputs.maturity }}
+          DEPLOY: ${{ needs.setup.outputs.deploy }}
+          REGISTRY_TAG: ${{ needs.setup.outputs.registry_tag }}
+          OPERATION_ID: ${{ needs.setup.outputs.operation_id }}
+          STEP_ID: ${{ needs.setup.outputs.step_id }}
+          IMAGE_DIGEST: ${{ needs.container-build.outputs.image_digest }}
+          PROMOTABLE: ${{ needs.setup.outputs.promotable }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          CANDIDATE_SMOKE_RESULT: ${{ needs.candidate-smoke.result }}
+          CONTAINER_ALIAS_RESULT: ${{ needs.container-alias.result }}
+        run: |
+          python3 .github/scripts/release_candidate.py build \
+            --repository "$REPOSITORY" \
+            --release-run-id "$RELEASE_RUN_ID" \
+            --evidence-run-id "$EVIDENCE_RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --tag-sha "$TAG_SHA" \
+            --source-sha "$SOURCE_SHA" \
+            --release-tag "$RELEASE_TAG" \
+            --worker "$WORKER" \
+            --version "$VERSION" \
+            --maturity "$MATURITY" \
+            --deploy "$DEPLOY" \
+            --registry-tag "$REGISTRY_TAG" \
+            --operation-id "$OPERATION_ID" \
+            --step-id "$STEP_ID" \
+            --image-digest "$IMAGE_DIGEST" \
+            --promotable "$PROMOTABLE" \
+            --publish-result "$PUBLISH_RESULT" \
+            --candidate-smoke-result "$CANDIDATE_SMOKE_RESULT" \
+            --container-alias-result "$CONTAINER_ALIAS_RESULT" \
+            --output release-candidate.json
+          cat release-candidate.json
+
+      - name: Upload candidate evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-candidate-${{ needs.setup.outputs.worker }}-${{ needs.setup.outputs.version }}
+          path: release-candidate.json
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Require all candidate gates
+        run: jq -e '.candidate_ready == true' release-candidate.json >/dev/null
 
   # ──────────────────────────────────────────────────────────────
-  # Announce the release in Slack (#worker-releases). Terminal job:
-  # nothing depends on it, but a bad token or channel fails red
-  # instead of rotting silently.
+  # Announce the release in Slack (#worker-releases). Notification failures
+  # are warnings: they must not turn an already published release red.
   # ──────────────────────────────────────────────────────────────
   announce:
     name: Announce on Slack
-    needs: [setup, binary-build, container-build, bundle-build, publish]
-    if: ${{ !failure() && !cancelled() && needs.setup.outputs.dry_run != 'true' }}
+    needs: [setup, binary-build, container-build, bundle-build, publish, container-alias, candidate-ready]
+    if: >-
+      ${{
+        always() &&
+        needs.setup.result == 'success' &&
+        needs.setup.outputs.dry_run != 'true' &&
+        (
+          (needs.setup.outputs.staged == 'true' && needs.candidate-ready.result == 'success') ||
+          (
+            needs.setup.outputs.staged != 'true' &&
+            needs.binary-build.result != 'failure' &&
+            needs.container-build.result != 'failure' &&
+            needs.bundle-build.result != 'failure' &&
+            (needs.setup.outputs.deploy != 'image' || needs.container-alias.result == 'success') &&
+            (needs.setup.outputs.interface_smoke == 'false' || needs.publish.result == 'success')
+          )
+        )
+      }}
     runs-on: ubuntu-latest
+    outputs:
+      notification_result: ${{ steps.post.outcome == 'success' && steps.thread.outcome != 'failure' && 'success' || 'failure' }}
     steps:
       - name: Post to Slack
         id: post
+        continue-on-error: true
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL: worker-releases
           WORKER: ${{ needs.setup.outputs.worker }}
           VERSION: ${{ needs.setup.outputs.version }}
           IS_PRERELEASE: ${{ needs.setup.outputs.is_prerelease }}
+          STAGED: ${{ needs.setup.outputs.staged }}
+          PROMOTABLE: ${{ needs.setup.outputs.promotable }}
           RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.setup.outputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          suffix=""
-          if [[ "$IS_PRERELEASE" == "true" ]]; then suffix=" (pre-release)"; fi
-          text="🚀 ${WORKER} v${VERSION}${suffix} released — <${RELEASE_URL}|GitHub Release>"
+          if [[ "$STAGED" == true && "$PROMOTABLE" == true ]]; then
+            text="🧪 ${WORKER} v${VERSION} candidate passed on @next — <${RUN_URL}|promote manually> · <${RELEASE_URL}|GitHub prerelease>"
+          elif [[ "$STAGED" == true ]]; then
+            text="🧪 ${WORKER} v${VERSION} prerelease passed on @next — <${RELEASE_URL}|GitHub prerelease>"
+          else
+            suffix=""
+            if [[ "$IS_PRERELEASE" == "true" ]]; then suffix=" (pre-release)"; fi
+            text="🚀 ${WORKER} v${VERSION}${suffix} released — <${RELEASE_URL}|GitHub Release>"
+          fi
           payload=$(jq -n --arg channel "$CHANNEL" --arg text "$text" '{channel: $channel, text: $text}')
           resp=$(curl -sf -X POST https://slack.com/api/chat.postMessage \
             -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
@@ -330,6 +411,9 @@ jobs:
           echo "ts=$(echo "$resp" | jq -r .ts)" >> "$GITHUB_OUTPUT"
 
       - name: Post release notes in thread
+        id: thread
+        if: steps.post.outputs.ts != ''
+        continue-on-error: true
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL: worker-releases
@@ -354,3 +438,89 @@ jobs:
             echo "::error::Slack API error: $(echo "$resp" | jq -r .error)"
             exit 1
           fi
+
+  release-result:
+    name: Record terminal release result
+    needs:
+      - setup
+      - create-release
+      - binary-build
+      - container-build
+      - bundle-build
+      - publish
+      - container-alias
+      - candidate-ready
+      - announce
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Build release result
+        env:
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          OPERATION_ID: ${{ needs.setup.outputs.operation_id || 'unknown' }}
+          STEP_ID: ${{ needs.setup.outputs.step_id || 'unknown' }}
+          WORKER: ${{ needs.setup.outputs.worker || 'unknown' }}
+          VERSION: ${{ needs.setup.outputs.version || 'unknown' }}
+          MATURITY: ${{ needs.setup.outputs.maturity || 'unknown' }}
+          RELEASE_TAG: ${{ needs.setup.outputs.tag || inputs.tag || github.ref_name }}
+          TAG_SHA: ${{ needs.setup.outputs.tag_sha || 'unknown' }}
+          SOURCE_SHA: ${{ needs.setup.outputs.source_sha || 'unknown' }}
+          DEPLOY: ${{ needs.setup.outputs.deploy || 'unknown' }}
+          REGISTRY_TAG: ${{ needs.setup.outputs.registry_tag || 'unknown' }}
+          IMAGE_DIGEST: ${{ needs.container-build.outputs.image_digest }}
+          DRY_RUN: ${{ needs.setup.outputs.dry_run || 'false' }}
+          STAGED: ${{ needs.setup.outputs.staged || 'false' }}
+          INTERFACE_SMOKE: ${{ needs.setup.outputs.interface_smoke || 'false' }}
+          SETUP_RESULT: ${{ needs.setup.result }}
+          GITHUB_RELEASE_RESULT: ${{ needs.create-release.result }}
+          BINARY_BUILD_RESULT: ${{ needs.binary-build.result }}
+          CONTAINER_BUILD_RESULT: ${{ needs.container-build.result }}
+          BUNDLE_BUILD_RESULT: ${{ needs.bundle-build.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          CONTAINER_ALIAS_RESULT: ${{ needs.container-alias.result }}
+          CANDIDATE_RESULT: ${{ needs.candidate-ready.result }}
+          NOTIFICATION_RESULT: ${{ needs.announce.outputs.notification_result || needs.announce.result }}
+        run: |
+          python3 .github/scripts/release_result.py \
+            --repository "$REPOSITORY" \
+            --release-run-id "$RELEASE_RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --operation-id "$OPERATION_ID" \
+            --step-id "$STEP_ID" \
+            --worker "$WORKER" \
+            --version "$VERSION" \
+            --maturity "$MATURITY" \
+            --release-tag "$RELEASE_TAG" \
+            --tag-sha "$TAG_SHA" \
+            --source-sha "$SOURCE_SHA" \
+            --deploy "$DEPLOY" \
+            --registry-tag "$REGISTRY_TAG" \
+            --image-digest "$IMAGE_DIGEST" \
+            --dry-run "$DRY_RUN" \
+            --staged "$STAGED" \
+            --interface-smoke "$INTERFACE_SMOKE" \
+            --setup-result "$SETUP_RESULT" \
+            --github-release-result "$GITHUB_RELEASE_RESULT" \
+            --binary-build-result "$BINARY_BUILD_RESULT" \
+            --container-build-result "$CONTAINER_BUILD_RESULT" \
+            --bundle-build-result "$BUNDLE_BUILD_RESULT" \
+            --publish-result "$PUBLISH_RESULT" \
+            --container-alias-result "$CONTAINER_ALIAS_RESULT" \
+            --candidate-result "$CANDIDATE_RESULT" \
+            --notification-result "$NOTIFICATION_RESULT" \
+            --output release-result.json
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-result-${{ github.run_id }}
+          path: release-result.json
+          retention-days: 30
+          if-no-files-found: error

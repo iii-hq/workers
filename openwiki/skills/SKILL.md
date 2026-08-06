@@ -8,7 +8,7 @@ description: Generate and browse a source-grounded markdown wiki for a git repos
 Builds and maintains a categorized, interlinked markdown wiki for a code
 repository. A model reads the source, plans an outline, writes one page per
 topic with file citations, and refreshes pages from git diffs. Wiki content is
-stored in iii-state; a browser UI and JSON API are served under `/openwiki`.
+stored in state; a browser UI and JSON API are served under `/openwiki`.
 
 ## When to Use
 
@@ -25,7 +25,7 @@ stored in iii-state; a browser UI and JSON API are served under `/openwiki`.
 - Not a chatbot. It maintains structured pages rather than answering free-form
   questions.
 - Cloned repositories are ephemeral working copies on local disk; the wiki
-  itself lives in iii-state.
+  itself lives in state.
 
 ## Functions
 

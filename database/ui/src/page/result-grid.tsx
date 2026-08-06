@@ -200,7 +200,9 @@ export function ResultGrid({
   return (
     <div>
       <div className="db-grid-wrap">
-        <table className="db-grid">
+        {/* With the roving cursor the table is a grid for real — the role
+            makes the per-cell `gridcell`s valid instead of orphaned. */}
+        <table className="db-grid" role={keyboard ? 'grid' : undefined}>
           <thead className={stickyHeader ? 'sticky' : undefined}>
             <tr>
               {cols.map((col) => {

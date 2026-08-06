@@ -211,7 +211,7 @@ instance.
 - `worktree::land-step` — internal queue consumer; not agent-callable.
 
 Errors carry stable `W###` codes (`src/error.rs`). One instance per engine:
-iii-state has no compare-and-set, so run a single worktree worker (shard by
+state has no compare-and-set, so run a single worktree worker (shard by
 repo if you need more).
 
 ## Custom trigger types
