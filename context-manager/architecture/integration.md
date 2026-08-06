@@ -287,8 +287,8 @@ provider-legal. Build on these:
   needed]` text block; the message, its `function_call_id`, and the message
   ordering all survive. Message counts are stable across a prune. The
   unconditional cap pass replaces the same way, with its own marker:
-  `[…result capped: was ~N tokens; middle omitted; re-call {function_id} for
-  the full data]`.
+  `[…result capped: was ~N tokens; middle omitted; re-call {function_id} with
+  narrower arguments if the omitted middle is needed]`.
 - **`custom` messages never reach the model.** `assemble` excludes
   `role: "custom"` from the returned `messages` and from `token_count`. A huge
   custom entry can't trigger a phantom overflow, and customs never leak to a

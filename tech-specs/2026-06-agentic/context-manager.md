@@ -76,7 +76,8 @@ Whatever pruning or compaction does, the returned context must still be accepted
   placeholder (`[output of {function_id} pruned: was ~N tokens; re-call it if still needed]`); the
   block, the message, and the `function_call_id` linkage all survive. The unconditional per-result
   cap pass (see `context::assemble`) replaces the same way, with its own marker: `[…result capped:
-  was ~N tokens; middle omitted; re-call {function_id} for the full data]`.
+  was ~N tokens; middle omitted; re-call {function_id} with narrower arguments if the omitted
+  middle is needed]`.
 - **`custom` messages are app-facing.** `context::assemble` excludes `role: "custom"` messages from
   the model-facing list (and their tokens from the count) — they have no provider wire mapping (see
   [README § Messages](README.md#messages-the-many-message-types)).

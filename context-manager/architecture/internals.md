@@ -224,15 +224,19 @@ exemptions beyond a `details` payload carrying `"status": "denied"` (which
 keeps its `details` even though its `content` is still capped). Any single
 result estimating over `max_result_tokens` (config default `20_000`; `0`
 disables the pass) is rewritten to a head + marker + tail view — `[…result
-capped: was ~N tokens; middle omitted; re-call {function_id} for the full
-data]` — reserving the marker's own bytes out of a 90%-of-cap-budget target
-*before* splitting head/tail, so the rewrite is idempotent without a fixpoint
-loop even at a small cap or a long `function_id`. On the assemble path it
-runs **before** prune (`functions/assemble.rs` Step 0): a result that is both
-oversized and aged is capped first and can still be pruned afterward if it's
-still verbose and old enough — the ordering doesn't skip prune's pass, it
-just means prune's own rewrite runs against the already-shrunk capped text
-instead of the original.
+capped: was ~N tokens; middle omitted; re-call {function_id} with narrower
+arguments if the omitted middle is needed]` — reserving the marker's own
+bytes out of a 90%-of-cap-budget target *before* splitting head/tail, so the
+rewrite is idempotent without a fixpoint loop even at a small cap or a long
+`function_id`. On the assemble path it runs **before** prune
+(`functions/assemble.rs` Step 0): a result that is both oversized and aged is
+capped first and can still be pruned afterward if it's still verbose and old
+enough — the ordering doesn't skip prune's pass, it just means prune's own
+rewrite runs against the already-shrunk capped text instead of the original.
+Like prune and emergency reduction, the rewrite replaces a result's whole
+`content` vector with a single text block, so a non-text block (e.g. an
+image) riding alongside more than `max_result_tokens` of text is dropped from
+the model-facing view along with it.
 
 ## 7. Compaction — tail selection
 

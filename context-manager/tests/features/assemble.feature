@@ -78,7 +78,7 @@ Feature: context::assemble — the model-ready context pipeline
     When I assemble the history with model "big"
     Then the call succeeds
     And the response field "applied.capped_parts" is 1
-    And response message 2 text contains "re-call engine::traces::list for the full data"
+    And response message 2 text contains "re-call engine::traces::list with narrower arguments if the omitted middle is needed"
 
   Scenario: max_result_tokens 0 disables the cap pass
     Given the router knows model "big" with context window 200000 and max output 8000
@@ -135,9 +135,10 @@ Feature: context::assemble — the model-ready context pipeline
     Then the call succeeds
     And the response field "applied.pruned" is false
     And the response field "applied.capped_parts" is 1
+    And the response field "applied.capped_tokens" exceeds 500000
     And the response field "token_count" does not exceed 124000
     And response message 2 text does not exceed 100000 chars
-    And response message 2 text contains "re-call session::messages for the full data"
+    And response message 2 text contains "re-call session::messages with narrower arguments if the omitted middle is needed"
     And the response messages have as many messages as the request
     And every response message keeps its function_call_id
     And call/result pairing is intact in the response messages

@@ -389,7 +389,7 @@ pub fn cap_results_with_sizes(
         // the threshold (the marker's fixed cost can exceed the 10% margin
         // once the cap itself is small).
         let marker = format!(
-            "\n[…result capped: was ~{tokens} tokens; middle omitted; re-call {function_id} for the full data]\n"
+            "\n[…result capped: was ~{tokens} tokens; middle omitted; re-call {function_id} with narrower arguments if the omitted middle is needed]\n"
         );
 
         // Chars kept: scale the text down to 90% of the cap, preserving the
@@ -770,7 +770,7 @@ mod tests {
         // Rewritten text estimates under the cap (90% target + marker).
         assert!(HeuristicEstimator.text(&text) <= 20_000);
         assert!(text.contains(
-            "[…result capped: was ~50000 tokens; middle omitted; re-call engine::traces::list for the full data]"
+            "[…result capped: was ~50000 tokens; middle omitted; re-call engine::traces::list with narrower arguments if the omitted middle is needed]"
         ));
         // Head and tail of the original both survive.
         assert!(text.starts_with('x'));
@@ -919,7 +919,8 @@ mod tests {
         assert!(HeuristicEstimator.text(&text) <= 20_000);
         let marker_start = text.find("\n[…result capped").unwrap();
         let head = &text[..marker_start];
-        let marker_end = text.find("for the full data]\n").unwrap() + "for the full data]\n".len();
+        let marker_end = text.find("if the omitted middle is needed]\n").unwrap()
+            + "if the omitted middle is needed]\n".len();
         let tail = &text[marker_end..];
         // 60/40 split of the kept budget, within rounding slack.
         let ratio = head.len() as f64 / (head.len() + tail.len()) as f64;

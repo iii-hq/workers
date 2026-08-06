@@ -895,7 +895,7 @@
             "type": "boolean"
           },
           "initial_token_count": {
-            "description": "Full estimated request size before pruning or compaction, including the system prompt, tool schemas, and provider framing overhead.",
+            "description": "Full estimated request size before capping, pruning, or compaction, including the system prompt, tool schemas, and provider framing overhead.",
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"

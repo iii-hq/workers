@@ -78,8 +78,8 @@ with `context/overflow`; callers must not issue a provider request in that case.
 
 Before pruning or compaction runs, assemble unconditionally caps any single function
 result over `max_result_tokens` (default 20000; 0 disables the pass) to a bounded
-`[…result capped: was ~N tokens; middle omitted; re-call {function_id} for the full
-data]` head+tail view — see Configuration below.
+`[…result capped: was ~N tokens; middle omitted; re-call {function_id} with narrower
+arguments if the omitted middle is needed]` head+tail view — see Configuration below.
 
 The other three functions: `context::count-tokens` (estimate messages + tools +
 system prompt vs a model), `context::prune` (replace verbose function outputs

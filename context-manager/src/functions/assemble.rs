@@ -97,8 +97,8 @@ pub enum ModelResolvedWire {
 /// What the pipeline actually did this call.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Applied {
-    /// Full estimated request size before pruning or compaction, including the
-    /// system prompt, tool schemas, and provider framing overhead.
+    /// Full estimated request size before capping, pruning, or compaction,
+    /// including the system prompt, tool schemas, and provider framing overhead.
     pub initial_token_count: u64,
     pub pruned: bool,
     pub pruned_tokens: u64,
@@ -259,8 +259,10 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     let mut token_count = initial_token_count;
 
     // Step 0: cap oversized single results — always, any age (the spec's
-    // unconditional ceiling; 0 disables). Runs before prune so a whale
-    // that is ALSO aged only pays the cheaper placeholder rewrite once.
+    // unconditional ceiling; 0 disables). Runs before prune so (a) the
+    // ceiling holds even when prune's own min_free_tokens hysteresis skips
+    // its pass entirely, and (b) prune's window accounting then measures
+    // what the model actually sees, not the pre-cap size.
     let max_result_tokens = options
         .max_result_tokens
         .unwrap_or(config.max_result_tokens);
@@ -268,6 +270,13 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         let cap = cap_results_with_sizes(&mut working, &mut sizes, max_result_tokens, estimator);
         applied.capped_parts = cap.capped_parts;
         applied.capped_tokens = cap.capped_tokens;
+        if cap.capped_parts > 0 {
+            tracing::info!(
+                capped_parts = cap.capped_parts,
+                capped_tokens = cap.capped_tokens,
+                "assemble: capped oversized function result(s)"
+            );
+        }
         token_count = total(&sizes, prompt_tokens);
     }
 
