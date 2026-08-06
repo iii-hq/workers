@@ -486,6 +486,35 @@ describe('engine::register_trigger', () => {
     expect(html).not.toContain('this session')
   })
 
+  it('parses and renders gating conditions', () => {
+    const input = {
+      trigger_type: 'state',
+      config: { scope: 'rx_run' },
+      label: 'wake when all couriers done',
+      once: true,
+      conditions: [
+        {
+          function_id: 'state::barrier',
+          config: {
+            expect: ['acme', 'globex', 'initech'],
+            id: 'all_couriers_done',
+            key_from: '/key',
+          },
+        },
+      ],
+    }
+    const req = safeParseRequest(registerTriggerRequestSchema, input)
+    expect(req?.conditions).toEqual(input.conditions)
+
+    const html = renderToStaticMarkup(
+      createElement(RegisterTriggerView, { input, output: undefined }),
+    )
+    expect(html).toContain('only if')
+    expect(html).toContain('state::barrier')
+    expect(html).toContain('acme, globex, initech')
+    expect(html).toContain('all_couriers_done')
+  })
+
   it('parses the harness subscribe variant (no function_id, has label/once)', () => {
     const req = safeParseRequest(registerTriggerRequestSchema, {
       trigger_type: 'state',

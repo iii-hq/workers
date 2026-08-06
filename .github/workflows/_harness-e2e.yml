@@ -13,16 +13,6 @@ on:
         required: false
         type: number
         default: 2
-      quality_advisory:
-        description: Only fail degraded results below the CI score floor
-        required: false
-        type: boolean
-        default: false
-      ci_score_floor:
-        description: Minimum median score allowed by the advisory CI policy
-        required: false
-        type: number
-        default: 50
       subjects:
         description: JSON array of subject entries with id, model, and provider
         required: false
@@ -88,17 +78,65 @@ on:
         required: false
         type: string
         default: ''
+      cli_channel:
+        description: iii installer channel used for a registry stack
+        required: false
+        type: string
+        default: latest
+      stack_versions:
+        description: JSON object of exact worker versions required in a registry E2E stack
+        required: false
+        type: string
+        default: '{}'
+      validation_profile:
+        description: Scenario profile resolved for this execution
+        required: false
+        type: string
+        default: full
+      scenarios_json:
+        description: Exact scenario ids; required for custom and checked for named profiles
+        required: false
+        type: string
+        default: '[]'
+      catalog_sha:
+        description: Release catalog SHA used by the caller preview
+        required: false
+        type: string
+        default: ''
+      profile_digest:
+        description: Canonical scenario profile digest used by the caller preview
+        required: false
+        type: string
+        default: ''
       coverage:
         description: Instrument the E2E stack and produce an LLVM coverage report
         required: false
         type: boolean
         default: false
+    outputs:
+      validation_profile:
+        description: Resolved scenario profile
+        value: ${{ jobs.build.outputs.validation_profile }}
+      scenarios_json:
+        description: Resolved scenario ids
+        value: ${{ jobs.build.outputs.scenarios }}
+      required_scenarios_json:
+        description: Canonical promotion gate
+        value: ${{ jobs.build.outputs.required_scenarios }}
+      profile_digest:
+        description: Digest of the canonical scenario catalog and release gate
+        value: ${{ jobs.build.outputs.profile_digest }}
+      catalog_sha:
+        description: Catalog commit used by the suite
+        value: ${{ jobs.build.outputs.catalog_sha }}
     secrets:
       anthropic_api_key:
         required: false
       openai_api_key:
         required: false
       zai_api_key:
+        required: false
+      deepseek_api_key:
         required: false
 
 jobs:
@@ -110,9 +148,23 @@ jobs:
     timeout-minutes: ${{ inputs.coverage && 60 || 45 }}
     outputs:
       scenarios: ${{ steps.scenarios.outputs.json }}
+      required_scenarios: ${{ steps.scenarios.outputs.required }}
+      validation_profile: ${{ steps.scenarios.outputs.profile }}
+      profile_digest: ${{ steps.scenarios.outputs.profile_digest }}
+      catalog_sha: ${{ steps.scenarios.outputs.catalog_sha }}
       engine_binary: ${{ steps.engine.outputs.binary }}
       engine_revision: ${{ steps.engine.outputs.version }}
     steps:
+      # The registry-mode stack build filled a standard runner's disk (the
+      # harness 1.7.1 release died packaging harness-e2e-stack.tar.gz with
+      # ENOSPC). Preinstalled toolchains this job never touches hold ~30GB;
+      # drop them before building.
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.source_ref }}
@@ -138,9 +190,11 @@ jobs:
           JUDGE_MODEL: ${{ inputs.judge_model }}
           JUDGE_PROVIDER: ${{ inputs.judge_provider }}
           STACK_MODE: ${{ inputs.stack_mode }}
+          CLI_CHANNEL: ${{ inputs.cli_channel }}
           REGISTRY_TAG: ${{ inputs.registry_tag }}
           RELEASE_WORKER: ${{ inputs.release_worker }}
           RELEASE_VERSION: ${{ inputs.release_version }}
+          STACK_VERSIONS: ${{ inputs.stack_versions }}
           COVERAGE: ${{ inputs.coverage }}
         run: |
           set -euo pipefail
@@ -158,9 +212,18 @@ jobs:
           case "$STACK_MODE" in
             source) ;;
             registry)
-              [[ "$REGISTRY_TAG" == "latest" || "$REGISTRY_TAG" == "next" ]]
+              [[ "$CLI_CHANNEL" == "latest" || "$CLI_CHANNEL" == "next" ]]
+              [[ "$REGISTRY_TAG" =~ ^[A-Za-z0-9._-]+$ ]]
               [[ "$RELEASE_WORKER" =~ ^[A-Za-z0-9_-]+$ ]]
               [[ -n "$RELEASE_VERSION" ]]
+              jq -e --arg worker "$RELEASE_WORKER" --arg version "$RELEASE_VERSION" '
+                type == "object" and
+                all(to_entries[];
+                  (.key | test("^[a-z0-9][a-z0-9_-]*$")) and
+                  (.value | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+(-(experimental|alpha|beta))?$"))
+                ) and
+                .[$worker] == $version
+              ' <<<"$STACK_VERSIONS" >/dev/null
               [[ "$COVERAGE" == "false" ]]
               ;;
             *)
@@ -217,6 +280,7 @@ jobs:
             provider-openai-codex -> target
             provider-claude-code -> target
             provider-zai -> target
+            provider-deepseek -> target
             context-manager -> target
             iii-directory -> target
             cron -> target
@@ -266,14 +330,29 @@ jobs:
       - name: Read code-defined scenarios
         id: scenarios
         env:
+          VALIDATION_PROFILE: ${{ inputs.validation_profile }}
+          REQUESTED_SCENARIOS: ${{ inputs.scenarios_json }}
+          EXPECTED_CATALOG_SHA: ${{ inputs.catalog_sha }}
+          EXPECTED_PROFILE_DIGEST: ${{ inputs.profile_digest }}
           # The instrumented binary would otherwise drop default.profraw in cwd.
           LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/build-profraw/%m_%p.profraw', github.workspace) || '' }}
         run: |
           set -euo pipefail
-          scenarios=$(harness/target/release/harness-e2e list)
-          jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' \
-            <<<"$scenarios" >/dev/null
-          echo "json=$scenarios" >> "$GITHUB_OUTPUT"
+          available=$(harness/target/release/harness-e2e list)
+          resolved=$(python3 .github/scripts/harness_e2e_profiles.py \
+            --available-json "$available" \
+            --profile "$VALIDATION_PROFILE" \
+            --scenarios-json "$REQUESTED_SCENARIOS" \
+            --catalog-sha "${{ github.sha }}" \
+            --expected-catalog-sha "$EXPECTED_CATALOG_SHA" \
+            --expected-profile-digest "$EXPECTED_PROFILE_DIGEST")
+          {
+            echo "json=$(jq -c .scenarios <<<"$resolved")"
+            echo "required=$(jq -c .required_scenarios <<<"$resolved")"
+            echo "profile=$(jq -r .validation_profile <<<"$resolved")"
+            echo "profile_digest=$(jq -r .profile_digest <<<"$resolved")"
+            echo "catalog_sha=$(jq -r .catalog_sha <<<"$resolved")"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Package E2E binaries
         if: inputs.stack_mode == 'source'
@@ -315,7 +394,13 @@ jobs:
 
       - name: Package registry E2E runner
         if: inputs.stack_mode == 'registry'
-        run: tar -czf target/harness-e2e-stack.tar.gz -C harness/target/release harness-e2e
+        # Registry mode builds only the runner (harness/target/release), so the
+        # repo-root target/ this writes into does not exist yet — source mode
+        # gets it from the engine install. Both harness release attempts died
+        # here (1.7.1 masked as ENOSPC, 1.7.2 as ENOENT).
+        run: |
+          mkdir -p target
+          tar -czf target/harness-e2e-stack.tar.gz -C harness/target/release harness-e2e
 
       - name: Upload E2E binaries
         uses: actions/upload-artifact@v6
@@ -381,6 +466,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
           OPENAI_API_KEY: ${{ secrets.openai_api_key }}
           ZAI_API_KEY: ${{ secrets.zai_api_key }}
+          DEEPSEEK_API_KEY: ${{ secrets.deepseek_api_key }}
           III_BIN: ${{ github.workspace }}/${{ needs.build.outputs.engine_binary }}
           HARNESS_E2E_BIN: ${{ github.workspace }}/harness/target/release/harness-e2e
           HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
@@ -390,8 +476,6 @@ jobs:
           HARNESS_E2E_PROVIDER: ${{ matrix.subject.provider }}
           HARNESS_E2E_JUDGE_MODEL: ${{ inputs.judge_model }}
           HARNESS_E2E_JUDGE_PROVIDER: ${{ inputs.judge_provider }}
-          HARNESS_E2E_QUALITY_ADVISORY: ${{ inputs.quality_advisory }}
-          HARNESS_E2E_CI_SCORE_FLOOR: ${{ inputs.ci_score_floor }}
           HARNESS_E2E_ENGINE_REVISION: ${{ needs.build.outputs.engine_revision }}
           # run-ci.sh spawns every worker with cwd inside the artifacts dir, so
           # the profile path must be absolute; %c keeps profiles flushing after
@@ -405,12 +489,15 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
           OPENAI_API_KEY: ${{ secrets.openai_api_key }}
           ZAI_API_KEY: ${{ secrets.zai_api_key }}
-          III_CHANNEL: ${{ inputs.registry_tag }}
+          DEEPSEEK_API_KEY: ${{ secrets.deepseek_api_key }}
+          III_CLI_CHANNEL: ${{ inputs.cli_channel }}
+          III_WORKER_TAG: ${{ inputs.registry_tag }}
           HARNESS_E2E_RELEASE_WORKER: ${{ inputs.release_worker }}
           HARNESS_E2E_RELEASE_VERSION: ${{ inputs.release_version }}
           HARNESS_E2E_RELEASE_TAG: ${{ inputs.release_tag }}
           HARNESS_E2E_RELEASE_RUN_ID: ${{ inputs.release_run_id }}
           HARNESS_E2E_SMOKE_RUN_ID: ${{ inputs.smoke_run_id }}
+          HARNESS_E2E_STACK_VERSIONS: ${{ inputs.stack_versions }}
           HARNESS_E2E_BIN: ${{ github.workspace }}/target/runner/harness-e2e
           HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
           HARNESS_E2E_SCENARIO: ${{ matrix.scenario }}
@@ -419,8 +506,6 @@ jobs:
           HARNESS_E2E_PROVIDER: ${{ matrix.subject.provider }}
           HARNESS_E2E_JUDGE_MODEL: ${{ inputs.judge_model }}
           HARNESS_E2E_JUDGE_PROVIDER: ${{ inputs.judge_provider }}
-          HARNESS_E2E_QUALITY_ADVISORY: ${{ inputs.quality_advisory }}
-          HARNESS_E2E_CI_SCORE_FLOOR: ${{ inputs.ci_score_floor }}
         run: harness/tests/e2e/run-deployed-ci.sh
 
       - name: Write benchmark context
@@ -448,17 +533,11 @@ jobs:
         env:
           SCENARIO: ${{ matrix.scenario }}
           SUBJECT: ${{ matrix.subject.id }}
-          QUALITY_ADVISORY: ${{ inputs.quality_advisory }}
-          CI_SCORE_FLOOR: ${{ inputs.ci_score_floor }}
         run: |
           {
             echo "### Harness E2E · $SUBJECT · $SCENARIO"
             echo
-            if [[ "$QUALITY_ADVISORY" == "true" ]]; then
-              echo "CI gate: scores below ${CI_SCORE_FLOOR}% and technical failures are blocking. Higher-scoring quality and hard-gate failures remain visible but do not fail the workflow."
-            else
-              echo "Quality score gate: enforced."
-            fi
+            echo "CI gate: scores are advisory; empty reports, hard-gate failures, and technical failures are blocking."
             echo
             results=target/harness-e2e/results/results.json
             if [[ -f "$results" ]]; then

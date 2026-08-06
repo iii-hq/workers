@@ -9,11 +9,19 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$script_dir/../../.." && pwd)
 artifact_dir=${HARNESS_QUICKSTART_ARTIFACTS_DIR:-"$repo_root/target/harness-quickstart"}
 install_url=${III_INSTALL_URL:-https://install.iii.dev/iii/main/install.sh}
-channel=${III_CHANNEL:-latest}
+cli_channel=${III_CLI_CHANNEL:-latest}
+worker_tag=${III_WORKER_TAG:-latest}
+release_worker=${HARNESS_QUICKSTART_RELEASE_WORKER:-}
+release_version=${HARNESS_QUICKSTART_RELEASE_VERSION:-}
 engine_port=49134
 wait_seconds=${HARNESS_QUICKSTART_WAIT_SECONDS:-180}
 add_timeout_seconds=${HARNESS_QUICKSTART_ADD_TIMEOUT_SECONDS:-600}
 trace_enabled=${HARNESS_QUICKSTART_TRACE:-0}
+
+if [[ -n "${III_CHANNEL:-}" ]]; then
+  echo "III_CHANNEL was split into III_CLI_CHANNEL and III_WORKER_TAG" >&2
+  exit 2
+fi
 
 case "$trace_enabled" in
   0 | 1) ;;
@@ -23,13 +31,28 @@ case "$trace_enabled" in
     ;;
 esac
 
-case "$channel" in
+case "$cli_channel" in
   latest | next) ;;
   *)
-    echo "III_CHANNEL must be 'latest' or 'next' (got: $channel)" >&2
+    echo "III_CLI_CHANNEL must be 'latest' or 'next' (got: $cli_channel)" >&2
     exit 2
     ;;
 esac
+
+case "$worker_tag" in
+  latest | next) ;;
+  *)
+    echo "III_WORKER_TAG must be 'latest' or 'next' (got: $worker_tag)" >&2
+    exit 2
+    ;;
+esac
+
+if [[ -n "$release_worker" || -n "$release_version" ]]; then
+  [[ -n "$release_worker" && -n "$release_version" ]] || {
+    echo "HARNESS_QUICKSTART_RELEASE_WORKER and HARNESS_QUICKSTART_RELEASE_VERSION must be set together" >&2
+    exit 2
+  }
+fi
 
 for command_name in curl jq; do
   command -v "$command_name" >/dev/null 2>&1 || {
@@ -119,7 +142,8 @@ write_result() {
     --arg reason "$failure_reason" \
     --arg cli_version "$cli_version" \
     --arg install_url "$install_url" \
-    --arg channel "$channel" \
+    --arg cli_channel "$cli_channel" \
+    --arg worker_tag "$worker_tag" \
     --argjson elapsed_ms "$(((SECONDS - started_at_seconds) * 1000))" \
     --argjson engine_port "$engine_port" \
     '{
@@ -127,7 +151,8 @@ write_result() {
       failure_reason: $reason,
       cli_version: $cli_version,
       install_url: $install_url,
-      channel: $channel,
+      cli_channel: $cli_channel,
+      worker_tag: $worker_tag,
       elapsed_ms: $elapsed_ms,
       engine_port: $engine_port
     }' >"$artifact_dir/result.json"
@@ -281,11 +306,11 @@ start_engine() {
 
 cd "$project_dir"
 
-log "Step 1/6: Install iii from $install_url (channel=$channel)"
+log "Step 1/7: Install iii from $install_url (channel=$cli_channel)"
 log_command "curl -fsSL $install_url -o install.sh"
 curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
   "$install_url" -o "$run_root/install.sh"
-if [[ "$channel" == "next" ]]; then
+if [[ "$cli_channel" == "next" ]]; then
   log_command "sh install.sh --next"
   sh "$run_root/install.sh" --next 2>&1 | tee "$log_dir/install.log"
 else
@@ -299,19 +324,28 @@ cli_version=$("$iii_bin" --version 2>&1)
 printf '%s\n' "$cli_version" >"$artifact_dir/cli-version.txt"
 ok "installed $cli_version"
 
-log "Step 2/6: Start an empty engine"
+log "Step 2/7: Start an empty engine"
 printf 'workers: []\n' >config.yaml
 start_engine
 wait_for_engine
 
-log "Step 3/6: Add harness and Console"
-run_worker_add harness console 2>&1 | tee "$log_dir/worker-add.log"
+log "Step 3/7: Add harness and Console from worker tag $worker_tag"
+run_worker_add "harness@$worker_tag" "console@$worker_tag" 2>&1 | tee "$log_dir/worker-add.log"
 ok "iii worker add harness console exited successfully"
 
-log "Step 4/6: Verify registered functions"
+log "Step 4/7: Apply exact release candidate override"
+if [[ -n "$release_worker" ]]; then
+  run_worker_add "${release_worker}@${release_version}" --force \
+    2>&1 | tee "$log_dir/candidate-override.log"
+  ok "installed exact candidate ${release_worker}@${release_version}"
+else
+  ok "no release candidate override requested"
+fi
+
+log "Step 5/7: Verify registered functions"
 wait_for_functions
 
-log "Step 5/6: Verify the Console HTTP surface"
+log "Step 6/7: Verify the Console HTTP surface"
 log_command "iii trigger console::status --port $engine_port --json '{}'"
 console_status=$("$iii_bin" trigger console::status --port "$engine_port" \
   --json '{}' 2>"$log_dir/console-status.log")
@@ -323,7 +357,7 @@ curl -fsS --retry 10 --retry-all-errors --retry-delay 1 \
   "http://127.0.0.1:$console_port/" -o "$artifact_dir/console.html"
 ok "Console answered on port $console_port"
 
-log "Step 6/6: Verify generated project files"
+log "Step 7/7: Verify generated project files"
 for output in config.yaml iii.lock; do
   [[ -s "$output" ]] || die "worker add did not write $output"
   grep -Eiq 'harness' "$output" || die "$output does not contain harness"
@@ -331,4 +365,4 @@ for output in config.yaml iii.lock; do
 done
 ok "config.yaml and iii.lock reference harness + console"
 
-log "ALL QUICKSTART ASSERTIONS PASSED ($cli_version, channel=$channel)"
+log "ALL QUICKSTART ASSERTIONS PASSED ($cli_version, cli=$cli_channel, workers=$worker_tag)"

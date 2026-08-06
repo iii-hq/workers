@@ -277,7 +277,7 @@ pub async fn handle(
     let fires_after = claimed.fires;
     let retiring = binding.retires_after_fire(fires_after);
 
-    let outcome = dispatch(deps, &claimed, &event).await;
+    let (delivered, outcome) = dispatch(deps, &claimed, &event).await;
 
     if retiring {
         retire(deps, &claimed).await;
@@ -301,6 +301,7 @@ pub async fn handle(
             scope: fired::event_state_watch(&event).0,
             key: fired::event_state_watch(&event).1,
             note: note.as_deref(),
+            payload: Some(&delivered),
             fired_at: now,
         },
     )
@@ -316,10 +317,11 @@ pub async fn handle(
 /// owner session, or a plain function call. The selection depends ONLY on the
 /// target function id — never on the event's source or shape, which is what
 /// keeps delivery generic across state, database, queue, cron, timer, and
-/// trigger types that do not exist yet.
-async fn dispatch(deps: &Deps, binding: &Binding, event: &Value) -> Result<(), String> {
+/// trigger types that do not exist yet. Returns the best-known delivered
+/// payload alongside the outcome so the fired record can carry it.
+async fn dispatch(deps: &Deps, binding: &Binding, event: &Value) -> (Value, Result<(), String>) {
     match binding.target.function_id.as_str() {
-        crate::functions::SEND_ID => wake_target(deps, binding, event).await,
+        crate::functions::SEND_ID => (event.clone(), wake_target(deps, binding, event).await),
         other => call_target(deps, binding, other, project(binding, event)).await,
     }
 }
@@ -406,26 +408,37 @@ fn call_allowed(binding: &Binding, target: &str) -> Result<(), String> {
 }
 
 /// A mechanical reaction: any ordinary function, checked against the
-/// capability the binding froze at registration.
+/// capability the binding froze at registration. Returns the payload as
+/// finally dispatched (or as far as it got before the failure) so the fired
+/// record shows what ran — or what was attempted.
 async fn call_target(
     deps: &Deps,
     binding: &Binding,
     target: &str,
     mut payload: Value,
-) -> Result<(), String> {
-    call_allowed(binding, target)?;
+) -> (Value, Result<(), String>) {
+    if let Err(e) = call_allowed(binding, target) {
+        return (payload, Err(e));
+    }
     let cfg = deps.cfg().await;
-    let turn = crate::state::get_turn(&deps.iii, &binding.owner.session_id, cfg.session_timeout_ms)
-        .await
-        .map_err(|e| e.to_string())?;
+    let turn =
+        match crate::state::get_turn(&deps.iii, &binding.owner.session_id, cfg.session_timeout_ms)
+            .await
+        {
+            Ok(turn) => turn,
+            Err(e) => return (payload, Err(e.to_string())),
+        };
     let grants = if turn.is_some() {
-        crate::filesystem_grants::roots(
+        match crate::filesystem_grants::roots(
             &deps.iii,
             &binding.owner.session_id,
             cfg.session_timeout_ms,
         )
         .await
-        .map_err(|e| e.to_string())?
+        {
+            Ok(grants) => grants,
+            Err(e) => return (payload, Err(e.to_string())),
+        }
     } else {
         Vec::new()
     };
@@ -441,29 +454,34 @@ async fn call_target(
     );
     // Argument-constrained approval rules must see the payload that will
     // actually run, after event projection and trusted filesystem stamping.
-    crate::functions::subscribe::approval_allows_unattended(
+    if let Err(e) = crate::functions::subscribe::approval_allows_unattended(
         deps,
         target,
         &binding.owner.session_id,
         &payload,
     )
-    .await?;
+    .await
+    {
+        return (payload, Err(e));
+    }
     // AWAITED, not fire-and-forget. A void dispatch reports success the moment
     // the engine accepts it, so a target that then fails — a bad statement, a
     // rejected payload — is recorded as delivered and "why did nothing
     // happen?" becomes unanswerable from the timeline. The dispatch timeout
     // bounds the wait.
     let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
-    deps.iii
+    let outcome = deps
+        .iii
         .trigger(TriggerRequest {
             function_id: target.to_string(),
-            payload,
+            payload: payload.clone(),
             action: None,
             timeout_ms: Some(timeout_ms),
         })
         .await
         .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    (payload, outcome)
 }
 
 fn notification_text(binding: &Binding, event: &Value) -> String {
@@ -585,6 +603,7 @@ async fn record_stop(deps: &Deps, binding: &Binding, event: &Value, skip: Skip) 
             scope,
             key,
             note: Some(&skip.reason),
+            payload: None,
             fired_at: AgentMessage::now_ms(),
         },
     )
@@ -907,5 +926,30 @@ mod tests {
             call_allowed(&b, "run::record").is_err(),
             "no frozen capability must deny, not pass"
         );
+    }
+
+    /// What a ƒ-call target actually receives — the value the fired record now
+    /// carries. Default `event_into` nests the event under `/event`; an
+    /// explicit pointer places it verbatim, template fields untouched.
+    #[test]
+    fn a_call_payload_is_the_template_with_the_event_at_its_pointer() {
+        let mut b = wake_binding("database::row-changed");
+        b.target = crate::bindings::BindingTarget::new("receiving::check_completion");
+        let event = json!({ "db": "primary", "table": "courier_status", "op": "update" });
+
+        // No template, default pointer: the event lands under `/event`.
+        assert_eq!(project(&b, &event), json!({ "event": event }));
+
+        // A template is preserved and the pointer is honoured.
+        b.target.payload = Some(json!({ "run_id": "r1", "args": {} }));
+        b.target.event_into = Some("/args/change".into());
+        assert_eq!(
+            project(&b, &event),
+            json!({ "run_id": "r1", "args": { "change": event } })
+        );
+
+        // An empty pointer replaces the whole payload with the raw event.
+        b.target.event_into = Some(String::new());
+        assert_eq!(project(&b, &event), event);
     }
 }

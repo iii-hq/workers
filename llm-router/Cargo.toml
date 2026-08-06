@@ -4,7 +4,7 @@
 # this lineage starts above them so Create Tag never collides.
 [package]
 name = "llm-router"
-version = "1.4.0"
+version = "1.4.2"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
@@ -19,6 +19,7 @@ path = "src/lib.rs"
 
 [dependencies]
 iii-sdk = "=0.21.6"
+iii-console-ui = { path = "../crates/console-ui", optional = true }
 # Re-exports the same `opentelemetry` the SDK uses, so we can carry the active
 # OTel context across `tokio::spawn` boundaries (shared `Context` global).
 # 0.21.5 adds the live span-start push, so `router::chat` renders in the
@@ -42,3 +43,10 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+
+[features]
+# The injectable console UI (ui.rs + the pnpm bundle in build.rs). Path
+# dependents that only consume the library types disable default features to
+# drop the Node toolchain from their build graph.
+default = ["console-ui"]
+console-ui = ["dep:iii-console-ui"]

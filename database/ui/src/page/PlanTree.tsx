@@ -98,6 +98,7 @@ function Node({
           className={`db-plan-twist${hasChildren ? '' : ' leaf'}${isCollapsed ? '' : ' open'}`}
           onClick={() => hasChildren && onToggle(node.id)}
           aria-label={isCollapsed ? 'expand' : 'collapse'}
+          aria-expanded={hasChildren ? !isCollapsed : undefined}
           tabIndex={hasChildren ? 0 : -1}
         >
           {hasChildren ? <ChevronRight size={11} aria-hidden /> : null}

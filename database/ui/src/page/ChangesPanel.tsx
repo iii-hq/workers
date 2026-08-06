@@ -29,6 +29,15 @@ const OP_LABEL: Record<string, string> = {
   other: 'other',
 }
 
+/**
+ * The capture-mode caveat, shown on demand. It used to live only in a title
+ * attribute the idle copy told you to hover — unreachable by keyboard, touch,
+ * or a screen reader. The badge is a real disclosure button now; the tooltip
+ * stays for mouse users.
+ */
+const CAPTURE_NOTE =
+  'following committed writes to this table. a connection using statement capture reports only writes made through this worker; one using native capture reports every client. delivery is best effort — reload to be certain.'
+
 export function ChangesPanel({
   host,
   db,
@@ -43,6 +52,7 @@ export function ChangesPanel({
   kind?: string
   onRefresh?: () => void
 }) {
+  const [capOpen, setCapOpen] = useState(false)
   // A view is never the target of a write. The worker keys every change on the
   // table the statement actually touched, so a binding on a view matches
   // nothing and would sit at "following" forever while rows visibly change
@@ -90,10 +100,15 @@ export function ChangesPanel({
 
   return (
     <div className="db-changes">
-      <div className="db-changes-bar">
-        <FreshnessBadge status={feed.status} lastAt={feed.lastAt} />
+      <div className="db-changes-bar db-toolbar">
+        <FreshnessBadge
+          status={feed.status}
+          lastAt={feed.lastAt}
+          expanded={capOpen}
+          onToggle={() => setCapOpen((v) => !v)}
+        />
         <span className="db-changes-target">{table}</span>
-        <div className="db-erd-spacer" />
+        <div className="db-toolbar-spacer" />
         {feed.pending > 0 && onRefresh ? (
           <Button
             variant="ghost"
@@ -104,23 +119,25 @@ export function ChangesPanel({
             }}
           >
             <RefreshCw size={13} aria-hidden />
-            reload rows ({feed.pending})
+            reload rows · {feed.pending}
           </Button>
         ) : null}
       </div>
 
+      {capOpen ? <p className="db-changes-capnote">{CAPTURE_NOTE}</p> : null}
+
       {feed.changes.length === 0 ? (
-        <div className="db-changes-idle">
-          <p>nothing yet.</p>
-          <p className="db-changes-hint">
-            writes to <code>{table}</code> appear here as they commit. what counts as a write depends on this
-            connection's capture mode — hover the indicator above.
-          </p>
-        </div>
+        <EmptyState
+          icon={HistoryIcon}
+          title="nothing yet"
+          description={`writes to ${table} appear here as they commit. what counts as a write depends on this connection's capture mode — the "following" indicator above explains it.`}
+        />
       ) : (
-        <ol className="db-changes-list">
-          {feed.changes.map((c, i) => (
-            <ChangeRow key={`${c.seen}-${i}`} change={c} />
+        // role="log": arrivals are announced politely without stealing focus —
+        // the whole point of a feed whose job is telling you about writes.
+        <ol className="db-changes-list" role="log" aria-label={`writes to ${table}`}>
+          {feed.changes.map((c) => (
+            <ChangeRow key={c.seq} change={c} />
           ))}
         </ol>
       )}
@@ -155,22 +172,31 @@ function ChangeRow({ change }: { change: RowChange }) {
  * carries the caveat rather than a word in the badge implying more than is
  * true.
  */
-function FreshnessBadge({ status, lastAt }: { status: string; lastAt: number | null }) {
+function FreshnessBadge({
+  status,
+  lastAt,
+  expanded,
+  onToggle,
+}: {
+  status: string
+  lastAt: number | null
+  expanded: boolean
+  onToggle: () => void
+}) {
   const bound = status === 'bound'
   const recent = lastAt != null && Date.now() - lastAt < 10_000
   return (
-    <span
+    <button
+      type="button"
       className="db-freshness"
-      title={
-        bound
-          ? 'following committed writes to this table. a connection using statement capture reports only writes made through this worker; one using native capture reports every client. delivery is best effort — reload to be certain.'
-          : 'not following this table.'
-      }
+      onClick={onToggle}
+      aria-expanded={expanded}
+      title={bound ? CAPTURE_NOTE : 'not following this table.'}
     >
       <StatusDot tone={bound ? 'accent' : 'ink'} pulse={bound && recent} />
       <span>{bound ? 'following' : 'not following'}</span>
       {lastAt != null ? <span className="db-freshness-at">· last {relative(Date.now() - lastAt)}</span> : null}
-    </span>
+    </button>
   )
 }
 

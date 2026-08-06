@@ -1,0 +1,10 @@
+# Agent permissions for the provider-deepseek worker.
+# Spec: tech-specs/2026-06-agentic/llm-router.md § Security.
+version: 1
+
+rules:
+  # Direct provider calls bypass the router's accounting, budgets, and retry
+  # policy — never agent-callable. The router invokes these worker-to-worker.
+  - '!provider::deepseek::stream'
+  - '!provider::deepseek::refresh_models'
+  - '!provider::deepseek::on_router_ready'
