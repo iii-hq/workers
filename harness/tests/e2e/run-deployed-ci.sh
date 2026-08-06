@@ -344,16 +344,17 @@ add_with_retry() {
 log "Installing stable E2E support stack: ${workers[*]}"
 add_with_retry worker-add "${workers[@]}"
 
-# Bring the exact dependencies up first and the released worker last. For a
-# Harness candidate this prevents Harness from briefly booting against the
-# stable dependency graph before its candidate dependencies replace it.
+# Install the released worker first, then apply its exact candidate dependency
+# overrides. Resolving Harness necessarily selects the stable versions allowed
+# by its semver ranges; installing Harness last would overwrite the exact
+# dependency pins that Release Control supplied.
 while IFS=$'\t' read -r candidate_worker candidate_version; do
   log "Installing exact stack candidate: ${candidate_worker}@${candidate_version}"
   add_with_retry "candidate-${candidate_worker}" \
     "${candidate_worker}@${candidate_version}" --force
 done < <(jq -r --arg release_worker "$HARNESS_E2E_RELEASE_WORKER" '
   to_entries
-  | sort_by([if .key == $release_worker then 1 else 0 end, .key])[]
+  | sort_by([if .key == $release_worker then 0 else 1 end, .key])[]
   | [.key, .value]
   | @tsv
 ' <<<"$stack_versions")
