@@ -16,7 +16,7 @@ sign-in surface (`login::start` / `login::poll`).
 
 ## Signing in
 
-```
+```bash
 iii trigger provider::github-copilot::login::start
 # → { user_code, verification_uri, device_code, interval }
 # enter the code at the verification URL, then:
@@ -58,13 +58,16 @@ dev sessions).
   one answers while the other returns `model_not_supported` (a free or
   educational plan carries the base families but no premium requests).
   Discovery therefore probes each admitted model with a one-token request,
-  four at a time, and reconciles only what answered. Refusals are rejected
-  before generation so they consume no quota, and successes cost a single
-  token on models the plan already includes. Enabling more models upstream
-  needs no code change — the next refresh picks them up.
+  four at a time, and reconciles only what answered. Verdicts persist for
+  24 hours, so a model is probed once and answered from cache after that —
+  a refresh runs at boot, on every `router::ready` rebind, and after each
+  sign-in, and a probe that *succeeds* on a premium model spends a premium
+  request, not just a token. When the TTL lapses everything is re-checked,
+  so enabling more models upstream (or changing plan) needs no code change.
 - **Self-healing:** if a model refuses between refreshes, the stream returns
-  an actionable permanent error and the row is removed from the catalog, so
-  the picker never offers the same dead model twice.
+  an actionable permanent error, the row is removed from the catalog, and
+  the verdict is recorded — so the picker never offers the same dead model
+  twice and no further probe is spent on it.
 - **`model_picker_enabled` is deliberately ignored.** It reflects an
   editor-side picker preference and reads `false` for every row on accounts
   that have never toggled models in an editor — gating on it admits nothing.
@@ -119,7 +122,7 @@ serializes the tests (they manage credential env vars), so plain
 ## Running
 
 The binary takes the standard worker CLI flags: `--url` (engine WebSocket,
-default `ws://127.0.0.1:49134`, falls back to the `III_WS_URL` environment
+default `ws://127.0.0.1:49134`, falls back to the `III_URL` environment
 variable), `--manifest` (print the registry manifest and exit), and
 `--config` (accepted but ignored with a warning — provider config comes
 from the `llm-router` configuration entry).
