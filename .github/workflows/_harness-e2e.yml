@@ -294,9 +294,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           # Instrumented builds have different fingerprints; keep them on their
-          # own key so coverage runs never poison the normal cache.
+          # own key so coverage runs never poison the normal cache. Both lanes
+          # save their own key: with coverage-only saving, the plain key was
+          # never written and every registry-lane build compiled from scratch.
           shared-key: ${{ inputs.coverage && 'harness-e2e-coverage' || 'harness-e2e' }}
-          save-if: ${{ inputs.coverage }}
+          save-if: true
           workspaces: |
             harness -> target
             database -> target
