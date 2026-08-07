@@ -96,12 +96,19 @@ fn strip_cr(line: &str) -> &str {
 
 /// The trailing `  # comment` on a `default_stack:` line, including its
 /// leading whitespace so the user's alignment survives a rewrite — or `""`
-/// if there's none. Splitting on the first `#` is safe here: the value this
-/// module ever writes is `valid_stack_name`-constrained (`[A-Za-z0-9_-]`), so
-/// a `#` on this line can only ever start a comment, never appear inside the
-/// value itself.
+/// if there's none. YAML only starts a comment at a `#` that sits at the
+/// start of the line or is immediately preceded by whitespace; a `#` glued
+/// to the value (`console#nospacecomment`) or inside a quoted scalar
+/// (`"my#stack"`) is part of the VALUE, not a comment. This module's own
+/// header says the file is hand-written as often as tool-written, so either
+/// shape can already be sitting on this line — misreading it as a comment
+/// would silently rewrite that value into garbage instead of discarding it
+/// with the rest of the old line.
 fn trailing_comment(line: &str) -> &str {
-    let Some(hash) = line.find('#') else {
+    let bytes = line.as_bytes();
+    let Some(hash) = (0..bytes.len())
+        .find(|&i| bytes[i] == b'#' && (i == 0 || bytes[i - 1].is_ascii_whitespace()))
+    else {
         return "";
     };
     let ws_start = line[..hash]
@@ -414,6 +421,26 @@ default_stack: tiny
             out,
             "default_stack: console  # my usual loop\r\ncolor: auto\r\n"
         );
+        assert!(parses(&out));
+    }
+
+    /// A `#` glued directly to the value (no preceding whitespace) isn't a
+    /// YAML comment — it's part of the plain scalar. The whole old value
+    /// must be discarded with the rest of the line, not misread as a
+    /// comment and re-emitted after the new name.
+    #[test]
+    fn set_default_does_not_mistake_a_glued_hash_for_a_comment() {
+        let out = set_default_stack("default_stack: console#nospacecomment\n", "tiny").unwrap();
+        assert_eq!(out, "default_stack: tiny\n");
+        assert!(parses(&out));
+    }
+
+    /// Same failure mode, via a `#` inside a quoted value instead of glued
+    /// to a plain one.
+    #[test]
+    fn set_default_does_not_mistake_a_hash_inside_a_quoted_value_for_a_comment() {
+        let out = set_default_stack("default_stack: \"my#stack\"\n", "tiny").unwrap();
+        assert_eq!(out, "default_stack: tiny\n");
         assert!(parses(&out));
     }
 
