@@ -1,0 +1,24 @@
+{
+  "description": "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.",
+  "function_id": "provider::openrouter::on_router_ready",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Event delivered to a provider's `provider::<id>::on_router_ready` (the `router::ready` trigger payload, currently `{}`). Unknown fields are ignored.",
+    "title": "RouterReadyEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Ack returned by a provider's `provider::<id>::on_router_ready`.",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "ProviderReadyAck",
+    "type": "object"
+  }
+}

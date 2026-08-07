@@ -88,6 +88,7 @@ standard_workers:
   - provider-llamacpp
   - provider-openai
   - provider-openai-codex
+  - provider-openrouter
   - provider-xai
   - provider-zai
   - pubsub
