@@ -942,10 +942,10 @@ default_stack: tiny
     fn refuses_a_dash_nbsp_key_misread_as_a_list_item() {
         let src = "stacks:\n  tiny:\n    - session-manager\n  -\u{00A0}weird:\n    - console\n";
         let err = upsert_stack(src, "tiny", &roots(&["x"])).unwrap_err();
-        assert!(!err.to_string().is_empty());
+        assert!(err.to_string().contains("weird"), "{err:#}");
 
         let err = remove_stack(src, "tiny").unwrap_err();
-        assert!(!err.to_string().is_empty());
+        assert!(err.to_string().contains("weird"), "{err:#}");
     }
 
     /// Critical-1's headline repro, reopened a third way: `#` is only a
@@ -962,10 +962,16 @@ default_stack: tiny
         let src = "stacks:\n  tiny:\n    - session-manager\n  \u{00A0}#a:\n    - v\n";
 
         let err = upsert_stack(src, "tiny", &roots(&["x"])).unwrap_err();
-        assert!(!err.to_string().is_empty());
+        assert!(
+            err.to_string().contains("isn't a name or a list item"),
+            "{err:#}"
+        );
 
         let err = remove_stack(src, "tiny").unwrap_err();
-        assert!(!err.to_string().is_empty(), "{err:#}");
+        assert!(
+            err.to_string().contains("isn't a name or a list item"),
+            "{err:#}"
+        );
         // The sharpest form of the bug: must never succeed with an empty
         // file, which `write_verified` would then happily accept.
     }
@@ -1040,10 +1046,10 @@ default_stack: tiny
         let src = "stacks:\n  tiny:\n    - session-manager\n  \u{00A0}- weird: v\n";
 
         let err = upsert_stack(src, "tiny", &roots(&["x"])).unwrap_err();
-        assert!(!err.to_string().is_empty());
+        assert!(err.to_string().contains("weird"), "{err:#}");
 
         let err = remove_stack(src, "tiny").unwrap_err();
-        assert!(!err.to_string().is_empty(), "{err:#}");
+        assert!(err.to_string().contains("weird"), "{err:#}");
         // Must never succeed with an empty file, which `write_verified`
         // would then happily accept.
     }
