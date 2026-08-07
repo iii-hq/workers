@@ -249,8 +249,15 @@ pub fn write_verified(path: &Path, text: &str) -> Result<()> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "workers-dev.yaml".to_string());
     let tmp = path.with_file_name(format!("{name}.tmp"));
-    std::fs::write(&tmp, text).with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::write(&tmp, text)
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
+        .with_context(|| format!("write {}", tmp.display()))?;
     std::fs::rename(&tmp, path)
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
         .with_context(|| format!("replace {} with {}", path.display(), tmp.display()))?;
     Ok(())
 }

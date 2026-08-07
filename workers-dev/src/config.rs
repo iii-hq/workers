@@ -78,7 +78,17 @@ impl Config {
         color: Option<String>,
         ui_watch: bool,
     ) -> Result<Self> {
-        let (file_cfg, explicit_path) = match &config_path {
+        // `loaded_path` is the file `file_cfg` actually came from, captured at
+        // the point of loading rather than reconstructed afterwards — a
+        // loaded file's `repo:` key can redirect the final `repo_root`
+        // elsewhere (honored as-is, see below), so rebuilding the path from
+        // that final root could name a file in a different repo than the one
+        // that was read.
+        let (file_cfg, loaded_path) = match &config_path {
+            // `--config` may be relative (resolved against the process cwd);
+            // the auto-probed path below is always absolute. Nothing in this
+            // crate changes cwd, so a relative `config_path` is stable, but
+            // don't assume the field is always absolute.
             Some(path) => (load_file_config(path)?, Some(path.clone())),
             None => {
                 // No --config: auto-load <repo_root>/workers-dev.yaml when present.
@@ -91,7 +101,7 @@ impl Config {
                     Ok(root) => {
                         let path = root.join("workers-dev.yaml");
                         if path.is_file() {
-                            (load_file_config(&path)?, None)
+                            (load_file_config(&path)?, Some(path))
                         } else {
                             (FileConfig::default(), None)
                         }
@@ -102,7 +112,13 @@ impl Config {
         };
 
         let repo_root = resolve_repo_root(repo.or(file_cfg.repo))?;
-        let config_path = explicit_path.unwrap_or_else(|| repo_root.join("workers-dev.yaml"));
+        // `loaded_path` is `None` only when no file was read at all (explicit
+        // `--config` and a found auto-load both set it above) — a default
+        // `FileConfig` carries no `repo:` to redirect with, so
+        // `repo.or(file_cfg.repo)` here is just `repo`, the same input the
+        // probe above already resolved. `repo_root` is therefore necessarily
+        // the probed root, so reconstructing the path from it is safe.
+        let config_path = loaded_path.unwrap_or_else(|| repo_root.join("workers-dev.yaml"));
         let worker_specs = discover_repo_workers(&repo_root)?;
         if worker_specs.is_empty() {
             bail!("no workers discovered under {}", repo_root.display());
@@ -451,6 +467,46 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_repo(&tmp);
         let cfg = load(&tmp, None).unwrap();
+        assert_eq!(cfg.config_path, tmp.path().join("workers-dev.yaml"));
+    }
+
+    /// An auto-loaded file's `repo:` key redirects `repo_root` elsewhere, but
+    /// `config_path` must still name the file that was actually read, not a
+    /// path rebuilt from the (now different) final `repo_root`.
+    ///
+    /// No `--repo` here — `repo: None` is required to let `file_cfg.repo`
+    /// reach the final `resolve_repo_root` call at all (an explicit `--repo`
+    /// would win via `.or()` regardless of what the file says). That means
+    /// the auto-load probe itself needs `WORKERS_DEV_REPO` to find `tmp`
+    /// instead of falling through to cwd / CARGO_MANIFEST_DIR, which would
+    /// hit this crate's own real repo. No other test reads that env var, so
+    /// this is safe under `cargo test`'s default parallelism today — but it
+    /// would race a future test that also resolves with `repo: None`.
+    #[test]
+    fn config_path_points_at_the_loaded_file_even_when_repo_key_redirects() {
+        let tmp = TempDir::new().unwrap();
+        write_repo(&tmp);
+        let other_repo = TempDir::new().unwrap();
+        write_repo(&other_repo);
+        std::fs::write(
+            tmp.path().join("workers-dev.yaml"),
+            format!("repo: {}\n", other_repo.path().display()),
+        )
+        .unwrap();
+
+        unsafe {
+            std::env::set_var("WORKERS_DEV_REPO", tmp.path());
+        }
+        let result = Config::load(None, None, None, false, None, false, None, false);
+        unsafe {
+            std::env::remove_var("WORKERS_DEV_REPO");
+        }
+        let cfg = result.unwrap();
+
+        // The redirect really did take effect...
+        assert_eq!(cfg.repo_root, other_repo.path());
+        // ...but config_path must still be the file read from `tmp`, not a
+        // `workers-dev.yaml` reconstructed under `other_repo`.
         assert_eq!(cfg.config_path, tmp.path().join("workers-dev.yaml"));
     }
 
