@@ -32,16 +32,15 @@ def args(**overrides):
         "publish_result": "success",
         "container_alias_result": "skipped",
         "candidate_result": "success",
-        "notification_result": "failure",
     }
     values.update(overrides)
     return argparse.Namespace(**values)
 
 
-def test_notification_failure_does_not_fail_release():
+def test_successful_release_result_contains_only_release_truth():
     result = build_result(args())
     assert result["status"] == "succeeded"
-    assert result["notification"] == "failure"
+    assert "notification" not in result
 
 
 def test_failure_after_registry_publish_is_partial():

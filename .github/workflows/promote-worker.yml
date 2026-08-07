@@ -382,48 +382,6 @@ jobs:
             '.tagName == $tag and .isDraft == false and .isPrerelease == false' \
             github-release-after.json >/dev/null
 
-      - name: Announce promoted release
-        id: slack
-        continue-on-error: true
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          CHANNEL: worker-releases
-          TAG: ${{ steps.candidate.outputs.tag }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          release_url=$(jq -r .url github-release-after.json)
-          text="🚀 ${WORKER} v${VERSION} promoted to @latest — <${release_url}|GitHub Release>"
-          payload=$(jq -n --arg channel "$CHANNEL" --arg text "$text" \
-            '{channel: $channel, text: $text}')
-          resp=$(curl -sf -X POST https://slack.com/api/chat.postMessage \
-            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            -d "$payload")
-          jq -e .ok <<<"$resp" >/dev/null || {
-            echo "::error::Slack API error: $(jq -r .error <<<"$resp")"
-            exit 1
-          }
-          echo "ts=$(jq -r .ts <<<"$resp")" >>"$GITHUB_OUTPUT"
-
-          notes=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null || true)
-          if [[ -n "$notes" ]]; then
-            notes=$(printf '%s' "$notes" | head -c 2900)
-            thread_payload=$(jq -n \
-              --arg channel "$CHANNEL" \
-              --arg text "$notes" \
-              --arg ts "$(jq -r .ts <<<"$resp")" \
-              '{channel: $channel, text: $text, thread_ts: $ts}')
-            thread_resp=$(curl -sf -X POST https://slack.com/api/chat.postMessage \
-              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-              -H "Content-Type: application/json; charset=utf-8" \
-              -d "$thread_payload")
-            jq -e .ok <<<"$thread_resp" >/dev/null || {
-              echo "::error::Slack thread API error: $(jq -r .error <<<"$thread_resp")"
-              exit 1
-            }
-          fi
-
       - name: Write promotion summary
         if: always()
         run: |
@@ -452,7 +410,6 @@ jobs:
         env:
           OPERATION_ID: ${{ inputs.operation_id || format('github:{0}', github.run_id) }}
           STEP_ID: ${{ inputs.step_id || 'promote' }}
-          NOTIFICATION_RESULT: ${{ steps.slack.outcome }}
           DEPLOY: ${{ steps.candidate.outputs.deploy }}
         run: |
           registry=false
@@ -479,7 +436,6 @@ jobs:
             --arg candidate_evidence_run_id "$EVIDENCE_RUN_ID" \
             --arg e2e_run_id "$E2E_RUN_ID" \
             --arg status "$status" \
-            --arg notification "${NOTIFICATION_RESULT:-skipped}" \
             --argjson registry "$registry" \
             --argjson github_release "$github_release" \
             --argjson image_alias "$image_alias" \
@@ -490,7 +446,7 @@ jobs:
               release_run_id: $release_run_id,
               candidate_evidence_run_id: $candidate_evidence_run_id,
               e2e_run_id: ($e2e_run_id | if length > 0 then . else null end),
-              status: $status, notification: $notification,
+              status: $status,
               results: {registry: $registry, github_release: $github_release, image_alias: $image_alias}}' \
             >promotion-result.json
 
