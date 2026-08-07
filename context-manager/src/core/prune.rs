@@ -790,6 +790,18 @@ mod tests {
     }
 
     #[test]
+    fn cap_skips_result_exactly_at_the_threshold() {
+        // The skip condition is `tokens <= max_result_tokens`: 80_000
+        // chars / 4 == 20_000 tokens exactly, so the boundary itself
+        // must be left untouched, not just values strictly under it.
+        let mut messages = vec![result("engine::traces::list", 80_000, 1)];
+        let mut sizes = sizes_of(&messages);
+        let stats = cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
+        assert_eq!(stats.capped_parts, 0);
+        assert_eq!(text_of(messages[0].content()).len(), 80_000);
+    }
+
+    #[test]
     fn cap_is_idempotent_and_deterministic() {
         let mut once = vec![result("f::g", 200_000, 1)];
         let mut sizes_once = sizes_of(&once);
@@ -872,6 +884,8 @@ mod tests {
             panic!("kind changed");
         };
         assert!(details["context_capped"]["original_estimated_tokens"].is_u64());
+        // Size memo matches a from-scratch recount.
+        assert_eq!(sizes, sizes_of(std::slice::from_ref(&oversized)));
 
         // A denied envelope's details survive even on an oversized result.
         let mut denied: AgentMessage = serde_json::from_value(json!({
@@ -896,6 +910,8 @@ mod tests {
         };
         assert_eq!(details["status"], "denied");
         assert_eq!(details["blob"].as_str().unwrap().len(), 10_000);
+        // Size memo matches a from-scratch recount.
+        assert_eq!(sizes, sizes_of(std::slice::from_ref(&denied)));
     }
 
     #[test]
@@ -980,10 +996,13 @@ mod tests {
         whale_b_turn: usize,
         ceiling: u64,
     ) -> u64 {
+        // Read "the shipped defaults" rather than re-typing them, so a
+        // config-default change actually moves this test.
+        let shipped = crate::config::WorkerConfig::default();
         let defaults = PruneParams {
-            protect_recent_tokens: 40_000,
-            min_free_tokens: 20_000,
-            max_output_chars: 2_000,
+            protect_recent_tokens: shipped.protect_recent_tokens,
+            min_free_tokens: shipped.min_free_tokens,
+            max_output_chars: shipped.max_output_chars,
             protected_functions: vec![],
         };
         let mut raw: Vec<AgentMessage> = Vec::new();
@@ -1008,8 +1027,15 @@ mod tests {
             // One assemble step: re-derive from raw, never persist.
             let mut working = raw.clone();
             let mut sizes = sizes_of(&working);
-            cap_results_with_sizes(&mut working, &mut sizes, 20_000, &HeuristicEstimator);
+            cap_results_with_sizes(
+                &mut working,
+                &mut sizes,
+                shipped.max_result_tokens,
+                &HeuristicEstimator,
+            );
             prune_with_sizes(&mut working, &mut sizes, &defaults, &HeuristicEstimator);
+            // Message-history subtotal only: real assemble also adds
+            // system-prompt, tool-schema, and request-overhead tokens.
             let total: u64 = sizes.iter().sum();
             worst_total = worst_total.max(total);
         }
@@ -1046,7 +1072,10 @@ mod tests {
     ///           text-only tokens, 2_500 each, so the same window holds
     ///           slightly more at the message level) + 5 free-riding
     ///           user messages the window never charges for
-    /// + 1_511   residue already collapsed to ~65-token placeholders
+    /// + 1_511   residue: 1_378 tokens across the 21 placeholders
+    ///           already collapsed above + 133 tokens of aged-region
+    ///           user messages (past both the recent-turn and window
+    ///           zones, never charged against either budget)
     /// = 75_653. 78_000 is a fixed ceiling with headroom over that
     /// verified 75_653 (for incidental token-count drift from unrelated
     /// wording changes elsewhere in this file), while staying far below
@@ -1065,7 +1094,8 @@ mod tests {
     /// bounded` above for a deliberately heavier stress variant with the
     /// same whale timing). With the shipped defaults the model-facing
     /// total stays inside the spec's ~30-50k steady-state band: the mean
-    /// total across turns 5..20 (once both whales are in play) measures
+    /// total across turns 5..20 (the first whale lands at turn 5, the
+    /// second only at turn 12, so turns 5-11 run with one whale) measures
     /// 41_663 tokens — comfortably under the spec's <= 1/3-of-original
     /// criterion applied to this session's real ~190k peak, and nothing
     /// like the 75_653 stress figure above. The worst single step is

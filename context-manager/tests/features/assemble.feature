@@ -44,6 +44,7 @@ Feature: context::assemble — the model-ready context pipeline
     Then the call succeeds
     And the response field "applied.pruned" is true
     And the response field "token_count" does not exceed 172000
+    And response message 2 text is "[output of shell::run pruned: was ~5000 tokens; re-call it if still needed]"
 
   # Prevents: the always-on trigger swallowing the allow_prune switch.
   # This is the only scenario that fails if prune fires when explicitly
@@ -92,6 +93,7 @@ Feature: context::assemble — the model-ready context pipeline
       """
     Then the call succeeds
     And the response field "applied.capped_parts" is 0
+    And response message 2 text has 200000 chars
 
   # Prevents: an over-budget context reaching the model when freeing
   # old tool outputs would have been enough — the cheap pass must run
