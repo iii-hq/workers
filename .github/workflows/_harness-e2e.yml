@@ -179,15 +179,14 @@ jobs:
         with:
           ref: ${{ inputs.source_ref }}
 
-      # state/build.rs builds its embedded UI when the checked-out assets are
-      # stale, so the isolated E2E build needs the same Node/pnpm toolchain as
-      # the regular CI worker builds.
+      # state/build.rs and harness/build.rs build their embedded UIs when the
+      # checked-out assets are stale, and the harness crate compiles in every
+      # stack mode (Test/Lint E2E crate), so both lanes need the same
+      # Node/pnpm toolchain as the regular CI worker builds.
       - name: Setup pnpm
-        if: inputs.stack_mode == 'source'
         uses: pnpm/action-setup@v5
 
       - name: Setup Node
-        if: inputs.stack_mode == 'source'
         uses: actions/setup-node@v5
         with:
           node-version: 22
