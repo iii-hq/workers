@@ -773,7 +773,7 @@ function UserMessage({ message }: { message: UserMessageType }) {
       </header>
       <div
         className={cn(
-          'max-w-[80%] border-l border-rule pl-4 pr-1 py-1',
+          'max-w-[80%] rounded-sm bg-surface px-3.5 py-2.5',
           'break-words',
         )}
       >

@@ -72,7 +72,7 @@ export function SpanHoverCard({
       }}
     >
       <div
-        className="bg-panel border border-rule px-3 py-2.5 min-w-[200px]"
+        className="rounded-md bg-panel-raised shadow-floating px-3 py-2.5 min-w-[200px]"
         style={{ maxWidth: CARD_MAX_WIDTH }}
       >
         <div className="font-mono text-[12.5px] text-ink leading-tight mb-1.5 break-all lowercase">
@@ -120,7 +120,7 @@ export function SpanHoverCard({
         </div>
 
         {tracePercent != null && (
-          <div className="mt-2 h-1 bg-rule-2 overflow-hidden">
+          <div className="mt-2 h-1 bg-surface overflow-hidden">
             <div
               className="h-full bg-accent"
               style={{

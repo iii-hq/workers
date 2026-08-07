@@ -1,13 +1,14 @@
 import type * as React from 'react'
 import { cn } from '@/lib/utils'
 
-type DotTone = 'accent' | 'alert' | 'warn' | 'ink'
+type DotTone = 'accent' | 'alert' | 'warn' | 'ink' | 'ok'
 
 const dotTone: Record<DotTone, string> = {
   accent: 'bg-accent',
   alert: 'bg-alert',
   warn: 'bg-warn',
   ink: 'bg-ink',
+  ok: 'bg-ok',
 }
 
 interface StatusDotProps extends React.HTMLAttributes<HTMLSpanElement> {

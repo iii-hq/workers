@@ -180,10 +180,10 @@ function currentTimeRangeIndex(filters: TraceFilterState): number {
 }
 
 const inputClass =
-  'h-8 px-2 font-mono text-[12px] bg-bg border border-rule text-ink placeholder:text-ink-ghost focus:outline-none focus:border-accent transition-colors lowercase'
+  'h-8 px-2 rounded-sm font-mono text-[12px] bg-surface border border-transparent text-ink placeholder:text-ink-ghost hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors lowercase'
 
 const selectClass =
-  'h-8 px-2 font-mono text-[12px] bg-bg border border-rule text-ink focus:outline-none focus:border-accent transition-colors lowercase appearance-none cursor-pointer'
+  'h-8 px-2 rounded-sm font-mono text-[12px] bg-surface border border-transparent text-ink hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors lowercase appearance-none cursor-pointer'
 
 // Lightweight popover anchored to a trigger via getBoundingClientRect.
 // Portals into document.body so it isn't clipped by overflow-hidden
@@ -277,7 +277,7 @@ function MoreFiltersPopover({
         maxHeight: pos.maxHeight,
         zIndex: 50,
       }}
-      className="bg-bg border border-rule p-3 shadow-[0_8px_24px_rgba(0,0,0,0.18)] overflow-y-auto"
+      className="rounded-md bg-panel-raised p-3 shadow-floating overflow-y-auto"
     >
       {children}
     </div>,
@@ -298,8 +298,10 @@ function SearchInput({
   return (
     <label
       className={cn(
-        'flex items-center gap-2 h-8 px-2 border bg-bg transition-colors',
-        searchFocused ? 'border-accent' : 'border-rule',
+        'flex items-center gap-2 h-8 px-2 rounded-sm border bg-surface transition-[border-color,box-shadow]',
+        searchFocused
+          ? 'border-rule-focus ring-[3px] ring-accent/10'
+          : 'border-transparent',
         className,
       )}
     >
@@ -332,7 +334,7 @@ function SearchInput({
 function StatsBlock({ stats }: { stats: TraceFiltersProps['stats'] }) {
   if (!stats) return null
   return (
-    <div className="flex items-stretch border border-rule divide-x divide-rule-2">
+    <div className="flex items-stretch rounded-md bg-surface">
       <div className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] text-ink-faint lowercase">
         <Hash className="w-3 h-3 text-ink-faint" />
         <span className="text-ink tabular-nums">{stats.totalTraces}</span>
@@ -669,10 +671,10 @@ export function TraceFilters({
           type="button"
           onClick={() => setPopoverOpen((v) => !v)}
           className={cn(
-            'inline-flex items-center gap-2 h-8 px-2.5 border font-mono text-[12px] lowercase transition-colors',
+            'inline-flex items-center gap-2 h-8 px-2.5 rounded-sm font-mono text-[12px] lowercase transition-colors',
             popoverOpen || advancedFilterCount > 0
-              ? 'border-accent text-ink'
-              : 'border-rule text-ink-faint hover:text-ink hover:border-rule',
+              ? 'bg-accent-muted text-ink'
+              : 'bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover',
           )}
           aria-haspopup="dialog"
           aria-expanded={popoverOpen}
@@ -680,7 +682,7 @@ export function TraceFilters({
           <SlidersHorizontal className="w-3 h-3" />
           <span>more filters</span>
           {advancedFilterCount > 0 && (
-            <span className="px-1 py-0 bg-accent text-bg font-mono text-[10px] tabular-nums leading-none flex items-center min-w-[14px] justify-center">
+            <span className="px-1 py-0 rounded-xs bg-accent text-accent-fg font-mono text-[10px] tabular-nums leading-none flex items-center min-w-[14px] justify-center">
               {advancedFilterCount}
             </span>
           )}
@@ -713,10 +715,10 @@ export function TraceFilters({
               onClick={() =>
                 filter.onRemove ? filter.onRemove() : removeFilter(filter.key)
               }
-              className="flex items-center gap-1 px-1.5 py-0.5 bg-panel border border-rule hover:border-accent hover:text-ink font-mono text-[10px] text-ink-faint transition-colors group lowercase"
+              className="flex items-center gap-1 px-2 py-1 rounded-sm bg-surface hover:bg-surface-hover hover:text-ink font-mono text-[11px] text-ink-faint transition-colors group lowercase"
             >
               <span>{filter.label}</span>
-              <X className="w-2.5 h-2.5 opacity-50 group-hover:opacity-100 group-hover:text-accent transition-all" />
+              <X className="w-2.5 h-2.5 opacity-50 group-hover:opacity-100 transition-all" />
             </button>
           ))}
           <Button variant="ghost" size="sm" onClick={onClear} className="ml-1">

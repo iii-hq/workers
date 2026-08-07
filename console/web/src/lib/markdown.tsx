@@ -231,14 +231,14 @@ const components: Components = {
       return (
         <JsonHighlight
           code={source.replace(/\n$/, '')}
-          className="border border-rule my-4"
+          className="rounded-md border border-rule-2 my-4"
         />
       )
     }
     return (
       <pre
         className={cn(
-          'border border-rule bg-bg overflow-x-auto px-5 py-4 my-4 font-mono text-[12.5px] leading-[1.55] text-ink',
+          'rounded-md border border-rule-2 bg-bg overflow-x-auto px-5 py-4 my-4 font-mono text-[12.5px] leading-[1.55] text-ink',
           className,
         )}
         {...rest}
@@ -270,7 +270,7 @@ const components: Components = {
     )
   },
   table: ({ className, ...rest }) => (
-    <div className="my-4 overflow-x-auto border border-rule">
+    <div className="my-4 overflow-x-auto rounded-md border border-rule-2">
       <table
         className={cn(
           'w-full border-collapse font-mono text-[13px] text-ink',
@@ -281,7 +281,7 @@ const components: Components = {
     </div>
   ),
   thead: ({ className, ...rest }) => (
-    <thead className={cn('bg-panel', className)} {...rest} />
+    <thead className={cn('bg-surface', className)} {...rest} />
   ),
   th: ({ className, ...rest }) => (
     <th

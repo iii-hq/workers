@@ -1,118 +1,155 @@
 ---
-version: alpha
+version: beta
 name: iii Schematic
-description: A minimal, blueprint-style design system for the iii engine. Engineering-document aesthetic in warm cream and ink, with a single vivid orange accent and an all-monospace voice.
+description: A minimal, engineering-document design system for the iii engine. The system draws no lines — hierarchy comes entirely from layered surfaces and alpha-gray fills; warm cream paper in light, neutral grays from black in dark, with a single rationed accent (burnt orange on cream, electric blue on dark), one 6px corner radius everywhere, and a mono voice for technical data. The only sanctioned strokes are the focus ring and the very subtle `edge` frame around the floating workspace panels.
 colors:
   bg: "#f2f0ed"
-  panel: "#e9e6e2"
+  sidebar: "#edeae5"
+  panel: "lab(98.26% 0 0)"
+  panel-raised: "#f7f5f2"
   paper: "#f2f0ed"
   paper-2: "#ebe8e3"
+  surface: "rgba(20, 16, 8, 0.055)"
+  surface-hover: "rgba(20, 16, 8, 0.085)"
+  surface-selected: "rgba(184, 66, 15, 0.12)"
+  surface-active: "rgba(20, 16, 8, 0.12)"
   ink: "#0a0a0a"
   ink-2: "#1a1a1a"
   ink-soft: "#1a1a1a"
   ink-faint: "#6b6865"
   ink-ghost: "#a3a09c"
+  ink-disabled: "#b8b4ae"
   mute: "#6b6865"
   mute-2: "#a3a09c"
-  rule: "#d8d5d0"
-  rule-2: "#e6e3df"
-  accent: "#ff5a1f"
-  accent-dark: "#3ea8ff"
-  bg-dark: "#111110"
-  panel-dark: "#1a1916"
-  ink-dark: "#f2f0ed"
-  ink-faint-dark: "#a8a49e"
-  ink-ghost-dark: "#8a8782"
-  rule-dark: "#2a2926"
-  rule-2-dark: "#1f1e1c"
-  alert: "#c43e1c"
+  rule: "transparent"
+  rule-2: "transparent"
+  rule-strong: "transparent"
+  rule-focus: "rgba(184, 66, 15, 0.6)"
+  edge: "rgba(20, 16, 8, 0.08)"
+  accent: "#b8420f"
+  accent-fg: "#f2f0ed"
+  accent-hover: "#a53a0c"
+  accent-muted: "rgba(184, 66, 15, 0.1)"
+  accent-border: "rgba(184, 66, 15, 0.35)"
+  alert: "#ff0026"
+  alert-muted: "rgba(255, 0, 38, 0.08)"
   warn: "#a87a00"
+  warn-muted: "rgba(168, 122, 0, 0.12)"
+  ok: "#356f3d"
+  ok-muted: "rgba(53, 111, 61, 0.12)"
+  bg-dark: "#0a0a0a"
+  sidebar-dark: "#0e0e0e"
+  panel-dark: "#111111"
+  panel-raised-dark: "#171717"
+  paper-2-dark: "#171717"
+  surface-dark: "rgba(255, 255, 255, 0.055)"
+  surface-hover-dark: "rgba(255, 255, 255, 0.085)"
+  surface-selected-dark: "rgba(40, 168, 247, 0.14)"
+  surface-active-dark: "rgba(255, 255, 255, 0.12)"
+  ink-dark: "#ededed"
+  ink-faint-dark: "#a6a6a6"
+  ink-ghost-dark: "#6f6f6f"
+  ink-disabled-dark: "#4d4d4d"
+  rule-dark: "transparent"
+  rule-2-dark: "transparent"
+  rule-strong-dark: "transparent"
+  rule-focus-dark: "rgba(40, 168, 247, 0.7)"
+  edge-dark: "rgba(255, 255, 255, 0.07)"
+  accent-dark: "#28a8f7"
+  accent-hover-dark: "#46b6fa"
+  accent-muted-dark: "rgba(40, 168, 247, 0.12)"
+  accent-border-dark: "rgba(40, 168, 247, 0.35)"
+  alert-dark: "#f05d68"
+  warn-dark: "#f5a524"
+  ok-dark: "#36c98f"
 typography:
   logo:
-    fontFamily: Chivo Mono
+    fontFamily: Geist Mono
     fontSize: 18px
     fontWeight: 600
     lineHeight: 1
     letterSpacing: -0.02em
   display-hero:
-    fontFamily: Chivo Mono
+    fontFamily: Geist
     fontSize: 72px
     fontWeight: 600
     lineHeight: 1.02
     letterSpacing: -0.02em
   display-foot:
-    fontFamily: Chivo Mono
+    fontFamily: Geist
     fontSize: 48px
     fontWeight: 600
     lineHeight: 1.05
     letterSpacing: -0.03em
   headline-section:
-    fontFamily: Chivo Mono
+    fontFamily: Geist
     fontSize: 28px
     fontWeight: 500
     lineHeight: 1.25
     letterSpacing: -0.01em
   headline-card:
-    fontFamily: Chivo Mono
+    fontFamily: Geist
     fontSize: 20px
     fontWeight: 500
     lineHeight: 1.1
     letterSpacing: -0.02em
   title-cell:
-    fontFamily: Chivo Mono
+    fontFamily: Geist Mono
     fontSize: 16px
     fontWeight: 600
     lineHeight: 1.3
     letterSpacing: -0.01em
   body-md:
-    fontFamily: Chivo Mono
+    fontFamily: Geist
     fontSize: 14px
     fontWeight: 400
     lineHeight: 1.7
   body-sm:
-    fontFamily: Chivo Mono
+    fontFamily: Geist
     fontSize: 13px
     fontWeight: 400
     lineHeight: 1.7
   code-md:
-    fontFamily: Chivo Mono
+    fontFamily: Geist Mono
     fontSize: 13px
     fontWeight: 400
     lineHeight: 1.65
   code-sm:
-    fontFamily: Chivo Mono
+    fontFamily: Geist Mono
     fontSize: 12.5px
     fontWeight: 400
     lineHeight: 1.55
   label-caps-lg:
-    fontFamily: Chivo Mono
+    fontFamily: Geist Mono
     fontSize: 12px
     fontWeight: 500
     lineHeight: 1
     letterSpacing: 0.18em
   label-caps-md:
-    fontFamily: Chivo Mono
+    fontFamily: Geist Mono
     fontSize: 12px
     fontWeight: 500
     lineHeight: 1
     letterSpacing: 0.14em
   label-caps-sm:
-    fontFamily: Chivo Mono
+    fontFamily: Geist Mono
     fontSize: 11px
     fontWeight: 500
     lineHeight: 1
     letterSpacing: 0.06em
   micro:
-    fontFamily: Chivo Mono
+    fontFamily: Geist Mono
     fontSize: 9px
     fontWeight: 400
     lineHeight: 1
     letterSpacing: 0.04em
 rounded:
   none: 0px
-  sm: 0px
-  md: 0px
-  lg: 0px
+  xs: 6px
+  sm: 6px
+  md: 6px
+  lg: 6px
+  xl: 6px
   full: 9999px
 spacing:
   base: 16px
@@ -147,35 +184,35 @@ components:
     backgroundColor: "{colors.ink}"
     textColor: "{colors.bg}"
     typography: "{typography.body-sm}"
-    rounded: "{rounded.none}"
+    rounded: "{rounded.md}"
     padding: 12px 20px
   button-primary-hover:
-    backgroundColor: "{colors.bg}"
-    textColor: "{colors.ink}"
+    backgroundColor: "{colors.ink}"
+    opacity: 0.9
   button-ghost:
-    backgroundColor: "{colors.bg}"
-    textColor: "{colors.ink}"
+    backgroundColor: transparent
+    textColor: "{colors.ink-faint}"
     typography: "{typography.body-sm}"
-    rounded: "{rounded.none}"
+    rounded: "{rounded.sm}"
     padding: 12px 20px
   button-ghost-hover:
-    backgroundColor: "{colors.ink}"
-    textColor: "{colors.bg}"
+    backgroundColor: "{colors.surface-hover}"
+    textColor: "{colors.ink}"
   button-pill:
-    backgroundColor: "{colors.bg}"
+    backgroundColor: "{colors.surface}"
     textColor: "{colors.ink}"
     typography: "{typography.body-sm}"
-    rounded: "{rounded.none}"
+    rounded: "{rounded.sm}"
     padding: 6px 12px
   button-pill-hover:
-    backgroundColor: "{colors.ink}"
-    textColor: "{colors.bg}"
+    backgroundColor: "{colors.surface-hover}"
   button-icon:
-    backgroundColor: "{colors.bg}"
+    backgroundColor: transparent
     textColor: "{colors.ink-faint}"
-    rounded: "{rounded.none}"
+    rounded: "{rounded.sm}"
     size: 30px
   button-icon-hover:
+    backgroundColor: "{colors.surface-hover}"
     textColor: "{colors.ink}"
   nav-link:
     typography: "{typography.body-sm}"
@@ -184,68 +221,78 @@ components:
   nav-link-hover:
     textColor: "{colors.ink}"
   card:
-    backgroundColor: "{colors.bg}"
-    rounded: "{rounded.none}"
-    padding: 28px
+    backgroundColor: "{colors.surface}"
+    rounded: "{rounded.md}"
+    padding: 20px
   card-focus:
-    backgroundColor: "{colors.panel}"
+    backgroundColor: "{colors.panel-raised}"
   card-head:
-    backgroundColor: "{colors.panel}"
+    backgroundColor: "{colors.panel-raised}"
     typography: "{typography.label-caps-lg}"
     textColor: "{colors.ink-faint}"
     padding: 10px 14px
   input:
-    backgroundColor: "{colors.bg}"
+    backgroundColor: "{colors.surface}"
     textColor: "{colors.ink}"
     typography: "{typography.body-sm}"
-    rounded: "{rounded.none}"
-    padding: 10px 2px
+    rounded: "{rounded.sm}"
+    padding: 10px 12px
   input-placeholder:
     textColor: "{colors.ink-ghost}"
+  input-hover:
+    backgroundColor: "{colors.surface-hover}"
   input-focus:
-    backgroundColor: "{colors.bg}"
-    textColor: "{colors.ink}"
+    borderColor: "{colors.rule-focus}"
+    ring: "3px {colors.accent-muted}"
   badge-numeric:
     backgroundColor: "{colors.accent}"
-    textColor: "{colors.bg}"
+    textColor: "{colors.accent-fg}"
     typography: "{typography.label-caps-sm}"
-    rounded: "{rounded.none}"
+    rounded: "{rounded.xs}"
     padding: 0 4px
     height: 16px
   status-dot:
     backgroundColor: "{colors.accent}"
     rounded: "{rounded.full}"
     size: 6px
-  rule-line:
-    backgroundColor: "{colors.rule}"
-    height: 1px
   code-block:
     backgroundColor: "{colors.bg}"
     typography: "{typography.code-sm}"
     textColor: "{colors.ink}"
+    rounded: "{rounded.sm}"
     padding: 18px 20px
   terminal-button:
-    backgroundColor: "{colors.bg}"
+    backgroundColor: "{colors.surface}"
     textColor: "{colors.ink}"
     typography: "{typography.body-sm}"
-    rounded: "{rounded.none}"
+    rounded: "{rounded.sm}"
     padding: 10px 14px
   terminal-prompt:
     textColor: "{colors.accent}"
+  toggle-track:
+    backgroundColor: "{colors.surface}"
+    rounded: "{rounded.sm}"
+    padding: 2px
   toggle-active:
-    backgroundColor: "{colors.ink}"
-    textColor: "{colors.bg}"
+    backgroundColor: "{colors.accent-muted}"
+    textColor: "{colors.ink}"
+    rounded: "{rounded.xs}"
   toggle-inactive:
-    backgroundColor: "{colors.bg}"
+    backgroundColor: transparent
     textColor: "{colors.mute}"
 ---
 
 # iii Schematic — design system
 
-This document is a self-contained, portable spec for the iii Schematic UI: a
-warm-cream, ink-on-paper, monospace web UI built like an engineering drafting
-sheet. Everything needed to reproduce the system in another project lives
-inside this file — there are no links to repository sources.
+This document is a self-contained, portable spec for the iii Schematic UI:
+an engineering-document web UI built from layered surfaces and alpha-gray
+fills — warm cream paper in light, neutral grays from black in dark — with
+Geist for UI text, Geist Mono for technical data, one 6px corner radius
+everywhere, and a single rationed accent. The system draws no lines: the
+only sanctioned strokes are the focus ring and the subtle `edge` frame
+around the floating workspace panels. Everything needed to reproduce the
+system in another project lives inside this file — there are no links to
+repository sources.
 
 The YAML frontmatter above is the machine-readable token spec. The sections
 below translate it into implementation-ready CSS and React. They assume:
@@ -263,18 +310,24 @@ canonical components in §10 as-is.
 
 ## 0. Setup
 
-### Font
+### Fonts
 
-Load Chivo Mono in `index.html`. Weights 400/500/600 cover the entire scale
-(body, label-caps, headlines, display).
+Two families, loaded via `@fontsource` at the top of the global stylesheet:
+**Geist** (the UI sans — navigation, buttons, body copy, headings) and
+**Geist Mono** (the technical voice — trace names, IDs, timestamps, metrics,
+code). Chivo Mono stays in the mono fallback stack for legacy glyph parity.
+Weights 400/500/600 cover the entire scale.
 
-```html
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link
-  rel="stylesheet"
-  href="https://fonts.googleapis.com/css2?family=Chivo+Mono:wght@400;500;600&display=swap"
-/>
+```css
+@import "@fontsource/geist/400.css";
+@import "@fontsource/geist/500.css";
+@import "@fontsource/geist/600.css";
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
+@import "@fontsource/geist-mono/600.css";
+@import "@fontsource/chivo-mono/400.css";
+@import "@fontsource/chivo-mono/500.css";
+@import "@fontsource/chivo-mono/600.css";
 ```
 
 ### HTML shell
@@ -299,36 +352,89 @@ The full design-token stylesheet — drop this in as your global CSS entrypoint:
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
-    Consolas, "Liberation Mono", "Courier New", monospace;
-  --font-mono: "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
+  --font-sans:
+    "Geist", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-mono:
+    "Geist Mono", "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
     Consolas, "Liberation Mono", "Courier New", monospace;
 
-  /* paper / surface ramp (3-step) */
+  /* ── Surface ramp ─────────────────────────────────────────────────────
+     Layered surfaces are the ONLY structural tool — the system draws no
+     lines: bg (canvas) → sidebar → panel → panel-raised, then the
+     component fills surface → surface-hover → surface-selected →
+     surface-active. The base layers are solid; the component fills are
+     alpha grays so one step reads identically over any base layer.
+     `paper-2` is the legacy alias for panel-raised. */
   --color-bg: #f2f0ed;
-  --color-panel: #e9e6e2;
+  --color-sidebar: #edeae5;
+  --color-panel: lab(98.26% 0 0);
+  --color-panel-raised: #f7f5f2;
   --color-paper-2: #ebe8e3;
+  --color-surface: rgba(20, 16, 8, 0.055);
+  --color-surface-hover: rgba(20, 16, 8, 0.085);
+  --color-surface-selected: rgba(184, 66, 15, 0.12);
+  --color-surface-active: rgba(20, 16, 8, 0.12);
 
-  /* ink ramp (3-step) */
+  /* ── Ink ramp ──────────────────────────────────────────────────────── */
   --color-ink: #0a0a0a;
   --color-ink-faint: #6b6865;
   --color-ink-ghost: #a3a09c;
+  --color-ink-disabled: #b8b4ae;
 
-  /* structural lines */
-  --color-rule: #d8d5d0;
-  --color-rule-2: #e6e3df;
+  /* ── Border ramp ──────────────────────────────────────────────────────
+     The system draws no lines: rule/rule-2/rule-strong resolve to
+     transparent in both themes (legacy `border-rule*` utilities become
+     inert 1px transparent borders, so layout never shifts). Hierarchy is
+     carried by the surface fills above. The single exception is
+     rule-focus — the focus indicator on inputs and controls, which must
+     stay visible for accessibility. */
+  --color-rule: transparent;
+  --color-rule-2: transparent;
+  --color-rule-strong: transparent;
+  --color-rule-focus: rgba(184, 66, 15, 0.6);
 
-  /* accent (single hero — hot orange) */
-  --color-accent: #ff5a1f;
+  /* The one structural stroke the system keeps: a VERY subtle edge on the
+     main workspace panels (the tab columns), so the floating panels
+     read against the canvas. Never used inside a panel. */
+  --color-edge: rgba(20, 16, 8, 0.08);
+
+  /* accent (single hero — burnt orange on cream, blue on dark) */
+  --color-accent: #b8420f;
   --color-accent-fg: #f2f0ed;
+  --color-accent-hover: #a53a0c;
+  --color-accent-muted: rgba(184, 66, 15, 0.1);
+  --color-accent-border: rgba(184, 66, 15, 0.35);
 
-  /* status */
-  --color-alert: #c43e1c;
+  /* status (each with a muted fill for tinted backgrounds) */
+  --color-alert: #ff0026;
+  --color-alert-muted: rgba(255, 0, 38, 0.08);
   --color-warn: #a87a00;
+  --color-warn-muted: rgba(168, 122, 0, 0.12);
+  --color-ok: #356f3d;
+  --color-ok-muted: rgba(53, 111, 61, 0.12);
 
-  /* radii — only two are allowed */
+  /* ── Radii ────────────────────────────────────────────────────────────
+     One radius everywhere: every step of the Tailwind scale resolves to
+     6px, so badges, buttons, cards, panels, and modals share the same
+     corner. Only `none` (main columns' outer frame edge cases) and `full`
+     (dots, round action buttons) differ. */
   --radius-none: 0px;
+  --radius-xs: 6px;
+  --radius-sm: 6px;
+  --radius-md: 6px;
+  --radius-lg: 6px;
+  --radius-xl: 6px;
   --radius-full: 9999px;
+
+  /* ── Elevation (the only two sanctioned shadows) ────────────────────── */
+  --shadow-raised:
+    0 1px 0 rgba(255, 255, 255, 0.025) inset, 0 8px 24px rgba(0, 0, 0, 0.18);
+  --shadow-floating:
+    0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 12px 32px rgba(0, 0, 0, 0.28);
+
+  /* ── Motion ─────────────────────────────────────────────────────────── */
+  --ease-glide: cubic-bezier(0.2, 0.8, 0.2, 1);
 
   /* spacing scale (carried from the YAML) */
   --spacing-gutter: 24px;
@@ -338,18 +444,41 @@ The full design-token stylesheet — drop this in as your global CSS entrypoint:
   --spacing-content-max: 1216px;
 }
 
-/* dark theme: invert paper/ink and swap accent to electric blue */
 [data-theme="dark"] {
-  --color-bg: #111110;
-  --color-panel: #1a1916;
-  --color-paper-2: #1f1e1c;
-  --color-ink: #f2f0ed;
-  --color-ink-faint: #a8a49e;
-  --color-ink-ghost: #8a8782;
-  --color-rule: #2a2926;
-  --color-rule-2: #1f1e1c;
-  --color-accent: #3ea8ff;
-  --color-accent-fg: #111110;
+  /* Neutral grays derived from black — no blue cast in the base ramp. The
+     component fills (surface*) are white-alpha so a step reads identically
+     over any base layer; the ONLY chromatic surface is surface-selected,
+     the blue selection tint. Borders are gone: rule/rule-2/rule-strong
+     resolve to transparent, and hierarchy is carried entirely by fills. */
+  --color-bg: #0a0a0a;
+  --color-sidebar: #0e0e0e;
+  --color-panel: #111111;
+  --color-panel-raised: #171717;
+  --color-paper-2: #171717;
+  --color-surface: rgba(255, 255, 255, 0.055);
+  --color-surface-hover: rgba(255, 255, 255, 0.085);
+  --color-surface-selected: rgba(40, 168, 247, 0.14);
+  --color-surface-active: rgba(255, 255, 255, 0.12);
+  --color-ink: #ededed;
+  --color-ink-faint: #a6a6a6;
+  --color-ink-ghost: #6f6f6f;
+  --color-ink-disabled: #4d4d4d;
+  --color-rule: transparent;
+  --color-rule-2: transparent;
+  --color-rule-strong: transparent;
+  --color-rule-focus: rgba(40, 168, 247, 0.7);
+  --color-edge: rgba(255, 255, 255, 0.07);
+  --color-accent: #28a8f7;
+  --color-accent-fg: #070909;
+  --color-accent-hover: #46b6fa;
+  --color-accent-muted: rgba(40, 168, 247, 0.12);
+  --color-accent-border: rgba(40, 168, 247, 0.35);
+  --color-alert: #f05d68;
+  --color-alert-muted: rgba(240, 93, 104, 0.12);
+  --color-warn: #f5a524;
+  --color-warn-muted: rgba(245, 165, 36, 0.12);
+  --color-ok: #36c98f;
+  --color-ok-muted: rgba(54, 201, 143, 0.12);
 }
 
 @layer base {
@@ -388,11 +517,13 @@ The full design-token stylesheet — drop this in as your global CSS entrypoint:
   ::-webkit-scrollbar-track {
     background: transparent;
   }
+  /* rule is transparent (no-lines system) — the thumb needs its own
+     visible alpha gray. */
   ::-webkit-scrollbar-thumb {
-    background: var(--color-rule);
+    background: color-mix(in oklab, var(--color-ink) 22%, transparent);
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: var(--color-ink-ghost);
+    background: color-mix(in oklab, var(--color-ink) 38%, transparent);
   }
 }
 
@@ -428,11 +559,26 @@ The full design-token stylesheet — drop this in as your global CSS entrypoint:
   animation: wiggle 3s ease-in-out infinite;
 }
 
-/* the one sanctioned shadow stack — used only for the "deal" stack
-   animation on language cards */
+/* transient shadow stack — used only for the "deal" stack animation on
+   language cards (default elevation goes through shadow-raised /
+   shadow-floating from the theme) */
 @utility deal-shadow {
   box-shadow: -2px 0 0 var(--color-rule),
     -16px 4px 36px -10px rgba(0, 0, 0, 0.22);
+}
+
+/* Function/tool-call card chrome — an accent-tinted raised surface (a soft
+   gradient wash over panel-raised, no border) so calls read as special
+   without any outline. Derived from the accent token, so it tints blue in
+   dark mode and burnt orange in light mode. */
+@utility fcall-chrome {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--color-accent) 7%, transparent),
+      color-mix(in oklab, var(--color-accent) 3%, transparent)
+    ),
+    var(--color-panel-raised);
 }
 ```
 
@@ -454,19 +600,32 @@ export function cn(...inputs: ClassValue[]) {
 
 ## 1. Philosophy — "iii Schematic"
 
-The app should feel like an **engineering document**, not a SaaS dashboard.
+The app should feel like an **engineering document**, not a SaaS dashboard —
+technical, precise, dense without feeling cramped, structured without
+looking boxed.
 
-- The page is a **drafting sheet**: cream paper, hairline ink rules,
-  monospace voice, an unflinching commitment to lowercase. Nothing is
-  rounded; everything sits on a 1px grid.
-- Color is rationed: the palette is essentially **black-on-cream**, broken
-  only by a single hot orange used for state, focus, and emphasis.
+- The page is built from **layered surfaces**: hierarchy comes from a
+  one-step background difference, full stop. The system draws **no lines**
+  — no outlines on controls, no dividers between rows or regions. Exactly
+  two strokes are sanctioned: the focus indicator (`rule-focus`
+  border/ring) on a focused control, and the very subtle `edge` frame
+  around the floating workspace panels.
+- Dark mode is a **first-class layered system** — neutral grays derived
+  from black (`#0a0a0a → #171717`, no blue cast) with white-alpha component
+  fills, not an inverted paper ramp.
+- One corner radius: **6px everywhere** (every Tailwind radius step
+  resolves to it); the shapes stay disciplined, not soft or
+  consumer-playful. Lowercase voice throughout.
+- Color is rationed: the palette is essentially **ink-on-surface**, broken
+  by a single accent (burnt orange on cream, electric blue on dark) reserved
+  for selected, focused, active, and live states.
 - The personality is **technical but unintimidating** — the same energy as a
   well-kept lab notebook or a hand-drawn architecture diagram. It must feel
   built by engineers, for engineers, and for the agents working alongside
   them.
 - Density is deliberate: spec sheets, code, traces, and console panels
-  coexist on the same surface without a hierarchy contest.
+  coexist on the same surface without a hierarchy contest. Trace
+  visualizations stay the most colorful area of the UI.
 
 ### Voice
 
@@ -478,21 +637,27 @@ The app should feel like an **engineering document**, not a SaaS dashboard.
 - The wordmark is pronounced *"three eye"* — every "i" stays lowercase.
 
 > If you removed all the type, the page should still read as a structured
-> document. Lines establish hierarchy before color does.
+> document. Surfaces establish hierarchy; color marks state. Lines never
+> appear.
 
 ---
 
-## 2. Typography — single typeface (Chivo Mono)
+## 2. Typography — two families (Geist + Geist Mono)
 
-Chivo Mono is wired to **both** `--font-sans` and `--font-mono` in the theme
-(see §0), so every default text node is monospaced. There is no secondary
-face in this design language.
+**Geist** (`--font-sans`) carries the UI: navigation, conversation titles,
+buttons, inputs, chat content, empty states, headings, labels. **Geist
+Mono** (`--font-mono`) carries everything technical: trace names, worker
+names, function names, IDs, timestamps, metrics, span labels, filter
+expressions, code-like values.
 
-**Rule:** every UI surface uses Chivo Mono (the default). Don't reach for a
-sans-serif or a second monospace stack — variety comes from weight, scale,
-case, and letter-spacing, not family.
+**Rule:** if a human wrote it, it's sans; if the machine produced it (or a
+machine will parse it), it's mono. Don't add a third family — variety comes
+from weight, scale, case, and letter-spacing, not more fonts. Chat and
+configuration surfaces remap incidental `.font-mono` chrome back to Geist
+(see the `.chat-surface` / `.configuration-surface` rules in `index.css`);
+function-trigger cards run Geist Mono throughout.
 
-Decorative ligatures are explicitly disabled in `@layer base`
+Decorative ligatures are explicitly disabled on mono surfaces
 (`liga 0, clig 0, calt 0, dlig 0`) to preserve the schematic feel.
 
 ### Size scale
@@ -527,56 +692,85 @@ Decorative ligatures are explicitly disabled in `@layer base`
 ## 3. Color tokens
 
 All tokens live in the `@theme` block in §0. Use the Tailwind utility
-(`bg-bg`, `text-ink-faint`, `text-accent`, `border-rule`, …) — **never** the
+(`bg-bg`, `text-ink-faint`, `text-accent`, `bg-surface`, …) — **never** the
 raw CSS variable.
 
-### Paper / surface (3-step neutral scale)
+### Surface ramp (the depth axis)
 
-| Token     | Use                                                  |
-| --------- | ---------------------------------------------------- |
-| `bg`      | Page (warm cream paper) — every default surface      |
-| `panel`   | Header strips, focused cards, code-block chrome      |
-| `paper-2` | Nested separation when `panel` would be too heavy    |
+The base layers (`bg` → `panel-raised`) are solid neutral tones; the
+component fills (`surface*`) are **alpha grays**, so one step reads
+identically over any base layer. `surface-selected` is the only chromatic
+surface — the accent-tinted selection fill (blue in dark, burnt orange in
+light).
 
-### Ink (3-step contrast)
+| Token              | Use                                                        |
+| ------------------ | ---------------------------------------------------------- |
+| `bg`               | Application canvas — the deepest layer                     |
+| `sidebar`          | Left navigation/sidebar (one step off the canvas)          |
+| `panel`            | Main chat and traces columns                               |
+| `panel-raised`     | Composer, trace details, popovers, active tool cards       |
+| `paper-2`          | Legacy alias for `panel-raised` (kept for existing code)   |
+| `surface`          | Inputs, controls, pills, chips, secondary cards            |
+| `surface-hover`    | Hover state on rows, items, and ghost controls             |
+| `surface-selected` | Selected conversation, trace row, or list item (accent tint) |
+| `surface-active`   | Strong active/pressed state                                |
 
-| Token       | Use                                                |
-| ----------- | -------------------------------------------------- |
-| `ink`       | Primary type, wordmark, primary buttons, hairlines |
-| `ink-faint` | Body in muted contexts, captions, inactive nav     |
-| `ink-ghost` | Line numbers, placeholders, timestamps             |
+### Ink (4-step contrast)
 
-### Rules (the structural lines)
+| Token          | Use                                                |
+| -------------- | -------------------------------------------------- |
+| `ink`          | Primary type, wordmark, primary buttons            |
+| `ink-faint`    | Body in muted contexts, captions, inactive nav     |
+| `ink-ghost`    | Line numbers, placeholders, timestamps             |
+| `ink-disabled` | Disabled labels (paired with reduced opacity)      |
 
-| Token    | Use                                                          |
-| -------- | ------------------------------------------------------------ |
-| `rule`   | Default 1px borders — defines every container                |
-| `rule-2` | Nested separators (e.g. card head → body) when `rule` is too loud |
+### Rules (there are none)
 
-### Accent — hot orange (single hero)
+`rule`, `rule-2`, and `rule-strong` resolve to `transparent` in both
+themes. They exist only so legacy `border-rule*` / `divide-rule*`
+utilities stay inert (1px transparent — layout never shifts) instead of
+breaking. Never design with them.
 
-`accent`, `accent-fg`. Reserved for: the active state, the live pulse, the
-keyword/return value in a code block, the `iii` highlight in a sentence, the
-focus underline on the email row, the orange `$` prompt. **Never** for body
-text or large fills.
+| Token         | Value        | Meaning                                       |
+| ------------- | ------------ | --------------------------------------------- |
+| `rule`        | transparent  | Legacy default border — draws nothing         |
+| `rule-2`      | transparent  | Legacy subtle divider — draws nothing         |
+| `rule-strong` | transparent  | Legacy emphasis border — draws nothing        |
+| `rule-focus`  | accent ~60–70% alpha | The interactive stroke: the focus indicator on inputs and controls |
+| `edge`        | ink ~7–8% alpha | The structural stroke: the VERY subtle frame around the floating workspace panels (the tab columns) — never used inside a panel |
+
+### Accent (single hero — burnt orange on cream, electric blue on dark)
+
+`accent`, `accent-fg`, `accent-hover`, `accent-muted` (10–12%-alpha fill),
+`accent-border` (35%-alpha, legacy — prefer `accent-muted` fills). Reserved
+for: selected navigation and segmented controls (`accent-muted` fill),
+focused inputs (`rule-focus`), active filters, live state, the selected
+conversation/trace (`surface-selected` fill), the primary technical action,
+the `$` prompt. **Never** for body text, large fills, or outlines.
 
 ### Status
 
-`alert`, `warn` — desaturated on purpose. Status is expressed through **text
-color + a small icon/stripe**, not full-color backgrounds.
+`alert`, `warn`, `ok` — each with a `-muted` 8–12%-alpha fill for tinted
+backgrounds. Status is expressed through **text color + a small icon/dot on
+a muted tinted fill**, never a full-saturation background and never a
+stripe or outline.
 
 | Token    | Use                                       |
 | -------- | ----------------------------------------- |
-| `accent` | live / running / success                  |
+| `accent` | live / running / focused / selected       |
+| `ok`     | success, completed calls, diff additions  |
 | `alert`  | error states (traces, status panels)      |
-| `warn`   | warning states                            |
+| `warn`   | warning states, pending approval          |
 
 ### Dark theme
 
-Override the same tokens inside a `[data-theme="dark"]` block (see §0). The
-ramp inverts (`#111110 → #1a1916 → #1f1e1c` for paper; `#f2f0ed → #a8a49e →
-#8a8782` for ink) and the accent swaps to electric blue (`#3ea8ff`). Same
-structural logic — never collapses into pure black.
+Override the same tokens inside a `[data-theme="dark"]` block (see §0). Dark
+is a neutral gray ramp derived from black (`#0a0a0a → #0e0e0e → #111111 →
+#171717` — no blue cast), white-alpha component fills
+(`rgba(255,255,255,0.055 → 0.12)`), neutral light ink (`#ededed → #a6a6a6 →
+#6f6f6f`), and the accent swapped to electric blue (`#28a8f7`) — which also
+tints `surface-selected`. Same structural logic; the blue lives only in
+state, never in the grays.
 
 To follow the OS, set the attribute on load:
 
@@ -587,102 +781,141 @@ document.documentElement.dataset.theme = isDark ? 'dark' : 'light'
 
 ---
 
-## 4. The "lines define structure" rule (key composition pattern)
+## 4. The "surfaces, not borders" rule (key composition pattern)
 
-> **Borders define every container. Add a border before reaching for a
-> background fill.**
+> **A one-step surface difference defines a region. The system draws no
+> lines — exactly two strokes are sanctioned: the focus ring, and the
+> `edge` frame around the floating workspace panels.**
 
-This is the inverse of a surface-stacking system: the schematic is held
-together by 1px ink rules. A new line means a new container. Cards, cells,
-panels, code blocks, and inputs are all defined by `border border-rule` — not
-by background steps.
+Structure comes from the layered surface ramp (§3): a new region means a new
+background step, never an outline and never a divider. Controls are
+alpha-gray fills; rows separate by their hover/selected fills; regions
+separate by base-layer steps; overlays separate by `panel-raised` +
+`shadow-floating`.
+
+Two strokes are allowed, each with one job:
+
+1. **Focus** — a focused field swaps its (transparent) border to
+   `rule-focus` and gains a soft 3px accent ring; keyboard focus on
+   buttons uses the same `ring-rule-focus`.
+2. **Panel edges** — the main workspace panels (each
+   workspace-tab column) float on the canvas as
+   `rounded-sm border border-edge bg-panel` with 6px gutters; the `edge`
+   stroke is a VERY subtle ink-alpha frame that keeps a panel readable
+   against the canvas. It is never used inside a panel — interior
+   hierarchy stays fill-only.
+
+Nothing else in the chrome may draw a line. (Data visualizations are
+exempt: charts may draw connector and grid lines with explicit alpha-ink
+fills, e.g. `bg-ink/15` elbows and `bg-ink/8` time-grid guides in the
+trace timeline.)
 
 ### Pattern
 
 ```tsx
-<div className="border border-rule bg-bg">
-  <div className="px-3.5 py-2.5 border-b border-rule bg-panel font-mono text-[12px] uppercase tracking-[0.18em] text-ink-faint">
+<div className="rounded-md bg-surface overflow-hidden">
+  <div className="px-3.5 py-2.5 bg-panel-raised font-mono text-[12px] uppercase tracking-[0.18em] text-ink-faint">
     title
   </div>
-  <div className="p-7">{/* body */}</div>
+  <div className="p-5">{/* body */}</div>
 </div>
 ```
 
-The single tonal step (`bg → panel`) on the header strip is the only "lift"
-allowed in default states (see §5).
+The header strip is one surface step off the body — that difference IS the
+separator. No divider, no outer outline.
 
-### Allowed accents on top of borders
+### Selection and severity
 
-These are not extra borders, they are accents on the existing 1px grid:
+- Selected row, card, conversation, or trace: `bg-surface-selected` — the
+  accent-tinted fill. **No left rail, no outline.**
+- Active segment / tab / filter: `bg-accent-muted` fill.
+- Row severity: the status's `-muted` tinted fill (e.g. `bg-alert-muted`)
+  plus the status text color and dot — no stripe.
+- Legacy `divide-y divide-rule-2` / `border-b border-rule-2` classes are
+  inert (transparent) — don't add new ones.
 
-- `border-l-2 border-accent` rail on a focused `WorkerCard` (see §10).
-- `divide-x divide-rule` for inline grids (e.g. a metrics strip).
-- The "feature grid" trick: draw 1px rules on the **top + left** of the grid
-  and the **right + bottom** of each cell. This produces a single,
-  perfectly-aligned grid of borders with no doubled lines.
+### Shadows
 
-### The single-shadow exception
+Two sanctioned elevation shadows live in the theme: `shadow-raised` (raised
+cards — composer, trace detail) and `shadow-floating` (popovers, dialogs,
+dropdowns, tooltips). `.deal-shadow` remains a transient animation cue on
+the language-card stack. No heavy glows — the only glow is the live
+`pulse-dot`.
 
-The system carries no default shadows. The **one** allowed transient shadow
-is `.deal-shadow` (defined in §0), used only on the language-card stack
-when a card slides on top of another — a deliberate tactile cue, not a
-default elevation.
-
-**When in doubt:** add a 1px `border-rule`. Don't reach for a background fill
-or a shadow.
+**When in doubt:** step the background one level. Never reach for a border.
 
 ---
 
 ## 5. Surfaces & elevation
 
-The 3-step ramp is the only tonal tool. Think of it as a depth axis with one
-step of contrast — borders do the rest.
+The surface ramp is the primary tonal tool. Think of it as a depth axis:
+every step up reads as "closer" without a single stroke.
 
 ```
-bg            page (cream paper)
- └─ panel        header strips, focused cards, code-block chrome
-     └─ paper-2     nested separation when needed
+bg                  application canvas
+ └─ sidebar            left navigation
+ └─ panel              main chat / traces columns
+     └─ panel-raised      composer, trace detail, popovers, tool cards
+         └─ surface          inputs, controls, pills, secondary cards
+             └─ surface-hover     hover
+             └─ surface-selected  selected row / trace / conversation
+             └─ surface-active    pressed / segmented-control selection
 ```
 
-Most cards/panels should accept a `focused` (or `variant`) prop that lifts
-the body from `bg` to `panel`. That single tonal step is the only "lift"
-allowed in default states.
+Interactive containers walk the state sub-ramp (`surface →
+surface-hover → surface-selected → surface-active`); nothing about their
+edges ever changes except the focus ring.
 
 ### Where elevation actually shows up
 
-1. **Tonal layering** — the 3-step ramp above.
-2. **Hairline rules** — 1px lines in `rule` and `rule-2` do the work that
-   shadows would do in other systems.
-3. **Reserved transient shadow** — the `.deal-shadow` utility, used only on
-   the language-card stack (`HelloCard` flow mode in §10).
+1. **Tonal layering** — the ramp above; a one-step difference is the only
+   separator between regions. The alpha-gray component fills compose over
+   any base layer.
+2. **Sanctioned shadows** — `shadow-raised` on raised in-flow cards
+   (composer, expanded trace detail) and `shadow-floating` on overlays
+   (dropdowns, popovers, dialogs, tooltips, hover cards). Both carry a 1px
+   white inset highlight so raised surfaces catch light in dark mode.
+3. **Accent-tinted chrome** — the `.fcall-chrome` utility (§0): a soft
+   accent gradient wash over `panel-raised` (no border), reserved for
+   function/tool-call cards so agent actions read as special.
 4. **Pulse + glow** — the live state uses `.pulse-dot` (1.6s expanding
    `box-shadow` ring) on a 6px accent dot. This is the only "glow" the
    system allows.
 
-Dark mode keeps the same rule-driven hierarchy — the ramp flips but never
-collapses into pure black.
+Dark mode keeps the same surface-driven hierarchy — neutral grays stepping
+up from black. The only visible edge anywhere is the workspace panels'
+`edge` frame (§4).
 
 ---
 
 ## 6. Radii & shape
 
-Rectilinear sharpness, period. The system is built from squares and 1px
-strokes; the only curves are functional ones (status dots, glyph circles).
+**One radius: 6px, globally.** Every step of the Tailwind scale
+(`rounded-xs` through `rounded-xl`) resolves to 6px, so badges, chips,
+buttons, inputs, sidebar rows, cards, tool/function-call cards, popovers,
+dropdowns, dialogs, the composer, and the floating workspace panels all
+share the same corner. There is no per-component scale to choose from —
+write whichever step reads naturally (`rounded-sm` is the conventional
+spelling) and it renders 6px.
 
-| Token          | Value   | Used for                                        |
-| -------------- | ------- | ----------------------------------------------- |
-| `rounded-none` | 0px     | **Default for everything** (containers, buttons, cards, inputs, code blocks, badges, panels) |
-| `rounded-full` | 9999px  | Status dots and glyph circles **only**          |
+| Token                 | Value  | Used for                                 |
+| --------------------- | ------ | ---------------------------------------- |
+| `rounded-none`        | 0px    | Full-bleed edge cases only               |
+| `rounded-xs` … `-xl`  | 6px    | Everything — one corner everywhere       |
+| `rounded-full`        | 9999px | Status dots, pills, round action buttons |
 
-Never reach for `rounded-sm`, `rounded-md`, `rounded-lg`, or anything in
-between. There is no "soft" variant — the YAML aliases `sm/md/lg` to `0px`
-on purpose.
+Don't invent in-between values, and don't reach for `rounded-full` on
+anything that isn't genuinely circular.
 
 ### Stroke weight
 
-- 1px is the default for all UI borders.
-- SVG diagrams use 1–1.25px strokes; thicker strokes (1.25px `accent`) are
-  reserved for emphasized worker connections.
+- UI chrome draws no strokes, with two exceptions: the focus indicator — a
+  1px `rule-focus` border (inputs) or a 2px `ring-rule-focus` (buttons) —
+  and the 1px `edge` frame around the floating workspace panels (§4).
+- SVG **data** diagrams use 1–1.25px strokes; thicker strokes (1.25px
+  `accent`) are reserved for emphasized worker connections. Charts draw
+  their connectors/grids with explicit alpha-ink fills (`bg-ink/15`,
+  `bg-ink/8`).
 - The wordmark is six rectangles (three "i"s, each a stem + a tittle), all
   sharing the same square unit. The mark is the design system in miniature:
   identical units, no curves, deliberate negative space.
@@ -691,24 +924,37 @@ on purpose.
 
 ## 7. Spacing & layout
 
-The page is a vertical sheet, max 1200px, sitting on cream paper with a 1px
-ink-rule outer border. There is no hero card, no rounded container — the
-entire site reads as one continuous spec sheet.
+### Console workspace
 
-- **Sheet:** `min(1200px, 100%)` centered, 1px outer rule (see `Sheet` in
-  §10).
+The console shell is a set of **floating panels over the canvas**: the
+header holds server-persisted closable tabs (stored in the `console`
+configuration entry under `workspace.tabs` — model in
+`lib/workspace-tabs.ts`), and each tab shows one or two screens (any page
+or the chat view) as equal columns; an unattached column renders an
+attach affordance instead of a page. Each column renders as `rounded-sm border border-edge bg-panel` with 6px
+gutters between panels and against the viewport, so the canvas shows
+through as the seam. That gutter + edge frame is the entire column
+chrome; panels draw no other lines.
+
+### Sheet pages
+
+The page is a vertical sheet, max 1200px, sitting on the canvas surface.
+There is no hero card — the entire site reads as one continuous spec sheet.
+
+- **Sheet:** `min(1200px, 100%)` centered (see `Sheet` in §10). The sheet
+  itself is unbordered; the surface step against the canvas defines it.
 - **Sticky nav:** `py-4.5` vertical padding, collapses to `py-2.5` on
-  scroll. Bordered bottom only.
+  scroll. No border — it reads as chrome by sitting on its own surface.
 - **Section padding:** `px-9` on desktop (36px), `px-4.5` on tablet (18px),
   `px-3.5` on small mobile (14px). Vertical: `py-20` to `py-24` (80–96px)
   between major sections.
 - **Hero grid:** Two equal columns (`1fr 1fr`) with a 64px gap on desktop;
   collapses to a single column under 880px.
-- **Feature grids:** Always **3-up** on desktop (`grid-cols-3`), divided by
-  1px rules drawn on the **top + left** of the grid and the **right +
-  bottom** of each cell.
-- **Card padding:** 18–28px internal. Cards never carry shadows in their
-  default state.
+- **Feature grids:** Always **3-up** on desktop (`grid-cols-3`), each cell
+  a `rounded-md bg-surface` card separated by grid `gap` — never by drawn
+  rules.
+- **Card padding:** 12px compact, 20–24px default. In-flow cards carry no
+  shadow unless raised (`shadow-raised`); overlays use `shadow-floating`.
 - **Density rhythm:** 4/8 micro-scale for inline gaps (icon-to-text,
   dot-to-label), 12/14/16 for component padding, 24/28 for card padding, 36
   for section gutters, 64–96 for section breathing room.
@@ -739,23 +985,26 @@ Reach for these to keep the engineering-document feel consistent:
 
 ## 9. Status & semantics
 
-`StatusPanel` (§10) is the canonical status display — bordered, monospaced,
-icon + headline + detail. The body fill stays `bg` in every variant; only
-the chrome (border + icon + headline) changes.
+`StatusPanel` (§10) is the canonical status display — a rounded row on a
+muted tinted fill, monospaced, icon + headline + detail. No stripe, no
+outline in any variant; the tint + icon + headline color carry the
+severity.
 
-| Variant     | Border + icon token | Body fill |
-| ----------- | ------------------- | --------- |
-| `v-info`    | `rule` (ink icon)   | `bg`      |
-| `v-success` | `accent`            | `bg`      |
-| `v-warn`    | `warn`              | `bg`      |
-| `v-alert`   | `alert`             | `bg`      |
+| Variant     | Icon + headline | Body fill     |
+| ----------- | --------------- | ------------- |
+| `v-info`    | `ink`           | `surface`     |
+| `v-success` | `ok`            | `ok-muted`    |
+| `v-warn`    | `warn`          | `warn-muted`  |
+| `v-alert`   | `alert`         | `alert-muted` |
 
-**In tables and traces:** express row severity with a left-edge `border-l-2`
-stripe plus a faint tinted background (e.g. `bg-alert/5`). Never with a
-full ring or a solid status background. See `Trace` (§10).
+**In tables and traces:** the same recipe — the status's `-muted` tinted
+background plus its text color and dot. Never a stripe, ring, or solid
+status background. See `Trace` (§10).
 
-For inline "live" emphasis, pair a `StatusDot` with the `pulse-dot`
-utility — the only sanctioned glow.
+**Dot semantics:** green (`ok`) means completed; blue (`accent`) is reserved
+for live/running (animated) and selected states; `warn` for pending; `alert`
+for failed. For inline "live" emphasis, pair a `StatusDot` with the
+`pulse-dot` utility — the only sanctioned glow.
 
 ---
 
@@ -820,20 +1069,22 @@ export function Caret({ className }: CaretProps) {
 
 ### `StatusDot`
 
-6px circle. The only place `rounded-full` is allowed besides glyphs.
-Optional `.pulse-dot` glow for "live" emphasis.
+6px circle. Optional `.pulse-dot` glow for "live" emphasis. Tone semantics
+per §9: `ok` = completed, `accent` = live/selected, `warn` = pending,
+`alert` = failed.
 
 ```tsx
 import * as React from 'react'
 import { cn } from '@/lib/utils'
 
-type DotTone = 'accent' | 'alert' | 'warn' | 'ink'
+type DotTone = 'accent' | 'alert' | 'warn' | 'ink' | 'ok'
 
 const dotTone: Record<DotTone, string> = {
   accent: 'bg-accent',
   alert: 'bg-alert',
   warn: 'bg-warn',
   ink: 'bg-ink',
+  ok: 'bg-ok',
 }
 
 interface StatusDotProps extends React.HTMLAttributes<HTMLSpanElement> {
@@ -864,12 +1115,14 @@ export function StatusDot({
 
 ### `Button`
 
-Variants: `primary` (ink fill, hover inverts to outlined `bg`), `ghost`
-(transparent → solid ink on hover), `pill` (compact nav button), `icon`
-(30×30 rule-bordered), `terminal` (full-width row with `$` prompt + command
-+ optional copy), `wiggle` (primary + corner badge slot + `.wiggle`). Sizes:
-`sm` `md` `lg` `icon`. Depends on `class-variance-authority` and
-`@radix-ui/react-slot`.
+Variants: `primary` (ink fill, 6px radius — reads as a light chip in dark
+mode), `ghost` (borderless, faint text → `surface-hover` fill on hover),
+`pill` (compact borderless `surface` chip), `icon` (30×30 borderless,
+`surface-hover` on hover), `terminal` (full-width borderless `surface` row
+with `$` prompt + command + optional copy), `wiggle` (primary + corner badge
+slot + `.wiggle`). Sizes: `sm` `md` `lg` `icon`. Focus is a 2px
+`rule-focus` ring — the only stroke a button ever shows. Depends on
+`class-variance-authority` and `@radix-ui/react-slot`.
 
 ```tsx
 import * as React from 'react'
@@ -878,22 +1131,22 @@ import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-x-2 whitespace-nowrap font-mono lowercase rounded-none transition-[background-color,color,border-color] duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:pointer-events-none disabled:opacity-40 select-none',
+  'inline-flex items-center justify-center gap-x-2 whitespace-nowrap font-mono lowercase rounded-sm transition-[background-color,color,border-color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40 select-none',
   {
     variants: {
       variant: {
         primary:
-          'bg-ink text-bg border border-ink hover:bg-bg hover:text-ink',
+          'bg-ink text-bg border border-transparent hover:bg-ink/90 rounded-md',
         ghost:
-          'bg-transparent text-ink border border-transparent hover:bg-ink hover:text-bg',
+          'bg-transparent text-ink-faint border border-transparent hover:bg-surface-hover hover:text-ink',
         pill:
-          'bg-bg text-ink border border-ink hover:bg-ink hover:text-bg',
+          'bg-surface text-ink border border-transparent hover:bg-surface-hover',
         icon:
-          'bg-bg text-ink-faint border border-rule hover:text-ink',
+          'bg-transparent text-ink-faint border border-transparent hover:bg-surface-hover hover:text-ink',
         terminal:
-          'bg-bg text-ink border border-rule justify-start',
+          'bg-surface text-ink border border-transparent justify-start hover:bg-surface-hover',
         wiggle:
-          'wiggle bg-ink text-bg border border-ink hover:bg-bg hover:text-ink relative',
+          'wiggle bg-ink text-bg border border-transparent hover:bg-ink/90 rounded-md relative',
       },
       size: {
         sm: 'h-8 px-3 text-[13px]',
@@ -937,8 +1190,8 @@ export { buttonVariants }
 ### `StatusPanel`
 
 A row component for system messages: 18px icon slot, 13px Semi-Bold
-headline, 12px ink-faint detail. Variants tint the **border + icon +
-headline only** — body fill stays `bg`.
+headline, 12px ink-faint detail. Variants are a **muted tinted fill** —
+no stripe, no outline (§9).
 
 ```tsx
 import * as React from 'react'
@@ -948,25 +1201,25 @@ export type StatusVariant = 'info' | 'success' | 'warn' | 'alert'
 
 const variantTone: Record<
   StatusVariant,
-  { border: string; icon: string; headline: string }
+  { fill: string; icon: string; headline: string }
 > = {
   info: {
-    border: 'border-rule',
+    fill: 'bg-surface',
     icon: 'text-ink',
     headline: 'text-ink',
   },
   success: {
-    border: 'border-accent',
-    icon: 'text-accent',
-    headline: 'text-accent',
+    fill: 'bg-ok-muted',
+    icon: 'text-ok',
+    headline: 'text-ok',
   },
   warn: {
-    border: 'border-warn',
+    fill: 'bg-warn-muted',
     icon: 'text-warn',
     headline: 'text-warn',
   },
   alert: {
-    border: 'border-alert',
+    fill: 'bg-alert-muted',
     icon: 'text-alert',
     headline: 'text-alert',
   },
@@ -991,8 +1244,8 @@ export function StatusPanel({
   return (
     <div
       className={cn(
-        'flex items-start gap-x-3 border bg-bg px-3.5 py-3',
-        tone.border,
+        'flex items-start gap-x-3 rounded-md px-3.5 py-3',
+        tone.fill,
         className,
       )}
     >
@@ -1026,10 +1279,11 @@ export function StatusPanel({
 
 ### `CodeBlock`
 
-`bg` fill, 1px `rule` border, monospace at 12.5px / line-height 1.55. Light
-syntax tinting: comments italic-ghost, strings in `accent`, keywords
-bold-ink, numbers in `alert`. The accent orange is reserved for **string
-literals and the active call return**, not arbitrary keywords.
+A `bg` well — the canvas tone punching through the surface it sits on, no
+border — monospace at 12.5px / line-height 1.55. Light syntax tinting:
+comments italic-ghost, strings in `accent`, keywords bold-ink, numbers in
+`alert`. The accent orange is reserved for **string literals and the active
+call return**, not arbitrary keywords.
 
 ```tsx
 import * as React from 'react'
@@ -1043,7 +1297,7 @@ export function CodeBlock({ className, children, ...props }: CodeBlockProps) {
   return (
     <pre
       className={cn(
-        'border border-rule bg-bg overflow-x-auto px-5 py-4 font-mono text-[12.5px] leading-[1.55] text-ink',
+        'rounded-sm bg-bg overflow-x-auto px-5 py-4 font-mono text-[12.5px] leading-[1.55] text-ink',
         className,
       )}
       {...props}
@@ -1056,8 +1310,9 @@ export function CodeBlock({ className, children, ...props }: CodeBlockProps) {
 
 ### `Terminal` & `TerminalRow`
 
-Header strip in `panel` with a label-caps title; body in `bg` with an orange
-`$` prompt, ink command, and an animated 6×13 ink caret.
+Header strip in `panel-raised` with a label-caps title; `surface` body with
+an orange `$` prompt, ink command, and an animated 6×13 ink caret. The
+head/body surface step is the separator — no divider.
 
 ```tsx
 import * as React from 'react'
@@ -1073,9 +1328,9 @@ interface TerminalProps {
 
 export function Terminal({ title, children, className }: TerminalProps) {
   return (
-    <div className={cn('border border-rule bg-bg', className)}>
+    <div className={cn('rounded-md bg-surface overflow-hidden', className)}>
       {title ? (
-        <div className="bg-panel px-3.5 py-2 border-b border-rule font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">
+        <div className="bg-panel-raised px-3.5 py-2 font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">
           {title}
         </div>
       ) : null}
@@ -1108,8 +1363,9 @@ export function TerminalRow({
 ### `Trace`
 
 Header strip + a list of trace rows with a `StatusDot`, op label, duration,
-and a label-caps status. A waterfall of horizontal bars follows: `rule-2`
-background, `ink` fill, `alert` fill for error spans.
+and a label-caps status. A waterfall of horizontal bars follows: `surface`
+track, `ink` fill, `alert` fill for error spans. Rows separate by spacing —
+no dividers.
 
 > `TraceStatus` is the consumer's own domain type. The shape assumed here is
 > `{ id, op, durationMs, status, startMs?, spanMs? }`. Replace with whatever
@@ -1140,9 +1396,9 @@ interface TraceProps {
 
 const statusTone: Record<
   TraceStatus,
-  { dot: 'accent' | 'warn' | 'alert'; label: string; bar: string }
+  { dot: 'ok' | 'warn' | 'alert'; label: string; bar: string }
 > = {
-  ok: { dot: 'accent', label: 'text-accent', bar: 'bg-ink' },
+  ok: { dot: 'ok', label: 'text-ok', bar: 'bg-ink' },
   warn: { dot: 'warn', label: 'text-warn', bar: 'bg-warn' },
   err: { dot: 'alert', label: 'text-alert', bar: 'bg-alert' },
 }
@@ -1154,11 +1410,11 @@ export function Trace({ title, rows, totalMs, className }: TraceProps) {
       ...rows.map((r) => (r.startMs ?? 0) + (r.spanMs ?? r.durationMs)),
     )
   return (
-    <div className={cn('border border-rule bg-bg', className)}>
-      <div className="bg-panel px-3.5 py-2 border-b border-rule font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">
+    <div className={cn('rounded-md bg-surface overflow-hidden', className)}>
+      <div className="bg-panel-raised px-3.5 py-2 font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">
         {title}
       </div>
-      <ul className="divide-y divide-rule-2">
+      <ul>
         {rows.map((row) => {
           const tone = statusTone[row.status]
           const start = ((row.startMs ?? 0) / span) * 100
@@ -1181,7 +1437,7 @@ export function Trace({ title, rows, totalMs, className }: TraceProps) {
               >
                 {row.status}
               </span>
-              <div className="col-span-4 mt-1 h-1 bg-rule-2 relative">
+              <div className="col-span-4 mt-1 h-1 bg-surface relative">
                 <div
                   className={cn('absolute top-0 h-full', tone.bar)}
                   style={{ left: `${start}%`, width: `${width}%` }}
@@ -1198,9 +1454,10 @@ export function Trace({ title, rows, totalMs, className }: TraceProps) {
 
 ### `Cell`
 
-A grid-bordered cell — the universal container for short prose blocks
-(features, hellos, pull-quotes). 28px padding, `bg` fill, optional 16px
-Semi-Bold ink title, 13px ink-faint body capped at ~34ch.
+The universal container for short prose blocks (features, hellos,
+pull-quotes, empty states): a borderless `surface` card with a 6px radius
+and 20px padding, optional 16px Semi-Bold ink title, 13px ink-faint body
+capped at ~34ch.
 
 ```tsx
 import * as React from 'react'
@@ -1214,7 +1471,7 @@ interface CellProps {
 
 export function Cell({ title, children, className }: CellProps) {
   return (
-    <div className={cn('border border-rule bg-bg p-7', className)}>
+    <div className={cn('rounded-md bg-surface p-5', className)}>
       {title ? (
         <div className="font-mono text-[16px] font-semibold tracking-[-0.01em] text-ink mb-3 lowercase">
           {title}
@@ -1232,8 +1489,8 @@ export function Cell({ title, children, className }: CellProps) {
 
 400px-wide ticker card with a name + version row, description, a
 `panel`-tinted command block, and a footer with a kind tag and check icon.
-Focused state switches body fill from `bg` to `panel` and grows a
-`border-l-2 border-l-accent` rail on the left edge.
+Focused state switches the body fill from `surface` to `surface-selected`
+(the accent tint) — no rail, no outline.
 
 ```tsx
 import * as React from 'react'
@@ -1261,12 +1518,12 @@ export function WorkerCard({
   return (
     <article
       className={cn(
-        'w-[400px] border border-rule transition-colors',
-        focused ? 'bg-panel border-l-2 border-l-accent' : 'bg-bg',
+        'w-[400px] rounded-md overflow-hidden transition-colors',
+        focused ? 'bg-surface-selected' : 'bg-surface',
         className,
       )}
     >
-      <header className="flex items-center justify-between px-4 py-3 border-b border-rule-2">
+      <header className="flex items-center justify-between px-4 py-3">
         <div className="font-mono text-[16px] font-semibold lowercase text-ink">
           {name}
         </div>
@@ -1277,10 +1534,10 @@ export function WorkerCard({
       <div className="px-4 py-3 font-mono text-[13px] leading-[1.7] text-ink-faint">
         {description}
       </div>
-      <div className="bg-panel font-mono text-[12.5px] text-ink px-4 py-2 border-t border-rule-2">
+      <div className="bg-panel font-mono text-[12.5px] text-ink px-4 py-2">
         {command}
       </div>
-      <footer className="flex items-center justify-between px-4 py-2 border-t border-rule-2">
+      <footer className="flex items-center justify-between px-4 py-2">
         <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
           {kind}
         </span>
@@ -1326,12 +1583,12 @@ export function HelloCard({ items, flow, className }: HelloCardProps) {
           <div
             key={item.id}
             className={cn(
-              'border border-rule bg-bg',
+              'rounded-md bg-panel-raised overflow-hidden',
               isUnder && 'absolute inset-x-0 -z-10 deal-shadow',
             )}
             style={isUnder ? { top: `${idx * 120}px` } : undefined}
           >
-            <header className="flex items-center justify-between px-4 py-2 border-b border-rule-2 bg-panel font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+            <header className="flex items-center justify-between px-4 py-2 bg-panel font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
               <span>{item.language}</span>
               <span className="text-ink-ghost tabular-nums">
                 step {item.step}
@@ -1350,9 +1607,9 @@ export function HelloCard({ items, flow, className }: HelloCardProps) {
 
 ### `EmailRow`
 
-No border, no fill — just a 1px ink underline that switches to `accent` on
-focus. The submit arrow lives inside the row, right-aligned. Helper text
-below is label-caps in `ink-ghost`.
+The standard input recipe: a rounded `surface` fill whose only stroke is
+the `rule-focus` underline while focused. The submit arrow lives inside the
+row, right-aligned. Helper text below is label-caps in `ink-ghost`.
 
 ```tsx
 import * as React from 'react'
@@ -1372,7 +1629,7 @@ export function EmailRow({
 }: EmailRowProps) {
   return (
     <form className={cn('flex flex-col gap-y-2', className)} {...formProps}>
-      <div className="flex items-center gap-x-2 border-b border-ink focus-within:border-accent transition-colors">
+      <div className="flex items-center gap-x-2 rounded-sm bg-surface px-3 border-b border-transparent focus-within:border-rule-focus transition-colors">
         <input
           type="email"
           {...inputProps}
@@ -1442,10 +1699,9 @@ export function SearchField({
 
 ### `ModeToggle`
 
-Two-up segmented control with a 1px `rule` border and 2px internal padding.
-Active button: solid `ink` fill, `bg` text. Inactive: transparent,
-`ink-faint` text. Joined left-to-right with internal 1px dividers when more
-than two options are passed.
+Compact segmented control on a `surface` track (no border, 6px radius, 2px
+internal padding). Active segment: `accent-muted` fill (the selection
+tint), `ink` text, 6px radius. Inactive: transparent, `ink-faint` text.
 
 ```tsx
 import * as React from 'react'
@@ -1472,7 +1728,10 @@ export function ModeToggle<T extends string>({
   return (
     <div
       role="tablist"
-      className={cn('inline-flex border border-rule p-[2px]', className)}
+      className={cn(
+        'inline-flex rounded-sm bg-surface p-[2px] gap-[2px]',
+        className,
+      )}
     >
       {options.map((opt) => {
         const active = opt.value === value
@@ -1484,9 +1743,9 @@ export function ModeToggle<T extends string>({
             aria-pressed={active}
             onClick={() => onChange(opt.value)}
             className={cn(
-              'font-mono text-[13px] px-3 py-1 transition-colors lowercase',
+              'font-mono text-[13px] px-3 py-1 rounded-xs transition-colors lowercase',
               active
-                ? 'bg-ink text-bg'
+                ? 'bg-accent-muted text-ink'
                 : 'bg-transparent text-ink-faint hover:text-ink',
             )}
           >
@@ -1501,7 +1760,7 @@ export function ModeToggle<T extends string>({
 
 ### `NumericBadge`
 
-16px tall, 4px horizontal padding, `accent` fill on a `bg` border. Sits on
+16px tall, 4px horizontal padding, `accent` fill, 6px radius. Sits on
 the top-right corner of a CTA to indicate count or unread.
 
 ```tsx
@@ -1520,7 +1779,7 @@ export function NumericBadge({
   return (
     <span
       className={cn(
-        'inline-flex items-center justify-center bg-accent text-bg font-mono text-[11px] font-medium uppercase tracking-[0.06em] px-1 h-4 tabular-nums border border-bg',
+        'inline-flex items-center justify-center rounded-xs bg-accent text-accent-fg font-mono text-[11px] font-medium uppercase tracking-[0.06em] px-1 h-4 tabular-nums',
         className,
       )}
       {...props}
@@ -1534,7 +1793,8 @@ export function NumericBadge({
 ### `Sheet` & `PageHeader`
 
 `Sheet` is the standard page-level wrapper — `min(1200px, 100%)`, centered,
-1px outer rule. `PageHeader` carries an `eyebrow` (rendered through
+defined by its surface against the canvas (no outer rule). `PageHeader`
+carries an `eyebrow` (rendered through
 `Prompt`), a `title` (display-hero or headline-section), an optional
 description in `ink-faint`, and an `actions` slot on the right.
 
@@ -1552,7 +1812,7 @@ export function Sheet({ children, className }: SheetProps) {
   return (
     <div
       className={cn(
-        'mx-auto w-full max-w-[1200px] border-x border-rule min-h-screen bg-bg',
+        'mx-auto w-full max-w-[1200px] min-h-screen bg-bg',
         className,
       )}
     >
@@ -1614,42 +1874,57 @@ export function PageHeader({
 
 - Keep every text element **lowercase**, including headlines and buttons.
   The only uppercase text is the `label-caps-*` styles with explicit
-  tracking.
-- Lean on **1px hairline rules** to define structure. Add a border before
-  reaching for a background fill.
-- **Ration the orange accent.** One accent moment per visible region — the
-  rest is ink, faint, and ghost.
-- Use the **`panel` tone** for headers and focused states. It is the only
-  "elevation" the system permits.
+  tracking — used sparingly for small section labels.
+- Lean on **layered surfaces** to define structure — a one-step background
+  difference is the only separator. The sole visible stroke anywhere in the
+  chrome is the focus indicator (`rule-focus`).
+- **Ration the accent** (burnt orange on cream, electric blue on dark) to
+  selected, focused, active, and live states. One accent moment per visible
+  region — the rest is ink, faint, and ghost.
+- Mark selection with the **`surface-selected` accent-tinted fill** — the
+  canonical "you are here" signal. No rails, no outlines.
+- Use the **one 6px radius everywhere** (§6) — every Tailwind radius step
+  resolves to it, so there is no per-component choice to make.
 - Keep the `iii` wordmark in lowercase, with all six rectangles in `ink`
   (never colored).
-- Use **Chivo Mono for everything**, including body copy. Switching faces
-  breaks the schematic.
-- Use the **Tailwind utility** (`bg-bg`, `text-ink-faint`, `border-rule`,
+- Use **Geist for UI text and Geist Mono for technical data** (trace names,
+  IDs, timestamps, metrics, code). Two families, never a third.
+- Use the **Tailwind utility** (`bg-surface`, `text-ink-faint`,
   `text-accent`) — never the raw CSS variable.
 - Use **container queries** (`@container`, `@3xl:`, `@4xl:`) for panel-level
   responsiveness. Pages set `@container` and grids split with `@3xl:`.
 - Use **`tabular-nums`** on every number, timestamp, and KPI.
+- Keep motion minimal and functional: 100–220ms, `--ease-glide`, honoring
+  `prefers-reduced-motion`.
 
 **Don't**
 
-- Don't introduce **rounded corners** on containers, buttons, inputs, or
-  cards. Reserve `rounded-full` for true symbols (dots, glyphs).
-- Don't add **drop shadows** for default elevation. The `.deal-shadow`
-  stack-card animation is the only sanctioned shadow.
-- Don't use the orange accent for **body text, large fills, or decorative
+- Don't draw **any border or divider for structure or selection** — no
+  outlines on controls, no row dividers, no section rules, no left rails.
+  The chrome may show exactly two lines: the focus indicator
+  (`rule-focus`) and the workspace panels' `edge` frame (§4); charts may
+  draw data lines with explicit alpha-ink fills (`bg-ink/15`, `bg-ink/8`).
+- Don't use `edge` **inside** a panel — it frames the floating workspace
+  panels only; interior hierarchy stays fill-only.
+- Don't deviate from the **single 6px radius** — no in-between values, and
+  `rounded-full` only on genuinely circular elements.
+- Don't add **drop shadows** outside the two theme tokens (`shadow-raised`
+  in-flow, `shadow-floating` for overlays) and the transient `.deal-shadow`.
+  No heavy glows — `pulse-dot` is the only glow.
+- Don't use the accent for **body text, large fills, or decorative
   blocks.** It loses meaning the moment it stops being rare.
 - Don't mix proportional and tabular figures. Numbers are always tabular
   monospace.
-- Don't use **gradients** or color stops anywhere. The system is flat by
-  design.
+- Don't use **gradients** decoratively. The two sanctioned exceptions are
+  the `.fcall-chrome` accent wash on function-call cards and the
+  `.thinking-shimmer` streaming-text mask.
 - Don't capitalize a sentence to "fix" a heading — rewrite it instead.
 - Don't stack two headings of the same scale. Headlines are always paired
   with an ink-faint continuation, never another headline.
-- Don't add a **second typeface**, even for code or numbers. The
-  single-face constraint is load-bearing.
+- Don't set technical data (IDs, metrics, span labels) in the sans face —
+  and don't drop mono below 11px.
 - Don't paint **full-color status backgrounds** — use text color plus a
-  small icon, dot, or left stripe.
+  small icon, dot, or left stripe on the status's `-muted` tint.
 - Don't introduce **viewport breakpoints** for panel layouts — use
   container queries.
 
@@ -1699,14 +1974,14 @@ example), use a **hybrid layout** inside a single `Sheet`:
    §10), shown only when no search filter is active. The grid uses
    container queries (`grid-cols-1 @3xl:grid-cols-2 @5xl:grid-cols-3`) so
    it stays responsive within the `Sheet`. Eyebrow above the grid is a
-   `label-caps-lg` heading sitting on a `border-t border-rule` separator.
+   `label-caps-lg` heading with section spacing — no separator rule.
 2. **Search + index** — the spec's `SearchField` (24px display caret)
-   immediately above a `border border-rule bg-bg` container with rows
-   separated by `divide-y divide-rule-2`. Each row is a compact
+   immediately above a `rounded-md bg-surface` container; rows separate by
+   hover/selected surfaces (no per-row dividers). Each row is a compact
    row-shaped variant of `WorkerCard` (no command block; just name +
-   version + description + meta). Hover states use the same
-   `bg-panel border-l-2 border-l-accent` rail that focused `WorkerCard`s
-   use in §10.
+   version + description + meta). Hover uses `bg-surface-hover`; the
+   focused/selected row uses the same `bg-surface-selected` tint as the
+   focused `WorkerCard` in §10.
 3. **Search behaviour** — when the search field has a non-empty query, the
    featured row collapses entirely; only the filtered index is shown so
    that "featured" content never competes with results.
@@ -1729,19 +2004,20 @@ accordions or modals at the row level.
 The composition has three nesting levels and uses one tonal step per level:
 
 ```
-section eyebrow (label-caps)            <- bg page
-  card        bg-panel head + bg body   <- per function/trigger
-    pane      bg-paper-2 head + bg body <- per schema (request/response)
-      tree    flat type-table           <- per field
+section eyebrow (label-caps)                    <- bg page
+  card    bg-panel-raised head + surface body   <- per function/trigger
+    pane    bg-paper-2 head + bg body           <- per schema (request/response)
+      tree    flat type-table                   <- per field
 ```
 
 1. **Sections** — two `Section`s (functions, triggers), each with a
    `label-caps-lg` eyebrow on the left and a small ink-ghost count on the
    right. Same chrome already used by other tabs on the worker page; do not
    wrap the section bodies in an additional border.
-2. **Card** — a bordered `article` per function/trigger. The `bg-panel` head
-   strip carries the name (`title-cell`) on the left, any `metadata.tags`
-   rendered as `rule-2`-bordered label-caps-sm pills next to it, and the
+2. **Card** — a `rounded-md bg-surface` `article` per function/trigger. The
+   `bg-panel-raised` head strip carries the name (`title-cell`) on the left,
+   any `metadata.tags` rendered as borderless `bg-surface` label-caps-sm
+   pills next to it, and the
    kind label (`FUNCTION` / `TRIGGER`) in label-caps on the right. Function
    and trigger cards share the exact same head; the only difference is
    what the name represents. **Triggers do not carry a separate "type"
@@ -1751,17 +2027,18 @@ section eyebrow (label-caps)            <- bg page
    `scroll-mt-20` so that anchor navigation lands cleanly below the sticky
    site header.
 3. **Pane** — the two schemas inside a card sit in a `@2xl:grid-cols-2`
-   grid, separated by a 1px `bg-rule-2` gutter. Each pane is a
-   `border-rule` block with a `bg-paper-2` head strip carrying a
+   grid separated by grid `gap`. Each pane is a
+   `rounded-sm` block with a `bg-paper-2` head strip carrying a
    label-caps-sm eyebrow (`request` / `response` for functions,
    `invocation` / `return` for triggers). The `bg-paper-2` step makes the
-   pane read as one tonal level "down" from the card's `bg-panel` head.
+   pane read as one tonal level "down" from the card's `bg-panel-raised`
+   head.
 4. **Tree** — fields render as a flat type-table inside the pane body, one
    row per field. Each row is `name  type  required-marker  enum  constraints`
    on one line, with the description on a second line in
    `text-ink-faint text-[12px]`. Nested objects, arrays-of-objects, and
-   union variants indent under the parent with a `border-l border-rule-2`
-   guide. Nesting deeper than three levels collapses behind a native
+   union variants indent under the parent by indentation alone (no guide
+   line). Nesting deeper than three levels collapses behind a native
    `<details>` row labelled "… expand N nested" so the surface stays
    client-JS-free.
 
@@ -1782,8 +2059,9 @@ worker page.
 **Sidebar summary.** Pair the panel with an `api` card in the worker
 page's right-hand `aside` (placed between `details` and `author`) listing
 every function and trigger the worker exposes. The card uses the same
-chrome as the other sidebar cards (`border-rule` block + `bg-panel` head
-+ `label-caps-lg` title) and contains two sub-sections — `functions` and
+chrome as the other sidebar cards (`rounded-md bg-surface` block +
+`bg-panel-raised` head + `label-caps-lg` title) and contains two
+sub-sections — `functions` and
 `triggers` — each headed by a `label-caps-sm` eyebrow with a tabular
 count on the right. Each row is a Next.js `Link` whose `href` always
 includes `?tab=api#<anchor>`, where the anchor is the same id stamped on
@@ -1806,20 +2084,18 @@ internally instead of overflowing the viewport. At narrower widths the
 aside stacks below the main column and is not sticky.
 
 **Selection echo.** When a sidebar link is clicked, the corresponding
-function/trigger card lights up with the canonical `border-l-2
-border-l-accent` rail (the same recipe used by `WorkerCard` focused
-state in §10 and the `versions` Row's `aria-current` style) and the
-clicked sidebar link itself switches to `text-accent`. This gives the
-user a clear "you are here" signal that survives any subsequent
-scrolling. The 1px → 2px border shift on the left edge is the
-sanctioned accent on the existing rule grid (§4 "Allowed accents on top
-of borders").
+function/trigger card lights up with the canonical `bg-surface-selected`
+tint (the same recipe used by `WorkerCard` focused state in §10 and the
+`versions` Row's `aria-current` style) and the clicked sidebar link itself
+switches to `text-accent`. This gives the user a clear "you are here"
+signal that survives any subsequent scrolling. The tinted fill is the
+sanctioned selection accent (§4 "Selection and severity").
 
 **Why CSS `:target` is not enough.** Next.js `Link` performs same-page
 hash navigation through `history.pushState`, which does **not** fire
 `hashchange` and which most browsers do **not** treat as a `:target`
 re-evaluation trigger. As a result, plain
-`target:border-l-2 target:border-l-accent` only highlights on full page
+`target:bg-surface-selected` only highlights on full page
 load and back/forward — *not* on a soft sidebar click. The api panel
 must drive the highlight from JS instead.
 
@@ -1840,14 +2116,14 @@ Wiring:
 - **Cards** wrap their `<article>` in a tiny client component
   ([`hash-card.tsx`](app/src/components/api-reference/hash-card.tsx))
   that calls `useActiveHash()` and conditionally adds
-  `border-l-2 border-l-accent` when the hash matches its `id`. The card
+  `bg-surface-selected` when the hash matches its `id`. The card
   body (header, description, schema panes) is still a server-rendered
   React tree passed in as `children`, so the only JS that runs in the
   browser is the wrapper.
 - **Sidebar links** ([`summary-list.tsx`](app/src/components/api-reference/summary-list.tsx))
   call `useActiveHash()` for their visual state and
   `setActiveHash(target)` from `onClick`, which broadcasts to the
-  card subscribers immediately so the rail and the link light up in
+  card subscribers immediately so the tint and the link light up in
   the same frame as the click — even though Next.js will not have
   fired `hashchange` yet.
 
@@ -1859,6 +2135,6 @@ the user crossed sub-sections.
 
 **Accent rationing.** Per §3, the selection still costs only one accent
 moment per visible region: in the sidebar it is the active link; on the
-panel it is the rail on the targeted card. The required-marker accent
-inside the schema tree continues to coexist because it lives at a
+panel it is the tinted fill on the targeted card. The required-marker
+accent inside the schema tree continues to coexist because it lives at a
 different scale (a single character per row).

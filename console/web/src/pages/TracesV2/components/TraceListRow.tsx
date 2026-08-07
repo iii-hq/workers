@@ -19,10 +19,10 @@ function formatTime(timestamp: number): string {
 
 function statusDotTone(
   status: TraceListItem['status'],
-): 'accent' | 'alert' | 'warn' {
+): 'ok' | 'alert' | 'warn' {
   switch (status) {
     case 'ok':
-      return 'accent'
+      return 'ok'
     case 'error':
       return 'alert'
     default:
@@ -71,8 +71,8 @@ export function TraceListRow({
       onAnimationEnd={onAnimationEnd}
       aria-expanded={isSelected}
       className={cn(
-        'group/row w-full px-4 py-3 border-b border-rule-2 text-left transition-colors',
-        isSelected ? 'bg-panel border-l-2 border-l-accent' : 'hover:bg-panel',
+        'group/row w-full px-3 py-2.5 rounded-sm text-left transition-colors',
+        isSelected ? 'bg-surface-selected' : 'hover:bg-surface-hover',
         isNew && 'trace-flash',
       )}
     >

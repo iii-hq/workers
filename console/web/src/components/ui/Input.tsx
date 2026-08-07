@@ -23,10 +23,10 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
       value={value}
       onChange={(e) => onChange(e.currentTarget.value)}
       className={cn(
-        'w-full border border-rule bg-bg px-3 h-9 text-ink font-mono text-[13px]',
+        'w-full rounded-sm border border-transparent bg-surface px-3 h-9 text-ink font-mono text-[13px]',
         !preserveCase && 'lowercase',
-        'placeholder:text-ink-faint',
-        'focus:outline-none focus:border-ink transition-colors',
+        'placeholder:text-ink-ghost',
+        'hover:bg-surface-hover focus:outline-none focus:border-rule-focus focus:ring-[3px] focus:ring-accent/10 transition-[border-color,box-shadow,background-color]',
         'disabled:opacity-40 disabled:pointer-events-none',
         className,
       )}

@@ -155,8 +155,9 @@ separate successful **Harness E2E deployed** run before promotion.
 Every Release run also attempts to upload
 `release-result-<run-id>/release-result.json`. It classifies the terminal state
 as `succeeded`, `partial`, or `failed`, records the last durable phase and all
-job outcomes, and treats a Slack failure as a notification issue rather than a
-failed publication.
+job outcomes. Workflows do not send operator notifications; Release Control
+projects successful terminal evidence to Slack without coupling delivery to
+publication state.
 
 ## Promote a candidate
 
@@ -178,8 +179,6 @@ Promotion performs these guarded, idempotent changes:
 5. For images, move GHCR `latest` from the recorded immutable digest.
 6. Convert the GitHub prerelease to a normal release without changing the
    repository-global GitHub Latest release.
-7. Attempt the Slack announcement without making notification delivery part of
-   publication success.
 
 The terminal `promotion-<worker>-<version>` artifact records `succeeded`,
 `partial`, or `failed` plus each external surface. Release Control is the
@@ -209,7 +208,6 @@ version, original Release run id, and one explicit action:
 | `candidate-smoke` | Repeat the exact `next` smoke and emit new candidate evidence |
 | `container-alias` | Reconcile only the selected `next` or `latest` image alias |
 | `github-release` | Create or reconcile GitHub prerelease/release state |
-| `notification` | Explicitly repeat the release notification |
 
 Use `channel=original` for the tag's original channel. Select `next` or
 `latest` only when repairing a known partial candidate, direct release, or
@@ -264,7 +262,7 @@ dry-run versions; validate changes through CI or a branch prerelease.
 | Candidate evidence is rejected | Wrong worker/version/run attempt/tag SHA or a failed gate | Use the exact successful Release or repair evidence run |
 | Harness promotion lacks E2E | No green deployed evidence for that release | Dispatch Harness E2E deployed with the exact release identity |
 | Promotion becomes partial | Registry changed but a later surface failed | Repair the failed `latest` surface; do not cut another version |
-| Slack failed | Publication succeeded but notification did not | Use repair action `notification` after checking for duplicates |
+| Slack delivery failed | Release Control could not project successful evidence | Check its Slack bot configuration and durable notification outbox; delivery retries automatically |
 
 ## Roll forward and verify
 
@@ -281,7 +279,8 @@ iii worker info <name>
 Confirm the resolved version, published function/trigger interface, GitHub
 Release assets, and — for images — the expected channel digest.
 
-Slack announcements remain in `#worker-releases`. Candidate messages use
-`next`; promotion messages identify `latest`. Ticket association rides on PR
-titles (`(MOT-##) type: description`) or the `no-ticket` label for changes that
-do not belong to a Linear issue.
+Release Control owns Slack communication in `#worker-releases`. It creates one
+root message for the immutable Release run, updates that root when the candidate
+reaches `latest`, and keeps lifecycle checkpoints in the same thread. Ticket
+association rides on PR titles (`(MOT-##) type: description`) or the `no-ticket`
+label for changes that do not belong to a Linear issue.

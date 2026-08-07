@@ -84,7 +84,6 @@ def build_result(args: argparse.Namespace) -> dict:
         "phase": phase,
         "failed_requirements": failed,
         "jobs": jobs,
-        "notification": args.notification_result or "skipped",
     }
 
 
@@ -114,9 +113,11 @@ def main() -> None:
         "publish_result",
         "container_alias_result",
         "candidate_result",
-        "notification_result",
     ):
         parser.add_argument(f"--{name.replace('_', '-')}", required=True)
+    # Compatibility with a rerun of a pre-centralization Release workflow.
+    # The value is intentionally ignored: notification delivery is app-owned.
+    parser.add_argument("--notification-result")
     parser.add_argument("--run-attempt", type=int, required=True)
     parser.add_argument("--image-digest", default="")
     parser.add_argument("--output", type=Path, required=True)

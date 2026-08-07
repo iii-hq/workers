@@ -20,7 +20,7 @@ on:
         description: Repair action
         required: true
         type: choice
-        options: [verify, candidate-smoke, container-alias, github-release, notification]
+        options: [verify, candidate-smoke, container-alias, github-release]
         default: verify
       channel:
         description: 'Surface to repair (original uses the tag annotation)'
@@ -300,31 +300,6 @@ jobs:
               --generate-notes --prerelease="$prerelease" --latest=false
           fi
 
-  notification:
-    name: Repeat release notification
-    needs: [setup, registry]
-    if: inputs.action == 'notification'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Post explicit repair notification
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          CHANNEL: worker-releases
-          WORKER: ${{ needs.setup.outputs.worker }}
-          VERSION: ${{ needs.setup.outputs.version }}
-          REGISTRY_TAG: ${{ needs.setup.outputs.registry_tag }}
-          TAG: ${{ needs.setup.outputs.tag }}
-        run: |
-          set -euo pipefail
-          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
-          text="🔁 ${WORKER} v${VERSION} @${REGISTRY_TAG} — release notification repaired · <${url}|GitHub Release>"
-          payload=$(jq -n --arg channel "$CHANNEL" --arg text "$text" '{channel: $channel, text: $text}')
-          response=$(curl -sf -X POST https://slack.com/api/chat.postMessage \
-            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            -d "$payload")
-          jq -e .ok <<<"$response" >/dev/null
-
   verify:
     name: Verify release surfaces
     needs: [setup, registry]
@@ -369,7 +344,7 @@ jobs:
 
   result:
     name: Record repair result
-    needs: [setup, registry, candidate-smoke, container-alias, candidate-evidence, github-release, notification, verify]
+    needs: [setup, registry, candidate-smoke, container-alias, candidate-evidence, github-release, verify]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -382,7 +357,6 @@ jobs:
           CONTAINER_ALIAS_RESULT: ${{ needs.container-alias.result }}
           CANDIDATE_EVIDENCE_RESULT: ${{ needs.candidate-evidence.result }}
           GITHUB_RELEASE_RESULT: ${{ needs.github-release.result }}
-          NOTIFICATION_RESULT: ${{ needs.notification.result }}
           VERIFY_RESULT: ${{ needs.verify.result }}
         run: |
           selected_result=failed
@@ -391,7 +365,6 @@ jobs:
             candidate-smoke) selected_result="$CANDIDATE_EVIDENCE_RESULT" ;;
             container-alias) selected_result="$CONTAINER_ALIAS_RESULT" ;;
             github-release) selected_result="$GITHUB_RELEASE_RESULT" ;;
-            notification) selected_result="$NOTIFICATION_RESULT" ;;
           esac
           status=failed
           [[ "$SETUP_RESULT" == success && "$selected_result" == success ]] && status=succeeded

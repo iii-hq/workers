@@ -115,7 +115,7 @@ export function Select<T extends string>({
         aria-label={aria['aria-label']}
         aria-busy={aria['aria-busy']}
         className={cn(
-          'inline-flex items-center justify-between gap-x-2 border border-rule bg-bg px-3 h-9 text-ink font-mono text-[13px] lowercase focus:outline-none focus:border-ink data-[state=open]:border-ink transition-colors max-w-full min-w-0 data-[placeholder]:text-ink-faint',
+          'inline-flex items-center justify-between gap-x-2 rounded-sm border border-transparent bg-surface px-3 h-9 text-ink font-mono text-[13px] lowercase hover:bg-surface-hover focus:outline-none focus:border-rule-focus data-[state=open]:border-rule-focus transition-colors max-w-full min-w-0 data-[placeholder]:text-ink-ghost',
           disabled && 'opacity-40 pointer-events-none',
           className,
         )}
@@ -154,7 +154,7 @@ export function Select<T extends string>({
           position="popper"
           sideOffset={4}
           className={cn(
-            'z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden border border-rule bg-bg text-ink font-mono text-[13px] lowercase shadow-lg',
+            'z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md bg-panel-raised text-ink font-mono text-[13px] lowercase shadow-floating',
             'data-[state=open]:animate-in data-[state=closed]:animate-out',
             'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
           )}
@@ -236,8 +236,8 @@ function SelectItem({ value, label, title }: SelectItemProps) {
       value={value}
       title={title}
       className={cn(
-        'relative flex items-center pl-7 pr-3 py-1.5 cursor-pointer outline-none select-none',
-        'data-[highlighted]:bg-rule data-[highlighted]:text-ink',
+        'relative flex items-center pl-7 pr-3 py-1.5 rounded-xs cursor-pointer outline-none select-none',
+        'data-[highlighted]:bg-surface-hover data-[highlighted]:text-ink',
         'data-[state=checked]:text-ink',
         'data-[disabled]:opacity-40 data-[disabled]:pointer-events-none',
       )}

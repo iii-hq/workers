@@ -35,6 +35,7 @@ import { Button } from '@/components/ui/Button'
 import { Cell } from '@/components/ui/Cell'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { PageHeader } from '@/components/ui/PageChrome'
 import { Pagination } from '@/components/ui/Pagination'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
@@ -86,9 +87,11 @@ const PAGE_SIZES = [25, 50, 100]
 export interface TracesV2Props {
   /** mount with a trace's detail already expanded (stories/deep links) */
   initialTraceId?: string
+  /** Close the hosting pane — the header's standard ✕ when present. */
+  onRequestClose?: () => void
 }
 
-export function TracesV2({ initialTraceId }: TracesV2Props) {
+export function TracesV2({ initialTraceId, onRequestClose }: TracesV2Props) {
   // The strip's system/pause/refresh controls were removed; both stay at
   // their defaults (streams live, internal spans hidden) until some other
   // surface grows a toggle.
@@ -519,7 +522,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
   // border continues the selected row's marker.
   const traceDetail =
     selectedTraceId !== null ? (
-      <div className="border-b border-rule-2 border-l-2 border-l-accent">
+      <div className="bg-panel-raised shadow-raised">
         {isLoadingSpans && (
           <TraceDetailSkeleton onClose={() => selectTrace(null)} />
         )}
@@ -558,7 +561,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
               onClose={() => selectTrace(null)}
               onSpanClick={setSelectedSpan}
             />
-            <div className="border-b border-rule px-4 py-2.5">
+            <div className="border-b border-rule-2 px-3 py-2">
               <ViewSwitcher
                 currentView={activeView}
                 onViewChange={setActiveView}
@@ -587,7 +590,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                 />
               </div>
             )}
-            <div className="border-t border-rule">
+            <div className="border-t border-rule-2">
               <WorkerBreakdown data={waterfallData} />
             </div>
           </>
@@ -603,6 +606,11 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
       aria-label="traces"
       className="flex-1 flex flex-col overflow-hidden"
     >
+      <PageHeader
+        icon={<GitBranch />}
+        title="traces"
+        onClose={onRequestClose}
+      />
       <TimelineStrip
         spans={allSpans}
         spanFilter={spanFilter}
@@ -612,7 +620,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
         onToggleFollowTurns={conversationsCtx ? toggleFollowTurns : undefined}
       />
 
-      <div className="px-4 py-2.5 border-b border-rule">
+      <div className="px-3 py-2 border-b border-rule-2">
         <ErrorBoundary>
           <TraceFilters
             filters={filterState}
@@ -698,7 +706,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                     ).map((sk) => (
                       <div
                         key={sk}
-                        className="px-4 py-3 border-b border-rule-2"
+                        className="px-3 py-3 border-b border-rule-2"
                       >
                         <div className="flex items-center gap-2 mb-2">
                           <Skeleton className="w-1.5 h-1.5 rounded-full" />
@@ -768,7 +776,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                         )
                       })}
                     </div>
-                    <div className="flex-shrink-0 border-t border-rule px-4 py-2.5">
+                    <div className="flex-shrink-0 border-t border-rule-2 px-3 py-2">
                       <Pagination
                         currentPage={filterState.page}
                         totalPages={totalPages}
@@ -800,12 +808,12 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                   aria-label="resize span panel"
                   onMouseDown={spanPanel.startResize}
                   onDoubleClick={spanPanel.reset}
-                  className="w-[3px] flex-shrink-0 cursor-col-resize bg-rule hover:bg-accent active:bg-accent"
+                  className="w-[3px] flex-shrink-0 cursor-col-resize bg-transparent hover:bg-accent/60 active:bg-accent"
                 />
                 <div
                   style={{ width: spanPanel.width }}
                   className={cn(
-                    'bg-bg border-l border-rule flex-shrink-0 h-full overflow-hidden',
+                    'bg-panel-raised border-l border-rule-2 flex-shrink-0 h-full overflow-hidden',
                     spanPanel.isResizing && 'pointer-events-none select-none',
                   )}
                 >

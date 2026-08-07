@@ -347,98 +347,6 @@ jobs:
       - name: Require all candidate gates
         run: jq -e '.candidate_ready == true' release-candidate.json >/dev/null
 
-  # ──────────────────────────────────────────────────────────────
-  # Announce the release in Slack (#worker-releases). Notification failures
-  # are warnings: they must not turn an already published release red.
-  # ──────────────────────────────────────────────────────────────
-  announce:
-    name: Announce on Slack
-    needs: [setup, binary-build, container-build, bundle-build, publish, container-alias, candidate-ready]
-    if: >-
-      ${{
-        always() &&
-        needs.setup.result == 'success' &&
-        needs.setup.outputs.dry_run != 'true' &&
-        (
-          (needs.setup.outputs.staged == 'true' && needs.candidate-ready.result == 'success') ||
-          (
-            needs.setup.outputs.staged != 'true' &&
-            needs.binary-build.result != 'failure' &&
-            needs.container-build.result != 'failure' &&
-            needs.bundle-build.result != 'failure' &&
-            (needs.setup.outputs.deploy != 'image' || needs.container-alias.result == 'success') &&
-            (needs.setup.outputs.interface_smoke == 'false' || needs.publish.result == 'success')
-          )
-        )
-      }}
-    runs-on: ubuntu-latest
-    outputs:
-      notification_result: ${{ steps.post.outcome == 'success' && steps.thread.outcome != 'failure' && 'success' || 'failure' }}
-    steps:
-      - name: Post to Slack
-        id: post
-        continue-on-error: true
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          CHANNEL: worker-releases
-          WORKER: ${{ needs.setup.outputs.worker }}
-          VERSION: ${{ needs.setup.outputs.version }}
-          IS_PRERELEASE: ${{ needs.setup.outputs.is_prerelease }}
-          STAGED: ${{ needs.setup.outputs.staged }}
-          PROMOTABLE: ${{ needs.setup.outputs.promotable }}
-          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.setup.outputs.tag }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          if [[ "$STAGED" == true && "$PROMOTABLE" == true ]]; then
-            text="🧪 ${WORKER} v${VERSION} candidate passed on @next — <${RUN_URL}|promote manually> · <${RELEASE_URL}|GitHub prerelease>"
-          elif [[ "$STAGED" == true ]]; then
-            text="🧪 ${WORKER} v${VERSION} prerelease passed on @next — <${RELEASE_URL}|GitHub prerelease>"
-          else
-            suffix=""
-            if [[ "$IS_PRERELEASE" == "true" ]]; then suffix=" (pre-release)"; fi
-            text="🚀 ${WORKER} v${VERSION}${suffix} released — <${RELEASE_URL}|GitHub Release>"
-          fi
-          payload=$(jq -n --arg channel "$CHANNEL" --arg text "$text" '{channel: $channel, text: $text}')
-          resp=$(curl -sf -X POST https://slack.com/api/chat.postMessage \
-            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            -d "$payload")
-          if ! echo "$resp" | jq -e .ok > /dev/null; then
-            echo "::error::Slack API error: $(echo "$resp" | jq -r .error)"
-            exit 1
-          fi
-          echo "ts=$(echo "$resp" | jq -r .ts)" >> "$GITHUB_OUTPUT"
-
-      - name: Post release notes in thread
-        id: thread
-        if: steps.post.outputs.ts != ''
-        continue-on-error: true
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          CHANNEL: worker-releases
-          TAG: ${{ needs.setup.outputs.tag }}
-          THREAD_TS: ${{ steps.post.outputs.ts }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          notes=$(gh release view "$TAG" -R "${{ github.repository }}" --json body --jq .body 2>/dev/null || true)
-          if [[ -z "$notes" ]]; then
-            echo "::notice::no release notes body; skipping thread reply"
-            exit 0
-          fi
-          notes=$(printf '%s' "$notes" | head -c 2900)
-          payload=$(jq -n --arg channel "$CHANNEL" --arg text "$notes" --arg ts "$THREAD_TS" \
-            '{channel: $channel, text: $text, thread_ts: $ts}')
-          resp=$(curl -sf -X POST https://slack.com/api/chat.postMessage \
-            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            -d "$payload")
-          if ! echo "$resp" | jq -e .ok > /dev/null; then
-            echo "::error::Slack API error: $(echo "$resp" | jq -r .error)"
-            exit 1
-          fi
-
   release-result:
     name: Record terminal release result
     needs:
@@ -450,7 +358,6 @@ jobs:
       - publish
       - container-alias
       - candidate-ready
-      - announce
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -487,7 +394,6 @@ jobs:
           PUBLISH_RESULT: ${{ needs.publish.result }}
           CONTAINER_ALIAS_RESULT: ${{ needs.container-alias.result }}
           CANDIDATE_RESULT: ${{ needs.candidate-ready.result }}
-          NOTIFICATION_RESULT: ${{ needs.announce.outputs.notification_result || needs.announce.result }}
         run: |
           python3 .github/scripts/release_result.py \
             --repository "$REPOSITORY" \
@@ -515,7 +421,6 @@ jobs:
             --publish-result "$PUBLISH_RESULT" \
             --container-alias-result "$CONTAINER_ALIAS_RESULT" \
             --candidate-result "$CANDIDATE_RESULT" \
-            --notification-result "$NOTIFICATION_RESULT" \
             --output release-result.json
 
       - uses: actions/upload-artifact@v6

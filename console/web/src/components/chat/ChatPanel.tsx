@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
+import { PageHeader } from '@/components/ui/PageChrome'
 import { Prompt } from '@/components/ui/Prompt'
 import { useSidebarWidth } from '@/hooks/use-sidebar-width'
 import { useConversationsCtx } from '@/lib/conversations-context'
@@ -9,6 +10,8 @@ export type ChatPanelDensity = 'route' | 'dock'
 
 interface ChatPanelProps {
   density?: ChatPanelDensity
+  /** Close the hosting pane — the header's standard ✕ when present. */
+  onRequestClose?: () => void
 }
 
 const SIDEBAR_COLLAPSED_KEY = 'iii-chat-sidebar-collapsed'
@@ -31,7 +34,10 @@ function persistSidebarCollapsed(value: boolean): void {
   }
 }
 
-export function ChatPanel({ density = 'route' }: ChatPanelProps) {
+export function ChatPanel({
+  density = 'route',
+  onRequestClose,
+}: ChatPanelProps) {
   const {
     conversations,
     activeId,
@@ -86,6 +92,7 @@ export function ChatPanel({ density = 'route' }: ChatPanelProps) {
           modelOptions={modelOptions}
           catalogLoading={catalogLoading}
           density={density}
+          onRequestClose={onRequestClose}
           onUpdateModel={setModel}
           onUpdateMode={setMode}
           onUpdateWorkingDir={setWorkingDir}
@@ -94,9 +101,12 @@ export function ChatPanel({ density = 'route' }: ChatPanelProps) {
           onCompactConversation={compactConversation}
         />
       ) : (
-        <section className="flex-1 flex items-center justify-center">
-          <div className="font-mono text-[13px] text-ink-faint lowercase">
-            <Prompt symbol="$">no conversation selected.</Prompt>
+        <section className="flex-1 flex flex-col min-w-0 min-h-0">
+          <PageHeader title="chat" onClose={onRequestClose} />
+          <div className="flex-1 flex items-center justify-center">
+            <div className="font-mono text-[13px] text-ink-faint lowercase">
+              <Prompt symbol="$">no conversation selected.</Prompt>
+            </div>
           </div>
         </section>
       )}

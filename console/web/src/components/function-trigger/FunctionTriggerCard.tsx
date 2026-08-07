@@ -337,7 +337,7 @@ export function FunctionTriggerCard({
 
   return (
     <div
-      className="function-trigger-surface border border-rule bg-bg"
+      className="function-trigger-surface fcall-chrome rounded-md overflow-hidden"
       data-message-id={message.id}
       data-message-role="function-call"
       data-function-id={message.functionId}
@@ -350,7 +350,7 @@ export function FunctionTriggerCard({
           title with the copy icon in flow right after it, and the caret
           strip is a pointer-only duplicate target so clicking anywhere on
           the row still collapses. */}
-      <div className="group/fchdr flex items-center gap-2 hover:bg-paper-2 transition-colors">
+      <div className="group/fchdr flex items-center gap-2 hover:bg-surface-hover/50 transition-colors">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
