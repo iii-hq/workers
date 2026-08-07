@@ -22,9 +22,6 @@ pub struct Config {
     /// The config file this run reads and writes: `--config` when given, else
     /// `<repo_root>/workers-dev.yaml`. Set even when the file does not exist,
     /// so the TUI's first save knows where to create it.
-    // ponytail: no reader outside tests yet — the TUI's save path lands in a
-    // later task. Drop this allow once something reads `config_path`.
-    #[allow(dead_code)]
     pub config_path: PathBuf,
     pub engine_url: String,
     pub release: bool,
