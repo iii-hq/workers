@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786068111181,
+  "lastUpdate": 1786068207122,
   "repoUrl": "https://github.com/iii-hq/workers",
   "entries": {
     "Harness Stack Coverage": [
@@ -285,6 +285,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "Integration line coverage",
             "value": 45.27,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Ytallo Layon",
+            "username": "ytallo",
+            "email": "ytallo.layon@gmail.com"
+          },
+          "committer": {
+            "name": "Ytallo Layon",
+            "username": "ytallo",
+            "email": "ytallo.layon@gmail.com"
+          },
+          "id": "450995a8672a43416c09c73c193ab2b035dc8dd7",
+          "message": "fix(providers): sync deepseek and zai locks with llm-router 1.4.2\n\nThe standalone provider lockfiles still pinned llm-router 1.4.1 after the\npath dependency was bumped, so every --locked build of provider-deepseek\nand provider-zai fails (Harness E2E Daily has been red since the bump).\nRegenerated with cargo metadata; no other entries changed.",
+          "timestamp": "2026-08-06T18:26:15Z",
+          "url": "https://github.com/iii-hq/workers/commit/450995a8672a43416c09c73c193ab2b035dc8dd7"
+        },
+        "date": 1786068205986,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "E2E line coverage",
+            "value": 44.67,
+            "unit": "%"
+          },
+          {
+            "name": "Integration line coverage",
+            "value": 45.18,
             "unit": "%"
           }
         ]
