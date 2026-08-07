@@ -136,7 +136,6 @@ jobs:
         env:
           REGISTRY_TAG: ${{ steps.meta.outputs.registry_tag }}
           INTERFACE_SMOKE: ${{ steps.smoke.outputs.interface_smoke }}
-          IS_PRERELEASE: ${{ steps.meta.outputs.is_prerelease }}
           DRY_RUN: ${{ steps.meta.outputs.dry_run }}
         run: |
           set -euo pipefail
@@ -144,9 +143,7 @@ jobs:
           promotable=false
           if [[ "$REGISTRY_TAG" == next && "$INTERFACE_SMOKE" == true && "$DRY_RUN" != true ]]; then
             staged=true
-            if [[ "$IS_PRERELEASE" != true ]]; then
-              promotable=true
-            fi
+            promotable=true
           fi
           echo "staged=$staged" >>"$GITHUB_OUTPUT"
           echo "promotable=$promotable" >>"$GITHUB_OUTPUT"

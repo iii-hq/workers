@@ -172,14 +172,15 @@ Promotion performs these guarded, idempotent changes:
 
 1. Validate the candidate artifact, evidence-producing run attempt, and current
    Git tag SHA.
-2. Require stable `MAJOR.MINOR.PATCH` maturity and confirm Registry `next` still
-   points to the candidate.
+2. Require the release version grammar and confirm Registry `next` still points
+   to the candidate.
 3. For Harness, validate a deployed-E2E evidence artifact tied to the same
    release and E2E run attempt. `e2e_run_id` can be supplied or auto-located.
 4. Move Registry `latest` with source and destination preconditions.
 5. For images, move GHCR `latest` from the recorded immutable digest.
-6. Convert the GitHub prerelease to a normal release without changing the
-   repository-global GitHub Latest release.
+6. Convert a stable candidate's GitHub prerelease to a normal release. An
+   experimental, alpha, or beta release remains marked as a GitHub prerelease.
+   Neither path changes the repository-global GitHub Latest release.
 
 The terminal `promotion-<worker>-<version>` artifact records `succeeded`,
 `partial`, or `failed` plus each external surface. Release Control is the
