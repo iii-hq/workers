@@ -2,6 +2,68 @@ window.HARNESS_EXECUTIONS = {
   "executions": [
     {
       "actor": "ytallo",
+      "attempt": 3,
+      "availability": "unavailable",
+      "completed_at": "2026-08-07T11:07:33Z",
+      "conclusion": "failure",
+      "detail_path": null,
+      "event": "schedule",
+      "execution": {
+        "actor": "ytallo",
+        "attempt": 3,
+        "completed_at": "2026-08-07T11:07:33Z",
+        "conclusion": "failure",
+        "event": "schedule",
+        "head_branch": "main",
+        "head_sha": "abfadf473ecb33452372b9fa06f083639b6ba19a",
+        "id": "31153706659-3",
+        "repository": "iii-hq/workers",
+        "run_id": "31153706659",
+        "started_at": "2026-08-07T11:05:02Z",
+        "workflow_name": "Test · harness_registry · schedule",
+        "workflow_url": "https://github.com/iii-hq/workers/actions/runs/31153706659"
+      },
+      "first_failure": {
+        "job_name": "e2e / harness e2e build",
+        "kind": "job",
+        "message": "e2e / harness e2e build: Test E2E crate",
+        "step_name": "Test E2E crate",
+        "url": "https://github.com/iii-hq/workers/actions/runs/31153706659/job/92788543989"
+      },
+      "generated_at": "",
+      "id": "31153706659-3",
+      "lane": "daily",
+      "release": {},
+      "requested_runs": null,
+      "run_id": "31153706659",
+      "source": {
+        "ref": "main",
+        "repository": "iii-hq/workers",
+        "sha": "abfadf473ecb33452372b9fa06f083639b6ba19a"
+      },
+      "started_at": "2026-08-07T11:05:02Z",
+      "status": "infra_failed",
+      "subjects": [],
+      "totals": {
+        "average_score": null,
+        "expected_reports": 0,
+        "hard_gate_failures": 0,
+        "missing_reports": 0,
+        "passed_scenarios": 0,
+        "received_reports": 0,
+        "report_coverage": 0,
+        "retries": 0,
+        "scenario_pass_rate": 0,
+        "technical_failures": 0,
+        "total_cost_usd": null,
+        "wall_time_seconds": null
+      },
+      "workflow_duration_seconds": 151.0,
+      "workflow_name": "Test · harness_registry · schedule",
+      "workflow_url": "https://github.com/iii-hq/workers/actions/runs/31153706659"
+    },
+    {
+      "actor": "ytallo",
       "attempt": 2,
       "availability": "unavailable",
       "completed_at": "2026-08-07T10:00:57Z",
@@ -3526,7 +3588,7 @@ window.HARNESS_EXECUTIONS = {
       "workflow_url": "https://github.com/iii-hq/workers/actions/runs/30982733353"
     }
   ],
-  "last_update": "2026-08-07T10:00:57Z",
+  "last_update": "2026-08-07T11:07:33Z",
   "mode": "published",
   "repo_url": "https://github.com/iii-hq/workers",
   "retention": {
