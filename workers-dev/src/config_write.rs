@@ -217,23 +217,36 @@ fn block_range(lines: &[&str], head: usize) -> (usize, usize) {
 ///
 /// Deliberately looser than `valid_stack_name`: that governs what this tool
 /// may *write*, not what an existing entry may be named. `Config::load` (via
-/// `parse_stacks`) accepts any string key — `my.stack`, `'quoted'`, `tiny :`
-/// — so a scanner that only recognised `valid_stack_name` shapes would go
-/// blind on everything else, silently swallowing it into a neighbouring
-/// entry's range or, if it's the last entry left, making `remove_stack`
-/// drop the whole `stacks:` block out from under it. A key is only rejected
-/// here for shapes that line surgery genuinely cannot own: empty, a list item
-/// (`-` prefixed, or no colon at all), or stray whitespace around the name
-/// (`tiny :`) that `ensure_block_entries_recognized` then refuses to edit
-/// past rather than misreading.
+/// `parse_stacks`) accepts any string key — `my.stack`, `'quoted'`, `tiny :`,
+/// `web:dev` — so a scanner that only recognised `valid_stack_name` shapes
+/// would go blind on everything else, silently swallowing it into a
+/// neighbouring entry's range or, if it's the last entry left, making
+/// `remove_stack` drop the whole `stacks:` block out from under it. A key is
+/// only rejected here for shapes that line surgery genuinely cannot own:
+/// empty, a list item (`-` prefixed, or no key-ending colon at all), or
+/// stray whitespace around the name (`tiny :`) that
+/// `ensure_block_entries_recognized` then refuses to edit past rather than
+/// misreading.
+///
+/// The key ends at the first `:` YAML would end it at — one followed by
+/// whitespace or end-of-line — not just the first `:` byte. A colon glued to
+/// the next character is ordinary scalar content (`web:dev:` is the single
+/// key `web:dev`, YAML only treats the *second* colon as the terminator);
+/// stopping at the first `:` unconditionally truncated any such name, so
+/// `entry_range` matched it against the wrong (shorter) name entirely —
+/// Critical-1's exact swallowing failure, reached through name extraction
+/// instead of line classification.
 fn entry_key(line: &str) -> Option<(String, String)> {
     let indent: String = line.chars().take_while(|c| *c == ' ').collect();
     if indent.is_empty() || indent.len() == line.len() {
         return None;
     }
     let rest = &line[indent.len()..];
-    let key = rest.split(':').next()?;
-    if key.is_empty() || key.len() == rest.len() || key.starts_with('-') || key.trim() != key {
+    let (end, _) = rest
+        .char_indices()
+        .find(|&(i, c)| c == ':' && rest[i + 1..].chars().next().is_none_or(char::is_whitespace))?;
+    let key = &rest[..end];
+    if key.is_empty() || key.starts_with('-') || key.trim() != key {
         return None;
     }
     Some((indent, key.to_string()))
@@ -767,6 +780,35 @@ default_stack: tiny
 
         let out = upsert_stack("", "console-dev", &roots(&["console"])).unwrap();
         assert!(out.contains("console-dev"), "{out:?}");
+    }
+
+    /// `entry_key` ended a key at the FIRST `:`, but YAML ends a plain-scalar
+    /// key at the first `:` followed by whitespace or end-of-line — a colon
+    /// glued to the next character (`web:dev:`) is just scalar content. A
+    /// stack literally named `web:dev` had its extracted "key" truncated to
+    /// `web`, so upserting an unrelated new stack named `web` matched (and
+    /// swallowed) it instead of appending beside it.
+    #[test]
+    fn upsert_leaves_a_colon_containing_sibling_key_intact() {
+        let src = "stacks:\n  console:\n    - console\n  web:dev:\n    - session-manager\n";
+        let out = upsert_stack(src, "web", &roots(&["x"])).unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  console:\n    - console\n  web:dev:\n    - session-manager\n  web:\n    - x\n"
+        );
+        assert!(parses(&out));
+    }
+
+    /// Same root cause, on the remove path: the truncated key meant
+    /// `remove_stack` could never find `web:dev` by its real name (reporting
+    /// it undefined) while `remove_stack(src, "web")` — a name that isn't
+    /// actually defined anywhere — silently deleted it instead.
+    #[test]
+    fn remove_finds_a_colon_containing_key_by_its_full_name() {
+        let src = "stacks:\n  console:\n    - console\n  web:dev:\n    - session-manager\n";
+        let out = remove_stack(src, "web:dev").unwrap();
+        assert_eq!(out, "stacks:\n  console:\n    - console\n");
+        assert!(parses(&out));
     }
 
     #[test]
