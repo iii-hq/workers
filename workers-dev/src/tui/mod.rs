@@ -66,9 +66,11 @@ const BRANCH_MAX: usize = 40;
 const ENGINE_START_WAIT_MS: u64 = 8_000;
 
 /// Footer help, by available width. The narrowest tier always keeps the two
-/// keys a lost user needs (help, quit).
+/// keys a lost user needs (help, quit). `draw_footer` gates `HELP_FULL` on
+/// its own character count rather than a hand-copied number, so a tier that
+/// grows can never silently clip its own tail again.
 const HELP_FULL: &str =
-    " ↑↓ select · Space mark · s start · x stop · r restart · w ui-watch · / filter · f follow · ? keys · q quit ";
+    " ↑↓ select · Space mark · n new stack · s start · x stop · r restart · w ui-watch · / filter · f follow · ? keys · q quit ";
 const HELP_MID: &str = " s start · x stop · r restart · / filter · ? keys · q quit ";
 const HELP_MIN: &str = " / filter · ? keys · q quit ";
 
@@ -91,7 +93,11 @@ enum UiMode {
     },
     Busy(String),
     /// Stack picker (Ctrl+u with several stacks defined). `selected` indexes
-    /// into config.stacks; rows with no startable roots are skipped.
+    /// into the session's `stacks` list, not `config.stacks` — the two
+    /// diverge after any save/delete/default change made from the picker.
+    /// Every row is reachable, including ones with no startable roots:
+    /// `move_stack_selection` (`stacks.rs`) never skips them, since `x`
+    /// (delete) must still be able to reach an unstartable stack.
     StackPicker {
         selected: usize,
     },
@@ -186,7 +192,8 @@ struct UiCtx<'a> {
     config_path: &'a str,
     stacks: &'a [(String, Vec<String>)],
     views: &'a [WorkerView],
-    /// Workers marked with Space for a new stack (Task 5 saves these).
+    /// Workers marked with Space for a new stack; `n` saves the marked set
+    /// as a stack (see `handle_dashboard_key`'s `n` arm).
     marked: &'a std::collections::HashSet<String>,
     engine_error: Option<&'a str>,
     display_rows: &'a [DisplayRow],
@@ -221,11 +228,11 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
         // query can't freeze keyboard input.
         // Session copies of the config's stacks, so saving a new stack (n)
         // doesn't require re-reading the file: `default_stack` isn't mutated
-        // by this task, but lives here so a later "set default" (Ctrl+u
-        // picker) can update it without reaching back into `Config`.
+        // by saving a new stack, but lives here so a later "set default"
+        // (Ctrl+u picker) can update it without reaching back into `Config`.
         let mut stacks: Vec<(String, Vec<String>)> = orchestrator.config.stacks.clone();
-        // Reassigned by the picker's `*` (make default); never by anything
-        // in Task 5.
+        // Reassigned only by the picker's `*` (make default) — never by
+        // saving a new stack.
         let mut default_stack = orchestrator.config.default_stack.clone();
         let mut current_stack = orchestrator.config.default_stack.clone();
         // Precomputed once: the confirm-delete dialog names the file it will
@@ -1826,7 +1833,11 @@ fn draw_footer(f: &mut Frame, area: Rect, ctx: &UiCtx) {
             styled_if(color, Style::default().fg(Color::Yellow)),
         ),
         _ => {
-            let help = if area.width >= 86 {
+            // Gate on the string's own length, not a copied-by-hand number:
+            // `HELP_FULL` grew past its old `>= 86` gate once already,
+            // clipping its own tail (`? keys · q quit`) on any terminal
+            // narrower than its true width but still passing that gate.
+            let help = if area.width as usize >= HELP_FULL.chars().count() {
                 HELP_FULL
             } else if area.width >= 64 {
                 HELP_MID
@@ -2522,6 +2533,67 @@ mod tests {
         assert!(
             row.contains(name),
             "21-char worker name must survive the Worker column untruncated:\n{row:?}"
+        );
+    }
+
+    /// Minor fix: `HELP_FULL` grew past its old hardcoded `>= 86` gate, so a
+    /// terminal narrower than the text but still passing that gate rendered
+    /// it anyway, clipping its tail (`? keys · q quit`). `draw_footer` now
+    /// gates on the string's own length, so the tier can never outgrow its
+    /// gate again; this also pins that `n` (new stack) is documented in it.
+    #[test]
+    fn footer_help_never_clips_and_documents_new_stack() {
+        assert!(
+            HELP_FULL.contains("n new stack"),
+            "the `n` (new stack) key must be documented in the full help tier"
+        );
+
+        let marked = std::collections::HashSet::new();
+        let display_rows: Vec<DisplayRow> = Vec::new();
+        let ctx = UiCtx {
+            engine_url: "",
+            repo_branch: None,
+            current_stack: "s",
+            default_stack: "s",
+            config_path: "workers-dev.yaml",
+            stacks: &[],
+            views: &[],
+            marked: &marked,
+            engine_error: None,
+            display_rows: &display_rows,
+            mode: &UiMode::Dashboard,
+            filter: "",
+            selected_name: None,
+            log_lines: &[],
+            log_scroll: 0,
+            follow: true,
+            log_height: LOG_HEIGHT_DEFAULT,
+            table_width: TABLE_PANE_WIDTH,
+            spinner_frame: 0,
+            color_enabled: false,
+            error: None,
+        };
+        let render = |width: u16| -> String {
+            let backend = ratatui::backend::TestBackend::new(width, 1);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|f| draw_footer(f, f.area(), &ctx)).unwrap();
+            (0..width)
+                .map(|x| terminal.backend().buffer()[(x, 0)].symbol().to_string())
+                .collect()
+        };
+
+        // At exactly HELP_FULL's own width, the full text — including its
+        // tail — must render intact.
+        let full_width = HELP_FULL.chars().count() as u16;
+        assert!(
+            render(full_width).trim_end().ends_with("q quit"),
+            "HELP_FULL's own gate must not clip its tail"
+        );
+        // One column narrower must fall back to a shorter tier rather than
+        // render (and clip) HELP_FULL.
+        assert!(
+            !render(full_width - 1).contains("ui-watch"),
+            "a terminal narrower than HELP_FULL must not render (and clip) it"
         );
     }
 }

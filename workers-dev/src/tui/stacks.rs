@@ -1,7 +1,7 @@
 //! Stack management UI: the Ctrl+u picker, creating a stack from marked
-//! workers, and (later) deleting and defaulting stacks. Split out of
-//! `tui/mod.rs`, which owns the dashboard loop and was already long before
-//! stacks arrived.
+//! workers, and deleting or defaulting stacks from that same picker. Split
+//! out of `tui/mod.rs`, which owns the dashboard loop and was already long
+//! before stacks arrived.
 
 use std::collections::HashSet;
 use std::path::Path;
