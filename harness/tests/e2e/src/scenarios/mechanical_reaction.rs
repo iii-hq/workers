@@ -2,22 +2,48 @@ use serde_json::{json, Value};
 
 use crate::context::E2eContext;
 
+use super::assessment::{self, AssessmentSpec};
 use super::{
-    common, CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
+    common, CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec,
 };
 
 pub const ID: &str = "mechanical_reaction";
 
 const SOURCE_KEY: &str = "source";
 const MIRROR_KEY: &str = "mirror";
+const REACTIONS_ARMED: AssessmentSpec = AssessmentSpec::required(
+    "reactions_armed",
+    30,
+    "The wake and mechanical call are registered before the source write.",
+);
+const MECHANICAL_MIRROR: AssessmentSpec = AssessmentSpec::required(
+    "mechanical_mirror",
+    35,
+    "The call binding mirrors the complete source event without a root write.",
+);
+const PARENT_WOKEN: AssessmentSpec = AssessmentSpec::required(
+    "parent_woken",
+    20,
+    "The mirror state event wakes only the original session.",
+);
+const CLEAN_COMPLETION: AssessmentSpec = AssessmentSpec::required(
+    "clean_completion",
+    15,
+    "The run finishes without children, errors, or surviving bindings.",
+);
+const ASSESSMENTS: &[AssessmentSpec] = &[
+    REACTIONS_ARMED,
+    MECHANICAL_MIRROR,
+    PARENT_WOKEN,
+    CLEAN_COMPLETION,
+];
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = Names::new(run_id);
     let source = source_value(run_id);
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 2,
         prompt: format!(
             r#"Test a zero-token mechanical reaction in isolated state scope `{scope}`.
 
@@ -51,29 +77,7 @@ binding armed."#,
         },
         denied_functions: &[],
         threshold: 90,
-        criteria: vec![
-            CriterionSpec {
-                id: "reactions_armed",
-                weight: 30,
-                description: "The wake and mechanical call are registered before the source write.",
-            },
-            CriterionSpec {
-                id: "mechanical_mirror",
-                weight: 35,
-                description:
-                    "The call binding mirrors the complete source event without a root write.",
-            },
-            CriterionSpec {
-                id: "parent_woken",
-                weight: 20,
-                description: "The mirror state event wakes only the original session.",
-            },
-            CriterionSpec {
-                id: "clean_completion",
-                weight: 15,
-                description: "The run finishes without children, errors, or surviving bindings.",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
         evaluate,
@@ -157,68 +161,40 @@ fn evaluate<'a>(
             exact_source_write && mirror_valid && call_delivered && call_payload_recorded;
         let clean_completion = active_bindings == 0 && no_errors && confirmed;
 
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "reactions_preceded_source_write",
-                    reactions_armed,
-                    format!(
-                        "registrations={}, wakes={}, call_bindings={}, writes={}",
-                        registrations.len(),
-                        wakes.len(),
-                        mirrors.len(),
-                        writes.len()
-                    ),
+        Ok(assessment::objective([
+            REACTIONS_ARMED.binary(
+                reactions_armed,
+                format!(
+                    "registrations={}, wakes={}, call_bindings={}, writes={}",
+                    registrations.len(),
+                    wakes.len(),
+                    mirrors.len(),
+                    writes.len()
                 ),
-                common::gate(
-                    "source_event_was_mirrored_mechanically",
-                    mechanical_mirror,
-                    format!(
-                        "exact_source_write={exact_source_write}, mirror_valid={mirror_valid}, \
+            ),
+            MECHANICAL_MIRROR.binary(
+                mechanical_mirror,
+                format!(
+                    "exact_source_write={exact_source_write}, mirror_valid={mirror_valid}, \
                          call_delivered={call_delivered}, call_payload_recorded={call_payload_recorded}"
-                    ),
                 ),
-                common::gate(
-                    "mirror_woke_original_session",
-                    parent_woken,
-                    format!(
-                        "wake_records={}, sessions={}",
-                        wake_records.len(),
-                        observation.metrics.totals.sessions
-                    ),
+            ),
+            PARENT_WOKEN.binary(
+                parent_woken,
+                format!(
+                    "wake_records={}, sessions={}",
+                    wake_records.len(),
+                    observation.metrics.totals.sessions
                 ),
-                common::gate(
-                    "mechanical_run_completed_cleanly",
-                    clean_completion,
-                    format!(
-                        "active_bindings={active_bindings}, function_errors={}, confirmed={confirmed}",
-                        observation.metrics.totals.function_call_errors
-                    ),
+            ),
+            CLEAN_COMPLETION.binary(
+                clean_completion,
+                format!(
+                    "active_bindings={active_bindings}, function_errors={}, confirmed={confirmed}",
+                    observation.metrics.totals.function_call_errors
                 ),
-            ],
-            awards: vec![
-                common::award(
-                    "reactions_armed",
-                    if reactions_armed { 30 } else { 0 },
-                    "awarded when both reactions precede the only root state write",
-                ),
-                common::award(
-                    "mechanical_mirror",
-                    if mechanical_mirror { 35 } else { 0 },
-                    "awarded when the call binding persists the complete source event",
-                ),
-                common::award(
-                    "parent_woken",
-                    if parent_woken { 20 } else { 0 },
-                    "awarded when the mirror event wakes only the root session",
-                ),
-                common::award(
-                    "clean_completion",
-                    if clean_completion { 15 } else { 0 },
-                    "awarded for a confirmed result with no errors or live bindings",
-                ),
-            ],
-        })
+            ),
+        ]))
     })
 }
 
@@ -398,6 +374,20 @@ mod tests {
             &names,
             &source
         ));
-        scenario("run").validate().unwrap();
+        let spec = scenario("run");
+        spec.validate().unwrap();
+        assert_eq!(spec.version, 2);
+        assert_eq!(
+            spec.criteria
+                .iter()
+                .map(|criterion| (criterion.id, criterion.weight))
+                .collect::<Vec<_>>(),
+            vec![
+                ("reactions_armed", 30),
+                ("mechanical_mirror", 35),
+                ("parent_woken", 20),
+                ("clean_completion", 15),
+            ]
+        );
     }
 }
