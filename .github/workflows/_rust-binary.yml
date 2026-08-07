@@ -151,21 +151,31 @@ jobs:
           # A worker can have a web/ embedded SPA, a ui/ injected bundle, or
           # both. Keep the relative paths so the download step can restore
           # them exactly where each build.rs expects them.
-          frontends=()
+          bundles=()
           if [[ -f "$worker/web/package.json" ]]; then
-            frontends+=(web)
+            bundles+=("$worker/web")
           fi
           if [[ -f "$worker/ui/package.json" ]]; then
-            frontends+=(ui)
+            bundles+=("$worker/ui")
           fi
-          if [[ ${#frontends[@]} -eq 0 ]]; then
+          # Path dependencies compile inside this release too, and any of them
+          # with its own injected UI runs the same build.rs contract: under
+          # SKIP_UI_BUILD the dist/ must already exist. Missing this is exactly
+          # how eval/v0.2.0-experimental died — eval depends on the harness
+          # crate, whose ui/dist nobody had pre-built.
+          while IFS= read -r dep; do
+            if [[ -f "$dep/ui/package.json" ]]; then
+              bundles+=("$dep/ui")
+            fi
+          done < <(grep -oE 'path *= *"\.\./[A-Za-z0-9_-]+"' "$worker/Cargo.toml" | sed 's|.*"\.\./||; s|"||' | sort -u)
+          if [[ ${#bundles[@]} -eq 0 ]]; then
             echo "::error::$worker has neither web/package.json nor ui/package.json; web_bundle=true requires one"
             exit 1
           fi
-          frontend_csv=$(IFS=,; echo "${frontends[*]}")
+          bundle_csv=$(IFS=,; echo "${bundles[*]}")
           echo "worker=$worker" >> "$GITHUB_OUTPUT"
-          echo "frontends=$frontend_csv" >> "$GITHUB_OUTPUT"
-          echo "::notice::pre-building frontend bundle(s) in $worker/$frontend_csv"
+          echo "frontends=$bundle_csv" >> "$GITHUB_OUTPUT"
+          echo "::notice::pre-building frontend bundle(s): $bundle_csv"
 
       # `pnpm/action-setup` must run before `setup-node` so that
       # `setup-node`'s `cache: 'pnpm'` finds the binary on PATH. The pnpm
@@ -184,14 +194,13 @@ jobs:
 
       - name: Build frontend bundles
         env:
-          WORKER: ${{ steps.dirs.outputs.worker }}
           FRONTENDS: ${{ steps.dirs.outputs.frontends }}
         run: |
           set -euo pipefail
-          IFS=, read -ra frontends <<< "$FRONTENDS"
-          for frontend in "${frontends[@]}"; do
+          IFS=, read -ra bundles <<< "$FRONTENDS"
+          for bundle in "${bundles[@]}"; do
             (
-              cd "$WORKER/$frontend"
+              cd "$bundle"
               pnpm install --frozen-lockfile
               pnpm build
             )
@@ -199,23 +208,25 @@ jobs:
 
       - name: Stage frontend bundles
         env:
-          WORKER: ${{ steps.dirs.outputs.worker }}
           FRONTENDS: ${{ steps.dirs.outputs.frontends }}
         run: |
           set -euo pipefail
-          IFS=, read -ra frontends <<< "$FRONTENDS"
-          stage=".release-frontend-bundle/$WORKER"
-          for frontend in "${frontends[@]}"; do
-            test -d "$WORKER/$frontend/dist"
-            mkdir -p "$stage/$frontend"
-            cp -a "$WORKER/$frontend/dist" "$stage/$frontend/"
+          IFS=, read -ra bundles <<< "$FRONTENDS"
+          # Repo-relative staging so the restore lands every dist/ exactly
+          # where its crate's build.rs expects it — including dependency crates
+          # outside the released worker's directory.
+          stage=".release-frontend-bundle"
+          for bundle in "${bundles[@]}"; do
+            test -d "$bundle/dist"
+            mkdir -p "$stage/$bundle"
+            cp -a "$bundle/dist" "$stage/$bundle/"
           done
 
       - name: Upload frontend bundles
         uses: actions/upload-artifact@v6
         with:
           name: frontend-bundles
-          path: .release-frontend-bundle/${{ steps.dirs.outputs.worker }}/
+          path: .release-frontend-bundle/
           if-no-files-found: error
           retention-days: 1
 
@@ -339,7 +350,9 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: frontend-bundles
-          path: ${{ steps.dirs.outputs.worker }}/
+          # Repo-rooted: the artifact carries repo-relative paths (worker and
+          # any path-dependency crates with their own ui/dist).
+          path: ./
 
       - name: Build and upload binary
         uses: taiki-e/upload-rust-binary-action@v1
