@@ -197,8 +197,10 @@ function WorkerTableRow({
     </Button>
   )
 
+  // A span, not a div: this nests inside the expand <button>, which only
+  // allows phrasing content.
   const nameCell = (
-    <div className="flex items-center gap-2">
+    <span className="flex items-center gap-2">
       <StatusDot
         tone={statusTone(row.status)}
         pulse={row.status === 'connected'}
@@ -206,8 +208,9 @@ function WorkerTableRow({
       <span className="font-mono text-[13px] text-ink lowercase">
         {row.name}
       </span>
-    </div>
+    </span>
   )
+  const detailId = `worker-detail-${row.name}`
 
   return (
     <>
@@ -218,6 +221,7 @@ function WorkerTableRow({
               type="button"
               onClick={onToggle}
               aria-expanded={expanded}
+              aria-controls={detailId}
               aria-label={`${expanded ? 'hide' : 'show'} ${row.name} functions and triggers`}
               className="flex items-center gap-1.5 text-left hover:text-ink"
             >
@@ -274,7 +278,7 @@ function WorkerTableRow({
         <tr className="border-b border-rule-2 bg-paper-2/40">
           {/* The table wrapper is `whitespace-nowrap` so the columns never
               wrap mid-row; the surface below is prose, so it opts back out. */}
-          <td colSpan={8} className="whitespace-normal px-6 pb-2">
+          <td id={detailId} colSpan={8} className="whitespace-normal px-6 pb-2">
             <WorkerSurface name={row.name} />
           </td>
         </tr>

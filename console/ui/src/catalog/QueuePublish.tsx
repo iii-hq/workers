@@ -13,7 +13,7 @@ import {
   type Host,
   JsonHighlight,
 } from '@iii-dev/console-ui'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { type InvokeOutcome, invoke } from './engine'
 import { pretty } from './schema'
 import { Chip } from './widgets'
@@ -25,11 +25,17 @@ export function QueuePublish({ host, topic }: { host: Host; topic: string }) {
   const [outcome, setOutcome] = useState<InvokeOutcome | null>(null)
   const [invalid, setInvalid] = useState<string | null>(null)
 
+  // Guards an in-flight publish across a topic switch: the stale result must
+  // not land on the newly selected topic's fresh form.
+  const activeTopic = useRef(topic)
+  activeTopic.current = topic
+
   useEffect(() => {
     setBody('{}')
     setOutcome(null)
     setInvalid(null)
     setConfirming(false)
+    setSending(false)
   }, [topic])
 
   const publish = async () => {
@@ -43,7 +49,10 @@ export function QueuePublish({ host, topic }: { host: Host; topic: string }) {
     setInvalid(null)
     setConfirming(false)
     setSending(true)
-    setOutcome(await invoke(host, 'iii::durable::publish', { topic, data }))
+    const sentTopic = topic
+    const result = await invoke(host, 'iii::durable::publish', { topic, data })
+    if (activeTopic.current !== sentTopic) return
+    setOutcome(result)
     setSending(false)
   }
 

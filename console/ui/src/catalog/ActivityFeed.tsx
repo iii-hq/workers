@@ -117,18 +117,21 @@ export function ActivityFeed({
           {failures} failed
         </span>
       </div>
-      {calls.data.map((call) => (
-        <CallRow
-          key={call.spanId || `${call.startedAtMs}`}
-          call={call}
-          now={now}
-          open={open === call.spanId}
-          onToggle={() =>
-            setOpen((prev) => (prev === call.spanId ? null : call.spanId))
-          }
-          onReplay={onReplay}
-        />
-      ))}
+      {calls.data.map((call, i) => {
+        // spanId can be empty or duplicated on some backends — the row id
+        // keys AND drives open state, so a collision would open every twin.
+        const rowId = call.spanId || `${call.traceId}:${call.startedAtMs}:${i}`
+        return (
+          <CallRow
+            key={rowId}
+            call={call}
+            now={now}
+            open={open === rowId}
+            onToggle={() => setOpen((prev) => (prev === rowId ? null : rowId))}
+            onReplay={onReplay}
+          />
+        )
+      })}
     </div>
   )
 }

@@ -228,8 +228,12 @@ export function CopyButton({
       variant="pill"
       size="sm"
       title={title}
-      onClick={() => {
-        void navigator.clipboard.writeText(value)
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(value)
+        } catch {
+          return
+        }
         setCopied(true)
         window.setTimeout(() => setCopied(false), 2000)
       }}

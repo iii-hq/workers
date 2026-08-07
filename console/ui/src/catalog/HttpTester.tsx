@@ -104,7 +104,11 @@ export function HttpTester({
   const [invalid, setInvalid] = useState<string | null>(null)
 
   // A new selection resets the whole form; a stale path parameter filled for
-  // a different endpoint is worse than an empty one.
+  // a different endpoint is worse than an empty one. Keyed on the endpoint's
+  // VALUES, not the binding's identity — live catalog refreshes rebuild the
+  // object every tick, and resetting on identity would wipe the form
+  // mid-typing.
+  const paramKey = binding.params.join(',')
   useEffect(() => {
     setMethod(binding.method)
     setParams(Object.fromEntries(binding.params.map((p) => [p, ''])))
@@ -112,7 +116,8 @@ export function HttpTester({
     setBody('{}')
     setOutcome(null)
     setInvalid(null)
-  }, [binding])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [binding.method, binding.path, paramKey])
 
   const filledPath = binding.params.reduce(
     (path, name) =>

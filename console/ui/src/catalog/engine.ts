@@ -364,7 +364,10 @@ export async function listCalls(
         traceId: str(span.trace_id) ?? '',
         functionId,
         startedAtMs: start / 1e6,
-        durationMs: Number.isFinite(end) ? (end - start) / 1e6 : 0,
+        // In-flight spans carry a null end (Number(null) === 0) — same guard
+        // as spansFromFrame, or the duration goes negative.
+        durationMs:
+          Number.isFinite(end) && end > start ? (end - start) / 1e6 : 0,
         ok: str(span.status) !== 'error',
         input: eventPayload(span, 'iii.invocation.input'),
         output: eventPayload(span, 'iii.invocation.output'),

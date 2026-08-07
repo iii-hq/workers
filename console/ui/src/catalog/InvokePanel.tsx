@@ -62,7 +62,10 @@ function asCliCommand(functionId: string, payload: unknown): string {
   const args = Object.entries(payload).map(([key, value]) => {
     const literal =
       typeof value === 'string' ? value : (JSON.stringify(value) ?? '')
-    return /[\s"']/.test(literal) ? `${key}='${literal}'` : `${key}=${literal}`
+    if (!/[\s"']/.test(literal)) return `${key}=${literal}`
+    // A single quote cannot appear inside single quotes: close the segment,
+    // emit an escaped quote, reopen.
+    return `${key}='${literal.replaceAll("'", `'\\''`)}'`
   })
   return `iii trigger ${functionId} ${args.join(' ')}`
 }
@@ -92,12 +95,16 @@ export function InvokePanel({
   const [invalid, setInvalid] = useState<string | null>(null)
 
   // A new selection resets the editor to that function's own template and
-  // drops the previous function's attempts with it.
+  // drops the previous function's attempts with it. Keyed on the schema's
+  // CONTENT, not its identity — live catalog refreshes rebuild the object
+  // every tick, and resetting on identity would wipe a body mid-edit.
+  const schemaKey = JSON.stringify(requestSchema) ?? 'none'
   useEffect(() => {
     setBody(templateFromSchema(requestSchema))
     setAttempts([])
     setInvalid(null)
-  }, [functionId, requestSchema])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [functionId, schemaKey])
 
   useEffect(() => {
     if (!prefill) return

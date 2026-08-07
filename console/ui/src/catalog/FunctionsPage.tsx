@@ -171,7 +171,7 @@ export function FunctionsPage({
             }
             description={
               search.trim()
-                ? 'no function id, worker, or description contains that text.'
+                ? 'no function id or worker name contains that text.'
                 : 'workers register their functions on connect — start one and it appears here live.'
             }
           />

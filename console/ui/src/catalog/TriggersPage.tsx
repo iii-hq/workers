@@ -494,6 +494,17 @@ function TypeDetailPane({
   )
 }
 
+/** The engine sends `config_summary` as a JSON STRING — parse it so the
+ * fallback renders as structured JSON, not one quoted escaped line. */
+function parsedSummary(raw: string | null | undefined): unknown {
+  if (!raw) return undefined
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return raw
+  }
+}
+
 function BindingDetailPane({
   host,
   binding,
@@ -595,7 +606,9 @@ function BindingDetailPane({
 
           <TabsContent value="config">
             <JsonHighlight
-              code={pretty(binding.config ?? binding.config_summary ?? {})}
+              code={pretty(
+                binding.config ?? parsedSummary(binding.config_summary) ?? {},
+              )}
               className="console-catalog-json"
               wrap
             />
