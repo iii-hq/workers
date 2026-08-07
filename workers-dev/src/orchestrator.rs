@@ -215,15 +215,23 @@ impl Orchestrator {
         !names.iter().any(|n| n == worker) && connected.contains(worker)
     }
 
-    /// Start a configured stack by name.
-    pub async fn start_stack(&self, name: &str, wait_connected: bool) -> Result<()> {
-        let roots = self
-            .config
+    /// Roots configured for a named stack. Doesn't check for emptiness —
+    /// `start_roots` owns that guard for an actual start; callers that need
+    /// to ask the question before doing anything with side effects (e.g.
+    /// `commands::run_up`, before `ensure_engine()`) check the result
+    /// themselves.
+    pub fn stack_roots(&self, name: &str) -> Result<Vec<String>> {
+        self.config
             .stacks
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, roots)| roots.clone())
-            .with_context(|| format!("unknown stack {name}"))?;
+            .with_context(|| format!("unknown stack {name}"))
+    }
+
+    /// Start a configured stack by name.
+    pub async fn start_stack(&self, name: &str, wait_connected: bool) -> Result<()> {
+        let roots = self.stack_roots(name)?;
         self.start_roots(name, &roots, wait_connected).await
     }
 
@@ -250,13 +258,7 @@ impl Orchestrator {
 
     /// Member set (roots + transitive deps) of a configured stack.
     pub fn stack_members(&self, name: &str) -> Result<HashSet<String>> {
-        let roots = self
-            .config
-            .stacks
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, roots)| roots.clone())
-            .with_context(|| format!("unknown stack {name}"))?;
+        let roots = self.stack_roots(name)?;
         Ok(crate::discover::stack_members(
             &self.config.worker_specs,
             &roots,
