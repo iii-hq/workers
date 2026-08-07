@@ -6,6 +6,130 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue }
 
+export type SessionStatus = 'idle' | 'working' | 'done' | 'error'
+
+export interface SessionMeta {
+  session_id: string
+  title: string
+  description: string
+  status: SessionStatus
+  status_reason?: string
+  metadata?: Record<string, JsonValue>
+  forked_from?: string
+  draft?: string
+  created_at: number
+  updated_at: number
+  message_count: number
+}
+
+export interface ContextSnapshot {
+  session_id: string
+  turn_id: string
+  step: number
+  model: string
+  provider?: string
+  estimator?: string
+  usable: number
+  effective_max_output_tokens: number
+  total: number
+  free: number
+  categories: {
+    system_prompt: number
+    tools: number
+    messages: {
+      user: number
+      assistant: number
+      function_result: number
+      custom: number
+    }
+    overhead: number
+    hook_guidance: number
+  }
+  compacted: boolean
+  summarized_head_tokens?: number
+  usage?: JsonValue
+  timestamp: number
+}
+
+export interface SessionMetrics {
+  root_session_id: string
+  complete: boolean
+  totals: {
+    sessions: number
+    turns: number
+    function_calls: number
+    function_call_errors: number
+    input_tokens?: number
+    output_tokens?: number
+    cache_read_tokens?: number
+    cache_write_tokens?: number
+    reasoning_tokens?: number
+    cost_usd?: number
+  }
+  by_session: Array<{
+    session_id: string
+    parent_session_id?: string
+    depth: number
+    turns: number
+    function_calls: number
+    function_call_errors: number
+    input_tokens?: number
+    output_tokens?: number
+    cache_read_tokens?: number
+    cache_write_tokens?: number
+    reasoning_tokens?: number
+    cost_usd?: number
+    context?: ContextSnapshot
+  }>
+  traces?: {
+    trace_count: number
+    span_count: number
+    error_span_count: number
+    duration_ms: number
+    by_session: Array<{
+      session_id: string
+      parent_session_id?: string
+      depth: number
+      trace_count: number
+      span_count: number
+      error_span_count: number
+      duration_ms: number
+    }>
+  }
+}
+
+export type TurnStatus =
+  | 'running'
+  | 'awaiting_functions'
+  | 'completed'
+  | 'cancelled'
+  | 'failed'
+
+export interface SessionComparisonItem {
+  session: SessionMeta
+  lifecycle: {
+    session_status: SessionStatus
+    turn_id?: string
+    turn_status?: TurnStatus
+    result_error?: string
+    terminal?: boolean
+    expects_wake?: boolean
+    complete?: boolean
+    partial: boolean
+  }
+  metrics?: SessionMetrics
+  summary?: Record<string, number | null>
+  deltas: Record<string, { absolute: number | null; percent: number | null }>
+  errors: string[]
+}
+
+export interface SessionComparisonResponse {
+  schema_version: string
+  captured_at: number
+  baseline_session_id: string
+  sessions: SessionComparisonItem[]
+}
+
 export type EvalStatus =
   | 'queued'
   | 'running'

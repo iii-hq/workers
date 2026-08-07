@@ -143,13 +143,24 @@ pub async fn handle(
             complete = false;
             continue;
         }
-        let Some(turn) =
+        let mut context = None;
+        if let Some(turn) =
             crate::state::get_turn(&deps.iii, &node.session_id, cfg.session_timeout_ms).await?
-        else {
-            complete = false;
-            continue;
-        };
-        if !terminal_status(Some(turn.status)) {
+        {
+            context = turn.context_snapshot.clone();
+            if context.is_none() {
+                missing_context.push(by_session.len());
+            }
+            if !terminal_snapshot(
+                Some(turn.status),
+                crate::bindings::session_expects_wake(deps, &node.session_id).await,
+            ) {
+                complete = false;
+            }
+        } else {
+            // The transcript is durable independently of the latest harness
+            // turn record. Keep aggregating it, but make the snapshot partial
+            // and leave lifecycle/context data unavailable.
             complete = false;
         }
         let entries = session.messages_strict(&node.session_id).await?;
@@ -164,10 +175,6 @@ pub async fn handle(
         // free. A freshly seeded turn has not generated yet, so its record has
         // none and the durable `harness_context` row is the fallback — noted
         // here, read after the walk.
-        let context = turn.context_snapshot.clone();
-        if context.is_none() {
-            missing_context.push(by_session.len());
-        }
         by_session.push(current.finish_session(node, context));
     }
     // One state read per session whose record carried no snapshot — collected
@@ -203,6 +210,10 @@ pub async fn handle(
 
 fn terminal_status(status: Option<crate::types::turn::TurnStatus>) -> bool {
     status.is_some_and(crate::types::turn::TurnStatus::is_terminal)
+}
+
+fn terminal_snapshot(status: Option<crate::types::turn::TurnStatus>, expects_wake: bool) -> bool {
+    terminal_status(status) && !expects_wake
 }
 
 async fn collect_trace_metrics(
@@ -553,6 +564,8 @@ mod tests {
         assert!(terminal_status(Some(TurnStatus::Completed)));
         assert!(terminal_status(Some(TurnStatus::Cancelled)));
         assert!(terminal_status(Some(TurnStatus::Failed)));
+        assert!(!terminal_snapshot(Some(TurnStatus::Completed), true));
+        assert!(terminal_snapshot(Some(TurnStatus::Completed), false));
     }
 
     #[test]

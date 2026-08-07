@@ -12,6 +12,7 @@ fn catalog_matches_the_registered_surface() {
     assert_eq!(
         ids,
         [
+            "eval::compare-sessions",
             "eval::start",
             "eval::rerun",
             "eval::list",
