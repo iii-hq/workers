@@ -231,6 +231,20 @@ mod tests {
         );
     }
 
+    /// Mutual dependencies must terminate — the `members.insert` guard is the
+    /// only thing preventing an infinite traversal here.
+    #[test]
+    fn stack_members_terminates_on_a_dependency_cycle() {
+        let tmp = TempDir::new().unwrap();
+        write_worker_with_deps(&tmp, "a", &["b"]);
+        write_worker_with_deps(&tmp, "b", &["a"]);
+
+        let specs = discover_repo_workers(tmp.path()).unwrap();
+        let members = stack_members(&specs, &["a".to_string()]);
+        assert!(members.contains("a") && members.contains("b"));
+        assert_eq!(members.len(), 2);
+    }
+
     /// `ui/package.json` marks an injectable-UI worker; a bare `ui/` dir
     /// without a package.json (or no ui/ at all) does not.
     #[test]
