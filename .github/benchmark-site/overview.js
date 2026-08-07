@@ -112,6 +112,7 @@
       "#efficiency-tokens-sparkline",
     ),
     event: document.querySelector("#event-filter"),
+    footerSummary: document.querySelector("#dashboard-footer-summary"),
     commitHeading: document.querySelector("#execution-commit-heading"),
     kpiCost: document.querySelector("#kpi-cost"),
     kpiCoverage: document.querySelector("#kpi-coverage"),
@@ -1244,11 +1245,12 @@
     elements.preview.hidden = !(history.preview || isLocal);
     elements.preview.textContent = isLocal ? "Local data" : "Preview data";
     if (isLocal) {
-      elements.syncLabel.textContent = "Last imported";
-      elements.emptyTitle.textContent = "No local executions imported";
+      elements.syncLabel.textContent = "Last completed";
+      elements.emptyTitle.textContent = "No local executions yet";
       elements.emptyDescription.textContent =
-        "Run an E2E experiment above or import a results.json file.";
+        "Run an E2E experiment above to create the first local execution.";
       elements.actionsLink.textContent = "View repository ↗";
+      elements.footerSummary.textContent = "Harness E2E · local execution history";
       elements.localRunner.hidden = false;
       elements.commitHeading.hidden = true;
       elements.search.placeholder = "Search label, run, or date";
@@ -1368,7 +1370,7 @@
   function renderLocalJob(response) {
     applyLocalDefaults(response?.defaults);
     const job = response?.job;
-    const active = ["starting", "running", "cancelling"].includes(job?.status);
+    const active = ["running", "cancelling"].includes(job?.status);
     setLocalControls(active);
     elements.localCancel.hidden = !active;
     elements.localRunError.hidden = !job?.error;
@@ -1379,17 +1381,16 @@
     elements.localRunStatus.textContent = !job
       ? "Ready"
       : {
-          starting: "Starting…",
           running: "Running…",
           cancelling: "Cancelling…",
           cancelled: "Cancelled",
-          completed: "Results imported",
+          completed: "Results saved",
           failed: "Runner failed",
         }[job.status] || job.status;
     if (active) {
       clearTimeout(localPollTimer);
       localPollTimer = setTimeout(refreshLocalJob, 1_000);
-    } else if (job?.status === "completed" && job.execution_id) {
+    } else if (job?.status === "completed" && job.id) {
       const reloadKey = "harness-e2e-local-last-reload";
       if (sessionStorage.getItem(reloadKey) !== job.id) {
         sessionStorage.setItem(reloadKey, job.id);
@@ -1508,7 +1509,7 @@
     updateScenarioSummary();
   }
 
-  async function refreshLocalCatalog(force = false) {
+  async function refreshLocalCatalog() {
     const url = localFormField("url")?.value || localDefaults.url || "";
     elements.localConnectionUrl.textContent = url;
     elements.localCatalogStatus.textContent = "Discovering the running Harness…";
@@ -1518,7 +1519,6 @@
     setLocalControls(localJobActive);
     try {
       const query = new URLSearchParams({ url });
-      if (force) query.set("refresh", "1");
       const catalog = await localApi(`./api/local/catalog?${query}`);
       fillModelSelect(elements.localSubject, catalog.models);
       fillModelSelect(elements.localJudge, catalog.models, { includeAutomatic: true });
@@ -1592,7 +1592,7 @@
       }
     });
     elements.localCatalogRefresh.addEventListener("click", () => {
-      refreshLocalCatalog(true);
+      refreshLocalCatalog();
     });
     elements.localScenarioAll.addEventListener("click", () => {
       scenarioInputs().forEach((input) => {

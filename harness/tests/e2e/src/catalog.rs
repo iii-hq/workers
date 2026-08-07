@@ -17,6 +17,7 @@ struct ModelsListResponse {
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct CatalogModel {
     provider: String,
+    #[serde(rename(serialize = "model", deserialize = "id"))]
     id: String,
 }
 
@@ -86,10 +87,10 @@ openai-codex  codex/gpt-5.6-sol
     }
 
     #[test]
-    fn catalog_models_have_a_stable_json_shape() {
+    fn serializes_the_dashboard_model_contract() {
         assert_eq!(
-            serde_json::to_value([model("zai", "glm-5.2")]).unwrap(),
-            serde_json::json!([{"provider": "zai", "id": "glm-5.2"}]),
+            serde_json::to_value(model("zai", "glm-5.2")).unwrap(),
+            serde_json::json!({ "provider": "zai", "model": "glm-5.2" })
         );
     }
 }

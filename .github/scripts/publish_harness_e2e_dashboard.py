@@ -813,7 +813,6 @@ def build_summary(
         "run_id": metadata["run_id"],
         "attempt": metadata["attempt"],
         "workflow_name": metadata["workflow_name"],
-        "label": str(metadata.get("label") or ""),
         "workflow_url": metadata["workflow_url"],
         "event": metadata["event"],
         "actor": metadata["actor"],
@@ -882,7 +881,6 @@ def _metadata_from_summary(execution: dict[str, Any]) -> dict[str, Any]:
         "run_id": str(execution.get("run_id") or ""),
         "attempt": int(optional_number(execution.get("attempt")) or 1),
         "workflow_name": str(execution.get("workflow_name") or ""),
-        "label": str(execution.get("label") or ""),
         "workflow_url": str(execution.get("workflow_url") or ""),
         "event": str(execution.get("event") or ""),
         "actor": str(execution.get("actor") or ""),
@@ -930,12 +928,9 @@ def publish(
     repo_url: str,
     max_summaries: int,
     max_details: int,
-    site_mode: str = "published",
 ) -> dict[str, Any]:
     if max_summaries < 1 or max_details < 0 or max_details > max_summaries:
         raise PublishError("retention must satisfy 0 <= details <= summaries")
-    if site_mode not in {"local", "published"}:
-        raise PublishError("site mode must be local or published")
     site_dir.mkdir(parents=True, exist_ok=True)
     runs_dir = site_dir / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
@@ -986,7 +981,6 @@ def publish(
                 key: summary[key]
                 for key in (
                     "workflow_name",
-                    "label",
                     "workflow_url",
                     "event",
                     "actor",
@@ -1049,7 +1043,7 @@ def publish(
 
     updated = {
         "schema_version": SCHEMA_VERSION,
-        "mode": site_mode,
+        "mode": "published",
         "last_update": metadata["completed_at"] or metadata["started_at"],
         "repo_url": repo_url,
         "retention": {
@@ -1087,11 +1081,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-url", required=True)
     parser.add_argument("--max-summaries", type=int, default=100)
     parser.add_argument("--max-details", type=int, default=30)
-    parser.add_argument(
-        "--site-mode",
-        choices=("local", "published"),
-        default="published",
-    )
     return parser
 
 
@@ -1123,7 +1112,6 @@ def main(argv: list[str] | None = None) -> int:
         repo_url=args.repo_url,
         max_summaries=args.max_summaries,
         max_details=args.max_details,
-        site_mode=args.site_mode,
     )
     print(
         json.dumps(

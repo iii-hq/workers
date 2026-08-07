@@ -85,6 +85,13 @@ test("discovers local models and scenarios while keeping runner knobs advanced",
   assert.match(overview, /catalog\.scenarios/);
 });
 
+test("uses the native local-run contract without import compatibility", () => {
+  assert.match(overview, /Last completed/);
+  assert.match(overview, /Results saved/);
+  assert.match(overview, /job\?\.status === "completed" && job\.id/);
+  assert.doesNotMatch(overview, /execution_id|Results imported|results\.json file/);
+});
+
 test("keeps the completed runner log inside a padded local panel", () => {
   assert.match(index, /id="local-run-log" class="local-run-log"/);
   assert.match(styles, /\.local-runner\s*\{[^}]*padding:\s*28px 30px;[^}]*overflow:\s*hidden;/s);
