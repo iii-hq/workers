@@ -94,17 +94,31 @@ def test_validate_rejects_mismatched_or_unready_evidence(tmp_path, override, mes
         validate_evidence(validate_args(path))
 
 
-def test_validate_rejects_prerelease_version(tmp_path):
+@pytest.mark.parametrize("maturity", ["experimental", "alpha", "beta"])
+def test_validate_accepts_prerelease_version(tmp_path, maturity):
+    version = f"1.2.3-{maturity}"
     evidence = build_evidence(
         build_args(
-            version="1.2.3-alpha",
-            maturity="alpha",
-            release_tag="harness/v1.2.3-alpha",
-            promotable=False,
+            version=version,
+            maturity=maturity,
+            release_tag=f"harness/v{version}",
         )
     )
     path = write_evidence(tmp_path, evidence)
-    with pytest.raises(SystemExit, match="stable semver"):
+    result = validate_evidence(validate_args(path, version=version))
+    assert result["maturity"] == maturity
+
+
+def test_validate_rejects_maturity_that_does_not_match_version(tmp_path):
+    evidence = build_evidence(
+        build_args(
+            version="1.2.3-alpha",
+            maturity="beta",
+            release_tag="harness/v1.2.3-alpha",
+        )
+    )
+    path = write_evidence(tmp_path, evidence)
+    with pytest.raises(SystemExit, match="maturity: expected 'alpha', got 'beta'"):
         validate_evidence(validate_args(path, version="1.2.3-alpha"))
 
 

@@ -257,7 +257,7 @@ jobs:
             --operation-id "${{ needs.setup.outputs.release_operation_id }}" \
             --step-id "repair-candidate-smoke" \
             --image-digest "${{ needs.setup.outputs.image_digest }}" \
-            --promotable "${{ needs.setup.outputs.maturity == 'stable' }}" \
+            --promotable true \
             --publish-result success \
             --candidate-smoke-result success \
             --container-alias-result "$ALIAS_RESULT" \

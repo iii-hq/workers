@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-(experimental|alpha|beta))?$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -90,8 +90,9 @@ def validate_evidence(args: argparse.Namespace) -> dict:
             f"operation_id: expected {args.operation_id!r}, got {evidence.get('operation_id')!r}"
         )
 
-    if not VERSION_RE.fullmatch(args.version):
-        failures.append("version must be stable semver MAJOR.MINOR.PATCH")
+    version_match = VERSION_RE.fullmatch(args.version)
+    if not version_match:
+        failures.append("version must use MAJOR.MINOR.PATCH[-experimental|-alpha|-beta]")
     if not SHA_RE.fullmatch(str(evidence.get("tag_sha", ""))):
         failures.append("tag_sha must be a full lowercase commit SHA")
     if schema_version == 2:
@@ -100,8 +101,12 @@ def validate_evidence(args: argparse.Namespace) -> dict:
             failures.append("source_sha must be unknown or a full lowercase commit SHA")
     if not isinstance(evidence.get("run_attempt"), int) or evidence["run_attempt"] < 1:
         failures.append("run_attempt must be a positive integer")
-    if schema_version == 2 and evidence.get("maturity") != "stable":
-        failures.append("maturity must be stable for promotion")
+    if schema_version == 2 and version_match:
+        expected_maturity = version_match.group(1) or "stable"
+        if evidence.get("maturity") != expected_maturity:
+            failures.append(
+                f"maturity: expected {expected_maturity!r}, got {evidence.get('maturity')!r}"
+            )
     if schema_version == 2 and not str(evidence.get("operation_id", "")).strip():
         failures.append("operation_id must be present")
 
