@@ -32,14 +32,21 @@ fn str_array(v: Option<&Value>) -> impl Iterator<Item = &str> {
         .filter_map(Value::as_str)
 }
 
-/// Harness-usable models only: function tools + text output. OpenRouter lists
+/// Harness-usable models only: function tools + text output, reachable over
+/// the Chat Completions endpoint this provider speaks. OpenRouter lists
 /// hundreds of models; the ones that cannot drive an agent loop (no `tools`
-/// support) or produce no text (image/audio generators, embedders) would be
-/// dead rows in the picker.
+/// support), produce no text (image/audio generators, embedders), or are
+/// batch-endpoint-only would be dead rows in the picker. `:batch` variants
+/// carry chat-identical metadata — the id suffix is the only signal — and a
+/// chat call to one returns 404 "only available through the Batch API".
 pub fn admit(row: &Value) -> bool {
+    let batch_only = row
+        .get("id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| id.ends_with(":batch"));
     let has_tools = str_array(row.get("supported_parameters")).any(|p| p == "tools");
     let text_out = str_array(row.pointer("/architecture/output_modalities")).any(|m| m == "text");
-    has_tools && text_out
+    !batch_only && has_tools && text_out
 }
 
 pub fn parse_live_models(json: &Value) -> Vec<Model> {
@@ -178,6 +185,18 @@ mod tests {
         assert!(!admit(&row("vendor/painter", &["tools"], &["image"])));
         // missing metadata → not admitted
         assert!(!admit(&json!({ "id": "vendor/bare" })));
+        // batch-endpoint-only variant → 404 on chat completions, dead row
+        assert!(!admit(&row(
+            "anthropic/claude-x:batch",
+            &["tools"],
+            &["text"]
+        )));
+        // other variant suffixes stay admitted
+        assert!(admit(&row(
+            "meta-llama/llama-x:free",
+            &["tools"],
+            &["text"]
+        )));
     }
 
     #[test]
