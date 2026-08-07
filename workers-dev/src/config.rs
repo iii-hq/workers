@@ -265,18 +265,29 @@ fn load_file_config(path: &Path) -> Result<FileConfig> {
     serde_yaml::from_str(&raw).with_context(|| format!("parse config file {}", path.display()))
 }
 
-/// Parse `text` exactly as `load` would, without applying it. The write path
-/// uses this to prove an edited config still loads before it replaces the
-/// user's file. Deserializing into `FileConfig` alone isn't enough: `stacks:`
-/// lands there as an untyped mapping, so a bare-scalar key (`123`, `true`,
-/// `null`, ...) validates fine even though `parse_stacks` — what `load`
-/// actually runs — rejects it for not being a string. Run that same parse
-/// here so a name the loader can't read back is refused before the file is
-/// replaced, not discovered on the next launch.
+/// Parse `text` far enough to catch the mistakes a write must refuse before
+/// they reach disk — NOT a full replica of `load`: there is no repo here to
+/// discover workers against, so the managed-`workers:`/stack-roots
+/// filtering and warn-and-drop steps `load` runs afterward never happen in
+/// this function. Two things still must be checked here, because both would
+/// otherwise validate fine and only fail on the *next* launch:
+/// - Deserializing into `FileConfig` alone isn't enough: `stacks:` lands
+///   there as an untyped mapping, so a bare-scalar key (`123`, `true`,
+///   `null`, ...) validates fine even though `parse_stacks` — what `load`
+///   actually runs — rejects it for not being a string.
+/// - A `default_stack:` naming a stack that doesn't exist passes
+///   `FileConfig`'s own deserialization (it's just a `String`) and then
+///   bricks the very next `load`.
 pub fn validate_config_text(text: &str) -> Result<()> {
     let cfg = serde_yaml::from_str::<FileConfig>(text).context("parse edited config")?;
-    if let Some(stacks) = cfg.stacks {
-        parse_stacks(stacks)?;
+    let stacks = match cfg.stacks {
+        Some(stacks) => parse_stacks(stacks)?,
+        None => Vec::new(),
+    };
+    if let Some(default) = &cfg.default_stack {
+        if default != "harness" && !stacks.iter().any(|(n, _)| n == default) {
+            bail!("default_stack {default:?} is not a defined stack");
+        }
     }
     Ok(())
 }
@@ -529,6 +540,22 @@ mod tests {
     fn validate_config_text_accepts_and_rejects() {
         assert!(validate_config_text("stacks:\n  a:\n    - b\n").is_ok());
         assert!(validate_config_text("stacks:\n  a:\n  - b\n  bad\n").is_err());
+    }
+
+    /// Important fix: a `default_stack:` naming a stack that doesn't exist
+    /// used to pass verification (it's just a `String` to `FileConfig`) and
+    /// only fail on the *next* `Config::load` — after `write_verified` had
+    /// already replaced the user's file.
+    #[test]
+    fn validate_config_text_rejects_a_dangling_default_stack() {
+        let err =
+            validate_config_text("stacks:\n  a:\n    - b\ndefault_stack: nope\n").unwrap_err();
+        assert!(err.to_string().contains("not a defined stack"), "{err:#}");
+
+        // The built-in `harness` stack always exists, even with no `stacks:`
+        // key in the file at all.
+        assert!(validate_config_text("default_stack: harness\n").is_ok());
+        assert!(validate_config_text("stacks:\n  a:\n    - b\ndefault_stack: a\n").is_ok());
     }
 
     /// Repo with enough workers to define non-trivial stacks.
