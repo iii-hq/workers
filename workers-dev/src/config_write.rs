@@ -224,12 +224,19 @@ fn indent_len(line: &str) -> usize {
 
 /// Refuse a `stacks:` block containing a line that is neither a recognized
 /// entry key (`entry_key`, at the block's own indentation) nor a list item
-/// indented under one — e.g. `tiny :` (space before the colon), which
+/// at or under one — e.g. `tiny :` (space before the colon), which
 /// `entry_key` correctly declines to recognize but which would otherwise
 /// read as an ordinary line neither `upsert_stack` nor `remove_stack` can
 /// see. Layer (a) (`entry_key` above) widened what gets recognized; this is
 /// layer (b), for the shapes even that still can't own — refusing is always
 /// better than mangling, which is this module's stated contract.
+///
+/// A list item is recognized at the key's own indentation too, not only
+/// strictly deeper: YAML allows a block sequence to sit at the same column
+/// as its key (`tiny:` / `- session-manager` both at column 2), and several
+/// YAML writers emit exactly that by default. Only a key line is pinned to
+/// exactly `entry_depth` — a key can't itself be indented deeper than its
+/// siblings without starting a nested mapping this module doesn't understand.
 fn ensure_block_entries_recognized(lines: &[&str], block: (usize, usize)) -> Result<()> {
     let Some(entry_depth) = (block.0..block.1)
         .map(|i| strip_cr(lines[i]))
@@ -243,10 +250,10 @@ fn ensure_block_entries_recognized(lines: &[&str], block: (usize, usize)) -> Res
         if is_blank_or_comment(line) {
             continue;
         }
-        let recognized = if indent_len(line) == entry_depth {
-            entry_key(line).is_some()
+        let recognized = if line.trim_start().starts_with('-') {
+            indent_len(line) >= entry_depth
         } else {
-            indent_len(line) > entry_depth && line.trim_start().starts_with('-')
+            indent_len(line) == entry_depth && entry_key(line).is_some()
         };
         if !recognized {
             bail!(
@@ -668,6 +675,27 @@ default_stack: tiny
 
         let err = remove_stack(src, "console").unwrap_err();
         assert!(err.to_string().contains("tiny"), "{err:#}");
+    }
+
+    /// Regression in the guard above: a list item indented at the SAME level
+    /// as its own key (`tiny:` / `- session-manager` both at column 2) is
+    /// valid YAML and the default emit style of several YAML writers — the
+    /// guard must accept a list item at or under its key's depth, not only
+    /// strictly under it.
+    #[test]
+    fn accepts_a_list_item_indented_level_with_its_key() {
+        let src = "stacks:\n  tiny:\n  - session-manager\n  console:\n  - console\n";
+
+        let out = upsert_stack(src, "tiny", &roots(&["session-manager", "state"])).unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  tiny:\n    - session-manager\n    - state\n  console:\n  - console\n"
+        );
+        assert!(parses(&out));
+
+        let out = remove_stack(src, "tiny").unwrap();
+        assert_eq!(out, "stacks:\n  console:\n  - console\n");
+        assert!(parses(&out));
     }
 
     #[test]
