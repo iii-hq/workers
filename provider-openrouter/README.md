@@ -22,10 +22,12 @@ rows mapped to full catalog records → `router::models::reconcile`).
   (`anthropic/claude-sonnet-4.5`), which unprefixed would read as belonging
   to the sibling single-vendor providers. Catalog ids are therefore
   `openrouter/vendor/model`; the prefix is stripped on every upstream call.
-- **Admission:** a model must support function `tools` and emit `text` to be
-  reconciled. The agent loop is unusable without tool calling, and image or
-  audio generators would be dead rows in the picker; everything else in the
-  listing (several hundred models) lands in the catalog with live metadata.
+- **Admission:** a model must support function `tools`, emit `text`, and be
+  reachable over Chat Completions to be reconciled. The agent loop is
+  unusable without tool calling; image or audio generators and
+  batch-endpoint-only `:batch` variants (chat calls to them 404) would be
+  dead rows in the picker. Everything else in the listing (several hundred
+  models) lands in the catalog with live metadata.
 - **Registration:** self-declares via `router::provider::register` with
   backoff until acked, and re-declares on the `router::ready` trigger type.
   The declaration carries no static `models` slice — the live listing is the
