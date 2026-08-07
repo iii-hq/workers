@@ -244,7 +244,7 @@ fn entry_key(line: &str) -> Option<(String, String)> {
     let rest = &line[indent.len()..];
     let (end, _) = rest
         .char_indices()
-        .find(|&(i, c)| c == ':' && rest[i + 1..].chars().next().is_none_or(char::is_whitespace))?;
+        .find(|&(i, c)| c == ':' && rest[i + 1..].chars().next().is_none_or(is_yaml_space))?;
     let key = &rest[..end];
     if key.is_empty() || key.starts_with('-') || key.trim() != key {
         return None;
@@ -256,18 +256,36 @@ fn indent_len(line: &str) -> usize {
     line.chars().take_while(|c| *c == ' ').count()
 }
 
+/// YAML's `s-white`: space and tab, nothing else. Rust's `char::is_whitespace`
+/// (Unicode `White_Space`) is a strict superset — it's also true for NBSP
+/// (U+00A0) and several other Unicode spaces that YAML does *not* treat as
+/// separators. `entry_key` and `is_list_item` both used to check
+/// `char::is_whitespace` where YAML's own grammar calls for `s-white`, so a
+/// colon or dash followed by one of those extra codepoints was misread the
+/// same way an ASCII byte-for-byte mismatch already was: a colon followed by
+/// NBSP looked like a key terminator (truncating a name like `a:␠b`, ␠=NBSP,
+/// to `a`), and a dash followed by NBSP looked like a real list-item
+/// indicator (letting a name like `-␠weird` slip past `entry_key`
+/// unrefused). Optionally-recognized YAML line breaks (U+0085, U+2028,
+/// U+2029) are deliberately NOT included: nothing here has ever needed them,
+/// and treating a name using one of them as ordinary content just means this
+/// scanner refuses instead of losing data — the safe direction already.
+fn is_yaml_space(c: char) -> bool {
+    c == ' ' || c == '\t'
+}
+
 /// True when `line`'s first non-space character is a real YAML
-/// block-sequence indicator: a `-` followed by whitespace, or a `-` alone
+/// block-sequence indicator: a `-` followed by `s-white`, or a `-` alone
 /// at the end of the line. Per YAML, that trailing whitespace requirement is
 /// what makes `-` a sequence indicator at all — `-weird` (no space after the
 /// dash) is an ordinary plain scalar, so `-weird:` is a valid, if unusual,
-/// key. A looser `starts_with('-')` check would misread it as a list item
-/// and let it slide past `entry_key` unrefused in
-/// `ensure_block_entries_recognized` below — the exact swallowing bug
-/// Critical-1 fixed, reopened through a shape that fix never looked at.
+/// key. A looser check would misread it as a list item and let it slide past
+/// `entry_key` unrefused in `ensure_block_entries_recognized` below — the
+/// exact swallowing bug Critical-1 fixed, reopened through a shape that fix
+/// never looked at.
 fn is_list_item(line: &str) -> bool {
     match line.trim_start().strip_prefix('-') {
-        Some(rest) => rest.is_empty() || rest.starts_with(char::is_whitespace),
+        Some(rest) => rest.is_empty() || rest.starts_with(is_yaml_space),
         None => false,
     }
 }
@@ -809,6 +827,44 @@ default_stack: tiny
         let out = remove_stack(src, "web:dev").unwrap();
         assert_eq!(out, "stacks:\n  console:\n    - console\n");
         assert!(parses(&out));
+    }
+
+    /// Same colon-truncation bug, one codepoint over: `entry_key` used
+    /// `char::is_whitespace` (Unicode `White_Space`) to decide whether a `:`
+    /// ends a key, but YAML's `s-white` is space and tab only. NBSP
+    /// (U+00A0) has `White_Space=Yes` in Unicode but is not `s-white` in
+    /// YAML, so a colon followed by NBSP is ordinary scalar content, not a
+    /// key terminator — `a:<NBSP>b` is the single key `a:<NBSP>b`, not `a`.
+    #[test]
+    fn upsert_leaves_a_key_with_nbsp_after_the_colon_intact() {
+        let src = "stacks:\n  console:\n    - console\n  a:\u{00A0}b:\n    - session-manager\n";
+        let out = upsert_stack(src, "a", &roots(&["x"])).unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  console:\n    - console\n  a:\u{00A0}b:\n    - session-manager\n  a:\n    - x\n"
+        );
+        assert!(parses(&out));
+    }
+
+    /// Same root cause, in `is_list_item`: NBSP passes `char::is_whitespace`
+    /// too, so `-<NBSP>weird` was misread as a real list-item indicator
+    /// (dash-then-whitespace) even though YAML's dash rule also requires
+    /// `s-white`, not any Unicode space. That let the line slip past the
+    /// guard as "a recognized list item" without ever reaching `entry_key`
+    /// (which would refuse it, same as `-weird:` without a space at all) —
+    /// reopening the swallowing bug through a codepoint instead of a byte,
+    /// and reopening Critical-1's own zero-byte-file repro on the remove
+    /// path (no other entries left once the sibling is swallowed with
+    /// `tiny`, so the whole `stacks:` key — and then the whole file —
+    /// would go with it).
+    #[test]
+    fn refuses_a_dash_nbsp_key_misread_as_a_list_item() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  -\u{00A0}weird:\n    - console\n";
+        let err = upsert_stack(src, "tiny", &roots(&["x"])).unwrap_err();
+        assert!(!err.to_string().is_empty());
+
+        let err = remove_stack(src, "tiny").unwrap_err();
+        assert!(!err.to_string().is_empty());
     }
 
     #[test]
