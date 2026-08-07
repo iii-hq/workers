@@ -264,8 +264,8 @@ all; it is skipped outright, not merely kept despite counting against the
 window. The steady-state floor a long session settles into is therefore
 `exempt zone + protect_recent_tokens + residue` (the tiny already-pruned
 placeholders), and the exempt zone itself is bounded only by results-per-turn
-× the cap, not by any prune knob — a measured example: three capped whales
-landing in one turn reached ~107k tokens of floor. `protect_recent_tokens` is
+× the cap, not by any prune knob — in an adversarial case (several capped
+whales landing in one turn) the floor can climb well past 100k. `protect_recent_tokens` is
 the knob that lowers the steady state; `max_result_tokens` bounds a single
 result, not the floor.
 

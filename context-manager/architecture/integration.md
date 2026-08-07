@@ -281,7 +281,7 @@ over-budget request.
 
 ## 6. Structural invariants — what you can rely on
 
-Whatever pruning or compaction does, the returned context is always
+Whatever capping, pruning, or compaction does, the returned context is always
 provider-legal. Build on these:
 
 - **Call/result pairing is never split.** A `function_call` and its
