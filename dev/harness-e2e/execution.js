@@ -39,6 +39,11 @@
     score: document.querySelector("#detail-score"),
     status: document.querySelector("#execution-status"),
     subtitle: document.querySelector("#execution-subtitle"),
+    transcriptBody: document.querySelector("#session-transcript-body"),
+    transcriptClose: document.querySelector("#session-transcript-close"),
+    transcriptContext: document.querySelector("#session-transcript-context"),
+    transcriptDialog: document.querySelector("#session-transcript-dialog"),
+    transcriptTitle: document.querySelector("#session-transcript-title"),
     title: document.querySelector("#execution-title"),
     workflowLink: document.querySelector("#workflow-link"),
     workflowRuntime: document.querySelector("#workflow-runtime"),
@@ -138,7 +143,7 @@
 
   function availabilityLabel(availability) {
     return {
-      full: "Compact diagnostics",
+      full: "Full report",
       aggregate: "Aggregate only",
       unavailable: "No report",
     }[availability] || "Unknown data";
@@ -390,7 +395,7 @@
             ${metricBlock("Runs", compactNumber(scenario.runs, 0))}
           </div>
           <div class="aggregate-expired">
-            Per-run prompts, transcripts, criteria, and traces are not retained for this execution.
+            Per-run chat is available only while the full execution detail is retained.
           </div>
         </div>
       </details>
@@ -660,14 +665,22 @@
     `;
   }
 
-  function renderConversationLaunch(run) {
+  function renderConversationLaunch(messages, run) {
+    const transcript = window.HarnessExecutionTranscript;
+    const events = transcript.normalizeTranscript(messages);
+    const summary = transcript.summarizeTranscript(events);
     return `
       <section class="conversation-launch">
         <div>
-          <span>Public diagnostic detail</span>
-          <strong>Prompts and transcripts are not published</strong>
-          <small>${escapeHtml(run.session_id || "No session id")} · metrics and failures only</small>
+          <span>Session transcript</span>
+          <strong>${summary.messages} messages · ${summary.calls} functions</strong>
+          <small class="${summary.errors ? "has-errors" : ""}">
+            ${summary.errors
+              ? `${summary.errors} error${summary.errors === 1 ? "" : "s"} to inspect`
+              : `${escapeHtml(run.session_id || "No session id")} · read-only`}
+          </small>
         </div>
+        <button type="button" class="conversation-open">Open chat</button>
       </section>
     `;
   }
@@ -851,7 +864,7 @@
 
   function renderRawTab(panel, run) {
     panel.innerHTML = runSection(
-      "Compact diagnostic record",
+      "Complete run record",
       '<pre class="prompt-block"></pre>',
       { wide: true },
     );
@@ -861,10 +874,15 @@
   const RUN_TABS = [
     { id: "evaluation", label: "Evaluation", render: renderEvaluationTab },
     { id: "usage", label: "Usage", render: renderUsageTab },
-    { id: "raw", label: "Diagnostic JSON", render: renderRawTab },
+    { id: "prompt", label: "Prompt", render: renderPromptTab },
+    { id: "sessions", label: "Sessions", render: renderSessionsTab },
+    { id: "raw", label: "Raw", render: renderRawTab },
   ];
 
-  function renderRunContent(container, run) {
+  function renderRunContent(container, run, context) {
+    const messages = Array.isArray(run.transcript?.messages)
+      ? run.transcript.messages
+      : [];
     container.innerHTML = `
       <div class="run-overview">
         ${metricBlock("Score", compactNumber(run.score, 1))}
@@ -874,7 +892,7 @@
         ${metricBlock("Retries", compactNumber(run.retry_attempts?.length || 0, 0))}
         ${metricBlock("Session", run.session_id || "Unknown")}
       </div>
-      ${renderConversationLaunch(run)}
+      ${renderConversationLaunch(messages, run)}
       <div class="run-tabs" role="tablist" aria-label="Run diagnostics">
         ${RUN_TABS.map(
           (tab) =>
@@ -886,6 +904,9 @@
           `<div class="run-sections" role="tabpanel" data-panel="${tab.id}" hidden></div>`,
       ).join("")}
     `;
+    container.querySelector(".conversation-open")?.addEventListener("click", () => {
+      openConversationDialog(run, context);
+    });
     const buttons = [...container.querySelectorAll(".run-tabs button")];
     const activateRunTab = (tabId) => {
       RUN_TABS.forEach((tab) => {
@@ -1012,7 +1033,16 @@
           const container = element.querySelector(".run-content[data-pending='true']");
           if (!container) return;
           container.removeAttribute("data-pending");
-          renderRunContent(container, run);
+          renderRunContent(container, run, {
+            runIndex: index,
+            scenarioId: record.scenario_id,
+            subjectLabel: [
+              record.report?.subject?.provider,
+              record.report?.subject?.model,
+            ]
+              .filter(Boolean)
+              .join("/"),
+          });
         });
       });
     });
@@ -1046,7 +1076,7 @@
     }
     elements.scenarioIntro.textContent =
       execution.availability === "aggregate"
-        ? "The compact diagnostic report expired after 30 executions. Historical aggregate metrics remain available."
+        ? "The complete report expired after 30 executions. Historical aggregate metrics remain available."
         : "This workflow did not produce a complete benchmark report.";
     const aggregateCount = execution.subjects.reduce(
       (total, subject) => total + (subject.scenarios || []).length,
@@ -1222,6 +1252,7 @@
   }
 
   async function initialize() {
+    attachTranscriptDialogControls();
     attachAnchorNavigation();
     if (!execution) {
       elements.loading.hidden = true;
