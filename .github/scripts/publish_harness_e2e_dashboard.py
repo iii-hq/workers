@@ -303,6 +303,92 @@ def _public_metrics(value: Any) -> dict[str, Any] | None:
     return {"totals": totals} if totals else None
 
 
+def _public_json(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_public_json(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _public_json(item) for key, item in value.items()}
+    return str(value)
+
+
+def _public_content(value: Any) -> str | list[dict[str, Any]]:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, list):
+        return []
+    blocks: list[dict[str, Any]] = []
+    for block in value:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text" and isinstance(block.get("text"), str):
+            blocks.append({"type": "text", "text": block["text"]})
+        elif block_type == "function_call":
+            public_block = _pick(block, ("type", "id", "function_id"))
+            if "arguments" in block:
+                public_block["arguments"] = _public_json(block["arguments"])
+            blocks.append(public_block)
+    return blocks
+
+
+def _public_transcript_message(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    role = value.get("role")
+    if role not in {"user", "assistant", "function_result"}:
+        return None
+    message = _pick(
+        value,
+        (
+            "role",
+            "timestamp",
+            "model",
+            "provider",
+            "function_call_id",
+            "function_id",
+            "is_error",
+        ),
+    )
+    if "content" in value:
+        message["content"] = _public_content(value["content"])
+    if "details" in value:
+        message["details"] = _public_json(value["details"])
+    return message
+
+
+def _public_custom_event(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or value.get("type") != "function_call":
+        return None
+    event = _pick(value, ("type", "status", "name", "timestamp"))
+    if "arguments" in value:
+        event["arguments"] = _public_json(value["arguments"])
+    if "result" in value:
+        event["result"] = _public_json(value["result"])
+    return event
+
+
+def _public_transcript(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or not isinstance(value.get("messages"), list):
+        return None
+    messages = []
+    for entry in value["messages"]:
+        if not isinstance(entry, dict):
+            continue
+        public_entry = _pick(entry, ("entry_id",))
+        message = _public_transcript_message(entry.get("message"))
+        custom = _public_custom_event(entry.get("custom"))
+        if message is None and custom is None:
+            continue
+        if message is not None:
+            public_entry["message"] = message
+        if custom is not None:
+            public_entry["custom"] = custom
+        messages.append(public_entry)
+    return {"messages": messages}
+
+
 def _public_retry(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -329,6 +415,11 @@ def _public_run(value: Any) -> dict[str, Any] | None:
     metrics = _public_metrics(value.get("metrics"))
     if metrics is not None:
         run["metrics"] = metrics
+    if isinstance(value.get("prompt"), str):
+        run["prompt"] = value["prompt"]
+    transcript = _public_transcript(value.get("transcript"))
+    if transcript is not None:
+        run["transcript"] = transcript
     run["cost"] = _pick(value.get("cost"), ("subject_usd", "judge_usd", "total_usd"))
     run["hard_gates"] = _public_gates(value.get("hard_gates"))
     run["failures"] = _public_failures(value.get("failures"))
@@ -423,78 +514,26 @@ def _public_subject_summary(value: Any) -> dict[str, Any] | None:
     return subject
 
 
+def complete_public_detail(
+    detail: dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Restore and annotate the complete execution report for the Pages site."""
+    public_detail = json.loads(json.dumps(detail))
+    public_detail["schema_version"] = SCHEMA_VERSION
+    execution_metadata = public_detail.get("execution", {})
+    if not isinstance(execution_metadata, dict):
+        execution_metadata = {}
+    public_detail["execution"] = {**execution_metadata, **metadata}
+    return public_detail
+
+
 def compact_public_detail(
     detail: dict[str, Any],
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
-    """Project raw execution evidence into the diagnostics-safe Pages contract."""
-    public_metadata = _pick(
-        metadata,
-        (
-            "id",
-            "run_id",
-            "attempt",
-            "workflow_name",
-            "workflow_url",
-            "event",
-            "actor",
-            "started_at",
-            "completed_at",
-            "conclusion",
-            "head_sha",
-            "head_branch",
-            "repository",
-        ),
-    )
-    public = {
-        "schema_version": SCHEMA_VERSION,
-        "execution": {
-            **_pick(
-                detail.get("execution"),
-                ("id", "run_id", "attempt", "event", "actor", "workflow_url"),
-            ),
-            **public_metadata,
-        },
-        "generated_at": str(detail.get("generated_at") or ""),
-        "lane": str(detail.get("lane") or "daily"),
-        "source": _pick(detail.get("source"), ("sha", "ref", "repository")),
-        "workflow_url": str(detail.get("workflow_url") or metadata.get("workflow_url") or ""),
-        "release": _pick(
-            detail.get("release"),
-            ("tag", "worker", "version", "url", "registry_tag"),
-        ),
-        "requested_runs": detail.get("requested_runs"),
-        "subjects": [
-            subject
-            for item in detail.get("subjects", [])
-            if (subject := _public_subject_summary(item)) is not None
-        ] if isinstance(detail.get("subjects"), list) else [],
-        "reports": [],
-    }
-    reports = detail.get("reports", [])
-    if not isinstance(reports, list):
-        return public
-    for record in reports:
-        if not isinstance(record, dict):
-            continue
-        public_record = _pick(record, ("subject_id", "scenario_id", "available"))
-        report = record.get("report")
-        if isinstance(report, dict):
-            public_record["report"] = {
-                "subject": _pick(report.get("subject"), ("model", "provider")),
-                "judge": _pick(report.get("judge"), ("model", "provider", "protocol")),
-                "engine_revision": report.get("engine_revision"),
-                "passed": report.get("passed"),
-                "scenarios": [
-                    scenario
-                    for item in report.get("scenarios", [])
-                    if (scenario := _public_scenario(item)) is not None
-                ] if isinstance(report.get("scenarios"), list) else [],
-            }
-        else:
-            public_record["report"] = None
-        public["reports"].append(public_record)
-    return public
+    """Compatibility alias for callers using the previous projection name."""
+    return complete_public_detail(detail, metadata)
 
 
 def elapsed_seconds(started_at: str, completed_at: str) -> float | None:
@@ -854,11 +893,11 @@ def _metadata_from_summary(execution: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def sanitize_retained_details(
+def migrate_retained_details(
     site_dir: Path,
     manifest: dict[str, Any],
 ) -> None:
-    """Migrate retained schema 2 reports before the updated site is published."""
+    """Migrate retained reports while preserving their complete detail fields."""
     runs_dir = site_dir / "runs"
     for execution in manifest.get("executions", []):
         if not isinstance(execution, dict):
@@ -872,7 +911,7 @@ def sanitize_retained_details(
         retained = load_json(candidate)
         if retained is None:
             continue
-        public_detail = compact_public_detail(
+        public_detail = complete_public_detail(
             retained,
             _metadata_from_summary(execution),
         )
@@ -900,7 +939,7 @@ def publish(
     runs_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = site_dir / "executions.js"
     manifest = load_manifest(manifest_path)
-    sanitize_retained_details(site_dir, manifest)
+    migrate_retained_details(site_dir, manifest)
     raw_snapshot = load_json(snapshot_path)
     raw_detail = load_json(detail_path)
     snapshot, snapshot_identity_failure = validate_artifact_identity(
@@ -960,7 +999,7 @@ def publish(
     if detail is not None:
         scenario_metrics = build_scenario_metrics(detail)
         efficiency_totals = build_execution_efficiency_totals(detail)
-        public_detail = compact_public_detail(detail, metadata)
+        public_detail = complete_public_detail(detail, metadata)
         relative_detail_path = f"runs/{metadata['id']}.json"
         (site_dir / relative_detail_path).write_text(
             json.dumps(public_detail, indent=2, sort_keys=True) + "\n"
