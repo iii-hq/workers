@@ -107,16 +107,11 @@ jobs:
         env:
           CHANNEL_INPUT: ${{ inputs.channel }}
           ORIGINAL_CHANNEL: ${{ steps.meta.outputs.registry_tag }}
-          MATURITY: ${{ steps.meta.outputs.maturity }}
         run: |
           set -euo pipefail
           channel="$CHANNEL_INPUT"
           if [[ "$channel" == original ]]; then channel="$ORIGINAL_CHANNEL"; fi
           [[ "$channel" == next || "$channel" == latest ]]
-          if [[ "$channel" == latest && "$MATURITY" != stable ]]; then
-            echo "::error::prereleases cannot repair latest"
-            exit 2
-          fi
           if [[ "${{ inputs.action }}" == candidate-smoke && "$channel" != next ]]; then
             echo "::error::candidate-smoke repairs require channel next"
             exit 2

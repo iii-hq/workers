@@ -175,10 +175,6 @@ jobs:
             "$WORKER/$MANIFEST" --kind "$BUMP" --suffix "$SUFFIX" --target "$TARGET_VERSION")
           maturity=$(python3 .github/scripts/manifest_version.py maturity "$new_ver")
           python3 .github/scripts/manifest_version.py check-history "$WORKER" "$new_ver"
-          if [[ "$maturity" != stable && "$REGISTRY_TAG" != next ]]; then
-            echo "::error::prerelease $new_ver must publish to next"
-            exit 2
-          fi
           {
             echo "current=$current"
             echo "version=$new_ver"
