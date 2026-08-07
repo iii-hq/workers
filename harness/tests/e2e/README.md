@@ -366,8 +366,10 @@ rules:
   while structural refactors that preserve the behavioral contract keep it;
 - for new code-defined objective evaluators, declare each check once as a static
   `AssessmentSpec`: use `required` for conditions that must emit a hard gate and
-  a binary award, and `signal` for non-blocking quality awards; existing
-  evaluators can migrate to this pattern incrementally;
+  `binary` when the gate controls a full-or-zero award, `required_points` when
+  the gate outcome and quality award are evaluated independently, and `signal`
+  for non-blocking quality awards; existing evaluators can migrate to this
+  pattern incrementally;
 - prompts describe user intent and never prescribe function ids;
 - declare a scenario-sized execution policy;
 - objective effects are hard gates, not judge opinions;

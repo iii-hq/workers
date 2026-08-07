@@ -53,10 +53,41 @@ impl AssessmentSpec {
     pub(super) fn points(self, awarded: u8, reason: impl Into<String>) -> Result<AssessmentResult> {
         if self.kind == AssessmentKind::Required {
             bail!(
-                "required assessment {} must be evaluated as pass or fail",
+                "required assessment {} cannot use signal-only points; use binary or required_points",
                 self.id
             );
         }
+        self.validate_points(awarded)?;
+        Ok(AssessmentResult {
+            spec: self,
+            awarded,
+            gate_passed: None,
+            reason: reason.into(),
+        })
+    }
+
+    pub(super) fn required_points(
+        self,
+        passed: bool,
+        awarded: u8,
+        reason: impl Into<String>,
+    ) -> Result<AssessmentResult> {
+        if self.kind == AssessmentKind::Signal {
+            bail!(
+                "signal assessment {} cannot produce a required gate",
+                self.id
+            );
+        }
+        self.validate_points(awarded)?;
+        Ok(AssessmentResult {
+            spec: self,
+            awarded,
+            gate_passed: Some(passed),
+            reason: reason.into(),
+        })
+    }
+
+    fn validate_points(self, awarded: u8) -> Result<()> {
         if awarded > self.weight {
             bail!(
                 "assessment {} awarded {awarded} points, exceeding its weight {}",
@@ -64,12 +95,7 @@ impl AssessmentSpec {
                 self.weight
             );
         }
-        Ok(AssessmentResult {
-            spec: self,
-            awarded,
-            gate_passed: None,
-            reason: reason.into(),
-        })
+        Ok(())
     }
 
     fn criterion(self) -> CriterionSpec {
@@ -200,10 +226,52 @@ mod tests {
     }
 
     #[test]
-    fn required_assessments_reject_partial_points() {
+    fn required_assessments_reject_the_signal_points_api() {
         assert_eq!(
             REQUIRED.points(35, "partial").unwrap_err().to_string(),
-            "required assessment required must be evaluated as pass or fail"
+            "required assessment required cannot use signal-only points; use binary or required_points"
+        );
+    }
+
+    #[test]
+    fn required_gate_can_award_partial_points_after_passing() {
+        let evaluation = objective([REQUIRED
+            .required_points(true, 35, "passed with partial quality")
+            .unwrap()]);
+
+        assert!(evaluation.hard_gates[0].passed);
+        assert_eq!(evaluation.awards[0].awarded, 35);
+    }
+
+    #[test]
+    fn failed_required_gate_can_retain_independent_quality_points() {
+        let evaluation = objective([REQUIRED
+            .required_points(false, 35, "failed with partial quality")
+            .unwrap()]);
+
+        assert!(!evaluation.hard_gates[0].passed);
+        assert_eq!(evaluation.awards[0].awarded, 35);
+    }
+
+    #[test]
+    fn required_gate_rejects_points_above_its_weight() {
+        assert_eq!(
+            REQUIRED
+                .required_points(true, 71, "too many")
+                .unwrap_err()
+                .to_string(),
+            "assessment required awarded 71 points, exceeding its weight 70"
+        );
+    }
+
+    #[test]
+    fn signal_rejects_a_required_gate() {
+        assert_eq!(
+            SIGNAL
+                .required_points(true, 30, "wrong kind")
+                .unwrap_err()
+                .to_string(),
+            "signal assessment signal cannot produce a required gate"
         );
     }
 }
