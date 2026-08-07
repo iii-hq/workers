@@ -179,15 +179,14 @@ jobs:
         with:
           ref: ${{ inputs.source_ref }}
 
-      # state/build.rs builds its embedded UI when the checked-out assets are
-      # stale, so the isolated E2E build needs the same Node/pnpm toolchain as
-      # the regular CI worker builds.
+      # state/build.rs and harness/build.rs build their embedded UIs when the
+      # checked-out assets are stale, and the harness crate compiles in every
+      # stack mode (Test/Lint E2E crate), so both lanes need the same
+      # Node/pnpm toolchain as the regular CI worker builds.
       - name: Setup pnpm
-        if: inputs.stack_mode == 'source'
         uses: pnpm/action-setup@v5
 
       - name: Setup Node
-        if: inputs.stack_mode == 'source'
         uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -294,9 +293,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           # Instrumented builds have different fingerprints; keep them on their
-          # own key so coverage runs never poison the normal cache.
+          # own key so coverage runs never poison the normal cache. Both lanes
+          # save their own key: with coverage-only saving, the plain key was
+          # never written and every registry-lane build compiled from scratch.
           shared-key: ${{ inputs.coverage && 'harness-e2e-coverage' || 'harness-e2e' }}
-          save-if: ${{ inputs.coverage }}
+          save-if: true
           workspaces: |
             harness -> target
             database -> target
