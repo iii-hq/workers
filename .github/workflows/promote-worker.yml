@@ -116,8 +116,8 @@ jobs:
             )
             echo "::notice::next resolves to ${WORKER}@${version}"
           fi
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-            echo "::error::candidate must be stable semver MAJOR.MINOR.PATCH (got ${version}); prereleases are not promotable"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(experimental|alpha|beta))?$ ]] || {
+            echo "::error::candidate must use MAJOR.MINOR.PATCH[-experimental|-alpha|-beta] (got ${version})"
             exit 2
           }
 
@@ -270,10 +270,12 @@ jobs:
           }
 
           deploy=$(jq -r .deploy validated-candidate.json)
+          maturity=$(jq -r .maturity validated-candidate.json)
           image_digest=$(jq -r '.image_digest // empty' validated-candidate.json)
           {
             echo "tag=$tag"
             echo "deploy=$deploy"
+            echo "maturity=$maturity"
             echo "image_digest=$image_digest"
           } >>"$GITHUB_OUTPUT"
 
@@ -372,14 +374,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.candidate.outputs.tag }}
+          MATURITY: ${{ steps.candidate.outputs.maturity }}
         run: |
           set -euo pipefail
+          prerelease=false
+          if [[ "$MATURITY" != stable ]]; then prerelease=true; fi
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --prerelease=false --latest=false
+            --prerelease="$prerelease" --latest=false
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
             --json tagName,isDraft,isPrerelease,url >github-release-after.json
-          jq -e --arg tag "$TAG" \
-            '.tagName == $tag and .isDraft == false and .isPrerelease == false' \
+          jq -e --arg tag "$TAG" --argjson prerelease "$prerelease" \
+            '.tagName == $tag and .isDraft == false and .isPrerelease == $prerelease' \
             github-release-after.json >/dev/null
 
       - name: Write promotion summary
