@@ -3,9 +3,10 @@
 //!
 //! 1. `GITHUB_COPILOT_TOKEN` env — a ready Copilot **bearer**, skipping the
 //!    exchange entirely (tests, short-lived dev sessions).
-//! 2. iii-state (`provider-github-copilot` / `oauth_token`) — written by the
+//! 2. `GITHUB_COPILOT_OAUTH_TOKEN` env — a GitHub OAuth token (`gho_…`). An
+//!    explicit override outranks whatever a past sign-in persisted.
+//! 3. iii-state (`provider-github-copilot` / `oauth_token`) — written by the
 //!    device-flow login surface ([`crate::login`]).
-//! 3. `GITHUB_COPILOT_OAUTH_TOKEN` env — a GitHub OAuth token (`gho_…`).
 //! 4. Read-only import of an existing editor credential:
 //!    `~/.config/github-copilot/apps.json` (VS Code / copilot.vim), then
 //!    pi's `~/.pi/agent/auth.json`. Never written back — the editor owns
@@ -131,13 +132,15 @@ pub async fn resolve_credential(iii: &IIIClient) -> Option<GithubCredential> {
             return Some(GithubCredential::Bearer(bearer));
         }
     }
-    if let Some(oauth) = load_stored_oauth(iii).await {
-        return Some(GithubCredential::Oauth(oauth));
-    }
+    // Before the persisted token: an operator who sets this expects it to
+    // take effect, not to be masked by an older sign-in.
     if let Ok(oauth) = std::env::var("GITHUB_COPILOT_OAUTH_TOKEN") {
         if !oauth.is_empty() {
             return Some(GithubCredential::Oauth(oauth));
         }
+    }
+    if let Some(oauth) = load_stored_oauth(iii).await {
+        return Some(GithubCredential::Oauth(oauth));
     }
     read_local_editor_credential().map(GithubCredential::Oauth)
 }

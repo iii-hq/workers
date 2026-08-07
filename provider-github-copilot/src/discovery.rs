@@ -19,10 +19,22 @@ use serde_json::Value;
 
 /// Derive the models endpoint from the chat completions endpoint
 /// (`…/chat/completions` → `…/models`).
+///
+/// A configured endpoint that does not end in `/chat/completions` still
+/// resolves against its own origin: an operator routing Copilot through a
+/// gateway must not have the listing request — and the bearer on it — sent
+/// to the public host instead.
 pub fn models_url(api_url: &str) -> String {
-    match api_url.strip_suffix("/chat/completions") {
-        Some(base) => format!("{base}/models"),
-        None => "https://api.githubcopilot.com/models".to_string(),
+    if let Some(base) = api_url.strip_suffix("/chat/completions") {
+        return format!("{base}/models");
+    }
+    match reqwest::Url::parse(api_url) {
+        Ok(mut url) => {
+            url.set_path("/models");
+            url.set_query(None);
+            url.to_string()
+        }
+        Err(_) => "https://api.githubcopilot.com/models".to_string(),
     }
 }
 
@@ -110,25 +122,55 @@ async fn probe_model(http: &reqwest::Client, api_url: &str, bearer: &str, model:
 
 /// Keep only the models this account can actually call. Preserves listing
 /// order so the picker stays stable.
+///
+/// Verdicts persist (`state::ProbeResults`), so a model is probed once and
+/// then answered from cache until the TTL lapses. That matters for cost: a
+/// successful probe on a premium model spends a premium request, not just a
+/// token, and a refresh runs at boot, on every `router::ready` rebind, and
+/// after each sign-in.
 async fn retain_callable(
+    iii: &IIIClient,
     http: &reqwest::Client,
     api_url: &str,
     bearer: &str,
     models: Vec<Model>,
 ) -> Vec<Model> {
-    let mut callable = Vec::with_capacity(models.len());
-    for chunk in models.chunks(PROBE_CONCURRENCY) {
-        let checks = chunk.iter().map(|m| {
-            let id = crate::catalog::upstream_id(&m.id).to_string();
-            async move { probe_model(http, api_url, bearer, &id).await }
-        });
-        for (model, ok) in chunk.iter().zip(futures::future::join_all(checks).await) {
-            if ok {
-                callable.push(model.clone());
-            }
+    let mut results = state::load_probe_results(iii).await;
+    if results.taken_at == 0 {
+        results.taken_at = crate::now_ms() / 1000;
+    }
+    let unknown: Vec<String> = models
+        .iter()
+        .map(|m| crate::catalog::upstream_id(&m.id).to_string())
+        .filter(|id| !results.verdicts.contains_key(id))
+        .collect();
+    if !unknown.is_empty() {
+        println!(
+            "[provider-github-copilot] probing {} model(s) not yet classified",
+            unknown.len()
+        );
+    }
+    for chunk in unknown.chunks(PROBE_CONCURRENCY) {
+        let checks = chunk
+            .iter()
+            .map(|id| async move { probe_model(http, api_url, bearer, id).await });
+        for (id, ok) in chunk.iter().zip(futures::future::join_all(checks).await) {
+            results.verdicts.insert(id.clone(), ok);
         }
     }
-    callable
+    if !unknown.is_empty() {
+        state::store_probe_results(iii, &results).await;
+    }
+    models
+        .into_iter()
+        .filter(|m| {
+            results
+                .verdicts
+                .get(crate::catalog::upstream_id(&m.id))
+                .copied()
+                .unwrap_or(true)
+        })
+        .collect()
 }
 
 pub fn parse_live_models(json: &Value) -> Vec<Model> {
@@ -192,6 +234,7 @@ pub async fn refresh_models(
         Ok(b) => b,
         Err(ExchangeError::Unauthorized(_)) => {
             // Revoked login / no Copilot access: the models are unusable.
+            cache.invalidate();
             router_client::reconcile_exclusive(iii, vec![], token.as_deref()).await?;
             return Ok(0);
         }
@@ -210,7 +253,7 @@ pub async fn refresh_models(
             let listed = models.len();
             // The listing advertises models this plan cannot call; verify
             // rather than guess, so the picker only ever offers what works.
-            let models = retain_callable(http, &api_url, &bearer.token, models).await;
+            let models = retain_callable(iii, http, &api_url, &bearer.token, models).await;
             let count = models.len();
             if count < listed {
                 println!(
@@ -222,6 +265,9 @@ pub async fn refresh_models(
             Ok(count)
         }
         FetchOutcome::AuthFailed => {
+            // The bearer that produced the 401/403 is dead: drop it so the
+            // next call re-exchanges instead of reusing it until the margin.
+            cache.invalidate();
             router_client::reconcile_exclusive(iii, vec![], token.as_deref()).await?;
             Ok(0)
         }
@@ -275,9 +321,19 @@ mod tests {
             models_url("http://127.0.0.1:9999/v1/chat/completions"),
             "http://127.0.0.1:9999/v1/models"
         );
-        // unrecognized shape falls back to the public endpoint
+    }
+
+    #[test]
+    fn models_url_keeps_a_custom_origin_instead_of_the_public_host() {
+        // an operator's gateway must not have the listing — and the bearer
+        // on it — redirected to GitHub
         assert_eq!(
-            models_url("https://proxy.example/custom"),
+            models_url("https://gateway.internal/custom"),
+            "https://gateway.internal/models"
+        );
+        // only an unparseable endpoint falls back
+        assert_eq!(
+            models_url("not a url"),
             "https://api.githubcopilot.com/models"
         );
     }

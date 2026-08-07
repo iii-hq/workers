@@ -8,6 +8,15 @@ use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
+/// Cap on an upstream error body quoted back to the caller. A gateway can
+/// answer with a whole HTML page; the error frame should stay readable.
+const MAX_ERROR_BODY: usize = 2_000;
+
+/// Cap on the un-framed SSE buffer. An upstream that never sends a blank
+/// line would otherwise grow it for the whole response while every chunk
+/// rescans it. Exceeding this is a broken stream, not a slow one.
+const MAX_SSE_BUFFER: usize = 1_048_576;
+
 pub struct UpstreamArgs {
     pub api_url: String,
     pub model: String,
@@ -95,6 +104,8 @@ async fn run_upstream(
         let kind = classify(Some(status.as_u16()), &text);
         let msg = if text.is_empty() {
             format!("copilot http {status}")
+        } else if text.len() > MAX_ERROR_BODY {
+            format!("{}…", &text[..text.floor_char_boundary(MAX_ERROR_BODY)])
         } else {
             text
         };
@@ -134,6 +145,16 @@ async fn run_upstream(
             }
         };
         buf.extend_from_slice(&chunk);
+        if buf.len() > MAX_SSE_BUFFER {
+            let _ = tx
+                .send(synthetic_error_event(
+                    "upstream sent no SSE frame boundary within 1 MiB",
+                    &args.model,
+                    ErrorKind::Transient,
+                ))
+                .await;
+            return;
+        }
         while let Some((end, sep_len)) = find_block_end(&buf) {
             let raw: Vec<u8> = buf.drain(..end + sep_len).collect();
             let block = String::from_utf8_lossy(&raw);
@@ -169,7 +190,15 @@ async fn run_upstream(
             }
         }
     }
-    // Stream ended without [DONE] (connection close framing): still terminal.
+    // Stream ended without [DONE] (connection close framing): still terminal,
+    // and still preceded by Stop so both endings look the same downstream.
+    let _ = tx
+        .send(AssistantMessageEvent::Stop {
+            stop_reason: state.stop_reason(),
+            error_message: None,
+            error_kind: None,
+        })
+        .await;
     let _ = tx
         .send(AssistantMessageEvent::Done {
             message: build_final(&state, &args.model),
@@ -277,6 +306,27 @@ mod tests {
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
                 assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+            }
+            other => panic!("want error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oversized_error_body_is_truncated_in_the_frame() {
+        let big = "x".repeat(MAX_ERROR_BODY * 2);
+        let response: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 500 Internal Server Error\r\ncontent-type: text/html\r\nconnection: close\r\n\r\n{big}"
+            )
+            .into_boxed_str(),
+        );
+        let url = stub(response).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        match &events[0] {
+            AssistantMessageEvent::Error { error } => {
+                let msg = error.error_message.as_deref().unwrap_or_default();
+                assert!(msg.len() <= MAX_ERROR_BODY + 8, "got {} bytes", msg.len());
+                assert!(msg.ends_with('…'));
             }
             other => panic!("want error, got {other:?}"),
         }

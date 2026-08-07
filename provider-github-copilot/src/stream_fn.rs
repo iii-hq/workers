@@ -247,6 +247,9 @@ async fn pump_with_auth_invalidation(
                     tokio::spawn(async move {
                         let token = state::load_token(&iii).await;
                         router_client::prune_model(&iii, &model, token.as_deref()).await;
+                        // Remember the verdict: the next refresh drops it
+                        // without spending another probe on it.
+                        state::record_unavailable(&iii, upstream_id(&model)).await;
                     });
                 }
             }

@@ -28,8 +28,8 @@ fn classify_status(status: Option<u16>, message: &str) -> ErrorKind {
         Some(401) => ErrorKind::AuthExpired,
         // Billing wall: backoff cannot fix an empty credit balance.
         Some(402) => ErrorKind::Permanent,
-        // Moderation flagged the input for this model; retrying the same
-        // prompt cannot succeed.
+        // The plan does not authorize this call (no Copilot access, or the
+        // model is not enabled for the account) — retrying cannot fix it.
         Some(403) => ErrorKind::Permanent,
         Some(408) => ErrorKind::Transient,
         Some(413) => ErrorKind::ContextOverflow,
@@ -106,6 +106,9 @@ fn classify_envelope(v: &Value, status: Option<u16>) -> Option<ErrorKind> {
 /// authoritative signal — the caller prunes the row and tells the operator
 /// how to gain access.
 pub fn is_model_not_supported(message: &str) -> bool {
+    // Envelope only. A bare substring match would also fire on a body that
+    // merely echoes the phrase back — and this verdict prunes a model from
+    // the catalog, so a false positive removes a working one.
     serde_json::from_str::<Value>(message)
         .ok()
         .and_then(|v| {
@@ -114,7 +117,6 @@ pub fn is_model_not_supported(message: &str) -> bool {
                 .map(|c| c == "model_not_supported")
         })
         .unwrap_or(false)
-        || message.contains("model_not_supported")
 }
 
 fn is_context_overflow_message(message: &str) -> bool {
@@ -240,6 +242,11 @@ mod tests {
             r#"{"error":{"code":"rate_limited"}}"#
         ));
         assert!(!is_model_not_supported("plain text"));
+        // an echoed phrase is not a verdict — pruning on it would drop a
+        // model that works
+        assert!(!is_model_not_supported(
+            r#"{"choices":[{"delta":{"content":"model_not_supported"}}]}"#
+        ));
     }
 
     #[test]
