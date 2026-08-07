@@ -8,6 +8,7 @@
     window.HARNESS_EXECUTIONS,
     benchmarkData,
   );
+  const isLocal = history.mode === "local";
   const state = {
     matrixCount: 14,
     page: 1,
@@ -17,6 +18,7 @@
     event: "all",
     scenarioHistoryRow: null,
     scenarioHistoryMetric: "cost_usd",
+    comparison: [],
   };
   const efficiencyTrendColors = {
     improved: "var(--success)",
@@ -110,6 +112,8 @@
       "#efficiency-tokens-sparkline",
     ),
     event: document.querySelector("#event-filter"),
+    footerSummary: document.querySelector("#dashboard-footer-summary"),
+    commitHeading: document.querySelector("#execution-commit-heading"),
     kpiCost: document.querySelector("#kpi-cost"),
     kpiCoverage: document.querySelector("#kpi-coverage"),
     kpiFailures: document.querySelector("#kpi-failures"),
@@ -119,6 +123,7 @@
     efficiencyStatus: document.querySelector("#efficiency-status"),
     efficiencyStatusCaption: document.querySelector("#efficiency-status-caption"),
     lastUpdate: document.querySelector("#last-update"),
+    localRunner: document.querySelector("#local-runner"),
     matrix: document.querySelector("#health-matrix"),
     next: document.querySelector("#next-page"),
     pageLabel: document.querySelector("#page-label"),
@@ -136,6 +141,9 @@
     scenarioHistoryTitle: document.querySelector("#scenario-history-title"),
     syncLabel: document.querySelector("#sync-label"),
     status: document.querySelector("#status-filter"),
+    comparisonBar: document.querySelector("#comparison-bar"),
+    comparisonCount: document.querySelector("#comparison-count"),
+    comparisonLink: document.querySelector("#comparison-link"),
   };
 
   function escapeHtml(value) {
@@ -1083,6 +1091,35 @@
     }[availability] || "Unknown";
   }
 
+  function renderComparisonBar() {
+    if (!isLocal) {
+      elements.comparisonBar.hidden = true;
+      return;
+    }
+    elements.comparisonBar.hidden = false;
+    const count = state.comparison.length;
+    elements.comparisonCount.textContent =
+      count === 0
+        ? "Select two executions"
+        : count === 1
+          ? "1 of 2 executions selected"
+          : "2 executions selected";
+    const ready = count === 2;
+    elements.comparisonLink.setAttribute("aria-disabled", String(!ready));
+    elements.comparisonLink.href = ready
+      ? `./compare.html?left=${encodeURIComponent(state.comparison[0])}&right=${encodeURIComponent(state.comparison[1])}`
+      : "./compare.html";
+  }
+
+  function toggleComparison(executionId, checked) {
+    state.comparison = state.comparison.filter((id) => id !== executionId);
+    if (checked) {
+      if (state.comparison.length === 2) state.comparison.shift();
+      state.comparison.push(executionId);
+    }
+    renderTable();
+  }
+
   function renderTable() {
     const filtered = executionApi.filterExecutions(history.executions, state);
     const pageCount = Math.max(1, Math.ceil(filtered.length / state.pageSize));
@@ -1100,27 +1137,43 @@
       const failures = failureCount(execution);
       const trigger =
         execution.event === "workflow_dispatch" ? "manual" : execution.event || "unknown";
+      const primaryLabel = execution.label || formatDate(execution.completed_at, true);
+      const secondaryLabel = execution.label
+        ? `${formatDate(execution.completed_at, true)} · run ${execution.run_id || execution.id}`
+        : `run ${execution.run_id || execution.id}`;
+      const comparisonControl = isLocal
+        ? `<label class="execution-compare-control">
+            <input type="checkbox" data-compare-id="${escapeHtml(execution.id)}" ${
+              state.comparison.includes(execution.id) ? "checked" : ""
+            }>
+            <span class="visually-hidden">Select ${escapeHtml(primaryLabel)} for comparison</span>
+          </label>`
+        : "";
+      const commitCell = isLocal
+        ? ""
+        : `<td>${
+            commit
+              ? `<a class="commit-link" href="${escapeHtml(
+                  safeUrl(
+                    `${history.repoUrl.replace(/\/$/, "")}/commit/${encodeURIComponent(commit)}`,
+                  ),
+                )}">${escapeHtml(commit.slice(0, 7))}</a>`
+              : "—"
+          }</td>`;
       row.innerHTML = `
         <td>
-          <div class="release-cell">
+          <div class="execution-identity-cell">
+            ${comparisonControl}
+            <div class="release-cell">
             <a href="${escapeHtml(detailUrl(execution))}">${escapeHtml(
-              formatDate(execution.completed_at, true),
+              primaryLabel,
             )}</a>
-            <span>run ${escapeHtml(execution.run_id || execution.id)} · attempt ${
-              execution.attempt
-            } · ${escapeHtml(trigger)}</span>
+            <span>${escapeHtml(secondaryLabel)} · attempt ${execution.attempt} · ${escapeHtml(trigger)}</span>
+            </div>
           </div>
         </td>
         <td><span class="table-status status-${meta.css}">${meta.label}</span></td>
-        <td>${
-          commit
-            ? `<a class="commit-link" href="${escapeHtml(
-                safeUrl(
-                  `${history.repoUrl.replace(/\/$/, "")}/commit/${encodeURIComponent(commit)}`,
-                ),
-              )}">${escapeHtml(commit.slice(0, 7))}</a>`
-            : "—"
-        }</td>
+        ${commitCell}
         <td title="${escapeHtml(subjectLabels.join(", "))}">${escapeHtml(
           subjectLabels.length === 1
             ? subjectLabels[0]
@@ -1139,12 +1192,15 @@
           execution.availability,
         )}">${escapeHtml(dataLabel(execution.availability))}</span></td>
       `;
+      row.querySelector("[data-compare-id]")?.addEventListener("change", (event) => {
+        toggleComparison(execution.id, event.currentTarget.checked);
+      });
       elements.body.append(row);
     });
     if (!page.length) {
       const row = document.createElement("tr");
       row.innerHTML =
-        '<td class="table-empty" colspan="12">No executions match these filters.</td>';
+        `<td class="table-empty" colspan="${isLocal ? 11 : 12}">No executions match these filters.</td>`;
       elements.body.append(row);
     }
     elements.count.textContent =
@@ -1152,6 +1208,7 @@
     elements.pageLabel.textContent = `Page ${state.page} of ${pageCount}`;
     elements.previous.disabled = state.page === 1;
     elements.next.disabled = state.page === pageCount;
+    renderComparisonBar();
   }
 
   function render() {
@@ -1166,15 +1223,18 @@
   }
 
   async function initialize() {
-    const isLocal = history.mode === "local";
     elements.preview.hidden = !(history.preview || isLocal);
     elements.preview.textContent = isLocal ? "Local data" : "Preview data";
     if (isLocal) {
-      elements.syncLabel.textContent = "Last imported";
-      elements.emptyTitle.textContent = "No local executions imported";
+      elements.syncLabel.textContent = "Last completed";
+      elements.emptyTitle.textContent = "No local executions yet";
       elements.emptyDescription.textContent =
-        "Import a results.json file to populate this dashboard.";
+        "Run an E2E experiment above to create the first local execution.";
       elements.actionsLink.textContent = "View repository ↗";
+      elements.footerSummary.textContent = "Harness E2E · local execution history";
+      elements.localRunner.hidden = false;
+      elements.commitHeading.hidden = true;
+      elements.search.placeholder = "Search label, run, or date";
     }
     const lastUpdate = history.lastUpdate || history.executions[0]?.completed_at;
     if (lastUpdate) {
@@ -1240,6 +1300,7 @@
       state.page += 1;
       renderTable();
     });
+    if (isLocal) window.HarnessLocalRunner.initialize();
     render();
     await hydrateExecutionMetrics();
     renderEfficiency();

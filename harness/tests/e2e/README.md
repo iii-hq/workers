@@ -184,16 +184,19 @@ cargo run -p harness-e2e -- report target/e2e
 cargo run -p harness-e2e -- report target/e2e/results.json --verbose
 ```
 
-From the repository root, import that report into the benchmark dashboard and
-serve it locally:
+Build the runner once and start its local execution dashboard:
 
 ```bash
-python3 .github/scripts/serve_harness_e2e_dashboard.py
+cargo build --locked --manifest-path harness/Cargo.toml -p harness-e2e
+harness/target/debug/harness-e2e dashboard
 ```
 
-The page is available at <http://127.0.0.1:4173/index.html>. Pass additional
-`results.json` files or directories to build a local execution history. The
-generated site stays under `target/` and is not committed.
+The page is available at <http://127.0.0.1:4173/index.html>. The dashboard uses
+the same executable to run scenarios against `III_URL`; it never invokes Cargo.
+Every execution keeps its metadata, log, and raw `results.json` under
+`target/harness-e2e-local-runs/`. Use `serve` as an alias for `dashboard`,
+`--listen` to select another loopback listener, and `--runs-dir` to move the
+local history. Remote access must use SSH port forwarding.
 
 The runner writes `results.json` with:
 

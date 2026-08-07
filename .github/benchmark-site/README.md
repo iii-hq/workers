@@ -5,25 +5,48 @@ This static shell replaces the generic benchmark-action index at
 for metric trends. `executions.js` indexes workflow attempts, and
 `runs/<execution-id>.json` supplies the retained execution report.
 
-Import the default local report and serve the real dashboard from the repository
-root:
+Start the local dashboard from the repository root:
 
 ```bash
-python3 .github/scripts/serve_harness_e2e_dashboard.py
+cargo build --locked --manifest-path harness/Cargo.toml -p harness-e2e
+harness/target/debug/harness-e2e dashboard
 ```
 
-Pass files or directories to import other local executions:
+The dashboard can now execute one or more scenarios against the Harness already
+running at `III_URL`. It discovers registered provider/model pairs from that
+stack and scenario ids from the same E2E binary. The primary form only asks for an
+optional label, a subject model, and scenarios; URL, judge override, run count,
+and technical retries remain under **Advanced options** with safe defaults. Use
+**Refresh catalog** after restarting the Harness or changing its URL. The binary
+runs only one experiment at a time, streams its log, indexes the resulting
+`results.json`, and keeps run metadata and logs under
+`target/harness-e2e-local-runs/`.
+
+The dashboard executes itself as an isolated child process, so changing and
+restarting the Harness never recompiles the E2E client. `serve` is an alias for
+`dashboard`; neither command has a Cargo fallback.
+
+`local-runner.js` owns the browser-side execution controls and is loaded only
+when `executions.js` declares `mode: "local"`. The Pages publisher always emits
+`mode: "published"`, so the published dashboard keeps using only its static
+history and never calls the loopback execution APIs.
+
+The execution label is optional and intentionally descriptive only. The local
+dashboard does not inspect or record Harness code changes: restart or modify the
+Harness however you want, run another experiment, then select any two execution
+rows and open **Compare selected**. The comparison always remains available;
+different subjects, run counts, scenario sets, and behavioral contracts are
+shown as warnings instead of blocking the comparison.
+
+The listener is deliberately restricted to loopback. Over SSH, forward it with:
 
 ```bash
-python3 .github/scripts/serve_harness_e2e_dashboard.py \
-  harness/target/e2e-reactive-fix/results.json \
-  target/harness-e2e-glm-5.2
+ssh -L 4173:127.0.0.1:4173 user@host
 ```
 
-Imports accumulate in `target/harness-e2e-dashboard-local`. Reimporting the same
-report is idempotent. Use `--reset` to start a new local history, or `--host`
-and `--port` to change the default `127.0.0.1:4173` listener. The command only
-reads existing reports; it does not run E2E scenarios.
+Use `--listen 127.0.0.1:PORT` to select another port and `--runs-dir` to select
+another local history. The WebSocket URL is accessed on the host by the runner
+and does not need a browser-side port forward.
 
 To preview the sample fixtures instead, serve `.github/benchmark-site` directly:
 
