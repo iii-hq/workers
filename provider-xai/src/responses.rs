@@ -229,17 +229,21 @@ pub fn handle_event(
 /// Map the Responses usage object onto the shared `Usage`.
 fn merge_usage(raw: &Value, into: &mut Usage) {
     let num = |k: &str| raw.get(k).and_then(Value::as_u64);
+    // `Usage.input` is the cache-MISS slice, disjoint from `cache_read`
+    // (pricing bills the splits additively). The wire's `input_tokens` is a
+    // TOTAL that includes the cached slice, so the miss slice is derived —
+    // mapping the total verbatim would bill the cached prefix twice.
+    let cached = raw
+        .pointer("/input_tokens_details/cached_tokens")
+        .and_then(Value::as_u64);
+    if let Some(v) = cached {
+        into.cache_read = Some(v);
+    }
     if let Some(v) = num("input_tokens") {
-        into.input = Some(v);
+        into.input = Some(v.saturating_sub(cached.unwrap_or(0)));
     }
     if let Some(v) = num("output_tokens") {
         into.output = Some(v);
-    }
-    if let Some(v) = raw
-        .pointer("/input_tokens_details/cached_tokens")
-        .and_then(Value::as_u64)
-    {
-        into.cache_read = Some(v);
     }
     if let Some(v) = raw
         .pointer("/output_tokens_details/reasoning_tokens")
