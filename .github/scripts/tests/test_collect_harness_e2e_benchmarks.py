@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,15 @@ def test_semantic_result_status_uses_blocking_precedence() -> None:
             technical_failures=0,
         )
         == "passed"
+    )
+    assert (
+        semantic_result_status(
+            passed=True,
+            hard_gate_failures=0,
+            technical_failures=0,
+            infra_failures=1,
+        )
+        == "infra_failed"
     )
 
 
@@ -336,6 +346,51 @@ def test_missing_report_is_visible_and_totals_are_not_fabricated(
         "available": False,
         "report": None,
     }
+
+
+def test_registry_identity_is_recorded_and_registry_failure_is_infra_failed(
+    tmp_path: Path,
+) -> None:
+    write_report(tmp_path, subject_id="glm", scenario_id="direct_answer")
+    directory = tmp_path / "harness-e2e-glm-security_review-results"
+    directory.mkdir()
+    (directory / "benchmark-context.json").write_text(
+        json.dumps({"subject_id": "glm", "scenario_id": "security_review"})
+    )
+    (directory / "deployment.json").write_text(
+        json.dumps(
+            {
+                "status": "infra_failed",
+                "actual_release_version": "1.8.0",
+                "stack_versions": {"harness": "1.8.0", "state": "0.22.0"},
+                "stack_lock_digest": "a" * 64,
+            }
+        )
+    )
+
+    _, efficiency, snapshot, execution = collect(
+        replace(
+            config(tmp_path, ["direct_answer", "security_review"]),
+            stack_mode="registry",
+        )
+    )
+    efficiency_by_name = by_name(efficiency)
+    security_extra = json.loads(
+        efficiency_by_name[
+            "reliability::glm::security_review::infra_failed"
+        ]["extra"]
+    )
+
+    assert security_extra["status"] == "infra_failed"
+    assert security_extra["release"]["version"] == "1.8.0"
+    assert security_extra["stack"]["versions"] == {
+        "harness": "1.8.0",
+        "state": "0.22.0",
+    }
+    assert security_extra["stack"]["lock_digest"] == "a" * 64
+    assert snapshot["stack"] == security_extra["stack"]
+    assert snapshot["subjects"][0]["infra_failures"] == 1
+    assert execution["reports"][1]["deployment"]["status"] == "infra_failed"
 
 
 def test_unknown_cost_is_omitted_instead_of_recorded_as_zero(

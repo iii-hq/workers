@@ -231,6 +231,13 @@ fresh stack, and repetitions run sequentially inside that job with unique table,
 session, and state namespaces. At most two matrix jobs make live-model calls
 concurrently.
 
+The daily lane uses the registry mode to measure the currently published live
+stack. It resolves `latest` once per matrix job, records the exact versions and
+SHA-256 digest of the resulting `iii.lock`, and treats Registry resolution
+failures as `infra_failed`; it does not fall back to a source build. The main
+lane keeps the source build and LLVM coverage so operational daily metrics stay
+separate from checkout regression coverage.
+
 The deployed lane is a separate workflow run dispatched by the release smoke
 workflow. The release publishes first, the smoke validates the published
 installation and exact released version, and only a successful smoke dispatches

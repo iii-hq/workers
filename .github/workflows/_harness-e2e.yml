@@ -88,6 +88,16 @@ on:
         required: false
         type: string
         default: '{}'
+      stack_digest:
+        description: SHA-256 digest of the resolved registry lock
+        required: false
+        type: string
+        default: ''
+      resolve_stack:
+        description: Resolve the live registry stack from latest and freeze its lock
+        required: false
+        type: boolean
+        default: false
       validation_profile:
         description: Scenario profile resolved for this execution
         required: false
@@ -195,6 +205,7 @@ jobs:
           RELEASE_WORKER: ${{ inputs.release_worker }}
           RELEASE_VERSION: ${{ inputs.release_version }}
           STACK_VERSIONS: ${{ inputs.stack_versions }}
+          RESOLVE_STACK: ${{ inputs.resolve_stack }}
           COVERAGE: ${{ inputs.coverage }}
         run: |
           set -euo pipefail
@@ -215,16 +226,22 @@ jobs:
               [[ "$CLI_CHANNEL" == "latest" || "$CLI_CHANNEL" == "next" ]]
               [[ "$REGISTRY_TAG" =~ ^[A-Za-z0-9._-]+$ ]]
               [[ "$RELEASE_WORKER" =~ ^[A-Za-z0-9_-]+$ ]]
-              [[ -n "$RELEASE_VERSION" ]]
-              jq -e --arg worker "$RELEASE_WORKER" --arg version "$RELEASE_VERSION" '
-                type == "object" and
-                all(to_entries[];
-                  (.key | test("^[a-z0-9][a-z0-9_-]*$")) and
-                  (.value | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+(-(experimental|alpha|beta))?$"))
-                ) and
-                .[$worker] == $version
-              ' <<<"$STACK_VERSIONS" >/dev/null
               [[ "$COVERAGE" == "false" ]]
+              if [[ "$RESOLVE_STACK" == "true" ]]; then
+                [[ "$RELEASE_WORKER" == "harness" ]]
+                [[ "$RELEASE_VERSION" == "latest" ]]
+                jq -e 'type == "object" and length == 0' <<<"$STACK_VERSIONS" >/dev/null
+              else
+                [[ -n "$RELEASE_VERSION" ]]
+                jq -e --arg worker "$RELEASE_WORKER" --arg version "$RELEASE_VERSION" '
+                  type == "object" and
+                  all(to_entries[];
+                    (.key | test("^[a-z0-9][a-z0-9_-]*$")) and
+                    (.value | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+(-(experimental|alpha|beta))?$"))
+                  ) and
+                  .[$worker] == $version
+                ' <<<"$STACK_VERSIONS" >/dev/null
+              fi
               ;;
             *)
               echo "::error::stack_mode must be source or registry"
@@ -510,6 +527,8 @@ jobs:
           HARNESS_E2E_RELEASE_RUN_ID: ${{ inputs.release_run_id }}
           HARNESS_E2E_SMOKE_RUN_ID: ${{ inputs.smoke_run_id }}
           HARNESS_E2E_STACK_VERSIONS: ${{ inputs.stack_versions }}
+          HARNESS_E2E_STACK_DIGEST: ${{ inputs.stack_digest }}
+          HARNESS_E2E_RESOLVE_STACK: ${{ inputs.resolve_stack }}
           HARNESS_E2E_BIN: ${{ github.workspace }}/target/runner/harness-e2e
           HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
           HARNESS_E2E_SCENARIO: ${{ matrix.scenario }}
@@ -574,7 +593,11 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.scenario }}-results
-          path: target/harness-e2e/results/
+          path: |
+            target/harness-e2e/results/
+            target/harness-e2e/deployment.json
+            target/harness-e2e/cli-version.txt
+            target/harness-e2e/stack/
           retention-days: 14
           if-no-files-found: error
 
@@ -676,6 +699,9 @@ jobs:
           RELEASE_VERSION: ${{ inputs.release_version }}
           RELEASE_URL: ${{ inputs.release_url }}
           REGISTRY_TAG: ${{ inputs.registry_tag }}
+          STACK_MODE: ${{ inputs.stack_mode }}
+          STACK_VERSIONS: ${{ inputs.stack_versions }}
+          STACK_DIGEST: ${{ inputs.stack_digest }}
           JUDGE_MODEL: ${{ inputs.judge_model }}
           JUDGE_PROVIDER: ${{ inputs.judge_provider }}
           EXECUTION_RUN_ID: ${{ github.run_id }}
@@ -700,6 +726,9 @@ jobs:
             --release-version "$RELEASE_VERSION" \
             --release-url "$RELEASE_URL" \
             --registry-tag "$REGISTRY_TAG" \
+            --stack-mode "$STACK_MODE" \
+            --stack-versions "$STACK_VERSIONS" \
+            --stack-digest "$STACK_DIGEST" \
             --judge-model "$JUDGE_MODEL" \
             --judge-provider "$JUDGE_PROVIDER" \
             --execution-run-id "$EXECUTION_RUN_ID" \
