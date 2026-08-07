@@ -1,165 +1,328 @@
 /*
- * Styles for the github worker's injected console UI. Shipped as its own
- * `console:style` asset (github/styles.css) — the console mounts it as a
- * <link> and link-swaps it on change.
+ * The github worker's console stylesheet, shipped as its own `console:style`
+ * asset (github/styles.css) — the console mounts it as a <link> and
+ * link-swaps it on change. EVERY rule is scoped under
+ * [data-iii-ui="github"], the wrapper the console mounts around every
+ * injected render; unscoped rules would beat the console's layered CSS
+ * document-wide (injected sheets are unlayered). Keyframe names are global:
+ * keep the gh-ui- prefix. Colors come from the console's design tokens, so
+ * light/dark theming is free.
  *
- * EVERY rule is scoped under [data-iii-ui="github"] — the wrapper the console
- * mounts around every injected render. Unscoped rules would beat the console's
- * layered CSS document-wide (injected sheets are unlayered). Keyframe names are
- * global: keep the gh-ui- prefix. Colors come from the console's design tokens
- * so light/dark theming is free.
+ * The page follows the console redesign's surface + typography roles:
+ *
+ *   workspace   --color-panel           the graph / activity feed
+ *   raised      --color-panel-raised    the view toolbar, detail head
+ *   states      --color-surface-*       hover / selected washes
+ *   edges       --color-edge            hairline separation
+ *
+ *   sans (--font-sans)  interface prose: commit subjects, PR titles,
+ *                       empty states
+ *   mono (--font-mono)  technical values: function ids, args, hashes,
+ *                       durations, counts, diffs, streams
  */
 
-[data-iii-ui="github"] .gh-page,
-[data-iii-ui="github"] .gh-graph-page {
-  font-family: var(--font-mono, ui-monospace, monospace);
+/* ── the page (#/ext/github): application shell ─────────────────────────
+   The root + top bar are the shared page chrome (PageShell/PageHeader from
+   @iii-dev/console-ui); this class only layers the page's typography
+   defaults on top. */
+
+[data-iii-ui="github"] .gh-ui-shell {
+  min-height: 360px;
   color: var(--color-ink);
-  padding: 20px 24px;
-  box-sizing: border-box;
-}
-[data-iii-ui="github"] .gh-page *,
-[data-iii-ui="github"] .gh-page *::before,
-[data-iii-ui="github"] .gh-page *::after,
-[data-iii-ui="github"] .gh-graph-page *,
-[data-iii-ui="github"] .gh-graph-page *::before,
-[data-iii-ui="github"] .gh-graph-page *::after {
-  box-sizing: border-box;
+  font-family: var(--font-sans, system-ui, sans-serif);
 }
 
-/* --- header ---------------------------------------------------------- */
-[data-iii-ui="github"] .gh-head {
-  display: flex;
-  flex-wrap: wrap;
+/* segmented control (header middle slot) — one control, mutually
+   exclusive graph | activity options */
+[data-iii-ui="github"] .gh-ui-seg {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--color-rule);
+  gap: 2px;
+  padding: 2px;
+  background: var(--color-surface);
+  border-radius: 6px;
+  flex-shrink: 0;
 }
-[data-iii-ui="github"] .gh-title {
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  text-transform: lowercase;
-  color: var(--color-ink);
-}
-[data-iii-ui="github"] .gh-sub {
-  font-size: 12px;
+[data-iii-ui="github"] .gh-ui-seg-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 4px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
   color: var(--color-ink-faint);
-  margin-top: 2px;
-  text-transform: lowercase;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
 }
-[data-iii-ui="github"] .gh-head-actions {
+[data-iii-ui="github"] .gh-ui-seg-btn:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="github"] .gh-ui-seg-btn.active {
+  color: var(--color-ink);
+  background: var(--color-panel-raised);
+  box-shadow: 0 0 0 1px var(--color-edge);
+}
+[data-iii-ui="github"] .gh-ui-seg-btn:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+
+/* ── view container (one of graph | activity fills the shell body) ────── */
+
+[data-iii-ui="github"] .gh-ui-view {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-panel);
+}
+
+/* the view toolbar — status note on the left, live/refresh/clear controls
+   on the right; the one raised bar under the shared page header */
+[data-iii-ui="github"] .gh-ui-toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 40px;
+  padding: 4px 10px 4px 16px;
+  flex-shrink: 0;
+  background: var(--color-panel-raised);
+  border-bottom: 1px solid var(--color-edge);
 }
-
-/* --- activity feed --------------------------------------------------- */
-[data-iii-ui="github"] .gh-feed {
-  width: 100%;
-  margin-top: 12px;
-  border-collapse: collapse;
-  table-layout: fixed;
-}
-[data-iii-ui="github"] .gh-feed-row {
-  cursor: pointer;
-  border-bottom: 1px solid var(--color-rule);
-  transition: background 0.12s;
-}
-[data-iii-ui="github"] .gh-feed-row:hover,
-[data-iii-ui="github"] .gh-feed-row.expanded {
-  background: var(--color-panel);
-}
-[data-iii-ui="github"] .gh-feed-row:focus-visible {
-  outline: 2px solid var(--color-ring);
-  outline-offset: -2px;
-}
-[data-iii-ui="github"] .gh-feed td {
-  padding: 8px 10px;
-  vertical-align: middle;
-}
-
-[data-iii-ui="github"] .gh-feed-fn {
-  width: 12rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-[data-iii-ui="github"] .gh-feed-args {
+[data-iii-ui="github"] .gh-ui-toolbar-note {
   min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="github"] .gh-feed-args-inner {
+[data-iii-ui="github"] .gh-ui-toolbar .spacer {
+  flex: 1;
+}
+
+/* error / status fill under the toolbar */
+[data-iii-ui="github"] .gh-ui-fill {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
+/* skeleton bars (graph first load, commit detail loading) */
+[data-iii-ui="github"] .gh-ui-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px 16px;
+}
+[data-iii-ui="github"] .gh-ui-skel .bar {
+  display: block;
+  height: 10px;
+  border-radius: 4px;
+  background: var(--color-surface);
+  animation: gh-ui-pulse 1.6s ease-in-out infinite;
+}
+@keyframes gh-ui-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+[data-iii-ui="github"] .bar.w30 {
+  width: 30%;
+}
+[data-iii-ui="github"] .bar.w40 {
+  width: 40%;
+}
+[data-iii-ui="github"] .bar.w60 {
+  width: 60%;
+}
+[data-iii-ui="github"] .bar.w75 {
+  width: 75%;
+}
+[data-iii-ui="github"] .bar.w85 {
+  width: 85%;
+}
+[data-iii-ui="github"] .bar.w90 {
+  width: 90%;
+}
+
+/* hero empty state — teaches the next action, not the absence */
+[data-iii-ui="github"] .gh-ui-hero {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 48px 24px;
+  text-align: center;
+}
+[data-iii-ui="github"] .gh-ui-hero-icon {
+  width: 28px;
+  height: 28px;
+  color: var(--color-ink-ghost);
+  margin-bottom: 8px;
+}
+[data-iii-ui="github"] .gh-ui-hero-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+[data-iii-ui="github"] .gh-ui-hero-body {
+  margin: 0;
+  max-width: 460px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-ink-faint);
+}
+
+/* ── activity feed ──────────────────────────────────────────────────────
+   A scrolling list of call rows. Wide: four aligned columns (fn, args,
+   status, time). Narrow (container width, via useContainerNarrow): each
+   row regroups onto two lines with touch-sized targets and the relative
+   timestamp drops — no fixed multi-column assumptions. */
+
+[data-iii-ui="github"] .gh-ui-feed {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+[data-iii-ui="github"] .gh-ui-feed-item {
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="github"] .gh-ui-feed-row {
+  display: grid;
+  grid-template-columns: 12rem minmax(0, 1fr) 8rem 6rem;
+  align-items: center;
+  column-gap: 12px;
+  padding: 7px 16px;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+[data-iii-ui="github"] .gh-ui-feed-row:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="github"] .gh-ui-feed-row.expanded {
+  background: var(--color-surface-selected);
+}
+[data-iii-ui="github"] .gh-ui-feed-row:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="github"] .gh-ui-feed-fn {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+[data-iii-ui="github"] .gh-ui-feed-args {
   display: flex;
   align-items: baseline;
   gap: 8px;
+  min-width: 0;
   overflow: hidden;
 }
-[data-iii-ui="github"] .gh-feed-repo {
+[data-iii-ui="github"] .gh-ui-feed-repo {
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
   color: var(--color-ink-faint);
   flex-shrink: 0;
 }
-[data-iii-ui="github"] .gh-feed-argtext {
+[data-iii-ui="github"] .gh-ui-feed-argtext {
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 12px;
   color: var(--color-ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-[data-iii-ui="github"] .gh-feed-status {
-  width: 8rem;
-  font-size: 11px;
-  white-space: nowrap;
-}
-[data-iii-ui="github"] .gh-feed-status-inner {
+[data-iii-ui="github"] .gh-ui-feed-status {
   display: flex;
   align-items: center;
   gap: 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  white-space: nowrap;
 }
-[data-iii-ui="github"] .gh-ok {
+[data-iii-ui="github"] .gh-ui-ok {
   color: var(--color-ok);
   text-transform: lowercase;
 }
-[data-iii-ui="github"] .gh-err {
+[data-iii-ui="github"] .gh-ui-err {
   color: var(--color-alert);
   text-transform: lowercase;
 }
-[data-iii-ui="github"] .gh-feed-dur {
+[data-iii-ui="github"] .gh-ui-feed-dur {
   margin-left: auto;
   color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
 }
-
-[data-iii-ui="github"] .gh-feed-time {
-  width: 6rem;
+[data-iii-ui="github"] .gh-ui-feed-time {
   text-align: right;
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
-  color: var(--color-ink-faint);
+  color: var(--color-ink-ghost);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
-/* --- expanded detail ------------------------------------------------- */
-[data-iii-ui="github"] .gh-feed-detail-row td {
-  padding: 0 10px 10px;
+/* Narrow rows: two lines (fn + status, then args), touch-sized (≥44px),
+   timestamp dropped. */
+[data-iii-ui="github"] .gh-ui-view.narrow .gh-ui-feed-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "fn status"
+    "args args";
+  row-gap: 4px;
+  min-height: 44px;
+  padding-top: 10px;
+  padding-bottom: 10px;
 }
-[data-iii-ui="github"] .gh-feed-detail {
+[data-iii-ui="github"] .gh-ui-view.narrow .gh-ui-feed-fn {
+  grid-area: fn;
+}
+[data-iii-ui="github"] .gh-ui-view.narrow .gh-ui-feed-status {
+  grid-area: status;
+}
+[data-iii-ui="github"] .gh-ui-view.narrow .gh-ui-feed-args {
+  grid-area: args;
+}
+[data-iii-ui="github"] .gh-ui-view.narrow .gh-ui-feed-time {
+  display: none;
+}
+
+/* expanded detail — the budgeted result, rendered per kind */
+[data-iii-ui="github"] .gh-ui-feed-detail {
+  margin: 0 16px 10px;
+  padding: 8px 10px;
   font-size: 12px;
   color: var(--color-ink);
-  background: var(--color-paper-2);
+  background: var(--color-surface);
   border-left: 2px solid var(--color-accent);
-  padding: 8px 10px;
   animation: gh-ui-reveal 0.16s ease-out;
 }
-[data-iii-ui="github"] .gh-feed-summary {
+[data-iii-ui="github"] .gh-ui-feed-summary {
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
   color: var(--color-ink-faint);
   text-transform: lowercase;
   margin-bottom: 8px;
 }
-
 @keyframes gh-ui-reveal {
   from {
     opacity: 0;
@@ -170,93 +333,115 @@
     transform: translateY(0);
   }
 }
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="github"] .gh-ui-feed-detail {
+    animation: none;
+  }
+  [data-iii-ui="github"] .gh-ui-skel .bar {
+    animation: none;
+  }
+}
 
-/* --- result previews (result-views.tsx) ------------------------------ */
-[data-iii-ui="github"] .gh-rv-empty {
+/* ── result previews (result-views.tsx) ───────────────────────────────── */
+
+/* list wrapper — keeps the table + "showing N of M" footer together and
+   shrinkable inside the flex row */
+[data-iii-ui="github"] .gh-ui-rv {
+  min-width: 0;
+}
+[data-iii-ui="github"] .gh-ui-rv-empty {
   font-size: 12px;
   color: var(--color-ink-faint);
   text-transform: lowercase;
 }
-[data-iii-ui="github"] .gh-rv-trunc {
+[data-iii-ui="github"] .gh-ui-rv-trunc {
   font-size: 11px;
   color: var(--color-ink-faint);
   padding-top: 4px;
 }
 
 /* list */
-[data-iii-ui="github"] .gh-rv-list {
+[data-iii-ui="github"] .gh-ui-rv-list {
   width: 100%;
   border-collapse: collapse;
   table-layout: auto;
 }
-[data-iii-ui="github"] .gh-rv-list td,
-[data-iii-ui="github"] .gh-rv-list th {
+[data-iii-ui="github"] .gh-ui-rv-list td,
+[data-iii-ui="github"] .gh-ui-rv-list th {
   padding: 3px 8px 3px 0;
   vertical-align: top;
   font-size: 12px;
   text-align: left;
 }
-[data-iii-ui="github"] .gh-rv-row:not(:last-child) td {
-  border-bottom: 1px solid var(--color-rule-2);
+[data-iii-ui="github"] .gh-ui-rv-row:not(:last-child) td {
+  border-bottom: 1px solid var(--color-edge);
 }
-[data-iii-ui="github"] .gh-rv-ghead th {
+[data-iii-ui="github"] .gh-ui-rv-ghead th {
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 10px;
   color: var(--color-ink-faint);
   text-transform: lowercase;
   font-weight: 600;
-  border-bottom: 1px solid var(--color-rule);
+  border-bottom: 1px solid var(--color-edge);
 }
-[data-iii-ui="github"] .gh-rv-num {
+[data-iii-ui="github"] .gh-ui-rv-num {
+  font-family: var(--font-mono, ui-monospace, monospace);
   color: var(--color-ink-faint);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="github"] .gh-rv-title {
+[data-iii-ui="github"] .gh-ui-rv-title {
   color: var(--color-ink);
   overflow-wrap: anywhere;
 }
-[data-iii-ui="github"] .gh-rv-title a {
+[data-iii-ui="github"] .gh-ui-rv-title a {
   color: var(--color-accent);
   text-decoration: none;
 }
-[data-iii-ui="github"] .gh-rv-title a:hover {
+[data-iii-ui="github"] .gh-ui-rv-title a:hover {
   text-decoration: underline;
 }
-[data-iii-ui="github"] .gh-rv-flag {
+[data-iii-ui="github"] .gh-ui-rv-flag {
   margin-left: 6px;
   font-size: 10px;
   color: var(--color-ink-faint);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-[data-iii-ui="github"] .gh-rv-state {
+[data-iii-ui="github"] .gh-ui-rv-state {
   white-space: nowrap;
 }
-[data-iii-ui="github"] .gh-rv-author {
+[data-iii-ui="github"] .gh-ui-rv-author {
+  font-family: var(--font-mono, ui-monospace, monospace);
   color: var(--color-ink-faint);
   white-space: nowrap;
 }
-[data-iii-ui="github"] .gh-rv-repo {
+[data-iii-ui="github"] .gh-ui-rv-repo {
   margin-left: 8px;
   color: var(--color-ink-ghost);
 }
-[data-iii-ui="github"] .gh-rv-ctype {
+[data-iii-ui="github"] .gh-ui-rv-ctype {
   white-space: nowrap;
 }
-[data-iii-ui="github"] .gh-rv-cname {
+[data-iii-ui="github"] .gh-ui-rv-cname {
+  font-family: var(--font-mono, ui-monospace, monospace);
   color: var(--color-ink);
   word-break: break-all;
   width: 100%;
 }
-[data-iii-ui="github"] .gh-rv-csize {
+[data-iii-ui="github"] .gh-ui-rv-csize {
+  font-family: var(--font-mono, ui-monospace, monospace);
   color: var(--color-ink-faint);
   white-space: nowrap;
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="github"] .gh-rv-gcell {
+[data-iii-ui="github"] .gh-ui-rv-gcell {
+  font-family: var(--font-mono, ui-monospace, monospace);
   color: var(--color-ink);
   overflow-wrap: anywhere;
 }
-[data-iii-ui="github"] .gh-rv-more {
+[data-iii-ui="github"] .gh-ui-rv-more {
   font-size: 11px;
   color: var(--color-ink-faint);
   padding-top: 6px;
@@ -264,7 +449,7 @@
 }
 
 /* text / outcome streams */
-[data-iii-ui="github"] .gh-rv-text {
+[data-iii-ui="github"] .gh-ui-rv-text {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 12px;
   color: var(--color-ink);
@@ -273,25 +458,27 @@
   max-height: 320px;
   overflow: auto;
 }
-[data-iii-ui="github"] .gh-rv-errtext {
+[data-iii-ui="github"] .gh-ui-rv-errtext {
   color: var(--color-alert);
 }
-[data-iii-ui="github"] .gh-rv-outcome {
+[data-iii-ui="github"] .gh-ui-rv-outcome {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-[data-iii-ui="github"] .gh-rv-exit {
+[data-iii-ui="github"] .gh-ui-rv-exit {
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 12px;
   color: var(--color-ok);
   text-transform: lowercase;
 }
-[data-iii-ui="github"] .gh-rv-stream {
+[data-iii-ui="github"] .gh-ui-rv-stream {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
-[data-iii-ui="github"] .gh-rv-slabel {
+[data-iii-ui="github"] .gh-ui-rv-slabel {
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 10px;
   color: var(--color-ink-faint);
   text-transform: uppercase;
@@ -299,57 +486,35 @@
 }
 
 /* diff */
-[data-iii-ui="github"] .gh-rv-diff {
+[data-iii-ui="github"] .gh-ui-rv-diff {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 12px;
   line-height: 1.5;
   max-height: 360px;
   overflow: auto;
 }
-[data-iii-ui="github"] .gh-rv-dline {
+[data-iii-ui="github"] .gh-ui-rv-dline {
   white-space: pre;
   color: var(--color-ink);
 }
-[data-iii-ui="github"] .gh-rv-add {
+[data-iii-ui="github"] .gh-ui-rv-add {
   color: var(--color-ok);
 }
-[data-iii-ui="github"] .gh-rv-del {
+[data-iii-ui="github"] .gh-ui-rv-del {
   color: var(--color-alert);
 }
-[data-iii-ui="github"] .gh-rv-hunk {
+[data-iii-ui="github"] .gh-ui-rv-hunk {
   color: var(--color-ink-faint);
 }
 
-@media (max-width: 720px) {
-  [data-iii-ui="github"] .gh-feed-time {
-    display: none;
-  }
-  [data-iii-ui="github"] .gh-feed-fn {
-    width: 8rem;
-  }
-}
-
-/* --- tab shell (GithubPage.tsx) -------------------------------------- */
-[data-iii-ui="github"] .gh-tabs {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-[data-iii-ui="github"] .gh-tabs-list {
-  padding: 12px 24px 0;
-}
-[data-iii-ui="github"] .gh-tabs-content {
-  min-height: 0;
-}
-
-/* --- git graph (GitGraph.tsx) ---------------------------------------- */
+/* ── git graph (GitGraph.tsx) ─────────────────────────────────────────── */
 /*
  * Lane colors are semantically fixed (like syntax highlighting), not theme
- * tokens: gitk/Sourcetree keep the same lane palette in both themes. The eight
- * hues below read on both the light and dark console panels. The renderer sets
- * a gh-lane-cN class and paints via currentColor.
+ * tokens: gitk/Sourcetree keep the same lane palette in both themes. The
+ * eight hues below read on both the light and dark console panels. The
+ * renderer sets a gh-ui-lane-c<N> class and paints via currentColor.
  */
-[data-iii-ui="github"] .gh-graph-page {
+[data-iii-ui="github"] .gh-ui-graph {
   --gh-g0: #2f81f7;
   --gh-g1: #3fb950;
   --gh-g2: #a371f7;
@@ -359,74 +524,68 @@
   --gh-g6: #c9a227;
   --gh-g7: #f0503c;
 }
-[data-iii-ui="github"] .gh-lane-c0 { color: var(--gh-g0); }
-[data-iii-ui="github"] .gh-lane-c1 { color: var(--gh-g1); }
-[data-iii-ui="github"] .gh-lane-c2 { color: var(--gh-g2); }
-[data-iii-ui="github"] .gh-lane-c3 { color: var(--gh-g3); }
-[data-iii-ui="github"] .gh-lane-c4 { color: var(--gh-g4); }
-[data-iii-ui="github"] .gh-lane-c5 { color: var(--gh-g5); }
-[data-iii-ui="github"] .gh-lane-c6 { color: var(--gh-g6); }
-[data-iii-ui="github"] .gh-lane-c7 { color: var(--gh-g7); }
+[data-iii-ui="github"] .gh-ui-lane-c0 { color: var(--gh-g0); }
+[data-iii-ui="github"] .gh-ui-lane-c1 { color: var(--gh-g1); }
+[data-iii-ui="github"] .gh-ui-lane-c2 { color: var(--gh-g2); }
+[data-iii-ui="github"] .gh-ui-lane-c3 { color: var(--gh-g3); }
+[data-iii-ui="github"] .gh-ui-lane-c4 { color: var(--gh-g4); }
+[data-iii-ui="github"] .gh-ui-lane-c5 { color: var(--gh-g5); }
+[data-iii-ui="github"] .gh-ui-lane-c6 { color: var(--gh-g6); }
+[data-iii-ui="github"] .gh-ui-lane-c7 { color: var(--gh-g7); }
 
-[data-iii-ui="github"] .gh-graph-body {
-  padding-top: 16px;
-}
-[data-iii-ui="github"] .gh-graph-skeleton {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-[data-iii-ui="github"] .gh-graph-split {
-  display: flex;
-  flex-direction: column;
+/* graph over detail: the graph flexes, the detail docks under it (wide) or
+   fills the whole pane (narrow drill-in — the graph unmounts) */
+[data-iii-ui="github"] .gh-ui-graph-split {
+  flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
-[data-iii-ui="github"] .gh-graph-scroll {
+[data-iii-ui="github"] .gh-ui-graph-scroll {
   position: relative;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
-  max-height: calc(100vh - 260px);
-  min-height: 180px;
-  margin-top: 12px;
-  border-top: 1px solid var(--color-rule);
 }
-[data-iii-ui="github"] .gh-graph-svg {
+[data-iii-ui="github"] .gh-ui-graph-svg {
   position: absolute;
   left: 0;
   top: 0;
   pointer-events: none;
   overflow: visible;
 }
-[data-iii-ui="github"] .gh-node-selected {
+[data-iii-ui="github"] .gh-ui-node-selected {
   stroke: var(--color-accent);
   stroke-width: 2px;
 }
 
-[data-iii-ui="github"] .gh-graph-rows {
+[data-iii-ui="github"] .gh-ui-graph-rows {
   position: relative;
 }
-[data-iii-ui="github"] .gh-graph-row {
+[data-iii-ui="github"] .gh-ui-graph-row {
   display: flex;
   align-items: center;
   gap: 10px;
+  padding-right: 16px;
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background-color 120ms ease;
   overflow: hidden;
 }
-[data-iii-ui="github"] .gh-graph-row:hover {
-  background: var(--color-panel);
+[data-iii-ui="github"] .gh-ui-graph-row:hover {
+  background: var(--color-surface-hover);
 }
-[data-iii-ui="github"] .gh-graph-row.selected {
-  background: var(--color-panel);
+/* Selection = wash + accent indicator, not color alone. */
+[data-iii-ui="github"] .gh-ui-graph-row.selected {
+  background: var(--color-surface-selected);
   box-shadow: inset 2px 0 0 var(--color-accent);
 }
-[data-iii-ui="github"] .gh-graph-row:focus-visible {
-  outline: 2px solid var(--color-ring);
+[data-iii-ui="github"] .gh-ui-graph-row:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
   outline-offset: -2px;
 }
 
-[data-iii-ui="github"] .gh-graph-refs {
+[data-iii-ui="github"] .gh-ui-graph-refs {
   display: inline-flex;
   gap: 4px;
   flex-shrink: 0;
@@ -435,23 +594,23 @@
   overflow: hidden;
   white-space: nowrap;
 }
-[data-iii-ui="github"] .gh-graph-refs > * {
+[data-iii-ui="github"] .gh-ui-graph-refs > * {
   flex-shrink: 0;
   max-width: 14rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-[data-iii-ui="github"] .gh-graph-subject {
+[data-iii-ui="github"] .gh-ui-graph-subject {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--color-ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-[data-iii-ui="github"] .gh-graph-meta {
+[data-iii-ui="github"] .gh-ui-graph-meta {
   display: inline-flex;
   align-items: center;
   gap: 10px;
@@ -460,42 +619,97 @@
   color: var(--color-ink-faint);
   white-space: nowrap;
 }
-[data-iii-ui="github"] .gh-graph-hash {
+[data-iii-ui="github"] .gh-ui-graph-hash {
   font-family: var(--font-mono, ui-monospace, monospace);
   color: var(--color-ink-ghost);
 }
-[data-iii-ui="github"] .gh-graph-author {
+[data-iii-ui="github"] .gh-ui-graph-author {
   max-width: 12rem;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-
-/* --- commit detail (git show) ---------------------------------------- */
-[data-iii-ui="github"] .gh-graph-detail {
-  margin-top: 12px;
-  border: 1px solid var(--color-rule);
-  border-left: 2px solid var(--color-accent);
-  background: var(--color-paper-2);
+[data-iii-ui="github"] .gh-ui-graph-time {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="github"] .gh-graph-detail-head {
+
+/* Narrow graph rows (the row height itself grows to touch size in TSX —
+   the SVG gutter must stay aligned): the author drops, refs get more room. */
+[data-iii-ui="github"] .gh-ui-graph.narrow .gh-ui-graph-author {
+  display: none;
+}
+[data-iii-ui="github"] .gh-ui-graph.narrow .gh-ui-graph-refs {
+  max-width: 55%;
+}
+
+/* ── commit detail (git show) ─────────────────────────────────────────── */
+
+[data-iii-ui="github"] .gh-ui-detail {
+  flex: 0 1 auto;
+  max-height: 55%;
+  min-height: 140px;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--color-edge);
+  background: var(--color-panel);
+}
+/* Narrow drill-in: the detail is the only pane — let it fill. */
+[data-iii-ui="github"] .gh-ui-graph.narrow .gh-ui-detail {
+  flex: 1;
+  max-height: none;
+  min-height: 0;
+  border-top: 0;
+}
+[data-iii-ui="github"] .gh-ui-detail-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--color-rule);
+  min-height: 40px;
+  padding: 4px 10px 4px 16px;
+  flex-shrink: 0;
+  background: var(--color-panel-raised);
+  border-bottom: 1px solid var(--color-edge);
 }
-[data-iii-ui="github"] .gh-graph-detail-body {
-  padding: 8px 10px;
-  max-height: 34vh;
+[data-iii-ui="github"] .gh-ui-detail-head .spacer {
+  flex: 1;
+}
+[data-iii-ui="github"] .gh-ui-detail-body {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
+  padding: 10px 16px;
+}
+[data-iii-ui="github"] .gh-ui-detail-body .gh-ui-rv-diff {
+  max-height: none;
+  overflow: visible;
+}
+[data-iii-ui="github"] .gh-ui-detail-body .gh-ui-skel {
+  padding: 8px 0;
 }
 
-@media (max-width: 720px) {
-  [data-iii-ui="github"] .gh-graph-author {
-    display: none;
-  }
-  [data-iii-ui="github"] .gh-graph-refs {
-    max-width: 55%;
-  }
+/* back affordance (narrow drill-in flow) */
+[data-iii-ui="github"] .gh-ui-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="github"] .gh-ui-back:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="github"] .gh-ui-back:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="github"] .gh-ui-back-icon {
+  width: 16px;
+  height: 16px;
 }

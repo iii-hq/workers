@@ -80,6 +80,13 @@ export interface PageRenderProps {
    * Absent when the page renders outside a closable pane.
    */
   onRequestClose?: () => void
+  /**
+   * The active chat conversation's working directory, live: the page
+   * re-renders with the new value when the user picks another folder in
+   * chat, so filesystem-shaped pages can follow along. `null`/absent when
+   * no conversation is active or none is set.
+   */
+  workingDir?: string | null
 }
 
 export interface PageRegistration {

@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@fontsource/chivo-mono": "^5.2.8",
-    "@fontsource/geist": "^5.2.8",
+    "@fontsource/inter": "^5.2.8",
     "@fontsource/geist-mono": "^5.2.8",
     "@lexical/react": "^0.44.0",
     "@pierre/diffs": "^1.2.7",
