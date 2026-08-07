@@ -26,6 +26,12 @@ interface ConversationSidebarProps {
   width?: number
   /** Wire to enable drag-resize; omit to render a fixed-width panel. */
   onWidthChange?: (next: number) => void
+  /**
+   * Drill-in mode (narrow hosts): the list fills the pane instead of
+   * rendering as a fixed-width rail. Pair with omitted collapse/resize
+   * wiring — neither affordance makes sense when the list IS the page.
+   */
+  narrow?: boolean
   onCreate: () => void
   onSelect: (id: string) => void
   onRename: (id: string, title: string) => void
@@ -64,6 +70,7 @@ export function ConversationSidebar({
   onToggleCollapsed,
   width = SIDEBAR_DEFAULT_WIDTH,
   onWidthChange,
+  narrow = false,
   onCreate,
   onSelect,
   onRename,
@@ -172,9 +179,10 @@ export function ConversationSidebar({
   return (
     <>
       <aside
-        style={{ width }}
+        style={narrow ? undefined : { width }}
         className={cn(
           'shrink-0 flex flex-col bg-sidebar',
+          narrow && 'flex-1 min-w-0',
           isResizing && 'select-none',
         )}
       >

@@ -1,4 +1,4 @@
-import { Copy, Folder } from 'lucide-react'
+import { ArrowLeft, Copy, Folder } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
@@ -131,6 +131,12 @@ interface ChatViewProps {
   density?: 'route' | 'dock'
   /** Close the hosting pane — the header's standard ✕ when present. */
   onRequestClose?: () => void
+  /**
+   * Drill-out affordance for narrow (one-pane-at-a-time) hosts: when
+   * set, the header renders a ← back button returning to the session
+   * list and the chrome tightens to the compact (dock) padding.
+   */
+  onBack?: () => void
   onUpdateModel: (id: string, model: ModelId) => void
   onUpdateMode: (id: string, mode: Mode) => void
   onUpdateWorkingDir: (id: string, dir: string) => void
@@ -146,6 +152,7 @@ export function ChatView({
   catalogLoading,
   density = 'route',
   onRequestClose,
+  onBack,
   onUpdateModel,
   onUpdateMode,
   onUpdateWorkingDir,
@@ -1519,8 +1526,9 @@ export function ChatView({
   })()
 
   const isDock = density === 'dock'
-  const headerPad = isDock ? 'px-4' : 'px-9'
-  const footerPad = isDock ? 'px-4 pb-4 pt-2' : 'px-9 pb-6 pt-2'
+  const compact = isDock || onBack !== undefined
+  const headerPad = compact ? 'px-4' : 'px-9'
+  const footerPad = compact ? 'px-4 pb-4 pt-2' : 'px-9 pb-6 pt-2'
 
   // Resolve the working directory to its managed worktree (badge), and keep
   // it fresh across landed / land-blocked events.
@@ -1690,6 +1698,17 @@ export function ChatView({
         }
       >
         <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex items-center gap-2 min-w-0 flex-1">
+          {onBack ? (
+            <button
+              type="button"
+              onClick={onBack}
+              aria-label="back to conversations"
+              title="back to conversations"
+              className="flex items-center justify-center size-7 -ml-1.5 flex-shrink-0 rounded-sm text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+            >
+              <ArrowLeft aria-hidden className="size-4" />
+            </button>
+          ) : null}
           <span className="text-accent flex-shrink-0" aria-hidden>
             $
           </span>

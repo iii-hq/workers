@@ -1,4 +1,10 @@
-import { type ReactNode, useEffect, useMemo, useRef } from 'react'
+import {
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from 'react'
 import { resultEnvelope } from '@/components/function-trigger/FunctionTriggerCard'
 import {
   rawRedactor,
@@ -205,6 +211,20 @@ export function MessageList({
   // Read optionally so isolated renders (Storybook) still work without the
   // ConversationsProvider; the empty state falls back to `ready` there.
   const ctx = useConversationsCtxOptional()
+
+  /* Opening a session lands on the latest exchange, not the beginning: one
+     instant jump to the bottom the first time the transcript has content —
+     on mount for an already-hydrated session, or when the first hydration
+     batch arrives otherwise. Layout effect so the jump happens before
+     paint (no flash of the top). After this, the near-bottom rule below
+     owns scrolling, so reading upward is never interrupted. */
+  const didInitialScrollRef = useRef(false)
+  useLayoutEffect(() => {
+    if (didInitialScrollRef.current || messages.length === 0) return
+    didInitialScrollRef.current = true
+    const c = containerRef.current
+    if (c) c.scrollTop = c.scrollHeight
+  }, [messages])
 
   /* Auto-scroll only when the user is already near the bottom. The effect body
      reads layout off refs but the trigger we care about is "messages changed"

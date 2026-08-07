@@ -48,7 +48,7 @@ export function SaveBar({
   if (!shouldShow) return null
 
   return (
-    <div className="sticky bottom-0 inset-x-0 border-t border-rule bg-bg px-6 py-3 flex items-center justify-between gap-4 shadow-[0_-4px_12px_-8px_rgba(0,0,0,0.15)]">
+    <div className="sticky bottom-0 inset-x-0 border-t border-edge bg-panel-raised px-4 py-2.5 flex items-center justify-between gap-4">
       <SaveStatusText status={status} dirty={dirty} />
       <div className="flex items-center gap-2">
         <Button

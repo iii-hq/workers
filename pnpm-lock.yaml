@@ -146,6 +146,9 @@ importers:
       '@biomejs/biome':
         specifier: ^2.4.15
         version: 2.5.4
+      '@fontsource/geist':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@iii-dev/console-ui':
         specifier: workspace:*
         version: link:../../packages/console-ui
@@ -809,6 +812,9 @@ packages:
 
   '@fontsource/geist-mono@5.3.0':
     resolution: {integrity: sha512-UtJ1BBBCVpMYdIcW7nEB45UAoAw5M53ZXs2t0ciPW+IokuAAIc56M8+kW5tXbRJCTpDw4XTtU7proT6NdQAHTg==}
+
+  '@fontsource/geist@5.3.0':
+    resolution: {integrity: sha512-u03ftlfVwb05uijq2jGDJ03/HKGqMKaNFk7KOhkpBUex8+BhrAOfMs/XciJ2UUNUX9fEsZbZQld/RWMA2oFU7g==}
 
   '@fontsource/inter@5.3.0':
     resolution: {integrity: sha512-RofMylZmjlJEfELXeNHFWBRcSs75rGU/6bV2S2jfnvv/3rPXPGe0LgUJTklcHZ9lM4OZmAVFhcJPnACfb91A3g==}
@@ -3752,6 +3758,8 @@ snapshots:
   '@fontsource/chivo-mono@5.3.0': {}
 
   '@fontsource/geist-mono@5.3.0': {}
+
+  '@fontsource/geist@5.3.0': {}
 
   '@fontsource/inter@5.3.0': {}
 

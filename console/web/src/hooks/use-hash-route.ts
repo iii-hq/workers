@@ -13,10 +13,24 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 export type View = 'configuration' | 'traces' | 'workers' | 'ext'
 
 export interface WorkersConfigurationRoute {
+  /**
+   * Whether the configuration surface is showing at all. Distinct from
+   * `configurationId` so the narrow drill-in flow can sit on the list
+   * (`#/workers/configuration`, open with nothing selected) without
+   * falling back to the workers table.
+   */
+  open: boolean
   configurationId: string | null
   fieldPath: string[]
 }
 
+const CLOSED_CONFIGURATION_ROUTE: WorkersConfigurationRoute = {
+  open: false,
+  configurationId: null,
+  fieldPath: [],
+}
+
+const WORKERS_CONFIGURATION_ROOT = '#/workers/configuration'
 const WORKERS_CONFIGURATION_PREFIX = '#/workers/configuration/'
 const LEGACY_WORKERS_CONFIGURATION_PREFIX = '#/configuration/workers/'
 
@@ -43,19 +57,26 @@ function parseConfigurationRouteWithPrefix(
     .filter(Boolean)
     .map(decodeSegment)
   const [configurationId, ...fieldPath] = segments
-  if (!configurationId) return { configurationId: null, fieldPath: [] }
-  return { configurationId, fieldPath }
+  if (!configurationId)
+    return { open: true, configurationId: null, fieldPath: [] }
+  return { open: true, configurationId, fieldPath }
 }
 
 export function workersConfigurationRouteFromHash(
   hash: string,
 ): WorkersConfigurationRoute {
+  // Bare `#/workers/configuration`: the surface is open with nothing
+  // selected — the narrow flow's list page.
+  if (hash === WORKERS_CONFIGURATION_ROOT) {
+    return { open: true, configurationId: null, fieldPath: [] }
+  }
   return (
     parseConfigurationRouteWithPrefix(hash, WORKERS_CONFIGURATION_PREFIX) ??
     parseConfigurationRouteWithPrefix(
       hash,
       LEGACY_WORKERS_CONFIGURATION_PREFIX,
-    ) ?? { configurationId: null, fieldPath: [] }
+    ) ??
+    CLOSED_CONFIGURATION_ROUTE
   )
 }
 
@@ -238,10 +259,11 @@ export function useExtPageRoute(): string | null {
 export function useWorkersConfigurationRoute(): [
   WorkersConfigurationRoute,
   (configurationId: string | null, fieldPath?: string[]) => void,
+  () => void,
 ] {
   const [route, setRoute] = useState<WorkersConfigurationRoute>(() => {
     if (typeof window === 'undefined') {
-      return { configurationId: null, fieldPath: [] }
+      return CLOSED_CONFIGURATION_ROUTE
     }
     return workersConfigurationRouteFromHash(window.location.hash)
   })
@@ -257,6 +279,7 @@ export function useWorkersConfigurationRoute(): [
       const next = workersConfigurationRouteFromHash(window.location.hash)
       const cur = routeRef.current
       if (
+        next.open !== cur.open ||
         next.configurationId !== cur.configurationId ||
         next.fieldPath.join('/') !== cur.fieldPath.join('/')
       ) {
@@ -268,11 +291,13 @@ export function useWorkersConfigurationRoute(): [
     return () => window.removeEventListener('hashchange', sync)
   }, [])
 
+  /** Move within the open surface: to an entry, or (null) back to the
+      unselected list — the narrow flow's drill-out. */
   const navigate = useCallback(
     (configurationId: string | null, fieldPath: string[] = []) => {
       const targetHash = configurationId
         ? hashForWorkersConfiguration(configurationId, fieldPath)
-        : '#/workers'
+        : WORKERS_CONFIGURATION_ROOT
       if (window.location.hash !== targetHash) {
         window.location.hash = targetHash
       } else {
@@ -282,5 +307,15 @@ export function useWorkersConfigurationRoute(): [
     [],
   )
 
-  return [route, navigate]
+  /** Leave the configuration surface entirely — back to the workers table. */
+  const close = useCallback(() => {
+    const targetHash = '#/workers'
+    if (window.location.hash !== targetHash) {
+      window.location.hash = targetHash
+    } else {
+      setRoute(CLOSED_CONFIGURATION_ROUTE)
+    }
+  }, [])
+
+  return [route, navigate, close]
 }

@@ -387,7 +387,7 @@ function ScreenBody({
       // same way the old side dock was, especially in two-column layouts.
       return <ChatPanel density="dock" onRequestClose={onClose} />
     case 'workers':
-      return <Workers />
+      return <Workers onRequestClose={onClose} />
     default:
       return <TracesV2 onRequestClose={onClose} />
   }
