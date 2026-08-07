@@ -42,6 +42,7 @@ import {
   discardOne,
   dlqMessages,
   dlqTopics,
+  frameSpanNames,
   listTopics,
   publish,
   type QueueEvent,
@@ -118,19 +119,29 @@ function useQueueTraffic(
 
   useEffect(() => {
     let timer: number | null = null
+    // Trailing debounce with a ceiling: continuous traffic keeps extending a
+    // plain debounce forever, and the page would never reload exactly when
+    // the most is happening.
+    let deadline = 0
     const offHandler = host.iii.on(handlerId, (frame: unknown) => {
-      const text = JSON.stringify(frame ?? '')
-      const touches =
-        text.includes('execute engine::queue::') ||
-        text.includes('execute iii::durable::publish') ||
-        text.includes('execute iii::queue::') ||
-        watchedRef.current.some((fn) => text.includes(`execute ${fn}`))
+      const touches = frameSpanNames(frame).some(
+        (name) =>
+          name.startsWith('execute engine::queue::') ||
+          name === 'execute iii::durable::publish' ||
+          name.startsWith('execute iii::queue::') ||
+          watchedRef.current.some((fn) => name === `execute ${fn}`),
+      )
       if (!touches) return
-      if (timer !== null) window.clearTimeout(timer)
-      timer = window.setTimeout(() => {
-        timer = null
-        reloadRef.current()
-      }, 600)
+      const now = Date.now()
+      if (timer === null) deadline = now + 2500
+      else window.clearTimeout(timer)
+      timer = window.setTimeout(
+        () => {
+          timer = null
+          reloadRef.current()
+        },
+        Math.min(600, Math.max(0, deadline - now)),
+      )
     })
     let offTrigger: (() => void) | undefined
     try {
@@ -183,15 +194,15 @@ export function QueuesPage({
         setSetup(setupValue)
         setError(null)
         // A page that opens onto nothing selected is a page that opens
-        // mostly empty. Pick the topic with dead letters, else the busiest.
+        // mostly empty. Pick the topic with dead letters, else the first —
+        // on the FIRST populated load only: later traffic reloads must not
+        // override a deliberately cleared selection.
         if (!pickedRef.current && topicRows.length > 0) {
           pickedRef.current = true
           const dead = dlqRows[0]?.topic
-          setSelected((prev) => prev ?? dead ?? null)
+          setSelected((prev) => prev ?? dead ?? topicRows[0]?.name ?? null)
         }
         setStatsByTopic(await statsForAll(host, topicRows))
-        if (!pickedRef.current) return
-        setSelected((prev) => prev ?? topicRows[0]?.name ?? null)
       },
       (err: unknown) => setError(errorMessage(err)),
     )
@@ -629,9 +640,9 @@ function ActivityPanel({
   const now = Date.now()
   return (
     <div className="queue-ui-activity">
-      {events.map((event) => (
+      {events.map((event, i) => (
         <div
-          key={`${event.kind}-${event.functionId}-${event.atMs}`}
+          key={`${event.kind}-${event.functionId}-${event.atMs}-${i}`}
           className="queue-ui-event"
         >
           <StatusDot tone={event.ok ? 'accent' : 'alert'} />

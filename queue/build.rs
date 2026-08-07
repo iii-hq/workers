@@ -29,6 +29,8 @@ fn main() {
     // project links @iii-dev/console-ui from packages/console-ui).
     println!("cargo:rerun-if-changed=../pnpm-lock.yaml");
     println!("cargo:rerun-if-changed=ui/tsconfig.json");
+    println!("cargo:rerun-if-env-changed=SKIP_UI_BUILD");
+    println!("cargo:rerun-if-env-changed=PNPM");
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let ui_dir = manifest_dir.join("ui");
@@ -130,6 +132,14 @@ fn dist_is_fresh(dist_asset: &Path, ui_dir: &Path) -> bool {
 }
 
 fn subtree_older_than(root: &Path, ceiling: SystemTime) -> bool {
+    // The directory's own mtime catches deletions: removing a file bumps the
+    // parent while every surviving entry stays old.
+    let Ok(root_modified) = root.metadata().and_then(|m| m.modified()) else {
+        return false;
+    };
+    if root_modified > ceiling {
+        return false;
+    }
     let Ok(read) = std::fs::read_dir(root) else {
         return false;
     };

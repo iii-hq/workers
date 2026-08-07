@@ -314,19 +314,42 @@ export interface QueueEvent {
   ok: boolean
 }
 
+/**
+ * Span names carried by one all-spans stream frame. The envelope nests as
+ * `{event: {event: {data: {spans}}}}`; reading the names directly beats
+ * JSON.stringify'ing the whole frame just to substring-match it.
+ */
+export function frameSpanNames(frame: unknown): string[] {
+  if (!isRecord(frame)) return []
+  const outer = isRecord(frame.event) ? frame.event : undefined
+  const inner = outer && isRecord(outer.event) ? outer.event : undefined
+  const data = inner && isRecord(inner.data) ? inner.data : undefined
+  const spans = data && Array.isArray(data.spans) ? data.spans : []
+  const names: string[] = []
+  for (const span of spans) {
+    if (isRecord(span) && typeof span.name === 'string') names.push(span.name)
+  }
+  return names
+}
+
 function spanEvents(
   out: unknown,
   kind: QueueEvent['kind'],
   topicFilter?: string,
+  lenient = false,
 ): QueueEvent[] {
   const spans = isRecord(out) && Array.isArray(out.spans) ? out.spans : []
   const events: QueueEvent[] = []
   for (const span of spans) {
     if (!isRecord(span)) continue
     if (topicFilter !== undefined) {
-      // Publishes carry the topic in the recorded input payload event.
+      // Publishes carry the topic in the recorded input payload event, so
+      // they filter exactly. Delivery inputs are the bare message data — the
+      // envelope is gone — so a subscriber bound to several topics is only
+      // filterable when the payload happens to carry a `topic` field:
+      // lenient keeps a span unless that field names a DIFFERENT topic.
       const eventsAttr = Array.isArray(span.events) ? span.events : []
-      let matches = false
+      let matches = lenient
       for (const entry of eventsAttr) {
         if (!isRecord(entry) || entry.name !== 'iii.invocation.input') continue
         for (const attr of Array.isArray(entry.attributes)
@@ -335,8 +358,11 @@ function spanEvents(
           if (!Array.isArray(attr) || attr[0] !== 'iii.payload.json') continue
           try {
             const payload = JSON.parse(String(attr[1]))
-            if (isRecord(payload) && payload.topic === topicFilter) {
+            if (!isRecord(payload)) continue
+            if (payload.topic === topicFilter) {
               matches = true
+            } else if (lenient && typeof payload.topic === 'string') {
+              matches = false
             }
           } catch {
             // Unparseable payload: not a match.
@@ -372,29 +398,40 @@ export async function recentActivity(
   topic: string,
   subscribers: readonly Subscriber[],
 ): Promise<QueueEvent[]> {
-  const reads: Promise<QueueEvent[]>[] = [
-    host.iii
-      .trigger('engine::traces::list', {
-        name: 'execute iii::durable::publish',
-        limit: 60,
-        include_internal: true,
-      })
-      .then((out) => spanEvents(out, 'publish', topic)),
-  ]
-  for (const sub of subscribers) {
-    reads.push(
-      host.iii
-        .trigger('engine::traces::list', {
-          name: `execute ${sub.functionId}`,
-          limit: 25,
-          include_internal: true,
-        })
-        .then((out) => spanEvents(out, 'delivery')),
-    )
-  }
-  const settled = await Promise.allSettled(reads)
-  return settled
-    .flatMap((r) => (r.status === 'fulfilled' ? r.value : []))
+  const publishRead = host.iii
+    .trigger('engine::traces::list', {
+      name: 'execute iii::durable::publish',
+      limit: 60,
+      include_internal: true,
+    })
+    .then((out) => spanEvents(out, 'publish', topic))
+    .catch((): QueueEvent[] => [])
+
+  // Bounded like statsForAll — a topic with many subscribers must not
+  // stampede the engine with one traces call each, all at once.
+  const deliveries: QueueEvent[] = []
+  const pending = [...subscribers]
+  const pool = Array.from(
+    { length: Math.min(4, pending.length) },
+    async () => {
+      for (;;) {
+        const sub = pending.shift()
+        if (!sub) return
+        try {
+          const out = await host.iii.trigger('engine::traces::list', {
+            name: `execute ${sub.functionId}`,
+            limit: 25,
+            include_internal: true,
+          })
+          deliveries.push(...spanEvents(out, 'delivery', topic, true))
+        } catch {
+          // One unreadable subscriber must not blank the feed.
+        }
+      }
+    },
+  )
+  await Promise.all(pool)
+  return [...(await publishRead), ...deliveries]
     .sort((a, b) => b.atMs - a.atMs)
     .slice(0, 40)
 }
