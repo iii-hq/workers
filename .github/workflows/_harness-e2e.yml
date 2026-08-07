@@ -103,6 +103,11 @@ on:
         required: false
         type: boolean
         default: false
+      provisioning_attempts:
+        description: Full attempts allowed for bootstrap or Registry failures
+        required: false
+        type: number
+        default: 1
       validation_profile:
         description: Scenario profile resolved for this execution
         required: false
@@ -222,6 +227,7 @@ jobs:
           STACK_VERSIONS: ${{ inputs.stack_versions }}
           RESOLVE_STACK: ${{ inputs.resolve_stack }}
           PREBUILT_RUNNER: ${{ inputs.prebuilt_runner }}
+          PROVISIONING_ATTEMPTS: ${{ inputs.provisioning_attempts }}
           COVERAGE: ${{ inputs.coverage }}
         run: |
           set -euo pipefail
@@ -236,6 +242,7 @@ jobs:
           ' <<<"$SUBJECTS" >/dev/null
           [[ -n "$JUDGE_MODEL" ]]
           [[ "$JUDGE_PROVIDER" =~ ^[A-Za-z0-9_-]+$ ]]
+          [[ "$PROVISIONING_ATTEMPTS" =~ ^[12]$ ]]
           case "$STACK_MODE" in
             source) ;;
             registry)
@@ -514,7 +521,7 @@ jobs:
     needs: build
     if: inputs.stack_mode == 'registry' && inputs.resolve_stack
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: ${{ inputs.provisioning_attempts == 2 && 70 || 20 }}
     outputs:
       stack_versions: ${{ steps.identity.outputs.stack_versions }}
       stack_digest: ${{ steps.identity.outputs.stack_digest }}
@@ -581,6 +588,7 @@ jobs:
           HARNESS_E2E_STACK_DIGEST: ${{ inputs.stack_digest }}
           HARNESS_E2E_RESOLVE_STACK: 'true'
           HARNESS_E2E_RESOLVE_ONLY: 'true'
+          HARNESS_E2E_PROVISIONING_ATTEMPTS: ${{ inputs.provisioning_attempts }}
           HARNESS_E2E_MODEL_SPECS: ${{ steps.models.outputs.json }}
           HARNESS_E2E_BIN: ${{ github.workspace }}/target/runner/harness-e2e
           HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e-resolution
@@ -590,7 +598,7 @@ jobs:
           HARNESS_E2E_PROVIDER: ${{ steps.models.outputs.first_provider }}
           HARNESS_E2E_JUDGE_MODEL: ${{ inputs.judge_model }}
           HARNESS_E2E_JUDGE_PROVIDER: ${{ inputs.judge_provider }}
-        run: harness/tests/e2e/run-deployed-ci.sh
+        run: harness/tests/e2e/run-deployed-with-infra-retry.sh
 
       - name: Export resolved Registry identity
         id: identity
@@ -621,7 +629,7 @@ jobs:
       (needs.resolve-registry-stack.result == 'success' ||
       needs.resolve-registry-stack.result == 'skipped')
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: ${{ inputs.provisioning_attempts == 2 && 70 || 35 }}
     strategy:
       fail-fast: false
       max-parallel: ${{ inputs.max_parallel }}
@@ -707,6 +715,7 @@ jobs:
           HARNESS_E2E_STACK_VERSIONS: ${{ inputs.resolve_stack && needs.resolve-registry-stack.outputs.stack_versions || inputs.stack_versions }}
           HARNESS_E2E_STACK_DIGEST: ${{ inputs.resolve_stack && needs.resolve-registry-stack.outputs.stack_digest || inputs.stack_digest }}
           HARNESS_E2E_RESOLVE_STACK: 'false'
+          HARNESS_E2E_PROVISIONING_ATTEMPTS: ${{ inputs.provisioning_attempts }}
           HARNESS_E2E_BIN: ${{ github.workspace }}/target/runner/harness-e2e
           HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
           HARNESS_E2E_SCENARIO: ${{ matrix.scenario }}
@@ -715,7 +724,7 @@ jobs:
           HARNESS_E2E_PROVIDER: ${{ matrix.subject.provider }}
           HARNESS_E2E_JUDGE_MODEL: ${{ inputs.judge_model }}
           HARNESS_E2E_JUDGE_PROVIDER: ${{ inputs.judge_provider }}
-        run: harness/tests/e2e/run-deployed-ci.sh
+        run: harness/tests/e2e/run-deployed-with-infra-retry.sh
 
       - name: Write benchmark context
         if: always()
@@ -776,6 +785,7 @@ jobs:
             target/harness-e2e/deployment.json
             target/harness-e2e/cli-version.txt
             target/harness-e2e/stack/
+            target/harness-e2e/attempts/
           retention-days: 14
           if-no-files-found: error
 
