@@ -1,25 +1,25 @@
 {
   "execution": {
-    "actor": "iii-release-control-dev[bot]",
-    "attempt": 1,
-    "completed_at": "2026-08-07T02:01:13Z",
+    "actor": "ytallo",
+    "attempt": 2,
+    "completed_at": "2026-08-07T02:02:58Z",
     "conclusion": "failure",
     "event": "workflow_dispatch",
-    "head_branch": "daily/2026-08-07",
+    "head_branch": "main",
     "head_sha": "8c0c1ae621c439a49c097b073a85c1b13f5cc2e8",
-    "id": "31134926293-1",
+    "id": "31133924989-2",
     "repository": "iii-hq/workers",
-    "run_id": "31134926293",
-    "started_at": "2026-08-07T00:31:07Z",
-    "workflow_name": "Test \u00b7 harness_source \u00b7 f78ebe5e-3366-4848-a562-ba3af2401b0f",
-    "workflow_url": "https://github.com/iii-hq/workers/actions/runs/31134926293"
+    "run_id": "31133924989",
+    "started_at": "2026-08-07T01:39:46Z",
+    "workflow_name": "Test \u00b7 harness_source \u00b7 workflow_dispatch",
+    "workflow_url": "https://github.com/iii-hq/workers/actions/runs/31133924989"
   },
-  "generated_at": "2026-08-07T02:00:39.284301+00:00",
+  "generated_at": "2026-08-07T02:02:21.203199+00:00",
   "lane": "daily",
   "release": {
     "registry_tag": "daily",
     "tag": "daily/2026-08-07",
-    "url": "https://github.com/iii-hq/workers/commit/8c0c1ae621c439a49c097b073a85c1b13f5cc2e8",
+    "url": "https://github.com/iii-hq/workers/commit/450995a8672a43416c09c73c193ab2b035dc8dd7",
     "version": "2026-08-07",
     "worker": "main"
   },
@@ -37,9 +37,9 @@
           {
             "aggregate": {
               "cost": {
-                "judge_usd": 0.0037078399999999996,
-                "subject_usd": 0.0008493576,
-                "total_usd": 0.0045571976
+                "judge_usd": 0.0036574800000000003,
+                "subject_usd": 0.0008539776000000001,
+                "total_usd": 0.0045114576
               },
               "hard_gate_failures": 0,
               "median_score": 100.0,
@@ -54,9 +54,9 @@
             "runs": [
               {
                 "cost": {
-                  "judge_usd": 0.001206,
-                  "subject_usd": 0.0002853592,
-                  "total_usd": 0.0014913592000000001
+                  "judge_usd": 0.001212,
+                  "subject_usd": 0.0002832592,
+                  "total_usd": 0.0014952592
                 },
                 "failures": [],
                 "hard_gates": [
@@ -80,112 +80,112 @@
                 "metrics": {
                   "totals": {
                     "cache_read_tokens": 4864,
-                    "cost_usd": 0.0002853592,
-                    "function_call_errors": 0,
-                    "function_calls": 0,
-                    "input_tokens": 1745,
-                    "output_tokens": 98,
-                    "reasoning_tokens": 57,
-                    "sessions": 1,
-                    "turns": 1
-                  }
-                },
-                "retry_attempts": [],
-                "run_id": "61fcc2b22c4e4588986dea513e4ddf31",
-                "score": 100,
-                "session_id": "e2e_61fcc2b22c4e4588986dea513e4ddf31",
-                "status": "passed",
-                "wall_time_ms": 5837
-              },
-              {
-                "cost": {
-                  "judge_usd": 0.0012598,
-                  "subject_usd": 0.0002857792,
-                  "total_usd": 0.0015455792
-                },
-                "failures": [],
-                "hard_gates": [
-                  {
-                    "id": "response_present",
-                    "passed": true,
-                    "reason": "the assistant returned a textual response"
-                  },
-                  {
-                    "id": "no_function_calls",
-                    "passed": true,
-                    "reason": "observed 0 function call(s)"
-                  },
-                  {
-                    "id": "single_turn",
-                    "passed": true,
-                    "reason": "observed 1 turn(s), expected exactly one"
-                  }
-                ],
-                "judge_attempts": 1,
-                "metrics": {
-                  "totals": {
-                    "cache_read_tokens": 4864,
-                    "cost_usd": 0.0002857792,
-                    "function_call_errors": 0,
-                    "function_calls": 0,
-                    "input_tokens": 1742,
-                    "output_tokens": 101,
-                    "reasoning_tokens": 53,
-                    "sessions": 1,
-                    "turns": 1
-                  }
-                },
-                "retry_attempts": [],
-                "run_id": "dd165a2ed137409598b547387a6d011f",
-                "score": 100,
-                "session_id": "e2e_dd165a2ed137409598b547387a6d011f",
-                "status": "passed",
-                "wall_time_ms": 5025
-              },
-              {
-                "cost": {
-                  "judge_usd": 0.00124204,
-                  "subject_usd": 0.00027821920000000003,
-                  "total_usd": 0.0015202592
-                },
-                "failures": [],
-                "hard_gates": [
-                  {
-                    "id": "response_present",
-                    "passed": true,
-                    "reason": "the assistant returned a textual response"
-                  },
-                  {
-                    "id": "no_function_calls",
-                    "passed": true,
-                    "reason": "observed 0 function call(s)"
-                  },
-                  {
-                    "id": "single_turn",
-                    "passed": true,
-                    "reason": "observed 1 turn(s), expected exactly one"
-                  }
-                ],
-                "judge_attempts": 1,
-                "metrics": {
-                  "totals": {
-                    "cache_read_tokens": 4864,
-                    "cost_usd": 0.00027821920000000003,
+                    "cost_usd": 0.0002832592,
                     "function_call_errors": 0,
                     "function_calls": 0,
                     "input_tokens": 1744,
-                    "output_tokens": 73,
-                    "reasoning_tokens": 37,
+                    "output_tokens": 91,
+                    "reasoning_tokens": 52,
                     "sessions": 1,
                     "turns": 1
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "da2af34319484b6080531010e0e0e5ca",
+                "run_id": "0490c9f403d84baaa6cccb29cfcb9743",
                 "score": 100,
-                "session_id": "e2e_da2af34319484b6080531010e0e0e5ca",
+                "session_id": "e2e_0490c9f403d84baaa6cccb29cfcb9743",
                 "status": "passed",
-                "wall_time_ms": 3969
+                "wall_time_ms": 5545
+              },
+              {
+                "cost": {
+                  "judge_usd": 0.0012198400000000002,
+                  "subject_usd": 0.00027569920000000003,
+                  "total_usd": 0.0014955392000000002
+                },
+                "failures": [],
+                "hard_gates": [
+                  {
+                    "id": "response_present",
+                    "passed": true,
+                    "reason": "the assistant returned a textual response"
+                  },
+                  {
+                    "id": "no_function_calls",
+                    "passed": true,
+                    "reason": "observed 0 function call(s)"
+                  },
+                  {
+                    "id": "single_turn",
+                    "passed": true,
+                    "reason": "observed 1 turn(s), expected exactly one"
+                  }
+                ],
+                "judge_attempts": 1,
+                "metrics": {
+                  "totals": {
+                    "cache_read_tokens": 4864,
+                    "cost_usd": 0.00027569920000000003,
+                    "function_call_errors": 0,
+                    "function_calls": 0,
+                    "input_tokens": 1744,
+                    "output_tokens": 64,
+                    "reasoning_tokens": 25,
+                    "sessions": 1,
+                    "turns": 1
+                  }
+                },
+                "retry_attempts": [],
+                "run_id": "4fbfaf5c933b493abeaf687e6d08c278",
+                "score": 100,
+                "session_id": "e2e_4fbfaf5c933b493abeaf687e6d08c278",
+                "status": "passed",
+                "wall_time_ms": 5098
+              },
+              {
+                "cost": {
+                  "judge_usd": 0.00122564,
+                  "subject_usd": 0.0002950192,
+                  "total_usd": 0.0015206592
+                },
+                "failures": [],
+                "hard_gates": [
+                  {
+                    "id": "response_present",
+                    "passed": true,
+                    "reason": "the assistant returned a textual response"
+                  },
+                  {
+                    "id": "no_function_calls",
+                    "passed": true,
+                    "reason": "observed 0 function call(s)"
+                  },
+                  {
+                    "id": "single_turn",
+                    "passed": true,
+                    "reason": "observed 1 turn(s), expected exactly one"
+                  }
+                ],
+                "judge_attempts": 1,
+                "metrics": {
+                  "totals": {
+                    "cache_read_tokens": 4864,
+                    "cost_usd": 0.0002950192,
+                    "function_call_errors": 0,
+                    "function_calls": 0,
+                    "input_tokens": 1748,
+                    "output_tokens": 131,
+                    "reasoning_tokens": 91,
+                    "sessions": 1,
+                    "turns": 1
+                  }
+                },
+                "retry_attempts": [],
+                "run_id": "b5f82f8d7caf4e0f858fd919765e1d6e",
+                "score": 100,
+                "session_id": "e2e_b5f82f8d7caf4e0f858fd919765e1d6e",
+                "status": "passed",
+                "wall_time_ms": 4590
               }
             ],
             "scenario_id": "direct_answer",
@@ -215,8 +215,8 @@
             "aggregate": {
               "cost": {
                 "judge_usd": 0.0,
-                "subject_usd": 0.0028061096000000004,
-                "total_usd": 0.0028061096000000004
+                "subject_usd": 0.0024997056000000003,
+                "total_usd": 0.0024997056000000003
               },
               "hard_gate_failures": 0,
               "median_score": 90.0,
@@ -232,15 +232,15 @@
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.0013067096,
-                  "total_usd": 0.0013067096
+                  "subject_usd": 0.0009808624000000002,
+                  "total_usd": 0.0009808624000000002
                 },
                 "failures": [],
                 "hard_gates": [
                   {
                     "id": "state_persisted",
                     "passed": true,
-                    "reason": "expected {\"owner\":\"quality-suite\",\"run_id\":\"a6afc1cacd0c44ebb14e61668d16ad95\",\"status\":\"stored\"}, observed {\"owner\":\"quality-suite\",\"run_id\":\"a6afc1cacd0c44ebb14e61668d16ad95\",\"status\":\"stored\"}"
+                    "reason": "expected {\"owner\":\"quality-suite\",\"run_id\":\"2771bd243ef34be3aa16a69f53932e0f\",\"status\":\"stored\"}, observed {\"owner\":\"quality-suite\",\"run_id\":\"2771bd243ef34be3aa16a69f53932e0f\",\"status\":\"stored\"}"
                   },
                   {
                     "id": "single_exact_write",
@@ -255,36 +255,80 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 24832,
-                    "cost_usd": 0.0013067096,
+                    "cache_read_tokens": 23808,
+                    "cost_usd": 0.0009808624000000002,
                     "function_call_errors": 0,
                     "function_calls": 3,
-                    "input_tokens": 7785,
-                    "output_tokens": 526,
-                    "reasoning_tokens": 144,
+                    "input_tokens": 5642,
+                    "output_tokens": 444,
+                    "reasoning_tokens": 62,
                     "sessions": 1,
                     "turns": 4
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "a6afc1cacd0c44ebb14e61668d16ad95",
+                "run_id": "2771bd243ef34be3aa16a69f53932e0f",
                 "score": 90,
-                "session_id": "e2e_a6afc1cacd0c44ebb14e61668d16ad95",
+                "session_id": "e2e_2771bd243ef34be3aa16a69f53932e0f",
                 "status": "passed",
-                "wall_time_ms": 8285
+                "wall_time_ms": 7508
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.0007473984000000002,
-                  "total_usd": 0.0007473984000000002
+                  "subject_usd": 0.0007645848000000001,
+                  "total_usd": 0.0007645848000000001
                 },
                 "failures": [],
                 "hard_gates": [
                   {
                     "id": "state_persisted",
                     "passed": true,
-                    "reason": "expected {\"owner\":\"quality-suite\",\"run_id\":\"404112af4e084ea7a4dc17fad2343caa\",\"status\":\"stored\"}, observed {\"owner\":\"quality-suite\",\"run_id\":\"404112af4e084ea7a4dc17fad2343caa\",\"status\":\"stored\"}"
+                    "reason": "expected {\"owner\":\"quality-suite\",\"run_id\":\"5fcc204dc3e74297838921ea085666d5\",\"status\":\"stored\"}, observed {\"owner\":\"quality-suite\",\"run_id\":\"5fcc204dc3e74297838921ea085666d5\",\"status\":\"stored\"}"
+                  },
+                  {
+                    "id": "single_exact_write",
+                    "passed": true,
+                    "reason": "observed 1 state::set call(s)"
+                  },
+                  {
+                    "id": "no_function_errors",
+                    "passed": true,
+                    "reason": "observed 0 function-call error(s)"
+                  }
+                ],
+                "metrics": {
+                  "totals": {
+                    "cache_read_tokens": 28416,
+                    "cost_usd": 0.0007645848000000001,
+                    "function_call_errors": 0,
+                    "function_calls": 3,
+                    "input_tokens": 3971,
+                    "output_tokens": 461,
+                    "reasoning_tokens": 70,
+                    "sessions": 1,
+                    "turns": 4
+                  }
+                },
+                "retry_attempts": [],
+                "run_id": "5fcc204dc3e74297838921ea085666d5",
+                "score": 90,
+                "session_id": "e2e_5fcc204dc3e74297838921ea085666d5",
+                "status": "passed",
+                "wall_time_ms": 6966
+              },
+              {
+                "cost": {
+                  "judge_usd": 0.0,
+                  "subject_usd": 0.0007542584000000001,
+                  "total_usd": 0.0007542584000000001
+                },
+                "failures": [],
+                "hard_gates": [
+                  {
+                    "id": "state_persisted",
+                    "passed": true,
+                    "reason": "expected {\"owner\":\"quality-suite\",\"run_id\":\"81228c9d86d24671a7dcbfccdab68c4d\",\"status\":\"stored\"}, observed {\"owner\":\"quality-suite\",\"run_id\":\"81228c9d86d24671a7dcbfccdab68c4d\",\"status\":\"stored\"}"
                   },
                   {
                     "id": "single_exact_write",
@@ -300,66 +344,22 @@
                 "metrics": {
                   "totals": {
                     "cache_read_tokens": 28928,
-                    "cost_usd": 0.0007473984000000002,
+                    "cost_usd": 0.0007542584000000001,
                     "function_call_errors": 0,
                     "function_calls": 3,
-                    "input_tokens": 3702,
-                    "output_tokens": 529,
-                    "reasoning_tokens": 133,
+                    "input_tokens": 3735,
+                    "output_tokens": 537,
+                    "reasoning_tokens": 140,
                     "sessions": 1,
                     "turns": 4
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "404112af4e084ea7a4dc17fad2343caa",
+                "run_id": "81228c9d86d24671a7dcbfccdab68c4d",
                 "score": 90,
-                "session_id": "e2e_404112af4e084ea7a4dc17fad2343caa",
+                "session_id": "e2e_81228c9d86d24671a7dcbfccdab68c4d",
                 "status": "passed",
-                "wall_time_ms": 7545
-              },
-              {
-                "cost": {
-                  "judge_usd": 0.0,
-                  "subject_usd": 0.0007520016000000001,
-                  "total_usd": 0.0007520016000000001
-                },
-                "failures": [],
-                "hard_gates": [
-                  {
-                    "id": "state_persisted",
-                    "passed": true,
-                    "reason": "expected {\"owner\":\"quality-suite\",\"run_id\":\"1d2813cae70e4187aecbc08b3545193a\",\"status\":\"stored\"}, observed {\"owner\":\"quality-suite\",\"run_id\":\"1d2813cae70e4187aecbc08b3545193a\",\"status\":\"stored\"}"
-                  },
-                  {
-                    "id": "single_exact_write",
-                    "passed": true,
-                    "reason": "observed 1 state::set call(s)"
-                  },
-                  {
-                    "id": "no_function_errors",
-                    "passed": true,
-                    "reason": "observed 0 function-call error(s)"
-                  }
-                ],
-                "metrics": {
-                  "totals": {
-                    "cache_read_tokens": 28672,
-                    "cost_usd": 0.0007520016000000001,
-                    "function_call_errors": 0,
-                    "function_calls": 3,
-                    "input_tokens": 3862,
-                    "output_tokens": 468,
-                    "reasoning_tokens": 88,
-                    "sessions": 1,
-                    "turns": 4
-                  }
-                },
-                "retry_attempts": [],
-                "run_id": "1d2813cae70e4187aecbc08b3545193a",
-                "score": 90,
-                "session_id": "e2e_1d2813cae70e4187aecbc08b3545193a",
-                "status": "passed",
-                "wall_time_ms": 7816
+                "wall_time_ms": 7530
               }
             ],
             "scenario_id": "persistent_state",
@@ -388,9 +388,9 @@
           {
             "aggregate": {
               "cost": {
-                "judge_usd": 0.007373,
-                "subject_usd": 0.0014647976,
-                "total_usd": 0.008837797599999999
+                "judge_usd": 0.007465999999999999,
+                "subject_usd": 0.0015690976,
+                "total_usd": 0.0090350976
               },
               "hard_gate_failures": 0,
               "median_score": 100.0,
@@ -405,9 +405,9 @@
             "runs": [
               {
                 "cost": {
-                  "judge_usd": 0.002511,
-                  "subject_usd": 0.0004774392,
-                  "total_usd": 0.0029884392000000004
+                  "judge_usd": 0.0027397999999999997,
+                  "subject_usd": 0.0006058192,
+                  "total_usd": 0.0033456192
                 },
                 "failures": [],
                 "hard_gates": [
@@ -431,28 +431,28 @@
                 "metrics": {
                   "totals": {
                     "cache_read_tokens": 4864,
-                    "cost_usd": 0.0004774392,
+                    "cost_usd": 0.0006058192,
                     "function_call_errors": 0,
                     "function_calls": 0,
-                    "input_tokens": 1797,
-                    "output_tokens": 758,
-                    "reasoning_tokens": 237,
+                    "input_tokens": 1798,
+                    "output_tokens": 1216,
+                    "reasoning_tokens": 547,
                     "sessions": 1,
                     "turns": 1
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "a965dbdc043a456eb9711f953a8d234f",
+                "run_id": "16e6511f81444f71943bea96d758cd90",
                 "score": 100,
-                "session_id": "e2e_a965dbdc043a456eb9711f953a8d234f",
+                "session_id": "e2e_16e6511f81444f71943bea96d758cd90",
                 "status": "passed",
-                "wall_time_ms": 15010
+                "wall_time_ms": 19096
               },
               {
                 "cost": {
-                  "judge_usd": 0.0023584,
-                  "subject_usd": 0.0004889192,
-                  "total_usd": 0.0028473192
+                  "judge_usd": 0.0022602,
+                  "subject_usd": 0.00047729920000000005,
+                  "total_usd": 0.0027374992
                 },
                 "failures": [],
                 "hard_gates": [
@@ -476,28 +476,28 @@
                 "metrics": {
                   "totals": {
                     "cache_read_tokens": 4864,
-                    "cost_usd": 0.0004889192,
+                    "cost_usd": 0.00047729920000000005,
                     "function_call_errors": 0,
                     "function_calls": 0,
-                    "input_tokens": 1799,
-                    "output_tokens": 798,
-                    "reasoning_tokens": 282,
+                    "input_tokens": 1800,
+                    "output_tokens": 756,
+                    "reasoning_tokens": 213,
                     "sessions": 1,
                     "turns": 1
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "05e4bac082a641b28226024f4d48ef3c",
+                "run_id": "5cfb065c895342b9a17e6b331bcdfdb9",
                 "score": 100,
-                "session_id": "e2e_05e4bac082a641b28226024f4d48ef3c",
+                "session_id": "e2e_5cfb065c895342b9a17e6b331bcdfdb9",
                 "status": "passed",
-                "wall_time_ms": 13290
+                "wall_time_ms": 11469
               },
               {
                 "cost": {
-                  "judge_usd": 0.0025036,
-                  "subject_usd": 0.0004984392,
-                  "total_usd": 0.0030020392
+                  "judge_usd": 0.002466,
+                  "subject_usd": 0.0004859792,
+                  "total_usd": 0.0029519792
                 },
                 "failures": [],
                 "hard_gates": [
@@ -521,22 +521,22 @@
                 "metrics": {
                   "totals": {
                     "cache_read_tokens": 4864,
-                    "cost_usd": 0.0004984392,
+                    "cost_usd": 0.0004859792,
                     "function_call_errors": 0,
                     "function_calls": 0,
-                    "input_tokens": 1797,
-                    "output_tokens": 833,
-                    "reasoning_tokens": 185,
+                    "input_tokens": 1796,
+                    "output_tokens": 789,
+                    "reasoning_tokens": 241,
                     "sessions": 1,
                     "turns": 1
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "9149ff266ba946229dd5329225a26b1c",
+                "run_id": "55ada08c936243b5969fbff254bd7079",
                 "score": 100,
-                "session_id": "e2e_9149ff266ba946229dd5329225a26b1c",
+                "session_id": "e2e_55ada08c936243b5969fbff254bd7079",
                 "status": "passed",
-                "wall_time_ms": 15016
+                "wall_time_ms": 11747
               }
             ],
             "scenario_id": "security_review",
@@ -566,13 +566,13 @@
             "aggregate": {
               "cost": {
                 "judge_usd": 0.0,
-                "subject_usd": 0.06543788719999999,
-                "total_usd": 0.06543788719999999
+                "subject_usd": 0.04237386160000001,
+                "total_usd": 0.04237386160000001
               },
-              "hard_gate_failures": 1,
+              "hard_gate_failures": 0,
               "median_score": 100.0,
-              "pass_rate": 0.6666666666666666,
-              "passed_runs": 2,
+              "pass_rate": 1.0,
+              "passed_runs": 3,
               "required_passes": 2,
               "runs": 3,
               "scored_runs": 3,
@@ -583,57 +583,8 @@
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.03584640639999999,
-                  "total_usd": 0.03584640639999999
-                },
-                "failures": [],
-                "hard_gates": [
-                  {
-                    "id": "parallel_writers_completed",
-                    "passed": true,
-                    "reason": "tables=true, parallel_writers=true, orders_complete=true, invalid_amounts=Some(0), writers_done=true"
-                  },
-                  {
-                    "id": "reactive_totals_match",
-                    "passed": true,
-                    "reason": "totals_match=true, report_counts_match=true"
-                  },
-                  {
-                    "id": "trigger_orchestration_proven",
-                    "passed": false,
-                    "reason": "watch_before_writers=false, watch_documented=true, aggregate_deliveries=0, completion_wake=false"
-                  },
-                  {
-                    "id": "finalizer_and_cleanup_completed",
-                    "passed": false,
-                    "reason": "report_rows=1, report_identity=true, report_checks=true, completion_wake=false, report_watch_before_finalizer=false, report_wake=false, finalizer_spawns=1, finalizer_in_tree=true, finalizer_wrote_report=true, root_wrote_report=false, active_run_triggers=0"
-                  }
-                ],
-                "metrics": {
-                  "totals": {
-                    "cache_read_tokens": 892288,
-                    "cost_usd": 0.03584640639999999,
-                    "function_call_errors": 2,
-                    "function_calls": 75,
-                    "input_tokens": 82708,
-                    "output_tokens": 77746,
-                    "reasoning_tokens": 33715,
-                    "sessions": 5,
-                    "turns": 39
-                  }
-                },
-                "retry_attempts": [],
-                "run_id": "133bacad50dd467980ef6a4660ff3c10",
-                "score": 55,
-                "session_id": "e2e_133bacad50dd467980ef6a4660ff3c10",
-                "status": "hard_gate_failed",
-                "wall_time_ms": 576201
-              },
-              {
-                "cost": {
-                  "judge_usd": 0.0,
-                  "subject_usd": 0.012422468799999998,
-                  "total_usd": 0.012422468799999998
+                  "subject_usd": 0.0145364016,
+                  "total_usd": 0.0145364016
                 },
                 "failures": [],
                 "hard_gates": [
@@ -660,29 +611,29 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 429696,
-                    "cost_usd": 0.012422468799999998,
+                    "cache_read_tokens": 518272,
+                    "cost_usd": 0.0145364016,
                     "function_call_errors": 0,
-                    "function_calls": 55,
-                    "input_tokens": 37084,
-                    "output_tokens": 21527,
-                    "reasoning_tokens": 12532,
+                    "function_calls": 72,
+                    "input_tokens": 44240,
+                    "output_tokens": 24613,
+                    "reasoning_tokens": 14480,
                     "sessions": 5,
-                    "turns": 31
+                    "turns": 38
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "a76f8316e63a4f308216382f7f9c4c83",
+                "run_id": "32e4a1b66aee41b2bce79f9a873fbb85",
                 "score": 100,
-                "session_id": "e2e_a76f8316e63a4f308216382f7f9c4c83",
+                "session_id": "e2e_32e4a1b66aee41b2bce79f9a873fbb85",
                 "status": "passed",
-                "wall_time_ms": 172171
+                "wall_time_ms": 193689
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.017169012,
-                  "total_usd": 0.017169012
+                  "subject_usd": 0.013863119200000005,
+                  "total_usd": 0.013863119200000005
                 },
                 "failures": [],
                 "hard_gates": [
@@ -709,23 +660,72 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 739840,
-                    "cost_usd": 0.017169012,
+                    "cache_read_tokens": 587264,
+                    "cost_usd": 0.013863119200000005,
                     "function_call_errors": 0,
-                    "function_calls": 67,
-                    "input_tokens": 50293,
-                    "output_tokens": 28773,
-                    "reasoning_tokens": 18016,
+                    "function_calls": 62,
+                    "input_tokens": 35575,
+                    "output_tokens": 25851,
+                    "reasoning_tokens": 15372,
                     "sessions": 5,
-                    "turns": 49
+                    "turns": 37
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "b15affafa6a94928bbfaf86b8e2f410f",
+                "run_id": "69b2031d9f684ad199817859eedec301",
                 "score": 100,
-                "session_id": "e2e_b15affafa6a94928bbfaf86b8e2f410f",
+                "session_id": "e2e_69b2031d9f684ad199817859eedec301",
                 "status": "passed",
-                "wall_time_ms": 252746
+                "wall_time_ms": 213876
+              },
+              {
+                "cost": {
+                  "judge_usd": 0.0,
+                  "subject_usd": 0.0139743408,
+                  "total_usd": 0.0139743408
+                },
+                "failures": [],
+                "hard_gates": [
+                  {
+                    "id": "parallel_writers_completed",
+                    "passed": true,
+                    "reason": "tables=true, parallel_writers=true, orders_complete=true, invalid_amounts=Some(0), writers_done=true"
+                  },
+                  {
+                    "id": "reactive_totals_match",
+                    "passed": true,
+                    "reason": "totals_match=true, report_counts_match=true"
+                  },
+                  {
+                    "id": "trigger_orchestration_proven",
+                    "passed": true,
+                    "reason": "watch_before_writers=true, watch_documented=true, aggregate_deliveries=15, completion_wake=true"
+                  },
+                  {
+                    "id": "finalizer_and_cleanup_completed",
+                    "passed": true,
+                    "reason": "report_rows=1, report_identity=true, report_checks=true, completion_wake=true, report_watch_before_finalizer=true, report_wake=true, finalizer_spawns=1, finalizer_in_tree=true, finalizer_wrote_report=true, root_wrote_report=false, active_run_triggers=0"
+                  }
+                ],
+                "metrics": {
+                  "totals": {
+                    "cache_read_tokens": 542336,
+                    "cost_usd": 0.0139743408,
+                    "function_call_errors": 0,
+                    "function_calls": 61,
+                    "input_tokens": 43416,
+                    "output_tokens": 22777,
+                    "reasoning_tokens": 13259,
+                    "sessions": 5,
+                    "turns": 35
+                  }
+                },
+                "retry_attempts": [],
+                "run_id": "561d7ecc33854ea7a3399b2ad0dbd6e3",
+                "score": 100,
+                "session_id": "e2e_561d7ecc33854ea7a3399b2ad0dbd6e3",
+                "status": "passed",
+                "wall_time_ms": 178715
               }
             ],
             "scenario_id": "reactive_automation",
@@ -755,8 +755,8 @@
             "aggregate": {
               "cost": {
                 "judge_usd": 0.0,
-                "subject_usd": 0.0282416288,
-                "total_usd": 0.0282416288
+                "subject_usd": 0.0269488576,
+                "total_usd": 0.0269488576
               },
               "hard_gate_failures": 0,
               "median_score": 100.0,
@@ -772,8 +772,8 @@
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.011879504,
-                  "total_usd": 0.011879504
+                  "subject_usd": 0.011515744800000002,
+                  "total_usd": 0.011515744800000002
                 },
                 "failures": [],
                 "hard_gates": [
@@ -795,7 +795,7 @@
                   {
                     "id": "sandbox_lifecycle_completed",
                     "passed": true,
-                    "reason": "sandbox id=092b1693-1acd-4154-917f-916b44c8dcd8, exact create request=true, created=true, executed with exact stdout=true, listed active=true, stopped=true, lifecycle ordered=true"
+                    "reason": "sandbox id=5caa13b4-e971-4ba5-b235-8434cde594a7, exact create request=true, created=true, executed with exact stdout=true, listed active=true, stopped=true, lifecycle ordered=true"
                   },
                   {
                     "id": "operation_volume_reached",
@@ -805,29 +805,29 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 574080,
-                    "cost_usd": 0.011879504,
+                    "cache_read_tokens": 502016,
+                    "cost_usd": 0.011515744800000002,
                     "function_call_errors": 0,
-                    "function_calls": 28,
-                    "input_tokens": 57072,
-                    "output_tokens": 8150,
-                    "reasoning_tokens": 4745,
+                    "function_calls": 27,
+                    "input_tokens": 55509,
+                    "output_tokens": 8353,
+                    "reasoning_tokens": 5214,
                     "sessions": 1,
-                    "turns": 22
+                    "turns": 20
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "d9db513115aa4ef2a5a26c1376eb59a5",
+                "run_id": "831795f5644647308c9f3f7898cc5d62",
                 "score": 100,
-                "session_id": "e2e_d9db513115aa4ef2a5a26c1376eb59a5",
+                "session_id": "e2e_831795f5644647308c9f3f7898cc5d62",
                 "status": "passed",
-                "wall_time_ms": 104823
+                "wall_time_ms": 100573
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.008094620799999999,
-                  "total_usd": 0.008094620799999999
+                  "subject_usd": 0.0074790464,
+                  "total_usd": 0.0074790464
                 },
                 "failures": [],
                 "hard_gates": [
@@ -849,7 +849,7 @@
                   {
                     "id": "sandbox_lifecycle_completed",
                     "passed": true,
-                    "reason": "sandbox id=3ca218c7-49c9-4c13-9fab-462acf209ebb, exact create request=true, created=true, executed with exact stdout=true, listed active=true, stopped=true, lifecycle ordered=true"
+                    "reason": "sandbox id=580a4b70-9d3b-4771-8441-9431a6e16370, exact create request=true, created=true, executed with exact stdout=true, listed active=true, stopped=true, lifecycle ordered=true"
                   },
                   {
                     "id": "operation_volume_reached",
@@ -859,29 +859,29 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 523136,
-                    "cost_usd": 0.008094620799999999,
+                    "cache_read_tokens": 476288,
+                    "cost_usd": 0.0074790464,
                     "function_call_errors": 0,
-                    "function_calls": 23,
-                    "input_tokens": 32366,
-                    "output_tokens": 7495,
-                    "reasoning_tokens": 4391,
+                    "function_calls": 20,
+                    "input_tokens": 30810,
+                    "output_tokens": 6543,
+                    "reasoning_tokens": 4020,
                     "sessions": 1,
-                    "turns": 18
+                    "turns": 16
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "1563b95bbac14088ab498aeffa389556",
+                "run_id": "33d01b63bbb543338dddf210920af72b",
                 "score": 100,
-                "session_id": "e2e_1563b95bbac14088ab498aeffa389556",
+                "session_id": "e2e_33d01b63bbb543338dddf210920af72b",
                 "status": "passed",
-                "wall_time_ms": 89314
+                "wall_time_ms": 74633
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.008267504,
-                  "total_usd": 0.008267504
+                  "subject_usd": 0.007954066400000001,
+                  "total_usd": 0.007954066400000001
                 },
                 "failures": [],
                 "hard_gates": [
@@ -903,7 +903,7 @@
                   {
                     "id": "sandbox_lifecycle_completed",
                     "passed": true,
-                    "reason": "sandbox id=cf92da32-2934-4881-9d51-c164e6822f6f, exact create request=true, created=true, executed with exact stdout=true, listed active=true, stopped=true, lifecycle ordered=true"
+                    "reason": "sandbox id=b5956133-c63d-44ff-8103-86f29a621663, exact create request=true, created=true, executed with exact stdout=true, listed active=true, stopped=true, lifecycle ordered=true"
                   },
                   {
                     "id": "operation_volume_reached",
@@ -913,23 +913,23 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 609280,
-                    "cost_usd": 0.008267504,
+                    "cache_read_tokens": 575488,
+                    "cost_usd": 0.007954066400000001,
                     "function_call_errors": 0,
-                    "function_calls": 21,
-                    "input_tokens": 33068,
-                    "output_tokens": 6900,
-                    "reasoning_tokens": 4171,
+                    "function_calls": 24,
+                    "input_tokens": 29027,
+                    "output_tokens": 8139,
+                    "reasoning_tokens": 5039,
                     "sessions": 1,
-                    "turns": 18
+                    "turns": 23
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "8df580c9a502441598c7c3dff2e65a98",
+                "run_id": "c2cf954286894045ab0b38d1ddd06bc6",
                 "score": 100,
-                "session_id": "e2e_8df580c9a502441598c7c3dff2e65a98",
+                "session_id": "e2e_c2cf954286894045ab0b38d1ddd06bc6",
                 "status": "passed",
-                "wall_time_ms": 81518
+                "wall_time_ms": 97014
               }
             ],
             "scenario_id": "shell_coder_sandbox",
@@ -958,14 +958,14 @@
           {
             "aggregate": {
               "cost": {
-                "judge_usd": 0.0082536,
-                "subject_usd": 0.0036804375999999997,
-                "total_usd": 0.011934037599999999
+                "judge_usd": 0.012539639999999998,
+                "subject_usd": 0.0038909976000000004,
+                "total_usd": 0.0164306376
               },
-              "hard_gate_failures": 1,
+              "hard_gate_failures": 0,
               "median_score": 100.0,
-              "pass_rate": 0.6666666666666666,
-              "passed_runs": 2,
+              "pass_rate": 1.0,
+              "passed_runs": 3,
               "required_passes": 2,
               "runs": 3,
               "scored_runs": 3,
@@ -975,9 +975,9 @@
             "runs": [
               {
                 "cost": {
-                  "judge_usd": 0.0043024,
-                  "subject_usd": 0.0010868592,
-                  "total_usd": 0.0053892592
+                  "judge_usd": 0.003816,
+                  "subject_usd": 0.0014332192,
+                  "total_usd": 0.0052492192
                 },
                 "failures": [],
                 "hard_gates": [
@@ -1001,28 +1001,28 @@
                 "metrics": {
                   "totals": {
                     "cache_read_tokens": 4864,
-                    "cost_usd": 0.0010868592,
+                    "cost_usd": 0.0014332192,
                     "function_call_errors": 0,
                     "function_calls": 0,
                     "input_tokens": 1948,
-                    "output_tokens": 2859,
-                    "reasoning_tokens": 1441,
+                    "output_tokens": 4096,
+                    "reasoning_tokens": 3311,
                     "sessions": 1,
                     "turns": 1
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "1926211f847c411099a3f7236e619bfa",
-                "score": 100,
-                "session_id": "e2e_1926211f847c411099a3f7236e619bfa",
+                "run_id": "6914b5abc4ed446f81d5d17260475958",
+                "score": 94,
+                "session_id": "e2e_6914b5abc4ed446f81d5d17260475958",
                 "status": "passed",
-                "wall_time_ms": 49334
+                "wall_time_ms": 66238
               },
               {
                 "cost": {
-                  "judge_usd": 0.0039512,
-                  "subject_usd": 0.0011604992,
-                  "total_usd": 0.0051116992
+                  "judge_usd": 0.00437704,
+                  "subject_usd": 0.0013060992,
+                  "total_usd": 0.0056831391999999994
                 },
                 "failures": [],
                 "hard_gates": [
@@ -1046,35 +1046,35 @@
                 "metrics": {
                   "totals": {
                     "cache_read_tokens": 4864,
-                    "cost_usd": 0.0011604992,
+                    "cost_usd": 0.0013060992,
                     "function_call_errors": 0,
                     "function_calls": 0,
-                    "input_tokens": 1954,
-                    "output_tokens": 3119,
-                    "reasoning_tokens": 2044,
+                    "input_tokens": 1950,
+                    "output_tokens": 3641,
+                    "reasoning_tokens": 2288,
                     "sessions": 1,
                     "turns": 1
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "843e69b5f65f4833b28a2c5e2a2d7047",
+                "run_id": "170c4b546958467d9d5bbb62b0322c8d",
                 "score": 100,
-                "session_id": "e2e_843e69b5f65f4833b28a2c5e2a2d7047",
+                "session_id": "e2e_170c4b546958467d9d5bbb62b0322c8d",
                 "status": "passed",
-                "wall_time_ms": 51035
+                "wall_time_ms": 60803
               },
               {
                 "cost": {
-                  "judge_usd": 0.0,
-                  "subject_usd": 0.0014330792,
-                  "total_usd": 0.0014330792
+                  "judge_usd": 0.0043466,
+                  "subject_usd": 0.0011516792,
+                  "total_usd": 0.0054982792
                 },
                 "failures": [],
                 "hard_gates": [
                   {
                     "id": "response_present",
-                    "passed": false,
-                    "reason": "the assistant returned no text"
+                    "passed": true,
+                    "reason": "the assistant returned a textual response"
                   },
                   {
                     "id": "no_function_calls",
@@ -1087,25 +1087,26 @@
                     "reason": "observed 1 turn(s), expected exactly one"
                   }
                 ],
+                "judge_attempts": 1,
                 "metrics": {
                   "totals": {
                     "cache_read_tokens": 4864,
-                    "cost_usd": 0.0014330792,
+                    "cost_usd": 0.0011516792,
                     "function_call_errors": 0,
                     "function_calls": 0,
-                    "input_tokens": 1947,
-                    "output_tokens": 4096,
-                    "reasoning_tokens": 4096,
+                    "input_tokens": 1951,
+                    "output_tokens": 3089,
+                    "reasoning_tokens": 1863,
                     "sessions": 1,
                     "turns": 1
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "11445f312bc240b18e564abe6ca0508b",
-                "score": 0,
-                "session_id": "e2e_11445f312bc240b18e564abe6ca0508b",
-                "status": "hard_gate_failed",
-                "wall_time_ms": 56062
+                "run_id": "4f197b00a7464de1a16de0ac9c55498e",
+                "score": 100,
+                "session_id": "e2e_4f197b00a7464de1a16de0ac9c55498e",
+                "status": "passed",
+                "wall_time_ms": 52911
               }
             ],
             "scenario_id": "design_tradeoff",
@@ -1134,9 +1135,9 @@
           {
             "aggregate": {
               "cost": {
-                "judge_usd": 0.0091104,
-                "subject_usd": 0.0019372976000000004,
-                "total_usd": 0.0110476976
+                "judge_usd": 0.008963800000000001,
+                "subject_usd": 0.0019714576000000004,
+                "total_usd": 0.010935257600000001
               },
               "hard_gate_failures": 0,
               "median_score": 100.0,
@@ -1151,9 +1152,9 @@
             "runs": [
               {
                 "cost": {
-                  "judge_usd": 0.0030115999999999997,
-                  "subject_usd": 0.0006095992000000001,
-                  "total_usd": 0.0036211992
+                  "judge_usd": 0.0029960000000000004,
+                  "subject_usd": 0.0006317192000000002,
+                  "total_usd": 0.0036277192000000007
                 },
                 "failures": [],
                 "hard_gates": [
@@ -1177,28 +1178,28 @@
                 "metrics": {
                   "totals": {
                     "cache_read_tokens": 4864,
-                    "cost_usd": 0.0006095992000000001,
+                    "cost_usd": 0.0006317192000000002,
                     "function_call_errors": 0,
                     "function_calls": 0,
-                    "input_tokens": 2009,
-                    "output_tokens": 1124,
-                    "reasoning_tokens": 624,
+                    "input_tokens": 2011,
+                    "output_tokens": 1202,
+                    "reasoning_tokens": 770,
                     "sessions": 1,
                     "turns": 1
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "c679bbfe6f334a098c9fa7674522089b",
+                "run_id": "aea9300726474fa0a0148a5278c5bdc9",
                 "score": 100,
-                "session_id": "e2e_c679bbfe6f334a098c9fa7674522089b",
+                "session_id": "e2e_aea9300726474fa0a0148a5278c5bdc9",
                 "status": "passed",
-                "wall_time_ms": 18504
+                "wall_time_ms": 16519
               },
               {
                 "cost": {
-                  "judge_usd": 0.0029684,
-                  "subject_usd": 0.0006563592000000002,
-                  "total_usd": 0.0036247592
+                  "judge_usd": 0.0029738,
+                  "subject_usd": 0.0006261192000000001,
+                  "total_usd": 0.0035999192
                 },
                 "failures": [],
                 "hard_gates": [
@@ -1222,28 +1223,28 @@
                 "metrics": {
                   "totals": {
                     "cache_read_tokens": 4864,
-                    "cost_usd": 0.0006563592000000002,
+                    "cost_usd": 0.0006261192000000001,
                     "function_call_errors": 0,
                     "function_calls": 0,
                     "input_tokens": 2013,
-                    "output_tokens": 1289,
-                    "reasoning_tokens": 832,
+                    "output_tokens": 1181,
+                    "reasoning_tokens": 753,
                     "sessions": 1,
                     "turns": 1
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "abafb0e97b1947478fb9af6a9f25d254",
+                "run_id": "c5145add36f84d9e9ffe1d0eb7da62f6",
                 "score": 100,
-                "session_id": "e2e_abafb0e97b1947478fb9af6a9f25d254",
+                "session_id": "e2e_c5145add36f84d9e9ffe1d0eb7da62f6",
                 "status": "passed",
-                "wall_time_ms": 16695
+                "wall_time_ms": 18311
               },
               {
                 "cost": {
-                  "judge_usd": 0.0031304,
-                  "subject_usd": 0.0006713392000000001,
-                  "total_usd": 0.0038017392000000002
+                  "judge_usd": 0.002994,
+                  "subject_usd": 0.0007136192000000001,
+                  "total_usd": 0.0037076192
                 },
                 "failures": [],
                 "hard_gates": [
@@ -1267,22 +1268,22 @@
                 "metrics": {
                   "totals": {
                     "cache_read_tokens": 4864,
-                    "cost_usd": 0.0006713392000000001,
+                    "cost_usd": 0.0007136192000000001,
                     "function_call_errors": 0,
                     "function_calls": 0,
-                    "input_tokens": 2008,
-                    "output_tokens": 1345,
-                    "reasoning_tokens": 802,
+                    "input_tokens": 2014,
+                    "output_tokens": 1493,
+                    "reasoning_tokens": 1030,
                     "sessions": 1,
                     "turns": 1
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "57206e0957bd4549827f976536eee11e",
+                "run_id": "5da4e8126e094e9d9b050fab9f98cdb0",
                 "score": 100,
-                "session_id": "e2e_57206e0957bd4549827f976536eee11e",
+                "session_id": "e2e_5da4e8126e094e9d9b050fab9f98cdb0",
                 "status": "passed",
-                "wall_time_ms": 18571
+                "wall_time_ms": 20924
               }
             ],
             "scenario_id": "security_triage",
@@ -1312,13 +1313,13 @@
             "aggregate": {
               "cost": {
                 "judge_usd": 0.0,
-                "subject_usd": null,
-                "total_usd": null
+                "subject_usd": 0.048108468800000005,
+                "total_usd": 0.048108468800000005
               },
-              "hard_gate_failures": 1,
+              "hard_gate_failures": 0,
               "median_score": 100.0,
-              "pass_rate": 0.6666666666666666,
-              "passed_runs": 2,
+              "pass_rate": 1.0,
+              "passed_runs": 3,
               "required_passes": 2,
               "runs": 3,
               "scored_runs": 3,
@@ -1329,8 +1330,8 @@
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.013375073600000002,
-                  "total_usd": 0.013375073600000002
+                  "subject_usd": 0.017739993600000004,
+                  "total_usd": 0.017739993600000004
                 },
                 "failures": [],
                 "hard_gates": [
@@ -1357,73 +1358,29 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 288512,
-                    "cost_usd": 0.013375073600000002,
+                    "cache_read_tokens": 333312,
+                    "cost_usd": 0.017739993600000004,
                     "function_call_errors": 0,
-                    "function_calls": 24,
-                    "input_tokens": 45910,
-                    "output_tokens": 21928,
-                    "reasoning_tokens": 13209,
+                    "function_calls": 21,
+                    "input_tokens": 65708,
+                    "output_tokens": 27170,
+                    "reasoning_tokens": 18164,
                     "sessions": 3,
                     "turns": 15
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "b745f3786bda42f6a9593a9f4c34aa59",
+                "run_id": "0a733bfb07bc41a0acb4177af29d9dd3",
                 "score": 100,
-                "session_id": "e2e_b745f3786bda42f6a9593a9f4c34aa59",
+                "session_id": "e2e_0a733bfb07bc41a0acb4177af29d9dd3",
                 "status": "passed",
-                "wall_time_ms": 181421
+                "wall_time_ms": 192974
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": null,
-                  "total_usd": null
-                },
-                "failures": [],
-                "hard_gates": [
-                  {
-                    "id": "source_captured_after_watches",
-                    "passed": false,
-                    "reason": "armed_before_fetch=true, source_order=false, article_valid=true, exact_write=false"
-                  },
-                  {
-                    "id": "analysts_spawned_directly_in_parallel",
-                    "passed": true,
-                    "reason": "spawns=2, parallel_calls=true, overlapping_sessions=true, direct_sessions=true"
-                  },
-                  {
-                    "id": "analyst_outputs_joined_by_barrier",
-                    "passed": true,
-                    "reason": "summary_valid=true, facts_valid=true, analyst_writes=true, analyst_discipline=true, article_woke=true, barrier_woke=true"
-                  },
-                  {
-                    "id": "brief_returned_and_bindings_clean",
-                    "passed": false,
-                    "reason": "report_merged=true, active_bindings=0, function_errors=2"
-                  }
-                ],
-                "metrics": {
-                  "totals": {
-                    "function_call_errors": 2,
-                    "function_calls": 31,
-                    "sessions": 3,
-                    "turns": 22
-                  }
-                },
-                "retry_attempts": [],
-                "run_id": "054b06bfa38a4862aa3b533fd44dda68",
-                "score": 55,
-                "session_id": "e2e_054b06bfa38a4862aa3b533fd44dda68",
-                "status": "hard_gate_failed",
-                "wall_time_ms": 232062
-              },
-              {
-                "cost": {
-                  "judge_usd": 0.0,
-                  "subject_usd": 0.0146104448,
-                  "total_usd": 0.0146104448
+                  "subject_usd": 0.015598525600000005,
+                  "total_usd": 0.015598525600000005
                 },
                 "failures": [],
                 "hard_gates": [
@@ -1450,23 +1407,72 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 511616,
-                    "cost_usd": 0.0146104448,
+                    "cache_read_tokens": 349952,
+                    "cost_usd": 0.015598525600000005,
                     "function_call_errors": 0,
-                    "function_calls": 25,
-                    "input_tokens": 40796,
-                    "output_tokens": 26666,
-                    "reasoning_tokens": 16970,
+                    "function_calls": 23,
+                    "input_tokens": 49803,
+                    "output_tokens": 27308,
+                    "reasoning_tokens": 18404,
                     "sessions": 3,
-                    "turns": 20
+                    "turns": 16
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "75ed33818a764764a2f0e67d7038c0e0",
+                "run_id": "a8df2b777def484f8c62e7215d96a73a",
                 "score": 100,
-                "session_id": "e2e_75ed33818a764764a2f0e67d7038c0e0",
+                "session_id": "e2e_a8df2b777def484f8c62e7215d96a73a",
                 "status": "passed",
-                "wall_time_ms": 229405
+                "wall_time_ms": 238008
+              },
+              {
+                "cost": {
+                  "judge_usd": 0.0,
+                  "subject_usd": 0.0147699496,
+                  "total_usd": 0.0147699496
+                },
+                "failures": [],
+                "hard_gates": [
+                  {
+                    "id": "source_captured_after_watches",
+                    "passed": true,
+                    "reason": "armed_before_fetch=true, source_order=true, article_valid=true, exact_write=true"
+                  },
+                  {
+                    "id": "analysts_spawned_directly_in_parallel",
+                    "passed": true,
+                    "reason": "spawns=2, parallel_calls=true, overlapping_sessions=true, direct_sessions=true"
+                  },
+                  {
+                    "id": "analyst_outputs_joined_by_barrier",
+                    "passed": true,
+                    "reason": "summary_valid=true, facts_valid=true, analyst_writes=true, analyst_discipline=true, article_woke=true, barrier_woke=true"
+                  },
+                  {
+                    "id": "brief_returned_and_bindings_clean",
+                    "passed": true,
+                    "reason": "report_merged=true, active_bindings=0, function_errors=0"
+                  }
+                ],
+                "metrics": {
+                  "totals": {
+                    "cache_read_tokens": 344832,
+                    "cost_usd": 0.0147699496,
+                    "function_call_errors": 0,
+                    "function_calls": 20,
+                    "input_tokens": 49761,
+                    "output_tokens": 24421,
+                    "reasoning_tokens": 15989,
+                    "sessions": 3,
+                    "turns": 15
+                  }
+                },
+                "retry_attempts": [],
+                "run_id": "c569ce7369a64d2cb78ce2bf8880e420",
+                "score": 100,
+                "session_id": "e2e_c569ce7369a64d2cb78ce2bf8880e420",
+                "status": "passed",
+                "wall_time_ms": 204473
               }
             ],
             "scenario_id": "research_pipeline",
@@ -1496,8 +1502,8 @@
             "aggregate": {
               "cost": {
                 "judge_usd": 0.0,
-                "subject_usd": 0.0110519024,
-                "total_usd": 0.0110519024
+                "subject_usd": 0.0139988576,
+                "total_usd": 0.0139988576
               },
               "hard_gate_failures": 0,
               "median_score": 100.0,
@@ -1513,8 +1519,8 @@
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.004025750400000001,
-                  "total_usd": 0.004025750400000001
+                  "subject_usd": 0.0053201904,
+                  "total_usd": 0.0053201904
                 },
                 "failures": [],
                 "hard_gates": [
@@ -1541,78 +1547,29 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 154368,
-                    "cost_usd": 0.004025750400000001,
-                    "function_call_errors": 0,
-                    "function_calls": 17,
-                    "input_tokens": 17056,
-                    "output_tokens": 4306,
-                    "reasoning_tokens": 2639,
-                    "sessions": 1,
-                    "turns": 12
-                  }
-                },
-                "retry_attempts": [],
-                "run_id": "2fe82f63dcdc43e3b9ecd43a0228d576",
-                "score": 100,
-                "session_id": "e2e_2fe82f63dcdc43e3b9ecd43a0228d576",
-                "status": "passed",
-                "wall_time_ms": 48230
-              },
-              {
-                "cost": {
-                  "judge_usd": 0.0,
-                  "subject_usd": 0.0034813912000000004,
-                  "total_usd": 0.0034813912000000004
-                },
-                "failures": [],
-                "hard_gates": [
-                  {
-                    "id": "reactions_preceded_source_write",
-                    "passed": true,
-                    "reason": "registrations=2, wakes=1, call_bindings=1, writes=1"
-                  },
-                  {
-                    "id": "source_event_was_mirrored_mechanically",
-                    "passed": true,
-                    "reason": "exact_source_write=true, mirror_valid=true, call_delivered=true, call_payload_recorded=true"
-                  },
-                  {
-                    "id": "mirror_woke_original_session",
-                    "passed": true,
-                    "reason": "wake_records=1, sessions=1"
-                  },
-                  {
-                    "id": "mechanical_run_completed_cleanly",
-                    "passed": true,
-                    "reason": "active_bindings=0, function_errors=0, confirmed=true"
-                  }
-                ],
-                "metrics": {
-                  "totals": {
-                    "cache_read_tokens": 104704,
-                    "cost_usd": 0.0034813912000000004,
+                    "cache_read_tokens": 96768,
+                    "cost_usd": 0.0053201904,
                     "function_call_errors": 0,
                     "function_calls": 11,
-                    "input_tokens": 9337,
-                    "output_tokens": 6718,
-                    "reasoning_tokens": 4836,
+                    "input_tokens": 21526,
+                    "output_tokens": 7270,
+                    "reasoning_tokens": 5507,
                     "sessions": 1,
                     "turns": 8
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "0b1fc36ca1af49c49e8e9488725b5c31",
+                "run_id": "c71ad36dc3804876b0cd31d6151ac119",
                 "score": 100,
-                "session_id": "e2e_0b1fc36ca1af49c49e8e9488725b5c31",
+                "session_id": "e2e_c71ad36dc3804876b0cd31d6151ac119",
                 "status": "passed",
-                "wall_time_ms": 64404
+                "wall_time_ms": 64799
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.0035447608,
-                  "total_usd": 0.0035447608
+                  "subject_usd": 0.004802044799999999,
+                  "total_usd": 0.004802044799999999
                 },
                 "failures": [],
                 "hard_gates": [
@@ -1639,23 +1596,72 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 97536,
-                    "cost_usd": 0.0035447608,
+                    "cache_read_tokens": 198016,
+                    "cost_usd": 0.004802044799999999,
                     "function_call_errors": 0,
-                    "function_calls": 11,
-                    "input_tokens": 13057,
-                    "output_tokens": 5156,
-                    "reasoning_tokens": 3699,
+                    "function_calls": 22,
+                    "input_tokens": 14550,
+                    "output_tokens": 7895,
+                    "reasoning_tokens": 5429,
                     "sessions": 1,
-                    "turns": 7
+                    "turns": 13
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "fccc6d1e31ae44f99c8f56359d175693",
+                "run_id": "ce2e9a68b53f4321b445d1cb56c59eb6",
                 "score": 100,
-                "session_id": "e2e_fccc6d1e31ae44f99c8f56359d175693",
+                "session_id": "e2e_ce2e9a68b53f4321b445d1cb56c59eb6",
                 "status": "passed",
-                "wall_time_ms": 52527
+                "wall_time_ms": 81220
+              },
+              {
+                "cost": {
+                  "judge_usd": 0.0,
+                  "subject_usd": 0.0038766224,
+                  "total_usd": 0.0038766224
+                },
+                "failures": [],
+                "hard_gates": [
+                  {
+                    "id": "reactions_preceded_source_write",
+                    "passed": true,
+                    "reason": "registrations=2, wakes=1, call_bindings=1, writes=1"
+                  },
+                  {
+                    "id": "source_event_was_mirrored_mechanically",
+                    "passed": true,
+                    "reason": "exact_source_write=true, mirror_valid=true, call_delivered=true, call_payload_recorded=true"
+                  },
+                  {
+                    "id": "mirror_woke_original_session",
+                    "passed": true,
+                    "reason": "wake_records=1, sessions=1"
+                  },
+                  {
+                    "id": "mechanical_run_completed_cleanly",
+                    "passed": true,
+                    "reason": "active_bindings=0, function_errors=0, confirmed=true"
+                  }
+                ],
+                "metrics": {
+                  "totals": {
+                    "cache_read_tokens": 142208,
+                    "cost_usd": 0.0038766224,
+                    "function_call_errors": 0,
+                    "function_calls": 20,
+                    "input_tokens": 12726,
+                    "output_tokens": 6060,
+                    "reasoning_tokens": 3869,
+                    "sessions": 1,
+                    "turns": 10
+                  }
+                },
+                "retry_attempts": [],
+                "run_id": "5109b9a5f8b0465aad978b8ad6fdc6f8",
+                "score": 100,
+                "session_id": "e2e_5109b9a5f8b0465aad978b8ad6fdc6f8",
+                "status": "passed",
+                "wall_time_ms": 61528
               }
             ],
             "scenario_id": "mechanical_reaction",
@@ -1685,8 +1691,8 @@
             "aggregate": {
               "cost": {
                 "judge_usd": 0.0,
-                "subject_usd": 0.0079432136,
-                "total_usd": 0.0079432136
+                "subject_usd": 0.006939312800000002,
+                "total_usd": 0.006939312800000002
               },
               "hard_gate_failures": 0,
               "median_score": 100.0,
@@ -1702,8 +1708,8 @@
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.003472397600000001,
-                  "total_usd": 0.003472397600000001
+                  "subject_usd": 0.0024842776,
+                  "total_usd": 0.0024842776
                 },
                 "failures": [],
                 "hard_gates": [
@@ -1730,121 +1736,121 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 68992,
-                    "cost_usd": 0.003472397600000001,
+                    "cache_read_tokens": 40192,
+                    "cost_usd": 0.0024842776,
+                    "function_call_errors": 0,
+                    "function_calls": 5,
+                    "input_tokens": 11647,
+                    "output_tokens": 2647,
+                    "reasoning_tokens": 2032,
+                    "sessions": 1,
+                    "turns": 5
+                  }
+                },
+                "retry_attempts": [],
+                "run_id": "7b8410ab005f4a18a5073cca29859894",
+                "score": 100,
+                "session_id": "e2e_7b8410ab005f4a18a5073cca29859894",
+                "status": "passed",
+                "wall_time_ms": 32972
+              },
+              {
+                "cost": {
+                  "judge_usd": 0.0,
+                  "subject_usd": 0.0023787624000000005,
+                  "total_usd": 0.0023787624000000005
+                },
+                "failures": [],
+                "hard_gates": [
+                  {
+                    "id": "relative_timer_armed_before_result",
+                    "passed": true,
+                    "reason": "registrations=1, timers=1, writes=1"
+                  },
+                  {
+                    "id": "timer_woke_original_session",
+                    "passed": true,
+                    "reason": "timer_fired=true, root_only=true"
+                  },
+                  {
+                    "id": "woken_turn_persisted_result",
+                    "passed": true,
+                    "reason": "exact_write=true, observed={\"status\":\"fired\"}"
+                  },
+                  {
+                    "id": "timer_run_completed_cleanly",
+                    "passed": true,
+                    "reason": "active_bindings=0, function_errors=0, confirmed=true"
+                  }
+                ],
+                "metrics": {
+                  "totals": {
+                    "cache_read_tokens": 97408,
+                    "cost_usd": 0.0023787624000000005,
+                    "function_call_errors": 0,
+                    "function_calls": 9,
+                    "input_tokens": 6907,
+                    "output_tokens": 4068,
+                    "reasoning_tokens": 3067,
+                    "sessions": 1,
+                    "turns": 9
+                  }
+                },
+                "retry_attempts": [],
+                "run_id": "7d31072fb03d4228827ea5d245c8da5e",
+                "score": 100,
+                "session_id": "e2e_7d31072fb03d4228827ea5d245c8da5e",
+                "status": "passed",
+                "wall_time_ms": 53833
+              },
+              {
+                "cost": {
+                  "judge_usd": 0.0,
+                  "subject_usd": 0.0020762728000000004,
+                  "total_usd": 0.0020762728000000004
+                },
+                "failures": [],
+                "hard_gates": [
+                  {
+                    "id": "relative_timer_armed_before_result",
+                    "passed": true,
+                    "reason": "registrations=1, timers=1, writes=1"
+                  },
+                  {
+                    "id": "timer_woke_original_session",
+                    "passed": true,
+                    "reason": "timer_fired=true, root_only=true"
+                  },
+                  {
+                    "id": "woken_turn_persisted_result",
+                    "passed": true,
+                    "reason": "exact_write=true, observed={\"status\":\"fired\"}"
+                  },
+                  {
+                    "id": "timer_run_completed_cleanly",
+                    "passed": true,
+                    "reason": "active_bindings=0, function_errors=0, confirmed=true"
+                  }
+                ],
+                "metrics": {
+                  "totals": {
+                    "cache_read_tokens": 72576,
+                    "cost_usd": 0.0020762728000000004,
                     "function_call_errors": 0,
                     "function_calls": 7,
-                    "input_tokens": 15927,
-                    "output_tokens": 3748,
-                    "reasoning_tokens": 2869,
+                    "input_tokens": 7633,
+                    "output_tokens": 2873,
+                    "reasoning_tokens": 2103,
                     "sessions": 1,
                     "turns": 7
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "fa272689539a4e528d6efbe405b92c1c",
+                "run_id": "09470496109e49449080697caba77986",
                 "score": 100,
-                "session_id": "e2e_fa272689539a4e528d6efbe405b92c1c",
+                "session_id": "e2e_09470496109e49449080697caba77986",
                 "status": "passed",
-                "wall_time_ms": 44636
-              },
-              {
-                "cost": {
-                  "judge_usd": 0.0,
-                  "subject_usd": 0.0019608008,
-                  "total_usd": 0.0019608008
-                },
-                "failures": [],
-                "hard_gates": [
-                  {
-                    "id": "relative_timer_armed_before_result",
-                    "passed": true,
-                    "reason": "registrations=1, timers=1, writes=1"
-                  },
-                  {
-                    "id": "timer_woke_original_session",
-                    "passed": true,
-                    "reason": "timer_fired=true, root_only=true"
-                  },
-                  {
-                    "id": "woken_turn_persisted_result",
-                    "passed": true,
-                    "reason": "exact_write=true, observed={\"status\":\"fired\"}"
-                  },
-                  {
-                    "id": "timer_run_completed_cleanly",
-                    "passed": true,
-                    "reason": "active_bindings=0, function_errors=0, confirmed=true"
-                  }
-                ],
-                "metrics": {
-                  "totals": {
-                    "cache_read_tokens": 71936,
-                    "cost_usd": 0.0019608008,
-                    "function_call_errors": 0,
-                    "function_calls": 6,
-                    "input_tokens": 7655,
-                    "output_tokens": 2456,
-                    "reasoning_tokens": 1738,
-                    "sessions": 1,
-                    "turns": 7
-                  }
-                },
-                "retry_attempts": [],
-                "run_id": "47b9ad1504524215bbff9c7403f9d9a9",
-                "score": 100,
-                "session_id": "e2e_47b9ad1504524215bbff9c7403f9d9a9",
-                "status": "passed",
-                "wall_time_ms": 31114
-              },
-              {
-                "cost": {
-                  "judge_usd": 0.0,
-                  "subject_usd": 0.0025100152,
-                  "total_usd": 0.0025100152
-                },
-                "failures": [],
-                "hard_gates": [
-                  {
-                    "id": "relative_timer_armed_before_result",
-                    "passed": true,
-                    "reason": "registrations=1, timers=1, writes=1"
-                  },
-                  {
-                    "id": "timer_woke_original_session",
-                    "passed": true,
-                    "reason": "timer_fired=true, root_only=true"
-                  },
-                  {
-                    "id": "woken_turn_persisted_result",
-                    "passed": true,
-                    "reason": "exact_write=true, observed={\"status\":\"fired\"}"
-                  },
-                  {
-                    "id": "timer_run_completed_cleanly",
-                    "passed": true,
-                    "reason": "active_bindings=0, function_errors=0, confirmed=true"
-                  }
-                ],
-                "metrics": {
-                  "totals": {
-                    "cache_read_tokens": 112384,
-                    "cost_usd": 0.0025100152,
-                    "function_call_errors": 0,
-                    "function_calls": 11,
-                    "input_tokens": 8255,
-                    "output_tokens": 3713,
-                    "reasoning_tokens": 2456,
-                    "sessions": 1,
-                    "turns": 10
-                  }
-                },
-                "retry_attempts": [],
-                "run_id": "47935492ac344948829dd15b8e75b21e",
-                "score": 100,
-                "session_id": "e2e_47935492ac344948829dd15b8e75b21e",
-                "status": "passed",
-                "wall_time_ms": 43241
+                "wall_time_ms": 36178
               }
             ],
             "scenario_id": "timer_wake",
@@ -1868,31 +1874,31 @@
           "model": "glm-5.2",
           "provider": "zai"
         },
-        "passed": true,
+        "passed": false,
         "scenarios": [
           {
             "aggregate": {
               "cost": {
                 "judge_usd": 0.0,
-                "subject_usd": 0.07302980719999999,
-                "total_usd": 0.07302980719999999
+                "subject_usd": 0.06382785360000001,
+                "total_usd": 0.06382785360000001
               },
-              "hard_gate_failures": 1,
-              "median_score": 100.0,
-              "pass_rate": 0.6666666666666666,
-              "passed_runs": 2,
+              "hard_gate_failures": 2,
+              "median_score": 75.0,
+              "pass_rate": 0.3333333333333333,
+              "passed_runs": 1,
               "required_passes": 2,
               "runs": 3,
               "scored_runs": 3,
               "technical_failures": 0
             },
-            "passed": true,
+            "passed": false,
             "runs": [
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.0289616936,
-                  "total_usd": 0.0289616936
+                  "subject_usd": 0.022955755200000004,
+                  "total_usd": 0.022955755200000004
                 },
                 "failures": [],
                 "hard_gates": [
@@ -1903,13 +1909,13 @@
                   },
                   {
                     "id": "live_ledger_matches",
-                    "passed": false,
-                    "reason": "live_strategy=true, no_late_root_repair=false, expected=true, source=true"
+                    "passed": true,
+                    "reason": "live_strategy=true, no_late_root_repair=true, expected=true, source=true"
                   },
                   {
                     "id": "single_database_completion_wake",
-                    "passed": false,
-                    "reason": "watch_before_spawn=true, wake_records=4, notifications=4, no_polling=true, root_did_not_signal=true"
+                    "passed": true,
+                    "reason": "watch_before_spawn=true, wake_records=1, notifications=1, no_polling=true, root_did_not_signal=true"
                   },
                   {
                     "id": "verification_and_cleanup_completed",
@@ -1919,29 +1925,78 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 1002112,
-                    "cost_usd": 0.0289616936,
-                    "function_call_errors": 5,
-                    "function_calls": 61,
-                    "input_tokens": 71963,
-                    "output_tokens": 57432,
-                    "reasoning_tokens": 46836,
+                    "cache_read_tokens": 678784,
+                    "cost_usd": 0.022955755200000004,
+                    "function_call_errors": 4,
+                    "function_calls": 44,
+                    "input_tokens": 60076,
+                    "output_tokens": 45159,
+                    "reasoning_tokens": 36318,
+                    "sessions": 4,
+                    "turns": 26
+                  }
+                },
+                "retry_attempts": [],
+                "run_id": "a11251a4ca884bac8a4283d9ffa85b4a",
+                "score": 100,
+                "session_id": "e2e_a11251a4ca884bac8a4283d9ffa85b4a",
+                "status": "passed",
+                "wall_time_ms": 453080
+              },
+              {
+                "cost": {
+                  "judge_usd": 0.0,
+                  "subject_usd": 0.019938273600000007,
+                  "total_usd": 0.019938273600000007
+                },
+                "failures": [],
+                "hard_gates": [
+                  {
+                    "id": "database_only_couriers_completed",
+                    "passed": true,
+                    "reason": "relations=true, shipments=true, couriers_done=true, completion_rows=1, minimal_spawns=true, courier_execution=true, sessions=4, shared_medium=true"
+                  },
+                  {
+                    "id": "live_ledger_matches",
+                    "passed": true,
+                    "reason": "live_strategy=true, no_late_root_repair=true, expected=true, source=true"
+                  },
+                  {
+                    "id": "single_database_completion_wake",
+                    "passed": false,
+                    "reason": "watch_before_spawn=false, wake_records=1, notifications=1, no_polling=true, root_did_not_signal=true"
+                  },
+                  {
+                    "id": "verification_and_cleanup_completed",
+                    "passed": true,
+                    "reason": "response_evidence=true, active_bindings=0, sql_triggers=0"
+                  }
+                ],
+                "metrics": {
+                  "totals": {
+                    "cache_read_tokens": 1190912,
+                    "cost_usd": 0.019938273600000007,
+                    "function_call_errors": 2,
+                    "function_calls": 44,
+                    "input_tokens": 39176,
+                    "output_tokens": 39711,
+                    "reasoning_tokens": 31551,
                     "sessions": 4,
                     "turns": 33
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "85b54ff61aef4039ad220f469b708d6d",
-                "score": 50,
-                "session_id": "e2e_85b54ff61aef4039ad220f469b708d6d",
+                "run_id": "1db8265f27fe48ffa33fe1113000432a",
+                "score": 75,
+                "session_id": "e2e_1db8265f27fe48ffa33fe1113000432a",
                 "status": "hard_gate_failed",
-                "wall_time_ms": 577802
+                "wall_time_ms": 428639
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.026070396799999996,
-                  "total_usd": 0.026070396799999996
+                  "subject_usd": 0.0209338248,
+                  "total_usd": 0.0209338248
                 },
                 "failures": [],
                 "hard_gates": [
@@ -1957,8 +2012,8 @@
                   },
                   {
                     "id": "single_database_completion_wake",
-                    "passed": true,
-                    "reason": "watch_before_spawn=true, wake_records=1, notifications=1, no_polling=true, root_did_not_signal=true"
+                    "passed": false,
+                    "reason": "watch_before_spawn=true, wake_records=2, notifications=2, no_polling=true, root_did_not_signal=true"
                   },
                   {
                     "id": "verification_and_cleanup_completed",
@@ -1968,72 +2023,23 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 1453056,
-                    "cost_usd": 0.026070396799999996,
-                    "function_call_errors": 8,
-                    "function_calls": 63,
-                    "input_tokens": 41744,
-                    "output_tokens": 57706,
-                    "reasoning_tokens": 46296,
+                    "cache_read_tokens": 882816,
+                    "cost_usd": 0.0209338248,
+                    "function_call_errors": 4,
+                    "function_calls": 42,
+                    "input_tokens": 44487,
+                    "output_tokens": 43692,
+                    "reasoning_tokens": 34753,
                     "sessions": 4,
-                    "turns": 32
+                    "turns": 24
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "b73eedd5abc84ccdb27e1313a11ec6ec",
-                "score": 100,
-                "session_id": "e2e_b73eedd5abc84ccdb27e1313a11ec6ec",
-                "status": "passed",
-                "wall_time_ms": 624277
-              },
-              {
-                "cost": {
-                  "judge_usd": 0.0,
-                  "subject_usd": 0.0179977168,
-                  "total_usd": 0.0179977168
-                },
-                "failures": [],
-                "hard_gates": [
-                  {
-                    "id": "database_only_couriers_completed",
-                    "passed": true,
-                    "reason": "relations=true, shipments=true, couriers_done=true, completion_rows=1, minimal_spawns=true, courier_execution=true, sessions=4, shared_medium=true"
-                  },
-                  {
-                    "id": "live_ledger_matches",
-                    "passed": true,
-                    "reason": "live_strategy=true, no_late_root_repair=true, expected=true, source=true"
-                  },
-                  {
-                    "id": "single_database_completion_wake",
-                    "passed": true,
-                    "reason": "watch_before_spawn=true, wake_records=1, notifications=1, no_polling=true, root_did_not_signal=true"
-                  },
-                  {
-                    "id": "verification_and_cleanup_completed",
-                    "passed": true,
-                    "reason": "response_evidence=true, active_bindings=0, sql_triggers=0"
-                  }
-                ],
-                "metrics": {
-                  "totals": {
-                    "cache_read_tokens": 761856,
-                    "cost_usd": 0.0179977168,
-                    "function_call_errors": 2,
-                    "function_calls": 54,
-                    "input_tokens": 41680,
-                    "output_tokens": 35819,
-                    "reasoning_tokens": 26280,
-                    "sessions": 4,
-                    "turns": 36
-                  }
-                },
-                "retry_attempts": [],
-                "run_id": "f9ca79bb48d7471594b85e26a272ebe1",
-                "score": 100,
-                "session_id": "e2e_f9ca79bb48d7471594b85e26a272ebe1",
-                "status": "passed",
-                "wall_time_ms": 348922
+                "run_id": "0ad8c8a91dfe4eaabf995636acfa5d3a",
+                "score": 75,
+                "session_id": "e2e_0ad8c8a91dfe4eaabf995636acfa5d3a",
+                "status": "hard_gate_failed",
+                "wall_time_ms": 418859
               }
             ],
             "scenario_id": "receiving_operation",
@@ -2063,8 +2069,8 @@
             "aggregate": {
               "cost": {
                 "judge_usd": 0.0,
-                "subject_usd": 0.011865386400000004,
-                "total_usd": 0.011865386400000004
+                "subject_usd": 0.0100942128,
+                "total_usd": 0.0100942128
               },
               "hard_gate_failures": 0,
               "median_score": 100.0,
@@ -2080,8 +2086,8 @@
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.004683162400000001,
-                  "total_usd": 0.004683162400000001
+                  "subject_usd": 0.0032512424,
+                  "total_usd": 0.0032512424
                 },
                 "failures": [],
                 "hard_gates": [
@@ -2103,73 +2109,29 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 110208,
-                    "cost_usd": 0.004683162400000001,
+                    "cache_read_tokens": 97408,
+                    "cost_usd": 0.0032512424,
                     "function_call_errors": 0,
-                    "function_calls": 9,
-                    "input_tokens": 20261,
-                    "output_tokens": 5493,
-                    "reasoning_tokens": 4364,
-                    "sessions": 1,
-                    "turns": 8
-                  }
-                },
-                "retry_attempts": [],
-                "run_id": "e3f7162936d843098f4a35cc5b54e144",
-                "score": 100,
-                "session_id": "e2e_e3f7162936d843098f4a35cc5b54e144",
-                "status": "passed",
-                "wall_time_ms": 54283
-              },
-              {
-                "cost": {
-                  "judge_usd": 0.0,
-                  "subject_usd": 0.0023329712,
-                  "total_usd": 0.0023329712
-                },
-                "failures": [],
-                "hard_gates": [
-                  {
-                    "id": "goal_rows",
-                    "passed": true,
-                    "reason": "observed 8 row(s), need more than 6"
-                  },
-                  {
-                    "id": "validator_registered",
-                    "passed": true,
-                    "reason": "observed 1 post-turn registration(s), expected exactly one"
-                  },
-                  {
-                    "id": "nudge_delivered",
-                    "passed": true,
-                    "reason": "observed 1 validation nudge(s), expected at least one"
-                  }
-                ],
-                "metrics": {
-                  "totals": {
-                    "cache_read_tokens": 98304,
-                    "cost_usd": 0.0023329712,
-                    "function_call_errors": 0,
-                    "function_calls": 8,
-                    "input_tokens": 6598,
-                    "output_tokens": 4050,
-                    "reasoning_tokens": 3098,
+                    "function_calls": 10,
+                    "input_tokens": 11569,
+                    "output_tokens": 4853,
+                    "reasoning_tokens": 3764,
                     "sessions": 1,
                     "turns": 9
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "0c92d9d278e74b6c831987d48c6a8f9e",
+                "run_id": "39227954ed7347cdbfee44d7ffacfc3b",
                 "score": 100,
-                "session_id": "e2e_0c92d9d278e74b6c831987d48c6a8f9e",
+                "session_id": "e2e_39227954ed7347cdbfee44d7ffacfc3b",
                 "status": "passed",
-                "wall_time_ms": 45545
+                "wall_time_ms": 58247
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.004849252800000001,
-                  "total_usd": 0.004849252800000001
+                  "subject_usd": 0.003484292,
+                  "total_usd": 0.003484292
                 },
                 "failures": [],
                 "hard_gates": [
@@ -2186,28 +2148,72 @@
                   {
                     "id": "nudge_delivered",
                     "passed": true,
-                    "reason": "observed 2 validation nudge(s), expected at least one"
+                    "reason": "observed 1 validation nudge(s), expected at least one"
                   }
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 181376,
-                    "cost_usd": 0.004849252800000001,
+                    "cache_read_tokens": 119040,
+                    "cost_usd": 0.003484292,
                     "function_call_errors": 0,
-                    "function_calls": 10,
-                    "input_tokens": 15836,
-                    "output_tokens": 7587,
-                    "reasoning_tokens": 6348,
+                    "function_calls": 15,
+                    "input_tokens": 9271,
+                    "output_tokens": 6618,
+                    "reasoning_tokens": 5156,
                     "sessions": 1,
-                    "turns": 11
+                    "turns": 9
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "38e772ea5e40440c98ac8de698a30afc",
+                "run_id": "6895ced975554cd7aad1de4a8feace64",
                 "score": 100,
-                "session_id": "e2e_38e772ea5e40440c98ac8de698a30afc",
+                "session_id": "e2e_6895ced975554cd7aad1de4a8feace64",
                 "status": "passed",
-                "wall_time_ms": 82097
+                "wall_time_ms": 71123
+              },
+              {
+                "cost": {
+                  "judge_usd": 0.0,
+                  "subject_usd": 0.0033586784,
+                  "total_usd": 0.0033586784
+                },
+                "failures": [],
+                "hard_gates": [
+                  {
+                    "id": "goal_rows",
+                    "passed": true,
+                    "reason": "observed 8 row(s), need more than 6"
+                  },
+                  {
+                    "id": "validator_registered",
+                    "passed": true,
+                    "reason": "observed 1 post-turn registration(s), expected exactly one"
+                  },
+                  {
+                    "id": "nudge_delivered",
+                    "passed": true,
+                    "reason": "observed 1 validation nudge(s), expected at least one"
+                  }
+                ],
+                "metrics": {
+                  "totals": {
+                    "cache_read_tokens": 134528,
+                    "cost_usd": 0.0033586784,
+                    "function_call_errors": 0,
+                    "function_calls": 9,
+                    "input_tokens": 8970,
+                    "output_tokens": 6165,
+                    "reasoning_tokens": 4982,
+                    "sessions": 1,
+                    "turns": 9
+                  }
+                },
+                "retry_attempts": [],
+                "run_id": "1f86ce6186c3455ebbce8d7e89a75606",
+                "score": 100,
+                "session_id": "e2e_1f86ce6186c3455ebbce8d7e89a75606",
+                "status": "passed",
+                "wall_time_ms": 67225
               }
             ],
             "scenario_id": "validation_loop",
@@ -2231,31 +2237,31 @@
           "model": "glm-5.2",
           "provider": "zai"
         },
-        "passed": false,
+        "passed": true,
         "scenarios": [
           {
             "aggregate": {
               "cost": {
                 "judge_usd": 0.0,
-                "subject_usd": 0.012373172000000002,
-                "total_usd": 0.012373172000000002
+                "subject_usd": 0.0154522032,
+                "total_usd": 0.0154522032
               },
-              "hard_gate_failures": 0,
+              "hard_gate_failures": 1,
               "median_score": 100.0,
               "pass_rate": 0.6666666666666666,
               "passed_runs": 2,
               "required_passes": 2,
               "runs": 3,
-              "scored_runs": 2,
-              "technical_failures": 1
+              "scored_runs": 3,
+              "technical_failures": 0
             },
-            "passed": false,
+            "passed": true,
             "runs": [
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.003997532000000001,
-                  "total_usd": 0.003997532000000001
+                  "subject_usd": 0.0077079744,
+                  "total_usd": 0.0077079744
                 },
                 "failures": [],
                 "hard_gates": [
@@ -2267,7 +2273,56 @@
                   {
                     "id": "arm_before_spawn",
                     "passed": true,
-                    "reason": "validator@Some(6) wake@Some(7) spawn@Some(8) \u2014 validator and wake must precede the spawn"
+                    "reason": "validator@Some(11) wake@Some(12) spawn@Some(13) \u2014 validator and wake must precede the spawn"
+                  },
+                  {
+                    "id": "child_loop_ran",
+                    "passed": true,
+                    "reason": "observed 2 nudge(s) in the child transcript"
+                  },
+                  {
+                    "id": "parent_report",
+                    "passed": true,
+                    "reason": "expected the exact report line"
+                  }
+                ],
+                "metrics": {
+                  "totals": {
+                    "cache_read_tokens": 178048,
+                    "cost_usd": 0.0077079744,
+                    "function_call_errors": 0,
+                    "function_calls": 17,
+                    "input_tokens": 32058,
+                    "output_tokens": 9719,
+                    "reasoning_tokens": 7499,
+                    "sessions": 2,
+                    "turns": 14
+                  }
+                },
+                "retry_attempts": [],
+                "run_id": "d141738d3ad54eb784f9bae5e6b70354",
+                "score": 100,
+                "session_id": "e2e_d141738d3ad54eb784f9bae5e6b70354",
+                "status": "passed",
+                "wall_time_ms": 99188
+              },
+              {
+                "cost": {
+                  "judge_usd": 0.0,
+                  "subject_usd": 0.004033853600000001,
+                  "total_usd": 0.004033853600000001
+                },
+                "failures": [],
+                "hard_gates": [
+                  {
+                    "id": "child_goal_reached",
+                    "passed": true,
+                    "reason": "rows=8, verdict=8, need both above 6"
+                  },
+                  {
+                    "id": "arm_before_spawn",
+                    "passed": true,
+                    "reason": "validator@Some(15) wake@Some(16) spawn@Some(17) \u2014 validator and wake must precede the spawn"
                   },
                   {
                     "id": "child_loop_ran",
@@ -2282,29 +2337,29 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 141440,
-                    "cost_usd": 0.003997532000000001,
+                    "cache_read_tokens": 186112,
+                    "cost_usd": 0.004033853600000001,
                     "function_call_errors": 0,
-                    "function_calls": 12,
-                    "input_tokens": 19105,
-                    "output_tokens": 3310,
-                    "reasoning_tokens": 1675,
+                    "function_calls": 21,
+                    "input_tokens": 15207,
+                    "output_tokens": 4942,
+                    "reasoning_tokens": 2510,
                     "sessions": 2,
-                    "turns": 14
+                    "turns": 17
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "4fa4675f4a9b4054a3fa37700e565fed",
+                "run_id": "0f76ad3beb2a432280f368141a18b627",
                 "score": 100,
-                "session_id": "e2e_4fa4675f4a9b4054a3fa37700e565fed",
+                "session_id": "e2e_0f76ad3beb2a432280f368141a18b627",
                 "status": "passed",
-                "wall_time_ms": 39616
+                "wall_time_ms": 53523
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.0041941816,
-                  "total_usd": 0.0041941816
+                  "subject_usd": 0.0037103752,
+                  "total_usd": 0.0037103752
                 },
                 "failures": [],
                 "hard_gates": [
@@ -2325,62 +2380,29 @@
                   },
                   {
                     "id": "parent_report",
-                    "passed": true,
+                    "passed": false,
                     "reason": "expected the exact report line"
                   }
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 163072,
-                    "cost_usd": 0.0041941816,
+                    "cache_read_tokens": 109184,
+                    "cost_usd": 0.0037103752,
                     "function_call_errors": 0,
-                    "function_calls": 15,
-                    "input_tokens": 16855,
-                    "output_tokens": 4921,
-                    "reasoning_tokens": 2908,
+                    "function_calls": 14,
+                    "input_tokens": 16155,
+                    "output_tokens": 4082,
+                    "reasoning_tokens": 2423,
                     "sessions": 2,
-                    "turns": 14
+                    "turns": 11
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "c3db80a121dd4e469106fe6908b8b948",
-                "score": 100,
-                "session_id": "e2e_c3db80a121dd4e469106fe6908b8b948",
-                "status": "passed",
-                "wall_time_ms": 50502
-              },
-              {
-                "cost": {
-                  "judge_usd": 0.0,
-                  "subject_usd": 0.0041814584,
-                  "total_usd": 0.0041814584
-                },
-                "failures": [
-                  {
-                    "message": "scenario subagent_validation made no observable progress for 420s while waiting for session e2e_60055530f850461b8c678b20765de906 (last active turn t_d440d14359a1444ebc8a87f9d50d9715)",
-                    "phase": "execute"
-                  }
-                ],
-                "hard_gates": [],
-                "metrics": {
-                  "totals": {
-                    "cache_read_tokens": 214528,
-                    "cost_usd": 0.0041814584,
-                    "function_call_errors": 0,
-                    "function_calls": 18,
-                    "input_tokens": 14403,
-                    "output_tokens": 5587,
-                    "reasoning_tokens": 3407,
-                    "sessions": 2,
-                    "turns": 17
-                  }
-                },
-                "retry_attempts": [],
-                "run_id": "60055530f850461b8c678b20765de906",
-                "score": null,
-                "session_id": "e2e_60055530f850461b8c678b20765de906",
-                "status": "resource_limit",
-                "wall_time_ms": 482117
+                "run_id": "01d96dfc359f4abb9caf6ac684c095c7",
+                "score": 70,
+                "session_id": "e2e_01d96dfc359f4abb9caf6ac684c095c7",
+                "status": "hard_gate_failed",
+                "wall_time_ms": 40536
               }
             ],
             "scenario_id": "subagent_validation",
@@ -2410,8 +2432,8 @@
             "aggregate": {
               "cost": {
                 "judge_usd": 0.0,
-                "subject_usd": 0.023376892000000003,
-                "total_usd": 0.023376892000000003
+                "subject_usd": 0.0248807104,
+                "total_usd": 0.0248807104
               },
               "hard_gate_failures": 0,
               "median_score": 100.0,
@@ -2427,8 +2449,8 @@
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.006303175200000001,
-                  "total_usd": 0.006303175200000001
+                  "subject_usd": 0.008840669600000002,
+                  "total_usd": 0.008840669600000002
                 },
                 "failures": [],
                 "hard_gates": [
@@ -2460,131 +2482,131 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 169984,
-                    "cost_usd": 0.006303175200000001,
-                    "function_call_errors": 0,
-                    "function_calls": 21,
-                    "input_tokens": 25403,
-                    "output_tokens": 8110,
-                    "reasoning_tokens": 5192,
-                    "sessions": 3,
-                    "turns": 17
-                  }
-                },
-                "retry_attempts": [],
-                "run_id": "c696d3f3d6cb47cb9b7cd788be58c3f4",
-                "score": 100,
-                "session_id": "e2e_c696d3f3d6cb47cb9b7cd788be58c3f4",
-                "status": "passed",
-                "wall_time_ms": 76629
-              },
-              {
-                "cost": {
-                  "judge_usd": 0.0,
-                  "subject_usd": 0.007474857600000001,
-                  "total_usd": 0.007474857600000001
-                },
-                "failures": [],
-                "hard_gates": [
-                  {
-                    "id": "children_goal_reached",
-                    "passed": true,
-                    "reason": "rows=[8, 8], verdicts=[8, 8], all must exceed 6"
-                  },
-                  {
-                    "id": "two_scoped_validators",
-                    "passed": true,
-                    "reason": "observed 2 post-turn registration(s), expected two"
-                  },
-                  {
-                    "id": "arm_before_spawn",
-                    "passed": true,
-                    "reason": "observed 4 registration(s) before the first spawn, expected at least four"
-                  },
-                  {
-                    "id": "both_children_looped",
-                    "passed": true,
-                    "reason": "child nudges [1, 1], each child needs at least one"
-                  },
-                  {
-                    "id": "fan_in_report",
-                    "passed": true,
-                    "reason": "expected the exact report line"
-                  }
-                ],
-                "metrics": {
-                  "totals": {
-                    "cache_read_tokens": 244992,
-                    "cost_usd": 0.007474857600000001,
-                    "function_call_errors": 0,
-                    "function_calls": 22,
-                    "input_tokens": 26752,
-                    "output_tokens": 10870,
-                    "reasoning_tokens": 7677,
-                    "sessions": 3,
-                    "turns": 18
-                  }
-                },
-                "retry_attempts": [],
-                "run_id": "4c6dd836bf3e4e5f8459b5d9b8e03218",
-                "score": 100,
-                "session_id": "e2e_4c6dd836bf3e4e5f8459b5d9b8e03218",
-                "status": "passed",
-                "wall_time_ms": 99314
-              },
-              {
-                "cost": {
-                  "judge_usd": 0.0,
-                  "subject_usd": 0.0095988592,
-                  "total_usd": 0.0095988592
-                },
-                "failures": [],
-                "hard_gates": [
-                  {
-                    "id": "children_goal_reached",
-                    "passed": true,
-                    "reason": "rows=[8, 8], verdicts=[8, 8], all must exceed 6"
-                  },
-                  {
-                    "id": "two_scoped_validators",
-                    "passed": true,
-                    "reason": "observed 2 post-turn registration(s), expected two"
-                  },
-                  {
-                    "id": "arm_before_spawn",
-                    "passed": true,
-                    "reason": "observed 4 registration(s) before the first spawn, expected at least four"
-                  },
-                  {
-                    "id": "both_children_looped",
-                    "passed": true,
-                    "reason": "child nudges [1, 1], each child needs at least one"
-                  },
-                  {
-                    "id": "fan_in_report",
-                    "passed": true,
-                    "reason": "expected the exact report line"
-                  }
-                ],
-                "metrics": {
-                  "totals": {
-                    "cache_read_tokens": 443264,
-                    "cost_usd": 0.0095988592,
+                    "cache_read_tokens": 268032,
+                    "cost_usd": 0.008840669600000002,
                     "function_call_errors": 0,
                     "function_calls": 29,
-                    "input_tokens": 35640,
-                    "output_tokens": 12029,
-                    "reasoning_tokens": 8259,
+                    "input_tokens": 34731,
+                    "output_tokens": 11528,
+                    "reasoning_tokens": 7729,
                     "sessions": 3,
-                    "turns": 23
+                    "turns": 19
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "22091032c0214212921bf787112f8e2c",
+                "run_id": "a6dd22d90a8c4e83a0bf12a97ae0a5d9",
                 "score": 100,
-                "session_id": "e2e_22091032c0214212921bf787112f8e2c",
+                "session_id": "e2e_a6dd22d90a8c4e83a0bf12a97ae0a5d9",
                 "status": "passed",
-                "wall_time_ms": 112054
+                "wall_time_ms": 105062
+              },
+              {
+                "cost": {
+                  "judge_usd": 0.0,
+                  "subject_usd": 0.0079365608,
+                  "total_usd": 0.0079365608
+                },
+                "failures": [],
+                "hard_gates": [
+                  {
+                    "id": "children_goal_reached",
+                    "passed": true,
+                    "reason": "rows=[8, 8], verdicts=[8, 8], all must exceed 6"
+                  },
+                  {
+                    "id": "two_scoped_validators",
+                    "passed": true,
+                    "reason": "observed 2 post-turn registration(s), expected two"
+                  },
+                  {
+                    "id": "arm_before_spawn",
+                    "passed": true,
+                    "reason": "observed 4 registration(s) before the first spawn, expected at least four"
+                  },
+                  {
+                    "id": "both_children_looped",
+                    "passed": true,
+                    "reason": "child nudges [1, 1], each child needs at least one"
+                  },
+                  {
+                    "id": "fan_in_report",
+                    "passed": true,
+                    "reason": "expected the exact report line"
+                  }
+                ],
+                "metrics": {
+                  "totals": {
+                    "cache_read_tokens": 321536,
+                    "cost_usd": 0.0079365608,
+                    "function_call_errors": 0,
+                    "function_calls": 26,
+                    "input_tokens": 27275,
+                    "output_tokens": 11492,
+                    "reasoning_tokens": 7721,
+                    "sessions": 3,
+                    "turns": 21
+                  }
+                },
+                "retry_attempts": [],
+                "run_id": "1589582e311f4e99abf184f1bc794e83",
+                "score": 100,
+                "session_id": "e2e_1589582e311f4e99abf184f1bc794e83",
+                "status": "passed",
+                "wall_time_ms": 105655
+              },
+              {
+                "cost": {
+                  "judge_usd": 0.0,
+                  "subject_usd": 0.008103479999999998,
+                  "total_usd": 0.008103479999999998
+                },
+                "failures": [],
+                "hard_gates": [
+                  {
+                    "id": "children_goal_reached",
+                    "passed": true,
+                    "reason": "rows=[8, 8], verdicts=[8, 8], all must exceed 6"
+                  },
+                  {
+                    "id": "two_scoped_validators",
+                    "passed": true,
+                    "reason": "observed 2 post-turn registration(s), expected two"
+                  },
+                  {
+                    "id": "arm_before_spawn",
+                    "passed": true,
+                    "reason": "observed 4 registration(s) before the first spawn, expected at least four"
+                  },
+                  {
+                    "id": "both_children_looped",
+                    "passed": true,
+                    "reason": "child nudges [1, 1], each child needs at least one"
+                  },
+                  {
+                    "id": "fan_in_report",
+                    "passed": true,
+                    "reason": "expected the exact report line"
+                  }
+                ],
+                "metrics": {
+                  "totals": {
+                    "cache_read_tokens": 297600,
+                    "cost_usd": 0.008103479999999998,
+                    "function_call_errors": 0,
+                    "function_calls": 24,
+                    "input_tokens": 27164,
+                    "output_tokens": 12383,
+                    "reasoning_tokens": 8927,
+                    "sessions": 3,
+                    "turns": 19
+                  }
+                },
+                "retry_attempts": [],
+                "run_id": "446c386f7d844257a205dac648a73b94",
+                "score": 100,
+                "session_id": "e2e_446c386f7d844257a205dac648a73b94",
+                "status": "passed",
+                "wall_time_ms": 110555
               }
             ],
             "scenario_id": "multi_subagent_validation",
@@ -2614,8 +2636,8 @@
             "aggregate": {
               "cost": {
                 "judge_usd": 0.0,
-                "subject_usd": 0.0160120576,
-                "total_usd": 0.0160120576
+                "subject_usd": 0.0181351128,
+                "total_usd": 0.0181351128
               },
               "hard_gate_failures": 0,
               "median_score": 100.0,
@@ -2631,8 +2653,8 @@
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.005469184000000001,
-                  "total_usd": 0.005469184000000001
+                  "subject_usd": 0.0064500688,
+                  "total_usd": 0.0064500688
                 },
                 "failures": [],
                 "hard_gates": [
@@ -2659,29 +2681,29 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 222080,
-                    "cost_usd": 0.005469184000000001,
+                    "cache_read_tokens": 250496,
+                    "cost_usd": 0.0064500688,
                     "function_call_errors": 0,
-                    "function_calls": 20,
-                    "input_tokens": 23540,
-                    "output_tokens": 5542,
-                    "reasoning_tokens": 3142,
+                    "function_calls": 23,
+                    "input_tokens": 21634,
+                    "output_tokens": 9714,
+                    "reasoning_tokens": 6815,
                     "sessions": 2,
                     "turns": 19
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "b8615133af484480a5cb7d71a58ea576",
+                "run_id": "8fd1f766f0cf499091f69930511c8742",
                 "score": 100,
-                "session_id": "e2e_b8615133af484480a5cb7d71a58ea576",
+                "session_id": "e2e_8fd1f766f0cf499091f69930511c8742",
                 "status": "passed",
-                "wall_time_ms": 184852
+                "wall_time_ms": 189962
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.0055958,
-                  "total_usd": 0.0055958
+                  "subject_usd": 0.005773683999999999,
+                  "total_usd": 0.005773683999999999
                 },
                 "failures": [],
                 "hard_gates": [
@@ -2708,29 +2730,29 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 211200,
-                    "cost_usd": 0.0055958,
+                    "cache_read_tokens": 212480,
+                    "cost_usd": 0.005773683999999999,
                     "function_call_errors": 0,
-                    "function_calls": 17,
-                    "input_tokens": 21364,
-                    "output_tokens": 7191,
-                    "reasoning_tokens": 4705,
+                    "function_calls": 18,
+                    "input_tokens": 21591,
+                    "output_tokens": 7700,
+                    "reasoning_tokens": 5486,
                     "sessions": 2,
                     "turns": 16
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "f4dd69b96dce4b5d939fb2d60ba663f7",
+                "run_id": "426352afd97f4645aef32b479365314a",
                 "score": 100,
-                "session_id": "e2e_f4dd69b96dce4b5d939fb2d60ba663f7",
+                "session_id": "e2e_426352afd97f4645aef32b479365314a",
                 "status": "passed",
-                "wall_time_ms": 180360
+                "wall_time_ms": 176053
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.0049470736,
-                  "total_usd": 0.0049470736
+                  "subject_usd": 0.00591136,
+                  "total_usd": 0.00591136
                 },
                 "failures": [],
                 "hard_gates": [
@@ -2757,23 +2779,23 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 192512,
-                    "cost_usd": 0.0049470736,
+                    "cache_read_tokens": 185600,
+                    "cost_usd": 0.00591136,
                     "function_call_errors": 0,
-                    "function_calls": 14,
-                    "input_tokens": 16590,
-                    "output_tokens": 7448,
-                    "reasoning_tokens": 5450,
+                    "function_calls": 16,
+                    "input_tokens": 21882,
+                    "output_tokens": 8315,
+                    "reasoning_tokens": 5903,
                     "sessions": 2,
-                    "turns": 16
+                    "turns": 15
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "20cf02c735e746cb938a414be9e5c980",
+                "run_id": "8e1d9793b0a04834a170c9499e04c19f",
                 "score": 100,
-                "session_id": "e2e_20cf02c735e746cb938a414be9e5c980",
+                "session_id": "e2e_8e1d9793b0a04834a170c9499e04c19f",
                 "status": "passed",
-                "wall_time_ms": 180224
+                "wall_time_ms": 179316
               }
             ],
             "scenario_id": "subagent_validation_failure",
@@ -2803,8 +2825,8 @@
             "aggregate": {
               "cost": {
                 "judge_usd": 0.0,
-                "subject_usd": 0.0057817144000000004,
-                "total_usd": 0.0057817144000000004
+                "subject_usd": 0.0033302248000000004,
+                "total_usd": 0.0033302248000000004
               },
               "hard_gate_failures": 0,
               "median_score": 100.0,
@@ -2820,15 +2842,15 @@
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.0015355368,
-                  "total_usd": 0.0015355368
+                  "subject_usd": 0.0008999256,
+                  "total_usd": 0.0008999256
                 },
                 "failures": [],
                 "hard_gates": [
                   {
                     "id": "envelope_registration",
                     "passed": true,
-                    "reason": "observed 1 post-turn registration(s); need exactly one targeting e2etest::validate_a8e9 with no payload"
+                    "reason": "observed 1 post-turn registration(s); need exactly one targeting e2etest::validate_defd with no payload"
                   },
                   {
                     "id": "custom_reasons_delivered",
@@ -2843,36 +2865,36 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 35456,
-                    "cost_usd": 0.0015355368,
+                    "cache_read_tokens": 23552,
+                    "cost_usd": 0.0008999256,
                     "function_call_errors": 0,
-                    "function_calls": 3,
-                    "input_tokens": 7971,
-                    "output_tokens": 1144,
-                    "reasoning_tokens": 840,
+                    "function_calls": 1,
+                    "input_tokens": 5051,
+                    "output_tokens": 453,
+                    "reasoning_tokens": 289,
                     "sessions": 1,
-                    "turns": 5
+                    "turns": 4
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "a8e9e1eb3fd744e68841a5ae042e54c4",
+                "run_id": "defd18b9f43c4808b0569a53cbaaedc3",
                 "score": 100,
-                "session_id": "e2e_a8e9e1eb3fd744e68841a5ae042e54c4",
+                "session_id": "e2e_defd18b9f43c4808b0569a53cbaaedc3",
                 "status": "passed",
-                "wall_time_ms": 16868
+                "wall_time_ms": 9610
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.0022931944000000007,
-                  "total_usd": 0.0022931944000000007
+                  "subject_usd": 0.0015494752,
+                  "total_usd": 0.0015494752
                 },
                 "failures": [],
                 "hard_gates": [
                   {
                     "id": "envelope_registration",
                     "passed": true,
-                    "reason": "observed 1 post-turn registration(s); need exactly one targeting e2etest::validate_b92e with no payload"
+                    "reason": "observed 1 post-turn registration(s); need exactly one targeting e2etest::validate_ee8e with no payload"
                   },
                   {
                     "id": "custom_reasons_delivered",
@@ -2887,67 +2909,67 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 37248,
-                    "cost_usd": 0.0022931944000000007,
+                    "cache_read_tokens": 45184,
+                    "cost_usd": 0.0015494752,
                     "function_call_errors": 0,
-                    "function_calls": 3,
-                    "input_tokens": 10841,
-                    "output_tokens": 2397,
-                    "reasoning_tokens": 2042,
-                    "sessions": 1,
-                    "turns": 5
-                  }
-                },
-                "retry_attempts": [],
-                "run_id": "b92e68b343b04917aaf07ad439c56ae6",
-                "score": 100,
-                "session_id": "e2e_b92e68b343b04917aaf07ad439c56ae6",
-                "status": "passed",
-                "wall_time_ms": 25049
-              },
-              {
-                "cost": {
-                  "judge_usd": 0.0,
-                  "subject_usd": 0.0019529832,
-                  "total_usd": 0.0019529832
-                },
-                "failures": [],
-                "hard_gates": [
-                  {
-                    "id": "envelope_registration",
-                    "passed": true,
-                    "reason": "observed 1 post-turn registration(s); need exactly one targeting e2etest::validate_a491 with no payload"
-                  },
-                  {
-                    "id": "custom_reasons_delivered",
-                    "passed": true,
-                    "reason": "nudges: [\"Your previous result was not accepted: custom validator: not accepted yet \u2014 reply with a message containing exactly E2E-ACCEPT-2. Please provide a corrected result that satisfies the required output contract.\", \"Your previous result was not accepted: custom validator: not accepted yet \u2014 reply with a message containing exactly E2E-ACCEPT-3. Please provide a corrected result that satisfies the required output contract.\"] \u2014 expected the two ladder reasons in order"
-                  },
-                  {
-                    "id": "ladder_converged",
-                    "passed": true,
-                    "reason": "final response must contain E2E-ACCEPT-3"
-                  }
-                ],
-                "metrics": {
-                  "totals": {
-                    "cache_read_tokens": 50944,
-                    "cost_usd": 0.0019529832,
-                    "function_call_errors": 0,
-                    "function_calls": 5,
-                    "input_tokens": 10961,
-                    "output_tokens": 985,
-                    "reasoning_tokens": 528,
+                    "function_calls": 4,
+                    "input_tokens": 8308,
+                    "output_tokens": 928,
+                    "reasoning_tokens": 550,
                     "sessions": 1,
                     "turns": 6
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "a491433d39174df39350f1427a269370",
+                "run_id": "ee8e1ee64c9c4079aec70ec26b0f1d2d",
                 "score": 100,
-                "session_id": "e2e_a491433d39174df39350f1427a269370",
+                "session_id": "e2e_ee8e1ee64c9c4079aec70ec26b0f1d2d",
                 "status": "passed",
-                "wall_time_ms": 14869
+                "wall_time_ms": 12901
+              },
+              {
+                "cost": {
+                  "judge_usd": 0.0,
+                  "subject_usd": 0.0008808240000000001,
+                  "total_usd": 0.0008808240000000001
+                },
+                "failures": [],
+                "hard_gates": [
+                  {
+                    "id": "envelope_registration",
+                    "passed": true,
+                    "reason": "observed 1 post-turn registration(s); need exactly one targeting e2etest::validate_75c8 with no payload"
+                  },
+                  {
+                    "id": "custom_reasons_delivered",
+                    "passed": true,
+                    "reason": "nudges: [\"Your previous result was not accepted: custom validator: not accepted yet \u2014 reply with a message containing exactly E2E-ACCEPT-2. Please provide a corrected result that satisfies the required output contract.\", \"Your previous result was not accepted: custom validator: not accepted yet \u2014 reply with a message containing exactly E2E-ACCEPT-3. Please provide a corrected result that satisfies the required output contract.\"] \u2014 expected the two ladder reasons in order"
+                  },
+                  {
+                    "id": "ladder_converged",
+                    "passed": true,
+                    "reason": "final response must contain E2E-ACCEPT-3"
+                  }
+                ],
+                "metrics": {
+                  "totals": {
+                    "cache_read_tokens": 23680,
+                    "cost_usd": 0.0008808240000000001,
+                    "function_call_errors": 0,
+                    "function_calls": 1,
+                    "input_tokens": 4986,
+                    "output_tokens": 416,
+                    "reasoning_tokens": 257,
+                    "sessions": 1,
+                    "turns": 4
+                  }
+                },
+                "retry_attempts": [],
+                "run_id": "75c8099f71614516a993acd976fa2b11",
+                "score": 100,
+                "session_id": "e2e_75c8099f71614516a993acd976fa2b11",
+                "status": "passed",
+                "wall_time_ms": 7473
               }
             ],
             "scenario_id": "custom_validator",
@@ -2977,8 +2999,8 @@
             "aggregate": {
               "cost": {
                 "judge_usd": 0.0,
-                "subject_usd": 0.008401988,
-                "total_usd": 0.008401988
+                "subject_usd": 0.008368796799999998,
+                "total_usd": 0.008368796799999998
               },
               "hard_gate_failures": 0,
               "median_score": 100.0,
@@ -2994,8 +3016,8 @@
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.0031031672000000005,
-                  "total_usd": 0.0031031672000000005
+                  "subject_usd": 0.0029914303999999995,
+                  "total_usd": 0.0029914303999999995
                 },
                 "failures": [],
                 "hard_gates": [
@@ -3012,34 +3034,34 @@
                   {
                     "id": "envelope_registration",
                     "passed": true,
-                    "reason": "observed 1 post-turn registration(s); need exactly one targeting e2etest::audit_b686 with no payload"
+                    "reason": "observed 1 post-turn registration(s); need exactly one targeting e2etest::audit_63b8 with no payload"
                   }
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 81024,
-                    "cost_usd": 0.0031031672000000005,
+                    "cache_read_tokens": 131968,
+                    "cost_usd": 0.0029914303999999995,
                     "function_call_errors": 0,
-                    "function_calls": 10,
-                    "input_tokens": 14277,
-                    "output_tokens": 3134,
-                    "reasoning_tokens": 2140,
+                    "function_calls": 14,
+                    "input_tokens": 11774,
+                    "output_tokens": 3477,
+                    "reasoning_tokens": 2157,
                     "sessions": 1,
-                    "turns": 8
+                    "turns": 12
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "b686621e814d443badc9152e14f8bbb7",
+                "run_id": "63b8fb8d98be407c8124e4c60a14037d",
                 "score": 100,
-                "session_id": "e2e_b686621e814d443badc9152e14f8bbb7",
+                "session_id": "e2e_63b8fb8d98be407c8124e4c60a14037d",
                 "status": "passed",
-                "wall_time_ms": 37598
+                "wall_time_ms": 43680
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.002636788,
-                  "total_usd": 0.002636788
+                  "subject_usd": 0.0030224207999999995,
+                  "total_usd": 0.0030224207999999995
                 },
                 "failures": [],
                 "hard_gates": [
@@ -3056,34 +3078,34 @@
                   {
                     "id": "envelope_registration",
                     "passed": true,
-                    "reason": "observed 1 post-turn registration(s); need exactly one targeting e2etest::audit_2699 with no payload"
+                    "reason": "observed 1 post-turn registration(s); need exactly one targeting e2etest::audit_0543 with no payload"
                   }
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 76160,
-                    "cost_usd": 0.002636788,
+                    "cache_read_tokens": 78336,
+                    "cost_usd": 0.0030224207999999995,
                     "function_call_errors": 0,
-                    "function_calls": 8,
-                    "input_tokens": 12559,
-                    "output_tokens": 2376,
-                    "reasoning_tokens": 1478,
+                    "function_calls": 9,
+                    "input_tokens": 14146,
+                    "output_tokens": 2938,
+                    "reasoning_tokens": 1902,
                     "sessions": 1,
                     "turns": 8
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "269983e0ae3f45ec96b440843d74792e",
+                "run_id": "05438021fbd84075acec493918b71d07",
                 "score": 100,
-                "session_id": "e2e_269983e0ae3f45ec96b440843d74792e",
+                "session_id": "e2e_05438021fbd84075acec493918b71d07",
                 "status": "passed",
-                "wall_time_ms": 29879
+                "wall_time_ms": 34642
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.0026620328000000006,
-                  "total_usd": 0.0026620328000000006
+                  "subject_usd": 0.0023549456,
+                  "total_usd": 0.0023549456
                 },
                 "failures": [],
                 "hard_gates": [
@@ -3100,28 +3122,28 @@
                   {
                     "id": "envelope_registration",
                     "passed": true,
-                    "reason": "observed 1 post-turn registration(s); need exactly one targeting e2etest::audit_184c with no payload"
+                    "reason": "observed 1 post-turn registration(s); need exactly one targeting e2etest::audit_2f03 with no payload"
                   }
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 75776,
-                    "cost_usd": 0.0026620328000000006,
+                    "cache_read_tokens": 87552,
+                    "cost_usd": 0.0023549456,
                     "function_call_errors": 0,
-                    "function_calls": 8,
-                    "input_tokens": 11223,
-                    "output_tokens": 3138,
-                    "reasoning_tokens": 2223,
+                    "function_calls": 9,
+                    "input_tokens": 8448,
+                    "output_tokens": 3311,
+                    "reasoning_tokens": 2135,
                     "sessions": 1,
-                    "turns": 8
+                    "turns": 10
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "184c8d6fe0a641e483dfe9f2acb91da5",
+                "run_id": "2f033dfb13784b969c7d33d20c13c7b7",
                 "score": 100,
-                "session_id": "e2e_184c8d6fe0a641e483dfe9f2acb91da5",
+                "session_id": "e2e_2f033dfb13784b969c7d33d20c13c7b7",
                 "status": "passed",
-                "wall_time_ms": 37447
+                "wall_time_ms": 38449
               }
             ],
             "scenario_id": "validation_self_repair",
@@ -3151,13 +3173,13 @@
             "aggregate": {
               "cost": {
                 "judge_usd": 0.0,
-                "subject_usd": 0.009064076,
-                "total_usd": 0.009064076
+                "subject_usd": 0.008237992,
+                "total_usd": 0.008237992
               },
-              "hard_gate_failures": 1,
+              "hard_gate_failures": 0,
               "median_score": 100.0,
-              "pass_rate": 0.6666666666666666,
-              "passed_runs": 2,
+              "pass_rate": 1.0,
+              "passed_runs": 3,
               "required_passes": 2,
               "runs": 3,
               "scored_runs": 3,
@@ -3168,8 +3190,8 @@
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.0046369568,
-                  "total_usd": 0.0046369568
+                  "subject_usd": 0.0060535048,
+                  "total_usd": 0.0060535048
                 },
                 "failures": [],
                 "hard_gates": [
@@ -3191,29 +3213,29 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 109056,
-                    "cost_usd": 0.0046369568,
+                    "cache_read_tokens": 217216,
+                    "cost_usd": 0.0060535048,
                     "function_call_errors": 1,
-                    "function_calls": 12,
-                    "input_tokens": 19332,
-                    "output_tokens": 5804,
-                    "reasoning_tokens": 4426,
+                    "function_calls": 14,
+                    "input_tokens": 22757,
+                    "output_tokens": 8069,
+                    "reasoning_tokens": 6478,
                     "sessions": 1,
-                    "turns": 8
+                    "turns": 11
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "66ae8ec61374448b9ce35473431b6a93",
+                "run_id": "0751a8ba98b4471d95b3452cf50521d0",
                 "score": 100,
-                "session_id": "e2e_66ae8ec61374448b9ce35473431b6a93",
+                "session_id": "e2e_0751a8ba98b4471d95b3452cf50521d0",
                 "status": "passed",
-                "wall_time_ms": 56937
+                "wall_time_ms": 83141
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.0030143512000000003,
-                  "total_usd": 0.0030143512000000003
+                  "subject_usd": 0.0009669072,
+                  "total_usd": 0.0009669072
                 },
                 "failures": [],
                 "hard_gates": [
@@ -3235,67 +3257,67 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 37504,
-                    "cost_usd": 0.0030143512000000003,
+                    "cache_read_tokens": 36224,
+                    "cost_usd": 0.0009669072,
                     "function_call_errors": 1,
                     "function_calls": 3,
-                    "input_tokens": 8321,
-                    "output_tokens": 6230,
-                    "reasoning_tokens": 5684,
-                    "sessions": 1,
-                    "turns": 4
-                  }
-                },
-                "retry_attempts": [],
-                "run_id": "4d5422b71ded40a1bacb6240fc7b0fd8",
-                "score": 100,
-                "session_id": "e2e_4d5422b71ded40a1bacb6240fc7b0fd8",
-                "status": "passed",
-                "wall_time_ms": 57124
-              },
-              {
-                "cost": {
-                  "judge_usd": 0.0,
-                  "subject_usd": 0.0014127680000000002,
-                  "total_usd": 0.0014127680000000002
-                },
-                "failures": [],
-                "hard_gates": [
-                  {
-                    "id": "foreign_scope_refused",
-                    "passed": true,
-                    "reason": "attempted=true, out-of-scope error visible=true"
-                  },
-                  {
-                    "id": "gate_denied_once",
-                    "passed": false,
-                    "reason": "observed 0 nudge(s), expected exactly one before teardown"
-                  },
-                  {
-                    "id": "teardown_ungated_completion",
-                    "passed": true,
-                    "reason": "marker=null, teardown_called=true, reported=true \u2014 completion must come from the teardown, never from passing"
-                  }
-                ],
-                "metrics": {
-                  "totals": {
-                    "cache_read_tokens": 44160,
-                    "cost_usd": 0.0014127680000000002,
-                    "function_call_errors": 1,
-                    "function_calls": 4,
-                    "input_tokens": 4202,
-                    "output_tokens": 2503,
-                    "reasoning_tokens": 1925,
+                    "input_tokens": 3460,
+                    "output_tokens": 1361,
+                    "reasoning_tokens": 831,
                     "sessions": 1,
                     "turns": 5
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "e99ccc5cbb8c4b4a9d515218de849dae",
-                "score": 70,
-                "session_id": "e2e_e99ccc5cbb8c4b4a9d515218de849dae",
-                "status": "hard_gate_failed",
-                "wall_time_ms": 24693
+                "run_id": "487b1a4f9d3b41f8a99fe2e5b275d976",
+                "score": 100,
+                "session_id": "e2e_487b1a4f9d3b41f8a99fe2e5b275d976",
+                "status": "passed",
+                "wall_time_ms": 15772
+              },
+              {
+                "cost": {
+                  "judge_usd": 0.0,
+                  "subject_usd": 0.0012175800000000002,
+                  "total_usd": 0.0012175800000000002
+                },
+                "failures": [],
+                "hard_gates": [
+                  {
+                    "id": "foreign_scope_refused",
+                    "passed": true,
+                    "reason": "attempted=true, out-of-scope error visible=true"
+                  },
+                  {
+                    "id": "gate_denied_once",
+                    "passed": true,
+                    "reason": "observed 1 nudge(s), expected exactly one before teardown"
+                  },
+                  {
+                    "id": "teardown_ungated_completion",
+                    "passed": true,
+                    "reason": "marker=null, teardown_called=true, reported=true \u2014 completion must come from the teardown, never from passing"
+                  }
+                ],
+                "metrics": {
+                  "totals": {
+                    "cache_read_tokens": 38400,
+                    "cost_usd": 0.0012175800000000002,
+                    "function_call_errors": 1,
+                    "function_calls": 3,
+                    "input_tokens": 3771,
+                    "output_tokens": 2079,
+                    "reasoning_tokens": 1476,
+                    "sessions": 1,
+                    "turns": 5
+                  }
+                },
+                "retry_attempts": [],
+                "run_id": "56f3e30f091c4a01afc2d31b947c7da5",
+                "score": 100,
+                "session_id": "e2e_56f3e30f091c4a01afc2d31b947c7da5",
+                "status": "passed",
+                "wall_time_ms": 21923
               }
             ],
             "scenario_id": "validation_scope_enforcement",
@@ -3325,8 +3347,8 @@
             "aggregate": {
               "cost": {
                 "judge_usd": 0.0,
-                "subject_usd": 0.011507036800000002,
-                "total_usd": 0.011507036800000002
+                "subject_usd": 0.0135911888,
+                "total_usd": 0.0135911888
               },
               "hard_gate_failures": 0,
               "median_score": 100.0,
@@ -3342,8 +3364,8 @@
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.0042893256,
-                  "total_usd": 0.0042893256
+                  "subject_usd": 0.0047138112,
+                  "total_usd": 0.0047138112
                 },
                 "failures": [],
                 "hard_gates": [
@@ -3355,7 +3377,7 @@
                   {
                     "id": "chain_order",
                     "passed": true,
-                    "reason": "nudges in order: [\"CHAIN-A: only 0 rows \u2014 insert exactly 3 rows into chaintest_5efe (database::execute, sql \\\"INSERT INTO chaintest_5efe (note) VALUES ('r'),('r'),('r')\\\") and reply with a one-line status.\", \"CHAIN-B: the completion marker is missing \u2014 call state::set with scope \\\"chain-5efe\\\", key \\\"marker\\\", value 1, and reply with a one-line status.\"] \u2014 expected CHAIN-A then CHAIN-B"
+                    "reason": "nudges in order: [\"CHAIN-A: only 0 rows \u2014 insert exactly 3 rows into chaintest_a139 (database::execute, sql \\\"INSERT INTO chaintest_a139 (note) VALUES ('r'),('r'),('r')\\\") and reply with a one-line status.\", \"CHAIN-B: the completion marker is missing \u2014 call state::set with scope \\\"chain-a139\\\", key \\\"marker\\\", value 1, and reply with a one-line status.\"] \u2014 expected CHAIN-A then CHAIN-B"
                   },
                   {
                     "id": "all_gates_satisfied",
@@ -3365,29 +3387,29 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 202752,
-                    "cost_usd": 0.0042893256,
+                    "cache_read_tokens": 139904,
+                    "cost_usd": 0.0047138112,
                     "function_call_errors": 0,
-                    "function_calls": 18,
-                    "input_tokens": 16571,
-                    "output_tokens": 5006,
-                    "reasoning_tokens": 3175,
+                    "function_calls": 13,
+                    "input_tokens": 19888,
+                    "output_tokens": 5492,
+                    "reasoning_tokens": 4030,
                     "sessions": 1,
-                    "turns": 14
+                    "turns": 10
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "5efe660328914cc3adc7991d5c08c474",
+                "run_id": "a139be15966a4c7cbff61cce4c2825bb",
                 "score": 100,
-                "session_id": "e2e_5efe660328914cc3adc7991d5c08c474",
+                "session_id": "e2e_a139be15966a4c7cbff61cce4c2825bb",
                 "status": "passed",
-                "wall_time_ms": 55738
+                "wall_time_ms": 60621
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.003017067200000001,
-                  "total_usd": 0.003017067200000001
+                  "subject_usd": 0.004765006400000001,
+                  "total_usd": 0.004765006400000001
                 },
                 "failures": [],
                 "hard_gates": [
@@ -3399,7 +3421,7 @@
                   {
                     "id": "chain_order",
                     "passed": true,
-                    "reason": "nudges in order: [\"CHAIN-A: only 0 rows \u2014 insert exactly 3 rows into chaintest_6bbe (database::execute, sql \\\"INSERT INTO chaintest_6bbe (note) VALUES ('r'),('r'),('r')\\\") and reply with a one-line status.\", \"CHAIN-B: the completion marker is missing \u2014 call state::set with scope \\\"chain-6bbe\\\", key \\\"marker\\\", value 1, and reply with a one-line status.\"] \u2014 expected CHAIN-A then CHAIN-B"
+                    "reason": "nudges in order: [\"CHAIN-A: only 0 rows \u2014 insert exactly 3 rows into chaintest_560f (database::execute, sql \\\"INSERT INTO chaintest_560f (note) VALUES ('r'),('r'),('r')\\\") and reply with a one-line status.\", \"CHAIN-B: the completion marker is missing \u2014 call state::set with scope \\\"chain-560f\\\", key \\\"marker\\\", value 1, and reply with a one-line status.\"] \u2014 expected CHAIN-A then CHAIN-B"
                   },
                   {
                     "id": "all_gates_satisfied",
@@ -3409,29 +3431,29 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 145024,
-                    "cost_usd": 0.003017067200000001,
+                    "cache_read_tokens": 207488,
+                    "cost_usd": 0.004765006400000001,
                     "function_call_errors": 0,
-                    "function_calls": 14,
-                    "input_tokens": 9756,
-                    "output_tokens": 4447,
-                    "reasoning_tokens": 2758,
+                    "function_calls": 13,
+                    "input_tokens": 19170,
+                    "output_tokens": 5358,
+                    "reasoning_tokens": 3819,
                     "sessions": 1,
                     "turns": 11
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "6bbe1bd9866940498a184931385226aa",
+                "run_id": "560f09eab666448ca51ada800da19001",
                 "score": 100,
-                "session_id": "e2e_6bbe1bd9866940498a184931385226aa",
+                "session_id": "e2e_560f09eab666448ca51ada800da19001",
                 "status": "passed",
-                "wall_time_ms": 45549
+                "wall_time_ms": 55249
               },
               {
                 "cost": {
                   "judge_usd": 0.0,
-                  "subject_usd": 0.004200644000000001,
-                  "total_usd": 0.004200644000000001
+                  "subject_usd": 0.0041123712,
+                  "total_usd": 0.0041123712
                 },
                 "failures": [],
                 "hard_gates": [
@@ -3443,7 +3465,7 @@
                   {
                     "id": "chain_order",
                     "passed": true,
-                    "reason": "nudges in order: [\"CHAIN-A: only 0 rows \u2014 insert exactly 3 rows into chaintest_13cd (database::execute, sql \\\"INSERT INTO chaintest_13cd (note) VALUES ('r'),('r'),('r')\\\") and reply with a one-line status.\", \"CHAIN-B: the completion marker is missing \u2014 call state::set with scope \\\"chain-13cd\\\", key \\\"marker\\\", value 1, and reply with a one-line status.\"] \u2014 expected CHAIN-A then CHAIN-B"
+                    "reason": "nudges in order: [\"CHAIN-A: only 0 rows \u2014 insert exactly 3 rows into chaintest_d657 (database::execute, sql \\\"INSERT INTO chaintest_d657 (note) VALUES ('r'),('r'),('r')\\\") and reply with a one-line status.\", \"CHAIN-B: the completion marker is missing \u2014 call state::set with scope \\\"chain-d657\\\", key \\\"marker\\\", value 1, and reply with a one-line status.\"] \u2014 expected CHAIN-A then CHAIN-B"
                   },
                   {
                     "id": "all_gates_satisfied",
@@ -3453,23 +3475,23 @@
                 ],
                 "metrics": {
                   "totals": {
-                    "cache_read_tokens": 234880,
-                    "cost_usd": 0.004200644000000001,
+                    "cache_read_tokens": 175104,
+                    "cost_usd": 0.0041123712,
                     "function_call_errors": 0,
-                    "function_calls": 18,
-                    "input_tokens": 13267,
-                    "output_tokens": 6020,
-                    "reasoning_tokens": 3883,
+                    "function_calls": 15,
+                    "input_tokens": 14986,
+                    "output_tokens": 5443,
+                    "reasoning_tokens": 3773,
                     "sessions": 1,
-                    "turns": 15
+                    "turns": 11
                   }
                 },
                 "retry_attempts": [],
-                "run_id": "13cd763be2e7478d89308631692e2a9f",
+                "run_id": "d6575e7e3ec441a08dccd2bcdf3e94fe",
                 "score": 100,
-                "session_id": "e2e_13cd763be2e7478d89308631692e2a9f",
+                "session_id": "e2e_d6575e7e3ec441a08dccd2bcdf3e94fe",
                 "status": "passed",
-                "wall_time_ms": 62784
+                "wall_time_ms": 58685
               }
             ],
             "scenario_id": "validation_chain",
@@ -3491,13 +3513,13 @@
   "source": {
     "ref": "daily/2026-08-07",
     "repository": "iii-hq/workers",
-    "sha": "8c0c1ae621c439a49c097b073a85c1b13f5cc2e8"
+    "sha": "450995a8672a43416c09c73c193ab2b035dc8dd7"
   },
   "subjects": [
     {
       "engine_revision": "0.22.0",
       "expected_reports": 19,
-      "hard_gate_failures": 5,
+      "hard_gate_failures": 3,
       "id": "deepseek-v4-flash",
       "judge": {
         "model": "glm-5.2",
@@ -3522,8 +3544,8 @@
           "status": "passed",
           "technical_failures": 0,
           "threshold": 50.0,
-          "total_cost_usd": 0.0045571976,
-          "wall_time_seconds": 14.831
+          "total_cost_usd": 0.0045114576,
+          "wall_time_seconds": 15.233
         },
         {
           "hard_gate_failures": 0,
@@ -3536,8 +3558,8 @@
           "status": "passed",
           "technical_failures": 0,
           "threshold": 90.0,
-          "total_cost_usd": 0.0028061096000000004,
-          "wall_time_seconds": 23.646
+          "total_cost_usd": 0.0024997056000000003,
+          "wall_time_seconds": 22.004
         },
         {
           "hard_gate_failures": 0,
@@ -3550,22 +3572,22 @@
           "status": "passed",
           "technical_failures": 0,
           "threshold": 50.0,
-          "total_cost_usd": 0.008837797599999999,
-          "wall_time_seconds": 43.316
+          "total_cost_usd": 0.0090350976,
+          "wall_time_seconds": 42.312
         },
         {
-          "hard_gate_failures": 1,
+          "hard_gate_failures": 0,
           "id": "reactive_automation",
           "median_score": 100.0,
-          "pass_rate": 0.6666666666666666,
+          "pass_rate": 1.0,
           "passed": true,
           "retries": 0,
           "runs": 3,
           "status": "passed",
           "technical_failures": 0,
           "threshold": 90.0,
-          "total_cost_usd": 0.06543788719999999,
-          "wall_time_seconds": 1001.118
+          "total_cost_usd": 0.04237386160000001,
+          "wall_time_seconds": 586.28
         },
         {
           "hard_gate_failures": 0,
@@ -3578,22 +3600,22 @@
           "status": "passed",
           "technical_failures": 0,
           "threshold": 50.0,
-          "total_cost_usd": 0.0282416288,
-          "wall_time_seconds": 275.655
+          "total_cost_usd": 0.0269488576,
+          "wall_time_seconds": 272.22
         },
         {
-          "hard_gate_failures": 1,
+          "hard_gate_failures": 0,
           "id": "design_tradeoff",
           "median_score": 100.0,
-          "pass_rate": 0.6666666666666666,
+          "pass_rate": 1.0,
           "passed": true,
           "retries": 0,
           "runs": 3,
           "status": "passed",
           "technical_failures": 0,
           "threshold": 50.0,
-          "total_cost_usd": 0.011934037599999999,
-          "wall_time_seconds": 156.431
+          "total_cost_usd": 0.0164306376,
+          "wall_time_seconds": 179.952
         },
         {
           "hard_gate_failures": 0,
@@ -3606,22 +3628,22 @@
           "status": "passed",
           "technical_failures": 0,
           "threshold": 50.0,
-          "total_cost_usd": 0.0110476976,
-          "wall_time_seconds": 53.77
+          "total_cost_usd": 0.010935257600000001,
+          "wall_time_seconds": 55.754
         },
         {
-          "hard_gate_failures": 1,
+          "hard_gate_failures": 0,
           "id": "research_pipeline",
           "median_score": 100.0,
-          "pass_rate": 0.6666666666666666,
+          "pass_rate": 1.0,
           "passed": true,
           "retries": 0,
           "runs": 3,
           "status": "passed",
           "technical_failures": 0,
           "threshold": 90.0,
-          "total_cost_usd": null,
-          "wall_time_seconds": 642.888
+          "total_cost_usd": 0.048108468800000005,
+          "wall_time_seconds": 635.455
         },
         {
           "hard_gate_failures": 0,
@@ -3634,8 +3656,8 @@
           "status": "passed",
           "technical_failures": 0,
           "threshold": 90.0,
-          "total_cost_usd": 0.0110519024,
-          "wall_time_seconds": 165.161
+          "total_cost_usd": 0.0139988576,
+          "wall_time_seconds": 207.547
         },
         {
           "hard_gate_failures": 0,
@@ -3648,22 +3670,22 @@
           "status": "passed",
           "technical_failures": 0,
           "threshold": 90.0,
-          "total_cost_usd": 0.0079432136,
-          "wall_time_seconds": 118.991
+          "total_cost_usd": 0.006939312800000002,
+          "wall_time_seconds": 122.983
         },
         {
-          "hard_gate_failures": 1,
+          "hard_gate_failures": 2,
           "id": "receiving_operation",
-          "median_score": 100.0,
-          "pass_rate": 0.6666666666666666,
-          "passed": true,
+          "median_score": 75.0,
+          "pass_rate": 0.3333333333333333,
+          "passed": false,
           "retries": 0,
           "runs": 3,
-          "status": "passed",
+          "status": "failed",
           "technical_failures": 0,
           "threshold": 90.0,
-          "total_cost_usd": 0.07302980719999999,
-          "wall_time_seconds": 1551.001
+          "total_cost_usd": 0.06382785360000001,
+          "wall_time_seconds": 1300.578
         },
         {
           "hard_gate_failures": 0,
@@ -3676,22 +3698,22 @@
           "status": "passed",
           "technical_failures": 0,
           "threshold": 90.0,
-          "total_cost_usd": 0.011865386400000004,
-          "wall_time_seconds": 181.925
+          "total_cost_usd": 0.0100942128,
+          "wall_time_seconds": 196.595
         },
         {
-          "hard_gate_failures": 0,
+          "hard_gate_failures": 1,
           "id": "subagent_validation",
           "median_score": 100.0,
           "pass_rate": 0.6666666666666666,
-          "passed": false,
+          "passed": true,
           "retries": 0,
           "runs": 3,
-          "status": "failed",
-          "technical_failures": 1,
+          "status": "passed",
+          "technical_failures": 0,
           "threshold": 90.0,
-          "total_cost_usd": 0.012373172000000002,
-          "wall_time_seconds": 572.235
+          "total_cost_usd": 0.0154522032,
+          "wall_time_seconds": 193.247
         },
         {
           "hard_gate_failures": 0,
@@ -3704,8 +3726,8 @@
           "status": "passed",
           "technical_failures": 0,
           "threshold": 90.0,
-          "total_cost_usd": 0.023376892000000003,
-          "wall_time_seconds": 287.997
+          "total_cost_usd": 0.0248807104,
+          "wall_time_seconds": 321.272
         },
         {
           "hard_gate_failures": 0,
@@ -3718,8 +3740,8 @@
           "status": "passed",
           "technical_failures": 0,
           "threshold": 90.0,
-          "total_cost_usd": 0.0160120576,
-          "wall_time_seconds": 545.436
+          "total_cost_usd": 0.0181351128,
+          "wall_time_seconds": 545.331
         },
         {
           "hard_gate_failures": 0,
@@ -3732,8 +3754,8 @@
           "status": "passed",
           "technical_failures": 0,
           "threshold": 90.0,
-          "total_cost_usd": 0.0057817144000000004,
-          "wall_time_seconds": 56.786
+          "total_cost_usd": 0.0033302248000000004,
+          "wall_time_seconds": 29.984
         },
         {
           "hard_gate_failures": 0,
@@ -3746,22 +3768,22 @@
           "status": "passed",
           "technical_failures": 0,
           "threshold": 80.0,
-          "total_cost_usd": 0.008401988,
-          "wall_time_seconds": 104.924
+          "total_cost_usd": 0.008368796799999998,
+          "wall_time_seconds": 116.771
         },
         {
-          "hard_gate_failures": 1,
+          "hard_gate_failures": 0,
           "id": "validation_scope_enforcement",
           "median_score": 100.0,
-          "pass_rate": 0.6666666666666666,
+          "pass_rate": 1.0,
           "passed": true,
           "retries": 0,
           "runs": 3,
           "status": "passed",
           "technical_failures": 0,
           "threshold": 90.0,
-          "total_cost_usd": 0.009064076,
-          "wall_time_seconds": 138.754
+          "total_cost_usd": 0.008237992,
+          "wall_time_seconds": 120.836
         },
         {
           "hard_gate_failures": 0,
@@ -3774,14 +3796,14 @@
           "status": "passed",
           "technical_failures": 0,
           "threshold": 90.0,
-          "total_cost_usd": 0.011507036800000002,
-          "wall_time_seconds": 164.071
+          "total_cost_usd": 0.0135911888,
+          "wall_time_seconds": 174.555
         }
       ],
-      "technical_failures": 1,
-      "total_cost_usd": null,
-      "wall_time_seconds": 6098.936
+      "technical_failures": 0,
+      "total_cost_usd": 0.3476998096,
+      "wall_time_seconds": 5138.909
     }
   ],
-  "workflow_url": "https://github.com/iii-hq/workers/actions/runs/31134926293"
+  "workflow_url": "https://github.com/iii-hq/workers/actions/runs/31133924989"
 }
