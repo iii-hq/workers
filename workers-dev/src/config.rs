@@ -148,6 +148,7 @@ impl Config {
         let default_stack = file_cfg
             .default_stack
             .unwrap_or_else(|| "harness".to_string());
+        ensure_no_control_chars(&default_stack)?;
         if !stacks.iter().any(|(n, _)| *n == default_stack) {
             bail!(
                 "default_stack {default_stack:?} is not a defined stack (have: {})",
@@ -310,11 +311,28 @@ fn parse_stacks(mapping: serde_yaml::Mapping) -> Result<Vec<(String, Vec<String>
             .as_str()
             .with_context(|| format!("stacks: key {key:?} is not a string"))?
             .to_string();
+        ensure_no_control_chars(&name)?;
         let roots: Vec<String> = serde_yaml::from_value(value)
             .with_context(|| format!("stacks.{name}: expected a list of worker names"))?;
         stacks.push((name, roots));
     }
     Ok(stacks)
+}
+
+/// Refuse a stack name carrying control characters (`\e`/`\x1b` and friends).
+/// `workers-dev.yaml` auto-loads from the repo root, so a hostile or careless
+/// config's stack name reaches every consumer that prints it — `status`'s
+/// group headers, the TUI — as raw bytes (see status::group_label). Checked
+/// once here, at load, rather than escaped at each render site, so nothing
+/// downstream needs its own opinion on what's safe to print. A stack name
+/// legitimately needs only letters, digits, `-` and `_` (`valid_stack_name`
+/// in config_write.rs governs what this tool ever *writes*); a control
+/// character is never one a person typed on purpose.
+fn ensure_no_control_chars(name: &str) -> Result<()> {
+    if name.chars().any(char::is_control) {
+        bail!("stack name {name:?} contains control characters — not a valid stack name");
+    }
+    Ok(())
 }
 
 pub fn resolve_repo_root(explicit: Option<PathBuf>) -> Result<PathBuf> {
@@ -679,5 +697,30 @@ mod tests {
             err.to_string().contains("expected a list of worker names"),
             "{err:#}"
         );
+    }
+
+    /// `workers-dev.yaml` auto-loads from the repo root, so a stack key
+    /// carrying an ANSI escape (or any other control character) must never
+    /// reach `status`/the TUI, which print stack names unescaped. A
+    /// double-quoted YAML scalar can smuggle one in via `\x1b`; `parse_stacks`
+    /// must refuse it at load instead of letting it through to render time.
+    #[test]
+    fn parse_stacks_rejects_a_control_character_key() {
+        let tmp = TempDir::new().unwrap();
+        write_repo_multi(&tmp);
+        let err =
+            load_with_yaml(&tmp, "stacks:\n  \"a\\x1b[31mconsole\": [console]\n").unwrap_err();
+        assert!(err.to_string().contains("control characters"), "{err:#}");
+    }
+
+    /// Same rule, on `default_stack:` — it never goes through `parse_stacks`
+    /// (it's a bare `String` field on `FileConfig`), so it needs its own call
+    /// to the same check.
+    #[test]
+    fn default_stack_rejects_a_control_character_name() {
+        let tmp = TempDir::new().unwrap();
+        write_repo_multi(&tmp);
+        let err = load_with_yaml(&tmp, "default_stack: \"a\\x1b[31m\"\n").unwrap_err();
+        assert!(err.to_string().contains("control characters"), "{err:#}");
     }
 }
