@@ -33,7 +33,10 @@ pub struct Config {
     /// stacks in YAML order. Roots are filtered to managed workers.
     pub stacks: Vec<(String, Vec<String>)>,
     /// Name of the stack `up` / bare `start` / Ctrl+u start; always present
-    /// in `stacks` with non-empty roots.
+    /// in `stacks`, but its roots can be empty (e.g. a `workers:` allowlist
+    /// that excludes every root) — `load` only warns about that, so a
+    /// read-only command can still open. Anything that actually starts it
+    /// goes through `Orchestrator::start_roots`, which refuses on empty roots.
     pub default_stack: String,
     pub worker_specs: Vec<WorkerSpec>,
     pub stop_on_exit: bool,
@@ -217,7 +220,13 @@ impl Config {
             .find(|(n, _)| *n == default_stack)
             .is_none_or(|(_, roots)| roots.is_empty());
         if default_is_empty {
-            bail!("default stack {default_stack:?} has no startable workers after validation");
+            // Not a bail: `status`, `logs`, and the TUI are all read-only and
+            // must still be able to open so the user can see why (and fix
+            // it). `Orchestrator::start_roots` carries the same emptiness
+            // check and is what actually refuses to start this stack.
+            eprintln!(
+                "warning: default stack {default_stack:?} has no startable workers after validation"
+            );
         }
 
         let color_mode = color
@@ -645,13 +654,20 @@ mod tests {
         assert_eq!(console.1, vec!["console"]);
     }
 
+    /// A default stack left with no startable workers (e.g. a `workers:`
+    /// allowlist that excludes every root) must still let `load` succeed —
+    /// only warn — so read-only commands (`status`, `logs`, the TUI) can
+    /// open. `Orchestrator::start_roots` is what refuses to actually start
+    /// it (see orchestrator.rs's `start_roots_refuses_an_empty_root_list`).
     #[test]
-    fn empty_default_stack_after_filtering_fails() {
+    fn empty_default_stack_after_filtering_warns_but_still_loads() {
         let tmp = TempDir::new().unwrap();
         write_repo_multi(&tmp);
-        let err =
-            load_with_yaml(&tmp, "stacks:\n  ghost: [bogus]\ndefault_stack: ghost\n").unwrap_err();
-        assert!(err.to_string().contains("no startable workers"), "{err:#}");
+        let cfg = load_with_yaml(&tmp, "stacks:\n  ghost: [bogus]\ndefault_stack: ghost\n")
+            .expect("a load-time warning must not block a read-only command");
+        assert_eq!(cfg.default_stack, "ghost");
+        let ghost = cfg.stacks.iter().find(|(n, _)| n == "ghost").unwrap();
+        assert!(ghost.1.is_empty(), "{:?}", ghost.1);
     }
 
     #[test]
