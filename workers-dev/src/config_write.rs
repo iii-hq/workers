@@ -85,12 +85,29 @@ pub fn set_default_stack(text: &str, name: &str) -> Result<String> {
     };
     let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     let cr = if lines[i].ends_with('\r') { "\r" } else { "" };
-    out[i] = format!("default_stack: {name}{cr}");
+    let comment = trailing_comment(strip_cr(lines[i]));
+    out[i] = format!("default_stack: {name}{comment}{cr}");
     Ok(out.join("\n"))
 }
 
 fn strip_cr(line: &str) -> &str {
     line.strip_suffix('\r').unwrap_or(line)
+}
+
+/// The trailing `  # comment` on a `default_stack:` line, including its
+/// leading whitespace so the user's alignment survives a rewrite — or `""`
+/// if there's none. Splitting on the first `#` is safe here: the value this
+/// module ever writes is `valid_stack_name`-constrained (`[A-Za-z0-9_-]`), so
+/// a `#` on this line can only ever start a comment, never appear inside the
+/// value itself.
+fn trailing_comment(line: &str) -> &str {
+    let Some(hash) = line.find('#') else {
+        return "";
+    };
+    let ws_start = line[..hash]
+        .rfind(|c: char| !c.is_whitespace())
+        .map_or(0, |i| i + 1);
+    &line[ws_start..]
 }
 
 fn ensure_trailing_newline(text: &str) -> String {
@@ -371,6 +388,33 @@ default_stack: tiny
         let appended = set_default_stack("color: auto\n", "console").unwrap();
         assert_eq!(appended, "color: auto\ndefault_stack: console\n");
         assert!(parses(&replaced) && parses(&appended));
+        // No comment on the line: unchanged behavior, covered above already.
+    }
+
+    /// A trailing comment on `default_stack:` — and the whitespace the user
+    /// chose before it — must survive a value change, not just the block
+    /// comments `upsert_stack`/`remove_stack` already protect.
+    #[test]
+    fn set_default_preserves_a_trailing_comment_and_its_spacing() {
+        let out = set_default_stack("default_stack: tiny  # my usual loop\n", "console").unwrap();
+        assert_eq!(out, "default_stack: console  # my usual loop\n");
+        assert!(parses(&out));
+    }
+
+    /// Same as above, on a CRLF line: the comment must survive AND the line
+    /// must still end with `\r`, not just one or the other.
+    #[test]
+    fn set_default_preserves_a_trailing_comment_on_a_crlf_line() {
+        let out = set_default_stack(
+            "default_stack: tiny  # my usual loop\r\ncolor: auto\r\n",
+            "console",
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "default_stack: console  # my usual loop\r\ncolor: auto\r\n"
+        );
+        assert!(parses(&out));
     }
 
     /// Inline/flow style is not ours to edit — refuse instead of mangling it.
