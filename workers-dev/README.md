@@ -144,9 +144,11 @@ color: auto   # auto | always | never (respects NO_COLOR)
 ui_watch: false   # start injectable-UI workers in watcher mode (pnpm watch + III_<WORKER>_UI_WATCH=1)
 ```
 
-The built-in `harness` stack always exists. The old `harness_stack:` key was
-replaced by `stacks:` + `default_stack:` and now fails startup with a rename
-hint.
+The built-in `harness` stack always exists. Deleting a `stacks.harness:`
+override (`x` on it in the picker) removes it from that session's picker
+until the next launch, when the built-in returns with its default roots. The
+old `harness_stack:` key was replaced by `stacks:` + `default_stack:` and now
+fails startup with a rename hint.
 
 Stacks can also be created from the TUI: mark workers with `Space`, press `n`,
 name it, Enter. The stack is written into this file (comments and formatting
