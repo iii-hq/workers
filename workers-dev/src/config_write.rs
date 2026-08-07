@@ -120,22 +120,28 @@ fn strip_cr(line: &str) -> &str {
 /// The trailing `  # comment` on a `default_stack:` line, including its
 /// leading whitespace so the user's alignment survives a rewrite — or `""`
 /// if there's none. YAML only starts a comment at a `#` that sits at the
-/// start of the line or is immediately preceded by whitespace; a `#` glued
-/// to the value (`console#nospacecomment`) or inside a quoted scalar
-/// (`"my#stack"`) is part of the VALUE, not a comment. This module's own
-/// header says the file is hand-written as often as tool-written, so either
-/// shape can already be sitting on this line — misreading it as a comment
-/// would silently rewrite that value into garbage instead of discarding it
-/// with the rest of the old line.
+/// start of the line or is immediately preceded by `is_yaml_space`; a `#`
+/// glued to the value (`console#nospacecomment`), preceded by some other
+/// Unicode space, or inside a quoted scalar (`"my#stack"`) is part of the
+/// VALUE, not a comment. This module's own header says the file is
+/// hand-written as often as tool-written, so any of those shapes can
+/// already be sitting on this line — misreading one as a comment would
+/// silently rewrite that value into garbage instead of discarding it with
+/// the rest of the old line. (A byte, not `is_comment` above: this looks
+/// for the hash anywhere in the line, not just after leading indentation,
+/// so `is_yaml_space(bytes[i - 1] as char)` is the same predicate applied
+/// at a single position rather than to a whole line's worth of leading
+/// whitespace — `u8 as char` is exact for the ASCII byte values `#`, ` `
+/// and `\t` this comparison ever touches.)
 fn trailing_comment(line: &str) -> &str {
     let bytes = line.as_bytes();
     let Some(hash) = (0..bytes.len())
-        .find(|&i| bytes[i] == b'#' && (i == 0 || bytes[i - 1].is_ascii_whitespace()))
+        .find(|&i| bytes[i] == b'#' && (i == 0 || is_yaml_space(bytes[i - 1] as char)))
     else {
         return "";
     };
     let ws_start = line[..hash]
-        .rfind(|c: char| !c.is_whitespace())
+        .rfind(|c: char| !is_yaml_space(c))
         .map_or(0, |i| i + 1);
     &line[ws_start..]
 }
@@ -189,8 +195,12 @@ fn ensure_block_style(lines: &[&str], head: usize) -> Result<()> {
 /// on this one function is deliberate: they drifted apart once already
 /// (`block_range` went column-agnostic before `leading_gap_run` did, which
 /// is exactly how a comment ended up silently deleted).
+///
+/// Blank-ness is checked the same YAML-space-only way as `is_comment`
+/// (below), not Rust's Unicode `trim`: a line that's only NBSP isn't blank
+/// to YAML, it's a one-character plain scalar.
 fn is_blank_or_comment(line: &str) -> bool {
-    line.trim().is_empty() || line.trim_start().starts_with('#')
+    line.trim_start_matches(is_yaml_space).is_empty() || is_comment(line)
 }
 
 /// Half-open line range of the indented block under `head`. Blank lines and
@@ -236,7 +246,17 @@ fn block_range(lines: &[&str], head: usize) -> (usize, usize) {
 /// `entry_range` matched it against the wrong (shorter) name entirely —
 /// Critical-1's exact swallowing failure, reached through name extraction
 /// instead of line classification.
+///
+/// A comment line is never a key, even one shaped like one (`# TODO: add
+/// console` has a `:` followed by whitespace, same as a real entry).
+/// Recognizing it as key `# TODO` used to cut a preceding entry's range
+/// short right before it — Critical-1's swallowing failure again, this time
+/// because this function had no opinion on comments at all rather than the
+/// wrong one.
 fn entry_key(line: &str) -> Option<(String, String)> {
+    if is_comment(line) {
+        return None;
+    }
     let indent: String = line.chars().take_while(|c| *c == ' ').collect();
     if indent.is_empty() || indent.len() == line.len() {
         return None;
@@ -272,6 +292,21 @@ fn indent_len(line: &str) -> usize {
 /// scanner refuses instead of losing data — the safe direction already.
 fn is_yaml_space(c: char) -> bool {
     c == ' ' || c == '\t'
+}
+
+/// True when `line`, once only `is_yaml_space` indentation is stripped from
+/// the front, starts with `#` — YAML's own comment rule: a `#` preceded by
+/// nothing but `s-white`, or nothing at all (comments aren't bound to the
+/// surrounding block's indentation, so this is checked at any column, not
+/// just `entry_depth`). The one place every predicate in this module that
+/// needs to answer "is this line a comment" routes through, on purpose:
+/// `is_blank_or_comment`, `entry_key` and `trailing_comment` used to each
+/// carry their own opinion (Unicode `trim_start`, no comment-awareness at
+/// all, and `u8::is_ascii_whitespace` respectively) — and disagreeing was
+/// exactly how a comment-shaped line went invisible to some of them while
+/// another read it as an ordinary key.
+fn is_comment(line: &str) -> bool {
+    line.trim_start_matches(is_yaml_space).starts_with('#')
 }
 
 /// True when `line`'s first non-space character is a real YAML
@@ -865,6 +900,79 @@ default_stack: tiny
 
         let err = remove_stack(src, "tiny").unwrap_err();
         assert!(!err.to_string().is_empty());
+    }
+
+    /// Critical-1's headline repro, reopened a third way: `#` is only a
+    /// YAML comment when preceded by `s-white` (or nothing). NBSP is not
+    /// `s-white`, so `  <NBSP>#a:` is a real key (`<NBSP>#a`), not a
+    /// comment — but `is_blank_or_comment` used Unicode `trim_start`, which
+    /// strips NBSP too, so every function in this module treated the line
+    /// as a skippable comment and it went invisible. Refusing (not
+    /// silently losing the sibling, and never truncating the file to 0
+    /// bytes) is the required outcome, same as any other line this scanner
+    /// can't confidently own.
+    #[test]
+    fn refuses_a_comment_shaped_nbsp_key_rather_than_losing_it() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  \u{00A0}#a:\n    - v\n";
+
+        let err = upsert_stack(src, "tiny", &roots(&["x"])).unwrap_err();
+        assert!(!err.to_string().is_empty());
+
+        let err = remove_stack(src, "tiny").unwrap_err();
+        assert!(!err.to_string().is_empty(), "{err:#}");
+        // The sharpest form of the bug: must never succeed with an empty
+        // file, which `write_verified` would then happily accept.
+    }
+
+    /// Regression from Critical-1 itself (`entry_key` stopped requiring
+    /// `valid_stack_name`, which used to reject `#` as non-alphanumeric):
+    /// a comment that happens to look like `key: value` — an ordinary TODO
+    /// note — was read as a real key. `entry_range` then cut `tiny`'s
+    /// range short right before it, leaving `- state` behind; YAML doesn't
+    /// care that a comment sits between two list items of the same key, so
+    /// `- state` silently reattached to the rewritten `tiny:` on the next
+    /// load. `entry_key` must decline a comment line outright.
+    #[test]
+    fn upsert_does_not_let_a_todo_comment_pose_as_a_key() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  # TODO: add console\n    - state\n  other:\n    - o\n";
+        let out = upsert_stack(src, "tiny", &roots(&["x"])).unwrap();
+        assert_eq!(
+            out, "stacks:\n  tiny:\n    - x\n  other:\n    - o\n",
+            "`- state` must be replaced along with the rest of tiny's real \
+             range, not left behind to silently reattach to it on reload"
+        );
+        assert!(parses(&out));
+    }
+
+    /// A comment with no colon at all was never at risk (nothing here ever
+    /// misread it as a key) — this is the plain, common case, pinned so the
+    /// fix above can't regress it: comments between entries still survive
+    /// and stay attached to the right neighbour.
+    #[test]
+    fn plain_comment_inside_a_block_is_still_skipped() {
+        let src =
+            "stacks:\n  tiny:\n    - session-manager\n  # just a note\n  console:\n    - console\n";
+        let out = upsert_stack(src, "tiny", &roots(&["x"])).unwrap();
+        assert!(out.contains("# just a note"), "{out:?}");
+        assert!(out.contains("  console:\n    - console\n"), "{out:?}");
+        assert!(parses(&out));
+    }
+
+    /// Sibling of the TODO-comment case: a comment containing a colon, but
+    /// indented DEEPER than the keys (a commented-out list item, e.g. a
+    /// disabled root). `entry_range`'s own shallower-or-equal check already
+    /// happened to save this shape before this fix — pinned here so it
+    /// stays safe, and so "the comment check only matters at entry depth"
+    /// can never quietly regress into the truth.
+    #[test]
+    fn a_deeper_comment_with_a_colon_is_still_skipped() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n    # note: disabled\n    - state\n  console:\n    - console\n";
+        let out = upsert_stack(src, "tiny", &roots(&["x"])).unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  tiny:\n    - x\n  console:\n    - console\n"
+        );
+        assert!(parses(&out));
     }
 
     #[test]
