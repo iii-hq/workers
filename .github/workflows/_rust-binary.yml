@@ -215,7 +215,7 @@ jobs:
           # Repo-relative staging so the restore lands every dist/ exactly
           # where its crate's build.rs expects it — including dependency crates
           # outside the released worker's directory.
-          stage=".release-frontend-bundle"
+          stage="release-frontend-bundle"
           for bundle in "${bundles[@]}"; do
             test -d "$bundle/dist"
             mkdir -p "$stage/$bundle"
@@ -226,7 +226,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: frontend-bundles
-          path: .release-frontend-bundle/
+          path: release-frontend-bundle/
           if-no-files-found: error
           retention-days: 1
 
