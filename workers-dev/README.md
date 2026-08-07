@@ -30,7 +30,7 @@ Workers are **discovered automatically** from top-level `*/iii.worker.yaml` in t
 
 | Group | Workers | Started by |
 |-------|---------|------------|
-| **current stack** (default: `harness`) | The stack's roots **plus everything they transitively depend on**, derived live from each worker's `iii.worker.yaml` dependencies. The built-in `harness` stack's roots are `session-manager`, `llm-router`, `context-manager`, `provider-anthropic`, `provider-openai`, `approval-gate`, `harness`; define more stacks (or override `harness`'s roots) in `workers-dev.yaml` — see Config below | `workers-dev up` / bare `workers-dev start` start the `default_stack` (missing deps are pulled in, connected ones left alone); `Ctrl+u` in the TUI starts it directly, or opens a stack picker when more than one stack is defined |
+| **current stack** (default: `harness`) | The stack's roots **plus everything they transitively depend on**, derived live from each worker's `iii.worker.yaml` dependencies. The built-in `harness` stack's roots are `session-manager`, `llm-router`, `context-manager`, `provider-anthropic`, `provider-openai`, `approval-gate`, `harness`; define more stacks (or override `harness`'s roots) in `workers-dev.yaml` or from the TUI (`Space` + `n`) — see Config below | `workers-dev up` / bare `workers-dev start` start the `default_stack` (missing deps are pulled in, connected ones left alone); `Ctrl+u` in the TUI starts it directly, or opens a stack picker when more than one stack is defined |
 | **other** | All remaining repo workers (e.g. `telegram-bot`, `console`, …) | `workers-dev start <name>`, `workers-dev start --all`, `Ctrl+a` in TUI |
 
 Press `d` on any worker in the TUI to see its direct dependencies and its transitive dependents (the `r` restart blast radius), each with live status.
@@ -52,10 +52,11 @@ workers-dev logs harness -f
 workers-dev status
 ```
 
-Stacks: define named stacks in `workers-dev.yaml` (see Config below). `up` and
-bare `start` start the `default_stack`; in the TUI, `Ctrl+u` opens a stack
-picker (Enter = switch the dashboard's current stack + start it) when more
-than one stack is defined, and starts the only stack directly otherwise.
+Stacks: define named stacks in `workers-dev.yaml`, or create one from the TUI
+with `Space` + `n` (see Config below). `up` and bare `start` start the
+`default_stack`; in the TUI, `Ctrl+u` opens a stack picker (Enter = switch the
+dashboard's current stack + start it) when more than one stack is defined, and
+starts the only stack directly otherwise.
 
 Starting a worker (CLI `start <name>` or `s` in the TUI) pulls in its dependencies, but a dependency **already connected to the engine is left running as-is** — no rebuild, no restart, no duplicate spawn. Explicitly requested workers always (re)start; use `restart` when a dependency itself needs a rebuild. The group commands count every member as explicitly requested: `up`, bare `start`, and `Ctrl+u` always restart the whole stack, `start --all` and `Ctrl+a` every managed Rust worker.
 
@@ -96,6 +97,8 @@ Use `--color never` or `NO_COLOR=1` to force plain output. Default `--color auto
 |-----|--------|
 | `↑`/`↓` (or `k`/`j`) | Select worker (skips group headers) |
 | `g`/`G` (or `Home`/`End`) | Jump to the first / last worker |
+| `Space` | Mark the selected worker for a new stack |
+| `n` | Name and save a new stack from the marked workers |
 | `s` | Start selected worker |
 | `x` | Stop selected worker |
 | `r` | Restart selected worker + dependents (confirm lists the blast radius with live status) |
@@ -106,7 +109,7 @@ Use `--color never` or `NO_COLOR=1` to force plain output. Default `--color auto
 | `+`/`-` | Resize the log pane (drags the divider in two columns, the height when stacked) |
 | `/` | Filter workers by name (Enter applies, Esc clears) |
 | `e` | Start the iii engine (`iii -c harness/engine.config.yaml`) |
-| `Ctrl+u` | Start stack (picker when several stacks are defined; Enter = switch + start) |
+| `Ctrl+u` | Start stack (picker when several stacks are defined; Enter = switch + start) (in the picker: `x` delete a stack, `*` make it the default) |
 | `Ctrl+a` | Start all managed Rust workers |
 | `?` | Toggle the key-reference overlay |
 | `q` | Quit |
@@ -144,6 +147,18 @@ ui_watch: false   # start injectable-UI workers in watcher mode (pnpm watch + II
 The built-in `harness` stack always exists. The old `harness_stack:` key was
 replaced by `stacks:` + `default_stack:` and now fails startup with a rename
 hint.
+
+Stacks can also be created from the TUI: mark workers with `Space`, press `n`,
+name it, Enter. The stack is written into this file (comments and formatting
+are preserved) and becomes the current stack immediately — it is *not* started;
+press `Ctrl+u` when you want that. In the `Ctrl+u` picker, `x` deletes a stack
+and `*` makes it the default. Deleting the default stack is refused — set
+another default first.
+
+Note: `workers-dev.yaml` is not gitignored, so the first save leaves an
+untracked file in the repo root. `workers-dev` writes the file by editing the
+lines it owns; if `stacks:` is written inline (`stacks: {a: [b]}`) it refuses
+to edit and says so.
 
 ## Troubleshooting
 
