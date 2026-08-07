@@ -45,6 +45,7 @@ class CollectionConfig:
     stack_mode: str = "source"
     stack_versions: dict[str, str] = field(default_factory=dict)
     stack_digest: str = ""
+    preflight_deployment: Path | None = None
 
 
 def load_json(path: Path) -> Any:
@@ -304,6 +305,14 @@ def collect(
     dict[str, Any],
 ]:
     contexts = discover_contexts(config.reports_root)
+    preflight_deployment = None
+    if config.preflight_deployment is not None and config.preflight_deployment.is_file():
+        value = load_json(config.preflight_deployment)
+        if not isinstance(value, dict):
+            raise CollectionError(
+                f"{config.preflight_deployment} must contain an object"
+            )
+        preflight_deployment = value
     quality: list[dict[str, Any]] = []
     efficiency: list[dict[str, Any]] = []
     snapshot_subjects: list[dict[str, Any]] = []
@@ -335,7 +344,7 @@ def collect(
 
         for scenario_id in config.scenarios:
             context_path = contexts.get((subject["id"], scenario_id))
-            deployment = load_deployment(context_path)
+            deployment = load_deployment(context_path) or preflight_deployment
             report_path = (
                 context_path.parent / "results.json" if context_path is not None else None
             )
@@ -869,6 +878,8 @@ def collect(
         "requested_runs": config.requested_runs,
         "subjects": snapshot_subjects,
     }
+    if preflight_deployment is not None:
+        snapshot["preflight_deployment"] = preflight_deployment
     execution_detail = {
         **snapshot,
         "reports": execution_reports,
@@ -915,6 +926,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stack-mode", default="source")
     parser.add_argument("--stack-versions", default="{}")
     parser.add_argument("--stack-digest", default="")
+    parser.add_argument("--preflight-deployment", type=Path)
     parser.add_argument("--judge-model", required=True)
     parser.add_argument("--judge-provider", required=True)
     parser.add_argument("--execution-run-id", required=True)
@@ -958,6 +970,7 @@ def main(argv: list[str] | None = None) -> int:
         stack_mode=require_string(args.stack_mode, "stack mode"),
         stack_versions=parse_stack_versions(args.stack_versions),
         stack_digest=args.stack_digest,
+        preflight_deployment=args.preflight_deployment,
     )
     quality, efficiency, snapshot, execution = collect(config)
     write_outputs(args.output_dir, quality, efficiency, snapshot, execution)

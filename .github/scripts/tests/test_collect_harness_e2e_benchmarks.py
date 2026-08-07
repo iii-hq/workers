@@ -393,6 +393,39 @@ def test_registry_identity_is_recorded_and_registry_failure_is_infra_failed(
     assert execution["reports"][1]["deployment"]["status"] == "infra_failed"
 
 
+def test_preflight_failure_explains_all_unstarted_scenarios(tmp_path: Path) -> None:
+    preflight = tmp_path / "preflight-deployment.json"
+    preflight.write_text(
+        json.dumps(
+            {
+                "status": "infra_failed",
+                "failure_phase": "registry",
+                "failure_reason": "Registry resolution failed",
+                "stack_versions": {},
+                "stack_lock_digest": "",
+            }
+        )
+    )
+
+    _, efficiency, snapshot, execution = collect(
+        replace(
+            config(tmp_path, ["direct_answer", "security_review"]),
+            stack_mode="registry",
+            preflight_deployment=preflight,
+        )
+    )
+
+    assert snapshot["preflight_deployment"]["failure_phase"] == "registry"
+    assert snapshot["subjects"][0]["infra_failures"] == 2
+    assert all(
+        report["deployment"]["failure_reason"] == "Registry resolution failed"
+        for report in execution["reports"]
+    )
+    assert by_name(efficiency)[
+        "reliability::glm::suite::infra_failed"
+    ]["value"] == 2
+
+
 def test_unknown_cost_is_omitted_instead_of_recorded_as_zero(
     tmp_path: Path,
 ) -> None:

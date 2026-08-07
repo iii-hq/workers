@@ -21,6 +21,7 @@ cli_channel=${III_CLI_CHANNEL:-latest}
 worker_tag=${III_WORKER_TAG:-latest}
 stack_versions=${HARNESS_E2E_STACK_VERSIONS:-'{}'}
 resolve_stack=${HARNESS_E2E_RESOLVE_STACK:-false}
+resolve_only=${HARNESS_E2E_RESOLVE_ONLY:-false}
 expected_stack_digest=${HARNESS_E2E_STACK_DIGEST:-}
 runs=${HARNESS_E2E_RUNS:-1}
 engine_port=49134
@@ -53,6 +54,32 @@ case "$resolve_stack" in
     exit 2
     ;;
 esac
+case "$resolve_only" in
+  true | false) ;;
+  *)
+    echo "HARNESS_E2E_RESOLVE_ONLY must be true or false" >&2
+    exit 2
+    ;;
+esac
+model_specs=${HARNESS_E2E_MODEL_SPECS:-$(jq -cn \
+  --arg subject_provider "$HARNESS_E2E_PROVIDER" \
+  --arg subject_model "$HARNESS_E2E_MODEL" \
+  --arg judge_provider "$HARNESS_E2E_JUDGE_PROVIDER" \
+  --arg judge_model "$HARNESS_E2E_JUDGE_MODEL" \
+  '[
+    {provider: $subject_provider, model: $subject_model},
+    {provider: $judge_provider, model: $judge_model}
+  ] | unique_by([.provider, .model])')}
+jq -e '
+  type == "array" and length > 0 and
+  all(.[];
+    (.provider | type == "string" and test("^[A-Za-z0-9_-]+$")) and
+    (.model | type == "string" and length > 0)
+  )
+' <<<"$model_specs" >/dev/null || {
+  echo "HARNESS_E2E_MODEL_SPECS must contain provider/model objects" >&2
+  exit 2
+}
 if [[ "$resolve_stack" == true ]]; then
   [[ "$release_worker" == harness ]] || {
     echo "dynamic Registry stack resolution requires release_worker=harness" >&2
@@ -130,7 +157,7 @@ die() {
 write_deployment_result() {
   local outcome=$1
   local result_status=$outcome
-  if [[ "$outcome" != passed && "$failure_phase" == registry ]]; then
+  if [[ "$outcome" != passed && "$failure_phase" =~ ^(bootstrap|registry|preflight)$ ]]; then
     result_status=infra_failed
   fi
   jq -n \
@@ -355,12 +382,12 @@ wait_for_engine
 support_worker_tag=latest
 workers=("database@$support_worker_tag" "fp@$support_worker_tag" "web@$support_worker_tag")
 declare -A providers=()
-for provider in "$HARNESS_E2E_PROVIDER" "$HARNESS_E2E_JUDGE_PROVIDER"; do
+while IFS= read -r provider; do
   if [[ -z "${providers[$provider]:-}" ]]; then
     workers+=("provider-$provider@$support_worker_tag")
     providers[$provider]=1
   fi
-done
+done < <(jq -r 'map(.provider) | unique[]' <<<"$model_specs")
 
 # The registry's /resolve sits at ~7s per call and a stack install issues
 # dozens of them; one transient network blip fails the whole add. Retry the
@@ -384,7 +411,8 @@ if [[ "$resolve_stack" == true ]]; then
   log "Resolving the live Registry stack from latest: harness@latest ${workers[*]}"
   identity=$(add_with_retry live-stack "harness@latest" "${workers[@]}" >/dev/null && \
     python3 "$repo_root/.github/scripts/registry_stack_identity.py" \
-      --lock "$project_dir/iii.lock")
+      --lock "$project_dir/iii.lock" \
+      --output "$stack_dir/registry-stack.json")
   stack_versions=$(jq -c '.stack_versions' <<<"$identity")
   release_version=$(jq -er '.stack_versions.harness' <<<"$identity")
   lock_digest=$(jq -er '.lock_digest' <<<"$identity")
@@ -416,14 +444,15 @@ else
   fi
 fi
 
-failure_phase=e2e
+failure_phase=preflight
 wait_for_functions \
   harness::send harness::status worker::add database::query state::get \
   queue::define session::messages context::assemble router::models::get \
   directory::skills::list
 wait_for_triggers cron
-wait_for_model "$HARNESS_E2E_PROVIDER" "$HARNESS_E2E_MODEL"
-wait_for_model "$HARNESS_E2E_JUDGE_PROVIDER" "$HARNESS_E2E_JUDGE_MODEL"
+while IFS=$'\t' read -r provider model; do
+  wait_for_model "$provider" "$model"
+done < <(jq -r '.[] | [.provider, .model] | @tsv' <<<"$model_specs")
 
 "$iii_bin" trigger engine::workers::list --port "$engine_port" \
   --json '{}' >"$project_dir/workers.json"
@@ -444,6 +473,11 @@ done
 failure_phase=registry
 verification=$(python3 "$repo_root/.github/scripts/verify_registry_lock.py" "${verify_args[@]}")
 actual_release_version=$(jq -r '.actual_version' <<<"$verification")
+
+if [[ "$resolve_only" == true ]]; then
+  log "Registry stack resolved and verified; skipping scenario execution"
+  exit 0
+fi
 
 failure_phase=e2e
 export HARNESS_E2E_RUN_DIR="$project_dir"

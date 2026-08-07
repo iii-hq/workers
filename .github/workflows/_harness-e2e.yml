@@ -139,6 +139,15 @@ on:
       catalog_sha:
         description: Catalog commit used by the suite
         value: ${{ jobs.build.outputs.catalog_sha }}
+      stack_versions:
+        description: Exact Registry versions resolved for the execution
+        value: ${{ jobs.resolve-registry-stack.outputs.stack_versions }}
+      stack_digest:
+        description: SHA-256 digest of the resolved Registry lock
+        value: ${{ jobs.resolve-registry-stack.outputs.stack_digest }}
+      resolved_release_version:
+        description: Exact released worker version used by the execution
+        value: ${{ jobs.resolve-registry-stack.outputs.release_version }}
     secrets:
       anthropic_api_key:
         required: false
@@ -440,9 +449,117 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  resolve-registry-stack:
+    name: resolve Registry stack
+    needs: build
+    if: inputs.stack_mode == 'registry' && inputs.resolve_stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      stack_versions: ${{ steps.identity.outputs.stack_versions }}
+      stack_digest: ${{ steps.identity.outputs.stack_digest }}
+      release_version: ${{ steps.identity.outputs.release_version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
+
+      - name: Download E2E runner
+        uses: actions/download-artifact@v7
+        with:
+          name: harness-e2e-stack
+          path: target
+
+      - name: Extract E2E runner
+        run: |
+          mkdir -p target/runner
+          tar -xzf target/harness-e2e-stack.tar.gz -C target/runner
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Install Registry helper dependency
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Resolve requested models
+        id: models
+        env:
+          SUBJECTS: ${{ inputs.subjects }}
+          JUDGE_MODEL: ${{ inputs.judge_model }}
+          JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+        run: |
+          set -euo pipefail
+          models=$(jq -c \
+            --arg judge_model "$JUDGE_MODEL" \
+            --arg judge_provider "$JUDGE_PROVIDER" '
+              [(.[] | {provider, model}), {provider: $judge_provider, model: $judge_model}]
+              | unique_by([.provider, .model])
+            ' <<<"$SUBJECTS")
+          first_provider=$(jq -r '.[0].provider' <<<"$models")
+          first_model=$(jq -r '.[0].model' <<<"$models")
+          {
+            echo "json=$models"
+            echo "first_provider=$first_provider"
+            echo "first_model=$first_model"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve and verify Registry stack
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
+          OPENAI_API_KEY: ${{ secrets.openai_api_key }}
+          ZAI_API_KEY: ${{ secrets.zai_api_key }}
+          DEEPSEEK_API_KEY: ${{ secrets.deepseek_api_key }}
+          III_CLI_CHANNEL: ${{ inputs.cli_channel }}
+          III_WORKER_TAG: ${{ inputs.registry_tag }}
+          HARNESS_E2E_RELEASE_WORKER: ${{ inputs.release_worker }}
+          HARNESS_E2E_RELEASE_VERSION: ${{ inputs.release_version }}
+          HARNESS_E2E_RELEASE_TAG: ${{ inputs.release_tag }}
+          HARNESS_E2E_RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          HARNESS_E2E_SMOKE_RUN_ID: ${{ inputs.smoke_run_id }}
+          HARNESS_E2E_STACK_VERSIONS: ${{ inputs.stack_versions }}
+          HARNESS_E2E_STACK_DIGEST: ${{ inputs.stack_digest }}
+          HARNESS_E2E_RESOLVE_STACK: 'true'
+          HARNESS_E2E_RESOLVE_ONLY: 'true'
+          HARNESS_E2E_MODEL_SPECS: ${{ steps.models.outputs.json }}
+          HARNESS_E2E_BIN: ${{ github.workspace }}/target/runner/harness-e2e
+          HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e-resolution
+          HARNESS_E2E_SCENARIO: registry_stack_resolution
+          HARNESS_E2E_RUNS: 1
+          HARNESS_E2E_MODEL: ${{ steps.models.outputs.first_model }}
+          HARNESS_E2E_PROVIDER: ${{ steps.models.outputs.first_provider }}
+          HARNESS_E2E_JUDGE_MODEL: ${{ inputs.judge_model }}
+          HARNESS_E2E_JUDGE_PROVIDER: ${{ inputs.judge_provider }}
+        run: harness/tests/e2e/run-deployed-ci.sh
+
+      - name: Export resolved Registry identity
+        id: identity
+        run: |
+          set -euo pipefail
+          deployment=target/harness-e2e-resolution/deployment.json
+          test "$(jq -r .status "$deployment")" = passed
+          {
+            echo "stack_versions=$(jq -c .stack_versions "$deployment")"
+            echo "stack_digest=$(jq -r .stack_lock_digest "$deployment")"
+            echo "release_version=$(jq -r .actual_release_version "$deployment")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload Registry resolution evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-e2e-registry-stack-resolution
+          path: target/harness-e2e-resolution/
+          retention-days: 14
+          if-no-files-found: error
+
   e2e:
     name: harness e2e / ${{ matrix.subject.id }} / ${{ matrix.scenario }}
-    needs: build
+    needs: [build, resolve-registry-stack]
+    if: >-
+      always() && needs.build.result == 'success' &&
+      (needs.resolve-registry-stack.result == 'success' ||
+      needs.resolve-registry-stack.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
@@ -523,13 +640,13 @@ jobs:
           III_CLI_CHANNEL: ${{ inputs.cli_channel }}
           III_WORKER_TAG: ${{ inputs.registry_tag }}
           HARNESS_E2E_RELEASE_WORKER: ${{ inputs.release_worker }}
-          HARNESS_E2E_RELEASE_VERSION: ${{ inputs.release_version }}
+          HARNESS_E2E_RELEASE_VERSION: ${{ inputs.resolve_stack && needs.resolve-registry-stack.outputs.release_version || inputs.release_version }}
           HARNESS_E2E_RELEASE_TAG: ${{ inputs.release_tag }}
           HARNESS_E2E_RELEASE_RUN_ID: ${{ inputs.release_run_id }}
           HARNESS_E2E_SMOKE_RUN_ID: ${{ inputs.smoke_run_id }}
-          HARNESS_E2E_STACK_VERSIONS: ${{ inputs.stack_versions }}
-          HARNESS_E2E_STACK_DIGEST: ${{ inputs.stack_digest }}
-          HARNESS_E2E_RESOLVE_STACK: ${{ inputs.resolve_stack }}
+          HARNESS_E2E_STACK_VERSIONS: ${{ inputs.resolve_stack && needs.resolve-registry-stack.outputs.stack_versions || inputs.stack_versions }}
+          HARNESS_E2E_STACK_DIGEST: ${{ inputs.resolve_stack && needs.resolve-registry-stack.outputs.stack_digest || inputs.stack_digest }}
+          HARNESS_E2E_RESOLVE_STACK: 'false'
           HARNESS_E2E_BIN: ${{ github.workspace }}/target/runner/harness-e2e
           HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
           HARNESS_E2E_SCENARIO: ${{ matrix.scenario }}
@@ -624,7 +741,7 @@ jobs:
 
   summary:
     name: harness e2e summary
-    needs: [build, e2e]
+    needs: [build, resolve-registry-stack, e2e]
     if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -638,6 +755,14 @@ jobs:
         with:
           pattern: harness-e2e-*-results
           path: target/harness-e2e-results
+
+      - name: Download Registry resolution evidence
+        if: always() && needs.resolve-registry-stack.result != 'skipped'
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: harness-e2e-registry-stack-resolution
+          path: target/harness-e2e-preflight
 
       - name: Write suite cost summary
         run: |
@@ -697,12 +822,12 @@ jobs:
           WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           RELEASE_WORKER: ${{ inputs.release_worker }}
-          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_VERSION: ${{ inputs.resolve_stack && needs.resolve-registry-stack.outputs.release_version || inputs.release_version }}
           RELEASE_URL: ${{ inputs.release_url }}
           REGISTRY_TAG: ${{ inputs.registry_tag }}
           STACK_MODE: ${{ inputs.stack_mode }}
-          STACK_VERSIONS: ${{ inputs.stack_versions }}
-          STACK_DIGEST: ${{ inputs.stack_digest }}
+          STACK_VERSIONS: ${{ inputs.resolve_stack && needs.resolve-registry-stack.outputs.stack_versions || inputs.stack_versions }}
+          STACK_DIGEST: ${{ inputs.resolve_stack && needs.resolve-registry-stack.outputs.stack_digest || inputs.stack_digest }}
           JUDGE_MODEL: ${{ inputs.judge_model }}
           JUDGE_PROVIDER: ${{ inputs.judge_provider }}
           EXECUTION_RUN_ID: ${{ github.run_id }}
@@ -730,6 +855,7 @@ jobs:
             --stack-mode "$STACK_MODE" \
             --stack-versions "$STACK_VERSIONS" \
             --stack-digest "$STACK_DIGEST" \
+            --preflight-deployment target/harness-e2e-preflight/deployment.json \
             --judge-model "$JUDGE_MODEL" \
             --judge-provider "$JUDGE_PROVIDER" \
             --execution-run-id "$EXECUTION_RUN_ID" \
