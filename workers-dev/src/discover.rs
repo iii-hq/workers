@@ -131,12 +131,17 @@ pub fn stack_members(specs: &[WorkerSpec], roots: &[String]) -> HashSet<String> 
     let mut members: HashSet<&str> = HashSet::new();
     let mut queue: VecDeque<&str> = roots.iter().map(String::as_str).collect();
     while let Some(name) = queue.pop_front() {
-        if !deps_by_name.contains_key(name) || !members.insert(name) {
+        let Some(deps) = deps_by_name.get(name) else {
+            continue;
+        };
+        // `insert` returning false — already visited — is the only thing
+        // stopping a cyclic dependency graph from looping forever: every
+        // name is queued only once, so each edge is followed at most once.
+        // See `stack_members_terminates_on_a_dependency_cycle` below.
+        if !members.insert(name) {
             continue;
         }
-        if let Some(deps) = deps_by_name.get(name) {
-            queue.extend(deps.iter().map(String::as_str));
-        }
+        queue.extend(deps.iter().map(String::as_str));
     }
     members.into_iter().map(str::to_string).collect()
 }
