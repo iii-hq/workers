@@ -1,12 +1,19 @@
-//! Stack management UI: the Ctrl+u picker and (later) creating, deleting,
-//! and defaulting stacks. Split out of `tui/mod.rs`, which owns the dashboard
-//! loop and was already long before stacks arrived.
+//! Stack management UI: the Ctrl+u picker, creating a stack from marked
+//! workers, and (later) deleting and defaulting stacks. Split out of
+//! `tui/mod.rs`, which owns the dashboard loop and was already long before
+//! stacks arrived.
 
+use std::collections::HashSet;
+use std::path::Path;
+
+use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
+
+use crate::status::WorkerView;
 
 use super::theme::hint_style;
 use super::{draw_dialog, styled_if, UiCtx, UiMode};
@@ -133,9 +140,47 @@ pub(super) fn draw_stack_picker_overlay(f: &mut Frame, area: Rect, selected: usi
     );
 }
 
+/// The marked workers in dashboard order — the order the user sees, so the
+/// saved file reads the way the list did.
+pub(super) fn roots_from_marks(views: &[WorkerView], marked: &HashSet<String>) -> Vec<String> {
+    views
+        .iter()
+        .filter(|v| marked.contains(&v.name))
+        .map(|v| v.name.clone())
+        .collect()
+}
+
+/// Name-prompt keys. Enter on a non-empty name returns `(name, roots)`; the
+/// caller decides whether that name overwrites an existing stack. Esc cancels.
+/// Characters that would need YAML quoting are ignored as typed.
+pub(super) fn handle_name_key(key: KeyEvent, mode: &mut UiMode) -> Option<(String, Vec<String>)> {
+    let UiMode::NameStack { name, roots, .. } = mode else {
+        return None;
+    };
+    match key.code {
+        KeyCode::Char(c) if crate::config_write::valid_stack_name(&c.to_string()) => name.push(c),
+        KeyCode::Backspace => {
+            name.pop();
+        }
+        KeyCode::Enter if !name.is_empty() => return Some((name.clone(), roots.clone())),
+        KeyCode::Esc => *mode = UiMode::Dashboard,
+        _ => {}
+    }
+    None
+}
+
+/// Write `name`'s stack into the config file, creating the file if needed.
+pub(super) fn save_stack(path: &Path, name: &str, roots: &[String]) -> Result<()> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let next = crate::config_write::upsert_stack(&text, name, roots)?;
+    crate::config_write::write_verified(path, &next)
+        .with_context(|| format!("save stack {name} to {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::discover::WorkerGroup;
 
     fn stacks() -> Vec<(String, Vec<String>)> {
         vec![
@@ -143,6 +188,23 @@ mod tests {
             ("ghost".to_string(), Vec::new()),
             ("console".to_string(), vec!["console".to_string()]),
         ]
+    }
+
+    /// Shared worker fixture — mirrors `status.rs`'s test fixture of the same
+    /// name/shape.
+    fn view(name: &str) -> WorkerView {
+        WorkerView {
+            name: name.to_string(),
+            group: WorkerGroup::Other,
+            spawnable: true,
+            display_status: "stopped".to_string(),
+            process_status: "stopped".to_string(),
+            engine_status: "—".to_string(),
+            local_pid: None,
+            uptime: "—".to_string(),
+            exit_code: None,
+            ui_watch: None,
+        }
     }
 
     #[test]
@@ -177,5 +239,85 @@ mod tests {
         let chosen = handle_stack_picker_key(KeyEvent::from(KeyCode::Esc), &mut mode, &stacks);
         assert!(chosen.is_none());
         assert!(matches!(mode, UiMode::Dashboard));
+    }
+
+    #[test]
+    fn roots_from_marks_follows_dashboard_order() {
+        let mut views = vec![view("zeta"), view("alpha"), view("mid")];
+        crate::status::assign_view_groups(&mut views, &HashSet::new());
+        let marked: HashSet<String> = ["zeta".to_string(), "alpha".to_string()]
+            .into_iter()
+            .collect();
+        // views are sorted alpha within their group, so order is alpha, zeta.
+        assert_eq!(
+            roots_from_marks(&views, &marked),
+            vec!["alpha".to_string(), "zeta".to_string()]
+        );
+    }
+
+    #[test]
+    fn name_key_edits_accepts_and_cancels() {
+        let roots = vec!["console".to_string()];
+
+        // Valid characters append; invalid ones are ignored.
+        let mut mode = UiMode::NameStack {
+            name: String::new(),
+            roots: roots.clone(),
+            expanded: 3,
+        };
+        for c in ['c', 'o', ' ', 'n', ':', '-', '1'] {
+            assert!(handle_name_key(KeyEvent::from(KeyCode::Char(c)), &mut mode).is_none());
+        }
+        let UiMode::NameStack { name, .. } = &mode else {
+            panic!("still naming")
+        };
+        assert_eq!(name, "con-1");
+
+        // Backspace edits.
+        handle_name_key(KeyEvent::from(KeyCode::Backspace), &mut mode);
+        let UiMode::NameStack { name, .. } = &mode else {
+            panic!("still naming")
+        };
+        assert_eq!(name, "con-");
+
+        // Enter returns the name and its roots.
+        let out = handle_name_key(KeyEvent::from(KeyCode::Enter), &mut mode).unwrap();
+        assert_eq!(out, ("con-".to_string(), roots.clone()));
+
+        // Enter on an empty name does nothing.
+        let mut mode = UiMode::NameStack {
+            name: String::new(),
+            roots: roots.clone(),
+            expanded: 3,
+        };
+        assert!(handle_name_key(KeyEvent::from(KeyCode::Enter), &mut mode).is_none());
+        assert!(matches!(mode, UiMode::NameStack { .. }));
+
+        // Esc cancels.
+        handle_name_key(KeyEvent::from(KeyCode::Esc), &mut mode);
+        assert!(matches!(mode, UiMode::Dashboard));
+    }
+
+    #[test]
+    fn save_stack_creates_then_updates_the_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("workers-dev.yaml");
+
+        save_stack(&path, "console", &["console".to_string()]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "stacks:\n  console:\n    - console\n"
+        );
+
+        save_stack(
+            &path,
+            "console",
+            &["console".to_string(), "state".to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "stacks:\n  console:\n    - console\n    - state\n"
+        );
     }
 }

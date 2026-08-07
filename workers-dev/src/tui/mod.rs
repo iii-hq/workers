@@ -95,6 +95,19 @@ enum UiMode {
     StackPicker {
         selected: usize,
     },
+    /// Naming a new stack built from the marked workers. `roots` is frozen
+    /// when the prompt opens, so later marking cannot change what gets saved;
+    /// `expanded` is how many workers those roots reach with their deps.
+    NameStack {
+        name: String,
+        roots: Vec<String>,
+        expanded: usize,
+    },
+    /// Confirming an overwrite: the name already exists in the file.
+    ConfirmSaveStack {
+        name: String,
+        roots: Vec<String>,
+    },
 }
 
 enum ModeKind {
@@ -105,6 +118,8 @@ enum ModeKind {
     Confirm,
     Busy,
     StackPicker,
+    NameStack,
+    ConfirmSave,
 }
 
 fn mode_kind(mode: &UiMode) -> ModeKind {
@@ -116,6 +131,8 @@ fn mode_kind(mode: &UiMode) -> ModeKind {
         UiMode::ConfirmRestart { .. } => ModeKind::Confirm,
         UiMode::Busy(_) => ModeKind::Busy,
         UiMode::StackPicker { .. } => ModeKind::StackPicker,
+        UiMode::NameStack { .. } => ModeKind::NameStack,
+        UiMode::ConfirmSaveStack { .. } => ModeKind::ConfirmSave,
     }
 }
 
@@ -191,6 +208,12 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
 
         // Poll the engine on a background task so a slow or unreachable engine
         // query can't freeze keyboard input.
+        // Session copies of the config's stacks, so saving a new stack (n)
+        // doesn't require re-reading the file: `default_stack` isn't mutated
+        // by this task, but lives here so a later "set default" (Ctrl+u
+        // picker) can update it without reaching back into `Config`.
+        let mut stacks: Vec<(String, Vec<String>)> = orchestrator.config.stacks.clone();
+        let default_stack = orchestrator.config.default_stack.clone();
         let mut current_stack = orchestrator.config.default_stack.clone();
         let initial_members = orchestrator.stack_members(&current_stack)?;
         let (initial_views, initial_err) = orchestrator.dashboard_snapshot(&initial_members).await;
@@ -288,8 +311,8 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                     engine_url: &orchestrator.config.engine_url,
                     repo_branch: state.repo_branch.as_deref(),
                     current_stack: &current_stack,
-                    default_stack: &orchestrator.config.default_stack,
-                    stacks: &orchestrator.config.stacks,
+                    default_stack: &default_stack,
+                    stacks: &stacks,
                     views: &state.views,
                     marked: &marked,
                     engine_error: state.engine_error.as_deref(),
@@ -365,45 +388,98 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                     &state.views,
                                     table_state.selected(),
                                 );
-                                if let Some(name) = stacks::handle_stack_picker_key(
-                                    key,
-                                    &mut mode,
-                                    &orchestrator.config.stacks,
-                                ) {
-                                    // Only commit to the new stack — label,
-                                    // grouping, Busy, and the start — once
-                                    // its members actually resolve; an error
-                                    // leaves current_stack/shared_members/mode/
-                                    // the spawned action all untouched.
-                                    match orchestrator.stack_members(&name) {
-                                        Ok(members) => {
-                                            current_stack = name.clone();
-                                            // Mutates (re-sorts) state.views;
-                                            // the outer `display_rows` from
-                                            // the top of this loop iteration
-                                            // indexes the pre-sort order and
-                                            // must not be read again below —
-                                            // nothing does today.
-                                            crate::status::assign_view_groups(
-                                                &mut state.views,
-                                                &members,
-                                            );
-                                            *shared_members.write().expect("members lock") =
-                                                members;
-                                            let rows = build_display_rows(&state.views, &filter);
-                                            let target = keep_name
-                                                .as_deref()
-                                                .and_then(|n| row_of_worker(&rows, &state.views, n))
-                                                .or_else(|| first_worker_row(&rows));
-                                            table_state.select(target);
-                                            mode = UiMode::Busy(format!("starting stack {name}…"));
-                                            spawn_start_stack(&actions, name);
-                                        }
-                                        Err(err) => {
-                                            error_banner =
-                                                Some((format!("{err:#}"), Instant::now()));
-                                        }
+                                if let Some(name) =
+                                    stacks::handle_stack_picker_key(key, &mut mode, &stacks)
+                                {
+                                    // The picker only ever returns a name it
+                                    // read from this same `stacks` list with
+                                    // non-empty roots.
+                                    let roots = stacks
+                                        .iter()
+                                        .find(|(n, _)| *n == name)
+                                        .map(|(_, roots)| roots.clone())
+                                        .expect("picker returned a name absent from `stacks`");
+                                    let members = crate::discover::stack_members(
+                                        &orchestrator.config.worker_specs,
+                                        &roots,
+                                    );
+                                    current_stack = name.clone();
+                                    // Mutates (re-sorts) state.views; the
+                                    // outer `display_rows` from the top of
+                                    // this loop iteration indexes the
+                                    // pre-sort order and must not be read
+                                    // again below — nothing does today.
+                                    crate::status::assign_view_groups(&mut state.views, &members);
+                                    *shared_members.write().expect("members lock") = members;
+                                    let rows = build_display_rows(&state.views, &filter);
+                                    let target = keep_name
+                                        .as_deref()
+                                        .and_then(|n| row_of_worker(&rows, &state.views, n))
+                                        .or_else(|| first_worker_row(&rows));
+                                    table_state.select(target);
+                                    mode = UiMode::Busy(format!("starting stack {name}…"));
+                                    spawn_start_roots(&actions, name, roots);
+                                }
+                            }
+                            ModeKind::NameStack => {
+                                if let Some((name, roots)) = stacks::handle_name_key(key, &mut mode)
+                                {
+                                    if stacks.iter().any(|(n, _)| *n == name) {
+                                        mode = UiMode::ConfirmSaveStack { name, roots };
+                                    } else {
+                                        let keep_name = selected_worker(
+                                            &display_rows,
+                                            &state.views,
+                                            table_state.selected(),
+                                        );
+                                        save_and_adopt_stack(
+                                            &orchestrator,
+                                            name,
+                                            roots,
+                                            &mut stacks,
+                                            &mut current_stack,
+                                            &mut state.views,
+                                            &shared_members,
+                                            &filter,
+                                            &mut table_state,
+                                            keep_name,
+                                            &mut marked,
+                                            &mut mode,
+                                            &mut error_banner,
+                                        );
                                     }
+                                }
+                            }
+                            ModeKind::ConfirmSave => {
+                                let UiMode::ConfirmSaveStack { name, roots } = &mode else {
+                                    unreachable!("mode kind matched");
+                                };
+                                match key.code {
+                                    KeyCode::Char('y') | KeyCode::Enter => {
+                                        let (name, roots) = (name.clone(), roots.clone());
+                                        let keep_name = selected_worker(
+                                            &display_rows,
+                                            &state.views,
+                                            table_state.selected(),
+                                        );
+                                        save_and_adopt_stack(
+                                            &orchestrator,
+                                            name,
+                                            roots,
+                                            &mut stacks,
+                                            &mut current_stack,
+                                            &mut state.views,
+                                            &shared_members,
+                                            &filter,
+                                            &mut table_state,
+                                            keep_name,
+                                            &mut marked,
+                                            &mut mode,
+                                            &mut error_banner,
+                                        );
+                                    }
+                                    KeyCode::Char('n') | KeyCode::Esc => mode = UiMode::Dashboard,
+                                    _ => {}
                                 }
                             }
                             ModeKind::Dashboard => {
@@ -424,6 +500,7 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                     &mut log_scroll,
                                     &mut log_height,
                                     &mut table_width,
+                                    &stacks,
                                     &current_stack,
                                     two_col,
                                 );
@@ -499,6 +576,7 @@ fn handle_dashboard_key(
     log_scroll: &mut usize,
     log_height: &mut u16,
     table_width: &mut u16,
+    stacks: &[(String, Vec<String>)],
     current_stack: &str,
     two_col: bool,
 ) -> bool {
@@ -548,6 +626,28 @@ fn handle_dashboard_key(
                 if !marked.remove(&name) {
                     marked.insert(name);
                 }
+            }
+        }
+        // New stack from the marked workers. Opens the name prompt; nothing
+        // is written or started until Enter.
+        KeyCode::Char('n') => {
+            let roots = stacks::roots_from_marks(views, marked);
+            if roots.is_empty() {
+                *mode = UiMode::Busy("mark workers with Space first".into());
+            } else {
+                // Roots expand to roots + transitive deps at start and group
+                // time, so show both numbers — marking two workers can mean
+                // starting a dozen.
+                let expanded = crate::discover::stack_members(
+                    &actions.orchestrator.config.worker_specs,
+                    &roots,
+                )
+                .len();
+                *mode = UiMode::NameStack {
+                    name: String::new(),
+                    roots,
+                    expanded,
+                };
             }
         }
         KeyCode::Char('/') => *mode = UiMode::Filter,
@@ -669,11 +769,15 @@ fn handle_dashboard_key(
             *mode = UiMode::Busy("starting engine…".to_string());
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            let stacks = &actions.orchestrator.config.stacks;
             if stacks.len() <= 1 {
                 // Only the built-in stack: no choice to make, start it —
                 // exactly today's Ctrl+u.
-                spawn_start_stack(actions, current_stack.to_string());
+                let roots = stacks
+                    .iter()
+                    .find(|(n, _)| n == current_stack)
+                    .map(|(_, roots)| roots.clone())
+                    .expect("current_stack is always present in `stacks`");
+                spawn_start_roots(actions, current_stack.to_string(), roots);
                 *mode = UiMode::Busy(format!("starting stack {current_stack}…"));
             } else {
                 let selected = stacks
@@ -738,6 +842,59 @@ fn not_startable_msg() -> UiMode {
     UiMode::Busy("worker not startable from workers-dev (use iii worker add)".into())
 }
 
+/// Shared by both `n`-prompt paths (a fresh name, and after an overwrite
+/// confirm): write the stack to disk, then — only on success — adopt it as
+/// the session's current stack and regroup the dashboard around it. Never
+/// starts anything; that stays the picker/Ctrl+u's job. A free `fn` rather
+/// than a closure: it mutates enough distinct session bindings (`stacks`,
+/// `current_stack`, the views, `shared_members`, `table_state`, `marked`,
+/// `mode`, `error_banner`) that a capturing closure would fight the borrow
+/// checker, so every one is an explicit parameter instead.
+#[allow(clippy::too_many_arguments)]
+fn save_and_adopt_stack(
+    orchestrator: &Orchestrator,
+    name: String,
+    roots: Vec<String>,
+    stacks: &mut Vec<(String, Vec<String>)>,
+    current_stack: &mut String,
+    views: &mut [WorkerView],
+    shared_members: &std::sync::RwLock<std::collections::HashSet<String>>,
+    filter: &str,
+    table_state: &mut TableState,
+    keep_name: Option<String>,
+    marked: &mut std::collections::HashSet<String>,
+    mode: &mut UiMode,
+    error_banner: &mut Option<(String, Instant)>,
+) {
+    if let Err(err) = stacks::save_stack(&orchestrator.config.config_path, &name, &roots) {
+        *error_banner = Some((format!("{err:#}"), Instant::now()));
+        *mode = UiMode::Dashboard;
+        return;
+    }
+
+    match stacks.iter_mut().find(|(n, _)| *n == name) {
+        Some(entry) => entry.1 = roots.clone(),
+        None => stacks.push((name.clone(), roots.clone())),
+    }
+    *current_stack = name.clone();
+    let members = crate::discover::stack_members(&orchestrator.config.worker_specs, &roots);
+    crate::status::assign_view_groups(views, &members);
+    *shared_members.write().expect("members lock") = members;
+    // Downgrade to a shared borrow: nothing below needs `views` mutably.
+    let views: &[WorkerView] = views;
+    let rows = build_display_rows(views, filter);
+    let target = keep_name
+        .as_deref()
+        .and_then(|n| row_of_worker(&rows, views, n))
+        .or_else(|| first_worker_row(&rows));
+    table_state.select(target);
+    marked.clear();
+    *mode = UiMode::Busy(format!(
+        "saved stack {name} to {}",
+        orchestrator.config.config_path.display()
+    ));
+}
+
 /// Name the surrounding terminal window / tmux pane after this instance, so
 /// side-by-side instances are tellable apart from the window list without
 /// looking inside. Re-applied whenever the branch changes.
@@ -775,10 +932,10 @@ fn spawn_start(actions: &Actions, names: Vec<String>) {
     });
 }
 
-fn spawn_start_stack(actions: &Actions, name: String) {
+fn spawn_start_roots(actions: &Actions, name: String, roots: Vec<String>) {
     let orchestrator = actions.orchestrator.clone();
     spawn_action(actions, async move {
-        orchestrator.start_stack(&name, false).await
+        orchestrator.start_roots(&name, &roots, false).await
     });
 }
 
@@ -989,6 +1146,9 @@ fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) {
     }
     if let UiMode::StackPicker { selected } = ctx.mode {
         stacks::draw_stack_picker_overlay(f, body, *selected, ctx);
+    }
+    if let UiMode::ConfirmSaveStack { name, roots } = ctx.mode {
+        draw_confirm_save_overlay(f, body, name, roots, ctx);
     }
 }
 
@@ -1500,6 +1660,19 @@ fn draw_footer(f: &mut Frame, area: Rect, ctx: &UiCtx) {
             format!(" filter: {}_   (Enter apply · Esc clear) ", ctx.filter),
             styled_if(color, Style::default().fg(Color::Yellow)),
         ),
+        UiMode::NameStack {
+            name,
+            roots,
+            expanded,
+        } => (
+            format!(
+                " new stack: {name}_   {} marked → {}  ({expanded} workers with deps)   \
+                 (Enter save · Esc cancel) ",
+                roots.len(),
+                roots.join(", ")
+            ),
+            styled_if(color, Style::default().fg(Color::Yellow)),
+        ),
         _ => {
             let help = if area.width >= 86 {
                 HELP_FULL
@@ -1587,11 +1760,58 @@ fn draw_confirm_overlay(f: &mut Frame, area: Rect, name: &str, dependents: &[Str
     );
 }
 
+/// Confirm-overwrite dialog for `n`: the typed name already names a stack in
+/// the file. Mirrors `draw_confirm_overlay`'s shape — the new root list is
+/// what would be written, so an overwrite is never a blind guess.
+fn draw_confirm_save_overlay(f: &mut Frame, area: Rect, name: &str, roots: &[String], ctx: &UiCtx) {
+    let color = ctx.color_enabled;
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("   Overwrite stack {name}?"),
+            styled_if(color, confirm_prompt_style()),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "   new roots",
+            styled_if(color, Style::default().add_modifier(Modifier::BOLD)),
+        )),
+    ];
+    for w in roots {
+        lines.push(worker_status_line(ctx, w));
+    }
+
+    let pinned = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "   y/Enter ",
+                styled_if(color, Style::default().fg(Color::Cyan)),
+            ),
+            Span::raw("overwrite      "),
+            Span::styled("n/Esc ", styled_if(color, Style::default().fg(Color::Cyan))),
+            Span::raw("cancel"),
+        ]),
+        Line::from(""),
+    ];
+
+    draw_dialog(
+        f,
+        area,
+        " confirm overwrite ".to_string(),
+        lines,
+        pinned,
+        58,
+        color,
+    );
+}
+
 fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
     let keys = [
         ("↑ ↓  k j", "select worker"),
         ("g G", "jump to first / last worker"),
         ("Space", "mark worker for a new stack"),
+        ("n", "new stack from marked workers"),
         ("s", "start selected worker"),
         ("x", "stop selected worker"),
         ("r", "restart selected + dependents"),
