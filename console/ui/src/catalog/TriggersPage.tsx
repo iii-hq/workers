@@ -79,7 +79,15 @@ interface TypeGroup {
   bindings: RegisteredTrigger[]
 }
 
-export function TriggersPage({ host }: { host: Host }) {
+export function TriggersPage({
+  host,
+  side,
+  onRequestClose,
+}: {
+  host: Host
+  side?: 'left' | 'right'
+  onRequestClose?: () => void
+}) {
   const [showInternal, setShowInternal] = useState(false)
   const [search, setSearch] = useState('')
   const [family, setFamily] = useState<Family | null>(null)
@@ -227,6 +235,7 @@ export function TriggersPage({ host }: { host: Host }) {
 
   return (
     <CatalogShell
+      side={side}
       head={
         <CatalogHead
           title="triggers"
@@ -236,6 +245,7 @@ export function TriggersPage({ host }: { host: Host }) {
           searchPlaceholder="search types, functions, paths, topics, schedules…"
           onRefresh={catalog.reload}
           loading={catalog.loading}
+          onRequestClose={onRequestClose}
           below={
             <>
               <FilterChips

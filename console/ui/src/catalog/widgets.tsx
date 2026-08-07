@@ -6,7 +6,13 @@
  * class in ../../styles.css.
  */
 
-import { Badge, Button, Input } from '@iii-dev/console-ui'
+import {
+  Button,
+  Input,
+  PageBody,
+  PageHeader,
+  PageShell,
+} from '@iii-dev/console-ui'
 import { type ReactNode, useCallback, useState } from 'react'
 
 /**
@@ -33,29 +39,38 @@ export function useGroupToggle(defaultOpen: (id: string) => boolean) {
   return { isOpen, toggle }
 }
 
+/**
+ * The catalogue page frame, composed from the console's own Page*
+ * components (the redesign's pane chrome): PageHeader carries identity and
+ * actions, PageBody splits list from detail. Regions separate by surface
+ * step, never by a drawn line — the detail pane is a raised surface.
+ */
 export function CatalogShell({
   head,
   list,
   footer,
   detail,
+  side,
 }: {
   head: ReactNode
   list: ReactNode
   /** Rendered after the list inside the same scroll pane (plumbing section). */
   footer?: ReactNode
   detail: ReactNode | null
+  /** The hosting pane's side (`PageRenderProps.panelSide`). */
+  side?: 'left' | 'right'
 }) {
   return (
-    <div className="console-catalog">
+    <PageShell className="console-catalog">
       {head}
-      <div className="console-catalog-body">
+      <PageBody side={side} className="console-catalog-body">
         <div className="console-catalog-list">
           {list}
           {footer}
         </div>
         {detail ? <div className="console-catalog-detail">{detail}</div> : null}
-      </div>
-    </div>
+      </PageBody>
+    </PageShell>
   )
 }
 
@@ -69,6 +84,7 @@ export function CatalogHead({
   loading,
   children,
   below,
+  onRequestClose,
 }: {
   title: string
   count: ReactNode
@@ -80,28 +96,41 @@ export function CatalogHead({
   children?: ReactNode
   /** Row under the search box: filter chips, when the page has them. */
   below?: ReactNode
+  /** Close the hosting pane (`PageRenderProps.onRequestClose`). */
+  onRequestClose?: () => void
 }) {
   return (
-    <div className="console-catalog-head">
-      <div className="console-catalog-head-row">
-        <span className="console-catalog-title">{title}</span>
-        <Badge>{count}</Badge>
-        <span style={{ flex: 1 }} />
-        {children}
-        <Button variant="pill" size="sm" onClick={onRefresh} disabled={loading}>
-          {loading ? 'loading…' : 'refresh'}
-        </Button>
-      </div>
-      <Input
-        value={search}
-        onChange={onSearch}
-        preserveCase
-        placeholder={searchPlaceholder}
-        aria-label={searchPlaceholder}
-        className="console-catalog-search"
+    <>
+      <PageHeader
+        title={title}
+        description={count}
+        onClose={onRequestClose}
+        actions={
+          <>
+            {children}
+            <Button
+              variant="pill"
+              size="sm"
+              onClick={onRefresh}
+              disabled={loading}
+            >
+              {loading ? 'loading…' : 'refresh'}
+            </Button>
+          </>
+        }
       />
-      {below}
-    </div>
+      <div className="console-catalog-head">
+        <Input
+          value={search}
+          onChange={onSearch}
+          preserveCase
+          placeholder={searchPlaceholder}
+          aria-label={searchPlaceholder}
+          className="console-catalog-search"
+        />
+        {below}
+      </div>
+    </>
   )
 }
 

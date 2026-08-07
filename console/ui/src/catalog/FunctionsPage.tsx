@@ -58,7 +58,15 @@ import {
 /** Function namespaces always start expanded; there is no noisy bucket. */
 const alwaysOpen = () => true
 
-export function FunctionsPage({ host }: { host: Host }) {
+export function FunctionsPage({
+  host,
+  side,
+  onRequestClose,
+}: {
+  host: Host
+  side?: 'left' | 'right'
+  onRequestClose?: () => void
+}) {
   const [showInternal, setShowInternal] = useState(false)
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
@@ -120,6 +128,7 @@ export function FunctionsPage({ host }: { host: Host }) {
 
   return (
     <CatalogShell
+      side={side}
       head={
         <CatalogHead
           title="functions"
@@ -131,6 +140,7 @@ export function FunctionsPage({ host }: { host: Host }) {
           searchPlaceholder="search function ids or workers…"
           onRefresh={functions.reload}
           loading={functions.loading}
+          onRequestClose={onRequestClose}
           below={
             <NowStrip
               activity={activity}

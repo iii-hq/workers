@@ -24,7 +24,7 @@
  * toggled off without touching the host.
  */
 
-import type { Host } from '@iii-dev/console-ui'
+import type { Host, PageRenderProps } from '@iii-dev/console-ui'
 import { FunctionsPage } from './src/catalog/FunctionsPage'
 import { TriggersPage } from './src/catalog/TriggersPage'
 
@@ -32,12 +32,24 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'functions',
     title: 'functions',
-    render: () => <FunctionsPage host={host} />,
+    render: ({ panelSide, onRequestClose }: PageRenderProps) => (
+      <FunctionsPage
+        host={host}
+        side={panelSide}
+        onRequestClose={onRequestClose}
+      />
+    ),
   })
 
   host.pages.register({
     id: 'triggers',
     title: 'triggers',
-    render: () => <TriggersPage host={host} />,
+    render: ({ panelSide, onRequestClose }: PageRenderProps) => (
+      <TriggersPage
+        host={host}
+        side={panelSide}
+        onRequestClose={onRequestClose}
+      />
+    ),
   })
 }

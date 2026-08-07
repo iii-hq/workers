@@ -46,7 +46,8 @@ async function readEndpoint(host: Host): Promise<HttpEndpoint> {
   for (const id of ['http', 'iii-http']) {
     try {
       const entry = await host.iii.trigger('configuration::get', { id })
-      const candidate = isRecord(entry) && isRecord(entry.value) ? entry.value : null
+      const candidate =
+        isRecord(entry) && isRecord(entry.value) ? entry.value : null
       if (candidate && typeof candidate.port === 'number') {
         value = candidate
         break
@@ -57,8 +58,7 @@ async function readEndpoint(host: Host): Promise<HttpEndpoint> {
   }
   if (!value) throw new Error('no http worker configuration with a port found')
   const port = value.port
-  if (typeof port !== 'number')
-    throw new Error('http config carries no port')
+  if (typeof port !== 'number') throw new Error('http config carries no port')
   const bound = typeof value.host === 'string' ? value.host : '127.0.0.1'
   const reachable =
     bound === '0.0.0.0' || bound === '127.0.0.1' || bound === 'localhost'
