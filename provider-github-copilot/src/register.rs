@@ -3,7 +3,7 @@
 use crate::config::DEFAULT_MAX_TOKENS;
 use crate::discovery::{make_refresh_models, refresh_models};
 use crate::errors::invalid_request_from_serde;
-use crate::exchange::{BearerCache, DEFAULT_API_URL};
+use crate::exchange::BearerCache;
 use crate::login::{make_login_poll, make_login_start};
 use crate::stream_fn::make_stream;
 use crate::surface;
@@ -30,11 +30,24 @@ pub fn declaration() -> ProviderDeclaration {
         display_name: Some("GitHub Copilot".into()),
         credential_env_var: Some(CREDENTIAL_ENV_VAR.into()),
         defaults: Some(ProviderDefaults {
-            api_url: Some(DEFAULT_API_URL.into()),
+            // Deliberately no api_url default: the router's resolve step
+            // falls back to this value when the operator has not set one, and
+            // a default here would outrank the endpoint the token exchange
+            // names — pinning individual and Enterprise tenants to the
+            // generic host. Absent, the exchange endpoint wins and
+            // `exchange::DEFAULT_API_URL` remains the last resort.
+            api_url: None,
             max_tokens: Some(DEFAULT_MAX_TOKENS),
             extra: BTreeMap::new(),
         }),
-        config_schema: None, // the router's default {api_key, api_url, max_tokens}
+        // The router's default {api_key, api_url, max_tokens} slice. The
+        // api_key field goes unused — signing in is the device flow and the
+        // credential lives in iii-state — but the console renders a fixed
+        // field set per provider regardless of what a custom schema
+        // declares, so a custom one would buy nothing and cost `max_tokens`
+        // (the router rejects custom-schema fields containing "token"
+        // unless marked write-only).
+        config_schema: None,
         supports_model_listing: Some(true),
         // No static slice: GET /models is the source of truth once a login
         // exists, and a refresh fires right after registration.
@@ -236,6 +249,19 @@ mod tests {
         assert!(prompt.starts_with("You are an iii agent worker."));
         assert!(prompt.contains("agent_trigger"));
         assert!(prompt.contains("Never use a function id from memory."));
+    }
+
+    #[test]
+    fn declaration_declares_no_api_url_default() {
+        // A default here would outrank the endpoint the token exchange names
+        // (llm-router resolve falls back to it), pinning individual and
+        // Enterprise tenants to the generic host.
+        let d = declaration();
+        assert_eq!(d.defaults.as_ref().unwrap().api_url, None);
+        assert_eq!(
+            d.defaults.as_ref().unwrap().max_tokens,
+            Some(super::DEFAULT_MAX_TOKENS)
+        );
     }
 
     #[test]
