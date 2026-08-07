@@ -318,8 +318,15 @@ fn is_comment(line: &str) -> bool {
 /// `entry_key` unrefused in `ensure_block_entries_recognized` below — the
 /// exact swallowing bug Critical-1 fixed, reopened through a shape that fix
 /// never looked at.
+///
+/// The leading trim is `is_yaml_space`-based too, not Rust's Unicode
+/// `trim_start` — the same fix `is_comment`/`is_blank_or_comment` needed:
+/// stripping NBSP as if it were real indentation makes a line like
+/// `<NBSP>- weird: v` look like an ordinary same-level list item, when the
+/// dash there isn't a sequence indicator at all (nothing valid precedes
+/// it), so the real key is `<NBSP>- weird`.
 fn is_list_item(line: &str) -> bool {
-    match line.trim_start().strip_prefix('-') {
+    match line.trim_start_matches(is_yaml_space).strip_prefix('-') {
         Some(rest) => rest.is_empty() || rest.starts_with(is_yaml_space),
         None => false,
     }
@@ -973,6 +980,33 @@ default_stack: tiny
             "stacks:\n  tiny:\n    - x\n  console:\n    - console\n"
         );
         assert!(parses(&out));
+    }
+
+    /// Blocker 1's exact shape, one predicate over: `is_list_item`'s own
+    /// leading `trim_start()` was still Rust's Unicode trim, not
+    /// `is_yaml_space`-based, so `  <NBSP>- weird: v` had its NBSP eaten
+    /// right along with real indentation. What's left, `- weird: v`, reads
+    /// as a same-level list item (`indent_len` counts only real spaces, so
+    /// the depth check still passes) and the guard waves it through — but
+    /// `#` isn't the only thing NBSP can hide a real key behind: a `-` not
+    /// preceded by valid indentation isn't a YAML sequence indicator
+    /// either, so this line is really the key `<NBSP>- weird`, invisible to
+    /// `entry_key` (which then rejects it on the surrounding-whitespace
+    /// check) and so invisible to `entry_range`, `block_indent`, and
+    /// `remove_stack`'s `has_entry` scan alike. Previously assessed (wrongly
+    /// — see the corrected Follow-up 5 note in `final-fix-report.md`) as
+    /// degrading only to a safe refusal; it does not.
+    #[test]
+    fn refuses_a_dash_after_nbsp_misread_as_a_list_item() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  \u{00A0}- weird: v\n";
+
+        let err = upsert_stack(src, "tiny", &roots(&["x"])).unwrap_err();
+        assert!(!err.to_string().is_empty());
+
+        let err = remove_stack(src, "tiny").unwrap_err();
+        assert!(!err.to_string().is_empty(), "{err:#}");
+        // Must never succeed with an empty file, which `write_verified`
+        // would then happily accept.
     }
 
     #[test]
