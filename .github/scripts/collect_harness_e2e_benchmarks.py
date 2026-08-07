@@ -165,15 +165,29 @@ def discover_contexts(root: Path) -> dict[tuple[str, str], Path]:
         if not isinstance(context, dict):
             raise CollectionError(f"{path} must contain an object")
         subject_id = require_string(context.get("subject_id"), f"{path}: subject_id")
-        scenario_id = require_string(
-            context.get("scenario_id"), f"{path}: scenario_id"
-        )
-        key = (subject_id, scenario_id)
-        if key in contexts:
-            raise CollectionError(
-                f"duplicate benchmark context for {subject_id}/{scenario_id}"
-            )
-        contexts[key] = path
+        scenario_ids = context.get("scenario_ids")
+        if scenario_ids is None:
+            scenario_ids = [
+                require_string(context.get("scenario_id"), f"{path}: scenario_id")
+            ]
+        else:
+            if context.get("schema_version") != 2:
+                raise CollectionError(f"{path}: sharded context must use schema_version 2")
+            require_string(context.get("shard_id"), f"{path}: shard_id")
+        if (
+            not isinstance(scenario_ids, list)
+            or not scenario_ids
+            or not all(isinstance(value, str) and value for value in scenario_ids)
+            or len(set(scenario_ids)) != len(scenario_ids)
+        ):
+            raise CollectionError(f"{path}: scenario_ids must be unique and non-empty")
+        for scenario_id in scenario_ids:
+            key = (subject_id, scenario_id)
+            if key in contexts:
+                raise CollectionError(
+                    f"duplicate benchmark context for {subject_id}/{scenario_id}"
+                )
+            contexts[key] = path
     return contexts
 
 
@@ -288,12 +302,19 @@ def validate_report(
             f"{path}: report subject does not match {subject['id']}"
         )
     scenarios = report.get("scenarios")
-    if not isinstance(scenarios, list) or len(scenarios) != 1:
-        raise CollectionError(f"{path}: expected exactly one scenario")
-    scenario = scenarios[0]
-    if not isinstance(scenario, dict) or scenario.get("scenario_id") != scenario_id:
+    if not isinstance(scenarios, list) or not scenarios:
+        raise CollectionError(f"{path}: expected at least one scenario")
+    matches = [
+        scenario
+        for scenario in scenarios
+        if isinstance(scenario, dict) and scenario.get("scenario_id") == scenario_id
+    ]
+    if len(matches) != 1:
         raise CollectionError(f"{path}: scenario id does not match {scenario_id}")
-    return report, scenario
+    normalized_report = dict(report)
+    normalized_report["scenarios"] = [matches[0]]
+    normalized_report["passed"] = bool(matches[0].get("passed"))
+    return normalized_report, matches[0]
 
 
 def collect(

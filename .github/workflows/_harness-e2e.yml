@@ -108,6 +108,11 @@ on:
         required: false
         type: number
         default: 1
+      sharding_profile:
+        description: Execution grouping profile for the resolved scenarios
+        required: false
+        type: string
+        default: isolated
       validation_profile:
         description: Scenario profile resolved for this execution
         required: false
@@ -140,6 +145,9 @@ on:
       scenarios_json:
         description: Resolved scenario ids
         value: ${{ jobs.build.outputs.scenarios }}
+      shards_json:
+        description: Resolved scenario execution shards
+        value: ${{ jobs.build.outputs.shards }}
       required_scenarios_json:
         description: Canonical promotion gate
         value: ${{ jobs.build.outputs.required_scenarios }}
@@ -177,6 +185,7 @@ jobs:
     timeout-minutes: ${{ inputs.coverage && 60 || 45 }}
     outputs:
       scenarios: ${{ steps.scenarios.outputs.json }}
+      shards: ${{ steps.shards.outputs.json }}
       required_scenarios: ${{ steps.scenarios.outputs.required }}
       validation_profile: ${{ steps.scenarios.outputs.profile }}
       profile_digest: ${{ steps.scenarios.outputs.profile_digest }}
@@ -228,6 +237,7 @@ jobs:
           RESOLVE_STACK: ${{ inputs.resolve_stack }}
           PREBUILT_RUNNER: ${{ inputs.prebuilt_runner }}
           PROVISIONING_ATTEMPTS: ${{ inputs.provisioning_attempts }}
+          SHARDING_PROFILE: ${{ inputs.sharding_profile }}
           COVERAGE: ${{ inputs.coverage }}
         run: |
           set -euo pipefail
@@ -243,6 +253,7 @@ jobs:
           [[ -n "$JUDGE_MODEL" ]]
           [[ "$JUDGE_PROVIDER" =~ ^[A-Za-z0-9_-]+$ ]]
           [[ "$PROVISIONING_ATTEMPTS" =~ ^[12]$ ]]
+          [[ "$SHARDING_PROFILE" == isolated || "$SHARDING_PROFILE" == stateless-pilot ]]
           case "$STACK_MODE" in
             source) ;;
             registry)
@@ -460,6 +471,18 @@ jobs:
             echo "catalog_sha=$(jq -r .catalog_sha <<<"$resolved")"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Resolve execution shards
+        id: shards
+        env:
+          SCENARIOS: ${{ steps.scenarios.outputs.json }}
+          SHARDING_PROFILE: ${{ inputs.sharding_profile }}
+        run: |
+          set -euo pipefail
+          shards=$(python3 .github/scripts/harness_e2e_shards.py \
+            --scenarios-json "$SCENARIOS" \
+            --profile "$SHARDING_PROFILE")
+          echo "json=$shards" >> "$GITHUB_OUTPUT"
+
       - name: Package E2E binaries
         if: inputs.stack_mode == 'source'
         env:
@@ -622,19 +645,19 @@ jobs:
           if-no-files-found: error
 
   e2e:
-    name: harness e2e / ${{ matrix.subject.id }} / ${{ matrix.scenario }}
+    name: harness e2e / ${{ matrix.subject.id }} / ${{ matrix.shard.id }}
     needs: [build, resolve-registry-stack]
     if: >-
       always() && needs.build.result == 'success' &&
       (needs.resolve-registry-stack.result == 'success' ||
       needs.resolve-registry-stack.result == 'skipped')
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.provisioning_attempts == 2 && 70 || 35 }}
+    timeout-minutes: ${{ matrix.shard.id == 'stateless-core' && 90 || (inputs.provisioning_attempts == 2 && 70 || 35) }}
     strategy:
       fail-fast: false
       max-parallel: ${{ inputs.max_parallel }}
       matrix:
-        scenario: ${{ fromJSON(needs.build.outputs.scenarios) }}
+        shard: ${{ fromJSON(needs.build.outputs.shards) }}
         subject: ${{ fromJSON(inputs.subjects) }}
     steps:
       - uses: actions/checkout@v5
@@ -666,7 +689,7 @@ jobs:
         run: python3 -m pip install --quiet pyyaml
 
       - name: Prepare KVM for sandbox scenario
-        if: matrix.scenario == 'shell_coder_sandbox'
+        if: matrix.shard.requires_kvm
         run: |
           test -c /dev/kvm
           sudo chmod 0666 /dev/kvm
@@ -685,7 +708,7 @@ jobs:
           III_BIN: ${{ github.workspace }}/${{ needs.build.outputs.engine_binary }}
           HARNESS_E2E_BIN: ${{ github.workspace }}/harness/target/release/harness-e2e
           HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
-          HARNESS_E2E_SCENARIO: ${{ matrix.scenario }}
+          HARNESS_E2E_SCENARIOS_JSON: ${{ toJSON(matrix.shard.scenario_ids) }}
           HARNESS_E2E_RUNS: ${{ inputs.runs }}
           HARNESS_E2E_MODEL: ${{ matrix.subject.model }}
           HARNESS_E2E_PROVIDER: ${{ matrix.subject.provider }}
@@ -718,7 +741,7 @@ jobs:
           HARNESS_E2E_PROVISIONING_ATTEMPTS: ${{ inputs.provisioning_attempts }}
           HARNESS_E2E_BIN: ${{ github.workspace }}/target/runner/harness-e2e
           HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e
-          HARNESS_E2E_SCENARIO: ${{ matrix.scenario }}
+          HARNESS_E2E_SCENARIOS_JSON: ${{ toJSON(matrix.shard.scenario_ids) }}
           HARNESS_E2E_RUNS: ${{ inputs.runs }}
           HARNESS_E2E_MODEL: ${{ matrix.subject.model }}
           HARNESS_E2E_PROVIDER: ${{ matrix.subject.provider }}
@@ -730,37 +753,42 @@ jobs:
         if: always()
         env:
           SUBJECT_ID: ${{ matrix.subject.id }}
-          SCENARIO_ID: ${{ matrix.scenario }}
+          SHARD_ID: ${{ matrix.shard.id }}
+          SCENARIO_IDS: ${{ toJSON(matrix.shard.scenario_ids) }}
           REQUESTED_RUNS: ${{ inputs.runs }}
         run: |
           set -euo pipefail
           mkdir -p target/harness-e2e/results
           jq -n \
             --arg subject_id "$SUBJECT_ID" \
-            --arg scenario_id "$SCENARIO_ID" \
+            --arg shard_id "$SHARD_ID" \
+            --argjson scenario_ids "$SCENARIO_IDS" \
             --argjson requested_runs "$REQUESTED_RUNS" \
             '{
-              schema_version: 1,
+              schema_version: 2,
               subject_id: $subject_id,
-              scenario_id: $scenario_id,
+              shard_id: $shard_id,
+              scenario_ids: $scenario_ids,
               requested_runs: $requested_runs
             }' > target/harness-e2e/results/benchmark-context.json
 
       - name: Write E2E summary
         if: always()
         env:
-          SCENARIO: ${{ matrix.scenario }}
+          SHARD: ${{ matrix.shard.id }}
           SUBJECT: ${{ matrix.subject.id }}
         run: |
           {
-            echo "### Harness E2E · $SUBJECT · $SCENARIO"
+            echo "### Harness E2E · $SUBJECT · $SHARD"
             echo
             echo "CI gate: scores are advisory; empty reports, hard-gate failures, and technical failures are blocking."
             echo
             results=target/harness-e2e/results/results.json
             if [[ -f "$results" ]]; then
               jq -r '
-                .scenarios[0] |
+                .scenarios[] |
+                "#### \(.scenario_id)",
+                "",
                 "| Score median | Threshold | Pass rate | Hard-gate failures | Technical failures | Subject cost (USD) | Judge cost (USD) | Total cost (USD) | Status |",
                 "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
                 "| \(.aggregate.median_score // "n/a") | \(.threshold) | \((.aggregate.pass_rate * 100) | round)% | \(.aggregate.hard_gate_failures) | \(.aggregate.technical_failures) | \(.aggregate.cost.subject_usd // "n/a") | \(.aggregate.cost.judge_usd // "n/a") | \(.aggregate.cost.total_usd // "n/a") | \(if .passed then "pass" else "fail" end) |",
@@ -779,7 +807,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.scenario }}-results
+          name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.shard.id }}-results
           path: |
             target/harness-e2e/results/
             target/harness-e2e/deployment.json
@@ -793,7 +821,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.scenario }}-diagnostics
+          name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.shard.id }}-diagnostics
           path: |
             target/harness-e2e/logs/
             target/harness-e2e/stack/
@@ -804,7 +832,7 @@ jobs:
         if: always() && inputs.coverage
         uses: actions/upload-artifact@v6
         with:
-          name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.scenario }}-profraw
+          name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.shard.id }}-profraw
           path: target/harness-e2e/profraw/
           retention-days: 1
           if-no-files-found: ignore

@@ -2,7 +2,6 @@
 set -Eeuo pipefail
 
 : "${III_BIN:?III_BIN must point to the pinned iii engine binary}"
-: "${HARNESS_E2E_SCENARIO:?HARNESS_E2E_SCENARIO is required}"
 : "${HARNESS_E2E_MODEL:?HARNESS_E2E_MODEL is required}"
 : "${HARNESS_E2E_PROVIDER:?HARNESS_E2E_PROVIDER is required}"
 : "${HARNESS_E2E_JUDGE_MODEL:?HARNESS_E2E_JUDGE_MODEL is required}"
@@ -22,6 +21,20 @@ export PATH="$iii_bin_dir:$PATH"
 artifacts_dir=${HARNESS_E2E_ARTIFACTS_DIR:-"$repo_root/target/harness-e2e"}
 e2e_bin=${HARNESS_E2E_BIN:-"$harness_root/target/release/harness-e2e"}
 runs=${HARNESS_E2E_RUNS:-1}
+scenarios_json=${HARNESS_E2E_SCENARIOS_JSON:-}
+if [[ -z "$scenarios_json" ]]; then
+  : "${HARNESS_E2E_SCENARIO:?HARNESS_E2E_SCENARIO or HARNESS_E2E_SCENARIOS_JSON is required}"
+  scenarios_json=$(jq -cn --arg scenario "$HARNESS_E2E_SCENARIO" '[$scenario]')
+fi
+jq -e '
+  type == "array" and length > 0 and
+  all(.[]; type == "string" and test("^[a-z0-9][a-z0-9_]*$")) and
+  (unique | length) == length
+' <<<"$scenarios_json" >/dev/null || {
+  echo "HARNESS_E2E_SCENARIOS_JSON must contain unique scenario ids" >&2
+  exit 2
+}
+mapfile -t scenarios < <(jq -r '.[]' <<<"$scenarios_json")
 run_dir="$artifacts_dir/stack"
 logs_dir="$artifacts_dir/logs"
 iii_port=${HARNESS_E2E_PORT:-49134}
@@ -223,12 +236,17 @@ start_process harness \
   --url "$iii_url"
 wait_for_function harness::send
 
-if [[ "$HARNESS_E2E_SCENARIO" == "research_pipeline" ]]; then
+if jq -e 'index("research_pipeline") != null' <<<"$scenarios_json" >/dev/null; then
   start_process web \
     "$repo_root/web/target/release/web" \
     --url "$iii_url"
   wait_for_function web::fetch
 fi
+
+scenario_args=()
+for scenario in "${scenarios[@]}"; do
+  scenario_args+=(--scenario "$scenario")
+done
 
 "$e2e_bin" run \
   --url "$iii_url" \
@@ -237,5 +255,5 @@ fi
   --judge-model "$HARNESS_E2E_JUDGE_MODEL" \
   --judge-provider "$HARNESS_E2E_JUDGE_PROVIDER" \
   --output "$artifacts_dir/results" \
-  --scenario "$HARNESS_E2E_SCENARIO" \
+  "${scenario_args[@]}" \
   --runs "$runs"

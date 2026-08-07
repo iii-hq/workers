@@ -426,6 +426,83 @@ def test_preflight_failure_explains_all_unstarted_scenarios(tmp_path: Path) -> N
     ]["value"] == 2
 
 
+def test_collects_each_scenario_from_a_sharded_report(tmp_path: Path) -> None:
+    write_report(tmp_path, subject_id="glm", scenario_id="direct_answer")
+    directory = tmp_path / "harness-e2e-glm-direct_answer-results"
+    context = directory / "benchmark-context.json"
+    context.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "subject_id": "glm",
+                "shard_id": "stateless-core",
+                "scenario_ids": ["direct_answer", "security_review"],
+                "requested_runs": 3,
+            }
+        )
+    )
+    report_path = directory / "results.json"
+    report = json.loads(report_path.read_text())
+    second = json.loads(json.dumps(report["scenarios"][0]))
+    second["scenario_id"] = "security_review"
+    report["scenarios"].append(second)
+    report_path.write_text(json.dumps(report))
+
+    quality, _, snapshot, execution = collect(
+        config(tmp_path, ["direct_answer", "security_review"])
+    )
+
+    assert snapshot["subjects"][0]["received_reports"] == 2
+    assert {scenario["id"] for scenario in snapshot["subjects"][0]["scenarios"]} == {
+        "direct_answer",
+        "security_review",
+    }
+    assert {
+        metric["name"]
+        for metric in quality
+        if metric["name"].endswith("median_score")
+    } >= {
+        "quality::glm::direct_answer::median_score",
+        "quality::glm::security_review::median_score",
+    }
+    assert len(execution["reports"]) == 2
+    assert [
+        record["report"]["scenarios"][0]["scenario_id"]
+        for record in execution["reports"]
+    ] == ["direct_answer", "security_review"]
+
+
+def test_missing_shard_report_marks_every_scenario_as_infra_failed(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "harness-e2e-glm-stateless-core-results"
+    directory.mkdir()
+    (directory / "benchmark-context.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "subject_id": "glm",
+                "shard_id": "stateless-core",
+                "scenario_ids": ["direct_answer", "security_review"],
+                "requested_runs": 3,
+            }
+        )
+    )
+    (directory / "deployment.json").write_text(
+        json.dumps({"status": "infra_failed", "failure_phase": "registry"})
+    )
+
+    _, _, snapshot, _ = collect(
+        config(tmp_path, ["direct_answer", "security_review"])
+    )
+
+    scenarios = snapshot["subjects"][0]["scenarios"]
+    assert [scenario["status"] for scenario in scenarios] == [
+        "infra_failed",
+        "infra_failed",
+    ]
+
+
 def test_unknown_cost_is_omitted_instead_of_recorded_as_zero(
     tmp_path: Path,
 ) -> None:

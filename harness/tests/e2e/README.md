@@ -224,19 +224,26 @@ zero.
 
 The reusable workflow supports source and registry stack modes. Source runs
 install the latest stable `iii` release with its companion binaries, then build
-the runtime workers from the selected commit. Registry runs build only the E2E
-runner and install every runtime worker through `iii worker add`. Scenario ids
-come directly from `harness-e2e list`. Each subject/scenario pair receives a
-fresh stack, and repetitions run sequentially inside that job with unique table,
-session, and state namespaces. At most two matrix jobs make live-model calls
-concurrently.
+the runtime workers from the selected commit. Registry runs install every
+runtime worker through `iii worker add`; they may compile the E2E runner or use
+an immutable runner artifact produced for the selected commit. Scenario ids
+come directly from `harness-e2e list`. Each subject/shard pair receives a fresh
+stack, and repetitions run sequentially inside that job with unique table,
+session, and state namespaces. The default shard profile keeps one scenario per
+job. At most two matrix jobs make live-model calls concurrently.
 
 The daily lane uses the registry mode to measure the currently published live
-stack. It resolves `latest` once per matrix job, records the exact versions and
-SHA-256 digest of the resulting `iii.lock`, and treats Registry resolution
-failures as `infra_failed`; it does not fall back to a source build. The main
-lane keeps the source build and LLVM coverage so operational daily metrics stay
-separate from checkout regression coverage.
+stack. It resolves `latest` once for the workflow, records the exact versions
+and SHA-256 digest of the resulting `iii.lock`, and gives that immutable lock to
+every shard. It downloads the runner artifact for the exact source SHA and
+never compiles a fallback. Bootstrap and Registry failures may receive one
+clean provisioning retry; scenario and gate failures are never retried by the
+launcher. The daily stateless pilot runs `direct_answer`, `security_review`,
+`design_tradeoff`, `security_triage`, and `custom_validator` sequentially in one
+shard while the remaining scenarios stay isolated. Metrics and history remain
+separate per subject/scenario. The main lane keeps the source build and LLVM
+coverage so operational daily metrics stay separate from checkout regression
+coverage.
 
 The deployed lane is a separate workflow run dispatched by the release smoke
 workflow. The release publishes first, the smoke validates the published
@@ -326,16 +333,17 @@ credentials remain in access-controlled workflow artifacts. Missing reports are
 stored as reliability events; unknown cost is omitted instead of recorded as
 zero.
 
-The daily lane evaluates repository binaries built from the resolved default
-branch commit. It does not install registry artifacts; registry installation
-remains the responsibility of the quickstart validator.
+The daily lane evaluates the immutable E2E runner built from the resolved
+default-branch commit against the once-resolved Registry stack. Missing,
+expired, mismatched, or tampered runner artifacts fail before scenario
+execution rather than triggering an unverified local build.
 
 Repository administration has one manual prerequisite: under **Settings →
 Pages**, select **GitHub Actions** as the Pages source. The benchmark workflow
 maintains the `gh-pages` data history and deploys that history through the
 official Pages artifact flow.
 
-Each matrix job publishes its result for 14 days; failed jobs also publish
+Each shard job publishes its result for 14 days; failed jobs also publish
 diagnostics for 14 days. The workflow summary shows subject, judge, and total
 cost per scenario and consolidated by subject. The daily dashboard retains the
 latest 100 comparable points and summaries, plus complete reports for the latest

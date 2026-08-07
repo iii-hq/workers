@@ -83,6 +83,7 @@ jobs:
       resolve_stack: true
       prebuilt_runner: true
       provisioning_attempts: 2
+      sharding_profile: stateless-pilot
       benchmark_lane: daily
       release_tag: daily/${{ needs.context.outputs.benchmark_day }}
       release_worker: harness

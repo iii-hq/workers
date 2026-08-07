@@ -9,7 +9,6 @@ set -Eeuo pipefail
 : "${HARNESS_E2E_PROVIDER:?HARNESS_E2E_PROVIDER is required}"
 : "${HARNESS_E2E_JUDGE_MODEL:?HARNESS_E2E_JUDGE_MODEL is required}"
 : "${HARNESS_E2E_JUDGE_PROVIDER:?HARNESS_E2E_JUDGE_PROVIDER is required}"
-: "${HARNESS_E2E_SCENARIO:?HARNESS_E2E_SCENARIO is required}"
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 harness_root=$(cd -- "$script_dir/../.." && pwd)
@@ -24,6 +23,20 @@ resolve_stack=${HARNESS_E2E_RESOLVE_STACK:-false}
 resolve_only=${HARNESS_E2E_RESOLVE_ONLY:-false}
 expected_stack_digest=${HARNESS_E2E_STACK_DIGEST:-}
 runs=${HARNESS_E2E_RUNS:-1}
+scenarios_json=${HARNESS_E2E_SCENARIOS_JSON:-}
+if [[ -z "$scenarios_json" ]]; then
+  : "${HARNESS_E2E_SCENARIO:?HARNESS_E2E_SCENARIO or HARNESS_E2E_SCENARIOS_JSON is required}"
+  scenarios_json=$(jq -cn --arg scenario "$HARNESS_E2E_SCENARIO" '[$scenario]')
+fi
+jq -e '
+  type == "array" and length > 0 and
+  all(.[]; type == "string" and test("^[a-z0-9][a-z0-9_]*$")) and
+  (unique | length) == length
+' <<<"$scenarios_json" >/dev/null || {
+  echo "HARNESS_E2E_SCENARIOS_JSON must contain unique scenario ids" >&2
+  exit 2
+}
+mapfile -t scenarios < <(jq -r '.[]' <<<"$scenarios_json")
 engine_port=49134
 wait_seconds=180
 add_timeout_seconds=600
@@ -482,6 +495,10 @@ fi
 failure_phase=e2e
 export HARNESS_E2E_RUN_DIR="$project_dir"
 export HARNESS_E2E_ENGINE_REVISION="$cli_version"
+scenario_args=()
+for scenario in "${scenarios[@]}"; do
+  scenario_args+=(--scenario "$scenario")
+done
 "$e2e_bin" run \
   --url "ws://127.0.0.1:$engine_port" \
   --model "$HARNESS_E2E_MODEL" \
@@ -489,5 +506,5 @@ export HARNESS_E2E_ENGINE_REVISION="$cli_version"
   --judge-model "$HARNESS_E2E_JUDGE_MODEL" \
   --judge-provider "$HARNESS_E2E_JUDGE_PROVIDER" \
   --output "$artifact_dir/results" \
-  --scenario "$HARNESS_E2E_SCENARIO" \
+  "${scenario_args[@]}" \
   --runs "$runs"
