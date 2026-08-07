@@ -18,30 +18,20 @@ use crate::status::WorkerView;
 use super::theme::hint_style;
 use super::{draw_dialog, styled_if, UiCtx, UiMode};
 
-/// Move the picker selection, skipping stacks with no startable roots.
-/// Returns the index unchanged when there is no selectable stack in that
-/// direction.
+/// Move the picker selection by one row, clamped to the list's bounds.
+/// Every stack is reachable, including ones with no startable roots: `x`
+/// (delete) must be able to reach them (deleting an unstartable stack is
+/// exactly what you want the picker for), and Enter/`*` separately refuse to
+/// act on an empty one rather than making it unreachable.
 pub(super) fn move_stack_selection(
     stacks: &[(String, Vec<String>)],
     current: usize,
     down: bool,
 ) -> usize {
-    let mut i = current;
-    loop {
-        if down {
-            if i + 1 >= stacks.len() {
-                return current;
-            }
-            i += 1;
-        } else {
-            if i == 0 {
-                return current;
-            }
-            i -= 1;
-        }
-        if !stacks[i].1.is_empty() {
-            return i;
-        }
+    if down {
+        (current + 1).min(stacks.len().saturating_sub(1))
+    } else {
+        current.saturating_sub(1)
     }
 }
 
@@ -59,9 +49,10 @@ pub(super) enum PickerAction {
 /// `PickerAction::Start` — `mode` is left alone here. The caller only commits
 /// (current_stack, Busy, spawns the start) once `stack_members` actually
 /// resolves, so a lookup error can't strand the Busy dialog up with nothing
-/// in flight. `x`/`*` return Delete/MakeDefault for the highlighted stack
-/// regardless of whether it has startable roots — an empty stack is exactly
-/// the one you'd want to delete. Esc/q cancels back to the dashboard.
+/// in flight. `x` returns Delete for the highlighted stack regardless of
+/// whether it has startable roots — an empty stack is exactly the one you'd
+/// want to delete. `*` shares Enter's non-empty-roots guard instead: an empty
+/// stack can never become the default. Esc/q cancels back to the dashboard.
 pub(super) fn handle_stack_picker_key(
     key: KeyEvent,
     mode: &mut UiMode,
@@ -90,8 +81,15 @@ pub(super) fn handle_stack_picker_key(
             }
         }
         KeyCode::Char('*') => {
-            if let Some((name, _)) = stacks.get(*selected) {
-                return Some(PickerAction::MakeDefault(name.clone()));
+            // Unlike `x`, this is guarded: writing `default_stack:` at an
+            // empty-roots stack would pass `write_verified`'s validation
+            // (it checks stack-key types, not default membership/emptiness)
+            // and then brick the next `Config::load` — the exact failure
+            // class the previous task's Critical fix was about.
+            if let Some((name, roots)) = stacks.get(*selected) {
+                if !roots.is_empty() {
+                    return Some(PickerAction::MakeDefault(name.clone()));
+                }
             }
         }
         KeyCode::Esc | KeyCode::Char('q') => *mode = UiMode::Dashboard,
@@ -100,9 +98,25 @@ pub(super) fn handle_stack_picker_key(
     None
 }
 
+/// Why `name` can't be deleted right now, or `None` if the picker should go
+/// ahead and open the confirm dialog. The only reason today: deleting the
+/// default stack would leave `default_stack:` pointing at nothing, and
+/// `Config::load` would refuse to start on the next launch — this guard is
+/// the one thing standing between the picker and that outcome, so it's
+/// pulled out here to be unit-tested on its own rather than trusted to a
+/// `rustc`-checked string literal buried in `run()`'s dispatch.
+pub(super) fn refuse_delete_reason(name: &str, default_stack: &str) -> Option<String> {
+    if name == default_stack {
+        Some("set another default first (*) before deleting the default stack".to_string())
+    } else {
+        None
+    }
+}
+
 /// Stack picker: one row per configured stack (`*` marks the default, the
-/// current stack is bold, empty ones are dimmed and unselectable). Enter
-/// switches the session's current stack AND starts it.
+/// current stack is bold, empty ones are dimmed but still reachable — `x`
+/// can delete them). Enter switches the session's current stack AND starts
+/// it.
 pub(super) fn draw_stack_picker_overlay(f: &mut Frame, area: Rect, selected: usize, ctx: &UiCtx) {
     let color = ctx.color_enabled;
     let mut lines = vec![Line::from("")];
@@ -195,44 +209,39 @@ pub(super) fn handle_name_key(key: KeyEvent, mode: &mut UiMode) -> Option<(Strin
     None
 }
 
+/// Read `path`'s current contents, or an empty string if it doesn't exist yet
+/// (genuinely "nothing to load yet", e.g. a fresh repo's first save). Any
+/// other read failure (bad permissions, a directory in the way, invalid
+/// UTF-8) must NOT be treated the same way — that would build a fresh
+/// document out of nothing and have `write_verified` rename it over whatever
+/// was actually there.
+fn read_or_empty(path: &Path) -> Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(err) => Err(err).with_context(|| format!("read {}", path.display())),
+    }
+}
+
 /// Write `name`'s stack into the config file, creating the file if needed.
-/// A missing file is genuinely "nothing to load yet"; any other read failure
-/// (bad permissions, a directory in the way, invalid UTF-8) must NOT be
-/// treated the same way — that would build a fresh single-stack document and
-/// have `write_verified` rename it over whatever was actually there.
 pub(super) fn save_stack(path: &Path, name: &str, roots: &[String]) -> Result<()> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
-    };
+    let text = read_or_empty(path)?;
     let next = crate::config_write::upsert_stack(&text, name, roots)?;
     crate::config_write::write_verified(path, &next)
         .with_context(|| format!("save stack {name} to {}", path.display()))
 }
 
-/// Remove `name`'s entry from the config file. Read-error handling matches
-/// `save_stack`: a missing file has no stack to remove (a rare state — the
-/// picker only ever offers names it already read from a loaded config), any
-/// other read failure must propagate rather than be papered over.
+/// Remove `name`'s entry from the config file.
 pub(super) fn delete_stack(path: &Path, name: &str) -> Result<()> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
-    };
+    let text = read_or_empty(path)?;
     let next = crate::config_write::remove_stack(&text, name)?;
     crate::config_write::write_verified(path, &next)
         .with_context(|| format!("delete stack {name} from {}", path.display()))
 }
 
-/// Point `default_stack:` at `name`. Same read-error handling as `save_stack`.
+/// Point `default_stack:` at `name`.
 pub(super) fn set_default(path: &Path, name: &str) -> Result<()> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
-    };
+    let text = read_or_empty(path)?;
     let next = crate::config_write::set_default_stack(&text, name)?;
     crate::config_write::write_verified(path, &next)
         .with_context(|| format!("set default stack {name} in {}", path.display()))
@@ -269,10 +278,12 @@ mod tests {
     }
 
     #[test]
-    fn stack_picker_selection_skips_empty_stacks_and_clamps() {
+    fn stack_picker_selection_reaches_empty_stacks_and_clamps() {
         let stacks = stacks();
-        assert_eq!(move_stack_selection(&stacks, 0, true), 2); // skips ghost
-        assert_eq!(move_stack_selection(&stacks, 2, false), 0); // skips ghost
+        // `ghost` (index 1) has no roots but must still be reachable — it's
+        // the only way `x` can ever delete it.
+        assert_eq!(move_stack_selection(&stacks, 0, true), 1);
+        assert_eq!(move_stack_selection(&stacks, 2, false), 1);
         assert_eq!(move_stack_selection(&stacks, 2, true), 2); // clamp end
         assert_eq!(move_stack_selection(&stacks, 0, false), 0); // clamp start
     }
@@ -324,10 +335,16 @@ mod tests {
             Some(PickerAction::MakeDefault(ref n)) if n == "console"
         ));
 
-        // An unstartable stack can still be deleted, but not started.
+        // An unstartable stack can still be deleted, but not started or made
+        // default (the latter would write a `default_stack:` that bricks the
+        // next `Config::load`).
         let mut mode = UiMode::StackPicker { selected: 1 };
         assert!(
             handle_stack_picker_key(KeyEvent::from(KeyCode::Enter), &mut mode, &stacks).is_none()
+        );
+        assert!(
+            handle_stack_picker_key(KeyEvent::from(KeyCode::Char('*')), &mut mode, &stacks)
+                .is_none()
         );
         assert!(matches!(
             handle_stack_picker_key(KeyEvent::from(KeyCode::Char('x')), &mut mode, &stacks),
@@ -340,6 +357,16 @@ mod tests {
             handle_stack_picker_key(KeyEvent::from(KeyCode::Esc), &mut mode, &stacks).is_none()
         );
         assert!(matches!(mode, UiMode::Dashboard));
+    }
+
+    #[test]
+    fn refuse_delete_reason_blocks_only_the_default() {
+        let reason = refuse_delete_reason("console", "console").unwrap();
+        assert!(
+            reason.contains("before deleting the default stack"),
+            "{reason:?}"
+        );
+        assert!(refuse_delete_reason("console", "harness").is_none());
     }
 
     #[test]
@@ -368,6 +395,70 @@ mod tests {
             err.to_string().contains("not defined in this file"),
             "{err:#}"
         );
+    }
+
+    /// A failed write (`remove_stack` refusing a duplicated `stacks:` key)
+    /// must leave the file exactly as it was — mirrors
+    /// `save_stack_leaves_the_file_untouched_on_error`.
+    #[test]
+    fn delete_stack_leaves_the_file_untouched_on_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("workers-dev.yaml");
+        let original = "stacks:\n  a:\n    - x\nstacks:\n  b:\n    - y\n";
+        std::fs::write(&path, original).unwrap();
+
+        let err = delete_stack(&path, "a").unwrap_err();
+        assert!(err.to_string().contains("more than once"), "{err:#}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    /// A read failure that isn't "file doesn't exist yet" must propagate —
+    /// mirrors `save_stack_propagates_read_errors_other_than_not_found`, and
+    /// is the regression guard for `delete_stack`'s own NotFound-only default.
+    #[test]
+    fn delete_stack_propagates_read_errors_other_than_not_found() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("workers-dev.yaml");
+        std::fs::create_dir(&path).unwrap();
+
+        let err = delete_stack(&path, "console").unwrap_err();
+        assert!(
+            err.to_string().contains(&path.display().to_string()),
+            "{err:#}"
+        );
+        assert!(path.is_dir());
+    }
+
+    /// A failed write (`set_default_stack` refusing a duplicated
+    /// `default_stack:` key) must leave the file exactly as it was — mirrors
+    /// `save_stack_leaves_the_file_untouched_on_error`.
+    #[test]
+    fn set_default_leaves_the_file_untouched_on_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("workers-dev.yaml");
+        let original = "default_stack: a\ndefault_stack: b\n";
+        std::fs::write(&path, original).unwrap();
+
+        let err = set_default(&path, "console").unwrap_err();
+        assert!(err.to_string().contains("more than once"), "{err:#}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    /// A read failure that isn't "file doesn't exist yet" must propagate —
+    /// mirrors `save_stack_propagates_read_errors_other_than_not_found`, and
+    /// is the regression guard for `set_default`'s own NotFound-only default.
+    #[test]
+    fn set_default_propagates_read_errors_other_than_not_found() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("workers-dev.yaml");
+        std::fs::create_dir(&path).unwrap();
+
+        let err = set_default(&path, "console").unwrap_err();
+        assert!(
+            err.to_string().contains(&path.display().to_string()),
+            "{err:#}"
+        );
+        assert!(path.is_dir());
     }
 
     #[test]

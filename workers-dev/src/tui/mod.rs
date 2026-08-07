@@ -443,15 +443,11 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                     // the config unable to load — refuse
                                     // before ever opening the confirm dialog.
                                     Some(stacks::PickerAction::Delete(name)) => {
-                                        if name == default_stack {
-                                            error_banner = Some((
-                                                "set another default first (*) before deleting \
-                                                 the default stack"
-                                                    .into(),
-                                                Instant::now(),
-                                            ));
-                                        } else {
-                                            mode = UiMode::ConfirmDeleteStack { name };
+                                        match stacks::refuse_delete_reason(&name, &default_stack) {
+                                            Some(reason) => {
+                                                error_banner = Some((reason, Instant::now()));
+                                            }
+                                            None => mode = UiMode::ConfirmDeleteStack { name },
                                         }
                                     }
                                     // Written straight through — no
@@ -570,10 +566,13 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                                         .iter()
                                                         .find(|(n, _)| *n == current_stack)
                                                         .map(|(_, roots)| roots.clone())
-                                                        .expect(
-                                                            "default stack missing from \
-                                                             session `stacks`",
-                                                        );
+                                                        // default_stack is always present in
+                                                        // `stacks` (refuse_delete_reason keeps it
+                                                        // from ever being the one just deleted) —
+                                                        // fall back rather than panic in raw mode
+                                                        // if that invariant ever slips, same as
+                                                        // the Ctrl+u single-stack arm.
+                                                        .unwrap_or_else(|| stacks[0].1.clone());
                                                     let members = crate::discover::stack_members(
                                                         &orchestrator.config.worker_specs,
                                                         &roots,
@@ -1953,6 +1952,11 @@ fn draw_confirm_save_overlay(f: &mut Frame, area: Rect, name: &str, roots: &[Str
 /// it will be removed from. Mirrors `draw_confirm_save_overlay`'s shape.
 fn draw_confirm_delete_overlay(f: &mut Frame, area: Rect, name: &str, ctx: &UiCtx) {
     let color = ctx.color_enabled;
+    let path_line = format!("   removes it from {}", ctx.config_path);
+    // The usual fixed 58 cols clips a long config path (e.g. one nested in a
+    // worktree) with no visible sign of truncation — grow to fit it instead,
+    // the way the Busy overlay already sizes itself to its message.
+    let width = 58.max(path_line.chars().count() as u16 + 6);
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -1960,10 +1964,7 @@ fn draw_confirm_delete_overlay(f: &mut Frame, area: Rect, name: &str, ctx: &UiCt
             styled_if(color, confirm_prompt_style()),
         )),
         Line::from(""),
-        Line::from(Span::styled(
-            format!("   removes it from {}", ctx.config_path),
-            styled_if(color, hint_style()),
-        )),
+        Line::from(Span::styled(path_line, styled_if(color, hint_style()))),
     ];
 
     let pinned = vec![
@@ -1986,7 +1987,7 @@ fn draw_confirm_delete_overlay(f: &mut Frame, area: Rect, name: &str, ctx: &UiCt
         " confirm delete ".to_string(),
         lines,
         pinned,
-        58,
+        width,
         color,
     );
 }
