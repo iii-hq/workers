@@ -47,7 +47,7 @@ export interface ContextSnapshot {
   summarized_head_tokens?: number
   usage?: SnapshotUsage
   /** Running cost of the whole session, summed across generation steps. */
-  session_cost_usd?: number
+  session_cost_usd?: number | null
   timestamp: number
 }
 
