@@ -9,7 +9,7 @@ use tokio::process::Command;
 use tokio::time;
 
 use crate::config::Config;
-use crate::discover::SpawnKind;
+use crate::discover::{SpawnKind, WorkerGroup};
 use crate::graph::WorkerGraph;
 use crate::logs;
 use crate::runtime::{ProcState, SharedRuntimes, WorkerRuntime};
@@ -215,9 +215,54 @@ impl Orchestrator {
         !names.iter().any(|n| n == worker) && connected.contains(worker)
     }
 
-    pub async fn start_harness_stack(&self, wait_connected: bool) -> Result<()> {
-        self.start_workers(&self.config.harness_stack, wait_connected)
-            .await
+    /// Roots configured for a named stack. Doesn't check for emptiness —
+    /// `start_roots` owns that guard for an actual start; callers that need
+    /// to ask the question before doing anything with side effects (e.g.
+    /// `commands::run_up`, before `ensure_engine()`) check the result
+    /// themselves.
+    pub fn stack_roots(&self, name: &str) -> Result<Vec<String>> {
+        self.config
+            .stacks
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, roots)| roots.clone())
+            .with_context(|| format!("unknown stack {name}"))
+    }
+
+    /// Start a configured stack by name.
+    pub async fn start_stack(&self, name: &str, wait_connected: bool) -> Result<()> {
+        let roots = self.stack_roots(name)?;
+        self.start_roots(name, &roots, wait_connected).await
+    }
+
+    /// Start a stack given its roots directly — the path the TUI uses, since
+    /// stacks created mid-session are not in `config.stacks`. Roots are the
+    /// requested set (always (re)started); missing deps are pulled in, and
+    /// deps already connected to the engine are left alone.
+    pub async fn start_roots(
+        &self,
+        stack: &str,
+        roots: &[String],
+        wait_connected: bool,
+    ) -> Result<()> {
+        // Empty roots mean every name the stack listed was filtered out of
+        // the managed `workers:` set (config.rs warns and drops). Refuse
+        // instead of falling through to `start_workers`' "no names" meaning
+        // — "start every managed worker" — which an empty stack must never
+        // trigger.
+        if roots.is_empty() {
+            bail!("stack {stack} has no startable workers");
+        }
+        self.start_workers(roots, wait_connected).await
+    }
+
+    /// Member set (roots + transitive deps) of a configured stack.
+    pub fn stack_members(&self, name: &str) -> Result<HashSet<String>> {
+        let roots = self.stack_roots(name)?;
+        Ok(crate::discover::stack_members(
+            &self.config.worker_specs,
+            &roots,
+        ))
     }
 
     pub async fn start_all_managed(&self, wait_connected: bool) -> Result<()> {
@@ -606,14 +651,19 @@ impl Orchestrator {
     }
 
     pub async fn worker_views(&self) -> Result<Vec<WorkerView>> {
-        Ok(self.dashboard_snapshot().await.0)
+        let members = self.stack_members(&self.config.default_stack)?;
+        Ok(self.dashboard_snapshot(&members).await.0)
     }
 
     /// Like `worker_views`, but also reports an engine-query error (if any) so
     /// the dashboard can show "engine unreachable" instead of silently blanking
     /// every engine status. Never fails: on engine error the views still render
-    /// (all disconnected) alongside the error string.
-    pub async fn dashboard_snapshot(&self) -> (Vec<WorkerView>, Option<String>) {
+    /// (all disconnected) alongside the error string. Views come back grouped
+    /// and ordered for `members` (the current stack's member set).
+    pub async fn dashboard_snapshot(
+        &self,
+        members: &HashSet<String>,
+    ) -> (Vec<WorkerView>, Option<String>) {
         let (engine, engine_error) = match self.engine_workers().await {
             Ok(list) => (list, None),
             Err(err) => (Vec::new(), Some(format!("{err:#}"))),
@@ -630,6 +680,7 @@ impl Orchestrator {
             let spec = self.config.worker_spec(worker).expect("spec");
             views.push(build_view(spec, rt, engine_by_name.get(worker)));
         }
+        status::assign_view_groups(&mut views, members);
         (views, engine_error)
     }
 
@@ -704,7 +755,7 @@ fn build_view(
 
     WorkerView {
         name: spec.name.clone(),
-        group: spec.group,
+        group: WorkerGroup::Other, // reassigned by assign_view_groups
         spawnable: matches!(spec.spawn, SpawnKind::CargoRun),
         display_status: display.to_string(),
         process_status: process,
@@ -919,12 +970,14 @@ mod tests {
         let workers = crate::discover::order_worker_names(&worker_specs);
         let config = Config {
             repo_root: tmp.path().to_path_buf(),
+            config_path: tmp.path().join("workers-dev.yaml"),
             engine_url: crate::config::DEFAULT_ENGINE_URL.to_string(),
             release: false,
             poll_interval_ms: crate::config::DEFAULT_POLL_INTERVAL_MS,
             connect_timeout_ms: crate::config::DEFAULT_CONNECT_TIMEOUT_MS,
             workers,
-            harness_stack: vec!["harness".to_string()],
+            stacks: vec![("harness".to_string(), vec!["harness".to_string()])],
+            default_stack: "harness".to_string(),
             worker_specs,
             stop_on_exit: false,
             color_mode: Default::default(),
@@ -941,6 +994,84 @@ mod tests {
             .closure_with_deps(&["harness".to_string()])
             .unwrap();
         assert!(order.contains(&"scrapling".to_string()));
+    }
+
+    /// Shared fixture for the empty-roots tests below: a repo with a single
+    /// `harness` worker, plus a `ghost` stack with no roots — what config.rs
+    /// produces once every named root has been filtered out of `workers:`.
+    /// Returns the `TempDir` too: it backs `repo_root`/`config_path` and must
+    /// outlive the `Orchestrator`.
+    fn test_orchestrator() -> (tempfile::TempDir, Orchestrator) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let write = |name: &str, body: &str| {
+            let dir = tmp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("iii.worker.yaml"), body).unwrap();
+            dir
+        };
+        let harness_dir = write(
+            "harness",
+            "iii: v1\nname: harness\nlanguage: rust\ndeploy: binary\n",
+        );
+        std::fs::write(harness_dir.join("Cargo.toml"), "[workspace]\n").unwrap();
+
+        let worker_specs = crate::discover::discover_repo_workers(tmp.path()).unwrap();
+        let workers = crate::discover::order_worker_names(&worker_specs);
+        let config = Config {
+            repo_root: tmp.path().to_path_buf(),
+            config_path: tmp.path().join("workers-dev.yaml"),
+            engine_url: crate::config::DEFAULT_ENGINE_URL.to_string(),
+            release: false,
+            poll_interval_ms: crate::config::DEFAULT_POLL_INTERVAL_MS,
+            connect_timeout_ms: crate::config::DEFAULT_CONNECT_TIMEOUT_MS,
+            workers,
+            // "ghost" mirrors what config.rs produces once every root of a
+            // configured stack has been dropped: the stack survives with an
+            // empty roots list rather than being removed outright.
+            stacks: vec![
+                ("harness".to_string(), vec!["harness".to_string()]),
+                ("ghost".to_string(), Vec::new()),
+            ],
+            default_stack: "harness".to_string(),
+            worker_specs,
+            stop_on_exit: false,
+            color_mode: Default::default(),
+            ui_watch: false,
+        };
+        let orch = Orchestrator::new(config, false).unwrap();
+        (tmp, orch)
+    }
+
+    /// A stack can legitimately end up with empty roots when every root it
+    /// names is filtered out of the managed `workers:` set (config.rs warns
+    /// and drops). `start_stack` must refuse rather than fall through to
+    /// `start_workers`' "no names" meaning ("start every managed worker").
+    /// No engine is reachable in this test, and `start_workers`' first move
+    /// is an engine round-trip (`connected_worker_names`) — so the "stack
+    /// ghost has no startable workers" assertion below only passes if the
+    /// guard in `start_stack` returns first; were it missing or placed
+    /// after that call, this would fail on a connection error instead.
+    #[tokio::test]
+    async fn start_stack_with_empty_roots_refuses_to_start_everything() {
+        let (_tmp, orch) = test_orchestrator();
+
+        let err = orch
+            .start_stack("ghost", false)
+            .await
+            .expect_err("a stack with no startable workers must refuse to start");
+        assert!(
+            err.to_string().contains("ghost"),
+            "error should name the stack, got: {err}"
+        );
+    }
+
+    /// The empty-roots guard lives in `start_roots`, so it protects the
+    /// TUI's roots-based path too — and fires before any engine contact.
+    #[tokio::test]
+    async fn start_roots_refuses_an_empty_root_list() {
+        let (_tmp, orch) = test_orchestrator();
+        let err = orch.start_roots("ghost", &[], false).await.unwrap_err();
+        assert!(err.to_string().contains("ghost"), "{err:#}");
     }
 
     /// The env var must match what `iii-console-ui`'s `ConsoleUi::new`

@@ -1,0 +1,1121 @@
+//! Editing `workers-dev.yaml` in place.
+//!
+//! The file is hand-written as often as it is tool-written, so writes are
+//! line surgery on the original text rather than a serde round-trip: comments,
+//! key order, and blank lines all survive because they are never re-serialized.
+//! Anything the scanner cannot own confidently (inline `stacks: {…}`, a
+//! duplicated key) is refused rather than rewritten.
+
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
+use anyhow::{bail, Context, Result};
+
+/// Stack names land in YAML as plain scalars, so restrict them to characters
+/// that can never need quoting or change the document's shape.
+pub fn valid_stack_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// `valid_stack_name` on its own still admits a *leading* `-` (`-weird`, or
+/// bare `-`): `-` has to stay allowed as a character at all, or the TUI's
+/// name prompt — which filters one keystroke at a time via
+/// `valid_stack_name(&c.to_string())` and so can't see *position* — would
+/// block typing `console-dev`. But a name starting with `-` collides with a
+/// YAML block-sequence indicator closely enough that the line-surgery
+/// scanner can't always tell the two apart from text alone (see
+/// `is_list_item`); letting this tool ever *write* one risks the exact
+/// swallowing bug Critical-1 fixed, this time self-inflicted. So the
+/// leading-dash rule lives here instead, as a whole-name check called only
+/// where a name is about to be written into the file — `upsert_stack` and
+/// `set_default_stack`. `remove_stack` targets a name that must already
+/// exist to do anything, and `ensure_block_entries_recognized` already
+/// refuses to touch a block it can't fully parse regardless of which entry
+/// in it you're after, so it doesn't need this check too.
+fn ensure_writable_name(name: &str) -> Result<()> {
+    if !valid_stack_name(name) {
+        bail!("invalid stack name {name:?} (use letters, digits, - and _)");
+    }
+    if name.starts_with('-') {
+        bail!("invalid stack name {name:?} (can't start with -)");
+    }
+    Ok(())
+}
+
+/// Insert or replace `name`'s entry under `stacks:`, leaving every other byte
+/// of the file alone.
+pub fn upsert_stack(text: &str, name: &str, roots: &[String]) -> Result<String> {
+    ensure_writable_name(name)?;
+    let lines: Vec<&str> = text.split('\n').collect();
+    let Some(head) = top_level_key(&lines, "stacks")? else {
+        let mut out = ensure_trailing_newline(text);
+        out.push_str("stacks:\n");
+        for line in render_entry("  ", name, roots) {
+            out.push_str(&line);
+            out.push('\n');
+        }
+        return Ok(out);
+    };
+    ensure_block_style(&lines, head)?;
+    let block = block_range(&lines, head);
+    ensure_block_entries_recognized(&lines, block)?;
+    let entry = render_entry(&block_indent(&lines, block), name, roots);
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    match entry_range(&lines, block, name) {
+        Some((start, end)) => out.splice(start..end, entry),
+        None => out.splice(block.1..block.1, entry),
+    };
+    Ok(out.join("\n"))
+}
+
+/// Drop `name`'s entry. Removing the last entry drops the `stacks:` key too,
+/// rather than leaving a dangling header.
+pub fn remove_stack(text: &str, name: &str) -> Result<String> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let missing = || format!("stack {name} is not defined in this file");
+    let Some(head) = top_level_key(&lines, "stacks")? else {
+        bail!(missing());
+    };
+    ensure_block_style(&lines, head)?;
+    let block = block_range(&lines, head);
+    ensure_block_entries_recognized(&lines, block)?;
+    let Some((start, end)) = entry_range(&lines, block, name) else {
+        bail!(missing());
+    };
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    out.drain(start..end);
+
+    // Only the header itself is left to drop when the removed entry WAS the
+    // entire block — if anything else was in it (a sibling entry, or just a
+    // comment the user left behind), `stacks:` must stay as that content's
+    // header rather than leaving it dangling with nothing above it.
+    if (start, end) == block {
+        out.drain(head..head + 1);
+    }
+    Ok(out.join("\n"))
+}
+
+/// Point `default_stack:` at `name`, replacing the existing key or appending it.
+pub fn set_default_stack(text: &str, name: &str) -> Result<String> {
+    ensure_writable_name(name)?;
+    let lines: Vec<&str> = text.split('\n').collect();
+    let Some(i) = top_level_key(&lines, "default_stack")? else {
+        return Ok(format!(
+            "{}default_stack: {name}\n",
+            ensure_trailing_newline(text)
+        ));
+    };
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    let cr = if lines[i].ends_with('\r') { "\r" } else { "" };
+    let comment = trailing_comment(strip_cr(lines[i]));
+    out[i] = format!("default_stack: {name}{comment}{cr}");
+    Ok(out.join("\n"))
+}
+
+fn strip_cr(line: &str) -> &str {
+    line.strip_suffix('\r').unwrap_or(line)
+}
+
+/// The trailing `  # comment` on a `default_stack:` line, including its
+/// leading whitespace so the user's alignment survives a rewrite — or `""`
+/// if there's none. YAML only starts a comment at a `#` that sits at the
+/// start of the line or is immediately preceded by `is_yaml_space`; a `#`
+/// glued to the value (`console#nospacecomment`), preceded by some other
+/// Unicode space, or inside a quoted scalar (`"my#stack"`) is part of the
+/// VALUE, not a comment. This module's own header says the file is
+/// hand-written as often as tool-written, so any of those shapes can
+/// already be sitting on this line — misreading one as a comment would
+/// silently rewrite that value into garbage instead of discarding it with
+/// the rest of the old line. (A byte, not `is_comment` above: this looks
+/// for the hash anywhere in the line, not just after leading indentation,
+/// so `is_yaml_space(bytes[i - 1] as char)` is the same predicate applied
+/// at a single position rather than to a whole line's worth of leading
+/// whitespace — `u8 as char` is exact for the ASCII byte values `#`, ` `
+/// and `\t` this comparison ever touches.)
+fn trailing_comment(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let Some(hash) = (0..bytes.len())
+        .find(|&i| bytes[i] == b'#' && (i == 0 || is_yaml_space(bytes[i - 1] as char)))
+    else {
+        return "";
+    };
+    let ws_start = line[..hash]
+        .rfind(|c: char| !is_yaml_space(c))
+        .map_or(0, |i| i + 1);
+    &line[ws_start..]
+}
+
+fn ensure_trailing_newline(text: &str) -> String {
+    if text.is_empty() || text.ends_with('\n') {
+        text.to_string()
+    } else {
+        format!("{text}\n")
+    }
+}
+
+/// Line index of a top-level `key:`. Errors when the key appears twice —
+/// which one wins is a question for a human, not for line surgery.
+fn top_level_key(lines: &[&str], key: &str) -> Result<Option<usize>> {
+    let mut found = None;
+    for (i, line) in lines.iter().enumerate() {
+        let line = strip_cr(line);
+        let Some(rest) = line.strip_prefix(key) else {
+            continue;
+        };
+        if !rest.starts_with(':') {
+            continue;
+        }
+        if found.is_some() {
+            bail!("`{key}:` appears more than once in this file — fix it by hand");
+        }
+        found = Some(i);
+    }
+    Ok(found)
+}
+
+/// Refuse a `stacks: {…}` written inline; only block style is ours to edit.
+/// A trailing comment after the colon (`stacks: # my dev stacks`) is valid
+/// block style, not inline content.
+fn ensure_block_style(lines: &[&str], head: usize) -> Result<()> {
+    let after = strip_cr(lines[head])
+        .split_once(':')
+        .map(|(_, rest)| rest.trim())
+        .unwrap_or("");
+    if !after.is_empty() && !after.starts_with('#') {
+        bail!("`stacks:` is written inline in this file — edit it by hand");
+    }
+    Ok(())
+}
+
+/// True for a blank line or a comment line at any column — YAML comments
+/// aren't bound to the surrounding block's indentation, so one test serves
+/// both "does this end the block" and "does this belong to whatever line
+/// follows it" (`block_range` and `leading_gap_run`). Keeping both callers
+/// on this one function is deliberate: they drifted apart once already
+/// (`block_range` went column-agnostic before `leading_gap_run` did, which
+/// is exactly how a comment ended up silently deleted).
+///
+/// Blank-ness is checked the same YAML-space-only way as `is_comment`
+/// (below), not Rust's Unicode `trim`: a line that's only NBSP isn't blank
+/// to YAML, it's a one-character plain scalar.
+fn is_blank_or_comment(line: &str) -> bool {
+    line.trim_start_matches(is_yaml_space).is_empty() || is_comment(line)
+}
+
+/// Half-open line range of the indented block under `head`. Blank lines and
+/// comment lines (YAML allows comments at any column) don't end it; trailing
+/// blanks are left outside.
+fn block_range(lines: &[&str], head: usize) -> (usize, usize) {
+    let start = head + 1;
+    let mut end = start;
+    for (i, line) in lines.iter().enumerate().skip(start) {
+        let line = strip_cr(line);
+        if is_blank_or_comment(line) {
+            continue;
+        }
+        if line.starts_with(' ') || line.starts_with('\t') {
+            end = i + 1;
+        } else {
+            break;
+        }
+    }
+    (start, end)
+}
+
+/// `("  ", "console")` for a `  console:` line; None for list items and blanks.
+///
+/// Deliberately looser than `valid_stack_name`: that governs what this tool
+/// may *write*, not what an existing entry may be named. `Config::load` (via
+/// `parse_stacks`) accepts any string key — `my.stack`, `'quoted'`, `tiny :`,
+/// `web:dev` — so a scanner that only recognised `valid_stack_name` shapes
+/// would go blind on everything else, silently swallowing it into a
+/// neighbouring entry's range or, if it's the last entry left, making
+/// `remove_stack` drop the whole `stacks:` block out from under it. A key is
+/// only rejected here for shapes that line surgery genuinely cannot own:
+/// empty, a list item (`-` prefixed, or no key-ending colon at all), or
+/// stray whitespace around the name (`tiny :`) that
+/// `ensure_block_entries_recognized` then refuses to edit past rather than
+/// misreading.
+///
+/// The key ends at the first `:` YAML would end it at — one followed by
+/// whitespace or end-of-line — not just the first `:` byte. A colon glued to
+/// the next character is ordinary scalar content (`web:dev:` is the single
+/// key `web:dev`, YAML only treats the *second* colon as the terminator);
+/// stopping at the first `:` unconditionally truncated any such name, so
+/// `entry_range` matched it against the wrong (shorter) name entirely —
+/// Critical-1's exact swallowing failure, reached through name extraction
+/// instead of line classification.
+///
+/// A comment line is never a key, even one shaped like one (`# TODO: add
+/// console` has a `:` followed by whitespace, same as a real entry).
+/// Recognizing it as key `# TODO` used to cut a preceding entry's range
+/// short right before it — Critical-1's swallowing failure again, this time
+/// because this function had no opinion on comments at all rather than the
+/// wrong one.
+fn entry_key(line: &str) -> Option<(String, String)> {
+    if is_comment(line) {
+        return None;
+    }
+    let indent: String = line.chars().take_while(|c| *c == ' ').collect();
+    if indent.is_empty() || indent.len() == line.len() {
+        return None;
+    }
+    let rest = &line[indent.len()..];
+    let (end, _) = rest
+        .char_indices()
+        .find(|&(i, c)| c == ':' && rest[i + 1..].chars().next().is_none_or(is_yaml_space))?;
+    let key = &rest[..end];
+    if key.is_empty() || key.starts_with('-') || key.trim() != key {
+        return None;
+    }
+    Some((indent, key.to_string()))
+}
+
+fn indent_len(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ').count()
+}
+
+/// YAML's `s-white`: space and tab, nothing else. Rust's `char::is_whitespace`
+/// (Unicode `White_Space`) is a strict superset — it's also true for NBSP
+/// (U+00A0) and several other Unicode spaces that YAML does *not* treat as
+/// separators. `entry_key` and `is_list_item` both used to check
+/// `char::is_whitespace` where YAML's own grammar calls for `s-white`, so a
+/// colon or dash followed by one of those extra codepoints was misread the
+/// same way an ASCII byte-for-byte mismatch already was: a colon followed by
+/// NBSP looked like a key terminator (truncating a name like `a:␠b`, ␠=NBSP,
+/// to `a`), and a dash followed by NBSP looked like a real list-item
+/// indicator (letting a name like `-␠weird` slip past `entry_key`
+/// unrefused). Optionally-recognized YAML line breaks (U+0085, U+2028,
+/// U+2029) are deliberately NOT included: nothing here has ever needed them,
+/// and treating a name using one of them as ordinary content just means this
+/// scanner refuses instead of losing data — the safe direction already.
+fn is_yaml_space(c: char) -> bool {
+    c == ' ' || c == '\t'
+}
+
+/// True when `line`, once only `is_yaml_space` indentation is stripped from
+/// the front, starts with `#` — YAML's own comment rule: a `#` preceded by
+/// nothing but `s-white`, or nothing at all (comments aren't bound to the
+/// surrounding block's indentation, so this is checked at any column, not
+/// just `entry_depth`). The one place every predicate in this module that
+/// needs to answer "is this line a comment" routes through, on purpose:
+/// `is_blank_or_comment`, `entry_key` and `trailing_comment` used to each
+/// carry their own opinion (Unicode `trim_start`, no comment-awareness at
+/// all, and `u8::is_ascii_whitespace` respectively) — and disagreeing was
+/// exactly how a comment-shaped line went invisible to some of them while
+/// another read it as an ordinary key.
+fn is_comment(line: &str) -> bool {
+    line.trim_start_matches(is_yaml_space).starts_with('#')
+}
+
+/// True when `line`'s first non-space character is a real YAML
+/// block-sequence indicator: a `-` followed by `s-white`, or a `-` alone
+/// at the end of the line. Per YAML, that trailing whitespace requirement is
+/// what makes `-` a sequence indicator at all — `-weird` (no space after the
+/// dash) is an ordinary plain scalar, so `-weird:` is a valid, if unusual,
+/// key. A looser check would misread it as a list item and let it slide past
+/// `entry_key` unrefused in `ensure_block_entries_recognized` below — the
+/// exact swallowing bug Critical-1 fixed, reopened through a shape that fix
+/// never looked at.
+///
+/// The leading trim is `is_yaml_space`-based too, not Rust's Unicode
+/// `trim_start` — the same fix `is_comment`/`is_blank_or_comment` needed:
+/// stripping NBSP as if it were real indentation makes a line like
+/// `<NBSP>- weird: v` look like an ordinary same-level list item, when the
+/// dash there isn't a sequence indicator at all (nothing valid precedes
+/// it), so the real key is `<NBSP>- weird`.
+fn is_list_item(line: &str) -> bool {
+    match line.trim_start_matches(is_yaml_space).strip_prefix('-') {
+        Some(rest) => rest.is_empty() || rest.starts_with(is_yaml_space),
+        None => false,
+    }
+}
+
+/// Refuse a `stacks:` block containing a line that is neither a recognized
+/// entry key (`entry_key`, at the block's own indentation) nor a list item
+/// at or under one — e.g. `tiny :` (space before the colon), which
+/// `entry_key` correctly declines to recognize but which would otherwise
+/// read as an ordinary line neither `upsert_stack` nor `remove_stack` can
+/// see. Layer (a) (`entry_key` above) widened what gets recognized; this is
+/// layer (b), for the shapes even that still can't own — refusing is always
+/// better than mangling, which is this module's stated contract.
+///
+/// A list item is recognized at the key's own indentation too, not only
+/// strictly deeper: YAML allows a block sequence to sit at the same column
+/// as its key (`tiny:` / `- session-manager` both at column 2), and several
+/// YAML writers emit exactly that by default. Only a key line is pinned to
+/// exactly `entry_depth` — a key can't itself be indented deeper than its
+/// siblings without starting a nested mapping this module doesn't understand.
+fn ensure_block_entries_recognized(lines: &[&str], block: (usize, usize)) -> Result<()> {
+    let Some(entry_depth) = (block.0..block.1)
+        .map(|i| strip_cr(lines[i]))
+        .find(|line| !is_blank_or_comment(line))
+        .map(indent_len)
+    else {
+        return Ok(()); // Empty block: nothing to misread.
+    };
+    for &line in &lines[block.0..block.1] {
+        let line = strip_cr(line);
+        if is_blank_or_comment(line) {
+            continue;
+        }
+        let recognized = if is_list_item(line) {
+            indent_len(line) >= entry_depth
+        } else {
+            indent_len(line) == entry_depth && entry_key(line).is_some()
+        };
+        if !recognized {
+            bail!(
+                "`stacks:` entry {line:?} isn't a name or a list item this tool can read — \
+                 edit it by hand"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Indentation the block's entries already use, or two spaces for a new block.
+fn block_indent(lines: &[&str], block: (usize, usize)) -> String {
+    (block.0..block.1)
+        .find_map(|i| entry_key(strip_cr(lines[i])).map(|(indent, _)| indent))
+        .unwrap_or_else(|| "  ".to_string())
+}
+
+/// Half-open line range of `name`'s entry: its key line through the line
+/// before the next entry at the same indentation (or the end of the block).
+fn entry_range(lines: &[&str], block: (usize, usize), name: &str) -> Option<(usize, usize)> {
+    let mut start: Option<(String, usize)> = None;
+    for i in block.0..block.1 {
+        let Some((indent, key)) = entry_key(strip_cr(lines[i])) else {
+            continue;
+        };
+        match &start {
+            None if key == name => start = Some((indent, i)),
+            None => {}
+            Some((open_indent, open)) if indent.len() <= open_indent.len() => {
+                return Some((*open, leading_gap_run(lines, i, open + 1)));
+            }
+            Some(_) => {}
+        }
+    }
+    start.map(|(_, open)| (open, block.1))
+}
+
+/// Back `at` up over a run of blank lines and comment lines — at any column,
+/// same rule as `block_range` — stopping no earlier than `floor` (never the
+/// entry's own key line: callers pass `floor = open + 1`). A blank or
+/// comment line immediately above a key reads as part of that key's own
+/// entry, not trailing content of the entry before it, so both must stay
+/// out of that entry's replace/remove range.
+///
+/// Deliberate, not an oversight: this can only ever push a comment onto the
+/// *following* entry, never delete one. A comment that trails the entry
+/// being replaced/removed (e.g. a note on `tiny`'s last line, right before
+/// `console:`) ends up orphaned onto `console` instead — visible and still
+/// valid YAML, unlike silently deleting the user's writing.
+fn leading_gap_run(lines: &[&str], at: usize, floor: usize) -> usize {
+    let mut at = at;
+    while at > floor && is_blank_or_comment(strip_cr(lines[at - 1])) {
+        at -= 1;
+    }
+    at
+}
+
+fn render_entry(indent: &str, name: &str, roots: &[String]) -> Vec<String> {
+    let mut out = vec![format!("{indent}{name}:")];
+    for root in roots {
+        out.push(format!("{indent}{indent}- {root}"));
+    }
+    out
+}
+
+/// Replace `path`'s contents with `text`, but only after proving the result
+/// still loads. Writes `text` to a sibling temp file — named with this
+/// process's pid so two `workers-dev` instances editing the same config
+/// never share, or delete, each other's temp file — flushed and fsynced
+/// before the rename over the target, so a crash mid-write really cannot
+/// leave a half-written config behind.
+pub fn write_verified(path: &Path, text: &str) -> Result<()> {
+    crate::config::validate_config_text(text)?;
+    let tmp = temp_sibling(path);
+    write_synced(&tmp, text)
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
+        .with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
+        .with_context(|| format!("replace {} with {}", path.display(), tmp.display()))?;
+    Ok(())
+}
+
+/// `path`'s temp-file sibling for `write_verified`, unique per process: a
+/// fixed `<file>.tmp` name would let two `workers-dev` instances writing the
+/// same config collide, with the error path of one instance's write even
+/// `remove_file`-ing the other's in-flight temp file.
+fn temp_sibling(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "workers-dev.yaml".to_string());
+    path.with_file_name(format!("{name}.{}.tmp", std::process::id()))
+}
+
+/// Write `text` to `tmp`, flushed and synced to disk before returning.
+/// `std::fs::write` alone only guarantees the bytes reached the OS page
+/// cache, not the disk — a crash between that return and `write_verified`'s
+/// rename could still lose the write, which is exactly what that function's
+/// doc comment promises can't happen.
+fn write_synced(tmp: &Path, text: &str) -> io::Result<()> {
+    let mut file = std::fs::File::create(tmp)?;
+    file.write_all(text.as_bytes())?;
+    file.flush()?;
+    file.sync_all()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn roots(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Every text this module produces must still parse as YAML.
+    fn parses(text: &str) -> bool {
+        serde_yaml::from_str::<serde_yaml::Value>(text).is_ok()
+    }
+
+    #[test]
+    fn creates_stacks_block_in_an_empty_file() {
+        let out = upsert_stack("", "console", &roots(&["console", "session-manager"])).unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  console:\n    - console\n    - session-manager\n"
+        );
+        assert!(parses(&out));
+    }
+
+    /// A file with other keys keeps them, and the block is appended.
+    #[test]
+    fn appends_block_to_a_file_without_stacks() {
+        let src = "# my dev config\nengine_url: ws://127.0.0.1:49134\nrelease: false\n";
+        let out = upsert_stack(src, "tiny", &roots(&["session-manager"])).unwrap();
+        assert!(out.starts_with(src), "existing content must be untouched");
+        assert!(out.ends_with("stacks:\n  tiny:\n    - session-manager\n"));
+        assert!(parses(&out));
+    }
+
+    /// The whole point: comments around the edited entry survive.
+    #[test]
+    fn replaces_an_entry_and_preserves_comments() {
+        let src = "\
+stacks:
+  # the console loop
+  console:
+    - console
+  # everything else
+  tiny:
+    - session-manager
+default_stack: tiny
+";
+        let out = upsert_stack(src, "console", &roots(&["console", "state"])).unwrap();
+        assert!(out.contains("# the console loop"));
+        assert!(out.contains("# everything else"));
+        assert!(out.contains("  console:\n    - console\n    - state\n"));
+        assert!(out.contains("  tiny:\n    - session-manager\n"));
+        assert!(out.contains("default_stack: tiny"));
+        assert!(parses(&out));
+    }
+
+    #[test]
+    fn inserts_a_new_entry_at_the_end_of_the_block() {
+        let src = "stacks:\n  tiny:\n    - session-manager\ncolor: auto\n";
+        let out = upsert_stack(src, "console", &roots(&["console"])).unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  tiny:\n    - session-manager\n  console:\n    - console\ncolor: auto\n"
+        );
+        assert!(parses(&out));
+    }
+
+    #[test]
+    fn upsert_is_idempotent() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n";
+        let once = upsert_stack(src, "console", &roots(&["console"])).unwrap();
+        let twice = upsert_stack(&once, "console", &roots(&["console"])).unwrap();
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn removes_one_entry_and_keeps_the_others() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  console:\n    - console\n";
+        let out = remove_stack(src, "tiny").unwrap();
+        assert_eq!(out, "stacks:\n  console:\n    - console\n");
+        assert!(parses(&out));
+    }
+
+    /// Removing the last entry drops the now-empty `stacks:` key.
+    #[test]
+    fn removing_the_last_entry_drops_the_stacks_key() {
+        let src = "engine_url: ws://x:1\nstacks:\n  tiny:\n    - session-manager\n";
+        let out = remove_stack(src, "tiny").unwrap();
+        assert_eq!(out, "engine_url: ws://x:1\n");
+        assert!(parses(&out));
+    }
+
+    /// Sibling of the above: when a comment is still sitting in the block,
+    /// dropping `name`'s entry must NOT also drop the `stacks:` header out
+    /// from under it — that would leave the comment as a dangling, un-headed
+    /// indented line. This module's contract is to never destroy what the
+    /// user wrote, and unlike an entry, a bare comment can never make
+    /// `has_entry`-style detection see the block as non-empty on its own.
+    #[test]
+    fn removing_the_last_entry_keeps_the_header_when_a_comment_remains() {
+        let src = "stacks:\n  # the console loop\n  console:\n    - console\n";
+        let out = remove_stack(src, "console").unwrap();
+        assert_eq!(out, "stacks:\n  # the console loop\n");
+        assert!(parses(&out));
+    }
+
+    #[test]
+    fn remove_reports_an_unknown_stack() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n";
+        let err = remove_stack(src, "nope").unwrap_err();
+        assert!(
+            err.to_string().contains("not defined in this file"),
+            "{err:#}"
+        );
+        let err = remove_stack("release: false\n", "tiny").unwrap_err();
+        assert!(
+            err.to_string().contains("not defined in this file"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn sets_default_in_place_or_appends_it() {
+        let replaced = set_default_stack("default_stack: tiny\ncolor: auto\n", "console").unwrap();
+        assert_eq!(replaced, "default_stack: console\ncolor: auto\n");
+        let appended = set_default_stack("color: auto\n", "console").unwrap();
+        assert_eq!(appended, "color: auto\ndefault_stack: console\n");
+        assert!(parses(&replaced) && parses(&appended));
+        // No comment on the line: unchanged behavior, covered above already.
+    }
+
+    /// A trailing comment on `default_stack:` — and the whitespace the user
+    /// chose before it — must survive a value change, not just the block
+    /// comments `upsert_stack`/`remove_stack` already protect.
+    #[test]
+    fn set_default_preserves_a_trailing_comment_and_its_spacing() {
+        let out = set_default_stack("default_stack: tiny  # my usual loop\n", "console").unwrap();
+        assert_eq!(out, "default_stack: console  # my usual loop\n");
+        assert!(parses(&out));
+    }
+
+    /// Same as above, on a CRLF line: the comment must survive AND the line
+    /// must still end with `\r`, not just one or the other.
+    #[test]
+    fn set_default_preserves_a_trailing_comment_on_a_crlf_line() {
+        let out = set_default_stack(
+            "default_stack: tiny  # my usual loop\r\ncolor: auto\r\n",
+            "console",
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "default_stack: console  # my usual loop\r\ncolor: auto\r\n"
+        );
+        assert!(parses(&out));
+    }
+
+    /// A `#` glued directly to the value (no preceding whitespace) isn't a
+    /// YAML comment — it's part of the plain scalar. The whole old value
+    /// must be discarded with the rest of the line, not misread as a
+    /// comment and re-emitted after the new name.
+    #[test]
+    fn set_default_does_not_mistake_a_glued_hash_for_a_comment() {
+        let out = set_default_stack("default_stack: console#nospacecomment\n", "tiny").unwrap();
+        assert_eq!(out, "default_stack: tiny\n");
+        assert!(parses(&out));
+    }
+
+    /// Same failure mode, via a `#` inside a quoted value instead of glued
+    /// to a plain one.
+    #[test]
+    fn set_default_does_not_mistake_a_hash_inside_a_quoted_value_for_a_comment() {
+        let out = set_default_stack("default_stack: \"my#stack\"\n", "tiny").unwrap();
+        assert_eq!(out, "default_stack: tiny\n");
+        assert!(parses(&out));
+    }
+
+    /// Inline/flow style is not ours to edit — refuse instead of mangling it.
+    #[test]
+    fn refuses_inline_stacks_mapping() {
+        let src = "stacks: {tiny: [session-manager]}\n";
+        let err = upsert_stack(src, "console", &roots(&["console"])).unwrap_err();
+        assert!(err.to_string().contains("inline"), "{err:#}");
+    }
+
+    #[test]
+    fn refuses_a_duplicated_stacks_key() {
+        let src = "stacks:\n  a:\n    - x\nstacks:\n  b:\n    - y\n";
+        let err = upsert_stack(src, "c", &roots(&["z"])).unwrap_err();
+        assert!(err.to_string().contains("more than once"), "{err:#}");
+    }
+
+    #[test]
+    fn refuses_names_that_would_need_quoting() {
+        let err = upsert_stack("", "my stack", &roots(&["x"])).unwrap_err();
+        assert!(err.to_string().contains("invalid stack name"), "{err:#}");
+        assert!(valid_stack_name("console-dev_2"));
+        assert!(!valid_stack_name(""));
+        assert!(!valid_stack_name("a:b"));
+    }
+
+    /// CRLF files stay CRLF on the lines we don't touch.
+    #[test]
+    fn preserves_crlf_line_endings() {
+        let src = "color: auto\r\nstacks:\r\n  tiny:\r\n    - session-manager\r\n";
+        let out = upsert_stack(src, "console", &roots(&["console"])).unwrap();
+        assert!(out.starts_with("color: auto\r\n"));
+        assert!(out.contains("  tiny:\r\n"));
+        assert!(out.contains("  console:\n    - console\n"));
+    }
+
+    /// YAML comments are legal at any column. A column-0 comment between two
+    /// entries must not truncate block detection, or an entry past it goes
+    /// invisible: upsert would then append a duplicate key instead of
+    /// replacing the existing one, and remove would report it missing.
+    #[test]
+    fn sees_past_a_column_zero_comment_inside_the_block() {
+        let src = "stacks:\n  console:\n    - console\n# a stray column-0 comment\n  tiny:\n    - session-manager\n";
+
+        let out = upsert_stack(src, "tiny", &roots(&["y"])).unwrap();
+        assert_eq!(out.matches("tiny:").count(), 1, "{out:?}");
+        assert!(out.contains("# a stray column-0 comment"));
+        assert!(parses(&out));
+
+        let out = remove_stack(src, "tiny").unwrap();
+        assert!(!out.contains("tiny"), "{out:?}");
+        assert!(out.contains("# a stray column-0 comment"));
+        assert!(parses(&out));
+    }
+
+    /// A blank line separating two entries is layout, not part of either
+    /// entry's content, on both the replace and the remove path.
+    #[test]
+    fn preserves_a_blank_line_between_entries() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n\n  console:\n    - console\n";
+
+        let out = upsert_stack(src, "tiny", &roots(&["x"])).unwrap();
+        assert!(out.contains("- x\n\n  console:"), "{out:?}");
+        assert!(parses(&out));
+
+        let out = remove_stack(src, "tiny").unwrap();
+        assert!(out.contains("stacks:\n\n  console:"), "{out:?}");
+        assert!(parses(&out));
+    }
+
+    /// A trailing comment after `stacks:` is still block style, not inline.
+    #[test]
+    fn accepts_a_trailing_comment_on_the_stacks_header() {
+        let src = "stacks: # my dev stacks\n";
+        let out = upsert_stack(src, "console", &roots(&["x"])).unwrap();
+        assert!(out.starts_with("stacks: # my dev stacks\n"));
+        assert!(out.contains("  console:\n    - x\n"));
+        assert!(parses(&out));
+    }
+
+    /// Sibling of `sees_past_a_column_zero_comment_inside_the_block`: that one
+    /// edits the entry AFTER the mismatched-indent comment, this one edits
+    /// the entry BEFORE it. Both directions must leave the comment intact —
+    /// it must never fall inside the range being replaced or removed just
+    /// because its column doesn't match the entry that follows it.
+    #[test]
+    fn preserves_a_column_zero_comment_when_editing_the_entry_before_it() {
+        let src = "stacks:\n  console:\n    - console\n# a stray column-0 comment\n  tiny:\n    - session-manager\n";
+
+        let out = upsert_stack(src, "console", &roots(&["console", "state"])).unwrap();
+        assert!(out.contains("# a stray column-0 comment"), "{out:?}");
+        assert!(parses(&out));
+
+        let out = remove_stack(src, "console").unwrap();
+        assert!(out.contains("# a stray column-0 comment"), "{out:?}");
+        assert!(parses(&out));
+    }
+
+    /// A run mixing blank lines and an oddly-indented comment between two
+    /// entries must survive as a unit, in order, on both operations.
+    #[test]
+    fn preserves_mixed_blanks_and_comments_between_entries() {
+        let src =
+            "stacks:\n  tiny:\n    - session-manager\n\n# stray note\n  console:\n    - console\n";
+
+        let out = upsert_stack(src, "tiny", &roots(&["x"])).unwrap();
+        assert!(out.contains("- x\n\n# stray note\n  console:"), "{out:?}");
+        assert!(parses(&out));
+
+        let out = remove_stack(src, "tiny").unwrap();
+        assert!(
+            out.contains("stacks:\n\n# stray note\n  console:"),
+            "{out:?}"
+        );
+        assert!(parses(&out));
+    }
+
+    /// Critical fix: `entry_key` used to gate recognition on
+    /// `valid_stack_name`, so a sibling entry named `my.stack` — fully
+    /// supported by `Config::load`/`parse_stacks`, just not a name this tool
+    /// would ever write itself — was invisible to the scanner and got
+    /// swallowed into the entry actually being edited.
+    #[test]
+    fn upsert_stack_does_not_swallow_a_dotted_sibling_key() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  my.stack:\n    - console\n";
+        let out = upsert_stack(src, "tiny", &roots(&["console"])).unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  tiny:\n    - console\n  my.stack:\n    - console\n"
+        );
+        assert!(parses(&out));
+    }
+
+    /// Same fix, on the remove path — this used to drop `my.stack` right
+    /// along with `tiny`, which combined with a `default_stack: my.stack`
+    /// elsewhere in the file left the result unable to load at all.
+    #[test]
+    fn remove_stack_does_not_swallow_a_dotted_sibling_key() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  my.stack:\n    - console\ncolor: auto\ndefault_stack: my.stack\n";
+        let out = remove_stack(src, "tiny").unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  my.stack:\n    - console\ncolor: auto\ndefault_stack: my.stack\n"
+        );
+        assert!(parses(&out));
+    }
+
+    /// No edit may ever leave the file empty when the input had entries —
+    /// the sharpest form of the swallowed-sibling bug: removing `tiny` used
+    /// to take `my.stack` down with it, and then the now-seemingly-empty
+    /// `stacks:` key too, truncating the whole file to 0 bytes.
+    #[test]
+    fn remove_stack_never_empties_the_file_when_a_sibling_entry_remains() {
+        let src = "stacks:\n  my.stack:\n    - console\n  tiny:\n    - session-manager\n";
+        let out = remove_stack(src, "tiny").unwrap();
+        assert!(!out.is_empty(), "{out:?}");
+        assert!(out.contains("my.stack"), "{out:?}");
+        assert!(parses(&out));
+    }
+
+    /// A shape `entry_key` still can't recognize even once widened (`tiny :`,
+    /// a stray space before the colon) must refuse the whole edit rather than
+    /// mangle a block it can't fully see — layer (b) of the fix, and the
+    /// backstop for whatever layer (a) still misses.
+    #[test]
+    fn refuses_a_stacks_block_with_an_unrecognizable_entry() {
+        let src = "stacks:\n  tiny :\n    - session-manager\n  console:\n    - console\n";
+        let err = upsert_stack(src, "console", &roots(&["console", "state"])).unwrap_err();
+        assert!(err.to_string().contains("tiny"), "{err:#}");
+
+        let err = remove_stack(src, "console").unwrap_err();
+        assert!(err.to_string().contains("tiny"), "{err:#}");
+    }
+
+    /// Regression in the guard above: a list item indented at the SAME level
+    /// as its own key (`tiny:` / `- session-manager` both at column 2) is
+    /// valid YAML and the default emit style of several YAML writers — the
+    /// guard must accept a list item at or under its key's depth, not only
+    /// strictly under it.
+    #[test]
+    fn accepts_a_list_item_indented_level_with_its_key() {
+        let src = "stacks:\n  tiny:\n  - session-manager\n  console:\n  - console\n";
+
+        let out = upsert_stack(src, "tiny", &roots(&["session-manager", "state"])).unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  tiny:\n    - session-manager\n    - state\n  console:\n  - console\n"
+        );
+        assert!(parses(&out));
+
+        let out = remove_stack(src, "tiny").unwrap();
+        assert_eq!(out, "stacks:\n  console:\n  - console\n");
+        assert!(parses(&out));
+    }
+
+    /// Regression opened by the `>` → `>=` widening above: `-` only starts a
+    /// YAML block sequence when followed by whitespace or end-of-line, so
+    /// `-weird:` (no space after the dash) is an ordinary plain-scalar key,
+    /// not a list item. The widened dash check didn't require that
+    /// whitespace, so at entry depth it now misread `-weird:` as a list item
+    /// and let it slide past `entry_key` unrefused — reopening Critical-1's
+    /// swallowing bug through a shape the guard was never asked to look at.
+    #[test]
+    fn refuses_a_dash_led_key_misread_as_a_list_item() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  -weird:\n    - console\n";
+        let err = upsert_stack(src, "tiny", &roots(&["x"])).unwrap_err();
+        assert!(err.to_string().contains("weird"), "{err:#}");
+
+        let err = remove_stack(src, "tiny").unwrap_err();
+        assert!(err.to_string().contains("weird"), "{err:#}");
+    }
+
+    /// Defense in depth for the same regression: even once the guard (above)
+    /// refuses to misread an existing `-weird:`, this tool must never be the
+    /// one to *write* a leading-dash name in the first place — `-` has to
+    /// stay a valid character (`console-dev` is a completely ordinary name,
+    /// pinned below), just not the first one.
+    #[test]
+    fn refuses_writing_a_stack_name_that_starts_with_a_dash() {
+        let err = upsert_stack("", "-weird", &roots(&["x"])).unwrap_err();
+        assert!(err.to_string().contains("can't start with -"), "{err:#}");
+
+        let err = set_default_stack("", "-weird").unwrap_err();
+        assert!(err.to_string().contains("can't start with -"), "{err:#}");
+
+        let out = upsert_stack("", "console-dev", &roots(&["console"])).unwrap();
+        assert!(out.contains("console-dev"), "{out:?}");
+    }
+
+    /// `entry_key` ended a key at the FIRST `:`, but YAML ends a plain-scalar
+    /// key at the first `:` followed by whitespace or end-of-line — a colon
+    /// glued to the next character (`web:dev:`) is just scalar content. A
+    /// stack literally named `web:dev` had its extracted "key" truncated to
+    /// `web`, so upserting an unrelated new stack named `web` matched (and
+    /// swallowed) it instead of appending beside it.
+    #[test]
+    fn upsert_leaves_a_colon_containing_sibling_key_intact() {
+        let src = "stacks:\n  console:\n    - console\n  web:dev:\n    - session-manager\n";
+        let out = upsert_stack(src, "web", &roots(&["x"])).unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  console:\n    - console\n  web:dev:\n    - session-manager\n  web:\n    - x\n"
+        );
+        assert!(parses(&out));
+    }
+
+    /// Same root cause, on the remove path: the truncated key meant
+    /// `remove_stack` could never find `web:dev` by its real name (reporting
+    /// it undefined) while `remove_stack(src, "web")` — a name that isn't
+    /// actually defined anywhere — silently deleted it instead.
+    #[test]
+    fn remove_finds_a_colon_containing_key_by_its_full_name() {
+        let src = "stacks:\n  console:\n    - console\n  web:dev:\n    - session-manager\n";
+        let out = remove_stack(src, "web:dev").unwrap();
+        assert_eq!(out, "stacks:\n  console:\n    - console\n");
+        assert!(parses(&out));
+    }
+
+    /// Same colon-truncation bug, one codepoint over: `entry_key` used
+    /// `char::is_whitespace` (Unicode `White_Space`) to decide whether a `:`
+    /// ends a key, but YAML's `s-white` is space and tab only. NBSP
+    /// (U+00A0) has `White_Space=Yes` in Unicode but is not `s-white` in
+    /// YAML, so a colon followed by NBSP is ordinary scalar content, not a
+    /// key terminator — `a:<NBSP>b` is the single key `a:<NBSP>b`, not `a`.
+    #[test]
+    fn upsert_leaves_a_key_with_nbsp_after_the_colon_intact() {
+        let src = "stacks:\n  console:\n    - console\n  a:\u{00A0}b:\n    - session-manager\n";
+        let out = upsert_stack(src, "a", &roots(&["x"])).unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  console:\n    - console\n  a:\u{00A0}b:\n    - session-manager\n  a:\n    - x\n"
+        );
+        assert!(parses(&out));
+    }
+
+    /// Same root cause, in `is_list_item`: NBSP passes `char::is_whitespace`
+    /// too, so `-<NBSP>weird` was misread as a real list-item indicator
+    /// (dash-then-whitespace) even though YAML's dash rule also requires
+    /// `s-white`, not any Unicode space. That let the line slip past the
+    /// guard as "a recognized list item" without ever reaching `entry_key`
+    /// (which would refuse it, same as `-weird:` without a space at all) —
+    /// reopening the swallowing bug through a codepoint instead of a byte,
+    /// and reopening Critical-1's own zero-byte-file repro on the remove
+    /// path (no other entries left once the sibling is swallowed with
+    /// `tiny`, so the whole `stacks:` key — and then the whole file —
+    /// would go with it).
+    #[test]
+    fn refuses_a_dash_nbsp_key_misread_as_a_list_item() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  -\u{00A0}weird:\n    - console\n";
+        let err = upsert_stack(src, "tiny", &roots(&["x"])).unwrap_err();
+        assert!(err.to_string().contains("weird"), "{err:#}");
+
+        let err = remove_stack(src, "tiny").unwrap_err();
+        assert!(err.to_string().contains("weird"), "{err:#}");
+    }
+
+    /// Critical-1's headline repro, reopened a third way: `#` is only a
+    /// YAML comment when preceded by `s-white` (or nothing). NBSP is not
+    /// `s-white`, so `  <NBSP>#a:` is a real key (`<NBSP>#a`), not a
+    /// comment — but `is_blank_or_comment` used Unicode `trim_start`, which
+    /// strips NBSP too, so every function in this module treated the line
+    /// as a skippable comment and it went invisible. Refusing (not
+    /// silently losing the sibling, and never truncating the file to 0
+    /// bytes) is the required outcome, same as any other line this scanner
+    /// can't confidently own.
+    #[test]
+    fn refuses_a_comment_shaped_nbsp_key_rather_than_losing_it() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  \u{00A0}#a:\n    - v\n";
+
+        let err = upsert_stack(src, "tiny", &roots(&["x"])).unwrap_err();
+        assert!(
+            err.to_string().contains("isn't a name or a list item"),
+            "{err:#}"
+        );
+
+        let err = remove_stack(src, "tiny").unwrap_err();
+        assert!(
+            err.to_string().contains("isn't a name or a list item"),
+            "{err:#}"
+        );
+        // The sharpest form of the bug: must never succeed with an empty
+        // file, which `write_verified` would then happily accept.
+    }
+
+    /// Regression from Critical-1 itself (`entry_key` stopped requiring
+    /// `valid_stack_name`, which used to reject `#` as non-alphanumeric):
+    /// a comment that happens to look like `key: value` — an ordinary TODO
+    /// note — was read as a real key. `entry_range` then cut `tiny`'s
+    /// range short right before it, leaving `- state` behind; YAML doesn't
+    /// care that a comment sits between two list items of the same key, so
+    /// `- state` silently reattached to the rewritten `tiny:` on the next
+    /// load. `entry_key` must decline a comment line outright.
+    #[test]
+    fn upsert_does_not_let_a_todo_comment_pose_as_a_key() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  # TODO: add console\n    - state\n  other:\n    - o\n";
+        let out = upsert_stack(src, "tiny", &roots(&["x"])).unwrap();
+        assert_eq!(
+            out, "stacks:\n  tiny:\n    - x\n  other:\n    - o\n",
+            "`- state` must be replaced along with the rest of tiny's real \
+             range, not left behind to silently reattach to it on reload"
+        );
+        assert!(parses(&out));
+    }
+
+    /// A comment with no colon at all was never at risk (nothing here ever
+    /// misread it as a key) — this is the plain, common case, pinned so the
+    /// fix above can't regress it: comments between entries still survive
+    /// and stay attached to the right neighbour.
+    #[test]
+    fn plain_comment_inside_a_block_is_still_skipped() {
+        let src =
+            "stacks:\n  tiny:\n    - session-manager\n  # just a note\n  console:\n    - console\n";
+        let out = upsert_stack(src, "tiny", &roots(&["x"])).unwrap();
+        assert!(out.contains("# just a note"), "{out:?}");
+        assert!(out.contains("  console:\n    - console\n"), "{out:?}");
+        assert!(parses(&out));
+    }
+
+    /// Sibling of the TODO-comment case: a comment containing a colon, but
+    /// indented DEEPER than the keys (a commented-out list item, e.g. a
+    /// disabled root). `entry_range`'s own shallower-or-equal check already
+    /// happened to save this shape before this fix — pinned here so it
+    /// stays safe, and so "the comment check only matters at entry depth"
+    /// can never quietly regress into the truth.
+    #[test]
+    fn a_deeper_comment_with_a_colon_is_still_skipped() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n    # note: disabled\n    - state\n  console:\n    - console\n";
+        let out = upsert_stack(src, "tiny", &roots(&["x"])).unwrap();
+        assert_eq!(
+            out,
+            "stacks:\n  tiny:\n    - x\n  console:\n    - console\n"
+        );
+        assert!(parses(&out));
+    }
+
+    /// Blocker 1's exact shape, one predicate over: `is_list_item`'s own
+    /// leading `trim_start()` was still Rust's Unicode trim, not
+    /// `is_yaml_space`-based, so `  <NBSP>- weird: v` had its NBSP eaten
+    /// right along with real indentation. What's left, `- weird: v`, reads
+    /// as a same-level list item (`indent_len` counts only real spaces, so
+    /// the depth check still passes) and the guard waves it through — but
+    /// `#` isn't the only thing NBSP can hide a real key behind: a `-` not
+    /// preceded by valid indentation isn't a YAML sequence indicator
+    /// either, so this line is really the key `<NBSP>- weird`, invisible to
+    /// `entry_key` (which then rejects it on the surrounding-whitespace
+    /// check) and so invisible to `entry_range`, `block_indent`, and
+    /// `remove_stack`'s `has_entry` scan alike. Previously assessed (wrongly
+    /// — see the corrected Follow-up 5 note in `final-fix-report.md`) as
+    /// degrading only to a safe refusal; it does not.
+    #[test]
+    fn refuses_a_dash_after_nbsp_misread_as_a_list_item() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  \u{00A0}- weird: v\n";
+
+        let err = upsert_stack(src, "tiny", &roots(&["x"])).unwrap_err();
+        assert!(err.to_string().contains("weird"), "{err:#}");
+
+        let err = remove_stack(src, "tiny").unwrap_err();
+        assert!(err.to_string().contains("weird"), "{err:#}");
+        // Must never succeed with an empty file, which `write_verified`
+        // would then happily accept.
+    }
+
+    /// Pins the fix directly: a fixed `<file>.tmp` sibling is what let two
+    /// `workers-dev` instances collide (and delete each other's temp file on
+    /// the error path); the name must carry this process's pid instead.
+    #[test]
+    fn temp_sibling_name_carries_the_process_id() {
+        let tmp = temp_sibling(Path::new("/repo/workers-dev.yaml"));
+        assert_eq!(
+            tmp,
+            Path::new(&format!(
+                "/repo/workers-dev.yaml.{}.tmp",
+                std::process::id()
+            ))
+        );
+    }
+
+    #[test]
+    fn write_verified_replaces_the_file_atomically() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("workers-dev.yaml");
+        std::fs::write(&path, "color: auto\n").unwrap();
+
+        write_verified(&path, "color: auto\nstacks:\n  a:\n    - b\n").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "color: auto\nstacks:\n  a:\n    - b\n"
+        );
+        // No temp file left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp file was not renamed away");
+    }
+
+    #[test]
+    fn write_verified_refuses_text_the_loader_cannot_parse() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("workers-dev.yaml");
+        std::fs::write(&path, "color: auto\n").unwrap();
+
+        let err = write_verified(&path, "stacks:\n  a:\n  - b\n  bad\n").unwrap_err();
+        assert!(!err.to_string().is_empty());
+        // The original file is untouched.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "color: auto\n");
+    }
+
+    /// A digits-only (or `true`/`false`/`null`/...) stack name writes as valid
+    /// YAML text — `upsert_stack` only checks ASCII alnum/-/_, which digits
+    /// satisfy — but reads back as a non-string mapping key, which `load`'s
+    /// `parse_stacks` then refuses. `write_verified` must catch that at write
+    /// time (via `validate_config_text` running the same parse), not leave a
+    /// file behind that only fails on the next launch.
+    #[test]
+    fn write_verified_refuses_a_digits_only_stack_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("workers-dev.yaml");
+        std::fs::write(&path, "color: auto\n").unwrap();
+
+        let err = write_verified(&path, "stacks:\n  123:\n    - console\n").unwrap_err();
+        assert!(!err.to_string().is_empty());
+        // The original file is untouched — byte-identical.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "color: auto\n");
+    }
+}
