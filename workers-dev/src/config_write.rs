@@ -87,11 +87,12 @@ pub fn remove_stack(text: &str, name: &str) -> Result<String> {
     let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     out.drain(start..end);
 
-    let after: Vec<&str> = out.iter().map(String::as_str).collect();
-    let rest = block_range(&after, head);
-    let has_entry = (rest.0..rest.1).any(|i| entry_key(strip_cr(after[i])).is_some());
-    if !has_entry {
-        out.drain(head..rest.1.max(head + 1));
+    // Only the header itself is left to drop when the removed entry WAS the
+    // entire block — if anything else was in it (a sibling entry, or just a
+    // comment the user left behind), `stacks:` must stay as that content's
+    // header rather than leaving it dangling with nothing above it.
+    if (start, end) == block {
+        out.drain(head..head + 1);
     }
     Ok(out.join("\n"))
 }
@@ -541,6 +542,20 @@ default_stack: tiny
         let src = "engine_url: ws://x:1\nstacks:\n  tiny:\n    - session-manager\n";
         let out = remove_stack(src, "tiny").unwrap();
         assert_eq!(out, "engine_url: ws://x:1\n");
+        assert!(parses(&out));
+    }
+
+    /// Sibling of the above: when a comment is still sitting in the block,
+    /// dropping `name`'s entry must NOT also drop the `stacks:` header out
+    /// from under it — that would leave the comment as a dangling, un-headed
+    /// indented line. This module's contract is to never destroy what the
+    /// user wrote, and unlike an entry, a bare comment can never make
+    /// `has_entry`-style detection see the block as non-empty on its own.
+    #[test]
+    fn removing_the_last_entry_keeps_the_header_when_a_comment_remains() {
+        let src = "stacks:\n  # the console loop\n  console:\n    - console\n";
+        let out = remove_stack(src, "console").unwrap();
+        assert_eq!(out, "stacks:\n  # the console loop\n");
         assert!(parses(&out));
     }
 
