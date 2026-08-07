@@ -1947,11 +1947,55 @@ mod tests {
         );
         let marked: std::collections::HashSet<String> = ["beta".to_string()].into_iter().collect();
         let buf = render_table_for_test(&views, &marked, 40, 8);
-        let text = buffer_text(&buf);
+
+        // Row-scoped, not a whole-buffer `contains` — a regression that
+        // hardcoded the mark unconditionally (marking every row, or none)
+        // would still pass a bare "a ✓ exists somewhere" check. Row layout
+        // for this 40x8 backend: y=0 border, y=1 column header, y=2 the
+        // "stack:s" group header (both workers are members), y=3 alpha
+        // (unmarked), y=4 beta (marked).
+        let alpha_row: String = (1..39).map(|x| buf[(x, 3)].symbol()).collect();
+        let beta_row: String = (1..39).map(|x| buf[(x, 4)].symbol()).collect();
         assert!(
-            text.contains("✓"),
-            "marked worker must show a check:\n{text}"
+            beta_row.starts_with('✓'),
+            "marked worker's row must start with a check:\n{beta_row:?}"
         );
+        assert!(
+            alpha_row.starts_with(' '),
+            "unmarked worker's row must start with a space, not a check:\n{alpha_row:?}"
+        );
+
+        let text = buffer_text(&buf);
         assert!(text.contains("1 marked"), "title must count marks:\n{text}");
+    }
+
+    #[test]
+    fn marked_worker_name_at_the_column_budget_is_not_truncated() {
+        // Longest real worker name (provider-openai-codex, verified against
+        // the */iii.worker.yaml directories) is 21 chars. Plus the 3-char
+        // mark+icon+space prefix, that's exactly `Constraint::Length(24)` on
+        // the Worker column — zero margin. Rendered at the table's real pane
+        // width (TABLE_PANE_WIDTH), not a narrow test backend, so this
+        // exercises the actual column budget rather than width pressure from
+        // an undersized buffer.
+        let name = "provider-openai-codex";
+        assert_eq!(
+            name.len(),
+            21,
+            "fixture drifted from the real worker name length"
+        );
+        let views = vec![view_fixture(name)];
+        let marked: std::collections::HashSet<String> = [name.to_string()].into_iter().collect();
+        let buf = render_table_for_test(&views, &marked, TABLE_PANE_WIDTH, 6);
+
+        // y=0 border, y=1 column header, y=2 the single group header, y=3
+        // the one worker row.
+        let row: String = (1..TABLE_PANE_WIDTH - 1)
+            .map(|x| buf[(x, 3)].symbol())
+            .collect();
+        assert!(
+            row.contains(name),
+            "21-char worker name must survive the Worker column untruncated:\n{row:?}"
+        );
     }
 }
