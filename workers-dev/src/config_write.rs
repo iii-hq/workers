@@ -19,12 +19,35 @@ pub fn valid_stack_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Insert or replace `name`'s entry under `stacks:`, leaving every other byte
-/// of the file alone.
-pub fn upsert_stack(text: &str, name: &str, roots: &[String]) -> Result<String> {
+/// `valid_stack_name` on its own still admits a *leading* `-` (`-weird`, or
+/// bare `-`): `-` has to stay allowed as a character at all, or the TUI's
+/// name prompt — which filters one keystroke at a time via
+/// `valid_stack_name(&c.to_string())` and so can't see *position* — would
+/// block typing `console-dev`. But a name starting with `-` collides with a
+/// YAML block-sequence indicator closely enough that the line-surgery
+/// scanner can't always tell the two apart from text alone (see
+/// `is_list_item`); letting this tool ever *write* one risks the exact
+/// swallowing bug Critical-1 fixed, this time self-inflicted. So the
+/// leading-dash rule lives here instead, as a whole-name check called only
+/// where a name is about to be written into the file — `upsert_stack` and
+/// `set_default_stack`. `remove_stack` targets a name that must already
+/// exist to do anything, and `ensure_block_entries_recognized` already
+/// refuses to touch a block it can't fully parse regardless of which entry
+/// in it you're after, so it doesn't need this check too.
+fn ensure_writable_name(name: &str) -> Result<()> {
     if !valid_stack_name(name) {
         bail!("invalid stack name {name:?} (use letters, digits, - and _)");
     }
+    if name.starts_with('-') {
+        bail!("invalid stack name {name:?} (can't start with -)");
+    }
+    Ok(())
+}
+
+/// Insert or replace `name`'s entry under `stacks:`, leaving every other byte
+/// of the file alone.
+pub fn upsert_stack(text: &str, name: &str, roots: &[String]) -> Result<String> {
+    ensure_writable_name(name)?;
     let lines: Vec<&str> = text.split('\n').collect();
     let Some(head) = top_level_key(&lines, "stacks")? else {
         let mut out = ensure_trailing_newline(text);
@@ -75,9 +98,7 @@ pub fn remove_stack(text: &str, name: &str) -> Result<String> {
 
 /// Point `default_stack:` at `name`, replacing the existing key or appending it.
 pub fn set_default_stack(text: &str, name: &str) -> Result<String> {
-    if !valid_stack_name(name) {
-        bail!("invalid stack name {name:?} (use letters, digits, - and _)");
-    }
+    ensure_writable_name(name)?;
     let lines: Vec<&str> = text.split('\n').collect();
     let Some(i) = top_level_key(&lines, "default_stack")? else {
         return Ok(format!(
@@ -222,6 +243,22 @@ fn indent_len(line: &str) -> usize {
     line.chars().take_while(|c| *c == ' ').count()
 }
 
+/// True when `line`'s first non-space character is a real YAML
+/// block-sequence indicator: a `-` followed by whitespace, or a `-` alone
+/// at the end of the line. Per YAML, that trailing whitespace requirement is
+/// what makes `-` a sequence indicator at all — `-weird` (no space after the
+/// dash) is an ordinary plain scalar, so `-weird:` is a valid, if unusual,
+/// key. A looser `starts_with('-')` check would misread it as a list item
+/// and let it slide past `entry_key` unrefused in
+/// `ensure_block_entries_recognized` below — the exact swallowing bug
+/// Critical-1 fixed, reopened through a shape that fix never looked at.
+fn is_list_item(line: &str) -> bool {
+    match line.trim_start().strip_prefix('-') {
+        Some(rest) => rest.is_empty() || rest.starts_with(char::is_whitespace),
+        None => false,
+    }
+}
+
 /// Refuse a `stacks:` block containing a line that is neither a recognized
 /// entry key (`entry_key`, at the block's own indentation) nor a list item
 /// at or under one — e.g. `tiny :` (space before the colon), which
@@ -250,7 +287,7 @@ fn ensure_block_entries_recognized(lines: &[&str], block: (usize, usize)) -> Res
         if is_blank_or_comment(line) {
             continue;
         }
-        let recognized = if line.trim_start().starts_with('-') {
+        let recognized = if is_list_item(line) {
             indent_len(line) >= entry_depth
         } else {
             indent_len(line) == entry_depth && entry_key(line).is_some()
@@ -696,6 +733,40 @@ default_stack: tiny
         let out = remove_stack(src, "tiny").unwrap();
         assert_eq!(out, "stacks:\n  console:\n  - console\n");
         assert!(parses(&out));
+    }
+
+    /// Regression opened by the `>` → `>=` widening above: `-` only starts a
+    /// YAML block sequence when followed by whitespace or end-of-line, so
+    /// `-weird:` (no space after the dash) is an ordinary plain-scalar key,
+    /// not a list item. The widened dash check didn't require that
+    /// whitespace, so at entry depth it now misread `-weird:` as a list item
+    /// and let it slide past `entry_key` unrefused — reopening Critical-1's
+    /// swallowing bug through a shape the guard was never asked to look at.
+    #[test]
+    fn refuses_a_dash_led_key_misread_as_a_list_item() {
+        let src = "stacks:\n  tiny:\n    - session-manager\n  -weird:\n    - console\n";
+        let err = upsert_stack(src, "tiny", &roots(&["x"])).unwrap_err();
+        assert!(err.to_string().contains("weird"), "{err:#}");
+
+        let err = remove_stack(src, "tiny").unwrap_err();
+        assert!(err.to_string().contains("weird"), "{err:#}");
+    }
+
+    /// Defense in depth for the same regression: even once the guard (above)
+    /// refuses to misread an existing `-weird:`, this tool must never be the
+    /// one to *write* a leading-dash name in the first place — `-` has to
+    /// stay a valid character (`console-dev` is a completely ordinary name,
+    /// pinned below), just not the first one.
+    #[test]
+    fn refuses_writing_a_stack_name_that_starts_with_a_dash() {
+        let err = upsert_stack("", "-weird", &roots(&["x"])).unwrap_err();
+        assert!(err.to_string().contains("can't start with -"), "{err:#}");
+
+        let err = set_default_stack("", "-weird").unwrap_err();
+        assert!(err.to_string().contains("can't start with -"), "{err:#}");
+
+        let out = upsert_stack("", "console-dev", &roots(&["console"])).unwrap();
+        assert!(out.contains("console-dev"), "{out:?}");
     }
 
     #[test]
