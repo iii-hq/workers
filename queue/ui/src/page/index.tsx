@@ -53,6 +53,7 @@ import {
   redriveOne,
   type Subscriber,
   statsForAll,
+  subscriberCounts,
   subscribersFor,
   type TopicInfo,
   type TopicPolicy,
@@ -184,14 +185,21 @@ export function QueuesPage({
   const [statsByTopic, setStatsByTopic] = useState<Map<string, TopicStats>>(
     new Map(),
   )
+  const [regCounts, setRegCounts] = useState<Map<string, number>>(new Map())
   const pickedRef = useRef(false)
 
   const load = useCallback(() => {
-    Promise.all([listTopics(host), dlqTopics(host), queueSetup(host)]).then(
-      async ([topicRows, dlqRows, setupValue]) => {
+    Promise.all([
+      listTopics(host),
+      dlqTopics(host),
+      queueSetup(host),
+      subscriberCounts(host).catch(() => new Map<string, number>()),
+    ]).then(
+      async ([topicRows, dlqRows, setupValue, counts]) => {
         setTopics(topicRows)
         setDlq(dlqRows)
         setSetup(setupValue)
+        setRegCounts(counts)
         setError(null)
         // A page that opens onto nothing selected is a page that opens
         // mostly empty. Pick the topic with dead letters, else the first —
@@ -319,7 +327,12 @@ export function QueuesPage({
                   <span className="c-n" data-alert={dead > 0}>
                     {dead}
                   </span>
-                  <span className="c-n">{topic.subscriberCount}</span>
+                  <span className="c-n">
+                    {Math.max(
+                      topic.subscriberCount,
+                      regCounts.get(topic.name) ?? 0,
+                    )}
+                  </span>
                 </button>
               )
             })}

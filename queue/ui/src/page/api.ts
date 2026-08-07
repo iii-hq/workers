@@ -272,18 +272,46 @@ export interface Subscriber {
  * Live `durable:subscriber` registrations for one topic. This is the answer
  * to "who consumes this" — the list the topic row's `N subs` count summarizes.
  */
-export async function subscribersFor(
-  host: Host,
-  topic: string,
-): Promise<Subscriber[]> {
+async function durableRegistrations(host: Host): Promise<unknown[]> {
   const out = await host.iii.trigger('engine::registered-triggers::list', {
     trigger_type: 'durable:subscriber',
     include_internal: true,
   })
-  const rows =
-    isRecord(out) && Array.isArray(out.registered_triggers)
-      ? out.registered_triggers
-      : []
+  return isRecord(out) && Array.isArray(out.registered_triggers)
+    ? out.registered_triggers
+    : []
+}
+
+function registrationTopic(row: unknown): string | null {
+  if (!isRecord(row)) return null
+  const config = isRecord(row.config) ? row.config : {}
+  if (typeof config.queue === 'string') return config.queue
+  if (typeof config.topic === 'string') return config.topic
+  return null
+}
+
+/**
+ * Subscriber registrations per topic. The engine's own
+ * `list_topics.subscriber_count` reports connected CONSUMERS and reads 0 for
+ * idle durable subscribers — registrations are what an operator means by
+ * "does anything consume this topic".
+ */
+export async function subscriberCounts(
+  host: Host,
+): Promise<Map<string, number>> {
+  const counts = new Map<string, number>()
+  for (const row of await durableRegistrations(host)) {
+    const topic = registrationTopic(row)
+    if (topic !== null) counts.set(topic, (counts.get(topic) ?? 0) + 1)
+  }
+  return counts
+}
+
+export async function subscribersFor(
+  host: Host,
+  topic: string,
+): Promise<Subscriber[]> {
+  const rows = await durableRegistrations(host)
   const subs: Subscriber[] = []
   for (const row of rows) {
     if (!isRecord(row)) continue
