@@ -37,12 +37,33 @@ pub fn spawn_upstream(
     rx
 }
 
-/// Last `data: ` payload in an SSE block, if any.
+/// Last `data:` payload in an SSE block, if any. Both `data: x` and `data:x`
+/// are valid SSE framings; trailing `\r` from CRLF line endings is stripped.
 fn data_line(block: &str) -> Option<&str> {
     block
         .lines()
-        .filter_map(|l| l.strip_prefix("data: "))
+        .filter_map(|l| {
+            let rest = l.trim_end_matches('\r').strip_prefix("data:")?;
+            Some(rest.strip_prefix(' ').unwrap_or(rest))
+        })
         .next_back()
+}
+
+/// Earliest complete-SSE-block boundary in the byte buffer: `(end_index,
+/// separator_len)` for `\n\n` or `\r\n\r\n`, whichever comes first. Byte-level
+/// so a multibyte UTF-8 character split across network chunks is never
+/// decoded early (OpenRouter fronts many CJK-heavy models).
+fn find_block_end(buf: &[u8]) -> Option<(usize, usize)> {
+    let lf = buf.windows(2).position(|w| w == b"\n\n").map(|i| (i, 2));
+    let crlf = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| (i, 4));
+    match (lf, crlf) {
+        (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
+        (a, None) => a,
+        (None, b) => b,
+    }
 }
 
 async fn run_upstream(
@@ -95,7 +116,9 @@ async fn run_upstream(
     }
 
     let mut stream = resp.bytes_stream();
-    let mut buf = String::new();
+    // Byte buffer, decoded only per complete block: a multibyte character or
+    // block separator split across chunks stays buffered until whole.
+    let mut buf: Vec<u8> = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(c) => c,
@@ -110,9 +133,10 @@ async fn run_upstream(
                 return;
             }
         };
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(idx) = buf.find("\n\n") {
-            let block: String = buf.drain(..idx + 2).collect();
+        buf.extend_from_slice(&chunk);
+        while let Some((end, sep_len)) = find_block_end(&buf) {
+            let raw: Vec<u8> = buf.drain(..end + sep_len).collect();
+            let block = String::from_utf8_lossy(&raw);
             let Some(data) = data_line(&block) else {
                 continue;
             };
@@ -270,6 +294,45 @@ mod tests {
                 assert!(
                     matches!(&message.content[0], llm_router::types::content::ContentBlock::Text { text } if text == "Hi")
                 );
+            }
+            other => panic!("want done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn block_end_handles_lf_and_crlf_separators() {
+        assert_eq!(find_block_end(b"data: x\n\nrest"), Some((7, 2)));
+        assert_eq!(find_block_end(b"data: x\r\n\r\nrest"), Some((7, 4)));
+        // earliest boundary wins when both framings appear
+        assert_eq!(find_block_end(b"a\n\nb\r\n\r\nc"), Some((1, 2)));
+        assert_eq!(find_block_end(b"a\r\n\r\nb\n\nc"), Some((1, 4)));
+        // incomplete block: no boundary yet
+        assert_eq!(find_block_end(b"data: partial\n"), None);
+        assert_eq!(find_block_end(b"data: partial\r\n"), None);
+    }
+
+    #[test]
+    fn data_line_accepts_bare_and_spaced_prefixes_and_crlf() {
+        assert_eq!(data_line("data: hello\n"), Some("hello"));
+        assert_eq!(data_line("data:hello\n"), Some("hello"));
+        assert_eq!(data_line("data: hello\r\n"), Some("hello"));
+        assert_eq!(data_line(": comment\nretry: 1000\n"), None);
+        // last data line of the block wins
+        assert_eq!(data_line("data: a\ndata: b\n"), Some("b"));
+    }
+
+    const CRLF_CJK: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata:{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"你好，世界\"}}]}\r\n\r\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\r\n\r\ndata: [DONE]\r\n\r\n";
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn crlf_framing_and_multibyte_content_arrive_intact() {
+        let url = stub(CRLF_CJK).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        match events.last() {
+            Some(AssistantMessageEvent::Done { message }) => {
+                assert!(
+                    matches!(&message.content[0], llm_router::types::content::ContentBlock::Text { text } if text == "你好，世界")
+                );
+                assert_eq!(message.native_stop_reason.as_deref(), Some("stop"));
             }
             other => panic!("want done, got {other:?}"),
         }

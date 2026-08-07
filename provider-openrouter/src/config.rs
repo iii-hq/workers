@@ -8,12 +8,25 @@ use llm_router::types::router::ProviderResolveResponse;
 pub const DEFAULT_API_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 pub const DEFAULT_MAX_TOKENS: u64 = 8192;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenRouterConfig {
     pub credential_value: String,
     pub model: String,
     pub max_tokens: u64,
     pub api_url: String,
+}
+
+/// Manual Debug: the credential must never reach logs or error text through a
+/// diagnostic format of this struct.
+impl std::fmt::Debug for OpenRouterConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenRouterConfig")
+            .field("credential_value", &"<redacted>")
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .field("api_url", &self.api_url)
+            .finish()
+    }
 }
 
 /// No usable credential — the caller turns this into a permanent error frame.
@@ -86,6 +99,20 @@ mod tests {
         assert_eq!(cfg.max_tokens, 2000);
         let cfg = config_from_resolve("m", None, &resolved(key, None)).unwrap();
         assert_eq!(cfg.max_tokens, DEFAULT_MAX_TOKENS);
+    }
+
+    #[test]
+    fn debug_output_redacts_the_credential() {
+        let cfg = OpenRouterConfig {
+            credential_value: "sk-or-v1-secret".into(),
+            model: "m".into(),
+            max_tokens: 1,
+            api_url: "https://openrouter.ai/api/v1/chat/completions".into(),
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("sk-or-v1-secret"));
+        assert!(dbg.contains("<redacted>"));
+        assert!(dbg.contains("openrouter.ai"));
     }
 
     #[test]
