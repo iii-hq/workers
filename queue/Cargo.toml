@@ -41,6 +41,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 uuid = { version = "1", features = ["v4"] }
+iii-console-ui = { path = "../crates/console-ui" }
 futures = "0.3"
 redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
 lapin = { version = "3", optional = true }

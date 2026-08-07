@@ -18,6 +18,7 @@ packages:
   - harness/ui
   - memory/ui
   - pdf/ui
+  - queue/ui
   - state/ui
   - iii-directory/ui
   - shell/ui
