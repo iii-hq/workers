@@ -134,6 +134,12 @@ pub struct ContextSnapshotV1 {
     /// generation never completed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// Running cost of the whole session in USD, accumulated across every
+    /// generation step. `usage.cost_usd` is one step's bill — on providers
+    /// with steep cache discounts the per-step number swings two orders of
+    /// magnitude, so a chip showing it alone reads as a bouncing total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_cost_usd: Option<f64>,
     pub timestamp: i64,
 }
 
@@ -419,6 +425,7 @@ mod tests {
                 reasoning: None,
                 cost_usd: Some(0.42),
             }),
+            session_cost_usd: Some(1.37),
             timestamp: 1_722_700_000_000,
         };
         let mut value = serde_json::to_value(&snapshot).unwrap();

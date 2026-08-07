@@ -739,6 +739,24 @@ pub async fn run_step(
     // must never fail a turn that generated successfully.
     if let Some(snapshot) = record.context_snapshot.as_mut() {
         snapshot.usage = outcome.message.usage.clone();
+        // Accumulate the session's running cost on top of the stored
+        // snapshot's total: the loop is the only writer per session, so the
+        // read-back is race-free, and seeding from the store keeps the total
+        // honest across turns and harness restarts.
+        let step_cost = outcome
+            .message
+            .usage
+            .as_ref()
+            .and_then(|u| u.cost_usd)
+            .unwrap_or(0.0);
+        let prior_cost =
+            crate::context_snapshot::get(&deps.iii, &record.session_id, cfg.session_timeout_ms)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|prev| prev.session_cost_usd)
+                .unwrap_or(0.0);
+        snapshot.session_cost_usd = Some(prior_cost + step_cost);
         crate::context_snapshot::exactify(snapshot, &router, gen_system_prompt.as_deref(), &tools)
             .await;
         if let Err(error) =
@@ -2217,6 +2235,7 @@ fn build_context_snapshot(
         model: record.options.model.clone(),
         provider: record.options.provider.clone(),
         estimator: b.estimator,
+        session_cost_usd: None,
         usable: assembled.usable,
         effective_max_output_tokens: assembled.effective_max_output_tokens,
         total: final_request_tokens,

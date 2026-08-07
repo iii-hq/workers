@@ -282,6 +282,7 @@ function ContextPopover({
           <span>
             last step {formatTokens(usage?.input ?? 0)} in · output{' '}
             {formatTokens(usage?.output ?? 0)}
+            {usage?.cost_usd != null ? <> · {formatCost(usage.cost_usd)}</> : null}
           </span>
         ) : null}
         {cache ? (
@@ -298,8 +299,15 @@ function ContextPopover({
             </span>
           </span>
         ) : null}
-        {usage?.cost_usd != null ? (
-          <span>cost {formatCost(usage.cost_usd)}</span>
+        {snapshot.session_cost_usd != null ? (
+          <span
+            title={
+              'every generation step of this session summed. The per-step ' +
+              'cost on the line above swings with cache hits; this one only grows.'
+            }
+          >
+            session total {formatCost(snapshot.session_cost_usd)}
+          </span>
         ) : null}
       </div>
     </div>
