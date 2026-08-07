@@ -3,7 +3,7 @@
 This static shell replaces the generic benchmark-action index at
 `dev/harness-e2e/`. The workflow-generated `data.js` remains the source of truth
 for metric trends. `executions.js` indexes workflow attempts, and
-`runs/<execution-id>.json` supplies the complete retained reports.
+`runs/<execution-id>.json` supplies compact retained diagnostics.
 
 Import the default local report and serve the real dashboard from the repository
 root:
@@ -45,22 +45,23 @@ Metric names are stable identifiers:
 ```
 
 The execution index retains 100 workflow attempts. The latest 30 also retain the
-complete structured `results.json` content, including prompts, transcripts,
-session ids, gates, criteria, failures, retries, usage, and traces. The UI loads
-those reports only on the detail page and renders transcript-heavy sections only
-when expanded. Each run opens its transcript in a read-only dialog patterned
-after the Harness chat, with message and error filters, paired function calls
-and results, and recovered errors expanded by default. Diagnostic logs, stack
-files, and credentials remain in access-controlled Actions artifacts.
+allowlisted diagnostic projection: execution identity, scenario outcomes,
+scores, metrics, cost, duration, retries, hard gates, and failure messages.
+Prompts, transcripts, model responses, criteria, traces, and tool payloads are
+never copied into Pages. They remain in access-controlled Actions artifacts
+alongside diagnostic logs and stack files.
+Each publish also rewrites retained schema 2 detail files through the same
+allowlist and removes unreferenced run files before deploying Pages.
 
 Each full execution summary also carries compact per-scenario averages for
 tokens, wall time, cost, function calls, function-call errors, sessions, and
 turns. Tokens mean input plus output; cache-read tokens are already represented
 in input usage and are not added again. The execution table also exposes exact
-total tokens and function calls for every retained full report.
+total tokens and function calls for every retained diagnostic report.
 
-Efficiency is the primary overview. Its cards show the current operational suite
-totals, while deltas use only successful scenarios with the same subject,
+Operational health is the primary overview. Efficiency appears after the latest
+status, completeness, first actionable failure, KPIs, and scenario matrix. Its
+cards show current suite totals, while deltas use only successful scenarios with the same subject,
 scenario id, and behavioral contract fingerprint. New and changed scenarios
 collect five comparable executions before receiving a trend verdict. Removed
 scenarios remain visible as historical rows and never count as an efficiency

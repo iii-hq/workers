@@ -11,7 +11,87 @@ from collect_harness_e2e_benchmarks import (
     CollectionConfig,
     CollectionError,
     collect,
+    semantic_result_status,
 )
+
+
+def test_semantic_result_status_uses_blocking_precedence() -> None:
+    assert (
+        semantic_result_status(
+            passed=False,
+            hard_gate_failures=1,
+            technical_failures=1,
+        )
+        == "technical_failed"
+    )
+    assert (
+        semantic_result_status(
+            passed=False,
+            hard_gate_failures=1,
+            technical_failures=0,
+        )
+        == "hard_gate_failed"
+    )
+    assert (
+        semantic_result_status(
+            passed=False,
+            hard_gate_failures=0,
+            technical_failures=0,
+        )
+        == "quality_advisory"
+    )
+    assert (
+        semantic_result_status(
+            passed=True,
+            hard_gate_failures=0,
+            technical_failures=0,
+            complete=False,
+        )
+        == "incomplete"
+    )
+    assert (
+        semantic_result_status(
+            passed=True,
+            hard_gate_failures=0,
+            technical_failures=0,
+        )
+        == "passed"
+    )
+
+
+@pytest.mark.parametrize(
+    ("passed", "hard_gates", "technical", "expected"),
+    (
+        (False, 0, 0, "quality_advisory"),
+        (False, 1, 0, "hard_gate_failed"),
+        (False, 0, 1, "technical_failed"),
+    ),
+)
+def test_collects_semantic_scenario_status(
+    tmp_path: Path,
+    passed: bool,
+    hard_gates: int,
+    technical: int,
+    expected: str,
+) -> None:
+    write_report(
+        tmp_path,
+        subject_id="glm",
+        scenario_id="direct_answer",
+        passed=passed,
+        hard_gate_failures=hard_gates,
+        technical_failures=technical,
+    )
+
+    quality, _, snapshot, _ = collect(config(tmp_path, ["direct_answer"]))
+
+    assert snapshot["subjects"][0]["scenarios"][0]["status"] == expected
+    scenario_metric = next(
+        metric
+        for metric in quality
+        if metric["name"] == "quality::glm::direct_answer::median_score"
+    )
+    assert json.loads(scenario_metric["extra"])["status"] == expected
 
 
 def write_report(

@@ -30,6 +30,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html {
   background: var(--bg);
   scroll-behavior: smooth;
@@ -471,6 +475,15 @@ a:focus-visible {
 .failure-callout strong {
   color: var(--danger);
   font-size: 0.78rem;
+}
+
+.failure-callout.failure-advisory {
+  border-color: rgba(255, 209, 102, 0.24);
+  background: rgba(255, 209, 102, 0.055);
+}
+
+.failure-callout.failure-advisory strong {
+  color: var(--warning);
 }
 
 .failure-callout span {
@@ -1154,7 +1167,71 @@ footer {
   margin-top: 4px;
 }
 
+.latest-health {
+  padding: 26px 30px;
+  border-color: rgba(199, 255, 74, 0.18);
+  background:
+    radial-gradient(circle at 100% 0, rgba(199, 255, 74, 0.075), transparent 34%),
+    var(--surface);
+}
+
+.latest-health-heading,
+.latest-health-title {
+  display: flex;
+  align-items: center;
+}
+
+.latest-health-heading {
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.latest-health-title {
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.latest-health-title h2 {
+  margin: 0;
+  font-size: 1.45rem;
+  font-weight: 590;
+  letter-spacing: -0.035em;
+}
+
+.latest-health-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 22px 0 0;
+}
+
+.latest-health-facts > div {
+  min-width: 0;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.022);
+}
+
+.latest-health-facts dt {
+  color: var(--text-muted);
+  font-size: 0.61rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.latest-health-facts dd {
+  margin: 7px 0 0;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .efficiency-overview {
+  margin-top: 24px;
   padding: 30px;
   overflow: hidden;
   border-color: rgba(123, 199, 255, 0.22);
@@ -1646,6 +1723,14 @@ footer {
   color: var(--warning);
 }
 
+.text-advisory {
+  color: var(--warning);
+}
+
+.text-running {
+  color: var(--accent-blue);
+}
+
 .text-cancelled {
   color: var(--text-soft);
 }
@@ -1654,6 +1739,18 @@ footer {
   border-color: rgba(168, 176, 169, 0.28);
   background: rgba(168, 176, 169, 0.08);
   color: var(--text-soft);
+}
+
+.status-advisory {
+  border-color: rgba(255, 209, 102, 0.28);
+  background: rgba(255, 209, 102, 0.08);
+  color: var(--warning);
+}
+
+.status-running {
+  border-color: rgba(123, 199, 255, 0.28);
+  background: rgba(123, 199, 255, 0.08);
+  color: var(--accent-blue);
 }
 
 .health-panel,
@@ -1881,10 +1978,25 @@ footer {
   color: var(--success);
 }
 
-.matrix-failed {
+.matrix-failed,
+.matrix-hard_gate_failed,
+.matrix-technical_failed,
+.matrix-infra_failed {
   border-color: rgba(255, 120, 111, 0.3);
   background: rgba(255, 120, 111, 0.13);
   color: var(--danger);
+}
+
+.matrix-quality_advisory {
+  border-color: rgba(255, 209, 102, 0.3);
+  background: rgba(255, 209, 102, 0.1);
+  color: var(--warning);
+}
+
+.matrix-running {
+  border-color: rgba(123, 199, 255, 0.3);
+  background: rgba(123, 199, 255, 0.1);
+  color: var(--accent-blue);
 }
 
 .matrix-incomplete {
@@ -3358,6 +3470,15 @@ footer {
     flex-direction: column;
   }
 
+  .latest-health-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .latest-health-facts {
+    grid-template-columns: 1fr;
+  }
+
   .kpi-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3498,6 +3619,7 @@ footer {
   }
 
   .latest-release,
+  .latest-health,
   .trend-panel,
   .history-panel {
     padding: 22px 18px;

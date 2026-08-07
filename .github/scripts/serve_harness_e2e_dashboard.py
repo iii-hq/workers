@@ -326,6 +326,12 @@ def import_report(
         quality, efficiency, snapshot, execution = collect(config)
         if report.get("judge") is None:
             snapshot["subjects"][0]["judge"] = {}
+        has_blocking_failure = any(
+            int(subject.get("hard_gate_failures") or 0) > 0
+            or int(subject.get("technical_failures") or 0) > 0
+            for subject in snapshot["subjects"]
+            if isinstance(subject, dict)
+        )
         write_outputs(output_dir, quality, efficiency, snapshot, execution)
         publish(
             site_dir,
@@ -341,7 +347,9 @@ def import_report(
                 "actor": getpass.getuser(),
                 "started_at": started_at,
                 "completed_at": completed_at,
-                "conclusion": "success" if bool(report.get("passed")) else "failure",
+                # Quality is advisory in CI and must remain advisory in a local
+                # import. Only technical and hard-gate outcomes fail the run.
+                "conclusion": "failure" if has_blocking_failure else "success",
                 "head_sha": source_sha,
                 "head_branch": source_ref,
                 "repository": repo_name,
