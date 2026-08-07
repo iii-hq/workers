@@ -45,16 +45,28 @@ pub(super) fn move_stack_selection(
     }
 }
 
-/// Stack-picker keys. Enter on a startable stack just returns the chosen
-/// name — `mode` is left alone here. The caller only commits (current_stack,
-/// Busy, spawns the start) once `stack_members` actually resolves, so a
-/// lookup error can't strand the Busy dialog up with nothing in flight.
-/// Esc/q cancels back to the dashboard.
+/// What the picker's keys ask the dashboard loop to do.
+pub(super) enum PickerAction {
+    /// Switch the current stack to this one and start it (Enter).
+    Start(String),
+    /// Remove this stack from the config file (x) — caller confirms first.
+    Delete(String),
+    /// Point `default_stack:` at this one (*).
+    MakeDefault(String),
+}
+
+/// Stack-picker keys. Enter on a startable stack just returns
+/// `PickerAction::Start` — `mode` is left alone here. The caller only commits
+/// (current_stack, Busy, spawns the start) once `stack_members` actually
+/// resolves, so a lookup error can't strand the Busy dialog up with nothing
+/// in flight. `x`/`*` return Delete/MakeDefault for the highlighted stack
+/// regardless of whether it has startable roots — an empty stack is exactly
+/// the one you'd want to delete. Esc/q cancels back to the dashboard.
 pub(super) fn handle_stack_picker_key(
     key: KeyEvent,
     mode: &mut UiMode,
     stacks: &[(String, Vec<String>)],
-) -> Option<String> {
+) -> Option<PickerAction> {
     let UiMode::StackPicker { selected } = mode else {
         return None;
     };
@@ -68,8 +80,18 @@ pub(super) fn handle_stack_picker_key(
         KeyCode::Enter => {
             if let Some((name, roots)) = stacks.get(*selected) {
                 if !roots.is_empty() {
-                    return Some(name.clone());
+                    return Some(PickerAction::Start(name.clone()));
                 }
+            }
+        }
+        KeyCode::Char('x') => {
+            if let Some((name, _)) = stacks.get(*selected) {
+                return Some(PickerAction::Delete(name.clone()));
+            }
+        }
+        KeyCode::Char('*') => {
+            if let Some((name, _)) = stacks.get(*selected) {
+                return Some(PickerAction::MakeDefault(name.clone()));
             }
         }
         KeyCode::Esc | KeyCode::Char('q') => *mode = UiMode::Dashboard,
@@ -123,7 +145,11 @@ pub(super) fn draw_stack_picker_overlay(f: &mut Frame, area: Rect, selected: usi
                 "   Enter ",
                 styled_if(color, Style::default().fg(Color::Cyan)),
             ),
-            Span::raw("switch + start      "),
+            Span::raw("switch + start  "),
+            Span::styled("x ", styled_if(color, Style::default().fg(Color::Cyan))),
+            Span::raw("delete  "),
+            Span::styled("* ", styled_if(color, Style::default().fg(Color::Cyan))),
+            Span::raw("default  "),
             Span::styled("Esc ", styled_if(color, Style::default().fg(Color::Cyan))),
             Span::raw("cancel"),
         ]),
@@ -185,6 +211,33 @@ pub(super) fn save_stack(path: &Path, name: &str, roots: &[String]) -> Result<()
         .with_context(|| format!("save stack {name} to {}", path.display()))
 }
 
+/// Remove `name`'s entry from the config file. Read-error handling matches
+/// `save_stack`: a missing file has no stack to remove (a rare state — the
+/// picker only ever offers names it already read from a loaded config), any
+/// other read failure must propagate rather than be papered over.
+pub(super) fn delete_stack(path: &Path, name: &str) -> Result<()> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    let next = crate::config_write::remove_stack(&text, name)?;
+    crate::config_write::write_verified(path, &next)
+        .with_context(|| format!("delete stack {name} from {}", path.display()))
+}
+
+/// Point `default_stack:` at `name`. Same read-error handling as `save_stack`.
+pub(super) fn set_default(path: &Path, name: &str) -> Result<()> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    let next = crate::config_write::set_default_stack(&text, name)?;
+    crate::config_write::write_verified(path, &next)
+        .with_context(|| format!("set default stack {name} in {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,7 +287,7 @@ mod tests {
         // nothing in flight.
         let mut mode = UiMode::StackPicker { selected: 2 };
         let chosen = handle_stack_picker_key(KeyEvent::from(KeyCode::Enter), &mut mode, &stacks);
-        assert_eq!(chosen.as_deref(), Some("console"));
+        assert!(matches!(chosen, Some(PickerAction::Start(ref n)) if n == "console"));
         assert!(matches!(mode, UiMode::StackPicker { selected: 2 }));
 
         // Enter on an unstartable (empty) stack does nothing.
@@ -247,6 +300,74 @@ mod tests {
         let chosen = handle_stack_picker_key(KeyEvent::from(KeyCode::Esc), &mut mode, &stacks);
         assert!(chosen.is_none());
         assert!(matches!(mode, UiMode::Dashboard));
+    }
+
+    #[test]
+    fn picker_keys_return_start_delete_and_default_actions() {
+        let stacks = vec![
+            ("harness".to_string(), vec!["harness".to_string()]),
+            ("ghost".to_string(), Vec::new()),
+            ("console".to_string(), vec!["console".to_string()]),
+        ];
+
+        let mut mode = UiMode::StackPicker { selected: 2 };
+        assert!(matches!(
+            handle_stack_picker_key(KeyEvent::from(KeyCode::Enter), &mut mode, &stacks),
+            Some(PickerAction::Start(ref n)) if n == "console"
+        ));
+        assert!(matches!(
+            handle_stack_picker_key(KeyEvent::from(KeyCode::Char('x')), &mut mode, &stacks),
+            Some(PickerAction::Delete(ref n)) if n == "console"
+        ));
+        assert!(matches!(
+            handle_stack_picker_key(KeyEvent::from(KeyCode::Char('*')), &mut mode, &stacks),
+            Some(PickerAction::MakeDefault(ref n)) if n == "console"
+        ));
+
+        // An unstartable stack can still be deleted, but not started.
+        let mut mode = UiMode::StackPicker { selected: 1 };
+        assert!(
+            handle_stack_picker_key(KeyEvent::from(KeyCode::Enter), &mut mode, &stacks).is_none()
+        );
+        assert!(matches!(
+            handle_stack_picker_key(KeyEvent::from(KeyCode::Char('x')), &mut mode, &stacks),
+            Some(PickerAction::Delete(ref n)) if n == "ghost"
+        ));
+
+        // Esc still cancels.
+        let mut mode = UiMode::StackPicker { selected: 0 };
+        assert!(
+            handle_stack_picker_key(KeyEvent::from(KeyCode::Esc), &mut mode, &stacks).is_none()
+        );
+        assert!(matches!(mode, UiMode::Dashboard));
+    }
+
+    #[test]
+    fn delete_and_set_default_edit_the_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("workers-dev.yaml");
+        std::fs::write(
+            &path,
+            "stacks:\n  console:\n    - console\n  tiny:\n    - session-manager\n",
+        )
+        .unwrap();
+
+        set_default(&path, "console").unwrap();
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("default_stack: console"));
+
+        delete_stack(&path, "tiny").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("  console:"));
+        assert!(!text.contains("tiny"));
+
+        // A stack that isn't in the file (e.g. the built-in harness) says so.
+        let err = delete_stack(&path, "harness").unwrap_err();
+        assert!(
+            err.to_string().contains("not defined in this file"),
+            "{err:#}"
+        );
     }
 
     #[test]

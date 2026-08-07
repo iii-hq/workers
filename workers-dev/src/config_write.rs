@@ -5,10 +5,6 @@
 //! key order, and blank lines all survive because they are never re-serialized.
 //! Anything the scanner cannot own confidently (inline `stacks: {…}`, a
 //! duplicated key) is refused rather than rewritten.
-//!
-// ponytail: nothing outside #[cfg(test)] calls this module yet. Drop this
-// allow once this module has any real caller.
-#![allow(dead_code)]
 
 use std::path::Path;
 

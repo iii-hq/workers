@@ -108,6 +108,12 @@ enum UiMode {
         name: String,
         roots: Vec<String>,
     },
+    /// Confirming a delete (picker's x). The file write happens only on
+    /// y/Enter; deleting the default stack is refused before this mode is
+    /// ever entered (there'd be nothing left to fall back to).
+    ConfirmDeleteStack {
+        name: String,
+    },
 }
 
 enum ModeKind {
@@ -120,6 +126,7 @@ enum ModeKind {
     StackPicker,
     NameStack,
     ConfirmSave,
+    ConfirmDelete,
 }
 
 fn mode_kind(mode: &UiMode) -> ModeKind {
@@ -133,6 +140,7 @@ fn mode_kind(mode: &UiMode) -> ModeKind {
         UiMode::StackPicker { .. } => ModeKind::StackPicker,
         UiMode::NameStack { .. } => ModeKind::NameStack,
         UiMode::ConfirmSaveStack { .. } => ModeKind::ConfirmSave,
+        UiMode::ConfirmDeleteStack { .. } => ModeKind::ConfirmDelete,
     }
 }
 
@@ -173,6 +181,9 @@ struct UiCtx<'a> {
     repo_branch: Option<&'a str>,
     current_stack: &'a str,
     default_stack: &'a str,
+    /// The config file's path, displayed in the confirm-delete dialog so a
+    /// deletion never names a file the user can't place.
+    config_path: &'a str,
     stacks: &'a [(String, Vec<String>)],
     views: &'a [WorkerView],
     /// Workers marked with Space for a new stack (Task 5 saves these).
@@ -213,8 +224,13 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
         // by this task, but lives here so a later "set default" (Ctrl+u
         // picker) can update it without reaching back into `Config`.
         let mut stacks: Vec<(String, Vec<String>)> = orchestrator.config.stacks.clone();
-        let default_stack = orchestrator.config.default_stack.clone();
+        // Reassigned by the picker's `*` (make default); never by anything
+        // in Task 5.
+        let mut default_stack = orchestrator.config.default_stack.clone();
         let mut current_stack = orchestrator.config.default_stack.clone();
+        // Precomputed once: the confirm-delete dialog names the file it will
+        // edit, and `UiCtx` borrows `&str`s for the whole frame.
+        let config_path_display = orchestrator.config.config_path.display().to_string();
         let initial_members = orchestrator.stack_members(&current_stack)?;
         let (initial_views, initial_err) = orchestrator.dashboard_snapshot(&initial_members).await;
         // The poller reads the current stack's member set each tick, so a
@@ -312,6 +328,7 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                     repo_branch: state.repo_branch.as_deref(),
                     current_stack: &current_stack,
                     default_stack: &default_stack,
+                    config_path: &config_path_display,
                     stacks: &stacks,
                     views: &state.views,
                     marked: &marked,
@@ -388,37 +405,74 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                     &state.views,
                                     table_state.selected(),
                                 );
-                                if let Some(name) =
-                                    stacks::handle_stack_picker_key(key, &mut mode, &stacks)
-                                {
-                                    // The picker only ever returns a name it
-                                    // read from this same `stacks` list with
-                                    // non-empty roots.
-                                    let roots = stacks
-                                        .iter()
-                                        .find(|(n, _)| *n == name)
-                                        .map(|(_, roots)| roots.clone())
-                                        .expect("picker returned a name absent from `stacks`");
-                                    let members = crate::discover::stack_members(
-                                        &orchestrator.config.worker_specs,
-                                        &roots,
-                                    );
-                                    current_stack = name.clone();
-                                    // Mutates (re-sorts) state.views; the
-                                    // outer `display_rows` from the top of
-                                    // this loop iteration indexes the
-                                    // pre-sort order and must not be read
-                                    // again below — nothing does today.
-                                    crate::status::assign_view_groups(&mut state.views, &members);
-                                    *shared_members.write().expect("members lock") = members;
-                                    let rows = build_display_rows(&state.views, &filter);
-                                    let target = keep_name
-                                        .as_deref()
-                                        .and_then(|n| row_of_worker(&rows, &state.views, n))
-                                        .or_else(|| first_worker_row(&rows));
-                                    table_state.select(target);
-                                    mode = UiMode::Busy(format!("starting stack {name}…"));
-                                    spawn_start_roots(&actions, name, roots);
+                                match stacks::handle_stack_picker_key(key, &mut mode, &stacks) {
+                                    Some(stacks::PickerAction::Start(name)) => {
+                                        // The picker only ever returns a name
+                                        // it read from this same `stacks`
+                                        // list with non-empty roots.
+                                        let roots = stacks
+                                            .iter()
+                                            .find(|(n, _)| *n == name)
+                                            .map(|(_, roots)| roots.clone())
+                                            .expect("picker returned a name absent from `stacks`");
+                                        let members = crate::discover::stack_members(
+                                            &orchestrator.config.worker_specs,
+                                            &roots,
+                                        );
+                                        current_stack = name.clone();
+                                        // Mutates (re-sorts) state.views; the
+                                        // outer `display_rows` from the top
+                                        // of this loop iteration indexes the
+                                        // pre-sort order and must not be read
+                                        // again below — nothing does today.
+                                        crate::status::assign_view_groups(
+                                            &mut state.views,
+                                            &members,
+                                        );
+                                        *shared_members.write().expect("members lock") = members;
+                                        let rows = build_display_rows(&state.views, &filter);
+                                        let target = keep_name
+                                            .as_deref()
+                                            .and_then(|n| row_of_worker(&rows, &state.views, n))
+                                            .or_else(|| first_worker_row(&rows));
+                                        table_state.select(target);
+                                        mode = UiMode::Busy(format!("starting stack {name}…"));
+                                        spawn_start_roots(&actions, name, roots);
+                                    }
+                                    // Deleting the default stack would leave
+                                    // the config unable to load — refuse
+                                    // before ever opening the confirm dialog.
+                                    Some(stacks::PickerAction::Delete(name)) => {
+                                        if name == default_stack {
+                                            error_banner = Some((
+                                                "set another default first (*) before deleting \
+                                                 the default stack"
+                                                    .into(),
+                                                Instant::now(),
+                                            ));
+                                        } else {
+                                            mode = UiMode::ConfirmDeleteStack { name };
+                                        }
+                                    }
+                                    // Written straight through — no
+                                    // confirmation, and the picker stays open
+                                    // (mode untouched) either way so the
+                                    // redraw shows the `*` land on its new
+                                    // row, which is the only feedback this
+                                    // needs.
+                                    Some(stacks::PickerAction::MakeDefault(name)) => {
+                                        match stacks::set_default(
+                                            &orchestrator.config.config_path,
+                                            &name,
+                                        ) {
+                                            Ok(()) => default_stack = name,
+                                            Err(err) => {
+                                                error_banner =
+                                                    Some((format!("{err:#}"), Instant::now()));
+                                            }
+                                        }
+                                    }
+                                    None => {}
                                 }
                             }
                             ModeKind::NameStack => {
@@ -477,6 +531,79 @@ pub async fn run(orchestrator: Arc<Orchestrator>) -> Result<()> {
                                             &mut mode,
                                             &mut error_banner,
                                         );
+                                    }
+                                    KeyCode::Char('n') | KeyCode::Esc => mode = UiMode::Dashboard,
+                                    _ => {}
+                                }
+                            }
+                            ModeKind::ConfirmDelete => {
+                                let UiMode::ConfirmDeleteStack { name } = &mode else {
+                                    unreachable!("mode kind matched");
+                                };
+                                match key.code {
+                                    KeyCode::Char('y') | KeyCode::Enter => {
+                                        let name = name.clone();
+                                        // Same ordering as save_and_adopt_stack:
+                                        // the write must succeed before any
+                                        // session state changes.
+                                        match stacks::delete_stack(
+                                            &orchestrator.config.config_path,
+                                            &name,
+                                        ) {
+                                            Ok(()) => {
+                                                stacks.retain(|(n, _)| *n != name);
+                                                if current_stack == name {
+                                                    // The deleted stack was
+                                                    // current: fall back to
+                                                    // the default (guaranteed
+                                                    // present — it can never
+                                                    // be the one just
+                                                    // deleted) and regroup,
+                                                    // same as a picker switch.
+                                                    let keep_name = selected_worker(
+                                                        &display_rows,
+                                                        &state.views,
+                                                        table_state.selected(),
+                                                    );
+                                                    current_stack = default_stack.clone();
+                                                    let roots = stacks
+                                                        .iter()
+                                                        .find(|(n, _)| *n == current_stack)
+                                                        .map(|(_, roots)| roots.clone())
+                                                        .expect(
+                                                            "default stack missing from \
+                                                             session `stacks`",
+                                                        );
+                                                    let members = crate::discover::stack_members(
+                                                        &orchestrator.config.worker_specs,
+                                                        &roots,
+                                                    );
+                                                    crate::status::assign_view_groups(
+                                                        &mut state.views,
+                                                        &members,
+                                                    );
+                                                    *shared_members
+                                                        .write()
+                                                        .expect("members lock") = members;
+                                                    let rows =
+                                                        build_display_rows(&state.views, &filter);
+                                                    let target = keep_name
+                                                        .as_deref()
+                                                        .and_then(|n| {
+                                                            row_of_worker(&rows, &state.views, n)
+                                                        })
+                                                        .or_else(|| first_worker_row(&rows));
+                                                    table_state.select(target);
+                                                }
+                                                mode =
+                                                    UiMode::Busy(format!("deleted stack {name}"));
+                                            }
+                                            Err(err) => {
+                                                error_banner =
+                                                    Some((format!("{err:#}"), Instant::now()));
+                                                mode = UiMode::Dashboard;
+                                            }
+                                        }
                                     }
                                     KeyCode::Char('n') | KeyCode::Esc => mode = UiMode::Dashboard,
                                     _ => {}
@@ -783,10 +910,12 @@ fn handle_dashboard_key(
                     .iter()
                     .find(|(n, _)| n == current_stack)
                     .map(|(_, roots)| roots.clone())
-                    // current_stack is always present in `stacks` today, but
-                    // a future "delete the current stack" (Task 6) could
-                    // leave it stale — fall back to the first stack rather
-                    // than panic in raw mode.
+                    // current_stack is always present in `stacks`: deleting
+                    // it (picker's x) switches current_stack back to
+                    // default_stack first, and the default itself can never
+                    // be deleted (the picker refuses that before this state
+                    // is reachable). Kept as a fallback anyway — cheaper than
+                    // a panic in raw mode if that invariant ever slips.
                     .unwrap_or_else(|| stacks[0].1.clone());
                 spawn_start_roots(actions, current_stack.to_string(), roots);
                 *mode = UiMode::Busy(format!("starting stack {current_stack}…"));
@@ -1160,6 +1289,9 @@ fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) {
     }
     if let UiMode::ConfirmSaveStack { name, roots } = ctx.mode {
         draw_confirm_save_overlay(f, body, name, roots, ctx);
+    }
+    if let UiMode::ConfirmDeleteStack { name } = ctx.mode {
+        draw_confirm_delete_overlay(f, body, name, ctx);
     }
 }
 
@@ -1817,6 +1949,48 @@ fn draw_confirm_save_overlay(f: &mut Frame, area: Rect, name: &str, roots: &[Str
     );
 }
 
+/// Confirm-delete dialog for the picker's `x`: names the stack and the file
+/// it will be removed from. Mirrors `draw_confirm_save_overlay`'s shape.
+fn draw_confirm_delete_overlay(f: &mut Frame, area: Rect, name: &str, ctx: &UiCtx) {
+    let color = ctx.color_enabled;
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("   Delete stack {name}?"),
+            styled_if(color, confirm_prompt_style()),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("   removes it from {}", ctx.config_path),
+            styled_if(color, hint_style()),
+        )),
+    ];
+
+    let pinned = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "   y/Enter ",
+                styled_if(color, Style::default().fg(Color::Cyan)),
+            ),
+            Span::raw("delete      "),
+            Span::styled("n/Esc ", styled_if(color, Style::default().fg(Color::Cyan))),
+            Span::raw("cancel"),
+        ]),
+        Line::from(""),
+    ];
+
+    draw_dialog(
+        f,
+        area,
+        " confirm delete ".to_string(),
+        lines,
+        pinned,
+        58,
+        color,
+    );
+}
+
 fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
     let keys = [
         ("↑ ↓  k j", "select worker"),
@@ -1833,7 +2007,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
         ("+ -", "resize the log pane"),
         ("/", "filter workers by name"),
         ("e", "start the iii engine"),
-        ("Ctrl+u", "start stack (picker when several)"),
+        ("Ctrl+u", "start stack (picker: x delete · * default)"),
         ("Ctrl+a", "start all managed workers"),
         ("?", "toggle this help"),
         ("q", "quit (workers keep running)"),
@@ -1970,6 +2144,7 @@ mod tests {
             repo_branch: None,
             current_stack: "s",
             default_stack: "s",
+            config_path: "workers-dev.yaml",
             stacks: &[],
             views,
             marked,
@@ -2037,6 +2212,7 @@ mod tests {
             repo_branch: None,
             current_stack: stack_name,
             default_stack: stack_name,
+            config_path: "workers-dev.yaml",
             stacks: &[],
             views: &[],
             marked: &marked,
@@ -2122,6 +2298,7 @@ mod tests {
             repo_branch: None,
             current_stack: stack_name,
             default_stack: stack_name,
+            config_path: "workers-dev.yaml",
             stacks: &[],
             views: &views,
             marked: &marked,
