@@ -170,8 +170,16 @@ pub(super) fn handle_name_key(key: KeyEvent, mode: &mut UiMode) -> Option<(Strin
 }
 
 /// Write `name`'s stack into the config file, creating the file if needed.
+/// A missing file is genuinely "nothing to load yet"; any other read failure
+/// (bad permissions, a directory in the way, invalid UTF-8) must NOT be
+/// treated the same way — that would build a fresh single-stack document and
+/// have `write_verified` rename it over whatever was actually there.
 pub(super) fn save_stack(path: &Path, name: &str, roots: &[String]) -> Result<()> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
     let next = crate::config_write::upsert_stack(&text, name, roots)?;
     crate::config_write::write_verified(path, &next)
         .with_context(|| format!("save stack {name} to {}", path.display()))
@@ -244,14 +252,18 @@ mod tests {
     #[test]
     fn roots_from_marks_follows_dashboard_order() {
         let mut views = vec![view("zeta"), view("alpha"), view("mid")];
-        crate::status::assign_view_groups(&mut views, &HashSet::new());
+        // zeta is a stack member: it sorts into the Stack group, ahead of the
+        // alphabetically-earlier Other group, so dashboard order is
+        // zeta, alpha, mid — deliberately NOT alphabetical. A `marks.sort()`
+        // reimplementation would produce alpha, zeta and fail this.
+        let members: HashSet<String> = ["zeta".to_string()].into_iter().collect();
+        crate::status::assign_view_groups(&mut views, &members);
         let marked: HashSet<String> = ["zeta".to_string(), "alpha".to_string()]
             .into_iter()
             .collect();
-        // views are sorted alpha within their group, so order is alpha, zeta.
         assert_eq!(
             roots_from_marks(&views, &marked),
-            vec!["alpha".to_string(), "zeta".to_string()]
+            vec!["zeta".to_string(), "alpha".to_string()]
         );
     }
 
@@ -319,5 +331,39 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "stacks:\n  console:\n    - console\n    - state\n"
         );
+    }
+
+    /// A failed write (here: `upsert_stack` refusing a duplicated `stacks:`
+    /// key) must leave the file exactly as it was — this is the property the
+    /// error-banner path in `save_and_adopt_stack` depends on.
+    #[test]
+    fn save_stack_leaves_the_file_untouched_on_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("workers-dev.yaml");
+        let original = "stacks:\n  a:\n    - x\nstacks:\n  b:\n    - y\n";
+        std::fs::write(&path, original).unwrap();
+
+        let err = save_stack(&path, "console", &["console".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("more than once"), "{err:#}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    /// A read failure that isn't "file doesn't exist yet" (here: a directory
+    /// sitting where the config file should be) must propagate, not be
+    /// treated as an empty file — that would silently overwrite whatever was
+    /// actually unreadable there with a fresh single-stack document.
+    #[test]
+    fn save_stack_propagates_read_errors_other_than_not_found() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("workers-dev.yaml");
+        std::fs::create_dir(&path).unwrap();
+
+        let err = save_stack(&path, "console", &["console".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains(&path.display().to_string()),
+            "{err:#}"
+        );
+        // Untouched — still a directory, not clobbered by a written file.
+        assert!(path.is_dir());
     }
 }

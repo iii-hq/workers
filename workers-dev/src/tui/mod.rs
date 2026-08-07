@@ -620,11 +620,18 @@ fn handle_dashboard_key(
             }
         }
         // Mark for stack creation (n). Marks are independent of selection and
-        // of the filter — the name prompt shows what will be saved.
+        // of the filter — the name prompt shows what will be saved. Refusing
+        // a non-spawnable (external) worker here matches `s`'s own refusal —
+        // otherwise a saved stack could name a worker that fails the whole
+        // start rather than just being skipped.
         KeyCode::Char(' ') => {
             if let Some(name) = worker_name {
-                if !marked.remove(&name) {
-                    marked.insert(name);
+                if views.iter().any(|v| v.name == name && v.spawnable) {
+                    if !marked.remove(&name) {
+                        marked.insert(name);
+                    }
+                } else {
+                    *mode = not_startable_msg();
                 }
             }
         }
@@ -776,7 +783,11 @@ fn handle_dashboard_key(
                     .iter()
                     .find(|(n, _)| n == current_stack)
                     .map(|(_, roots)| roots.clone())
-                    .expect("current_stack is always present in `stacks`");
+                    // current_stack is always present in `stacks` today, but
+                    // a future "delete the current stack" (Task 6) could
+                    // leave it stale — fall back to the first stack rather
+                    // than panic in raw mode.
+                    .unwrap_or_else(|| stacks[0].1.clone());
                 spawn_start_roots(actions, current_stack.to_string(), roots);
                 *mode = UiMode::Busy(format!("starting stack {current_stack}…"));
             } else {

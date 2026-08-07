@@ -523,4 +523,22 @@ default_stack: tiny
         // The original file is untouched.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "color: auto\n");
     }
+
+    /// A digits-only (or `true`/`false`/`null`/...) stack name writes as valid
+    /// YAML text — `upsert_stack` only checks ASCII alnum/-/_, which digits
+    /// satisfy — but reads back as a non-string mapping key, which `load`'s
+    /// `parse_stacks` then refuses. `write_verified` must catch that at write
+    /// time (via `validate_config_text` running the same parse), not leave a
+    /// file behind that only fails on the next launch.
+    #[test]
+    fn write_verified_refuses_a_digits_only_stack_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("workers-dev.yaml");
+        std::fs::write(&path, "color: auto\n").unwrap();
+
+        let err = write_verified(&path, "stacks:\n  123:\n    - console\n").unwrap_err();
+        assert!(!err.to_string().is_empty());
+        // The original file is untouched — byte-identical.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "color: auto\n");
+    }
 }

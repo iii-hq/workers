@@ -270,9 +270,17 @@ fn load_file_config(path: &Path) -> Result<FileConfig> {
 
 /// Parse `text` exactly as `load` would, without applying it. The write path
 /// uses this to prove an edited config still loads before it replaces the
-/// user's file.
+/// user's file. Deserializing into `FileConfig` alone isn't enough: `stacks:`
+/// lands there as an untyped mapping, so a bare-scalar key (`123`, `true`,
+/// `null`, ...) validates fine even though `parse_stacks` — what `load`
+/// actually runs — rejects it for not being a string. Run that same parse
+/// here so a name the loader can't read back is refused before the file is
+/// replaced, not discovered on the next launch.
 pub fn validate_config_text(text: &str) -> Result<()> {
-    serde_yaml::from_str::<FileConfig>(text).context("parse edited config")?;
+    let cfg = serde_yaml::from_str::<FileConfig>(text).context("parse edited config")?;
+    if let Some(stacks) = cfg.stacks {
+        parse_stacks(stacks)?;
+    }
     Ok(())
 }
 
