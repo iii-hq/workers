@@ -18,15 +18,12 @@
     scenarioHistoryRow: null,
     scenarioHistoryMetric: "cost_usd",
   };
-  const palette = [
-    "#c7ff4a",
-    "#7bc7ff",
-    "#ff9ee2",
-    "#ffd166",
-    "#a78bfa",
-    "#69e3c2",
-    "#ff786f",
-  ];
+  const efficiencyTrendColors = {
+    improved: "var(--success)",
+    regressed: "var(--danger)",
+    neutral: "var(--text-muted)",
+  };
+  const chartAccentColor = "var(--accent)";
   const scenarioHistoryMetricIds = [
     "cost_usd",
     "tokens",
@@ -119,17 +116,8 @@
     kpiPassRate: document.querySelector("#kpi-pass-rate"),
     kpiRuntime: document.querySelector("#kpi-runtime"),
     kpiScore: document.querySelector("#kpi-score"),
-    kpiStatus: document.querySelector("#kpi-status"),
-    kpiStatusCaption: document.querySelector("#kpi-status-caption"),
-    latestCompleteness: document.querySelector("#latest-completeness"),
-    latestFailure: document.querySelector("#latest-failure"),
-    latestFailureDetail: document.querySelector("#latest-failure-detail"),
-    latestFailureLink: document.querySelector("#latest-failure-link"),
-    latestFailureTitle: document.querySelector("#latest-failure-title"),
-    latestIdentity: document.querySelector("#latest-identity"),
-    latestLane: document.querySelector("#latest-lane"),
-    latestRunLink: document.querySelector("#latest-run-link"),
-    latestStatus: document.querySelector("#latest-status"),
+    efficiencyStatus: document.querySelector("#efficiency-status"),
+    efficiencyStatusCaption: document.querySelector("#efficiency-status-caption"),
     lastUpdate: document.querySelector("#last-update"),
     matrix: document.querySelector("#health-matrix"),
     next: document.querySelector("#next-page"),
@@ -269,52 +257,9 @@
     );
   }
 
-  function renderLatestHealth() {
-    const latest = history.executions[0];
-    if (!latest) return;
-    const model = executionApi.latestHealthModel(latest);
-    const meta = statusMeta(model.status);
-    elements.latestStatus.textContent = meta.label;
-    elements.latestStatus.className = `status-pill status-${meta.css}`;
-    elements.latestLane.textContent = titleCase(model.lane);
-    elements.latestIdentity.textContent = model.identity;
-    elements.latestCompleteness.textContent = model.expectedReports
-      ? `${model.receivedReports}/${model.expectedReports} reports · ${dataLabel(model.availability)}`
-      : dataLabel(model.availability);
-
-    const workflowUrl = safeUrl(model.workflowUrl);
-    elements.latestRunLink.hidden = !workflowUrl;
-    if (workflowUrl) elements.latestRunLink.href = workflowUrl;
-
-    const issue = model.firstFailure;
-    elements.latestFailure.hidden = !issue;
-    if (!issue) return;
-    elements.latestFailure.classList.toggle("failure-advisory", issue.kind === "quality");
-    elements.latestFailureTitle.textContent =
-      issue.kind === "quality" ? "First quality advisory" : "First actionable failure";
-    const context = [
-      issue.job_name,
-      issue.step_name,
-      issue.subject_id,
-      issue.scenario_id,
-      issue.id,
-    ].filter(Boolean);
-    elements.latestFailureDetail.textContent =
-      `${context.length ? `${context.join(" · ")} — ` : ""}${issue.message || "No diagnostic message"}`;
-    const issueUrl = safeUrl(issue.url);
-    elements.latestFailureLink.hidden = !issueUrl;
-    if (issueUrl) elements.latestFailureLink.href = issueUrl;
-  }
-
   function renderKpis() {
     const latest = history.executions[0];
     if (!latest) return;
-    const status = statusMeta(latest.status);
-    elements.kpiStatus.textContent = status.label;
-    elements.kpiStatus.className = `kpi-value kpi-status-value text-${status.css}`;
-    elements.kpiStatusCaption.textContent =
-      `${formatDate(latest.completed_at, true)} · run ${latest.run_id || latest.id}` +
-      (latest.attempt > 1 ? ` · attempt ${latest.attempt}` : "");
     elements.kpiPassRate.textContent = formatPercent(
       latest.totals?.scenario_pass_rate,
     );
@@ -486,6 +431,16 @@
   }
 
   function renderEfficiency() {
+    const latest = history.executions[0];
+    if (latest) {
+      const status = statusMeta(latest.status);
+      elements.efficiencyStatus.textContent = status.label;
+      elements.efficiencyStatus.className =
+        `efficiency-result-value text-${status.css}`;
+      elements.efficiencyStatusCaption.textContent =
+        `${formatDate(latest.completed_at, true)} · run ${latest.run_id || latest.id}` +
+        (latest.attempt > 1 ? ` · attempt ${latest.attempt}` : "");
+    }
     const overview = executionApi.buildEfficiencyOverview(history.executions);
     if (!overview.latest) {
       elements.efficiencyBody.innerHTML =
@@ -505,7 +460,6 @@
         baseline: elements.efficiencyCostBaseline,
         sparkline: elements.efficiencyCostSparkline,
         format: formatCurrency,
-        color: palette[0],
       },
       {
         metricId: "tokens",
@@ -514,7 +468,6 @@
         baseline: elements.efficiencyTokensBaseline,
         sparkline: elements.efficiencyTokensSparkline,
         format: (value) => compactNumber(value, 0),
-        color: palette[1],
       },
       {
         metricId: "duration_seconds",
@@ -523,7 +476,6 @@
         baseline: elements.efficiencyDurationBaseline,
         sparkline: elements.efficiencyDurationSparkline,
         format: formatDuration,
-        color: palette[3],
       },
       {
         metricId: "function_call_errors",
@@ -532,7 +484,6 @@
         baseline: elements.efficiencyErrorsBaseline,
         sparkline: elements.efficiencyErrorsSparkline,
         format: (value) => compactNumber(value, 1),
-        color: palette[6],
       },
     ];
     const cohortRows = overview.rows.filter(
@@ -557,7 +508,7 @@
       renderEfficiencySparkline(
         card.sparkline,
         card.metricId,
-        card.color,
+        efficiencyTrendColors[meta.css] || efficiencyTrendColors.neutral,
         cohortRows,
         cohortRows.length ? metric?.comparableBaseline : null,
       );
@@ -851,7 +802,7 @@
         svg.append(
           svgElement("polyline", {
             points: segment.map((point) => `${point.x},${point.y}`).join(" "),
-            stroke: palette[0],
+            stroke: chartAccentColor,
             class: "chart-path",
           }),
         );
@@ -897,7 +848,7 @@
         cx: point.x,
         cy: point.y,
         r: 4.5,
-        fill: palette[0],
+        fill: chartAccentColor,
         class: `chart-point chart-point-${statusMeta(entry.status).css}`,
       });
       link.append(circle);
@@ -1208,7 +1159,6 @@
     elements.empty.hidden = hasData;
     elements.content.hidden = !hasData;
     if (!hasData) return;
-    renderLatestHealth();
     renderKpis();
     renderEfficiency();
     renderMatrix();

@@ -3,7 +3,7 @@
 This static shell replaces the generic benchmark-action index at
 `dev/harness-e2e/`. The workflow-generated `data.js` remains the source of truth
 for metric trends. `executions.js` indexes workflow attempts, and
-`runs/<execution-id>.json` supplies compact retained diagnostics.
+`runs/<execution-id>.json` supplies the retained execution report.
 
 Import the default local report and serve the real dashboard from the repository
 root:
@@ -45,13 +45,10 @@ Metric names are stable identifiers:
 ```
 
 The execution index retains 100 workflow attempts. The latest 30 also retain the
-allowlisted diagnostic projection: execution identity, scenario outcomes,
-scores, metrics, cost, duration, retries, hard gates, and failure messages.
-Prompts, transcripts, model responses, criteria, traces, and tool payloads are
-never copied into Pages. They remain in access-controlled Actions artifacts
-alongside diagnostic logs and stack files.
-Each publish also rewrites retained schema 2 detail files through the same
-allowlist and removes unreferenced run files before deploying Pages.
+complete execution report: per-run prompts, transcripts, criteria, metrics,
+costs, retries, hard gates, traces, and failure evidence. Each publish updates
+the retained report metadata and removes unreferenced run files before deploying
+Pages.
 
 Each full execution summary also carries compact per-scenario averages for
 tokens, wall time, cost, function calls, function-call errors, sessions, and

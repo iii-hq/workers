@@ -8,7 +8,7 @@ from pathlib import Path
 from publish_harness_e2e_dashboard import (
     build_summary,
     build_execution_efficiency_totals,
-    compact_public_detail,
+    complete_public_detail,
     contract_fingerprint,
     execution_status,
     load_manifest,
@@ -424,7 +424,7 @@ def test_publishes_average_run_metrics_by_scenario(tmp_path: Path) -> None:
     ]
 
 
-def test_public_detail_excludes_prompts_transcripts_and_payloads(tmp_path: Path) -> None:
+def test_public_detail_retains_the_complete_run_record(tmp_path: Path) -> None:
     raw = detail("10000000019")
     run = raw["reports"][0]["report"]["scenarios"][0]["runs"][0]
     run.update(
@@ -433,10 +433,39 @@ def test_public_detail_excludes_prompts_transcripts_and_payloads(tmp_path: Path)
             "transcript": {
                 "messages": [
                     {
-                        "role": "assistant",
-                        "content": "SECRET_TRANSCRIPT_MARKER",
-                        "arguments": {"token": "SECRET_TOOL_ARGUMENT_MARKER"},
-                    }
+                        "entry_id": "message-1",
+                        "message": {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "SECRET_TRANSCRIPT_MARKER"}
+                            ],
+                        },
+                    },
+                    {
+                        "entry_id": "message-2",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "function_call",
+                                    "id": "call-1",
+                                    "function_id": "worker::state",
+                                    "arguments": {
+                                        "token": "SECRET_TOOL_ARGUMENT_MARKER"
+                                    },
+                                }
+                            ],
+                        },
+                    },
+                    {
+                        "entry_id": "result-1",
+                        "message": {
+                            "role": "function_result",
+                            "function_call_id": "call-1",
+                            "details": {"status": "ready"},
+                            "content": [{"type": "text", "text": "ready"}],
+                        },
+                    },
                 ]
             },
             "criteria": [
@@ -448,26 +477,33 @@ def test_public_detail_excludes_prompts_transcripts_and_payloads(tmp_path: Path)
             "failures": [{"phase": "execute", "message": "provider unavailable"}],
         }
     )
-    compact = compact_public_detail(raw, metadata("10000000019"))
+    run["metrics"]["traces"] = {"trace_marker": "SECRET_TRACE_MARKER"}
+    complete = complete_public_detail(raw, metadata("10000000019"))
 
-    encoded = json.dumps(compact)
+    encoded = json.dumps(complete)
     for marker in (
         "SECRET_PROMPT_MARKER",
         "SECRET_TRANSCRIPT_MARKER",
         "SECRET_TOOL_ARGUMENT_MARKER",
         "SECRET_CRITERION_MARKER",
+        "SECRET_TRACE_MARKER",
     ):
-        assert marker not in encoded
-    for forbidden_key in ('"prompt"', '"transcript"', '"criteria"', '"arguments"'):
-        assert forbidden_key not in encoded
-    public_run = compact["reports"][0]["report"]["scenarios"][0]["runs"][0]
-    assert public_run["hard_gates"] == [
+        assert marker in encoded
+    complete_run = complete["reports"][0]["report"]["scenarios"][0]["runs"][0]
+    assert complete_run["prompt"] == "SECRET_PROMPT_MARKER"
+    assert complete_run["criteria"][0]["reason"] == "SECRET_CRITERION_MARKER"
+    assert complete_run["metrics"]["traces"]["trace_marker"] == "SECRET_TRACE_MARKER"
+    assert complete_run["transcript"]["messages"][0]["message"]["role"] == "user"
+    assert complete_run["transcript"]["messages"][1]["message"]["content"][0][
+        "arguments"
+    ]["token"] == "SECRET_TOOL_ARGUMENT_MARKER"
+    assert complete_run["hard_gates"] == [
         {"id": "required_state", "passed": False, "reason": "state missing"}
     ]
-    assert public_run["failures"] == [
+    assert complete_run["failures"] == [
         {"phase": "execute", "message": "provider unavailable"}
     ]
-    assert public_run["metrics"]["totals"]["input_tokens"] == 100
+    assert complete_run["metrics"]["totals"]["input_tokens"] == 100
 
     inputs = tmp_path / "inputs"
     manifest = publish(
@@ -480,12 +516,13 @@ def test_public_detail_excludes_prompts_transcripts_and_payloads(tmp_path: Path)
         max_details=2,
     )
     published = (tmp_path / "site" / manifest["executions"][0]["detail_path"]).read_text()
-    assert "SECRET_" not in published
-    assert '"prompt"' not in published
-    assert '"transcript"' not in published
+    assert "SECRET_CRITERION_MARKER" in published
+    assert "SECRET_TRACE_MARKER" in published
+    assert "SECRET_PROMPT_MARKER" in published
+    assert "SECRET_TRANSCRIPT_MARKER" in published
 
 
-def test_next_publish_sanitizes_retained_schema_two_details(tmp_path: Path) -> None:
+def test_next_publish_preserves_chat_in_retained_schema_two_details(tmp_path: Path) -> None:
     first = publish_run(tmp_path, "10000000021")
     retained_path = tmp_path / "site" / first["executions"][0]["detail_path"]
     legacy = detail("10000000021")
@@ -497,8 +534,8 @@ def test_next_publish_sanitizes_retained_schema_two_details(tmp_path: Path) -> N
     publish_run(tmp_path, "10000000022")
 
     migrated = retained_path.read_text()
-    assert "SECRET_RETAINED_PROMPT" not in migrated
-    assert '"prompt"' not in migrated
+    assert "SECRET_RETAINED_PROMPT" in migrated
+    assert '"prompt"' in migrated
     assert json.loads(migrated)["schema_version"] == 3
 
 
