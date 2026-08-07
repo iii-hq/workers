@@ -86,9 +86,14 @@ flowchart TD
   I -->|no| K
   K --> L{still over AND allow_compaction?}
   L -->|yes| M["try_compact under lease: select tail, summarise head"]
-  L -->|no| N[assemble response]
-  M -->|summary produced| O["replace system prompt with summary, drop head, recount"] --> N
-  M -->|busy / failed / empty| N
+  L -->|no| P{still over budget?}
+  M -->|summary produced| O["replace system prompt with summary, drop head, recount"] --> P
+  M -->|busy / failed / empty| P
+  P -->|yes| Q[emergency-reduce function results] --> R[recount]
+  P -->|no| S[assemble response]
+  R --> T{still over budget?}
+  T -->|yes| U[return context/overflow]
+  T -->|no| S
 ```
 
 Load-bearing details:
@@ -113,12 +118,14 @@ Load-bearing details:
    `tail_start_index` can be reported against the **request** array the caller
    holds, customs included (`invariants.feature` "tail_start_index accounts for
    excluded custom messages").
-3. **Degradation is best effort and visible, never an error.** A busy lease, a
-   failed/unavailable summariser, or disabled steps all leave the turn alive:
-   the response still returns, `applied.compacted` is false, and
-   `token_count > usable` is the visible signal that the context didn't fit.
-   `assemble` only throws for `messages is required` or `could not resolve
-   model limits` (fallback disabled).
+3. **Degradation is best effort, but the hard budget check always runs.**
+   A busy lease, a failed/unavailable summariser, or a disabled step
+   (`allow_prune`/`allow_compaction: false`) just skips that pass; emergency
+   reduction (Step 3) is never gated by them and always gets a chance to
+   close the gap. The response returns normally — `token_count <= usable` —
+   once it fits, or `assemble` throws `context/overflow` if it still doesn't.
+   `assemble` throws only for `messages is required`, `could not resolve
+   model limits` (fallback disabled), and `context/overflow`.
 4. **`applied` is the audit trail.** `{ pruned, pruned_tokens, capped_parts,
    capped_tokens, compacted, summary?, tail_start_index?, tokens_before? }`
    reports exactly what ran. `capped_parts`/`capped_tokens` are always
@@ -222,13 +229,20 @@ different kind of pass. Prune is policy: age window, `protected_functions`,
 `min_free_tokens` hysteresis. Cap is an unconditional ceiling with no
 exemptions beyond a `details` payload carrying `"status": "denied"` (which
 keeps its `details` even though its `content` is still capped). Any single
-result estimating over `max_result_tokens` (config default `20_000`; `0`
+result estimating over `max_result_tokens` (config default `20000`; `0`
 disables the pass) is rewritten to a head + marker + tail view — `[…result
 capped: was ~N tokens; middle omitted; re-call {function_id} with narrower
 arguments if the omitted middle is needed]` — reserving the marker's own
 bytes out of a 90%-of-cap-budget target *before* splitting head/tail, so the
 rewrite is idempotent without a fixpoint loop even at a small cap or a long
-`function_id`. On the assemble path it runs **before** prune
+`function_id`. The threshold check itself measures raw text (`estimator.text`,
+chars/4) while the size memo it updates — and every downstream budget check —
+measures the full serialized message, so escape-heavy content (e.g.
+ANSI-colored shell output, where a raw ESC byte serializes as the
+6-character `\u001b`) can leave a capped result reading above the nominal cap
+in budget terms, though the hard `token_count <= usable` contract still holds
+because emergency reduction re-measures with the same message-level estimate
+the ledger uses. On the assemble path it runs **before** prune
 (`functions/assemble.rs` Step 0): a result that is both oversized and aged is
 capped first and can still be pruned afterward if it's still verbose and old
 enough — the ordering doesn't skip prune's pass, it just means prune's own
@@ -236,7 +250,24 @@ rewrite runs against the already-shrunk capped text instead of the original.
 Like prune and emergency reduction, the rewrite replaces a result's whole
 `content` vector with a single text block, so a non-text block (e.g. an
 image) riding alongside more than `max_result_tokens` of text is dropped from
-the model-facing view along with it.
+the model-facing view along with it. When the cap pass and emergency
+reduction both rewrite the same result within one call, the emergency
+reference's `original_estimated_tokens` reports the already-capped size, not
+the true original, though the session transcript still holds the true
+original untouched.
+
+One consequence of prune's eligibility order (above) is worth calling out:
+because the two-user-turn exemption (item 1) is checked — and `continue`s —
+before the window accumulation (item 2) in the same scan, a result sitting
+inside that exempt zone never charges the `protect_recent_tokens` budget at
+all; it is skipped outright, not merely kept despite counting against the
+window. The steady-state floor a long session settles into is therefore
+`exempt zone + protect_recent_tokens + residue` (the tiny already-pruned
+placeholders), and the exempt zone itself is bounded only by results-per-turn
+× the cap, not by any prune knob — a measured example: three capped whales
+landing in one turn reached ~107k tokens of floor. `protect_recent_tokens` is
+the knob that lowers the steady state; `max_result_tokens` bounds a single
+result, not the floor.
 
 ## 7. Compaction — tail selection
 
@@ -425,6 +456,7 @@ the code before the colon is the stable contract. One mapping point:
 | `InvalidRequest` | `context/invalid_request` | `messages` absent/null (`messages is required`); serde-survivable shape problems. |
 | `ModelUnresolved` | `context/model_unresolved` | No inline limits, router can't resolve, fallback disabled (`could not resolve model limits`). |
 | `State` | `context/state` | A filesystem call backing the lease failed (reserved; lease failures normally degrade to busy rather than throw). |
+| `Overflow` | `context/overflow` | No safe combination of capping, pruning, and compaction fits the request (assemble only). |
 
 `messages is required` and `could not resolve model limits` are kept word-for-word
 because callers match on them (`errors.feature`). Adding a variant means: add

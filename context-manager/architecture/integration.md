@@ -56,8 +56,12 @@ Integration is always some subset of four moves:
   epoch. The worker reads them only incidentally — order is array order
   (oldest first), never timestamp.
 - **Errors** are strings beginning with a stable code: `context/<snake>:
-  message`. Match on the code substring. Only `assemble`/`compact` validation
-  and unresolved-model throw; pipeline degradations do **not** error (§7).
+  message`. Match on the code substring. Missing `messages` throws
+  `context/invalid_request` from every function; `context/model_unresolved`
+  is `assemble`/`compact`-only and `context/overflow` is `assemble`-only.
+  Busy leases and disabled steps are not themselves errors, but `assemble`
+  still throws `context/overflow` if nothing fits even after emergency
+  reduction (§7).
 - **Indices, not ids.** `tail_start_index` is an index into the `messages`
   array *you sent*. The worker never sees your storage ids; you map the index
   onto your own (§5).
@@ -156,9 +160,13 @@ overflow if nothing fits.
 
 Throws only: `context/invalid_request` (`messages is required`),
 `context/model_unresolved` (`could not resolve model limits` — only when no
-inline limits, no router, and `allow_fallback_limits` is off). Everything else
-— busy lease, failed/absent summariser, disabled steps — is **best effort**:
-the context still returns, possibly with `token_count > usable`.
+inline limits, no router, and `allow_fallback_limits` is off), and
+`context/overflow` (no safe combination of capping, pruning, and compaction
+can fit the complete request). A busy lease, a failed/absent summariser, or
+`allow_prune`/`allow_compaction: false` are **best effort** short of that —
+whichever step they skip, emergency reduction still runs unconditionally, and
+the call only throws `context/overflow` if the context still doesn't fit
+afterward.
 
 ### `context::count-tokens` — estimate usage
 
@@ -302,14 +310,18 @@ provider-legal. Build on these:
 | Code | Meaning / trigger | Functions |
 |---|---|---|
 | `context/invalid_request` | `messages` missing or `null` (`messages is required`); a `model` missing where required; malformed shapes serde can't coerce. | all |
-| `context/model_unresolved` | No inline limits, router can't resolve, and `allow_fallback_limits` is off (`could not resolve model limits`). | assemble, compact, count-tokens |
+| `context/model_unresolved` | No inline limits, router can't resolve, and `allow_fallback_limits` is off (`could not resolve model limits`). | assemble, compact |
 | `context/state` | A backing lease filesystem write hard-failed (rare; lease problems usually degrade to `busy`). | compact, assemble |
+| `context/overflow` | No safe combination of capping, pruning, and compaction can fit the complete request. | assemble |
 
 **Not errors — degradations you must read, not catch:**
 
-- `assemble` over budget with prune/compaction disabled, a busy lease, or an
-  unavailable summariser → returns normally with `applied.compacted: false` and
-  `token_count > usable`. Inspect `token_count` vs `usable` to know it didn't fit.
+- `assemble` with prune or compaction disabled, a busy lease, or an
+  unavailable summariser only skips that pass — emergency reduction still
+  runs unconditionally afterward and enforces the hard budget. The call
+  returns normally with `token_count <= usable`, or throws
+  `context/overflow` if the context still doesn't fit; it never returns a
+  normal response with `token_count > usable`.
 - `compact` → `{ status: "busy" | "empty" | "overflow" }` are normal outcomes,
   not thrown errors. `overflow` specifically means "compaction unavailable"
   (no `llm-router`, or the summariser failed) — treat it as such.
@@ -409,8 +421,9 @@ bespoke in-harness compaction side-car with a reusable worker.
 - **Optional reactive pre-warm.** To pre-warm or surface a token-usage metric
   off the hot path, bind a handler to `session::message-added` and call
   `context::count-tokens` (cheap, no LLM) there. This is opt-in and lives in
-  the harness — context-manager binds no triggers and never reaches into a
-  session itself, which is exactly what keeps it store-agnostic.
+  the harness — context-manager binds no *session* triggers and never
+  reaches into a session itself, which is exactly what keeps it
+  store-agnostic.
 - **Agent exposure.** All functions are pure transforms (nothing to leak), but
   deny `context::assemble` and `context::compact` to in-run agents in
   cost-sensitive deployments — they can trigger a summariser call.

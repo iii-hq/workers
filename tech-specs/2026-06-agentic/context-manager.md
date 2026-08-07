@@ -66,7 +66,7 @@ now run on every call, before that check.
 
 ## Structural invariants
 
-Whatever pruning or compaction does, the returned context must still be accepted by providers:
+Whatever capping, pruning, or compaction does, the returned context must still be accepted by providers:
 
 - **Call/result pairing.** A `function_call` and its `function_result` always land on the same side
   of any boundary: the compaction tail never starts between an assistant's call and its result
@@ -140,8 +140,8 @@ in [README.md § Cross-cutting contracts](README.md#cross-cutting-contracts).
 
 Build a model-ready context. Applies, in this order: cap oversized single results (always) ->
 prune aged function outputs (always) -> (if over budget) compact the head -> (if still over)
-emergency-reduce -> structured overflow. A successful response has the hard postcondition
-`token_count <= usable`.
+emergency-reduce -> return the budgeted list, or a structured overflow if nothing fits. A
+successful response has the hard postcondition `token_count <= usable`.
 
 - Invocation: **sync**
 

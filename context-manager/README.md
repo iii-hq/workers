@@ -68,6 +68,11 @@ system prompt under `# Conversation summary`, and any further compaction
 *updates* it instead of starting over. Callers that skip persistence stay
 correct at the cost of one summariser call per over-budget request.
 
+Before pruning or compaction runs, assemble unconditionally caps any single function
+result over `max_result_tokens` (default 20000; 0 disables the pass) to a bounded
+`[…result capped: was ~N tokens; middle omitted; re-call {function_id} with narrower
+arguments if the omitted middle is needed]` head+tail view — see Configuration below.
+
 Every successful `context::assemble` response satisfies `token_count <= usable`.
 Callers should include the complete `tools` array and set
 `options.request_overhead_tokens` for response-format and provider-specific request
@@ -75,11 +80,6 @@ fields. If ordinary pruning and compaction are insufficient, assembly replaces
 oversized function results in its model-facing copy with bounded references to the
 full result retained in the session transcript. Requests that still cannot fit fail
 with `context/overflow`; callers must not issue a provider request in that case.
-
-Before pruning or compaction runs, assemble unconditionally caps any single function
-result over `max_result_tokens` (default 20000; 0 disables the pass) to a bounded
-`[…result capped: was ~N tokens; middle omitted; re-call {function_id} with narrower
-arguments if the omitted middle is needed]` head+tail view — see Configuration below.
 
 The other three functions: `context::count-tokens` (estimate messages + tools +
 system prompt vs a model), `context::prune` (replace verbose function outputs
