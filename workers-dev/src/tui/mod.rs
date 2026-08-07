@@ -1648,6 +1648,16 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
     )
     .block(Block::default().borders(Borders::ALL).title(title))
     .row_highlight_style(styled_if(color, selection_row_style()));
+    // ratatui's `get_row_bounds` only ever lowers the render offset when
+    // `selected < offset`, and the selection can never land on display row 0
+    // when it's a group header (the up/down helpers skip headers) — so once
+    // a scroll pushes the offset to 1, it never falls back to 0 on its own,
+    // even after the first worker row scrolls back into view. That row's
+    // header is the only place the dashboard names the current stack, so
+    // force the offset back whenever the selection is on it.
+    if table_state.selected() == first_worker_row(ctx.display_rows) {
+        *table_state.offset_mut() = 0;
+    }
     f.render_stateful_widget(table, area, table_state);
 
     // Header rows render no cells of their own (see the match arm above) —
@@ -2342,6 +2352,113 @@ mod tests {
             row.trim_end(),
             label_other,
             "scrolled header row painted at the wrong screen line: {row:?}"
+        );
+    }
+
+    /// Important fix: ratatui's `get_row_bounds` only ever lowers the render
+    /// offset when `selected < offset`, and the selection can never land on
+    /// display row 0 here — it's a group header, and the up/down nav helpers
+    /// skip headers. So once a scroll pushed the offset to 1 it used to
+    /// never fall back to 0 on its own, permanently hiding the first group
+    /// header even after scrolling back to the very top of the list — the
+    /// one place the dashboard names the current stack. Scroll down, then
+    /// return to the first worker row, and the header must reappear.
+    #[test]
+    fn group_header_row_becomes_visible_again_after_returning_to_first_worker() {
+        let stack_name = "s";
+        let views = vec![
+            view_fixture("a1"),
+            view_fixture("a2"),
+            view_fixture("b1"),
+            view_fixture("b2"),
+        ];
+        // Same fixture as the scrolling test above:
+        // [H(Stack,2), W(a1), W(a2), H(Other,2), W(b1), W(b2)].
+        let display_rows = vec![
+            DisplayRow {
+                kind: DisplayRowKind::Header(WorkerGroup::Stack, 2),
+            },
+            DisplayRow {
+                kind: DisplayRowKind::Worker(0),
+            },
+            DisplayRow {
+                kind: DisplayRowKind::Worker(1),
+            },
+            DisplayRow {
+                kind: DisplayRowKind::Header(WorkerGroup::Other, 2),
+            },
+            DisplayRow {
+                kind: DisplayRowKind::Worker(2),
+            },
+            DisplayRow {
+                kind: DisplayRowKind::Worker(3),
+            },
+        ];
+        let label_stack = format!(
+            "── {} (2) ──",
+            crate::status::group_label(WorkerGroup::Stack, stack_name)
+        );
+        let marked = std::collections::HashSet::new();
+        let ctx = UiCtx {
+            engine_url: "",
+            repo_branch: None,
+            current_stack: stack_name,
+            default_stack: stack_name,
+            config_path: "workers-dev.yaml",
+            stacks: &[],
+            views: &views,
+            marked: &marked,
+            engine_error: None,
+            display_rows: &display_rows,
+            mode: &UiMode::Dashboard,
+            filter: "",
+            selected_name: None,
+            log_lines: &[],
+            log_scroll: 0,
+            follow: true,
+            log_height: LOG_HEIGHT_DEFAULT,
+            table_width: TABLE_PANE_WIDTH,
+            spinner_frame: 0,
+            color_enabled: false,
+            error: None,
+        };
+
+        // Same 40x6 backend as the sibling scrolling test.
+        let backend = ratatui::backend::TestBackend::new(40, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut table_state = TableState::default();
+
+        // Scroll down onto the last row first, exactly like the sibling test
+        // above — this pushes the offset to 2, scrolling the first header
+        // (display row 0) out of view.
+        table_state.select(Some(4));
+        terminal
+            .draw(|f| draw_table(f, f.area(), &mut table_state, &ctx))
+            .unwrap();
+        assert_eq!(
+            table_state.offset(),
+            2,
+            "test setup must actually scroll (offset > 0) to be meaningful"
+        );
+
+        // Now return to the first worker row (display row 1, "a1") — the
+        // offset must snap back to 0 so the header above it is visible again.
+        table_state.select(first_worker_row(&display_rows));
+        terminal
+            .draw(|f| draw_table(f, f.area(), &mut table_state, &ctx))
+            .unwrap();
+        assert_eq!(
+            table_state.offset(),
+            0,
+            "offset must snap back to 0 once the first worker row is selected again"
+        );
+
+        let buf = terminal.backend().buffer();
+        let row: String = (1..39).map(|x| buf[(x, 2)].symbol()).collect();
+        assert_eq!(
+            row.trim_end(),
+            label_stack,
+            "first group header did not reappear after returning to the top: {row:?}"
         );
     }
 
