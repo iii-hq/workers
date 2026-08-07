@@ -72,7 +72,7 @@ Actions -> **Create Tag** accepts:
 | `bump` | `patch`, `minor`, `major`, or `none` |
 | `target_version` | Optional exact version; overrides `bump` and `suffix` |
 | `suffix` | `none`, `experimental`, `alpha`, or `beta` |
-| `registry_tag` | `next` for a candidate, `latest` for a direct stable release |
+| `registry_tag` | `next` for a candidate, `latest` for a direct release |
 | `experimental` | Independent Registry badge |
 | `operation_id`, `step_id` | Optional Release Control correlation IDs |
 | `expected_current_version` | Optional compare-and-swap guard for the manifest |
@@ -98,9 +98,10 @@ needed, pushes the version commit to `main`, then creates the annotated
 selected worker did not change. A matching existing tag is treated as an
 idempotent result.
 
-Prereleases always publish to `next`. Harness also cannot publish directly to
-`latest`; it must pass the candidate and deployed-E2E gates before promotion.
-Other stable workers may use either channel.
+Experimental, alpha, beta, and stable versions may publish directly to `latest`
+when the worker allows it. Harness cannot publish directly to `latest`; it must
+pass the candidate and deployed-E2E gates before promotion. Any worker may use
+`next` for candidate validation.
 
 ## Release pipeline
 

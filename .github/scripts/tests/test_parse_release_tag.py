@@ -15,7 +15,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / "parse_release_tag.py"
 
 
 def make_repo_with_tagged_worker(tmp_path, tag, version, deploy="binary",
-                                  registry_tag_line="registry-tag: latest"):
+                                  registry_tag_line="registry-tag: latest",
+                                  allow_direct_latest=True):
     """Init a tmp repo with one worker + an annotated tag matching `tag`."""
     def run(*args):
         return subprocess.run(args, cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
@@ -47,7 +48,7 @@ def make_repo_with_tagged_worker(tmp_path, tag, version, deploy="binary",
                 },
                 "defaults": {
                     "release_workflow": "release.yml",
-                    "allow_direct_latest": True,
+                    "allow_direct_latest": allow_direct_latest,
                     "required_validation": "smoke",
                     "release_control_enabled": True,
                 },
@@ -153,7 +154,38 @@ class TestParseReleaseTag:
         assert output["maturity"] == "alpha"
         assert output["operation_id"] == "11111111-1111-1111-1111-111111111111"
 
-    def test_v2_prerelease_cannot_publish_latest(self, tmp_path):
+    @pytest.mark.parametrize("maturity", ["experimental", "alpha", "beta"])
+    def test_v2_prerelease_can_publish_latest(self, tmp_path, maturity):
+        version = f"1.2.3-{maturity}"
+        metadata = "\n".join(
+            [
+                "release-contract: 2",
+                "worker: smoke",
+                f"version: {version}",
+                f"maturity: {maturity}",
+                "registry-tag: latest",
+                "experimental: false",
+                "operation-id: op",
+                "step-id: step",
+                "source-sha: unknown",
+            ]
+        )
+        repo = make_repo_with_tagged_worker(
+            tmp_path,
+            f"smoke/v{version}",
+            version,
+            registry_tag_line=metadata,
+        )
+        out_path = tmp_path / "gh_output"
+        out_path.touch()
+        result = run_script(repo, f"smoke/v{version}", out_path)
+        assert result.returncode == 0, result.stderr
+        output = parse_outputs(out_path)
+        assert output["registry_tag"] == "latest"
+        assert output["is_prerelease"] == "true"
+        assert output["maturity"] == maturity
+
+    def test_v2_prerelease_latest_still_requires_worker_permission(self, tmp_path):
         metadata = "\n".join(
             [
                 "release-contract: 2",
@@ -172,12 +204,13 @@ class TestParseReleaseTag:
             "smoke/v1.2.3-beta",
             "1.2.3-beta",
             registry_tag_line=metadata,
+            allow_direct_latest=False,
         )
         out_path = tmp_path / "gh_output"
         out_path.touch()
         result = run_script(repo, "smoke/v1.2.3-beta", out_path)
         assert result.returncode != 0
-        assert "must publish to next" in result.stderr
+        assert "cannot publish directly to latest" in result.stderr
 
     def test_missing_channel_fails_closed_to_next(self, tmp_path):
         repo = make_repo_with_tagged_worker(

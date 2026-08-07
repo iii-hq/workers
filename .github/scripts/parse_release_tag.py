@@ -107,9 +107,6 @@ def main(argv: list[str] | None = None) -> int:
     if registry_tag not in {"next", "latest"}:
         print(f"::error::registry-tag must be next|latest (got {registry_tag!r})", file=sys.stderr)
         return 1
-    if is_pre == "true" and dry_run != "true" and registry_tag != "next":
-        print(f"::error::prerelease {version} must publish to next", file=sys.stderr)
-        return 1
     if registry_tag == "latest" and not worker_config["allow_direct_latest"]:
         print(f"::error::{worker} cannot publish directly to latest", file=sys.stderr)
         return 1
