@@ -189,7 +189,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
                 let (iii, http, cache) = (iii_poll.clone(), http_poll.clone(), cache_poll.clone());
                 async move {
                     let resp = out.await?;
-                    if resp.status == "ok" {
+                    if resp.status == crate::login::LoginStatus::Ok {
                         tokio::spawn(async move {
                             match refresh_models(&iii, &http, &cache).await {
                                 Ok(count) => println!(

@@ -22,7 +22,9 @@ pub async fn load_token(iii: &IIIClient) -> Option<String> {
         })
         .await
         .ok()?;
-    value.as_str().map(String::from)
+    // An empty value is not a token: presenting one would be rejected as a
+    // mismatch instead of registering fresh.
+    value.as_str().filter(|s| !s.is_empty()).map(String::from)
 }
 
 pub async fn store_token(iii: &IIIClient, token: &str) -> Result<(), Error> {

@@ -17,6 +17,9 @@ pub const OAUTH_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 pub const DEFAULT_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 pub const DEFAULT_ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 
+/// Seconds GitHub asks callers to add to their interval after a `slow_down`.
+const SLOW_DOWN_BACKOFF_SECS: u64 = 5;
+
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct LoginStartRequest {}
 
@@ -40,11 +43,30 @@ pub struct LoginPollRequest {
     pub device_code: String,
 }
 
+/// Outcome of one poll. `SlowDown` is kept distinct from `Pending` because
+/// GitHub asks callers to lengthen their interval when it appears; the
+/// requested wait rides along in `retry_after_seconds`.
+#[derive(Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LoginStatus {
+    /// Signed in; the credential is stored and discovery has been kicked.
+    Ok,
+    /// The operator has not finished at the verification URL yet.
+    Pending,
+    /// Polling too fast — wait `retry_after_seconds` longer before retrying.
+    SlowDown,
+    /// The device code expired; start again.
+    Expired,
+    /// The operator rejected the request.
+    Denied,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct LoginPollResponse {
-    /// `ok` (token stored), `pending` (user has not finished), or a terminal
-    /// failure (`expired`, `denied`).
-    pub status: String,
+    pub status: LoginStatus,
+    /// Seconds to add to the poll interval; set when `status` is `slow_down`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_seconds: Option<u64>,
 }
 
 fn login_error(message: impl Into<String>) -> Error {
@@ -112,18 +134,32 @@ pub async fn poll(
     if let Some(token) = v.get("access_token").and_then(Value::as_str) {
         auth::store_oauth(iii, token).await?;
         return Ok(LoginPollResponse {
-            status: "ok".into(),
+            status: LoginStatus::Ok,
+            retry_after_seconds: None,
         });
     }
     let status = match v.get("error").and_then(Value::as_str) {
-        Some("authorization_pending") | Some("slow_down") => "pending",
-        Some("expired_token") => "expired",
-        Some("access_denied") => "denied",
+        Some("authorization_pending") => LoginStatus::Pending,
+        Some("slow_down") => LoginStatus::SlowDown,
+        Some("expired_token") => LoginStatus::Expired,
+        Some("access_denied") => LoginStatus::Denied,
         Some(other) => return Err(login_error(format!("device flow failed: {other}"))),
-        None => return Err(login_error(format!("unexpected access token reply: {v}"))),
+        // Never interpolate the reply itself: this branch is reached with a
+        // body we did not recognise, which may still carry a credential.
+        None => {
+            let keys: Vec<&str> = v
+                .as_object()
+                .map(|o| o.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            return Err(login_error(format!(
+                "unexpected access token reply (keys: {keys:?})"
+            )));
+        }
     };
+    let retry_after_seconds = (status == LoginStatus::SlowDown).then_some(SLOW_DOWN_BACKOFF_SECS);
     Ok(LoginPollResponse {
-        status: status.into(),
+        status,
+        retry_after_seconds,
     })
 }
 

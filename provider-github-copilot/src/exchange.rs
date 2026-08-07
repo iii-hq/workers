@@ -95,8 +95,11 @@ async fn exchange(
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default();
     if status == 401 || status == 403 {
+        // Bounded: the reply is GitHub's, but an error body is not a place to
+        // spill an arbitrary upstream payload into logs and error frames.
+        let detail: String = body.chars().take(200).collect();
         return Err(ExchangeError::Unauthorized(format!(
-            "copilot token exchange rejected (http {status}): {body}"
+            "copilot token exchange rejected (http {status}): {detail}"
         )));
     }
     if !(200..300).contains(&status) {

@@ -245,9 +245,32 @@ async fn stub_upstream(messages_response: &'static str) -> StubUpstream {
                 break;
             };
             tokio::spawn(async move {
-                let mut buf = vec![0u8; 65536];
-                let n = sock.read(&mut buf).await.unwrap_or(0);
-                let head = String::from_utf8_lossy(&buf[..n]);
+                // One read can land mid-request: keep reading until the
+                // headers are complete and any body has arrived, so routing
+                // on the requested model is not a race.
+                let mut acc = Vec::new();
+                let mut chunk = vec![0u8; 65536];
+                loop {
+                    let n = sock.read(&mut chunk).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    acc.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&acc);
+                    let headers_done = text.contains("\r\n\r\n");
+                    let body_len = text
+                        .to_ascii_lowercase()
+                        .split("content-length:")
+                        .nth(1)
+                        .and_then(|rest| rest.split(['\r', '\n']).next())
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    let body_start = text.find("\r\n\r\n").map(|i| i + 4).unwrap_or(acc.len());
+                    if headers_done && acc.len() >= body_start + body_len {
+                        break;
+                    }
+                }
+                let head = String::from_utf8_lossy(&acc);
                 let response = if head.contains("GET ") && head.contains("/models") {
                     STUB_MODELS
                 } else if head.contains("premium-only") {

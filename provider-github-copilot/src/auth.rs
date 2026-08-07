@@ -84,7 +84,7 @@ pub fn read_local_editor_credential() -> Option<String> {
 }
 
 pub async fn load_stored_oauth(iii: &IIIClient) -> Option<String> {
-    let value = iii
+    let value = match iii
         .trigger(TriggerRequest {
             function_id: "state::get".into(),
             payload: json!({ "scope": state::STATE_SCOPE, "key": state::OAUTH_TOKEN_KEY }),
@@ -92,7 +92,18 @@ pub async fn load_stored_oauth(iii: &IIIClient) -> Option<String> {
             timeout_ms: None,
         })
         .await
-        .ok()?;
+    {
+        Ok(value) => value,
+        // A state outage is not the same as "never signed in" — say so, or
+        // the fallback to env/editor credentials looks like a lost login.
+        Err(e) => {
+            eprintln!(
+                "[provider-github-copilot] reading the stored GitHub credential failed ({e}); \
+                 falling back to the env and editor-credential chain"
+            );
+            return None;
+        }
+    };
     value.as_str().filter(|s| !s.is_empty()).map(String::from)
 }
 

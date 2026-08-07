@@ -59,8 +59,12 @@ fn classify_envelope(v: &Value, status: Option<u16>) -> Option<ErrorKind> {
     let err = v.get("error")?;
     let msg = err.get("message").and_then(Value::as_str).unwrap_or("");
 
+    // Only a plausible HTTP status takes the status path: application codes
+    // (and anything past u16) would otherwise be truncated into one.
     if let Some(code) = err.get("code").and_then(Value::as_u64) {
-        return Some(classify_status(Some(code as u16), msg));
+        if (100..=599).contains(&code) {
+            return Some(classify_status(Some(code as u16), msg));
+        }
     }
 
     let code = err.get("code").and_then(Value::as_str).unwrap_or("");
@@ -215,6 +219,16 @@ mod tests {
         );
         // 5xx wins over message sniffing
         assert_eq!(classify(Some(500), "context blah"), ErrorKind::Transient);
+    }
+
+    #[test]
+    fn non_http_numeric_codes_do_not_masquerade_as_statuses() {
+        // an application code, not an HTTP status
+        let body = r#"{"error":{"code":1000,"message":"boom"}}"#;
+        assert_eq!(classify(Some(500), body), ErrorKind::Transient);
+        // beyond u16: must not truncate into a 2xx/4xx
+        let body = r#"{"error":{"code":70401,"message":"boom"}}"#;
+        assert_eq!(classify(Some(500), body), ErrorKind::Transient);
     }
 
     #[test]

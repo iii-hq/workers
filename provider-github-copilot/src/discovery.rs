@@ -185,14 +185,14 @@ pub async fn refresh_models(
     let Some(credential) = auth::resolve_credential(iii).await else {
         // Never signed in anywhere this worker can see: prune the slice so
         // the picker reflects reality instead of stale rows.
-        router_client::reconcile(iii, vec![], token.as_deref()).await?;
+        router_client::reconcile_exclusive(iii, vec![], token.as_deref()).await?;
         return Ok(0);
     };
     let bearer = match fresh_bearer(http, cache, &credential, DEFAULT_TOKEN_URL).await {
         Ok(b) => b,
         Err(ExchangeError::Unauthorized(_)) => {
             // Revoked login / no Copilot access: the models are unusable.
-            router_client::reconcile(iii, vec![], token.as_deref()).await?;
+            router_client::reconcile_exclusive(iii, vec![], token.as_deref()).await?;
             return Ok(0);
         }
         Err(ExchangeError::Transient(msg)) => return Err(upstream_unavailable(msg)),
@@ -218,11 +218,11 @@ pub async fn refresh_models(
                     count
                 );
             }
-            router_client::reconcile(iii, models, token.as_deref()).await?;
+            router_client::reconcile_exclusive(iii, models, token.as_deref()).await?;
             Ok(count)
         }
         FetchOutcome::AuthFailed => {
-            router_client::reconcile(iii, vec![], token.as_deref()).await?;
+            router_client::reconcile_exclusive(iii, vec![], token.as_deref()).await?;
             Ok(0)
         }
         // Blip: keep the previous slice (spec § reconcile-to-empty guidance).

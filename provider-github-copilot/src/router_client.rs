@@ -41,6 +41,22 @@ pub async fn resolve(
     )
 }
 
+/// Serializes whole-slice replacement. `reconcile` overwrites the provider's
+/// entire catalog, so a prune's read-modify-write racing another prune (or a
+/// refresh) would drop one of the two results.
+static CATALOG_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// `router::models::reconcile` under the catalog lock — use this for every
+/// caller that computes a slice and then writes it.
+pub async fn reconcile_exclusive(
+    iii: &IIIClient,
+    models: Vec<Model>,
+    token: Option<&str>,
+) -> Result<(), Error> {
+    let _guard = CATALOG_LOCK.lock().await;
+    reconcile(iii, models, token).await
+}
+
 /// `router::models::reconcile` — replace this provider's catalog slice.
 pub async fn reconcile(
     iii: &IIIClient,
@@ -67,6 +83,9 @@ pub async fn reconcile(
 /// removes the row, so the picker converges on what this account can really
 /// use. A later refresh restores it if the entitlement changes.
 pub async fn prune_model(iii: &IIIClient, model_id: &str, token: Option<&str>) {
+    // Held across the read and the write: two models failing at once must not
+    // each write back a snapshot that still contains the other.
+    let _guard = CATALOG_LOCK.lock().await;
     let Ok(raw) = call(
         iii,
         "router::models::list",
